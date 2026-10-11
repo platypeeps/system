@@ -2328,3 +2328,61 @@ class TheLabelSheet(unittest.TestCase):
         self.assertEqual(self.sheet()[0], 2)
         self.assertEqual((labels / "sheet-C1.csv").read_text(), filled)
         self.assertEqual((labels / "key-C1.csv").read_bytes(), written["key-C1.csv"])
+
+    def test_each_population_draws_from_its_own_stream(self):
+        # Review round 2, class pass: one seed string for every population
+        # drew the same positions in C1's and C2's pools, so their draws
+        # were not independent.
+        def drawn(population):
+            rows = [kit_row(n, population=population) for n in range(400)]
+            _sheet, key, _summary = self.kit(rows, kit_answers(range(400), kev=range(400)))
+            order = sorted(r["commit"] for r in key if r["kev_skip_draw"] == "1")
+            return {sorted(sha(n) for n in range(400)).index(c) for c in order}
+        self.assertEqual(len(drawn("C1")), 300)
+        self.assertNotEqual(drawn("C1"), drawn("C2"))
+
+
+def thinning_rows(count):
+    return [{"repo": "R01", "commit": sha(n)} for n in range(count)]
+
+
+class TheThinning(unittest.TestCase):
+    """design.md "Pooled H1": before a pooled H1 look, each arm's drawn
+    skips are thinned per population to the lowest rate (review round 2)."""
+
+    def test_the_registered_per_row_expression_keeps_all_or_none(self):
+        # The counterexample: a fresh generator per row draws one number.
+        import random
+        for population in ("C1", "C2", "C3"):
+            kept = [r for r in thinning_rows(20)
+                    if random.Random(f"2764:thin:kev:{population}").random() < 0.75]
+            self.assertIn(len(kept), (0, 20))
+
+    def test_one_generator_per_arm_and_population_thins_row_by_row(self):
+        rows = thinning_rows(2000)
+        kept = experiment.thinned(rows, "kev", "C2", common=0.75, own=1.0)
+        self.assertTrue(1400 <= len(kept) <= 1600, len(kept))
+        self.assertEqual(kept, experiment.thinned(list(reversed(rows)), "kev", "C2",
+                                                  common=0.75, own=1.0))
+        self.assertNotEqual(kept, experiment.thinned(rows, "kev", "C1", common=0.75, own=1.0))
+        self.assertNotEqual(kept, experiment.thinned(rows, "jev", "C2", common=0.75, own=1.0))
+        # 20 rows at 0.75 keep some, not all or none, as the finding's case.
+        few = len(experiment.thinned(thinning_rows(20), "kev", "C2", common=0.75, own=1.0))
+        self.assertTrue(0 < few < 20, few)
+
+    def test_the_population_that_sets_the_rate_keeps_every_row(self):
+        rows = thinning_rows(50)
+        self.assertEqual(experiment.thinned(rows, "jev", "C1", common=0.75, own=0.75),
+                         sorted(rows, key=lambda r: (r["repo"], r["commit"])))
+
+    def test_each_row_keeps_the_common_rate_over_its_own(self):
+        # Kept at common/own after a draw at own: every row's chance is common.
+        rows = thinning_rows(4000)
+        kept = experiment.thinned(rows, "kev", "C1", common=0.3, own=0.6)
+        self.assertTrue(1800 <= len(kept) <= 2200, len(kept))
+
+    def test_a_common_rate_above_the_population_s_own_refuses(self):
+        for common, own in ((0.9, 0.75), (0.5, None), (0.0, 0.5)):
+            with self.subTest(common=common, own=own):
+                with self.assertRaises(experiment.Refused):
+                    experiment.thinned(thinning_rows(5), "kev", "C1", common=common, own=own)

@@ -1926,13 +1926,16 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
     above it, a seeded draw within each pattern, each row weighted by its
     pattern's heads over its pattern's drawn rows. Each skip draw keeps
     every model skip up to `SKIP_CAP`, else a seeded simple random draw.
-    Each draw has its own stream of `seed`, so one draw's size never moves
-    another's rows; the order and each row's candidates use a fourth.
+    Each draw has its own stream, seeded with `seed`, the population and the
+    draw's name, so one draw's size never moves another's rows and two
+    populations' draws are independent. The order and each row's candidates
+    use a fourth stream, which selects nothing.
 
     One population per sheet: C2 gets its own draws, as C3 does (operator,
     on #14764), so rows of two populations refuse."""
     if len({r["population"] for r in rows}) > 1:
         raise Refused("a sheet draws over one population; C2 and C3 get sheets of their own")
+    population = rows[0]["population"] if rows else ""
     heads, left_out = [], collections.Counter()
     for row in sorted(rows, key=lambda r: (r["population"], r["repository"], r["head"])):
         if not row.get("state"):
@@ -1959,7 +1962,7 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
         if "S" in head["pattern"] and "R" in head["pattern"]:
             strata.setdefault(head["pattern"], []).append(head)
     taken = allocate({p: len(m) for p, m in strata.items()}, DISAGREEMENT_CAP)
-    rng = random.Random(f"{seed}:disagreement")
+    rng = random.Random(f"{seed}:{population}:disagreement")
     for pattern in sorted(strata):
         for head in rng.sample(strata[pattern], taken[pattern]):
             keyed(head).update(disagreement_draw=1, stratum_heads=len(strata[pattern]),
@@ -1968,7 +1971,8 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
     skips = {}
     for arm in SKIP_ARMS:
         pool = [h for h in heads if h["votes"][arm] == "skip" and h["votes"]["rules"] != "skip"]
-        drawn = random.Random(f"{seed}:skip:{arm}").sample(pool, min(SKIP_CAP, len(pool)))
+        drawn = random.Random(f"{seed}:{population}:skip:{arm}").sample(
+            pool, min(SKIP_CAP, len(pool)))
         for head in drawn:
             keyed(head).update({f"{arm}_skip_draw": 1,
                                 f"{arm}_skip_weight": len(pool) / len(drawn)})
@@ -2012,6 +2016,22 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
                                 "drawn": sum(taken.values()), "strata": len(strata)},
                "skip": skips}
     return [as_cells(r) for r in sheet], [as_cells(k) for k in keys], summary
+
+
+def thinned(rows: list[dict], arm: str, population: str, common: float, own,
+            seed: int = SEED) -> list[dict]:
+    """One population's drawn skips of one arm, thinned for a pooled H1
+    look (design.md, "Pooled H1"): one generator per arm and population,
+    advanced once per row in `(repo, commit)` order, keeps a row when its
+    number falls below `common / own`. A row was drawn at `own`, so it is
+    kept at `common`, the lowest rate across the looked-at populations,
+    whatever its population: the pooled sample has one inclusion chance."""
+    if own is None or not 0 < common <= own <= 1:
+        raise Refused(f"no thinning from {own!r} to {common!r}: the common rate is the lowest "
+                      "rate of the populations pooled, each above 0")
+    rng = random.Random(f"{seed}:thin:{arm}:{population}")
+    return [row for row in sorted(rows, key=lambda r: (r["repo"], r["commit"]))
+            if rng.random() < common / own]
 
 
 def as_cells(row: dict) -> dict:

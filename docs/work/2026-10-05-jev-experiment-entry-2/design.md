@@ -221,17 +221,29 @@ So a head is a disagreement when the arms asked about it split, and each arm's s
 
 The key records which draw each row came from; the sheet does not.
 If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
-**Pooled H1** (review round 1 of step 8). Separate sheets give each population its own skip-draw rate per arm: 300 of 400 model skips in one and 20 of 20 in another are rates 0.75 and 1.
-Pooled as they stand, the second is overrepresented, and no weighting keeps the Clopper-Pearson interval exact.
+**Pooled H1** (review rounds 1 and 2 of step 8). Separate sheets give each population its own skip-draw rate per arm: 300 of 400 model skips in one and 20 of 20 in another are rates 0.75 and 1.
+Pooled as they stand, the second is overrepresented, and no weighting gives an equal-probability sample.
 So before any pooled H1 look, the first (C1+C2) and the one after the extension alike, each arm is thinned on its own:
 
 - Each population's sheet records the arm's rate, `drawn / pool`, as `skip.<arm>.rate` in `sheet-<population>.json`; no model skip means no rate.
 - The common rate is the lowest rate of every population included in that look (C1, C2, and C3 once it runs), among those with a rate.
-- Each population's drawn model skips are thinned to it by Bernoulli draws: in `(repository, head)` order, a row stays when `random.Random(f"2764:thin:<arm>:<population>").random()` is below the common rate over its population's rate.
+- `jev_experiment.thinned` thins each population's drawn model skips to it: one generator per arm and population, `random.Random(f"2764:thin:<arm>:<population>")`, advanced once per row in `(repo, commit)` order of the key; a row stays when its number is below the common rate over its population's rate.
+  A generator built afresh for each row draws one number for all of them, so it keeps every row or none (review round 2); a test pins that counterexample.
   The population that sets the common rate keeps every row.
-- Every model skip of every included population then has the same chance, the common rate, of being in the pooled sample, so the pooled sample is uniform and the interval stays exact.
+- A row was drawn at its population's rate and stays at the common rate over that, so every model skip of every included population is in the pooled sample with the same chance, the common rate.
   A thinned-out row keeps its label; it is left out of the pooled H1 look only.
-Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
+
+**Draws and streams.** Every draw has its own generator, seeded with a string, which Python hashes with SHA-512, so the stream is the same on every run and machine.
+
+| Draw | Generator and seed | Advance order | Inclusion per row | Across populations |
+|---|---|---|---|---|
+| Disagreement draw | one per sheet, `2764:<population>:disagreement` | one `sample` per pattern, patterns sorted, rows in `(population, repository, head)` order | every row up to 150; above, the pattern's drawn over its heads | own stream per population; estimates weight each row by its pattern's heads over its drawn rows |
+| Skip draw, Jev and Kev | one per arm and sheet, `2764:<population>:skip:<arm>` | one `sample` over the arm's model skips in `(population, repository, head)` order | every skip up to 300; above, 300 over the pool | own stream per population; thinned to one common rate before a pooled H1 look |
+| Thinning | one per arm and population, `2764:thin:<arm>:<population>` | one number per drawn row, `(repo, commit)` order | the common rate over the population's rate, so the common rate overall | the same chance in every population |
+| Sheet order and candidates | one per sheet, `2764:order` | the rows' shuffle, then each row's candidates | selects nothing | blinding only |
+
+Before review round 2, the two draws used one seed string in every population, so C1, C2 and C3 drew the same positions in pools of one size.
+Each population now has its own streams; on C1 every pool is under its cap, so C1's sheet and key are unchanged.
 Order is shuffled with the same seed.
 
 **Sheet.** `labels/sheet-<population>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
