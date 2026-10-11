@@ -1186,7 +1186,7 @@ class TheReplay(CompareCase):
                                         return_value=("refused", None)):
             self.assertEqual(self.replay("kev")[0], 1)
         before = len(Arm.seen)
-        with unittest.mock.patch.object(experiment, "recorded", return_value=None):
+        with unittest.mock.patch.object(experiment, "recorded", return_value="unreadable"):
             self.assertEqual(self.replay("kev", "--resume", "the ledger is back")[0], 1)
         self.assertEqual(len(Arm.seen), before)
         self.assertTrue((self.folder / "replay" / "kev.asking").exists())
@@ -1455,3 +1455,84 @@ class TheReplay(CompareCase):
         marker.write_text(json.dumps({"repository": "owner/repo", "head": sha(0)}))
         self.assertEqual(self.replay("jev")[0], 2)
         self.assertEqual(len(Stub.seen), 1)
+
+    def one_head(self):
+        self.HEADS = 1
+        self.write_population(["a.py"])
+
+    def test_a_recovered_answer_over_the_cap_halts_the_last_head(self):
+        self.one_head()
+        self.costing(0.4)
+        self.in_turn(dict(CHEAP, usd=0.4))
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("jev", "--cap", "2.0")[0], 1)
+        (self.folder / "replay" / "haiku.jsonl").write_text(json.dumps({"usd": 0.8}) + "\n")
+        self.assertEqual(self.replay("jev", "--resume", "the ledger is back", "--cap", "1.0")[0], 1)
+        self.assertEqual([a["usd"] for a in self.answers("jev")], [0.4])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("spend cap", manifest["arms"]["jev"]["halted"])
+
+    def test_an_interrupted_call_over_the_cap_halts_the_last_head(self):
+        self.one_head()
+        self.costing(0.4)
+        self.stop_after_first_call("jev")
+        (self.folder / "replay" / "haiku.jsonl").write_text(json.dumps({"usd": 0.5}) + "\n")
+        self.assertEqual(self.replay("jev", "--cap", "1.0")[0], 1)
+        self.assertEqual([(a["outcome"], a["usd"]) for a in self.answers("jev")],
+                         [("interrupted", 0.8)])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("spend cap", manifest["arms"]["jev"]["halted"])
+
+    def test_an_interrupted_call_gets_its_ledger_row_before_its_line(self):
+        self.costing(0.42)
+        replay = self.stop_after_first_call("jev")
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("jev", "--cap", "1.0")[0], 1)
+        self.assertEqual((self.answers("jev"), (replay / "jev.asking").exists()), ([], True))
+        self.assertEqual(self.replay("jev", "--resume", "the ledger is back", "--cap", "1.0")[0], 1)
+        with contextlib.closing(connect(self.ledger, write=False)) as connection:
+            rows = [tuple(r) for r in connection.execute(
+                "SELECT outcome, error_class, usd, run_id FROM judgment")]
+        self.assertEqual(rows, [("unavailable", "Interrupted", 0.84, experiment.RUN_ID)])
+        self.assertEqual([a["outcome"] for a in self.answers("jev")], ["interrupted"])
+        self.assertFalse((replay / "jev.asking").exists())
+
+    def test_another_folder_s_row_under_the_same_run_id_is_not_this_answer(self):
+        pair = hashlib.sha256(f"{experiment.RUN_ID}:owner/repo:{sha(0)}".encode()).hexdigest()
+        said, _id = experiment.jev_meter.write(
+            {"caller": "jev-experiment", "stage": "JEV_SD_REVIEW", "arm": "jev", "pair": pair[:16],
+             "provider": "typesafe", "model": "m", "primitive": "choice", "outcome": "ok",
+             "answer": "1", "usd": 0.01, "run_id": experiment.RUN_ID},
+            {"JEV_METER": "1", "JEV_METER_DB": str(self.ledger)})
+        self.assertEqual(said, "written")
+        self.costing(0.5)
+        self.in_turn(dict(CHEAP, usd=0.43))
+        self.assertEqual(self.replay("jev")[0], 1)
+        self.assertEqual(self.answers("jev"), [])
+        self.assertTrue((self.folder / "replay" / "jev.asking").exists())
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("another row", manifest["arms"]["jev"]["halted"])
+
+    def test_a_stop_while_kev_s_ended_lines_are_written_asks_kev_nothing_more(self):
+        Arm.status = 500
+        kev_calls = lambda: [s for s in Arm.seen if s["path"] == "/v1/systemone"]  # noqa: E731
+        real = json.dumps
+
+        def stop_at_ended(value, *args, **kwargs):
+            if isinstance(value, dict) and value.get("outcome") == "ended":
+                raise KeyboardInterrupt("stopped while the ended lines were written")
+            return real(value, *args, **kwargs)
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2, create=True))
+        self.enterContext(unittest.mock.patch.object(experiment, "kev_up", return_value=True,
+                                                     create=True))
+        self.assertEqual(self.replay("kev")[0], 1)
+        with unittest.mock.patch.object(experiment.json, "dumps", stop_at_ended):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("kev", "--resume", "kev is back")
+        before = len(kev_calls())
+        self.assertEqual(self.replay("kev")[0], 0)
+        self.assertEqual(len(kev_calls()), before)
+        self.assertEqual([a["outcome"] for a in self.answers("kev")],
+                         ["unavailable"] * 4 + ["ended"])

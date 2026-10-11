@@ -1241,28 +1241,45 @@ def spent(replay: Path) -> float:
     return total
 
 
-def recorded(ledger: Path, row: dict) -> bool | None:
-    """Whether the ledger holds this head's row; None when it cannot be read."""
+#: What tells this head's ledger row from another folder's under the same
+#: run id, pair and arm: primary run ids repeat when folders share a ledger.
+MATCHED = ("outcome", "cause", "answer", "usd", "tokens_in", "tokens_out", "duration_ms",
+           "question_id", "prompt_hash")
+#: `recorded` when the ledger holds another row under this run id, pair and arm.
+DIFFERS = "another row under this run id, pair and arm"
+
+
+def facts(row: dict) -> tuple:
+    return tuple(None if row.get(k) is None else round(float(row[k]), 9) if k == "usd"
+                 else str(row[k]) for k in MATCHED)
+
+
+def recorded(ledger: Path, row: dict) -> str:
+    """"written" when the ledger holds this head's row, "absent" when it holds
+    none, DIFFERS when its rows under this run id, pair and arm are other
+    answers, and "unreadable" when it cannot be read."""
     try:
         with contextlib.closing(open_ro(ledger)) as connection:
-            return connection.execute(
-                "SELECT 1 FROM judgment WHERE run_id = ? AND pair = ? AND arm = ?",
-                (row["run_id"], row["pair"], row["arm"])).fetchone() is not None
+            found = connection.execute(
+                f"SELECT {', '.join(MATCHED)} FROM judgment WHERE run_id = ? AND pair = ?"
+                " AND arm = ?", (row["run_id"], row["pair"], row["arm"])).fetchall()
     except Exception:                        # unknown, never "not there"
-        return None
+        return "unreadable"
+    if not found:
+        return "absent"
+    return "written" if facts(row) in {facts(dict(zip(MATCHED, r))) for r in found} else DIFFERS
 
 
 def settle(ledger: Path, row: dict, env) -> str:
     """Write an answered head's ledger row once, with one retry: "written"
     once it is there, else the reason. The model is never asked again here,
-    and a row already written is not written twice."""
+    a row already written is not written twice, and another answer under the
+    same run id, pair and arm is not taken for this one."""
     said = "unreadable"
     for _attempt in range(2):
         found = recorded(ledger, row)
-        if found is None:
-            return "unreadable"
-        if found:
-            return "written"
+        if found != "absent":
+            return found
         said, _id = jev_meter.write(row, env)
         if said == "written":
             return said
@@ -1397,9 +1414,9 @@ def cmd_replay(args, out, env) -> int:
                       f"{faults[0]}; nothing was asked")
     done = {(r["repository"], r["head"]) for r in kept}
     cut = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None
-    if cut is not None and "reserved" not in cut:
-        raise Refused(f"{marker} predates cost reservations; its call's cost is unknown, "
-                      "so settle it by hand before a resume")
+    if cut is not None and not {"reserved", "ledger_row"} <= cut.keys():
+        raise Refused(f"{marker} predates cost reservations and ledger rows; its call's cost "
+                      "is unknown, so settle it by hand before a resume")
     entry = manifest.setdefault("arms", {}).setdefault(name, {})
     entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun,
                  scope=scope_of(rows), started=entry.get("started") or now())
@@ -1430,26 +1447,32 @@ def cmd_replay(args, out, env) -> int:
         done.add((line["repository"], line["head"]))
         return code
 
+    # Spend before the cut head: its own marker's reservation is its charge.
+    total = spent(replay) - (cut["reserved"] if cut is not None and arm in HOSTED else 0.0)
     if cut is not None and (cut["repository"], cut["head"]) in done:
         marker.unlink()
-    elif cut is not None and "line" in cut:
-        # Answered before a stop: its ledger row, then the stopping rule, then
-        # its line; the model is not asked again.
+    elif cut is not None:
+        # A stop before the head's line: its ledger row, then the stopping
+        # rule, then its line; the model is not asked again. Stopped between
+        # a call and its answer, the call may have been made, so the head
+        # keeps its reservation and the marker's interrupted row.
+        if "line" in cut:
+            line, bound, attempts = cut["line"], cut["reserved"] / 2, cut["line"]["attempts"]
+        else:
+            row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
+                                                                            cut["head"])), {})
+            line = dict(repository=cut["repository"], head=cut["head"], alias=row.get("alias"),
+                        population=row.get("population"), arm=arm, run_id=run_id, tier=None,
+                        outcome="interrupted", usd=cut["reserved"], reserved=cut["reserved"],
+                        at=now())
+            bound, attempts = cut["reserved"], [{"outcome": "interrupted", "usd": cut["reserved"]}]
         said = settle(ledger, cut["ledger_row"], env)
-        stop = stopping(arm, entry, bound=cut["reserved"] / 2, attempts=cut["line"]["attempts"],
+        stop = stopping(arm, entry, total=total, cap=args.cap, bound=bound, attempts=attempts,
                         ledger=said)
         if said != "written":
             return halt(stop)
-        if record(dict(cut["line"], ledger=said), stop):
+        if record(dict(line, ledger=said), stop):
             return 1
-    elif cut is not None:
-        # Stopped between a call and its answer: the call may have been
-        # made, so the head keeps its reservation and is not asked again.
-        row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
-                                                                        cut["head"])), {})
-        record(dict(cut, alias=row.get("alias"), population=row.get("population"), arm=arm,
-                    tier=None, outcome="interrupted", usd=cut["reserved"], run_id=run_id,
-                    at=now()), None)
     definition = {"type": "choice", "instructions": QUESTION,
                   "criteria": jev.parse_mapping(criteria())}
     questions = {QID: definition}
@@ -1462,6 +1485,8 @@ def cmd_replay(args, out, env) -> int:
         ident = (row["repository"], row["head"])
         if ident in done:
             continue
+        if entry.get("ended"):
+            break
         line = {"repository": row["repository"], "head": row["head"], "alias": row["alias"],
                 "population": row["population"], "arm": arm, "run_id": run_id}
         found = reuse.get(ident)
@@ -1481,20 +1506,27 @@ def cmd_replay(args, out, env) -> int:
         stop = stopping(arm, entry, total=total, cap=args.cap, need=2 * bound)
         if stop:
             return halt(stop)
-        asking = {"repository": row["repository"], "head": row["head"], "reserved": 2 * bound}
+        owner_repo = row["repository"].lower().replace("/", ".")
+        pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
+        held = dict(caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm, pair=pair,
+                    question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
+                    primitive="choice", questions=1, prompt_hash=prompt_hash, run_id=run_id,
+                    changed="no")
+        # Until the answer replaces it, the marker holds the row a stop
+        # leaves: the call may have been made, so it is charged its reservation.
+        provider = {"jev": jev.PROVIDER, "kev": jev.BASELINE_PROVIDER}.get(arm, "anthropic")
+        asking = {"repository": row["repository"], "head": row["head"], "reserved": 2 * bound,
+                  "ledger_row": dict(held, provider=provider, outcome="unavailable",
+                                     cause="unavailable", error_class="Interrupted",
+                                     usd=2 * bound)}
         write_json(marker, asking)
         event, attempts, stop = ask_arm(arm, payload, definition, conf, env, check=lambda tried,
                                         more: stopping(arm, entry, total=total, cap=args.cap,
                                                        bound=bound, attempts=tried,
                                                        need=bound if more else 0.0))
         usd = sum(charge(a, bound) for a in attempts)
-        owner_repo = row["repository"].lower().replace("/", ".")
-        pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
         # The final attempt's answer, with the cost and counts of every attempt.
-        ledger_row = dict(event, caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm,
-                          pair=pair, question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
-                          primitive="choice", questions=1, prompt_hash=prompt_hash,
-                          run_id=run_id, changed="no", load_avg=jev.load_avg(), usd=usd,
+        ledger_row = dict(event, **held, load_avg=jev.load_avg(), usd=usd,
                           tokens_in=summed(attempts, "tokens_in"),
                           tokens_out=summed(attempts, "tokens_out"))
         tier = TIERS[int(event["answer"]) - 1] if event.get("answer") else None
@@ -1529,18 +1561,21 @@ def cmd_replay(args, out, env) -> int:
             if entry["outages"] == 1:
                 return halt(f"Kev outage: {failures} heads failed in a row; the arm resumes "
                             "once `kev.sh status` exits 0")
-            # A second outage ends the arm: each head left is counted, not asked.
+            # A second outage ends the arm, saved before its lines go in.
             entry["ended"] = "a second Kev outage"
-            with answers.open("a", encoding="utf-8") as fh:
-                for other in rows:
-                    if (other["repository"], other["head"]) not in done:
-                        fh.write(json.dumps({
-                            "repository": other["repository"], "head": other["head"],
-                            "alias": other["alias"], "population": other["population"],
-                            "arm": arm, "run_id": run_id, "tier": None, "outcome": "ended",
-                            "cause": "a second Kev outage", "usd": 0.0, "at": now()},
-                            sort_keys=True) + "\n")
+            write_json(manifest_path, manifest)
             break
+    if entry.get("ended"):
+        # Each head left is counted, not asked; a stop here resumes here.
+        with answers.open("a", encoding="utf-8") as fh:
+            for other in rows:
+                if (other["repository"], other["head"]) not in done:
+                    fh.write(json.dumps({
+                        "repository": other["repository"], "head": other["head"],
+                        "alias": other["alias"], "population": other["population"],
+                        "arm": arm, "run_id": run_id, "tier": None, "outcome": "ended",
+                        "cause": entry["ended"], "usd": 0.0, "at": now()},
+                        sort_keys=True) + "\n")
     written = read_jsonl(answers) if answers.exists() else []
     entry.update(finished=now(), answers=len(written),
                  no_answer=sum(1 for r in written if r.get("tier") is None),
