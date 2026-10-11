@@ -221,6 +221,7 @@ So a head is a disagreement when the arms asked about it split, and each arm's s
 
 The key records which draw each row came from; the sheet does not.
 If the extension (C3) runs, C3 gets its own sheet from the same two draws over C3 heads alone.
+
 **Pooled H1** (review rounds 1 and 2 of step 8). Separate sheets give each population its own skip-draw rate per arm: 300 of 400 model skips in one and 20 of 20 in another are rates 0.75 and 1.
 Pooled as they stand, the second is overrepresented, and no weighting gives an equal-probability sample.
 So before any pooled H1 look, the first (C1+C2) and the one after the extension alike, each arm is thinned on its own:
