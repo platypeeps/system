@@ -50,7 +50,9 @@ case "$*" in
   "lane retry --help") if [ -n "$QUEUE_NO_RETRY" ]; then echo "invalid choice: 'retry'" >&2; exit 2; fi
      if [ -n "$QUEUE_OLD_RETRY" ]; then echo "usage: sd-ship lane retry [--manual] item"; else echo "usage: sd-ship lane retry [--manual] [--expected-head EXPECTED_HEAD] item"; fi ;;
   "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
-  *) if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s", "code": "%s"}\\n' "$QUEUE_REFUSE" "$QUEUE_CODE"; exit 3; fi
+  *) if [ -n "$QUEUE_SLEEP" ]; then exec sleep "$QUEUE_SLEEP"; fi
+     if [ -n "$QUEUE_CRASH" ]; then echo "Traceback: $QUEUE_CRASH" >&2; exit 1; fi
+     if [ -n "$QUEUE_REFUSE" ]; then printf '{"ok": false, "error": "%s", "code": "%s"}\\n' "$QUEUE_REFUSE" "$QUEUE_CODE"; exit "${QUEUE_EXIT:-3}"; fi
      printf '{"ok": true}\\n' ;;
 esac
 """
@@ -377,6 +379,32 @@ class TheMove(Lane, BrowserSession):
             status, _, answer = self.move("retry", item=4, head="4" * 40)
         self.assertEqual((status, answer["error"]), (400, "sd:4's last entry kept no body copy"))
 
+    # sd:3339: only a refusal `sd-ship lane` reports wrote nothing; any other failure may come after the write landed.
+    def test_a_hub_fault_an_unknown_publish_or_an_unknown_code_is_an_unknown_outcome(self):
+        for code in ("hub_unavailable", "publish_unknown", "a_code_this_page_does_not_know"):
+            with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "The hub database did not answer.", "QUEUE_CODE": code}):
+                status, _, answer = self.move("cancel", item=9)
+            self.assertEqual((code, status, answer.get("outcome")), (code, 502, "unknown"), answer)
+            self.assertEqual(answer["error"], "The hub database did not answer.")
+
+    def test_a_verb_that_runs_past_its_bound_is_an_unknown_outcome(self):
+        with mock.patch.object(queue_screen, "WRITE_SECONDS", 1), mock.patch.dict(os.environ, {"QUEUE_SLEEP": "10"}):
+            status, _, answer = self.move("hold")
+        self.assertEqual((status, answer.get("outcome")), (502, "unknown"), answer)
+        self.assertNotIn("did not run", answer["error"])
+
+    def test_an_exit_without_a_refusal_is_an_unknown_outcome(self):
+        for env in ({"QUEUE_CRASH": "KeyError: 'item'"}, {"QUEUE_REFUSE": "sd:12 is running", "QUEUE_EXIT": "1"}):
+            with mock.patch.dict(os.environ, env):
+                status, _, answer = self.move("up")
+            self.assertEqual((env, status, answer.get("outcome")), (env, 502, "unknown"), answer)
+
+    def test_a_refusal_that_wrote_nothing_stays_a_refusal(self):
+        for code in ("", "holder_alive", "head_gone", "branch_diverged", "default_branch"):
+            with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "refused before the write", "QUEUE_CODE": code}):
+                status, _, answer = self.move("retry", item=4, head="4" * 40)
+            self.assertEqual((code, status, answer), (code, 400, {"error": "refused before the write"}))
+
     def test_a_post_without_the_csrf_token_runs_nothing(self):
         status, _, _ = self.move(**{"X-SD-CSRF": "0" * 64})
         self.assertEqual((status, self.calls()), (403, []))
@@ -425,6 +453,12 @@ class TheMove(Lane, BrowserSession):
                                           "QUEUE_CODE": "holder_alive"}):
             status, _, answer = self.reclaim()
         self.assertEqual((status, answer["error"]), (400, "sd:3 is running under pid 4242 on this machine; it is not stuck"))
+
+    def test_a_release_the_hub_did_not_answer_is_an_unknown_outcome(self):
+        # sd:3339: `lane cancel` may have released the claim before the hub fault; a 400 would say nothing changed.
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "The hub database did not answer.", "QUEUE_CODE": "hub_unavailable"}):
+            status, _, answer = self.reclaim()
+        self.assertEqual((status, answer), (502, {"error": "The hub database did not answer.", "outcome": "unknown"}))
 
     def test_release_without_a_whole_claim_runs_nothing(self):
         for claim in (None, "", "claim-token-3", ":merge", "claim-token-3:", 7, "x" * 300 + ":merge"):
@@ -727,6 +761,12 @@ class TheScript(Lane, ScreenCase):
         self.assertIn('<p class="fail" role="alert">sd:3 not released from its holder: sd:3 moved on since the page read it.</p>',
                       out["R"]["lanes"])
 
+    def test_a_release_with_an_unknown_outcome_says_so_and_reads_the_lane_again(self):
+        out = self.release(True, move=(502, {"error": "The hub database did not answer.", "outcome": "unknown"}))
+        self.assertIn('<p class="fail" role="alert">Not known whether sd:3 was released from its holder: The hub database did '
+                      'not answer. The lane below was read again; check sd:3 there before you act again.</p>', out["R"]["lanes"])
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
+
     def test_a_running_entry_past_its_lease_lights_caution(self):
         entries = self.entries()
         entries[5] = {**entries[5], "lease_until": "2026-09-06T11:55:00Z", "step": None, "holder": None}
@@ -796,6 +836,21 @@ class TheScript(Lane, ScreenCase):
         out = self.cancel(True, move=(400, {"error": "sd:9 has no pending entry in this lane"}))
         self.assertIn('<p class="fail" role="alert">sd:9 not cancelled: sd:9 has no pending entry in this lane The queue is unchanged.</p>',
                       out["R"]["lanes"])
+
+    # sd:3339: a hub fault or timeout may come after the write landed, so the page says the outcome is not known.
+    def test_an_unknown_outcome_never_says_the_queue_is_unchanged_and_reads_the_lane_again(self):
+        out = self.cancel(True, move=(502, {"error": "The hub database did not answer.", "outcome": "unknown"}))
+        self.assertNotIn("unchanged", out["R"]["lanes"])
+        self.assertIn('<p class="fail" role="alert">Not known whether sd:9 was cancelled: The hub database did not answer. '
+                      'The lane below was read again; check sd:9 there before you act again.</p>', out["R"]["lanes"])
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
+
+    def test_a_post_that_got_no_answer_is_an_unknown_outcome(self):
+        out = self.run_page("var answered = fetch; fetch = (p, o) => o && o.method === 'POST' ? Promise.reject(new TypeError('Load failed')) : answered(p, o);\n"
+                            f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '12', act: 'hold' }} }}); R.lanes = ELS.lanes.html;")
+        self.assertNotIn("unchanged", out["R"]["lanes"])
+        self.assertIn("Not known whether sd:12 was held: Load failed", out["R"]["lanes"])
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
 
 
     def test_blocked_rows_offer_retry_and_approve_on_a_manual_repo(self):

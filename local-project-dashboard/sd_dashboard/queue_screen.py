@@ -25,6 +25,9 @@ order and holds, the one `lane list` prints) as `--expected-revision`, and the v
 lock, so a write that lands between the two checks is refused too. `cancel` needs it most: it also releases a running
 entry (pack sd:3282), so a Cancel on a pending row the runner claimed since must not reach it.
 The runner reads the queue again at each item boundary, so an edit takes effect there.
+A refusal the verb reports as written-nothing (`refused`) answers 400, or 409 when stale; any other failure answers 502
+with `outcome: unknown` (sd:3339). A hub fault, a timeout or an exit without a refusal may come after the write landed,
+so the page reads the lane again and never says the queue is unchanged.
 
 Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
 the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge grant, so only a repo whose
@@ -67,6 +70,9 @@ BLOCKED = ("failed", "skipped", "prepared")
 #: Who acts on a blocked entry, by its status and failed step.
 WHO = {("prepared", None): "operator", ("skipped", None): "builder", ("failed", "prepare"): "builder",
        ("failed", "merge"): "lane", ("failed", None): "lane"}
+#: The refusal codes of the verbs the page runs that wrote nothing: a stale check, or a definite answer before the write.
+#: Not `hub_unavailable` (a write may have landed) or `publish_unknown` (origin may have moved): those are unknown.
+REFUSED = ("stale_revision", "stale_head", "stale_claim", "holder_alive", "head_gone", "branch_diverged", "default_branch")
 EDITS = "Edits take effect at the next item boundary: the runner reads the queue again before each item, never mid-merge."
 
 
@@ -85,18 +91,25 @@ def command(name: str) -> str:
 
 
 def _run(argv: list[str], seconds: int) -> dict:
-    """A pack command's JSON answer; a failure to run or parse is `{"ok": False, "error": ...}`."""
+    """A pack command's JSON answer and its exit status, `exit`; a failure to run or parse is `{"ok": False, "error": ...}`
+    with no `exit`, since a command stopped past `seconds` may have written first."""
     try:
         done = subprocess.run(argv, capture_output=True, text=True, timeout=seconds, check=False)
     except (OSError, subprocess.SubprocessError) as error:
-        return {"ok": False, "error": f"{Path(argv[0]).name} did not run: {error}"}
+        return {"ok": False, "error": f"{Path(argv[0]).name} gave no answer: {error}"}
     try:
         answer = json.loads(done.stdout)
     except ValueError:
         answer = None
     if not isinstance(answer, dict):
         return {"ok": False, "error": (done.stderr or done.stdout).strip()[-400:] or f"exit {done.returncode}"}
-    return answer
+    return {**answer, "exit": done.returncode}
+
+
+def refused(answer: dict) -> bool:
+    """Whether a lane verb refused and wrote nothing: `sd-ship lane` exits 3 with its refusal, coded in `REFUSED` or with
+    no code, which is a check before the write. Any other failure is unknown, not a refusal (sd:3339)."""
+    return answer.get("exit") == 3 and answer.get("ok") is False and (answer.get("code") or None) in (None, *REFUSED)
 
 
 def lane_list(path: str) -> dict:
@@ -293,6 +306,9 @@ def move(payload: dict):
             # The fresh list matched the page, so its lane revision is the page's; the verb checks it under its lock.
             verb += ["--expected-revision", lane_revision(entries)]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)
+        if not (answer.get("ok") and answer.get("exit") == 0) and not refused(answer):
+            # A hub fault, a timeout or an exit without a refusal may follow a landed write: not known (sd:3339).
+            return 502, {"error": answer.get("error") or "sd-ship lane gave no answer.", "outcome": "unknown"}
         if answer.get("code") in ("stale_revision", "stale_head"):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         if answer.get("code") == "stale_claim":
