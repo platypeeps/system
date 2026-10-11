@@ -696,7 +696,7 @@ R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await fl
         doc = json.loads(json.dumps(self.doc))
         doc["repos"].append(dict(doc["repos"][0], path="/srv/other", lane_host="build-3"))
         path = self.ids["checkout"]
-        out = self.run_page("""R.page = ELS['view-repos'].html; propose('lane_host', 'build-2'); R.cmd = pending[0].cmd;
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('lane_host', 'build-2'); R.cmd = pending[0].cmd; R.note = pending[0].note;
 C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
                             doc=doc, search=f"?repo={path}", answer="(p, b) => [200, {}]")
         page = out["R"]["page"]
@@ -704,6 +704,8 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertIn('data-set="lane_host"', page)
         self.assertEqual(re.findall(r'<option value="([^"]+)"></option>', page.split('id="lane-hosts"')[1]), ["hub", "build-3"])
         self.assertEqual(out["R"]["cmd"], f"~/repos/system/local-sd-db/sd-db.sh repo lane-host '{path}' 'build-2'")
+        # sd:3284: the queue lives in the hub database, so the move takes the pending entries with it.
+        self.assertIn("Pending entries follow", out["R"]["note"])
         self.assertEqual([(p, b) for p, b, _ in out["posts"]],
                          [("/api/repos/lane-host", {"path": path, "value": "build-2", "before": "hub"}),
                           ("/api/repos/lane-host", {"path": path, "value": "hub", "before": "build-2"})])

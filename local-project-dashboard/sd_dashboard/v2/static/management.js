@@ -366,7 +366,7 @@ function propose(key, value) {
     if (!value || value === r.lane) return withdraw(key);
     p = { key, value, before: r.lane, verb: 'lane-host', route: 'sd-db', icon: 'terminal', title: `Move lane ${r.lane} → ${value}`,
       cmd: `${SDDB} repo lane-host ${shq(r.path)} ${shq(value)}`,
-      note: `Only ${value === 'hub' ? 'the hub' : value} may take this repo's ship lock; every other machine refuses with the way back.` };
+      note: `Only ${value === 'hub' ? 'the hub' : value} may take this repo's ship lock; every other machine refuses with the way back. Pending entries follow: the queue lives in the hub database.` };
   } else if (key === 'severity_floor' || key === 'automatic_deep') {
     if (value === String(key === 'severity_floor' ? rv.severity_floor || '' : rv.automatic_deep)) return withdraw(key);
     const diff = reviewDiff(rv.file || '', body => {
