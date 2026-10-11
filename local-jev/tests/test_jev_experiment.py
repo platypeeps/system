@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,33 @@ def checkpoint_db(rows) -> Path:
                 "INSERT INTO state (kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
                 (key, stamp, body if isinstance(body, str) else json.dumps(body)))
     return path
+
+
+def checkout(tracked, untracked=()):
+    """A git checkout whose index lists `tracked`; `untracked` files sit
+    beside them on disk."""
+    root = Path(tempfile.mkdtemp()) / "checkout"
+    for name in (*tracked, *untracked):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if tracked:
+        subprocess.run(["git", "-C", str(root), "add", "--", *tracked], check=True)
+    return root
+
+
+def register(db, root, visibility, managed=1):
+    """`root` as a repository row with its last observed visibility, the way
+    `sd shadow sync` stores it (`sd_db.protection.alerts`)."""
+    stamp = "2026-10-10T00:00:00+00:00"
+    body = {"alerts": {"secret_scanning": {"visibility": visibility}}} if visibility else {}
+    with contextlib.closing(connect(db)) as connection:
+        connection.execute(
+            "INSERT INTO repo (path, remote, created_at, updated_at, managed) VALUES (?, ?, ?, ?, ?)",
+            (str(root), f"https://github.com/owner/{root.parent.name}.git", stamp, stamp, managed))
+        connection.execute(
+            "INSERT INTO repo_protection (repo, observed_at, status, body) VALUES (?, ?, 'unknown', ?)",
+            (str(root), stamp, json.dumps(body)))
 
 
 def a_pass(head, routed="standard", tier="standard", paths=("a.py",), lines=3,
@@ -191,16 +219,77 @@ BOUNDARIES = (
 )
 
 
+#: Each probe's path with its root, prefix or wrapper taken off, as if a public
+#: repository tracked it: a probe must halt on what comes before the path,
+#: not on the path being unknown (review round 4, operator decision).
+NEAR_MISSES = frozenset((
+    "opt/private/file.py", "opt/a/b", "srv/c/d", "opt/x/y", "srv/z/w", "srv/x",
+    "notes/a.md", "etc/passwd", "secret/file.py", "private/file.py", "work/a.txt",
+    "a/b.py", "c/d.py", "var/lib/y", "src/a.py", "styles/a.css", "y/z", "b/c", "x/y"))
+
+
 class TheBoundaryClass(unittest.TestCase):
-    """Each boundary form halts in a changed path and in a routing reason."""
+    """Each boundary form halts in a changed path and in a routing reason,
+    even when the path after its root is a tracked public one."""
 
     def test_each_boundary_form(self):
         for row, text, halts in BOUNDARIES:
             for state in (experiment.state_of(["a.py", text], 1, "r"),
                           experiment.state_of(["a.py"], 1, text)):
                 with self.subTest(row):
-                    found = experiment.private_path(state, None)
+                    found = experiment.private_path(state, None, NEAR_MISSES)
                     self.assertEqual(found is not None, halts, f"{row}: {text!r}")
+
+
+class ThePublicAllowlist(unittest.TestCase):
+    """Review round 4, operator decision: a path passes only when it is, once
+    wrapping punctuation is stripped, exactly one `git ls-files` lists in a
+    public managed repository."""
+
+    def setUp(self):
+        self.db = checkpoint_db([])
+        self.public = checkout(["pkg/mod.py", ".github/ci.yml"], untracked=["pkg/other.py"])
+        self.private = checkout(["secret/plan.md"])
+        register(self.db, self.public, "public")
+        register(self.db, self.private, "private")
+        self.allowed = experiment.public_paths(self.db)
+
+    def halts(self, text):
+        return [experiment.private_path(state, None, self.allowed) is not None
+                for state in (experiment.state_of(["a.py", text], 1, "r"),
+                              experiment.state_of(["a.py"], 1, text))]
+
+    def test_a_tracked_public_path_passes(self):
+        self.assertEqual(self.allowed, frozenset({"pkg/mod.py", ".github/ci.yml"}))
+        for text in ("pkg/mod.py", ".github/ci.yml", "touches `pkg/mod.py`.",
+                     '"**pkg/mod.py**", then (pkg/mod.py);'):
+            self.assertEqual(self.halts(text), [False, False], text)
+
+    def test_a_root_or_prefix_before_a_tracked_path_halts(self):
+        for text in ("/pkg/mod.py", "./pkg/mod.py", "../pkg/mod.py", "~/pkg/mod.py",
+                     "file:pkg/mod.py", "$X/pkg/mod.py", "%X%/pkg/mod.py", "\\pkg/mod.py",
+                     "x/pkg/mod.py", "pkg/mod.py/", "pkg//mod.py", "]/pkg/mod.py",
+                     "pkg/mod.py:12", "pkg/mod.py\x1b[0m"):
+            self.assertEqual(self.halts(text), [True, True], text)
+
+    def test_a_tracked_path_in_a_private_repository_halts(self):
+        self.assertNotIn("secret/plan.md", self.allowed)
+        self.assertEqual(self.halts("secret/plan.md"), [True, True])
+
+    def test_an_untracked_look_alike_halts(self):
+        for text in ("pkg/other.py", "pkg/mod.py.orig", "PKG/mod.py", "pkg/mod.pyc"):
+            self.assertEqual(self.halts(text), [True, True], text)
+
+    def test_a_repository_not_read_as_public_adds_nothing(self):
+        # Unmanaged, visibility never read, and a checkout git cannot list:
+        # each answer is unknown, and unknown is not public.
+        db = checkpoint_db([])
+        register(db, checkout(["a/unmanaged.py"]), "public", managed=0)
+        register(db, checkout(["a/unread.py"]), None)
+        gone = checkout(["a/gone.py"])
+        register(db, gone, "public")
+        subprocess.run(["rm", "-rf", str(gone)], check=True)
+        self.assertEqual(experiment.public_paths(db), frozenset())
 
 
 class TheRebuiltState(unittest.TestCase):
@@ -290,7 +379,8 @@ class TheFaithfulnessCheck(StubServer):
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])
 
-    def test_a_state_with_a_home_path_halts_before_any_call(self):
+    def restate(self, paths):
+        """The 60 checkpoints again, each changing `paths`."""
         with contextlib.closing(connect(self.db)) as connection:
             connection.execute("DELETE FROM state")
             for n in range(30):
@@ -300,7 +390,26 @@ class TheFaithfulnessCheck(StubServer):
                         "INSERT INTO state (kind, key, timestamp, body) VALUES"
                         " ('checkpoint', 'ship:x', '2026-09-25T00:00:00+00:00', ?)",
                         (json.dumps({"repository": "o/r", "head": head, "passes": [
-                            a_pass(head, tier=tier, paths=("/Users/someone/a.py",))]}),))
+                            a_pass(head, tier=tier, paths=paths)]}),))
+
+    def test_a_tracked_public_path_reaches_the_call(self):
+        Stub.choice_value = "standard"
+        register(self.db, checkout(["pkg/mod.py"]), "public")
+        self.restate(("pkg/mod.py",))
+        code, out = self.faithful()
+        self.assertEqual(code, 1, out)          # 25 of 50 match the stub
+        self.assertEqual(len(Stub.seen), 50)
+        self.assertEqual(Stub.seen[0]["payload"]["state"]["changed_paths"], ["pkg/mod.py"])
+
+    def test_a_tracked_private_path_halts_before_any_call(self):
+        register(self.db, checkout(["pkg/mod.py"]), "private")
+        self.restate(("pkg/mod.py",))
+        code, _out = self.faithful()
+        self.assertEqual(code, 2)
+        self.assertEqual(Stub.seen, [])
+
+    def test_a_state_with_a_home_path_halts_before_any_call(self):
+        self.restate(("/Users/someone/a.py",))
         code, _out = self.faithful()
         self.assertEqual(code, 2)
         self.assertEqual(Stub.seen, [])

@@ -20,8 +20,9 @@ nothing here writes a checkpoint or a live ledger row.
 empty, shadow off and traces off, and refuses to start while `jev_meter.ready`
 refuses that database.
 
-**It sends no absolute path.** A state holding one halts the run before the
-call (the stopping rule's privacy halt).
+**It sends no path but a public one.** A state holding a path sign, or a `/`
+in anything but a path a public managed repository tracks, halts the run
+before the call (the stopping rule's privacy halt).
 
 Stdlib and `sd_db`, the one opener of the workflow database. Raw output goes
 to `--out`, outside the checkout.
@@ -291,20 +292,69 @@ def criteria(order=TIERS) -> str:
     return ",".join(f"{name}={TIER_CRITERIA[name]}" for name in order)
 
 
-#: A path sign anywhere in a string, with no exception for what comes before
-#: it (review round 4; rounds 1 to 3 each let some character glue a slash
-#: into a relative path, and each round found one that hid a root): any `/`,
-#: `\`, `~` or `file:`, any `$` or `%` with something other than space after
-#: it, and any control character. So every changed path that names a folder
-#: halts, as do `1/2`, `and/or` and `profile:`; `a.py`, `25% off` and plain
-#: words do not. A false halt costs a resume the operator reviews; a miss
-#: sends a path off the machine.
-ABSOLUTE = re.compile(r"[/\\~\x00-\x1f\x7f-\x9f]|[$%]\S|(?i:file):")
+#: A path sign anywhere in a string (review round 4; rounds 1 to 3 each let
+#: some character before a slash pass, and each round found one that hid a
+#: root): any `\`, `~` or `file:`, any `$` or `%` with something other than
+#: space after it, and any control character. A `/` is judged per token by
+#: `public_path`, the one exception the operator allowed.
+SIGNS = re.compile(r"[\\~\x00-\x1f\x7f-\x9f]|[$%]\S|(?i:file):")
+
+#: What may wrap a path in prose, stripped from a token's ends before it is
+#: compared. Never `/`, so the compared token keeps every slash, and never a
+#: leading `.`, so `./x` and `../x` stay themselves and `.github/x` matches.
+LEADING = "\"'`*_([{<\u2018\u201c"
+TRAILING = "\"'`*_)]}>.,;:!?\u2019\u201d"
 
 
-def private_path(state: str, home: str | None) -> str | None:
-    """The first string in the state that holds an absolute or home path
-    anywhere in it, else None."""
+def path_token(piece: str) -> str:
+    """A whitespace-split piece without the punctuation that wraps it: the
+    string `public_path` compares, and the only one."""
+    return piece.lstrip(LEADING).rstrip(TRAILING)
+
+
+def public_path(piece: str, public: frozenset) -> bool:
+    """Whether a piece with a `/` in it is exactly a path a public managed
+    repository tracks (`public_paths`). `git ls-files` never lists a name
+    with a leading `/` or a `.` or `..` segment, so a root, `./` or `../`
+    before a tracked path is not that path."""
+    return path_token(piece) in public
+
+
+def public_paths(db) -> frozenset:
+    """Every path `git ls-files` lists in a managed repository whose last
+    observed visibility is public, from its local checkout, read once per run.
+    Public is what `sd shadow sync` stored (`sd_db.protection.alerts`), the
+    same reading Health's Security area uses. A repository not read as
+    public, or a checkout git cannot list, adds nothing: unknown is not public."""
+    from sd_db import protection
+    from sd_db.paths import home_absolute
+    with contextlib.closing(open_ro(db)) as connection:
+        repos = protection.rows(connection)
+    tracked = set()
+    for repo in repos:
+        part = (repo.get("alerts") or {}).get("secret_scanning")
+        if not repo["managed"] or not isinstance(part, dict) or part.get("visibility") != "public":
+            continue
+        try:
+            done = subprocess.run(["git", "-C", home_absolute(repo["repo"]), "ls-files", "-z"],
+                                  capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if done.returncode != 0:
+            continue
+        for raw in done.stdout.split(b"\0"):
+            try:
+                name = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if name:
+                tracked.add(name)
+    return frozenset(tracked)
+
+
+def private_path(state: str, home: str | None, public: frozenset = frozenset()) -> str | None:
+    """The first string in the state that holds a path sign, or a `/` in a
+    token that is not a tracked public path, else None."""
     def strings(value):
         if isinstance(value, str):
             yield value
@@ -316,7 +366,9 @@ def private_path(state: str, home: str | None) -> str | None:
             for item in value:
                 yield from strings(item)
     for text in strings(json.loads(state)):
-        if ABSOLUTE.search(text) or (home and home in text):
+        if SIGNS.search(text) or (home and home in text):
+            return text
+        if any("/" in piece and not public_path(piece, public) for piece in text.split()):
             return text
     return None
 
@@ -454,11 +506,12 @@ def cmd_faithful(args, out, env) -> int:
                 exclude.add((row["repository"], row["head"]))
     chosen = draw(candidates(db), exclude=exclude)
     home = env.get("HOME")
+    public = public_paths(db)
     for one in chosen:
-        hit = private_path(one["state"], home)
+        hit = private_path(one["state"], home, public)
         if hit is not None:
-            raise Refused(f"privacy halt: a state for {one['head'][:12]} holds an "
-                          "absolute or home path; the operator reviews before any resume")
+            raise Refused(f"privacy halt: a state for {one['head'][:12]} holds a path "
+                          "sign or an untracked path; the operator reviews before any resume")
     args.out.mkdir(parents=True, exist_ok=True)
     answers = args.out / "answers.jsonl"
     if answers.exists():
