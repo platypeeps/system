@@ -886,6 +886,15 @@ def sha(n):
     return (f"{n}feedface" + "ab" * 20)[:40]
 
 
+#: Jev attempts as `ask_once` returns them: a billed invalid answer, an
+#: invalid answer with no cost, and a priced answer of `cheap`.
+BILLED_INVALID = {"provider": "jev", "model": "m", "outcome": "invalid", "cause": "invalid",
+                  "usd": 0.42, "tokens_in": 10_000_000}
+UNPRICED_INVALID = {"provider": "jev", "model": "m", "outcome": "invalid", "cause": "invalid"}
+CHEAP = {"provider": "jev", "model": "m", "outcome": "ok", "cause": None, "answer": "2",
+         "confidence": 0.5, "probabilities": "0.1,0.6,0.2,0.1", "usd": 0.01, "tokens_in": 238}
+
+
 class TheReplay(CompareCase):
     """Step 5 against loopback stubs: Jev, Kev, Anthropic and the collector."""
 
@@ -991,7 +1000,7 @@ class TheReplay(CompareCase):
             self.assertEqual((len(Stub.seen), len(self.answers("jev"))), (1, 1))
             self.assertLessEqual(sum(a["usd"] for a in self.answers("jev")), 1.0)
             code, _out = self.replay("jev", "--cap", "1.0")
-        self.assertEqual((code, len(Stub.seen)), (1, 1))
+        self.assertEqual((code, len(Stub.seen)), (2, 1))           # halted until resumed
 
     def test_an_answer_with_no_cost_is_charged_its_reservation_and_halts(self):
         Stub.drop_usage = True
@@ -1005,8 +1014,8 @@ class TheReplay(CompareCase):
     def test_a_call_stopped_before_its_answer_keeps_its_reserved_charge(self):
         real = experiment.ask_arm
 
-        def stop(*args):
-            real(*args)
+        def stop(*args, **kwargs):
+            real(*args, **kwargs)
             raise KeyboardInterrupt("stopped between the call and its answer")
         with unittest.mock.patch.object(experiment, "reserve", return_value=0.42, create=True):
             with unittest.mock.patch.object(experiment, "ask_arm", stop):
@@ -1130,8 +1139,8 @@ class TheReplay(CompareCase):
         real = experiment.ask_arm
         calls = []
 
-        def stop_on_second(*args):
-            calls.append(real(*args))
+        def stop_on_second(*args, **kwargs):
+            calls.append(real(*args, **kwargs))
             if len(calls) == 2:
                 raise KeyboardInterrupt("stopped between the call and its answer")
             return calls[-1]
@@ -1153,7 +1162,7 @@ class TheReplay(CompareCase):
             self.assertEqual(self.replay("kev")[0], 1)
         kev_calls = lambda: [s for s in Arm.seen if s["path"] == "/v1/systemone"]  # noqa: E731
         self.assertEqual((len(kev_calls()), self.answers("kev")), (1, []))
-        self.assertEqual(self.replay("kev")[0], 0)
+        self.assertEqual(self.replay("kev", "--resume", "the ledger is back")[0], 0)
         found = self.answers("kev")
         self.assertEqual({(a["outcome"], a["ledger"]) for a in found}, {("ok", "written")})
         self.assertEqual((len(found), len(kev_calls())), (5, 5))
@@ -1172,14 +1181,17 @@ class TheReplay(CompareCase):
         self.assertEqual(self.rows(), [("kev", "JEV_SD_REVIEW", "jev-entry-2-replay", "ok", 5)])
         self.assertEqual(len(self.answers("kev")), 5)
 
-    def test_an_unreadable_ledger_on_resume_refuses_and_asks_nothing(self):
+    def test_an_unreadable_ledger_on_resume_halts_and_asks_nothing(self):
         with unittest.mock.patch.object(experiment.jev_meter, "write",
                                         return_value=("refused", None)):
             self.assertEqual(self.replay("kev")[0], 1)
         before = len(Arm.seen)
         with unittest.mock.patch.object(experiment, "recorded", return_value=None):
-            self.assertEqual(self.replay("kev")[0], 2)
+            self.assertEqual(self.replay("kev", "--resume", "the ledger is back")[0], 1)
         self.assertEqual(len(Arm.seen), before)
+        self.assertTrue((self.folder / "replay" / "kev.asking").exists())
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("unreadable", manifest["arms"]["kev"]["halted"])
 
     def test_answers_no_manifest_names_refuse(self):
         self.assertEqual(self.replay("kev")[0], 0)
@@ -1204,11 +1216,11 @@ class TheReplay(CompareCase):
             before = len(kev_calls())
             with unittest.mock.patch.object(experiment, "kev_up", return_value=False,
                                             create=True):
-                self.assertEqual(self.replay("kev")[0], 2)      # still down: nothing asked
+                self.assertEqual(self.replay("kev", "--resume", "back?")[0], 2)  # still down
             self.assertEqual(len(kev_calls()), before)
             with unittest.mock.patch.object(experiment, "kev_up", return_value=True,
                                             create=True):
-                self.assertEqual(self.replay("kev")[0], 0)      # resumed; a second outage ends it
+                self.assertEqual(self.replay("kev", "--resume", "kev is back")[0], 0)
         found = self.answers("kev")
         self.assertEqual([a["outcome"] for a in found],
                          ["unavailable"] * 4 + ["ended"])
@@ -1282,6 +1294,86 @@ class TheReplay(CompareCase):
         self.assertEqual(landed, [])
         self.assertEqual({a["outcome"] for a in self.answers("kev")}, {"unavailable"})
 
+    def in_turn(self, *events):
+        """`ask_once` answers `events` in turn, then the last one again; the
+        list it returns counts the calls."""
+        calls = []
+
+        def fake(arm, payload, definition, conf, env):
+            calls.append(arm)
+            return dict(events[min(len(calls), len(events)) - 1])
+        self.enterContext(unittest.mock.patch.object(experiment, "ask_once", fake))
+        return calls
+
+    def costing(self, bound):
+        self.enterContext(unittest.mock.patch.object(experiment, "reserve", return_value=bound,
+                                                     create=True))
+
+    def test_a_first_attempt_above_its_reservation_is_not_retried(self):
+        self.costing(0.1)
+        calls = self.in_turn(BILLED_INVALID, CHEAP)
+        self.assertEqual(self.replay("jev")[0], 1)
+        self.assertEqual(len(calls), 1)
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("above its reservation", manifest["arms"]["jev"]["halted"])
+
+    def test_a_first_attempt_with_no_cost_is_not_retried(self):
+        self.costing(0.5)
+        calls = self.in_turn(UNPRICED_INVALID, CHEAP)
+        self.assertEqual(self.replay("jev")[0], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([a["usd"] for a in self.answers("jev")], [0.5])
+
+    def test_the_ledger_row_carries_every_attempt_s_cost(self):
+        self.costing(0.5)
+        self.in_turn(BILLED_INVALID, CHEAP)
+        self.assertEqual(self.replay("jev", "--cap", "1.0")[0], 1)   # the next head does not fit
+        with contextlib.closing(connect(self.ledger, write=False)) as connection:
+            rows = [tuple(r) for r in connection.execute("SELECT outcome, answer, usd FROM judgment")]
+        self.assertEqual([(o, a, round(u, 2)) for o, a, u in rows], [("ok", "2", 0.43)])
+        self.assertEqual([(a["tier"], len(a["attempts"])) for a in self.answers("jev")],
+                         [("cheap", 2)])
+
+    def test_a_recovered_answer_with_no_cost_halts_and_asks_nothing_more(self):
+        Stub.drop_usage = True
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("jev")[0], 1)
+        self.assertEqual(len(Stub.seen), 1)
+        self.assertEqual(self.replay("jev")[0], 2)                   # halted until resumed
+        self.assertEqual(self.replay("jev", "--resume", "the ledger is back")[0], 1)
+        self.assertEqual(len(Stub.seen), 1)
+        self.assertEqual([a["tier"] for a in self.answers("jev")], ["skip"])
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertIn("no cost", manifest["arms"]["jev"]["halted"])
+
+    def test_a_halt_holds_until_it_is_resumed_by_name(self):
+        self.costing(0.42)
+        self.assertEqual(self.replay("jev", "--cap", "0.5")[0], 1)
+        self.assertEqual(self.replay("jev")[0], 2)
+        self.assertEqual(Stub.seen, [])
+        self.assertEqual(self.replay("jev", "--resume", "the cap was a typo")[0], 0)
+        self.assertEqual(len(Stub.seen), 5)
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertEqual([r["reason"] for r in manifest["arms"]["jev"]["resumes"]],
+                         ["the cap was a typo"])
+
+    def test_a_resume_refuses_lines_that_are_not_final_answers(self):
+        replay = self.stop_after_first_call("kev")
+        other = {"repository": "owner/repo", "head": sha(3), "arm": "kev",
+                 "run_id": "jev-entry-2-replay", "outcome": "ok", "tier": "deep", "usd": 0.0,
+                 "at": "2026-10-11T00:00:00+00:00"}
+        for name, line in (("identity only", {"repository": "owner/repo", "head": sha(3)}),
+                           ("another arm", dict(other, arm="jev")),
+                           ("another run", dict(other, run_id="jev-entry-2-replay-2")),
+                           ("not final", dict(other, outcome="pending", tier=None)),
+                           ("an answer with no tier", dict(other, tier=None)),
+                           ("no cost", dict(other, usd=None))):
+            with self.subTest(name=name):
+                (replay / "kev.jsonl").write_text(json.dumps(line) + "\n")
+                self.assertEqual(self.replay("kev")[0], 2)
+        self.assertEqual(len([s for s in Arm.seen if s["path"] == "/v1/systemone"]), 1)
+
     def seal(self, *arms):
         """A note on sd:2764 carrying each arm's answer file hash."""
         stamp = "2026-10-11T00:00:00+00:00"
@@ -1332,8 +1424,8 @@ class TheReplay(CompareCase):
         """A run stopped after its first call, before that call's answer."""
         real = experiment.ask_arm
 
-        def stop(*args):
-            real(*args)
+        def stop(*args, **kwargs):
+            real(*args, **kwargs)
             raise KeyboardInterrupt("stopped between the call and its answer")
         with unittest.mock.patch.object(experiment, "ask_arm", stop):
             with self.assertRaises(KeyboardInterrupt):

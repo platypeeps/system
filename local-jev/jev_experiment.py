@@ -1103,19 +1103,97 @@ def ask_once(arm: str, payload: dict, definition: dict, conf: dict, env) -> dict
     return event
 
 
-def ask_arm(arm, payload, definition, conf, env) -> tuple[dict, list]:
-    """The stopping rule's one retry after 30 s: the final call's row, and
-    every attempt's outcome, wait and cost."""
+def ask_arm(arm, payload, definition, conf, env, check=lambda tried, more: None):
+    """The stopping rule's one retry after 30 s. `check` is asked after every
+    attempt, before any retry, with whether a retry would follow. Returns the
+    final attempt's row, every attempt's outcome, wait, cost and counts, and
+    the halt `check` gave, if any."""
     attempts = []
     for attempt in range(2):
         if attempt:
             time.sleep(RETRY_WAIT)
         event = ask_once(arm, payload, definition, conf, env)
         attempts.append({"outcome": event["outcome"], "wait_ms": event.get("duration_ms"),
-                         "usd": event.get("usd")})
-        if event["outcome"] == "ok":
-            break
-    return event, attempts
+                         "usd": event.get("usd"), "tokens_in": event.get("tokens_in"),
+                         "tokens_out": event.get("tokens_out")})
+        more = event["outcome"] != "ok" and attempt == 0
+        stop = check(attempts, more)
+        if stop or not more:
+            return event, attempts, stop
+    return event, attempts, None
+
+
+#: Attempt outcomes where a response came back; one with no cost is an
+#: unknown cost. A call that got no response is charged its whole reservation.
+RESPONDED = ("ok", "invalid")
+
+
+def charge(attempt: dict, bound: float) -> float:
+    """What an attempt counts against the cap: its cost, else its reservation."""
+    return bound if attempt["usd"] is None else attempt["usd"]
+
+
+def summed(attempts: list, name: str) -> int | None:
+    counts = [a.get(name) for a in attempts if a.get(name) is not None]
+    return sum(counts) if counts else None
+
+
+def stopping(arm: str, entry: dict, *, total=0.0, cap=math.inf, bound=0.0, attempts=(),
+             need=0.0, ledger=None) -> str | None:
+    """Why the run must stop, else None: the stopping rule's halts in one
+    place. Asked before every call, after every attempt and for every
+    answer, recovered ones included, before its marker goes: a halt already
+    saved, a ledger that did not take the row, an attempt that answered with
+    no cost or cost more than its reservation, and spend plus the next call's
+    reservation (`need`) above the cap."""
+    if entry.get("halted"):
+        return entry["halted"]
+    if ledger not in (None, "written"):
+        return f"the ledger did not take a row ({ledger}); its answer waits in the marker"
+    if arm not in HOSTED:
+        return None
+    for one in attempts:
+        if one["usd"] is None and one["outcome"] in RESPONDED:
+            return f"an attempt answered with no cost; it is charged its reservation, ${bound:.4f}"
+        if one["usd"] is not None and one["usd"] > bound:
+            return f"an attempt cost ${one['usd']:.4f}, above its reservation of ${bound:.4f}"
+    so_far = total + sum(charge(one, bound) for one in attempts)
+    if so_far + need > cap:
+        return (f"spend cap: ${so_far:.4f} spent, and the next call reserves ${need:.4f} "
+                f"of ${cap:.2f}")
+    return None
+
+
+#: A head's final outcome when it got no answer; each is counted, not asked again.
+NO_ANSWER = ("timeout", "unavailable", "invalid", "fallback", "interrupted", "ended")
+#: The fields every answer line carries.
+LINE_FIELDS = ("repository", "head", "arm", "run_id", "outcome", "tier", "usd", "at")
+
+
+def record_faults(lines: list, arm: str, run_id: str) -> list[str]:
+    """Why lines are not this run's final records, one reason each: another
+    arm or run, a missing field, an outcome that is neither an answer with a
+    tier nor an explicit no-answer, a cost that is not a number (a reused
+    answer excepted), or a head twice."""
+    faults, seen = [], set()
+    for line in lines:
+        missing = [k for k in LINE_FIELDS if k not in line]
+        usd = line.get("usd")
+        if missing:
+            faults.append(f"a line without {', '.join(missing)}")
+        elif (line["arm"], line["run_id"]) != (arm, run_id):
+            faults.append(f"a line of {line['arm']} run {line['run_id']}")
+        elif not ((line["outcome"] == "ok" and line["tier"] in TIERS)
+                  or (line["outcome"] in NO_ANSWER and line["tier"] is None)):
+            faults.append(f"outcome {line['outcome']!r} with tier {line['tier']!r}")
+        elif not (usd is None and line.get("reused")) and (
+                isinstance(usd, bool) or not isinstance(usd, (int, float))
+                or not math.isfinite(usd) or usd < 0):
+            faults.append(f"a line with cost {usd!r}")
+        elif (line["repository"], line["head"]) in seen:
+            faults.append("a head answered twice")
+        seen.add((line.get("repository"), line.get("head")))
+    return faults
 
 
 def write_json(path: Path, value) -> None:
@@ -1283,13 +1361,14 @@ def cmd_replay(args, out, env) -> int:
         raise Refused(f"replay/{name}.jsonl or its marker exists, and no manifest names it; "
                       "its registration, population and scope are unknown")
     paused = manifest.get("arms", {}).get(name, {})
-    resumed = None
-    if arm == "kev" and paused.get("outages") == 1 and not paused.get("resumed"):
-        if not kev_up():
-            raise Refused(f"{name} is paused after a Kev outage; it resumes once "
-                          "`kev.sh status` exits 0; nothing was asked")
-        resumed = now()
-    if manifest.get("arms", {}).get(name, {}).get("scope", scope_of(rows)) != scope_of(rows):
+    # A halt holds until the operator resumes it by name: no run clears one alone.
+    if paused.get("halted") and not args.resume:
+        raise Refused(f"{name} halted: {paused['halted']}; after review, run again with "
+                      "--resume REASON; nothing was asked")
+    if arm == "kev" and paused.get("outages") == 1 and not paused.get("resumed") and not kev_up():
+        raise Refused(f"{name} is paused after a Kev outage; it resumes once "
+                      "`kev.sh status` exits 0; nothing was asked")
+    if paused.get("scope", scope_of(rows)) != scope_of(rows):
         raise Refused(f"{name}'s heads differ from those it started on: the public pool moved; "
                       "nothing was sent")
     reuse = {}
@@ -1305,44 +1384,66 @@ def cmd_replay(args, out, env) -> int:
         data = answers.read_bytes()
         if not data.endswith(b"\n"):
             answers.write_bytes(data[:data.rfind(b"\n") + 1])
-    done = {(r["repository"], r["head"]) for r in read_jsonl(answers)} if answers.exists() else set()
-    if marker.exists():
-        # A run stopped between its call and its answer line: the call may
-        # have been made, so the head is not asked again.
-        cut = json.loads(marker.read_text(encoding="utf-8"))
-        if "reserved" not in cut:
-            raise Refused(f"{marker} predates cost reservations; its call's cost is unknown, "
-                          "so settle it by hand before a resume")
-        if "line" in cut and (cut["repository"], cut["head"]) not in done:
-            # Answered: its ledger row goes in, then its line, with no call.
-            said = settle(ledger, cut["ledger_row"], env)
-            if said != "written":
-                raise Refused(f"the ledger did not take the row {marker.name} holds ({said}); "
-                              "nothing was asked")
-            with answers.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(dict(cut["line"], ledger=said), sort_keys=True) + "\n")
-            done.add((cut["repository"], cut["head"]))
-        elif (cut["repository"], cut["head"]) not in done:
-            row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
-                                                                            cut["head"])), {})
-            with answers.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(dict(cut, alias=row.get("alias"),
-                                         population=row.get("population"), arm=arm, tier=None,
-                                         outcome="interrupted", usd=cut["reserved"],
-                                         run_id=run_id,
-                                         at=now()), sort_keys=True) + "\n")
-            done.add((cut["repository"], cut["head"]))
-        marker.unlink()
+    kept = read_jsonl(answers) if answers.exists() else []
+    faults = record_faults(kept, arm, run_id)
+    if faults:
+        raise Refused(f"{answers.name} holds lines that are not final answers of this run: "
+                      f"{faults[0]}; nothing was asked")
+    done = {(r["repository"], r["head"]) for r in kept}
+    cut = json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None
+    if cut is not None and "reserved" not in cut:
+        raise Refused(f"{marker} predates cost reservations; its call's cost is unknown, "
+                      "so settle it by hand before a resume")
     entry = manifest.setdefault("arms", {}).setdefault(name, {})
-    entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun, scope=scope_of(rows),
-                 started=entry.get("started") or now(), halted=None)
-    if resumed:
-        entry["resumed"] = resumed
+    entry.update(file=f"replay/{answers.name}", run_id=run_id, reason=args.rerun,
+                 scope=scope_of(rows), started=entry.get("started") or now())
+    if args.resume:
+        entry.setdefault("resumes", []).append(
+            {"at": now(), "reason": args.resume, "halted": entry.get("halted")})
+        entry["halted"] = None
+        if entry.get("outages") == 1:
+            entry["resumed"] = now()
     manifest.update(
         registration=registration,
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
         population={"file": args.population.name, "sha256": population_sha})
     write_json(manifest_path, manifest)
+
+    def halt(why):
+        entry.update(halted=why)
+        write_json(manifest_path, manifest)
+        sys.stderr.write(f"jev_experiment: {why}; the run stops here\n")
+        return 1
+
+    def record(line, stop):
+        """The head's line goes in and its marker goes; a halt is saved first."""
+        code = halt(stop) if stop else 0
+        with answers.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+        marker.unlink(missing_ok=True)
+        done.add((line["repository"], line["head"]))
+        return code
+
+    if cut is not None and (cut["repository"], cut["head"]) in done:
+        marker.unlink()
+    elif cut is not None and "line" in cut:
+        # Answered before a stop: its ledger row, then the stopping rule, then
+        # its line; the model is not asked again.
+        said = settle(ledger, cut["ledger_row"], env)
+        stop = stopping(arm, entry, bound=cut["reserved"] / 2, attempts=cut["line"]["attempts"],
+                        ledger=said)
+        if said != "written":
+            return halt(stop)
+        if record(dict(cut["line"], ledger=said), stop):
+            return 1
+    elif cut is not None:
+        # Stopped between a call and its answer: the call may have been
+        # made, so the head keeps its reservation and is not asked again.
+        row = next((r for r in rows if (r["repository"], r["head"]) == (cut["repository"],
+                                                                        cut["head"])), {})
+        record(dict(cut, alias=row.get("alias"), population=row.get("population"), arm=arm,
+                    tier=None, outcome="interrupted", usd=cut["reserved"], run_id=run_id,
+                    at=now()), None)
     definition = {"type": "choice", "instructions": QUESTION,
                   "criteria": jev.parse_mapping(criteria())}
     questions = {QID: definition}
@@ -1351,12 +1452,6 @@ def cmd_replay(args, out, env) -> int:
     model = env.get("JEV_MODEL") or jev.DEFAULT_MODEL
     total = spent(replay)
     sent = failures = 0
-
-    def halt(why):
-        entry.update(halted=why)
-        write_json(manifest_path, manifest)
-        sys.stderr.write(f"jev_experiment: {why}; the run stops here\n")
-        return 1
     for row in rows:
         ident = (row["repository"], row["head"])
         if ident in done:
@@ -1370,35 +1465,37 @@ def cmd_replay(args, out, env) -> int:
                         confidence=answer.get("confidence"), outcome="ok",
                         attempts=found.get("tries"), usd=None,
                         reused=args.reuse.parent.name, at=now())
-            with answers.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(line, sort_keys=True) + "\n")
+            record(line, None)
             continue
         payload, taken = jev.redacted_payload(
             jev.build_payload(json.loads(row["state"]), questions, model), patterns)
         # Both attempts are reserved before the first, and the marker keeps the
         # reservation: a stop before the answer line charges it, never $0.
         bound = reserve(arm, payload, definition, env)
-        if arm in HOSTED and total + 2 * bound > args.cap:
-            return halt(f"spend cap: ${total:.4f} spent, and the next head reserves "
-                        f"${2 * bound:.4f} of ${args.cap:.2f}")
+        stop = stopping(arm, entry, total=total, cap=args.cap, need=2 * bound)
+        if stop:
+            return halt(stop)
         asking = {"repository": row["repository"], "head": row["head"], "reserved": 2 * bound}
         write_json(marker, asking)
-        event, attempts = ask_arm(arm, payload, definition, conf, env)
-        usd = sum(bound if a["usd"] is None else a["usd"] for a in attempts)
+        event, attempts, stop = ask_arm(arm, payload, definition, conf, env, check=lambda tried,
+                                        more: stopping(arm, entry, total=total, cap=args.cap,
+                                                       bound=bound, attempts=tried,
+                                                       need=bound if more else 0.0))
+        usd = sum(charge(a, bound) for a in attempts)
         owner_repo = row["repository"].lower().replace("/", ".")
         pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
+        # The final attempt's answer, with the cost and counts of every attempt.
         ledger_row = dict(event, caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm,
                           pair=pair, question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
                           primitive="choice", questions=1, prompt_hash=prompt_hash,
-                          run_id=run_id, changed="no", load_avg=jev.load_avg())
+                          run_id=run_id, changed="no", load_avg=jev.load_avg(), usd=usd,
+                          tokens_in=summed(attempts, "tokens_in"),
+                          tokens_out=summed(attempts, "tokens_out"))
         tier = TIERS[int(event["answer"]) - 1] if event.get("answer") else None
         span = {k: ledger_row.get(k) for k in ("caller", "stage", "arm", "pair", "primitive",
                                                "provider", "model", "outcome", "cause", "answer",
                                                "confidence", "tokens_in", "tokens_out",
                                                "duration_ms")}
-        sent += jev_trace.export(span, env, project=PROJECT, extra=(
-            ("jev.repo_alias", row["alias"]), ("jev.tier", tier), ("jev.usd", usd),
-            ("jev.population", row["population"]))) == jev_trace.SENT
         values = (event.get("probabilities") or "").split(",")
         line.update(tier=tier, confidence=event.get("confidence"),
                     probabilities=dict(zip(TIERS, map(float, values))) if len(values) == 4 else None,
@@ -1410,19 +1507,16 @@ def cmd_replay(args, out, env) -> int:
         # The answer waits in the marker until the ledger takes its row; a
         # ledger that will not halts the run, and a resume records it with no call.
         write_json(marker, dict(asking, ledger_row=ledger_row, line=line))
+        sent += jev_trace.export(span, env, project=PROJECT, extra=(
+            ("jev.repo_alias", row["alias"]), ("jev.tier", tier), ("jev.usd", usd),
+            ("jev.population", row["population"]))) == jev_trace.SENT
         said = settle(ledger, ledger_row, env)
+        stop = stopping(arm, entry, bound=bound, attempts=attempts, ledger=said) or stop
         if said != "written":
-            return halt(f"the ledger did not take a {name} row ({said}); its answer waits "
-                        f"in {marker.name}, and a resume records it without a call")
-        line["ledger"] = said
-        with answers.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
-        marker.unlink()
+            return halt(stop)
         total += usd
-        if arm in HOSTED and event["outcome"] == "ok" and event.get("usd") is None:
-            return halt(f"an answer reported no cost; it is charged its reservation, ${usd:.4f}")
-        if arm in HOSTED and usd > 2 * bound:
-            return halt(f"a head cost ${usd:.4f}, above its reservation of ${2 * bound:.4f}")
+        if record(dict(line, ledger=said), stop):
+            return 1
         failures = 0 if event["outcome"] == "ok" else failures + 1
         if arm == "kev" and failures >= KEV_OUTAGE:
             entry["outages"] = entry.get("outages", 0) + 1
@@ -1431,10 +1525,9 @@ def cmd_replay(args, out, env) -> int:
                             "once `kev.sh status` exits 0")
             # A second outage ends the arm: each head left is counted, not asked.
             entry["ended"] = "a second Kev outage"
-            left = {(r["repository"], r["head"]) for r in read_jsonl(answers)}
             with answers.open("a", encoding="utf-8") as fh:
                 for other in rows:
-                    if (other["repository"], other["head"]) not in left:
+                    if (other["repository"], other["head"]) not in done:
                         fh.write(json.dumps({
                             "repository": other["repository"], "head": other["head"],
                             "alias": other["alias"], "population": other["population"],
@@ -1494,6 +1587,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--cap", type=dollars, default=SPEND_CAP, help="hosted spend cap in US dollars")
     rep.add_argument("--traces", default=TRACES_URL, help="the OTLP traces endpoint")
     rep.add_argument("--rerun", metavar="REASON", help="a second run, reported as one")
+    rep.add_argument("--resume", metavar="REASON",
+                     help="go on after a halt, once the operator has reviewed it")
     rep.add_argument("--preregistration", type=Path, default=REGISTRATION, help=argparse.SUPPRESS)
     return parser
 
