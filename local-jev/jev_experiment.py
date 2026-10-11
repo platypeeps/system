@@ -51,6 +51,7 @@ import math
 import os
 import random
 import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -1227,17 +1228,19 @@ def answer_file(arm: str, rerun: str | None, manifest: dict) -> tuple[str, str]:
     return f"{arm}.run{number}", f"{RUN_ID}-{number}"
 
 
-def spent(replay: Path) -> float:
-    """Hosted spend so far, over every run's answers, plus the reservation of
-    each call still waiting in a marker; a marker without one counts as
-    unbounded."""
+def spent(replay: Path, apart: Path | None = None) -> float:
+    """Hosted spend so far, over every run's answers, plus each call still
+    waiting in a marker other than `apart`: its reservation, or its held
+    answer's cost when that is higher. A marker without a reservation counts
+    as unbounded."""
     total = 0.0
     for path in replay.glob("*.jsonl"):
         if path.name.split(".")[0] in HOSTED:
             total += sum(row.get("usd") or 0.0 for row in read_jsonl(path))
     for path in replay.glob("*.asking"):
-        if path.name.split(".")[0] in HOSTED:
-            total += json.loads(path.read_text(encoding="utf-8")).get("reserved", math.inf)
+        if path.name.split(".")[0] in HOSTED and path != apart:
+            held = json.loads(path.read_text(encoding="utf-8"))
+            total += max(held.get("reserved", math.inf), held.get("line", {}).get("usd") or 0.0)
     return total
 
 
@@ -1426,6 +1429,9 @@ def cmd_replay(args, out, env) -> int:
         entry["halted"] = None
         if entry.get("outages") == 1:
             entry["resumed"] = now()
+    # The ledger's pairs name this folder's experiment, so folders that
+    # share a ledger and a run id never take each other's rows.
+    manifest.setdefault("instance", secrets.token_hex(8))
     manifest.update(
         registration=registration,
         heuristic_sha256=HEURISTIC_SHA256, pack=PACK_SHA, system=git_head(FOLDER.parent),
@@ -1438,17 +1444,43 @@ def cmd_replay(args, out, env) -> int:
         sys.stderr.write(f"jev_experiment: {why}; the run stops here\n")
         return 1
 
+    # Kev's failure streak, rebuilt from the answer file: a stop does not
+    # reset it. The head that completed an outage starts a new streak.
+    outaged = {tuple(key) for key in entry.get("outage_heads", [])}
+    failures = 0
+    for one in kept:
+        failures = 0 if one["outcome"] == "ok" or (one["repository"], one["head"]) in outaged \
+            else failures + 1
+
     def record(line, stop):
-        """The head's line goes in and its marker goes; a halt is saved first."""
+        """The head's line goes in and its marker goes; a halt, and Kev's
+        outage, are saved first. A head counts toward one outage once."""
+        nonlocal failures
+        failures = 0 if line["outcome"] == "ok" else failures + 1
+        moved = arm == "kev" and failures >= KEV_OUTAGE
+        if moved:
+            failures = 0
+            key = [line["repository"], line["head"]]
+            if key not in entry.setdefault("outage_heads", []):
+                entry["outage_heads"].append(key)
+            entry["outages"] = len(entry["outage_heads"])
+            if entry["outages"] == 1 and not entry.get("resumed"):
+                stop = stop or (f"Kev outage: {KEV_OUTAGE} heads failed in a row; the arm "
+                                "resumes once `kev.sh status` exits 0")
+            elif entry["outages"] > 1:
+                # A second outage ends the arm: the heads left get `ended` lines.
+                entry["ended"] = "a second Kev outage"
         code = halt(stop) if stop else 0
+        if moved and not stop:
+            write_json(manifest_path, manifest)
         with answers.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, sort_keys=True) + "\n")
         marker.unlink(missing_ok=True)
         done.add((line["repository"], line["head"]))
         return code
 
-    # Spend before the cut head: its own marker's reservation is its charge.
-    total = spent(replay) - (cut["reserved"] if cut is not None and arm in HOSTED else 0.0)
+    # Spend before the cut head, whose own marker is its charge.
+    total = spent(replay, apart=marker)
     if cut is not None and (cut["repository"], cut["head"]) in done:
         marker.unlink()
     elif cut is not None:
@@ -1480,7 +1512,7 @@ def cmd_replay(args, out, env) -> int:
     patterns = jev.settings(env)["privacy"]
     model = env.get("JEV_MODEL") or jev.DEFAULT_MODEL
     total = spent(replay)
-    sent = failures = 0
+    sent = 0
     for row in rows:
         ident = (row["repository"], row["head"])
         if ident in done:
@@ -1507,7 +1539,8 @@ def cmd_replay(args, out, env) -> int:
         if stop:
             return halt(stop)
         owner_repo = row["repository"].lower().replace("/", ".")
-        pair = hashlib.sha256(f"{run_id}:{row['repository']}:{row['head']}".encode()).hexdigest()[:16]
+        pair = hashlib.sha256(f"{manifest['instance']}:{run_id}:{row['repository']}:"
+                              f"{row['head']}".encode()).hexdigest()[:16]
         held = dict(caller="jev-experiment", stage="JEV_SD_REVIEW", arm=arm, pair=pair,
                     question_id=jev.named(f"{QID}:{owner_repo}:{row['head'][:12]}"),
                     primitive="choice", questions=1, prompt_hash=prompt_hash, run_id=run_id,
@@ -1555,16 +1588,6 @@ def cmd_replay(args, out, env) -> int:
         total += usd
         if record(dict(line, ledger=said), stop):
             return 1
-        failures = 0 if event["outcome"] == "ok" else failures + 1
-        if arm == "kev" and failures >= KEV_OUTAGE:
-            entry["outages"] = entry.get("outages", 0) + 1
-            if entry["outages"] == 1:
-                return halt(f"Kev outage: {failures} heads failed in a row; the arm resumes "
-                            "once `kev.sh status` exits 0")
-            # A second outage ends the arm, saved before its lines go in.
-            entry["ended"] = "a second Kev outage"
-            write_json(manifest_path, manifest)
-            break
     if entry.get("ended"):
         # Each head left is counted, not asked; a stop here resumes here.
         with answers.open("a", encoding="utf-8") as fh:

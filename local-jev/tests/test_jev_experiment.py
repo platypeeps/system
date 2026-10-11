@@ -1499,16 +1499,18 @@ class TheReplay(CompareCase):
         self.assertEqual([a["outcome"] for a in self.answers("jev")], ["interrupted"])
         self.assertFalse((replay / "jev.asking").exists())
 
-    def test_another_folder_s_row_under_the_same_run_id_is_not_this_answer(self):
-        pair = hashlib.sha256(f"{experiment.RUN_ID}:owner/repo:{sha(0)}".encode()).hexdigest()
+    def test_another_row_under_this_pair_is_not_this_answer(self):
+        self.costing(0.42)
+        self.stop_after_first_call("jev")
+        instance = json.loads((self.folder / "manifest.json").read_text())["instance"]
+        pair = hashlib.sha256(f"{instance}:{experiment.RUN_ID}:owner/repo:{sha(0)}".encode())
         said, _id = experiment.jev_meter.write(
-            {"caller": "jev-experiment", "stage": "JEV_SD_REVIEW", "arm": "jev", "pair": pair[:16],
-             "provider": "typesafe", "model": "m", "primitive": "choice", "outcome": "ok",
-             "answer": "1", "usd": 0.01, "run_id": experiment.RUN_ID},
+            {"caller": "jev-experiment", "stage": "JEV_SD_REVIEW", "arm": "jev",
+             "pair": pair.hexdigest()[:16], "provider": "typesafe", "model": "m",
+             "primitive": "choice", "outcome": "ok", "answer": "1", "usd": 0.01,
+             "run_id": experiment.RUN_ID},
             {"JEV_METER": "1", "JEV_METER_DB": str(self.ledger)})
         self.assertEqual(said, "written")
-        self.costing(0.5)
-        self.in_turn(dict(CHEAP, usd=0.43))
         self.assertEqual(self.replay("jev")[0], 1)
         self.assertEqual(self.answers("jev"), [])
         self.assertTrue((self.folder / "replay" / "jev.asking").exists())
@@ -1536,3 +1538,61 @@ class TheReplay(CompareCase):
         self.assertEqual(len(kev_calls()), before)
         self.assertEqual([a["outcome"] for a in self.answers("kev")],
                          ["unavailable"] * 4 + ["ended"])
+
+    def test_another_arm_s_held_answer_counts_at_its_cost(self):
+        self.costing(0.1)
+        calls = self.in_turn(dict(CHEAP, usd=1.2))
+        with unittest.mock.patch.object(experiment.jev_meter, "write",
+                                        return_value=("refused", None)):
+            self.assertEqual(self.replay("jev", "--cap", "10")[0], 1)
+        self.assertEqual(self.replay("haiku", "--cap", "1.0")[0], 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_two_folders_sharing_a_ledger_keep_a_row_each(self):
+        self.one_head()
+        self.costing(0.42)
+        for folder in ("first", "second"):
+            self.folder = self.folder.parent / folder
+            self.folder.mkdir()
+            self.stop_after_first_call("jev")
+            self.assertEqual(self.replay("jev")[0], 0)
+        with contextlib.closing(connect(self.ledger, write=False)) as connection:
+            rows = connection.execute("SELECT count(*), sum(usd) FROM judgment"
+                                      " WHERE error_class = 'Interrupted'").fetchone()
+        self.assertEqual((rows[0], round(rows[1], 2)), (2, 1.68))
+
+    def test_kev_s_failure_streak_survives_a_stop(self):
+        Arm.status = 500
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2, create=True))
+        reserve = unittest.mock.patch.object(experiment, "reserve", create=True,
+                                             side_effect=[0.0, KeyboardInterrupt("stopped")])
+        with reserve, self.assertRaises(KeyboardInterrupt):
+            self.replay("kev")
+        self.assertEqual(self.replay("kev")[0], 1)
+        self.assertEqual(len(self.answers("kev")), 2)
+
+    def test_kev_s_outage_is_saved_before_the_line_that_starts_it(self):
+        Arm.status = 500
+        kev_calls = lambda: [s for s in Arm.seen if s["path"] == "/v1/systemone"]  # noqa: E731
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2, create=True))
+        real, lines = json.dumps, []
+
+        def stop_at_second_line(value, *args, **kwargs):
+            if isinstance(value, dict) and value.get("outcome") == "unavailable" \
+                    and "run_id" in value:
+                lines.append(value)
+                if len(lines) == 2:
+                    raise KeyboardInterrupt("stopped before the line")
+            return real(value, *args, **kwargs)
+        with unittest.mock.patch.object(experiment.json, "dumps", stop_at_second_line):
+            with self.assertRaises(KeyboardInterrupt):
+                self.replay("kev")
+        before = len(kev_calls())
+        self.assertEqual(self.replay("kev")[0], 2)                  # paused until resumed
+        self.assertEqual(len(kev_calls()), before)
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True, create=True):
+            self.assertEqual(self.replay("kev", "--resume", "kev is back")[0], 0)
+        found = self.answers("kev")
+        self.assertEqual([a["outcome"] for a in found], ["unavailable"] * 4 + ["ended"])
+        entry = json.loads((self.folder / "manifest.json").read_text())["arms"]["kev"]
+        self.assertEqual(entry["outages"], 2)
