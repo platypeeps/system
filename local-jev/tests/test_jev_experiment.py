@@ -2401,11 +2401,11 @@ class TheScannerBenchmark(CompareCase):
         self.enterContext(unittest.mock.patch.dict(os.environ))
         self.out = Path(tempfile.mkdtemp()) / "experiment"
 
-    def scanner(self, step, env=None, corpus=None):
+    def scanner(self, step, *more, env=None, corpus=None):
         if corpus is not None:
             self.enterContext(unittest.mock.patch.object(experiment, "scanner_corpus",
                                                          return_value=corpus))
-        return run(["scanner", step, "--out", str(self.out)], env or self.env())
+        return run(["scanner", step, "--out", str(self.out), *more], env or self.env())
 
     def small(self):
         """Two hits of each class, as the generator writes them."""
@@ -2413,8 +2413,8 @@ class TheScannerBenchmark(CompareCase):
         return [h for c in ("realistic", "documented", "placeholder")
                 for h in [h for h in hits if h["class"] == c][:2]]
 
-    def answers(self):
-        path = self.out / "scanner" / "kev.jsonl"
+    def answers(self, form="caller"):
+        path = self.out / "scanner" / form / "kev.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_the_generator_reads_no_environment_variable_and_no_file(self):
@@ -2453,6 +2453,19 @@ class TheScannerBenchmark(CompareCase):
         again = {json.loads(h["state"])["line"] for h in experiment.scanner_corpus()
                  if h["class"] == "realistic"}
         self.assertEqual(fakes & again, set())
+        # Each hit as the scanner's caller sends it: `path:line:match`, the
+        # match alone, as `rg -o` gives it; a key block's match is its first line.
+        for hit in hits:
+            path, number, match = hit["caller"].rstrip("\n").split(":", 2)
+            self.assertEqual((path, hit["caller"].count("\n")),
+                             (experiment.CALLER_PATHS[hit["context"]], 1))
+            self.assertTrue(number.isdigit())
+            line = json.loads(hit["state"])["line"]
+            self.assertIn(match, line)
+            if "-----BEGIN " in line:
+                self.assertEqual(match, "-----BEGIN " + experiment.KEY_LABEL + "-----")
+            else:
+                self.assertNotEqual(match, line)
 
     def test_the_runner_asks_kev_alone_and_holds_no_hosted_key(self):
         os.environ.update(TYPESAFE_API_KEY="process-key", JEV_COMPARE_HAIKU_VIA="anthropic",
@@ -2513,20 +2526,77 @@ class TheScannerBenchmark(CompareCase):
         self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
         self.assertEqual(len(target.read_text().splitlines()), 6)
 
-    def test_a_kev_outage_halts_until_resumed_by_name(self):
+    def test_a_kev_outage_pauses_once_and_a_second_ends_the_arm(self):
         self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2))
         self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
         Arm.status = 500
         self.assertEqual(self.scanner("run")[0], 1)
         self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2)
         asked = len(Arm.seen)
+        # The pause holds without a resume, and until `kev.sh status` exits 0.
         self.assertEqual(self.scanner("run")[0], 2)
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=False):
+            self.assertEqual(self.scanner("run", "--resume", "kev is up")[0], 2)
         self.assertEqual(len(Arm.seen), asked)
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            code, out = self.scanner("run", "--resume", "kev is up")
+        self.assertEqual(code, 0, out)
+        # The second outage ends the arm: each hit left is counted, not asked.
+        self.assertEqual([a["outcome"] for a in self.answers()],
+                         ["unavailable"] * 4 + ["ended"] * 2)
+        asked = len(Arm.seen)
         Arm.status = 200
-        code, out = run(["scanner", "run", "--out", str(self.out), "--resume", "kev is up"],
-                        self.env())
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            self.assertEqual(self.scanner("run", "--resume", "once more")[0], 2)
+            self.assertEqual(self.scanner("run")[0], 0)
+        self.assertEqual(len(Arm.seen), asked)
+        self.assertEqual(len(self.answers()), 6)
+
+    def test_a_kev_outage_resumed_once_goes_on_when_kev_answers(self):
+        self.enterContext(unittest.mock.patch.object(experiment, "KEV_OUTAGE", 2))
+        self.assertEqual(self.scanner("generate", corpus=self.small())[0], 0)
+        Arm.status = 500
+        self.assertEqual(self.scanner("run")[0], 1)
+        Arm.status = 200
+        with unittest.mock.patch.object(experiment, "kev_up", return_value=True):
+            code, out = self.scanner("run", "--resume", "kev is up")
         self.assertEqual(code, 0, out)
         self.assertEqual([a["outcome"] for a in self.answers()], ["unavailable"] * 2 + ["ok"] * 4)
+
+    def test_the_caller_form_sends_what_the_scanner_s_caller_sends(self):
+        script = (experiment.FOLDER.parent / "local-scan-for-secrets" / "scan-for-secrets.sh").read_text()
+        self.assertIn(f"noul '{experiment.CALLER_QUESTION}'", script)
+        self.assertIn("--gate 0.5", script)
+        self.assertIn("--state-format text", script)
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        code, out = self.scanner("run", "--form", "caller")
+        self.assertEqual(code, 0, out)
+        bodies = [s["body"] for s in Arm.seen]
+        self.assertEqual(sorted(b["state"] for b in bodies), sorted(h["caller"] for h in corpus))
+        self.assertEqual({json.dumps(b["questions"], sort_keys=True) for b in bodies},
+                         {json.dumps({"answer": {"type": "noul",
+                                                 "instructions": experiment.CALLER_QUESTION}},
+                                     sort_keys=True)})
+        self.assertEqual(len(self.answers("caller")), 6)
+
+    def test_the_draft_form_is_a_second_run_of_its_own(self):
+        corpus = self.small()
+        self.assertEqual(self.scanner("generate", corpus=corpus)[0], 0)
+        self.assertEqual(self.scanner("run")[0], 0)
+        caller = (self.out / "scanner" / "caller" / "kev.jsonl").read_bytes()
+        before = len(Arm.seen)
+        code, out = self.scanner("run", "--form", "draft")
+        self.assertEqual(code, 0, out)
+        bodies = [s["body"] for s in Arm.seen[before:]]
+        self.assertEqual(sorted(json.dumps(b["state"], sort_keys=True) for b in bodies),
+                         sorted(json.dumps(json.loads(h["state"]), sort_keys=True)
+                                for h in corpus))
+        self.assertEqual({q["instructions"] for b in bodies for q in b["questions"].values()},
+                         {experiment.SCANNER_QUESTION})
+        self.assertEqual(len(self.answers("draft")), 6)
+        self.assertEqual((self.out / "scanner" / "caller" / "kev.jsonl").read_bytes(), caller)
+        self.assertEqual(json.loads(out)["form"], "draft")
 
 
 #: The two public repositories the injection test draws from, and another

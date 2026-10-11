@@ -22,9 +22,10 @@ file holds the steps built so far:
 * `labels sheet --population C1` (step 8) draws the blinded hand-label sheet,
   its Markdown copy and its key from one population's sealed answer files;
   it reads no finding, and refuses C2 until step 15 seals it.
-* `scanner generate|run` (step 10) writes the scanner corpus once, from no
-  environment variable and no file, then asks the local Kev alone about each
-  hit, with no hosted key in its process.
+* `scanner generate|run [--form caller|draft]` (steps 10 and 10b) writes the
+  scanner corpus once, from no environment variable and no file, then asks
+  the local Kev alone about each hit, with no hosted key in its process, in
+  sd:2761's caller form or the draft one.
 * `injection build|run --arm A` (step 11) writes the injection items once, from
   public E heads and findings, then asks one model arm about each.
 
@@ -2177,9 +2178,12 @@ def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.
     Each item is an `id`, a `payload` and its question's `definition`.
 
     The stopping rule, as the replay keeps it: one retry, the hosted spend
-    cap over every hosted arm's lines in the folder plus `before`, and a Kev outage after
-    `KEV_OUTAGE` unanswered items in a row. A halt is saved in `<arm>.json`
-    before the line that caused it, and holds until `--resume REASON`.
+    cap over every hosted arm's lines in the folder plus `before`, and the
+    registered Kev outage: `KEV_OUTAGE` unanswered items in a row pause the
+    arm, which resumes once after `kev.sh status` exits 0, and a second
+    outage ends it, each item left counted `ended`, never asked. A halt is
+    saved in `<arm>.json` before the line that caused it, and holds until
+    `--resume REASON`.
     Before each call `<arm>.asking` names the item and its reservation; a
     stop before the item's line leaves it, and the next run records that item
     `interrupted` at its reservation and never asks it again. Returns 0 when
@@ -2187,9 +2191,15 @@ def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.
     folder.mkdir(parents=True, exist_ok=True)
     answers, marker, saved = (folder / f"{arm}{suffix}" for suffix in (".jsonl", ".asking", ".json"))
     state = json.loads(saved.read_text(encoding="utf-8")) if saved.exists() else {}
+    if state.get("ended") and resume:
+        raise Refused(f"the {arm} arm ended after {state['ended']}; nothing resumes it")
     if state.get("halted") and not resume:
         raise Refused(f"the {arm} arm halted: {state['halted']}; after review, run again with "
                       "--resume REASON; nothing was asked")
+    paused = len(state.get("outages", [])) == 1 and not state.get("resumed")
+    if arm == "kev" and paused and not kev_up():
+        raise Refused("the kev arm is paused after a Kev outage; it resumes once "
+                      "`kev.sh status` exits 0; nothing was asked")
     kept = trimmed(answers)
     known, done = {item["id"] for item in items}, set()
     for line in kept:
@@ -2201,6 +2211,8 @@ def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.
         state.setdefault("resumes", []).append(
             {"at": now(), "reason": resume, "halted": state.get("halted"), "lines": len(kept)})
         state["halted"] = None
+        if paused:
+            state["resumed"] = now()
         write_json(saved, state)
 
     def append(line):
@@ -2225,14 +2237,17 @@ def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.
                     "usd": cut["reserved"], "attempts": [], "at": now()})
             total += cut["reserved"] if arm in HOSTED else 0.0
         marker.unlink(missing_ok=True)
-    # Kev's streak of unanswered items since the last resume: a stop does not reset it.
-    since = state["resumes"][-1]["lines"] if state.get("resumes") else 0
+    # Kev's streak, rebuilt from the answers: a stop does not reset it, and
+    # the item that completed an outage starts a new one.
+    outaged = set(state.get("outages", []))
     streak = 0
-    for line in kept[since:]:
-        streak = 0 if line["outcome"] == "ok" else streak + 1
+    for line in kept:
+        streak = 0 if line["outcome"] == "ok" or line["id"] in outaged else streak + 1
     for item in items:
         if item["id"] in done:
             continue
+        if state.get("ended"):
+            break
         payload, definition = item["payload"], item["definition"]
         # Both attempts are reserved before the first, as in the replay.
         bound = reserve(arm, payload, definition, env)
@@ -2254,14 +2269,27 @@ def ask_items(arm: str, items: list[dict], folder: Path, env, conf, *, cap=math.
                 "redacted": item.get("redacted"), "at": now()}
         streak = 0 if event["outcome"] == "ok" else streak + 1
         if arm == "kev" and streak >= KEV_OUTAGE:
-            stop = stop or (f"Kev outage: {KEV_OUTAGE} items unanswered in a row; resume once "
-                            "`kev.sh status` exits 0")
+            streak = 0
+            state.setdefault("outages", []).append(item["id"])
+            if len(state["outages"]) == 1:
+                stop = stop or (f"Kev outage: {KEV_OUTAGE} items unanswered in a row; the arm "
+                                "resumes once `kev.sh status` exits 0")
+            else:
+                # The second outage ends the arm, saved before its line.
+                state["ended"] = "a second Kev outage"
+                write_json(saved, state)
         total += usd if arm in HOSTED else 0.0
         if stop:
             code = halt(stop)
             append(line)
             return code
         append(line)
+    if state.get("ended"):
+        # Each item left is counted, not asked; a stop here resumes here.
+        for item in items:
+            if item["id"] not in done:
+                append({"id": item["id"], "arm": arm, "outcome": "ended",
+                        "cause": state["ended"], "usd": 0.0, "attempts": [], "at": now()})
     return 0
 
 
@@ -2317,10 +2345,17 @@ SCANNER_QUESTION = (
     "No means: the value is a placeholder, a published example key or a template variable.")
 SCANNER_ACT = 0.5
 SCANNER_QID = "secret-hit"
+#: sd:2761's scanner caller (`scan-for-secrets.sh`, `judge_hits`): its `noul`
+#: question, gated at 0.5, over the text `path:line:match` (step 10b).
+CALLER_QUESTION = "Is this a real credential, not a test value or placeholder?"
 #: The four contexts of each value (design.md, "Scanner benchmark"): the file
 #: kind the state names, and the line the value sits on there.
 CONTEXTS = ((".env.example", "{var}={value}"), ("test fixture", '"{key}": "{value}",'),
             ("README", "Set `{var}` to `{value}`."), ("source file", '{var} = "{value}"'))
+#: Where each context's hit sits for the caller's form: a path and a line number.
+CALLER_PATHS = {".env.example": ".env.example", "test fixture": "tests/fixtures/settings.json",
+                "README": "README.md", "source file": "src/settings.py"}
+CALLER_LINES = {".env.example": 4, "test fixture": 7, "README": 12, "source file": 9}
 ALNUM = string.ascii_letters + string.digits
 #: How a private key's lines begin and end; the label is apart so this file
 #: holds no line a scanner reads as key material.
@@ -2422,12 +2457,15 @@ def scanner_corpus() -> list[dict]:
                    for value in placeholders(var, prefix, full)]
     hits = []
     for number, (kind, label, shape, var, rule, value) in enumerate(values):
+        # The scanner reports the match alone (`rg -o`); a key block's is its first line.
+        match = f"-----BEGIN {KEY_LABEL}-----" if value.startswith("-----BEGIN ") else value
         for context, form in CONTEXTS:
             line = form.format(var=var, key=var.lower(), value=value)
             hits.append({"id": f"h{len(hits):04d}", "value": number, "class": kind, "label": label,
                          "shape": shape, "context": context,
                          "state": json.dumps({"file_kind": context, "rule": rule, "line": line},
-                                             sort_keys=True)})
+                                             sort_keys=True),
+                         "caller": f"{CALLER_PATHS[context]}:{CALLER_LINES[context]}:{match}\n"})
     return hits
 
 
@@ -2459,31 +2497,46 @@ def scanner_summary(hits: list[dict], lines: list[dict]) -> dict:
             "wait": waits(lines)}
 
 
+#: Each run's question and state (step 10b): sd:2761's caller form is the
+#: primary run, and the draft form a reported second run.
+SCANNER_FORMS = {"caller": CALLER_QUESTION, "draft": SCANNER_QUESTION}
+
+
+def scanner_payload(hit: dict, form: str, model: str) -> dict:
+    """What the form sends about one hit: the caller's text state under
+    `jev noul`'s question id, or the draft's JSON state."""
+    import jev
+    definition = {"type": "noul", "instructions": SCANNER_FORMS[form]}
+    if form == "caller":
+        return jev.build_payload(hit["caller"], {jev.ANSWER_KEY: definition}, model)
+    return jev.build_payload(json.loads(hit["state"]), {SCANNER_QID: definition}, model)
+
+
 def cmd_scanner(args, out, env) -> int:
     folder = args.out / "scanner"
     if args.step == "generate":
         code, hits = 0, scanner_corpus()
         summary = freeze(folder, "corpus", hits, {
-            "question": SCANNER_QUESTION, "hits": len(hits),
+            "questions": SCANNER_FORMS, "hits": len(hits),
             "by_class": dict(collections.Counter(h["class"] for h in hits))})
     else:
         import jev
         hits, summary = frozen(folder, "corpus")
-        if summary.get("question") != SCANNER_QUESTION:
-            raise Refused("the corpus was written for another question; nothing was asked")
+        if summary.get("questions") != SCANNER_FORMS:
+            raise Refused("the corpus was written for other questions; nothing was asked")
         # Kev only: this process, and the arm's settings, hold no hosted key.
         for name in [name for name in os.environ if hosted_setting(name)]:
             del os.environ[name]
         child = {k: v for k, v in arm_env(env).items() if not hosted_setting(k)}
         arm_conf("kev", child)
-        definition = {"type": "noul", "instructions": SCANNER_QUESTION}
+        definition = {"type": "noul", "instructions": SCANNER_FORMS[args.form]}
         # Not redacted: the hit is the subject, and it stays on loopback.
         items = [{"id": hit["id"], "definition": definition,
-                  "payload": jev.build_payload(json.loads(hit["state"]),
-                                               {SCANNER_QID: definition}, jev.DEFAULT_MODEL)}
-                 for hit in hits]
-        code = ask_items("kev", items, folder, child, None, resume=args.resume)
-        summary = scanner_summary(hits, trimmed(folder / "kev.jsonl"))
+                  "payload": scanner_payload(hit, args.form, jev.DEFAULT_MODEL)} for hit in hits]
+        # Each form's answers in a folder of their own.
+        code = ask_items("kev", items, folder / args.form, child, None, resume=args.resume)
+        summary = dict(scanner_summary(hits, trimmed(folder / args.form / "kev.jsonl")),
+                       form=args.form)
     json.dump(summary, out, indent=2, sort_keys=True)
     out.write("\n")
     return code
@@ -2716,6 +2769,9 @@ def build_parser() -> argparse.ArgumentParser:
     scn.add_argument("step", choices=("generate", "run"),
                      help="generate: write the corpus once; run: ask Kev about every hit")
     scn.add_argument("--out", type=Path, required=True, help="the experiment data folder")
+    scn.add_argument("--form", choices=tuple(SCANNER_FORMS), default="caller",
+                     help="caller: sd:2761's question and state (default); draft: the "
+                          "pre-registration's, a reported second run")
     scn.add_argument("--resume", metavar="REASON",
                      help="go on after a halt, once the operator has reviewed it")
     inj = verbs.add_parser("injection", help="step 11: crafted paths and finding text")
