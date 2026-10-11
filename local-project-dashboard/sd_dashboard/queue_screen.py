@@ -25,18 +25,6 @@ lock, so a write that lands between the two checks is refused too. `cancel` need
 entry (pack sd:3282), so a Cancel on a pending row the runner claimed since must not reach it.
 The runner reads the queue again at each item boundary, so an edit takes effect there.
 
-Release acts on a running row at `step: merge` (sd:3284, D3 of pack sd:3174): `lane cancel <item>` fails the entry at
-once, without waiting for its lease, so a merge holder on another machine that stopped answering no longer blocks the
-lane. The page sends the entry id the row showed. The page's revision also covers each running entry's id, holder
-(host and pid) and step, so a claim taken again since, or a step that moved on, is refused before the verb; the server
-then checks that the fresh list still runs that entry at `merge`. `lane cancel` checks the lane revision under the
-queue's lock, which catches the entry going back to pending.
-
-No Release in prepare: `lane cancel` binds neither the claim nor the step it acts on (pack `bin/sd_lane.py` `cancel`),
-so a prepare that reaches merge between the server's check and the verb would be failed instead of put back. Merge is
-the last step, so a release read there ends as the dialog says, or is refused once the entry finished. A stuck prepare
-waits for its lease: the lane host reclaims it at its next run.
-
 Retry and Approve act on a blocked row (sd:3012): `lane retry <item>` queues its last entry again at the same head with
 the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge grant, so only a repo whose
 `runner_merge` is manual takes it. Both carry the head the row showed as `--expected-head`, which the verb checks under
@@ -64,9 +52,9 @@ WRITE_SECONDS = 30
 GIT_SECONDS = 5
 BUILDING_HOURS = 6
 BLOCKED_DAYS = 3
-#: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, a blocked row's retry and
-#: approve (`retry --manual`), and a running row's Release (`reclaim`, which runs `lane cancel`).
-ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve", "reclaim")
+#: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, and a blocked row's retry and
+#: approve (`retry --manual`).
+ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve")
 #: The ends short of a merge that the page shows as blocked and `lane retry` takes.
 BLOCKED = ("failed", "skipped", "prepared")
 #: Who acts on a blocked entry, by its status and failed step.
@@ -124,24 +112,14 @@ def lane_revision(entries: list[dict]) -> str:
     return hashlib.sha256(json.dumps(pending).encode()).hexdigest()[:16]
 
 
-def _holder(entry: dict) -> dict:
-    """A running entry's holder as the page may see it: host and pid, never the token, which is the claim itself."""
-    holder = entry.get("holder")
-    return {"host": holder.get("host") or None, "pid": holder.get("pid")} if isinstance(holder, dict) else {}
-
-
 def revision(entries: list[dict]) -> str:
-    """The page's revision: the lane revision, the head of each item's newest entry when it is blocked, and each
-    running entry's id, holder and step.
+    """The page's revision: the lane revision and the head of each item's newest entry when it is blocked.
 
     A run that ends blocked at another head leaves the pending order alone; this still changes (sd:3012 review).
-    So does a claim taken again or a step that moved on, which Release would otherwise act on unseen (sd:3284).
     """
     newest = {row.get("item"): row for row in entries}
     heads = [[item, row.get("expected_head")] for item, row in newest.items() if row.get("status") in BLOCKED]
-    running = [[row.get("item"), row.get("id"), _holder(row), row.get("step"), row.get("started_at")]
-               for row in entries if row.get("status") == "running"]
-    return hashlib.sha256(json.dumps([lane_revision(entries), heads, running]).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps([lane_revision(entries), heads]).encode()).hexdigest()[:16]
 
 
 def _when(stamp: str | None) -> float | None:
@@ -195,12 +173,10 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
         status, item = entry.get("status"), entry.get("item")
         base = {"item": item, "title": entry.get("title") or ""}
         if status == "running":
-            started, holder = _when(entry.get("started_at")), _holder(entry)
+            started, holder = _when(entry.get("started_at")), entry.get("holder")
+            holder = holder if isinstance(holder, dict) else {}  # never the token: it is the claim itself
             merging.append({**base, "state": "merging", "step": entry.get("step") or None,
-                            # Release names the entry it showed: only at merge, with a holder and an id (see above).
-                            "entry": entry.get("id") if holder and isinstance(entry.get("id"), str)
-                            and entry.get("step") == "merge" else None,
-                            "host": holder.get("host"), "claim_age": int(now - started) if started else None,
+                            "host": holder.get("host") or None, "claim_age": int(now - started) if started else None,
                             "lease_until": entry.get("lease_until") or None,
                             "lease_passed": (_when(entry.get("lease_until")) or now) < now,
                             "head": str(entry.get("expected_head") or "")[:12]})
@@ -270,16 +246,14 @@ def document(connection, *, now: str = "") -> dict:
 def move(payload: dict):
     """Check the page's request, then return the write: a best-effort revision check, then one lane verb."""
     values = dict(payload)
-    again, reclaim = values.get("action") in ("retry", "approve"), values.get("action") == "reclaim"
-    if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ()), *(("entry",) if reclaim else ())}
+    again = values.get("action") in ("retry", "approve")
+    if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ())}
             or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
             or values["action"] not in ACTIONS or not isinstance(values["revision"], str)
-            or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))
-            or (reclaim and not (isinstance(values["entry"], str) and 0 < len(values["entry"]) <= 200))):
-        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry, approve or "
-                         "reclaim, the lane's revision, for retry or approve the full head the row showed, and for "
-                         "reclaim the running entry it showed.")
+            or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))):
+        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry or approve, "
+                         "the lane's revision, and for retry or approve the full head the row showed.")
 
     def write(connection):
         from sd_db import repos, workflow
@@ -296,23 +270,12 @@ def move(payload: dict):
         entries = listed.get("entries") or []
         if revision(entries) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
-        if reclaim:
-            running = next((row for row in entries if row.get("status") == "running" and row.get("item") == values["item"]
-                            and row.get("id") == values["entry"] and _holder(row)), None)
-            if running is None:
-                raise workflow.StaleItem(f"sd:{values['item']} is not running under the claim the page showed. "
-                                         "Read it again, then retry.")
-            if running.get("step") != "merge":
-                raise ValueError(f"sd:{values['item']} is at {running.get('step') or 'a step not recorded'}; Release runs "
-                                 "only at merge. lane cancel binds no step, so a prepare that reached merge first would "
-                                 "be failed. The lane reclaims a stuck prepare once its lease passes.")
         item, action = str(values["item"]), values["action"]
         verb = (["move", item, action] if action in ("up", "down", "top")
-                else ["retry", item, "--expected-head", values["head"]] if again
-                else ["cancel", item] if reclaim else [action, item])
+                else ["retry", item, "--expected-head", values["head"]] if again else [action, item])
         if action == "approve":
             verb.append("--manual")
-        if action in ("up", "down", "top", "hold", "release", "cancel", "reclaim"):
+        if action in ("up", "down", "top", "hold", "release", "cancel"):
             # The fresh list matched the page, so its lane revision is the page's; the verb checks it under its lock.
             verb += ["--expected-revision", lane_revision(entries)]
         answer = _run([command("sd-ship"), "-C", path, "lane", *verb], WRITE_SECONDS)

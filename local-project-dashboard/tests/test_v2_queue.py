@@ -228,19 +228,6 @@ class TheRows(Lane, ScreenCase):
         self.assertEqual(queue_screen.lane_revision(self.entries()),
                          queue_screen.lane_revision(json.loads(self.fixture.read_text())["entries"]))
 
-    def test_a_new_holder_or_step_changes_the_revision_but_not_the_lane_revision(self):
-        # sd:3284: Release acts on the claim the page showed; a claim taken again, or a step that moved on, is
-        # another subject, so the page's revision covers both. The lane revision `lane list` prints does not.
-        before = queue_screen.revision(self.entries())
-        for change in ({"holder": {"host": "build-2", "pid": 9, "token": "t2"}}, {"step": "prepare"}):
-            entries = self.entries()
-            entries[5] = {**entries[5], **change}
-            self.assertNotEqual(queue_screen.revision(entries), before, change)
-            self.assertEqual(queue_screen.lane_revision(entries), queue_screen.lane_revision(self.entries()))
-        entries = self.entries()
-        entries[5] = {**entries[5], "holder": {**entries[5]["holder"], "token": "another-token"}}
-        self.assertEqual(queue_screen.revision(entries), before)
-
     def test_landed_today_carries_the_pull_request_and_merge_commit(self):
         landed = self.doc()["lanes"][0]["rows"][-1]
         self.assertEqual((landed["pr"], landed["commit"]), ("161", self.merged[:12]))
@@ -332,71 +319,6 @@ class TheMove(Lane, BrowserSession):
             status, _, answer = self.move("cancel", item=9)
         self.assertEqual((status, answer["error"]), (400, "sd:9 has no pending entry in this lane"))
 
-    def reclaim(self, entry="e-3", revision=None):
-        payload = {"repo": str(self.checkout), "item": 3, "action": "reclaim", "revision": revision or self.revision()}
-        if entry is not None:
-            payload["entry"] = entry
-        return self.post("/api/queue/move", payload)
-
-    def test_release_calls_lane_cancel_on_the_running_entry_with_the_revision(self):
-        # sd:3284, D3 of sd:3174: Release on a running row is `lane cancel`, which releases its claim.
-        status, _, answer = self.reclaim()
-        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "reclaim"), answer)
-        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
-                                        ["-C", str(self.checkout), "lane", "cancel", "3", "--expected-revision",
-                                         self.lane_revision()]])
-
-    def test_release_after_the_holder_changed_is_refused_before_any_verb(self):
-        # The page showed one claim; another host took the entry since. The page's revision names the holder.
-        revision = self.revision()
-        entries = self.entries()
-        entries[5] = {**entries[5], "holder": {"host": "build-2", "pid": 9, "token": "t2"}, "started_at": "2026-09-06T11:59:00Z"}
-        self.list(entries)
-        status, _, answer = self.reclaim(revision=revision)
-        self.assertEqual((status, answer.get("reload")), (409, True), answer)
-        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
-
-    def test_release_of_an_entry_that_is_not_the_running_one_is_refused_before_any_verb(self):
-        for entry in ("e-other", ""):
-            self.log.write_text("")
-            status, _, answer = self.reclaim(entry=entry)
-            self.assertIn(status, (400, 409), answer)
-            self.assertEqual(self.calls()[1:], [])
-
-    def test_release_of_an_entry_no_longer_running_is_refused_before_any_verb(self):
-        # It finished and went back to pending: Release must never cancel the pending entry.
-        entries = self.entries()
-        entries[5] = {key: value for key, value in entries[5].items() if key not in ("holder", "step", "lease_until")}
-        entries[5]["status"] = "pending"
-        self.list(entries)
-        status, _, answer = self.reclaim(revision=self.revision())
-        self.assertEqual((status, answer.get("reload")), (409, True), answer)
-        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
-
-    def test_release_in_prepare_runs_nothing(self):
-        # sd:3284 review: `lane cancel` binds no step, so a prepare that moves to merge before the verb would be failed
-        # instead of put back. The server releases only an entry it read at `merge`.
-        entries = self.entries()
-        entries[5] = {**entries[5], "step": "prepare"}
-        self.list(entries)
-        status, _, answer = self.reclaim(revision=self.revision())
-        self.assertEqual(status, 400, answer)
-        self.assertIn("merge", answer["error"])
-        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
-
-    def test_release_without_the_entry_it_showed_runs_nothing(self):
-        status, _, _ = self.reclaim(entry=None)
-        self.assertEqual((status, self.calls()), (400, []))
-        payload = {"repo": str(self.checkout), "item": 9, "action": "cancel", "revision": self.revision(), "entry": "e-3"}
-        status, _, _ = self.post("/api/queue/move", payload)
-        self.assertEqual((status, self.calls()), (400, []))
-
-    def test_a_release_the_lane_refuses_is_the_answer(self):
-        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:3 is running under pid 4242 on this machine; it is not stuck",
-                                          "QUEUE_CODE": "holder_alive"}):
-            status, _, answer = self.reclaim()
-        self.assertEqual((status, answer["error"]), (400, "sd:3 is running under pid 4242 on this machine; it is not stuck"))
-
     def test_retry_calls_exactly_lane_retry_with_the_item_and_its_head(self):
         status, _, answer = self.move("retry", item=4, head="4" * 40)
         self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "retry"))
@@ -461,8 +383,9 @@ class TheMove(Lane, BrowserSession):
     def test_an_unregistered_repository_or_unknown_action_runs_nothing(self):
         status, _, _ = self.post("/api/queue/move", {"repo": self.tmp.name, "item": 12, "action": "up", "revision": "x"})
         self.assertEqual((status, self.calls()), (400, []))
-        status, _, _ = self.move("delete")
-        self.assertEqual((status, self.calls()), (400, []))
+        for action in ("delete", "reclaim"):  # reclaim: Release returns after pack sd:3330 binds lane cancel to a claim
+            status, _, _ = self.move(action)
+            self.assertEqual((action, status, self.calls()), (action, 400, []))
 
     def test_a_lane_refusal_is_the_answer(self):
         with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "sd:12 is running; the queue changes only between items"}):
@@ -497,17 +420,8 @@ connection.close()
 """
 
 
-#: The host name the pinned pack's lane writes as a holder's `host`.
-HOST = """\
-import sys
-sys.path.insert(0, sys.argv[1])
-import sd_lane
-print(sd_lane.this_host())
-"""
-
-
-class RealLane(BrowserSession):
-    """The pinned pack's `sd-ship lane` on a temporary lane root, seeded with `seeds()`.
+class TheRealLane(BrowserSession):
+    """The pinned pack's `sd-ship lane` on a temporary lane root: the page's reorder is what `lane list` shows.
 
     The pack keeps the queue in the hub database (pack sd:3282), so the entries go there through its own writer:
     a `<lane>/queue/queue.json` is only an earlier version's file, which `lane list` imports by publishing each
@@ -529,13 +443,14 @@ class RealLane(BrowserSession):
         (home / ".local/share/sd/sd.db").symlink_to(self.path)
         root = Path(self.tmp.name) / "lanes"
         (root / "system" / "lane" / "queue").mkdir(parents=True)
+        entries = [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
+                    "expected_head": "e" * 40, "repository": "example/system", "branch": f"b{n}"} for n in (1, 2, 3)]
         pack = pinned_pack()
         ship = pack / "bin" / "sd-ship"
         self.assertTrue(ship.is_file(), f"no pinned sd-ship at {ship}")
-        self.host = subprocess.run([sys.executable, "-c", HOST, str(pack / "bin")], check=True, capture_output=True,
-                                   text=True, env={**os.environ, "HOME": str(home)}).stdout.strip()
-        self.pack, self.home = pack, home
-        self.store(self.seeds())
+        subprocess.run([sys.executable, "-c", SEED, str(pack / "bin"), str(self.path), "example/system",
+                        json.dumps(entries)], check=True, capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(home)})
         bin_dir = Path(self.tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "sd-ship").write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ship}" "$@"\n')
@@ -545,23 +460,9 @@ class RealLane(BrowserSession):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def store(self, entries):
-        """Write `entries` through the pinned pack's own `sd_lane.store`, as a runner's write would land."""
-        subprocess.run([sys.executable, "-c", SEED, str(self.pack / "bin"), str(self.path), "example/system",
-                        json.dumps(entries)], check=True, capture_output=True, text=True,
-                       env={**os.environ, "HOME": str(self.home)})
-
-    def seeds(self):
-        return [{"id": f"seed-{n}", "item": n, "title": f"item {n}", "status": "pending", "position": n,
-                 "expected_head": "e" * 40, "repository": "example/system", "branch": f"b{n}"} for n in (1, 2, 3)]
-
     def order(self):
         listed = queue_screen.lane_list(str(self.checkout))
         return [entry["item"] for entry in listed["entries"] if entry["status"] == "pending"]
-
-
-class TheRealLane(RealLane):
-    """The page's reorder is what the pinned pack's `lane list` shows."""
 
     def test_a_reorder_from_the_page_is_the_order_lane_list_shows(self):
         lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
@@ -588,96 +489,6 @@ class TheRealLane(RealLane):
                                                               "revision": lane["revision"]})
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
         self.assertEqual(self.order(), [2, 1, 3])
-
-
-class TheRealRelease(RealLane):
-    """Release on the pinned pack's `lane cancel`: at `merge`, a holder on another host is released and one alive here
-    is refused; at `prepare` the page refuses, since `lane cancel` binds no step (sd:3284 review)."""
-
-    step = "merge"
-
-    def running(self, **change):
-        return {**super().seeds()[0], "status": "running", "step": self.step, "started_at": "2026-09-06T11:50:00Z",
-                "lease_until": "2026-09-06T13:00:00Z", "holder": self.holder(), "enqueued_on": "build-2", **change}
-
-    def seeds(self):
-        return [self.running(), *super().seeds()[1:]]
-
-    def release(self):
-        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
-        merging = lane["rows"][0]
-        self.assertEqual(merging["state"], "merging")
-        return self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "reclaim",
-                                             "revision": lane["revision"], "entry": "seed-1"}), merging
-
-    def status(self):
-        return [(entry["item"], entry["status"]) for entry in queue_screen.lane_list(str(self.checkout))["entries"]]
-
-
-class TheRealReleaseOfARemoteHolder(TheRealRelease):
-
-    def holder(self):
-        return {"host": "build-2", "pid": 4242, "token": "claim-token"}
-
-    def test_release_fails_a_merge_held_on_another_host(self):
-        (status, _, answer), merging = self.release()
-        self.assertEqual((merging["host"], merging["step"], merging["entry"]), ("build-2", "merge", "seed-1"))
-        self.assertEqual((status, answer.get("ok")), (200, True), answer)
-        self.assertEqual(self.status(), [(1, "failed"), (2, "pending"), (3, "pending")])
-
-    def test_a_queue_write_between_the_check_and_the_verb_refuses_the_release(self):
-        listed = queue_screen.lane_list
-
-        def then_another_writer(path):
-            answer = listed(path)
-            queue_screen._run([queue_screen.command("sd-ship"), "-C", path, "lane", "move", "3", "top"], 30)
-            return answer
-        with mock.patch.object(queue_screen, "lane_list", then_another_writer):
-            (status, _, answer), _ = self.release()
-        self.assertEqual((status, answer.get("reload")), (409, True), answer)
-        self.assertEqual(self.status()[0], (1, "running"))
-
-
-class TheRealReleaseInPrepare(TheRealRelease):
-    """sd:3284 review: `lane cancel` takes no step, so a prepare that reaches merge between the page's check and the
-    verb would be failed, not put back. The page offers no Release in prepare and the server refuses one."""
-
-    step = "prepare"
-
-    def holder(self):
-        return {"host": "build-2", "pid": 4242, "token": "claim-token"}
-
-    def test_the_row_offers_no_release_in_prepare(self):
-        merging = queue_screen.document(self.connection, now=NOW)["lanes"][0]["rows"][0]
-        self.assertEqual((merging["step"], merging["entry"]), ("prepare", None))
-
-    def test_a_prepare_that_reaches_merge_during_the_release_is_not_failed(self):
-        lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
-        listed = queue_screen.lane_list
-
-        def then_the_runner_steps_to_merge(path):
-            answer = listed(path)
-            self.store([self.running(step="merge", lease_until="2026-09-06T14:00:00Z")])
-            return answer
-        with mock.patch.object(queue_screen, "lane_list", then_the_runner_steps_to_merge):
-            status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "reclaim",
-                                                              "revision": lane["revision"], "entry": "seed-1"})
-        self.assertEqual(status, 400, answer)
-        self.assertIn("merge", answer["error"])
-        self.assertEqual(self.status()[0], (1, "running"))
-
-
-class TheRealReleaseOfALocalHolder(TheRealRelease):
-
-    def holder(self):
-        return {"host": self.host, "pid": os.getpid(), "token": "claim-token"}
-
-    def test_release_of_a_holder_alive_on_this_machine_is_refused(self):
-        (status, _, answer), merging = self.release()
-        self.assertEqual(merging["host"], self.host)
-        self.assertEqual(status, 400, answer)
-        self.assertIn("not stuck", answer["error"])
-        self.assertEqual(self.status()[0], (1, "running"))
 
 
 class TheScript(Lane, ScreenCase):
@@ -711,6 +522,7 @@ class TheScript(Lane, ScreenCase):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
         merging = next(row for row in lanes.split("<li ")[1:] if 'data-state="merging"' in row)
         self.assertIn("<b>merge</b> on <b>hub-1</b> · claimed 10m 0s ago · lease to 13:20 · head " + "a" * 12, merging)
+        self.assertNotIn("<button", merging)  # read-only until pack sd:3330
 
     def test_a_running_entry_past_its_lease_lights_caution(self):
         entries = self.entries()
@@ -735,50 +547,6 @@ class TheScript(Lane, ScreenCase):
         self.assertNotIn('aria-labelledby="lane-quiet"', lanes)
         self.assertIn('<p class="idle">Idle: <code>quiet</code> (lane on build-2)</p>', lanes)
         self.assertIn("2 lanes of 2 managed repositories", out["R"]["subhead"])
-
-    def test_a_running_row_with_a_holder_offers_release(self):
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
-        self.assertEqual(re.findall(r'data-act="reclaim" data-item="(\d+)" data-entry="([\w-]+)"', lanes), [("3", "e-3")])
-        offered = [row for row in lanes.split("<li ")[1:] if 'data-act="reclaim"' in row]
-        self.assertEqual([re.search(r'data-state="(\w+)"', row)[1] for row in offered], ["merging"])
-
-    def test_a_running_row_without_a_holder_offers_no_release(self):
-        # An entry an earlier pack wrote names no claim, so there is nothing the page can show it releases.
-        entries = self.entries()
-        entries[5] = {key: value for key, value in entries[5].items() if key != "holder"}
-        self.list(entries)
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
-        self.assertNotIn('data-act="reclaim"', lanes)
-
-    def release(self, answer, move=(200, {"ok": True, "action": "reclaim", "item": 3, "edits": "Edits take effect at the next item boundary."})):
-        return self.run_page(f"window.shell.confirm = a => {{ OUT.asked = a; return Promise.resolve({json.dumps(answer)}); }};\n"
-                             f"await window.queueAct({{ dataset: {{ repo: {json.dumps(str(self.checkout))}, item: '3', act: 'reclaim', entry: 'e-3' }} }}); R.lanes = ELS.lanes.html;", move)
-
-    def test_release_asks_first_naming_the_holder_step_claim_age_and_command(self):
-        out = self.release(True)
-        asked = out["asked"]
-        self.assertIn("sd:3", asked["title"])
-        self.assertIn("hub-1", asked["title"])
-        self.assertIn("hub-1 claimed it 10m 0s ago, at merge.", asked["body"])
-        self.assertIn("A merge it already started may still land", asked["body"])
-        self.assertEqual(asked["cli"], f"sd-ship -C '{self.checkout}' lane cancel 3")
-        revision = queue_screen.document(self.connection, now=NOW)["lanes"][0]["revision"]
-        self.assertEqual(out["posts"][0][1], {"repo": str(self.checkout), "item": 3, "action": "reclaim",
-                                              "revision": revision, "entry": "e-3"})
-        self.assertIn("sd:3 released from its holder.", out["R"]["lanes"])
-
-    def test_a_running_row_in_prepare_offers_no_release(self):
-        # sd:3284 review: in prepare the lane reclaims a stuck claim once its lease passes; Release waits for merge.
-        entries = self.entries()
-        entries[5] = {**entries[5], "step": "prepare"}
-        self.list(entries)
-        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
-        self.assertNotIn('data-act="reclaim"', lanes)
-        self.assertIn("the lane reclaims it once its lease passes", lanes)
-
-    def test_release_kept_at_the_confirm_posts_nothing(self):
-        out = self.release(False)
-        self.assertEqual((out["posts"], out["gets"]), ([], ["/api/queue"]))
 
     def test_only_next_rows_carry_controls_and_the_ends_are_off(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
