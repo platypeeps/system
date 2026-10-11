@@ -33,6 +33,10 @@ from sd_db.migrate import initialise
 
 SYSTEM = Path(__file__).resolve().parents[2]
 SCRIPT = SYSTEM / "local-agent-meter/agent-meter.py"
+#: The command pack checkout whose lib/ holds the sd_db the collector imports
+#: (sd:3279), as the script names it.
+PACK = Path(os.environ.get("SD_PACK_ROOT")
+            or Path.home() / "repos/platypeeps/sd-ai-command-pack")
 
 #: The shipped file's two `start` entries on their two bills, which is what
 #: the sampler names when it says `--provider claude` and `--provider codex`.
@@ -110,16 +114,24 @@ class MeterRun(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    def run_meter(self, *args, pythonpath=None, home=None):
+    def run_meter(self, *args, pythonpath=None, home=None, pack="", isolated=False):
+        """`pack` is SD_PACK_ROOT; "" leaves the caller's, None removes it.
+        `isolated` runs `python -I`, which drops PYTHONPATH and the cwd, so
+        only the pack's lib/ and the interpreter's own packages can answer."""
         env = dict(os.environ)
         if home is not None:
             env["HOME"] = str(home)
+        if pack is None:
+            env.pop("SD_PACK_ROOT", None)
+        elif pack != "":
+            env["SD_PACK_ROOT"] = str(pack)
         env["PATH"] = os.pathsep.join([str(self.bin), env.get("PATH", "/usr/bin:/bin")])
         env["CODEXBAR_FIXTURES"] = str(self.fixtures)
         if pythonpath is not None:
             env["PYTHONPATH"] = pythonpath
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--out", str(self.out), "--timeout", "10", *args],
+            [sys.executable, *(["-I"] if isolated else []), str(SCRIPT),
+             "--out", str(self.out), "--timeout", "10", *args],
             capture_output=True, text=True, env=env, timeout=60,
         )
 
@@ -196,13 +208,59 @@ class MeterRun(unittest.TestCase):
         shadow.mkdir()
         (shadow / "sd_db.py").write_text(
             "raise ImportError('no sd_db under this interpreter')\n", encoding="utf-8")
-        done = self.run_meter("--db", str(self.db), pythonpath=str(shadow))
+        # A pack with no lib/: the shadow on PYTHONPATH is all that answers.
+        done = self.run_meter("--db", str(self.db), pythonpath=str(shadow),
+                              pack=Path(self.tmp.name) / "no-pack")
         self.assertEqual(done.returncode, 0, done.stderr)
         (record,) = self.lines()
         self.assertEqual(record["sd_db"], {"rows": 0})
         self.assertEqual(record["errors"]["sd_db"],
                          "ImportError: no sd_db under this interpreter")
         self.assertEqual(self.meter_rows(), [])
+
+    def stub_pack(self, root):
+        """A pack whose lib/sd_db refuses to import, saying which pack it is."""
+        lib = Path(root) / "lib/sd_db"
+        lib.mkdir(parents=True)
+        (lib / "__init__.py").write_text(
+            "raise ImportError('the stub pack lib answered')\n", encoding="utf-8")
+        return Path(root)
+
+    def test_the_named_packs_lib_is_the_sd_db_the_collector_imports(self):
+        """sd:3279: SD_PACK_ROOT's lib/ goes first, ahead of the copy that
+        PYTHONPATH (and any site-packages) offers."""
+        pack = self.stub_pack(Path(self.tmp.name) / "stub-pack")
+        library = str(Path(sd_db.__file__).resolve().parents[1])
+        done = self.run_meter("--db", str(self.db), pythonpath=library, pack=pack)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["errors"]["sd_db"],
+                         "ImportError: the stub pack lib answered")
+        self.assertEqual(self.meter_rows(), [])
+
+    def test_with_no_sd_pack_root_the_home_clone_is_the_pack(self):
+        home = Path(self.tmp.name) / "home"
+        self.stub_pack(home / "repos/platypeeps/sd-ai-command-pack")
+        library = str(Path(sd_db.__file__).resolve().parents[1])
+        done = self.run_meter("--db", str(self.db), pythonpath=library,
+                              home=home, pack=None)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertEqual(record["errors"]["sd_db"],
+                         "ImportError: the stub pack lib answered")
+
+    def test_an_isolated_interpreter_writes_the_rows_from_the_packs_lib(self):
+        """The job's launch: no PYTHONPATH reaches it, so only the pack's
+        lib/ can supply the rows' library."""
+        pack = Path(self.tmp.name) / "real-pack"
+        pack.mkdir()
+        (pack / "lib").symlink_to(PACK / "lib")
+        done = self.run_meter("--db", str(self.db), pack=pack, isolated=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (record,) = self.lines()
+        self.assertNotIn("sd_db", record["errors"])
+        self.assertEqual(record["sd_db"], {"rows": 4})
+        self.assertEqual(len(self.meter_rows()), 4)
 
     def test_no_db_writes_the_jsonl_line_and_no_row(self):
         done = self.run_meter("--no-db")

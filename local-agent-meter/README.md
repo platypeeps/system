@@ -29,16 +29,17 @@ rows changes the exit, which stays 0.
 
 A probe store somewhere harmless: `--db` opens an existing database and never
 creates one, and the sample reads `providers.yaml` beside it for each provider's
-bill, so make both first (the pack's interpreter has `sd_db`):
+bill, so make both first (`sd_db` is the pack's `lib/`):
 
     mkdir -p /tmp/probe && cp ~/.local/share/sd/providers.yaml /tmp/probe/
-    ~/repos/platypeeps/sd-ai-command-pack/.venv/bin/python -c \
+    PYTHONPATH=~/repos/platypeeps/sd-ai-command-pack/lib python3 -c \
         "from sd_db.migrate import initialise; initialise('/tmp/probe/sd.db')"
     ./agent-meter.py --out /tmp/probe/meter.jsonl --db /tmp/probe/sd.db
 
-The rows need `sd_db`, which the pack's virtualenv has and Homebrew's `python3` does
-not; the job below runs the pack's interpreter. Under any other python3 the script
-still appends the JSONL line, with the missing import in `errors.sd_db`.
+The rows need `sd_db`, which the script loads from the command pack checkout's `lib/`
+(`SD_PACK_ROOT`, default `~/repos/platypeeps/sd-ai-command-pack`) ahead of any copy
+the interpreter has installed (sd:3279). With no `lib/sd_db` there, the script still
+appends the JSONL line, with the missing import in `errors.sd_db`.
 
 The tests live in `local-sd-db/tests/test_agent_meter.py`, in the library's suite,
 because the CI workflow fails every leg on a folder that grows `tests/` without a
@@ -52,11 +53,10 @@ Installed through the job framework, not a hand-written plist:
     ../local-cron-jobs/cron-jobs.sh status agent-meter
 
 Copy `../local-cron-jobs/examples/agent-meter.job` into `<config>/cron-jobs/jobs/`
-first. It sets `0 */4 * * *` and runs the script under the pack's `.venv/bin/python`,
-the interpreter that has `sd_db` installed (the same one
-`local-project-dashboard/dashboard.sh` serves under). After a change to the job file,
-`cron-jobs.sh verify agent-meter` says STALE until `cron-jobs.sh install agent-meter`
-rewrites the plist. The framework adds failure notification and `logs/failures.log`.
+first. It sets `0 */4 * * *` and runs the script under the pack's `.venv/bin/python`;
+the script finds `sd_db` in the pack's `lib/`, not in that interpreter. After a change
+to the job file, `cron-jobs.sh verify agent-meter` says STALE until
+`cron-jobs.sh install agent-meter` rewrites the plist. The framework adds failure notification and `logs/failures.log`.
 Keep this job as the one schedule for the collector: a second one appends duplicate
 readings to the same ledger.
 

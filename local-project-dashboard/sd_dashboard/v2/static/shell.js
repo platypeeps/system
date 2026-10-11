@@ -15,13 +15,14 @@
   const ICON = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   // fetch:start
   // build (sd:2588): the page's reads and writes, once for every page. post sends the page's CSRF token and rejects with the
-  // server's error text; a 409 marks the error stale, so a page can reread before it says why. A page script runs before
-  // shell.js, so it calls window.shell.post / shell.getJSON when it acts, not while it loads.
+  // server's error text and its HTTP status; a 409 marks the error stale, so a page can reread before it says why. An error
+  // with no status got no answer, so a write's outcome is not known. A page script runs before shell.js, so it calls
+  // window.shell.post / shell.getJSON when it acts, not while it loads.
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
   async function post(path, body) {
     const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
     const out = await r.json().catch(() => ({}));
-    if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; throw e; }
+    if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; e.status = r.status; throw e; }
     return out;
   }
   async function getJSON(path) {
