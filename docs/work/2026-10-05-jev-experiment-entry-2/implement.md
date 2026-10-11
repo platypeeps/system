@@ -48,6 +48,7 @@ Agent build time: about 25.5 hours. Operator time: about 3.5 hours. Wall time: a
 
 1. **Faithfulness check** (`faithful`). The operator's O4.
    Rebuild 50 states from heads with a recorded reading and a stored subject, seeded with 2764, 25 of them from heads where Jev moved the tier.
+   Draw only from public managed repositories whose changed paths they still track, and take every moved head if fewer than 25 (operator, 2026-10-11); the sample leans to public-repo work.
    Ask Jev once each through `jev.post`, both comparison switches unset, writing to the isolated ledger.
    Tests against a loopback stub: the rebuilt payload equals the pack's `_jev_state` output for the same inputs; the Jev suffix is stripped from the reason; a state with `/Users/` halts before the post.
    Check: at least 46 of 50 match the recorded tier. At 45 or fewer, stop: fix the rebuild, record the first attempt on sd:2764, and draw 50 new states.
