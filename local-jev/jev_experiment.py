@@ -41,6 +41,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import jev_meter
@@ -295,8 +296,9 @@ def criteria(order=TIERS) -> str:
 #: A path sign anywhere in a string (review round 4; rounds 1 to 3 each let
 #: some character before a slash pass, and each round found one that hid a
 #: root): any `\`, `~` or `file:`, any `$` or `%` with something other than
-#: space after it, and any control character. A `/` is judged per token by
-#: `public_path`, the one exception the operator allowed.
+#: space after it, and any control character; `private_path` adds any Unicode
+#: format character (a bidi override, a zero-width space). A `/` is judged per
+#: token by `public_path`, the one exception the operator allowed.
 SIGNS = re.compile(r"[\\~\x00-\x1f\x7f-\x9f]|[$%]\S|(?i:file):")
 
 #: What may wrap a path in prose, stripped from a token's ends before it is
@@ -321,10 +323,12 @@ def public_path(piece: str, public: frozenset) -> bool:
 
 
 def git(root: str, *argv: str) -> bytes | None:
-    """`git -C root argv` output, or None when git cannot answer."""
+    """`git -C root argv` output, or None when git cannot answer. Without any
+    inherited `GIT_*` variable: `GIT_DIR` would answer for another repository."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     try:
         done = subprocess.run(["git", "-C", root, *argv], capture_output=True,
-                              timeout=60, check=False)
+                              env=env, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout if done.returncode == 0 else None
@@ -386,7 +390,8 @@ def private_path(state: str, home: str | None, public: frozenset = frozenset()) 
         if path not in public:
             return str(path)
     for text in strings(found):
-        if SIGNS.search(text) or (home and home in text):
+        if SIGNS.search(text) or (home and home in text) \
+                or any(unicodedata.category(char) == "Cf" for char in text):
             return text
         if any("/" in piece and not public_path(piece, public) for piece in text.split()):
             return text

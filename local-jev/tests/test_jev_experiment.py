@@ -12,6 +12,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import jev_experiment as experiment
@@ -223,6 +224,9 @@ BOUNDARIES = (
     ("R29 closing bracket before a root", "never skip ]/opt/private/file.py", True),
     ("R30 closing brace before a root", "never skip }/private.txt", True),
     ("R31 closing parenthesis before a root", "see x)/etc/passwd", True),
+    # Second codex pass on round 4: Unicode format characters.
+    ("R32 bidi override", "review \u202eprivate.txt", True),
+    ("R33 zero-width space", "review a\u200bb", True),
     # What still passes: no slash, backslash, tilde, `file:`, variable sign
     # or control character anywhere.
     ("N01 plain words", "no category matched; default tier standard", False),
@@ -305,6 +309,18 @@ class ThePublicAllowlist(unittest.TestCase):
         register(db, other, None, remote=remote_of(public))
         # The twin is a checkout of the public remote, so it borrows rightly.
         self.assertEqual(experiment.public_paths(db), frozenset({"a/listed.py", "d/twin.py"}))
+
+    def test_an_inherited_git_dir_does_not_choose_the_checkout(self):
+        # Second codex pass on round 4: `git -C` obeys `GIT_DIR`, so an
+        # inherited one listed another repository's index under a public row.
+        db = checkpoint_db([])
+        public = checkout(["a/listed.py"])
+        register(db, public, "public")
+        rogue = checkout(["r/rogue.py"])
+        subprocess.run(["git", "-C", str(rogue), "remote", "set-url", "origin", remote_of(public)],
+                       check=True)
+        with unittest.mock.patch.dict("os.environ", {"GIT_DIR": str(rogue / ".git")}):
+            self.assertEqual(experiment.public_paths(db), frozenset({"a/listed.py"}))
 
     def test_a_root_or_prefix_before_a_tracked_path_halts(self):
         for text in ("/pkg/mod.py", "./pkg/mod.py", "../pkg/mod.py", "~/pkg/mod.py",
