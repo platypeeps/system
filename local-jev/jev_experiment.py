@@ -20,8 +20,8 @@ file holds the steps built so far:
   frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap,
   Kev outage.
 * `labels sheet --population C1` (step 8) draws the blinded hand-label sheet,
-  its Markdown copy and its key from sealed answer files only; it reads no
-  finding, and refuses C2 until step 15 seals it.
+  its Markdown copy and its key from one population's sealed answer files;
+  it reads no finding, and refuses C2 until step 15 seals it.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -1927,7 +1927,12 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
     pattern's heads over its pattern's drawn rows. Each skip draw keeps
     every model skip up to `SKIP_CAP`, else a seeded simple random draw.
     Each draw has its own stream of `seed`, so one draw's size never moves
-    another's rows; the order and each row's candidates use a fourth."""
+    another's rows; the order and each row's candidates use a fourth.
+
+    One population per sheet: C2 gets its own draws, as C3 does (operator,
+    on #14764), so rows of two populations refuse."""
+    if len({r["population"] for r in rows}) > 1:
+        raise Refused("a sheet draws over one population; C2 and C3 get sheets of their own")
     heads, left_out = [], collections.Counter()
     for row in sorted(rows, key=lambda r: (r["population"], r["repository"], r["head"])):
         if not row.get("state"):
@@ -2039,8 +2044,7 @@ def sheet_markdown(name: str, sheet: list[dict]) -> bytes:
 
 def cmd_sheet(args, out, env) -> int:
     db = args.db or default_db(env)
-    names = [name for name in ("C1", "C2") if name in args.population]
-    if "C2" in names:
+    if args.population == "C2":
         raise Refused("C2 is sealed by step 15 after its 14 days end (2026-10-20 09:01 MDT), "
                       "and step 15 is not built; nothing was read")
     # Before any answer is read: the draws come from sealed answer files only.
@@ -2054,16 +2058,16 @@ def cmd_sheet(args, out, env) -> int:
         inputs[name] = hashlib.sha256(data).hexdigest()
         lines = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
         if name == "population.jsonl":
-            rows = [r for r in lines if r["population"] in names]
+            rows = [r for r in lines if r["population"] == args.population]
         else:
             answers[name[len("replay/"):-len(".jsonl")]] = {
                 (line["repository"], line["head"]): line for line in lines}
     sheet, key, summary = label_kit(rows, answers, heuristic)
-    tag = "-".join(names)
+    tag = args.population
     files = {f"sheet-{tag}.csv": csv_bytes(SHEET_COLUMNS, sheet),
              f"sheet-{tag}.md": sheet_markdown(tag, sheet),
              f"key-{tag}.csv": csv_bytes(KEY_COLUMNS, key)}
-    summary.update(populations=names, seed=SEED, inputs=inputs,
+    summary.update(population=tag, seed=SEED, inputs=inputs,
                    files={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
     files[f"sheet-{tag}.json"] = (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode()
     # Written once: a file that holds other bytes, a filled sheet among them,
@@ -2118,8 +2122,8 @@ def build_parser() -> argparse.ArgumentParser:
     obj.add_argument("--out", type=Path, required=True,
                      help="the experiment data folder, holding population.jsonl")
     sht = kinds.add_parser("sheet", help="step 8: the blinded hand-label sheet and its key")
-    sht.add_argument("--population", choices=("C1", "C2"), action="append", required=True,
-                     help="a sealed population to draw from; repeat for more than one")
+    sht.add_argument("--population", choices=("C1", "C2"), required=True,
+                     help="the sealed population to draw from; each gets its own sheet")
     sht.add_argument("--db", type=db_path, help="default: the live workflow database")
     sht.add_argument("--out", type=Path, required=True,
                      help="the experiment data folder, holding population.jsonl and replay/")

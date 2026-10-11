@@ -205,7 +205,12 @@ The label is written to the experiment ledger only with `label`, source `review-
 
 ### Blinded hand labels second
 
-**Sample.** Two draws over C1 and C2, merged into one sheet; a head in both is one row. The seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+**Sample.** Two draws over one population, merged into one sheet; a head in both is one row. The seed is in the pre-registration (`docs/experiments/2026-10-05-jev-entry-2-preregistration.md`).
+
+**Deviation from the registration** (operator, on #14764). The pre-registration draws one sheet over C1 and C2 together.
+Each population now gets its own sheet with the same draws, seed and caps, as C3 already does: C1 now, C2 after step 15.
+Reason: C1 is sealed and exploratory (#14288) and is labelled before C2 seals; a joint draw could drop C1 rows already labelled and let them take confirmatory C2 slots.
+Pooled estimates weight each row by its own population's sampling rate, as the C3 rule below does.
 
 - **Disagreement draw**: every head where the five arms disagree on review or `skip`: at least one answers `skip` and at least one does not.
   Above 150, a seeded random draw stratified by disagreement pattern keeps 150, and each row carries its stratum weight.
@@ -220,7 +225,7 @@ Pooled H1 uses one common skip-draw rate per arm, the lowest of C1+C2 and C3; th
 Pooled disagreement-draw estimates weight each row by its own population's sampling rate.
 Order is shuffled with the same seed.
 
-**Sheet.** `labels/sheet-<populations>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
+**Sheet.** `labels/sheet-<population>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
 
 | Column | Content |
 |---|---|
@@ -235,7 +240,7 @@ Order is shuffled with the same seed.
 | `sure` | blank: 1 guess, 2 fairly sure, 3 sure |
 | `note` | blank |
 
-The key, `labels/key-<populations>.csv`, maps `row` to each arm's answer and draw weights; `sheet-<populations>.json` holds the counts and the input files' SHA-256.
+The key, `labels/key-<population>.csv`, maps `row` to each arm's answer and draw weights; `sheet-<population>.json` holds the counts and the input files' SHA-256.
 It stays closed until the labels are complete; the SHA-256 of the filled sheet goes on sd:2764 before the key opens.
 The sheet shows no review finding, so the two label sources stay independent.
 
@@ -350,7 +355,7 @@ Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of i
 | `population.jsonl` | one state per head, with alias, base, head, routed tier, blocking@head |
 | `replay/<arm>.jsonl` | one answer per head: tier, distribution, tokens, cost, wait |
 | `experiment.db` | the experiment ledger, through `JEV_METER_DB` (see Ledger isolation) |
-| `labels/` | `sheet-<populations>.csv`, `.md` and `.json`, `key-<populations>.csv`, the filled sheet |
+| `labels/` | `sheet-<population>.csv`, `.md` and `.json`, `key-<population>.csv`, the filled sheet |
 | `injection/`, `scanner/` | inputs, answers |
 | `results.md` | each hypothesis, its number, its query |
 

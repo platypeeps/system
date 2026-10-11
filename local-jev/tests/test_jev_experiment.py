@@ -2132,10 +2132,9 @@ class TheLabelSheet(unittest.TestCase):
             (self.out / "replay" / f"{arm}.jsonl").write_text(
                 "".join(json.dumps(line) + "\n" for line in lines.values()))
 
-    def sheet(self, *populations, db=None, unsealed=()):
-        argv = ["labels", "sheet", "--db", str(db or checkpoint_db([])), "--out", str(self.out)]
-        for name in populations or ("C1",):
-            argv += ["--population", name]
+    def sheet(self, population="C1", db=None, unsealed=()):
+        argv = ["labels", "sheet", "--population", population,
+                "--db", str(db or checkpoint_db([])), "--out", str(self.out)]
         with unittest.mock.patch.object(experiment, "sealed", return_value=list(unsealed)):
             return run(argv)
 
@@ -2289,10 +2288,15 @@ class TheLabelSheet(unittest.TestCase):
 
     def test_c2_refuses_until_step_15_seals_it(self):
         self.write([kit_row(0, population="C2")], kit_answers([0], kev=(0,)))
-        for populations in (("C2",), ("C1", "C2")):
-            with self.subTest(populations=populations):
-                self.assertEqual(self.sheet(*populations)[0], 2)
-                self.assertFalse((self.out / "labels").exists())
+        self.assertEqual(self.sheet("C2")[0], 2)
+        self.assertFalse((self.out / "labels").exists())
+
+    def test_a_sheet_draws_over_one_population(self):
+        # Operator, on #14764: C2 gets its own sheet and draws, as C3 does,
+        # so no draw pools two populations.
+        rows = [kit_row(0), kit_row(1, population="C2")]
+        with self.assertRaises(experiment.Refused):
+            self.kit(rows, kit_answers(range(2), kev=(0, 1)))
 
     def test_a_stopped_run_finishes_and_a_filled_sheet_is_never_overwritten(self):
         heads = range(6)
