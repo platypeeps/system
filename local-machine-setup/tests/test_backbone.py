@@ -28,7 +28,7 @@ from tests import fixture_config, plist_tools
 # The fixture database is built by the library, never by SQL here: only
 # sd_db opens the database and only its migration files create tables
 # (local-sd-db/tests/test_one_store.py greps the repository for both).
-# machine-setup.sh test puts this checkout's local-sd-db on PYTHONPATH.
+# machine-setup.sh test puts the command pack's lib/ on PYTHONPATH (sd:3279).
 import sd_db
 from sd_db.database import set_schema_version
 from sd_db.migrate import initialise
@@ -37,6 +37,8 @@ from sd_db.schema import SCHEMA_VERSION
 HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 ROOT = FOLDER.parent
+# The command pack checkout whose lib/ holds sd_db, as machine-setup.sh names it.
+PACK = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
 SCRIPT = FOLDER / "machine-setup.sh"
 PROFILES = fixture_config.PROFILES
 AGENTS = fixture_config.AGENTS
@@ -88,10 +90,10 @@ def manifest(name):
 
 
 def checkout_schema_version():
-    # What doctor reads out of local-sd-db/sd_db/schema.py with sed is the
+    # What doctor reads out of the pack's lib/sd_db/schema.py with sed is the
     # same constant this suite imports; assert that, so a doctor reading
     # the wrong file cannot agree with a test reading the right one.
-    text = (ROOT / "local-sd-db/sd_db/schema.py").read_text()
+    text = (PACK / "lib/sd_db/schema.py").read_text()
     from_file = int(re.search(r"^SCHEMA_VERSION\s*=\s*(\d+)", text, re.M).group(1))
     assert from_file == SCHEMA_VERSION, (from_file, SCHEMA_VERSION)
     return SCHEMA_VERSION
@@ -128,14 +130,18 @@ class Fixture:
                    'out=""\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
                    '[ "${STUB_CURL_CODE:-200}" = 000 ] && { echo "curl: (7) Failed to connect" >&2; exit 7; }\n'
                    'printf "%s" "$STUB_CURL_BODY" > "$out"\nprintf "%s" "${STUB_CURL_CODE:-200}"\n')
-        # The version report runs `python -I -c ...` and reads one line back:
-        # dist version, schema version, the file sd_db resolved to. Every
-        # other question is answered for real: `-I` dropped so this
-        # checkout's local-sd-db on PYTHONPATH is the library.
+        # The version report runs `python -I -c ...` and reads back the file
+        # sd_db resolved to. Every other question is answered for real: `-I`
+        # dropped so the pack's lib/ on PYTHONPATH is the library.
         self.python = write_stub(self.stubs, "python",
-                                 'case "$*" in *importlib.metadata*) printf "%s\\n" "$STUB_SD_DB_INFO"; exit 0 ;; esac\n'
+                                 'case "$*" in *sd_db.__file__*) [ -z "$STUB_SD_DB_FILE" ] || { printf "%s\\n" "$STUB_SD_DB_FILE"; exit 0; } ;; esac\n'
                                  '[ "$1" = -I ] && shift\n'
                                  'PYTHONPATH="$STUB_PYTHONPATH" exec "$STUB_REAL_PYTHON" "$@"\n')
+        # A pack checkout with the real lib/ and no .venv: doctor reads its
+        # schema, and its absent interpreter is reported, not failed.
+        self.pack = self.home / "pack"
+        self.pack.mkdir()
+        (self.pack / "lib").symlink_to(PACK / "lib")
         self.db = self.home / ".local/share/sd/sd.db"
         # Where the pack's installer seeds the provider registry; unwritten here.
         self.registry = self.home / ".local/share/sd/providers.yaml"
@@ -150,13 +156,12 @@ class Fixture:
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": f"{self.stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}",
-            "SD_PACK_ROOT": str(self.home / "no-pack"),
+            "SD_PACK_ROOT": str(self.pack),
             "SD_DASHBOARD_PYTHON": str(self.python),
             "STUB_REAL_PYTHON": sys.executable,
-            "STUB_PYTHONPATH": str(ROOT / "local-sd-db"),
+            "STUB_PYTHONPATH": str(PACK / "lib"),
             "STUB_SERVE_STATUS": str(self.serve_status),
             "STUB_CURL_BODY": HEALTHY_BODY,
-            "STUB_SD_DB_INFO": f"0.1.0 {checkout_schema_version()} /venv/lib/site-packages/sd_db/__init__.py",
             "LANG": "en_US.UTF-8",
             **fixture_config.env(),
             **self.plist_env,
@@ -435,34 +440,40 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("WARN    dashboard answers over https://host.example-tailnet.invalid:8443 with HTTP 403 (Untrusted dashboard host)", out)
 
-    def test_the_version_report_names_a_virtualenv_built_for_another_schema(self):
+    def test_the_version_report_reads_the_packs_lib(self):
+        """sd:3279: every sd_db caller runs the pack's lib/, so doctor reads its schema there."""
         self.fixture.make_database()
         schema = checkout_schema_version()
-        code, out = self.doctor(STUB_SD_DB_INFO=f"0.1.0 {schema - 1} /venv/lib/site-packages/sd_db/__init__.py")
-        self.assertEqual(code, 1, out)
-        self.assertIn(f"sd_db in this checkout: 0.1.0 built for schema {schema}; database at schema {schema}", out)
-        self.assertRegex(out, rf"FAIL    \S+/python: sd_db 0\.1\.0 built for schema {schema - 1} DIFFERS from the database's {schema}")
-        self.assertIn("no interpreter at", out)  # the absent pack venv is reported, not failed
+        code, out = self.doctor()
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"sd_db in the pack's lib/ {self.fixture.pack}/lib: built for schema {schema}; database at schema {schema}", out)
+        self.assertRegex(out, rf"ok      \S+/python imports sd_db from {re.escape(str(self.fixture.pack))}/lib")
+        self.assertIn(f"no interpreter at {self.fixture.pack}/.venv/bin/python", out)  # reported, not failed
 
-    def test_the_version_report_names_a_database_behind_the_checkout(self):
+    def test_a_database_behind_the_packs_lib_fails_and_names_its_migrate(self):
         schema = checkout_schema_version()
         self.fixture.make_database(schema=schema - 1)
-        code, out = self.doctor(STUB_SD_DB_INFO=f"0.1.0 {schema - 1} /venv/lib/site-packages/sd_db/__init__.py")
-        self.assertEqual(code, 0, out)
-        self.assertIn(f"WARN    database schema {schema - 1} DIFFERS from this checkout's {schema}", out)
-        self.assertIn("sd-db.sh migrate", out)
-        self.assertIn("sd-serve", out)  # sd:2974: the hub's listener stops too
-        # The virtualenv matches the database, so its agents run; it is the
-        # checkout that moved ahead, which is a warning and not a failure.
-        self.assertRegex(out, rf"WARN    \S+/python: sd_db 0\.1\.0 built for schema {schema - 1} DIFFERS from this checkout's {schema}")
-        self.assertNotIn("FAIL", out)
-
-    def test_a_virtualenv_resolving_this_checkout_is_named(self):
-        self.fixture.make_database()
-        schema = checkout_schema_version()
-        code, out = self.doctor(STUB_SD_DB_INFO=f"0.1.0 {schema} {ROOT}/local-sd-db/sd_db/__init__.py")
+        code, out = self.doctor()
         self.assertEqual(code, 1, out)
-        self.assertIn("resolves sd_db from this checkout", out)
+        self.assertIn(f"FAIL    database schema {schema - 1} DIFFERS from the pack's lib/ {schema}", out)
+        self.assertIn(f"{self.fixture.pack}/bin/sd-db migrate", out)
+        self.assertIn("sd-serve", out)  # sd:2974: the hub's listener stops too
+
+    def test_an_interpreter_resolving_another_copy_is_named(self):
+        # An installed copy, a pack-built one included, or this checkout's frozen local-sd-db.
+        self.fixture.make_database()
+        for elsewhere in ("/venv/lib/site-packages/sd_db/__init__.py", f"{ROOT}/local-sd-db/sd_db/__init__.py"):
+            with self.subTest(elsewhere=elsewhere):
+                code, out = self.doctor(STUB_SD_DB_FILE=elsewhere)
+                self.assertEqual(code, 1, out)
+                self.assertRegex(out, rf"FAIL    \S+/python resolves sd_db from {re.escape(elsewhere)}, not the pack's lib/")
+
+    def test_a_pack_without_lib_fails_and_names_the_move(self):
+        self.fixture.make_database()
+        code, out = self.doctor(SD_PACK_ROOT=self.fixture.home / "no-pack")
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"FAIL    no sd_db at {self.fixture.home}/no-pack/lib", out)
+        self.assertIn("repo-sync.sh refresh", out)
 
 
     # sd:1177, the review findings on #280 and #286.

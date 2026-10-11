@@ -14,6 +14,7 @@ without them; a PIN case keeps behaviour the change had to preserve.
 """
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -938,7 +939,9 @@ class FollowUpdateTest(unittest.TestCase):
             capture_output=True, text=True, timeout=60, check=True,
             env={"HOME": str(f.tmp / "home"), "BIN_LINKS_DIR": str(links), "PATH": f"{links}:/usr/bin:/bin"})
         self.assertRegex(status.stdout.splitlines()[-1], proof["bin"])
-        library = (root / "local-sd-db" / "sd_db" / "satellite.py").read_text()
+        # The stage runs the pack's lib/sd_db (sd:3279).
+        pack = pathlib.Path(os.environ.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+        library = (pack / "lib" / "sd_db" / "satellite.py").read_text()
         self.assertIn('out.write(f"  {word:<7} {text}\\n")', library)
         self.assertIn('_line(out, "ok", f"sd_db {built[\'package\']} build {built[\'build\']} matches the hub\'s")',
                       library)

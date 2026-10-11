@@ -20,7 +20,7 @@ import time
 import unittest
 
 from tests import fixture_config
-from tests.test_backbone import DRIFT_WORDS, FOLDER, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, manifest, write_stub
+from tests.test_backbone import DRIFT_WORDS, FOLDER, PACK, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, manifest, write_stub
 
 from sd_db.migrate import initialise
 
@@ -159,10 +159,11 @@ class Hub:
             command = [sys.executable, "-c",
                        f"import sys, sd_db; sd_db.__version__ = {version!r}; "
                        "from sd_db import serve; sys.exit(serve.main(sys.argv[1:]))"]
-        # The checkout's sd_db on both sides, whatever this interpreter has
-        # installed: the satellite's stub python runs the checkout too.
+        # The pack's lib/ on both sides, whatever this interpreter has
+        # installed: the shim runs the pack's bin/sd-db, which reads lib/,
+        # and the satellite's stub python runs that lib/ too (sd:3279).
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "PYTHON": sys.executable,
-               "PYTHONPATH": str(ROOT / "local-sd-db"), "SD_DB_LIBRARY": "checkout"}
+               "PYTHONPATH": str(PACK / "lib"), "SD_PACK_ROOT": str(PACK)}
         with open(self.log, "w") as stream:
             self.process = subprocess.Popen(
                 [*command, "--loopback", "--port", "0", "--database", str(self.database)],
@@ -409,17 +410,19 @@ class TheSatellite(Case):
                 self.assertFalse(self.shadow.exists())
                 self.assertFalse(log.exists())
 
-    def test_the_stage_names_its_own_checkout_as_the_source_to_install_from(self):
-        # sd:2802: `--apply` installs the hub's build from HEAD or origin/main of a
-        # system checkout; the stage names its own, and an exported value wins.
+    def test_the_stage_runs_the_packs_lib_satellite_and_names_no_system_source(self):
+        # sd:3279: the build that must match the hub's is the pack's lib/, which every
+        # caller runs, not a copy installed in the interpreter. And --apply must never
+        # install system's frozen local-sd-db: the stage names no source checkout.
         (self.profiles / "work.satellite").write_text("hub.example.test\n")
-        write_stub(self.root, "stub-python", 'echo "  ok      source=$SD_DB_SOURCE_CHECKOUT args=$*"\n')
-        python = self.root / "stub-python"
-        out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=python)
-        self.assertIn(f"  ok      source={ROOT} args=-I -m sd_db.satellite --hub hub.example.test --apply", out)
-        chosen = self.root / "elsewhere"
-        out = self.run_stage("satellite", SD_DB_PYTHON=python, SD_DB_SOURCE_CHECKOUT=chosen)
-        self.assertIn(f"  ok      source={chosen} args=", out)
+        pack = self.root / "pack"
+        (pack / "lib/sd_db").mkdir(parents=True)
+        (pack / "lib/sd_db/__init__.py").write_text("")
+        (pack / "lib/sd_db/satellite.py").write_text(
+            "import os, sys\n"
+            "print('  ok      pack satellite source=%s args=%s' % (os.environ.get('SD_DB_SOURCE_CHECKOUT'), ' '.join(sys.argv[1:])))\n")
+        out = self.run_stage("satellite", "--apply", SD_DB_PYTHON=sys.executable, SD_PACK_ROOT=pack)
+        self.assertIn("  ok      pack satellite source=None args=--hub hub.example.test --apply", out)
 
     def test_no_interpreter_is_missing(self):
         self.start_hub()
