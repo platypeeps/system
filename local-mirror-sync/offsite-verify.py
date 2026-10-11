@@ -11,9 +11,10 @@ schema version, the table set, every table's columns and the foreign keys --
 then compares the counts it returns against the manifest the snapshot was
 written with, and re-hashes every companion file the manifest names. It does
 NOT keep a second, weaker contract of its own: a verifier that passes what
-restore would refuse is the failure this row is about, one layer down. It runs
-under the interpreter that can import sd_db, and says so as a failure when it
-cannot.
+restore would refuse is the failure this row is about, one layer down. It loads
+sd_db from the command pack checkout's lib/ (`SD_PACK_ROOT`, else the home
+clone), ahead of any copy the interpreter has installed (sd:3279), and says so
+as a failure when it cannot.
 
 The database snapshot is the only thing on the share it checks. The repos
 mirror that used to be here, with its sampled byte comparison, was retired on
@@ -43,6 +44,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
+
+sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser() / "lib"))
 
 #: This tool's settings file, `<config>/mirror-sync/.env`, outside the checkout.
 ENV_FILE = system_tools_config.config_dir("mirror-sync") / ".env"
@@ -261,7 +264,7 @@ def verify_database(root: Path, report: Report, *, max_age_hours: float, now: da
         except ImportError as error:
             report.fail(
                 f"the sd_db restore validator could not be imported ({error});"
-                " run this under the interpreter sd-db.sh uses"
+                " the command pack's lib/ (SD_PACK_ROOT) holds no usable sd_db"
             )
             return
         # The library opens the file, not this script: one store, one caller,

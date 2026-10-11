@@ -147,8 +147,9 @@ around it.
 ## Proving the database snapshot on the NAS (`offsite-verify.py`)
 
 ```sh
-# under an interpreter that can import sd_db -- the one sd-db.sh picks first
-~/repos/platypeeps/sd-ai-command-pack/.venv/bin/python ./offsite-verify.py
+# sd_db comes from the pack's lib/ (SD_PACK_ROOT, default
+# ~/repos/platypeeps/sd-ai-command-pack), whatever python3 runs this (sd:3279)
+python3 ./offsite-verify.py
 python3 ./offsite-verify.py --root DIR   # against another share or a fixture
 ```
 
