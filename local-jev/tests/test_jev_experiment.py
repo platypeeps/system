@@ -770,3 +770,104 @@ class ThePopulation(unittest.TestCase):
             ("sd-gate-receipt:a", "2026-09-10T00:00:00+00:00", {"repository": self.repo, "head": "h8"}),
             ("ship:b", "2026-09-22T00:00:00+00:00", self.body("h8", a_pass("h8")))])
         self.assertEqual((rows["h8"]["population"], summary["no_passes"]), ("E", 1))
+
+
+def reviewed(head, *dispositions, completed=1, severity="high"):
+    """A pass at `head` whose review completed `completed` times with these findings."""
+    one = a_pass(head)
+    one["report"].update(completed_reviews=completed, findings=[
+        {"disposition": d, "severity": severity} for d in dispositions])
+    return one
+
+
+def population_file(folder, rows):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "population.jsonl").write_text("".join(json.dumps(dict(
+        {"repository": "o/r", "paper": False, "state": None}, **r)) + "\n" for r in rows))
+
+
+class TheObjectiveLabels(unittest.TestCase):
+    """Step 4: blocking@head from the first completed review at that head."""
+
+    def setUp(self):
+        self.out = Path(tempfile.mkdtemp()) / "experiment"
+
+    def labels(self, rows, heads, population="E"):
+        db = checkpoint_db(rows)
+        population_file(self.out, [{"head": h, "population": population} for h in heads])
+        code, printed = run(["labels", "objective", "--population", population,
+                             "--db", str(db), "--out", str(self.out)])
+        found = {}
+        target = self.out / "labels" / f"{population}.jsonl"
+        if target.exists():
+            found = {r["head"]: r for r in map(json.loads, target.read_text().splitlines())}
+        return code, found, db
+
+    def body(self, head, *passes_):
+        return {"repository": "o/r", "head": head, "passes": list(passes_)}
+
+    def test_a_head_with_only_advisory_findings_is_not_blocking(self):
+        code, found, _db = self.labels([("ship:a", "2026-09-22T00:00:00+00:00",
+                                         self.body("h1", reviewed("h1", "advisory", "advisory")))],
+                                       ["h1"])
+        self.assertEqual(code, 0)
+        self.assertIs(found["h1"]["blocking_at_head"], False)
+
+    def test_a_first_pass_that_did_not_complete_is_passed_over(self):
+        code, found, _db = self.labels([("ship:a", "2026-09-22T00:00:00+00:00", self.body(
+            "h2", reviewed("h2", "blocking", completed=0), reviewed("h2", "advisory")))], ["h2"])
+        self.assertIs(found["h2"]["blocking_at_head"], False)
+
+    def test_a_head_with_no_completed_review_is_unknown(self):
+        _code, found, _db = self.labels([("ship:a", "2026-09-22T00:00:00+00:00", self.body(
+            "h3", reviewed("h3", "blocking", completed=0)))], ["h3"])
+        self.assertEqual((found["h3"]["blocking_at_head"], found["h3"]["unknown"]),
+                         (None, "no-completed-review"))
+
+    def test_a_later_head_s_finding_is_ignored(self):
+        _code, found, _db = self.labels([("ship:a", "2026-09-22T00:00:00+00:00", self.body(
+            "h5", reviewed("h4", "advisory"), reviewed("h5", "blocking")))], ["h4", "h5"])
+        self.assertIs(found["h4"]["blocking_at_head"], False)
+        self.assertEqual((found["h5"]["blocking_at_head"], found["h5"]["severities"]),
+                         (True, ["high"]))
+
+    def test_a_c1_request_before_sealing_refuses_and_reads_nothing(self):
+        db = checkpoint_db([("ship:a", "2026-09-10T00:00:00+00:00",
+                             self.body("h6", reviewed("h6", "blocking")))])
+        population_file(self.out, [{"head": "h6", "population": "C1"}])
+        with unittest.mock.patch.object(experiment, "checkpoints",
+                                        side_effect=AssertionError("read a checkpoint")):
+            code, _printed = run(["labels", "objective", "--population", "C1",
+                                  "--db", str(db), "--out", str(self.out)])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.out / "labels").exists())
+
+    def test_c1_runs_once_each_answer_file_s_hash_is_on_the_item(self):
+        db = checkpoint_db([("ship:a", "2026-09-10T00:00:00+00:00",
+                             self.body("h7", reviewed("h7", "blocking")))])
+        population_file(self.out, [{"head": "h7", "population": "C1"}])
+        (self.out / "replay").mkdir()
+        hashes = []
+        for arm in experiment.MODEL_ARMS:
+            path = self.out / "replay" / f"{arm}.jsonl"
+            path.write_text(json.dumps({"arm": arm}) + "\n")
+            hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
+        stamp = "2026-10-11T00:00:00+00:00"
+        argv = ["labels", "objective", "--population", "C1", "--db", str(db), "--out", str(self.out)]
+        with contextlib.closing(connect(db)) as connection:
+            connection.execute(
+                "INSERT INTO item (id, kind, title, status, created_at, updated_at)"
+                " VALUES (2764, 'work', 't', 'in_progress', ?, ?)", (stamp, stamp))
+            connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
+                               " (2764, ?, 'comment', ?)", (stamp, " ".join(hashes[:2])))
+        self.assertEqual(run(argv)[0], 2)          # one arm's hash is not there yet
+        with contextlib.closing(connect(db)) as connection:
+            connection.execute("INSERT INTO note (item, timestamp, kind, body) VALUES"
+                               " (2764, ?, 'comment', ?)", (stamp, f"sealed {hashes[2]}"))
+        code, printed = run(argv)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(printed)["all"]["blocking"], 1)
+
+    def test_c2_refuses_until_step_15_seals_it(self):
+        code, found, _db = self.labels([], ["h8"], population="C2")
+        self.assertEqual((code, found), (2, {}))

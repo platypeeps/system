@@ -13,6 +13,8 @@ file holds the steps built so far:
 * `population` (step 2) lists every reviewed head of C1 and E with its state,
   from the checkpoint or rebuilt with git and the pinned pack's router. It
   reads routing only: no finding, review count or status.
+* `labels objective` (step 4) writes blocking@head per head of one
+  population; it refuses C1 until its answer files are sealed, and C2.
 
 **It reads the workflow database read-only.** Every query opens it through
 `sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
@@ -820,6 +822,104 @@ def cmd_population(args, out, env) -> int:
     return 0
 
 
+# --- step 4: objective labels ------------------------------------------------
+
+#: The model arms whose answer files seal a population (implement.md, step 7).
+MODEL_ARMS = ("kev", "jev", "haiku")
+
+#: The work item whose notes carry each seal.
+ITEM = 2764
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sealed(db, folder: Path) -> list[str]:
+    """What keeps C1 unsealed: each model arm's answer file that is missing,
+    or whose SHA-256 no note on sd:2764 carries. Empty when it is sealed."""
+    missing = []
+    with contextlib.closing(open_ro(db)) as connection:
+        notes = [body for (body,) in connection.execute(
+            "SELECT body FROM note WHERE item = ?", (ITEM,))]
+    for arm in MODEL_ARMS:
+        path = folder / "replay" / f"{arm}.jsonl"
+        if not path.is_file():
+            missing.append(f"{path.name} is missing")
+        elif not any(file_sha256(path) in body for body in notes):
+            missing.append(f"no note on sd:{ITEM} carries the SHA-256 of {path.name}")
+    return missing
+
+
+def blocking_at_head(db, wanted: set) -> dict:
+    """For each (repository, head): the first pass at that head with a
+    completed review, as (blocking, the blocking findings' severities).
+    A finding at another head of the branch is never read for this one."""
+    found = {}
+    for _id, _key, _stamp, body in checkpoints(db, C1_FROM, "9999"):
+        repository = body.get("repository") or ""
+        for one in passes(body):
+            ident = (repository, one.get("head"))
+            if ident not in wanted or ident in found:
+                continue
+            rep = report(one)
+            done = rep.get("completed_reviews")
+            if type(done) is not int or done <= 0:
+                continue
+            findings = rep.get("findings") if isinstance(rep.get("findings"), list) else []
+            blocking = [f for f in findings
+                        if isinstance(f, dict) and f.get("disposition") == "blocking"]
+            found[ident] = (bool(blocking), sorted(str(f.get("severity")) for f in blocking))
+    return found
+
+
+def cmd_labels(args, out, env) -> int:
+    db = args.db or default_db(env)
+    name = args.population
+    if name == "C2":
+        raise Refused("C2 is sealed by step 15 after its 14 days end (2026-10-20 09:01 MDT), "
+                      "and step 15 is not built; nothing was read")
+    if name == "C1":
+        # Before any checkpoint is opened: an unsealed C1 outcome stays unread.
+        unsealed = sealed(db, args.out)
+        if unsealed:
+            raise Refused("C1 is not sealed: " + "; ".join(unsealed) + "; nothing was read")
+    target = args.out / "labels" / f"{name}.jsonl"
+    if target.exists():
+        raise Refused(f"{target} exists; labels are written once")
+    rows = [r for r in read_jsonl(args.out / "population.jsonl") if r["population"] == name]
+    found = blocking_at_head(db, {(r["repository"], r["head"]) for r in rows})
+    labels = []
+    for row in rows:
+        blocking, severities = found.get((row["repository"], row["head"]), (None, []))
+        labels.append({"repository": row["repository"], "head": row["head"],
+                       "population": name, "paper": row["paper"],
+                       "blocking_at_head": blocking, "severities": severities,
+                       "source": "review-blocking-at-head",
+                       "unknown": None if blocking is not None else "no-completed-review"})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in labels),
+                      encoding="utf-8")
+
+    def rate(part):
+        known = [r for r in part if r["blocking_at_head"] is not None]
+        return {"heads": len(part), "known": len(known),
+                "blocking": sum(1 for r in known if r["blocking_at_head"]),
+                "rate": round(sum(1 for r in known if r["blocking_at_head"]) / len(known), 4)
+                if known else None}
+    summary = {"population": name, "all": rate(labels),
+               "paper": rate([r for r in labels if r["paper"]]),
+               "sha256": file_sha256(target)}
+    json.dump(summary, out, indent=2, sort_keys=True)
+    out.write("\n")
+    return 0
+
+
 # --- entry --------------------------------------------------------------------
 
 def default_db(env=None) -> Path:
@@ -844,11 +944,18 @@ def build_parser() -> argparse.ArgumentParser:
     pop.add_argument("--db", type=db_path, help="default: the live workflow database")
     pop.add_argument("--out", type=Path, required=True, help="the experiment data folder")
     pop.add_argument("--pack", type=Path, help=f"the pack checkout; default ~/{PACK_HOME}")
+    lab = verbs.add_parser("labels", help="step 4: labels from the review at each head")
+    kinds = lab.add_subparsers(dest="kind", required=True)
+    obj = kinds.add_parser("objective", help="blocking@head from the checkpoints")
+    obj.add_argument("--population", choices=("E", "C1", "C2"), required=True)
+    obj.add_argument("--db", type=db_path, help="default: the live workflow database")
+    obj.add_argument("--out", type=Path, required=True,
+                     help="the experiment data folder, holding population.jsonl")
     return parser
 
 
 VERBS = {"reconcile": cmd_reconcile, "heuristic": cmd_heuristic, "faithful": cmd_faithful,
-         "population": cmd_population}
+         "population": cmd_population, "labels": cmd_labels}
 
 
 def main(argv=None, out=None, env=None) -> int:
