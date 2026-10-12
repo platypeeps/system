@@ -22,7 +22,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - Put them in the config folder (convention 3), and commit a `.env.example` or `<name>.conf.example` with `change-me` values.
 - Use `example.test` names and TEST-NET addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`) in tests and docs.
 - Run `local-scan-for-secrets/scan-for-secrets.sh` from the root before a commit that adds configuration.
-- Install the pre-push leak guard once per clone: `sh local-leak-guard/leak-guard.sh install`.
+- machine-setup's `repos` stage installs the pre-push leak guard in every public managed clone; elsewhere run `sh local-leak-guard/leak-guard.sh install`.
   - It reads `<config>/privacy-patterns`, one ERE per line; never commit that file or its contents.
   - Test with synthetic patterns; no suite may need the real ones.
 
