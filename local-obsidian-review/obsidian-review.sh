@@ -100,19 +100,19 @@ _pinned = os.environ.get("OBSIDIAN_REVIEW_TODAY", "")
 today = (datetime.date.fromisoformat(_pinned) if _pinned
          else datetime.date.today())
 
-# db key -> (section title, folder, decide-status, [(action, label, color)])
+# db key -> (section title, folder, decide-status, [(action, label, palette key)])
 QUEUES = [
     ("blog", "Blog Ideas", "System/Databases/Blog Ideas", "inbox",
-     [("accept", "✓ Accept", "#2c7a2c"), ("decline", "✗ Decline", "#8a3030")]),
+     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
     ("skill", "Skill Proposals", "System/Databases/Skill Proposals", "proposed",
-     [("accept", "✓ Accept", "#2c7a2c"), ("decline", "✗ Decline", "#8a3030")]),
+     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
     ("tip", "Tips and Tricks", "System/Databases/Tips and Tricks", "inbox",
-     [("accept", "✓ Accept", "#2c7a2c"), ("decline", "✗ Decline", "#8a3030")]),
+     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
     ("topic", "Topics", "System/Databases/Topics", "candidate",
-     [("adopt", "✓ Adopt", "#2c7a2c"), ("park", "⏸ Park", "#666666")]),
+     [("adopt", "✓ Adopt", "ok"), ("park", "⏸ Park", "muted")]),
     ("watch", "Market Watch", "System/Databases/Market Watch", "candidate",
-     [("track", "▶ Track", "#2c7a2c"), ("pause", "⏸ Pause", "#8a6d1a"),
-      ("decline", "✗ Decline", "#8a3030")]),
+     [("track", "▶ Track", "ok"), ("pause", "⏸ Pause", "caution"),
+      ("decline", "✗ Decline", "warning")]),
 ]
 
 def field(fm, name):
@@ -242,9 +242,21 @@ def unsigned(why):
         "Open-only links for this run\n" % (why, load_text()))
     return ""
 
-BTN = ('<a href="{href}" style="display:inline-block;padding:7px 14px;'
-       'margin:0 6px 6px 0;border-radius:6px;text-decoration:none;'
-       'font-size:13px;font-weight:600;color:#fff;background:{bg}">{label}</a>')
+# Email-safe foundation palette: the ui-design light values as sRGB hex, since
+# a mail client has no custom properties, no light-dark() and no oklch(). One
+# glyph sits beside each state colour; colour alone carries nothing. The
+# test pins each value against the dashboard's tokens.css.
+PALETTE = {
+    "paper": "#eff2f6", "panel": "#f8fbfd", "rule": "#c6cbd1",
+    "ink": "#14191f", "ink-2": "#3d434a", "muted": "#5b6168",
+    "ok": "#287c42", "caution": "#8a5600", "warning": "#b71824",
+}
+# Single quotes: a double quote would end the style="..." attribute it sits in.
+FONT = "'IBM Plex Sans',-apple-system,Helvetica,Arial,sans-serif"
+
+BTN = ('<a href="{href}" style="display:inline-block;padding:13px 16px;'
+       'margin:0 6px 6px 0;border-radius:5px;text-decoration:none;line-height:18px;'
+       'font-size:13px;font-weight:600;color:' + PALETTE["panel"] + ';background:{bg}">{label}</a>')
 
 # Jev orders the digest; it never decides what is in it. It runs unless
 # `jev enabled JEV_OBSIDIAN_REVIEW` declines -- unkeyed, the fleet switch off,
@@ -440,31 +452,31 @@ for db, title, sub, acts, count, shown, rest in queues:
         link = "obsidian://open?vault=%s&file=%s" % (
             urllib.parse.quote(vault.name), urllib.parse.quote(f"{sub}/{stem}"))
         open_url = action_url(db, stem, "open") or link
-        buttons = [BTN.format(href=html.escape(open_url), bg="#7c5cbf", label="Open")]
+        buttons = [BTN.format(href=html.escape(open_url), bg=PALETTE["ink"], label="\u2197 Open")]
         for a, label, bg in acts:
             u = action_url(db, stem, a)
             if u:
-                buttons.append(BTN.format(href=html.escape(u), bg=bg, label=label))
+                buttons.append(BTN.format(href=html.escape(u), bg=PALETTE[bg], label=label))
         meta = " · ".join(x for x in (
             f"score {score}" if score else "",
             (f"added {created}" + (f" ({age}d ago)" if age else ""))
             if created else "") if x)
         cards.append(
-            '<div style="border:1px solid #ddd;border-radius:8px;padding:14px 16px;'
-            'margin:0 0 12px 0;background:#fafafa">'
-            f'<div style="font-size:15px;font-weight:600;margin-bottom:2px">'
+            f'<div style="border:1px solid {PALETTE["rule"]};border-radius:5px;padding:14px 16px;'
+            f'margin:0 0 12px 0;background:{PALETTE["panel"]}">'
+            f'<div style="font-size:15px;font-weight:600;margin-bottom:2px;color:{PALETTE["ink"]}">'
             f'{html.escape(stem)}</div>'
-            + (f'<div style="font-size:13px;color:#444;margin-bottom:4px">'
+            + (f'<div style="font-size:13px;color:{PALETTE["ink-2"]};margin-bottom:4px">'
                f'{html.escape(desc)}</div>' if desc else "")
-            + (f'<div style="font-size:12px;color:#666;margin-bottom:10px">'
+            + (f'<div style="font-size:12px;color:{PALETTE["muted"]};margin-bottom:10px">'
                f'{html.escape(meta)}</div>' if meta else "")
             + "".join(buttons) + '</div>')
     if rest > 0:
-        cards.append(f'<p style="font-size:12px;color:#888">… and {rest} '
+        cards.append(f'<p style="font-size:12px;color:{PALETTE["muted"]}">… and {rest} '
                      'more in Obsidian</p>')
     sections.append(
         f'<h3 style="font-size:16px;margin:18px 0 8px 0">{html.escape(title)}'
-        f' <span style="color:#888;font-weight:400">({count})</span></h3>'
+        f' <span style="color:{PALETTE["muted"]};font-weight:400">({count})</span></h3>'
         + "".join(cards))
 
 if total == 0:
@@ -473,15 +485,15 @@ if total == 0:
 if by_jev:
     lines.append("(ordered by Jev, most worth deciding first)")
 
-footer = ('<p style="font-size:11px;color:#999">Each decision button asks for '
+footer = (f'<p style="font-size:11px;color:{PALETTE["muted"]}">Each decision button asks for '
           'one confirming tap; links work from any device and expire after '
           '7 days. The nightly routines act on what you accept.'
           + (f' {ready_tips} tip(s) are `ready` and wait for your final call '
              'in Obsidian.' if ready_tips else '')
           + (' Ordered by Jev, most worth deciding first.' if by_jev else '')
           + '</p>')
-doc = ('<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
-       'max-width:560px;margin:0 auto">'
+doc = (f'<div style="font-family:{FONT};background:{PALETTE["paper"]};color:{PALETTE["ink"]};'
+       'max-width:560px;margin:0 auto;padding:16px">'
        f'<p style="font-size:14px"><b>{total}</b> note(s) across '
        f'{len(sections)} queue(s) wait for a decision</p>'
        + "".join(sections) + footer + '</div>')
