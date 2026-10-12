@@ -203,17 +203,25 @@ hooks_dir() {
 
 cmd_install() {
   repo="${1:-.}"
+  # The hook names the main checkout's script: a linked worktree's path fails
+  # every push once the worktree is removed (sd:3390). machine-setup's repos
+  # stage compares against the same path.
+  root="$(st_main_checkout "$(cd "$DIR/.." && pwd)")" ||
+    die "git cannot name the main checkout of $DIR/.."
+  guard="$root/local-leak-guard/leak-guard.sh"
+  [ -f "$guard" ] ||
+    die "$guard is missing; check out local-leak-guard in the main checkout, then install again"
   dir="$(hooks_dir "$repo")"
   case "$dir" in /*) ;; *) dir="$(cd "$repo" && pwd)/$dir" ;; esac
   hook="$dir/pre-push"
   if [ -f "$hook" ] && ! grep -qF "$MARKER" "$hook"; then
-    die "$hook exists and was not written by $ME; add \`$DIR/leak-guard.sh hook \"\$@\"\` to it by hand"
+    die "$hook exists and was not written by $ME; add \`$guard hook \"\$@\"\` to it by hand"
   fi
   mkdir -p "$dir"
   cat >"$hook" <<EOF
 #!/bin/sh
 $MARKER
-exec sh '$DIR/leak-guard.sh' hook "\$@"
+exec sh '$guard' hook "\$@"
 EOF
   chmod +x "$hook"
   printf '%s: installed %s\n' "$ME" "$hook"

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "leak-guard.sh"
+LIB = HERE.parent.parent / "lib"
 
 SECRET = "zebra-canary-4711"
 PATTERNS = "# synthetic test patterns\n\nzebra-canary-[0-9]+\n"
@@ -42,6 +44,9 @@ class LeakGuardTest(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1",
             "LC_ALL": "C",
         }
+        # A copy outside git: run from this checkout, install would name the
+        # main checkout's script when this one is a linked worktree (sd:3390).
+        self.script = self.copy_guard(self.tmp / "copy")
         self.remote = self.tmp / "remote.git"
         self.git(self.tmp, "init", "-q", "--bare", str(self.remote))
         self.repo = self.tmp / "repo"
@@ -60,6 +65,13 @@ class LeakGuardTest(unittest.TestCase):
             capture_output=True, text=True,
         ).stdout
 
+    @staticmethod
+    def copy_guard(root: pathlib.Path) -> pathlib.Path:
+        shutil.copytree(HERE.parent, root / "local-leak-guard",
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        shutil.copytree(LIB, root / "lib", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        return root / "local-leak-guard" / "leak-guard.sh"
+
     def commit(self, name: str, text: str, message: str) -> str:
         path = self.repo / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,9 +81,10 @@ class LeakGuardTest(unittest.TestCase):
         return self.git(self.repo, "rev-parse", "HEAD").strip()
 
     def run_guard(self, *args: str, cwd: pathlib.Path | None = None,
-                  stdin: str = "") -> subprocess.CompletedProcess[str]:
+                  stdin: str = "", script: pathlib.Path | None = None,
+                  ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["sh", str(SCRIPT), *args], cwd=cwd or self.repo, env=self.env,
+            ["sh", str(script or self.script), *args], cwd=cwd or self.repo, env=self.env,
             input=stdin, capture_output=True, text=True, timeout=60,
         )
 
@@ -319,6 +332,43 @@ class LeakGuardTest(unittest.TestCase):
         self.assertEqual(self.run_guard("remove").returncode, 0)
         self.assertFalse(hook.exists())
         self.assertEqual(self.run_guard("remove").returncode, 0)
+
+    def linked_worktree(self) -> tuple[pathlib.Path, pathlib.Path]:
+        """A main checkout holding the guard, and a linked worktree of it."""
+        main = self.tmp / "main"
+        self.copy_guard(main)
+        self.git(self.tmp, "init", "-q", str(main))
+        self.git(main, "add", "-A")
+        self.git(main, "commit", "-q", "-m", "guard")
+        linked = self.tmp / "linked"
+        self.git(main, "worktree", "add", "-q", "--detach", str(linked))
+        return main, linked
+
+    def test_install_from_a_linked_worktree_names_the_main_checkout(self) -> None:
+        # sd:3390: a hook that names a linked worktree fails every push once
+        # the worktree is removed.
+        main, linked = self.linked_worktree()
+        result = self.run_guard("install", str(self.repo),
+                                script=linked / "local-leak-guard" / "leak-guard.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.repo / ".git" / "hooks" / "pre-push").read_text()
+        self.assertIn(f"exec sh '{main.resolve()}/local-leak-guard/leak-guard.sh' hook", text)
+        self.assertNotIn(str(linked.name), text)
+
+    def test_install_from_the_main_checkout_names_it(self) -> None:
+        main, _ = self.linked_worktree()
+        script = main / "local-leak-guard" / "leak-guard.sh"
+        self.assertEqual(self.run_guard("install", script=script).returncode, 0)
+        text = (self.repo / ".git" / "hooks" / "pre-push").read_text()
+        self.assertIn(f"exec sh '{main.resolve()}/local-leak-guard/leak-guard.sh' hook", text)
+
+    def test_install_refuses_when_the_main_checkout_lacks_the_guard(self) -> None:
+        main, linked = self.linked_worktree()
+        (main / "local-leak-guard" / "leak-guard.sh").unlink()
+        result = self.run_guard("install", script=linked / "local-leak-guard" / "leak-guard.sh")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(f"{main.resolve()}/local-leak-guard/leak-guard.sh", result.stderr)
+        self.assertFalse((self.repo / ".git" / "hooks" / "pre-push").exists())
 
     def test_remove_leaves_a_foreign_hook(self) -> None:
         hook = self.repo / ".git" / "hooks" / "pre-push"

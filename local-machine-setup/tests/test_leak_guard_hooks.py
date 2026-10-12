@@ -286,6 +286,52 @@ class LeakGuardHooks(base.SyntheticHome):
         self.assertIn("SKIP    ~/repos/broken leak guard: git cannot name its hooks folder", out)
         self.assertIn("MISSING ~/repos/open leak guard pre-push hook", out)
 
+    def linked_worktree(self):
+        """Commit the fixture checkout and run machine-setup from a linked worktree of it."""
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=Test", "-c", "user.email=test@example.test",
+                      "commit", "-q", "-m", "fixture"],
+                     ["worktree", "add", "-q", "--detach", str(self.repo.parent / "linked")]):
+            subprocess.run(["git", "-C", str(self.repo), *args], check=True, env=self.git_env(),
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        self.folder = self.repo.parent / "linked" / "local-machine-setup"
+
+    def test_a_linked_worktree_keeps_the_main_checkouts_guard(self):
+        # sd:3390: a hook that names a linked worktree fails every push once
+        # the worktree is removed, so status and apply name the main checkout.
+        self.linked_worktree()
+        # Installed from the main checkout, and by an older run from the worktree.
+        self.install(self.public)
+        installed = self.hook(self.public).read_text()
+        worktree_guard = self.repo.parent / "linked" / "local-leak-guard" / "leak-guard.sh"
+        self.write_hook(self.private, f"#!/bin/sh\n{MARKER}\nexec sh '{worktree_guard}' hook \"$@\"\n")
+
+        out = self.run_repos("--apply")
+
+        self.assertIn("ok      ~/repos/open leak guard", out)
+        self.assertEqual(self.hook(self.public).read_text(), installed)
+        self.assertIn("STALE   ~/repos/closed leak guard pre-push hook", out)
+        self.assertIn(f"exec sh '{self.repo.resolve()}/local-leak-guard/leak-guard.sh' hook",
+                      self.hook(self.private).read_text())
+        self.assertIn("ok      ~/repos/closed leak guard", self.run_repos("--apply"))
+
+    def test_a_main_checkout_without_the_guard_is_a_skip(self):
+        self.linked_worktree()
+        self.script.unlink()
+
+        out = self.run_repos("--apply")
+
+        self.assertIn(f"SKIP    leak guard hooks: {self.repo.resolve()}/local-leak-guard/leak-guard.sh is missing", out)
+        self.assertFalse(self.hook(self.public).exists())
+
+    def test_a_checkout_git_cannot_name_is_a_skip_not_its_own_path(self):
+        (self.repo / ".git").write_text("gitdir: /nonexistent/example\n")
+
+        out = self.run_repos("--apply")
+
+        self.assertIn("SKIP    leak guard hooks: git cannot name the main checkout", out)
+        self.assertFalse(self.hook(self.public).exists())
+
     def test_a_failed_repo_list_is_a_skip(self):
         base.write_exec(self.pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
 
