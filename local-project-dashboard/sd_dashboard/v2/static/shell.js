@@ -57,7 +57,10 @@
   const rail = document.createElement('aside');
   rail.className = 'rail'; rail.setAttribute('aria-label', 'Sidebar');
   put(rail, html`
-    <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
+    <div class="rail-head">
+      <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
+      <button class="icon-btn" type="button" id="fold-rail" aria-expanded="true" aria-controls="sections" aria-label="Collapse sections ([)" title="Collapse sections ([)">${ICON('panel-left-close')}</button>
+    </div>
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
         const href = hrefOf(name) || '#';
@@ -70,7 +73,6 @@
       </div>
     </nav>
     <div class="foot">
-      <button class="cmd fold" type="button" id="fold-rail" aria-expanded="true" aria-controls="sections">${ICON('panel-left-close')}<span class="txt">Collapse</span><kbd>[</kbd></button>
       <div class="theme rail-theme" role="group" aria-label="Theme">
         <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
         <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
@@ -192,8 +194,10 @@
   const foldRail = rail.querySelector('#fold-rail'), foldPane = pane.querySelector('#fold-pane');
   function setRail(min) {
     min ? body.dataset.rail = 'min' : delete body.dataset.rail; store('sd.rail', min ? 'min' : '');
-    foldRail.setAttribute('aria-expanded', !min); foldRail.querySelector('.txt').textContent = min ? 'Expand' : 'Collapse';
-    foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`); foldRail.title = min ? 'Expand sections ([)' : '';
+    // sd:3442: the fold is an icon button beside the mark, so its name lives in aria-label and title.
+    const label = `${min ? 'Expand' : 'Collapse'} sections ([)`;
+    foldRail.setAttribute('aria-expanded', !min); foldRail.setAttribute('aria-label', label); foldRail.title = label;
+    foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`);
     rail.querySelectorAll('nav a[data-section]').forEach(a => { a.title = min ? a.querySelector('.nm').textContent : ''; });
   }
   function setPane(min) {

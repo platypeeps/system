@@ -311,5 +311,23 @@ class TheFilterChips(unittest.TestCase):
         self.assertEqual(out["none"], "")
 
 
+SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
+#: The rail's markup as shell.js draws it: its head row (the mark and its controls) and its foot.
+RAIL = re.search(r"put\(rail, html`(.*?)`\);", SHELL_JS, re.S).group(1)
+RAIL_HEAD = re.search(r'<div class="rail-head">(.*?)\n    </div>', RAIL, re.S)
+RAIL_FOOT = re.search(r'<div class="foot">(.*?)</div>\s*$', RAIL, re.S).group(1)
+
+
+class TheRailHead(unittest.TestCase):
+    """sd:3442: the rail's fold is a small icon button beside the title, not a row in the foot."""
+
+    def test_the_fold_sits_in_the_head_beside_the_mark_and_not_in_the_foot(self):
+        self.assertIsNotNone(RAIL_HEAD, "the rail has no head row")
+        head = RAIL_HEAD.group(1)
+        self.assertLess(head.index('class="mark"'), head.index('id="fold-rail"'))
+        self.assertRegex(head, r'<button class="icon-btn" type="button" id="fold-rail"[^>]* aria-label="Collapse sections \(\[\)"')
+        self.assertNotIn("fold-rail", RAIL_FOOT)
+
+
 if __name__ == "__main__":
     unittest.main()
