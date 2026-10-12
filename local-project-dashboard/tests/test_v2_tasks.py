@@ -1591,5 +1591,57 @@ class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "tasks", "Tasks", "/tasks", ("/api/tasks", "/api/tasks/1")
 
 
+class TheDocumentLinks(ScreenCase):
+    """The details name the item's design and related documents, each linked where GitHub has it."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = Path(self.tmp.name) / "checkout"
+        for rel, text in {
+            "docs/work/2026-10-01-own/prd.md": "the item's own file",
+            "docs/work/2026-10-01-own/design.md": "the folder's design",
+            "docs/work/2026-10-02-other/design.md": "Work: sd:{id}\n",
+            "docs/work/2026-10-03-unrelated/design.md": "Work: sd:{id}0\n",
+            "docs/notes/plan.md": "named in a note",
+            "docs/dashboard/report.html": "<p>local report</p>",
+        }.items():
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text(text, encoding="utf-8")
+        upsert_repo(self.connection, str(self.root), remote="git@github.com:owner/name.git")
+        self.id = self.item("Build it", kind="work", repo=str(self.root), path="docs/work/2026-10-01-own/prd.md",
+                            body="See docs/notes/plan.md and docs/missing.md.")
+        for rel in ("docs/work/2026-10-02-other/design.md", "docs/work/2026-10-03-unrelated/design.md"):
+            path = self.root / rel
+            path.write_text(path.read_text(encoding="utf-8").format(id=self.id), encoding="utf-8")
+        self.outside = Path(self.tmp.name) / "review" / "SYNTHESIS.md"
+        self.outside.parent.mkdir()
+        self.outside.write_text("x", encoding="utf-8")
+        self.note(self.id, f"Report at {self.outside} and docs/dashboard/report.html", kind="comment")
+
+    def test_the_details_list_the_design_and_related_documents_with_links(self):
+        got = tasks_screen.details(self.connection, self.id, now=NOW)["documents"]
+        by_path = {doc["path"]: doc for doc in got}
+        self.assertEqual(sorted(by_path), sorted([
+            "docs/work/2026-10-01-own/prd.md", "docs/work/2026-10-01-own/design.md",
+            "docs/work/2026-10-02-other/design.md", "docs/notes/plan.md",
+            "docs/dashboard/report.html", str(self.outside),
+        ]))
+        self.assertEqual(by_path["docs/work/2026-10-01-own/design.md"]["url"],
+                         "https://github.com/owner/name/blob/HEAD/docs/work/2026-10-01-own/design.md")
+        # docs/dashboard is gitignored and a file outside the checkout has no GitHub address: path only.
+        self.assertEqual(by_path["docs/dashboard/report.html"]["url"], "")
+        self.assertEqual(by_path[str(self.outside)]["url"], "")
+        self.assertTrue(all(doc["why"] for doc in got))
+
+    def test_an_item_without_a_repo_lists_only_absolute_paths_its_notes_name(self):
+        loose = self.item("Loose", kind="task", body=f"see {self.outside}")
+        got = tasks_screen.details(self.connection, loose, now=NOW)["documents"]
+        self.assertEqual([doc["path"] for doc in got], [str(self.outside)])
+
+    def test_the_panel_renders_the_documents_section(self):
+        self.assertIn("<h3>Documents</h3>", TASKS_JS)
+        self.assertIn("d.documents", TASKS_JS)
+
+
 if __name__ == "__main__":
     unittest.main()

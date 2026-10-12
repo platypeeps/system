@@ -36,9 +36,12 @@ starts a herdr session for the item and adds a note. Nothing here writes.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from pathlib import Path
 
-from sd_db import reads, workflow
+from sd_db import reads, repos, workflow
+from sd_db.protection import github_slug
 
 __all__ = ["details", "document"]
 
@@ -140,6 +143,56 @@ def _external(connection, row, *, now: str) -> dict | None:
                           "reason": freshness["reason"]}}
 
 
+#: A file path a body or note names: absolute, `~/`, or repo-relative with at least one folder.
+_NAMED_PATH = re.compile(r"(?<![\w./~-])((?:~?/)?[\w.-]+(?:/[\w.-]+)+\.(?:md|html))")
+
+
+def _documents(connection, state) -> list[dict]:
+    """The item's design and related documents: its path, its work folder, `docs/work` files naming `sd:<id>`,
+    and files its body or notes name. A file in the checkout links to GitHub at the default branch; one in
+    the gitignored `docs/dashboard` or outside the checkout shows its path only."""
+    item = state["item"]
+    root = Path(item["repo"]).expanduser() if item["repo"] else None
+    registered = repos.row_for(connection, item["repo"]) if root else None
+    slug = github_slug(registered["remote"]) if registered else None
+    web = f"https://github.com/{slug[0]}/{slug[1]}" if slug else ""
+    found: dict[Path, tuple[Path, str]] = {}  # resolved path -> (path as named, why)
+
+    def add(path: Path, why: str) -> None:
+        if path.is_file():
+            found.setdefault(path.resolve(), (path, why))
+
+    if root:
+        if item["path"]:
+            own = root / item["path"]
+            add(own, "the item's path")
+            if item["path"].startswith("docs/work/"):
+                for sibling in sorted(own.parent.glob("*.md")):
+                    add(sibling, "its work folder")
+        names = re.compile(rf"\bsd:{item['id']}\b")
+        for doc in sorted((root / "docs" / "work").rglob("*.md")):
+            try:
+                if names.search(doc.read_text(encoding="utf-8", errors="replace")[:200_000]):
+                    add(doc, f"names sd:{item['id']}")
+            except OSError:
+                continue
+    text = "\n".join([item["body"] or ""] + [note["body"] or "" for note in state["notes"]])
+    for raw in _NAMED_PATH.findall(text):
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            if root is None:
+                continue
+            path = root / raw
+        add(path, "named in a note")
+    base = root.resolve() if root else None
+    rows = []
+    for resolved, (named, why) in found.items():
+        rel = resolved.relative_to(base).as_posix() if base and resolved.is_relative_to(base) else None
+        url = f"{web}/blob/HEAD/{rel}" if web and rel and not rel.startswith("docs/dashboard/") else ""
+        rows.append({"path": rel or str(named), "why": why, "url": url})
+    return rows
+
+
 def details(connection, item: int, *, now: str) -> dict:
     """One item's Details sections. Raises `workflow.MissingItem` for an id with no item."""
     from sd_db import operations, progress
@@ -161,6 +214,7 @@ def details(connection, item: int, *, now: str) -> dict:
         "notes": [_note(note) for note in state["notes"] if note["kind"] != "status_change"],
         "assignments": assignments, "allowed": workflow.allowed_statuses(connection, item, state=state),
         "external": _external(connection, row, now=now),
+        "documents": _documents(connection, state),
         # `sd work relink` and `sd work cancel` availability, as the mutation checks it under its lock
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
