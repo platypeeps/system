@@ -79,6 +79,7 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
+             service: r.service,
              exit: r.exit, revision: r.revision, capability: r.capability, repo: pr && pr[1], number: pr && +pr[2], seen: r.seen,
              item: r.item, itemKind: r.item_kind };
   }
@@ -201,6 +202,10 @@
         run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
           out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
           err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) }),
+      // Each row kind's commands from the page that shows it in full (sd:3449): a job's log and launchd record, as Management
+      // and Activity declare them; Show log opens the job on Management > Schedules.
+      K.showLog({ job: o => ({ name: o.job }) }),
+      K.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
       K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo }),
       // Fix (sd:3456, commands.js) on a work row, with the revision the Now read gave; a refused one reads Now again.
       K.fix('work item', { item: o => o.item, report: o => o.itemKind === 'report',

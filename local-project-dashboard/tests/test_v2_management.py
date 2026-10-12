@@ -617,8 +617,8 @@ class TheScript(PageScript):
             ["svc.start", "service", "safe", "a", None, False],
             ["jobs.retry", "job", "safe", "t", None, False],
             ["jobs.cancel", "job", "confirm", "x", None, False],
-            ["job.log", "job", "safe", "o", False, False],
-            ["job.print", "job", "safe", "l", False, False],
+            ["jobs.log", "job", "safe", "l", False, False],
+            ["jobs.print", "job", "safe", "p", False, False],
         ])
 
     def test_the_page_reads_the_document_and_draws_repos_with_git_state(self):
@@ -793,7 +793,7 @@ C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""",
         doc = json.loads(json.dumps(self.doc))
         next(j for j in doc["jobs"] if j["name"] == "nightly-sync")["last_exit"] = 127
         out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
-R.on = c.when(o); R.primary = !!c.primary(o); R.print = !!cmd('job.print').primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+R.on = c.when(o); R.primary = !!c.primary(o); R.print = !!cmd('jobs.print').primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
 C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]", doc=doc)
         self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["print"], out["R"]["ask"]), (True, False, True, True))
         self.assertIn("exit 127", out["R"]["says"])
@@ -803,7 +803,7 @@ C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'acce
 
     def test_after_another_exit_retry_is_the_rows_act_and_does_not_ask(self):
         out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
-R.got = [!!c.primary(o), !!cmd('job.print').primary(o), !!c.askFirst(o)];""")
+R.got = [!!c.primary(o), !!cmd('jobs.print').primary(o), !!c.askFirst(o)];""")
         self.assertEqual(out["R"]["got"], [True, False, False])
 
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
@@ -1117,7 +1117,7 @@ class TheJobLogAndCancel(PageScript):
         quiet = next(j for j in doc["jobs"] if j["name"] == "quiet")
         quiet["log"] = {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"}
         out = self.run_page("selectRow('cron:busy', false); R.busy = ELS.details.html; selectRow('cron:quiet', false); R.quiet = ELS.details.html;"
-                            " R.shown = cmd('job.log').run(C.get('cron:busy')); R.after = ELS.details.html;", doc=doc, search="?view=schedules")
+                            " R.shown = cmd('jobs.log').run(C.get('cron:busy')); R.after = ELS.details.html;", doc=doc, search="?view=schedules")
         self.assertIn('<pre class="code" tabindex="0" aria-label="busy log">[busy] started\nstep 2 &lt;of&gt; 3\n</pre>', out["R"]["busy"])
         self.assertIn("local-cron-jobs/logs/busy.log", out["R"]["busy"])
         self.assertIn("<dt>Last request</dt><dd>cancel · accepted · dashboard · 2026-09-06T02:20:00Z · launchctl accepted the request</dd>",

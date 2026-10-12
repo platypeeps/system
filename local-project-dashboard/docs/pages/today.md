@@ -16,3 +16,5 @@ keyed `today:item:<id>`, and the item shows again early when its status or due d
 Retry on a failed or interrupted job posts `/api/jobs/<job>/retry` with the job's revision from the same read, as
 Management does (sd:3386); a job that changed since is refused and Now is read again.
 After exit 127, command not found, Retry asks first and names the exit (sd:3392).
+A job row also has Show log, which opens the job on Management > Schedules, and Print, the `launchctl print` line to
+copy; Print is the row's act after exit 127. Both are the declarations Management and Activity use (sd:3449).

@@ -345,6 +345,25 @@ class TheBadge(TheReader):
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
 
 
+class TheJobRow(TheReader):
+    """sd:3449: a job row carries the commands Management and Activity give a job, from the one declaration in commands.js."""
+
+    def test_a_job_row_shows_its_log_on_schedules_and_prints_its_launchd_record(self):
+        out = self.run_page("""const o = C.get('job:nightly-sync:7'), log = cmd('jobs.log'), print = cmd('jobs.print');
+R.got = [log.on, log.executes, log.cli(o), print.on, print.executes, print.when(o), print.cli(o), !!print.primary(o)];
+window.shell.pages = { Management: '/management' }; R.said = log.run(o);""")
+        self.assertEqual(out["R"]["got"], ["job", False, "local-cron-jobs/cron-jobs.sh logs nightly-sync",
+                                           "job", False, True, "launchctl print fixture/nightly-sync", False])
+        self.assertEqual(out["R"]["said"], "nightly-sync opens in Management > Schedules")
+        # The address it opens is the one Activity's test reads (test_v2_activity): the same declaration builds it.
+        self.assertEqual(out["posts"], [])
+
+    def test_after_exit_127_print_is_the_rows_act(self):
+        self.doc["rows"][0]["exit"] = 127
+        out = self.run_page("R.print = !!cmd('jobs.print').primary(C.get('job:nightly-sync:7'));")
+        self.assertTrue(out["R"]["print"])
+
+
 class TheRetry(TheReader):
     """sd:3386: a failed job's Retry posts /api/jobs/<job>/retry with the row's revision, as Management and Activity do."""
 

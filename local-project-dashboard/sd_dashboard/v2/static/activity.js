@@ -339,8 +339,6 @@ addEventListener('DOMContentLoaded', () => {
   const undoOf = (o, r) => r && r.undo ? r.undo() : false;
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
-  const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
-    location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
   C.register(
     window.commands.openPullRequest({ pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
@@ -352,9 +350,8 @@ addEventListener('DOMContentLoaded', () => {
     // Retry (commands.js): it posts /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts
     // the run.
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: ev(o).failed, exit: ev(o).exit, capability: ev(o).retry }), run: retry }),
-    // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
-    // Details show the exit and the schedule, and the line to copy still reads the log. The filter puts the row on page one.
-    { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => openSchedule(o.job) },
+    // Show log (commands.js) opens the job's row on Management > Schedules, as ruled (sd:2392).
+    window.commands.showLog({ job: o => ({ name: o.job }) }),
     // build (sd:3391): Reconcile outcome, from v1 Operations > Commands, which this page replaces. It posts
     // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
     // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.

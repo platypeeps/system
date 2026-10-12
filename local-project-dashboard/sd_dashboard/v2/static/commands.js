@@ -44,6 +44,24 @@
       run };
   }
 
+  // Show log: the cron-jobs wrapper prints the job's log; the line is copy only. run(o) shows where the page keeps it: the
+  // Details on Management, the job's row on Management > Schedules elsewhere (sd:2392). `job(o)` names { name }.
+  // The filter puts the row on Schedules' first page.
+  const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
+    location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
+  function showLog({ job, run = o => openSchedule(job(o).name) }) {
+    return { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false,
+      cli: o => `local-cron-jobs/cron-jobs.sh logs ${job(o).name}`, run };
+  }
+
+  // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
+  // `job(o)` names { service, exit }.
+  function printJob({ job }) {
+    return { id: 'jobs.print', on: 'job', label: 'Print', key: 'p', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
+      when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
+      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' };
+  }
+
   // Show assignment: `sd assignments get` prints what the page's Details show, so the line is copy only. run(o) shows it.
   function showAssignment({ primary = () => true, run }) {
     return { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary, executes: false,
@@ -76,5 +94,5 @@
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }
 
-  window.commands = { answered, fix, retry, showAssignment, openPullRequest, syncCollector };
+  window.commands = { answered, fix, retry, showLog, printJob, showAssignment, openPullRequest, syncCollector };
 })();

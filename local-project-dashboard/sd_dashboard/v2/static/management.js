@@ -546,10 +546,8 @@ function registerCommands() {
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
-    { id: 'job.log', on: 'job', label: 'Show log', key: 'o', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`,
-      run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } },
-    { id: 'job.print', on: 'job', label: 'Print', key: 'l', risk: 'safe', primary: o => o.exit === 127, executes: false, cli: o => `launchctl print ${o.service}`,
-      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' },
+    window.commands.showLog({ job: o => ({ name: o.job }), run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } }),
+    window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
   );
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
