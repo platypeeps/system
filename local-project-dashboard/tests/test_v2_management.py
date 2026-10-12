@@ -38,6 +38,7 @@ from test_v2_read import READ_SHELL
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "management.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 
 
 def git_row(name, *, behind=0, dirty=0, ahead=0, branch="main"):
@@ -495,7 +496,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Management · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "management.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "management.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -584,7 +585,7 @@ class PageScript(ScreenCase):
                   + """ANSWER = (path, body) => {
   if (path === '/api/management') return [200, DOC0];
   return WRITE ? WRITE(path, body) : [200, {}];
-};\n""" + PAGE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + PAGE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],

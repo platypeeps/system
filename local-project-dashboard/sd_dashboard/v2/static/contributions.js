@@ -113,11 +113,8 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `sd task contribution dismiss ${shq(o.key)} --if-revision ${o.revision}`,
         run: o => window.shell.post('/api/contributions/dismiss', { key: o.key, revision: o.revision })
           .then(() => { landed(o, { dismissed: true }); reread(); return `Dismissed · ${o.label}`; }, e => { load(); throw e; }) },
-      // build (sd:2207): the server runs sd shadow sync in a thread, bounded to 120 s, one run at a time; a second start is
-      // refused while one is live. The page asks how it went every 5 s and reads the page again once it ends.
-      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
-        cli: () => 'sd shadow sync --max-seconds 120',
-        run: () => window.shell.post('/api/shadow/sync', {}).then(() => { awaitSync(); return 'Shadow sync started · the page reads again when it ends'; }) },
+      // Re-run collector (commands.js); Contributions reads again once the run ends.
+      window.commands.syncCollector({ started: () => awaitSync(), page: 'Contributions' }),
     );
   }
   // Success is quiet: the reread shows it. A failed tracker or a run that broke stays as a toast with its first reason.

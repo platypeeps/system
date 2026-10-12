@@ -32,6 +32,7 @@ TODAY_JS = (V2 / "static" / "today.js").read_text(encoding="utf-8")
 SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 RECONCILE = re.search(r"^  function reconcile\(.*?^  }$", SHELL_JS, re.S | re.M).group(0)
 
 # What today.js reads beyond the Tasks stand-in: the address it writes ?row= into, and the ledger's rows as elements that
@@ -79,7 +80,7 @@ class TheReader(ScreenCase):
     def run_page(self, body, search=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   + f"\nconst DOC0 = {json.dumps(self.doc)};\nlocation.search = {json.dumps(search)};\n"
-                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + TODAY_JS
+                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + COMMANDS_JS + TODAY_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -155,7 +156,7 @@ class TheFix(TheReader):
     def test_fix_asks_first_names_the_session_by_the_item_kind_and_posts_the_revision(self):
         out = self.run_page(f"""ANSWER = (path, body) => path.endsWith('/fix') ? [200, {{ revision: 'e'.repeat(64), fix: {{ session: 'builder', pane: 'w9:p1' }} }}] : [200, DOC0];
 R.task = cmd('work item.fix').consequence(C.get('item:{self.task}')); R.report = cmd('work item.fix').consequence(C.get('item:{self.report}'));
-R.on = !cmd('work item.fix').when; // a listed work row is open, so Fix is always on
+R.on = cmd('work item.fix').when(C.get('item:{self.task}')) === true; // a listed work row is open, so Fix is always on
 shellRun(cmd('work item.fix'), C.get('item:{self.task}')); await flush();""")
         self.assertIn(f"starts claude as a builder on #{self.task}", out["R"]["task"])
         self.assertIn(f"starts claude on report #{self.report}: the sd-debug skill", out["R"]["report"])
@@ -286,7 +287,7 @@ class TheBadge(TheReader):
                   + f"\nconst DOC0 = {json.dumps(self.doc)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
                   + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : path === '/api/decisions' ? [200, DECISIONS]"
                     " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
-                  + SNOOZE_JS + TODAY_JS + "\n" + DECISIONS_JS
+                  + SNOOZE_JS + COMMANDS_JS + TODAY_JS + "\n" + DECISIONS_JS
                   + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
                     " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"

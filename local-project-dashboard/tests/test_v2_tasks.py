@@ -38,6 +38,7 @@ from test_v2_registry import Registers
 V2 = Path(v2.__file__).resolve().parent
 TASKS_JS = (V2 / "static" / "tasks.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 # The shell's run contract for writes, as shell.js has it: the stand-in runs these, not a copy.
 SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S | re.M).group(1)
@@ -240,7 +241,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "tasks.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "tasks.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -553,7 +554,7 @@ class TheScript(ScreenCase):
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
-};\n""" + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -588,7 +589,7 @@ class TheScript(ScreenCase):
             ["item.recur.clear", "item", "undo", None, None, True, True],
             ["note.resolve", "note", "confirm", "v", None, True, False],
             ["asg.cancel", "assignment", "confirm", "x", None, True, False],
-            ["asg.get", "assignment", "safe", "o", None, True, False],
+            ["asg.get", "assignment", "safe", "o", False, True, False],  # copy only: Details show it (sd:3524)
         ])
 
     def test_the_page_reads_the_rows_and_draws_the_kind_and_repo_filters(self):
