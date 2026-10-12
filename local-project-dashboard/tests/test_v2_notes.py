@@ -6,8 +6,8 @@ day in this machine's own zone, with its sd-ship merges, the items that
 reached done, the count opened, and the runner runs. A source that raises is
 named and adds no rows, so a failed read never looks like a quiet day. Each day
 carries its daily note from a vault of the test's own (sd:3426), or a named
-state. Mail has no reader: the document names it with its reason, and the page
-draws it as unknown.
+state. Mail is its own route (sd:3425), read here from a stand-in workspace-mcp
+server: inbox rows, or a named state when it cannot be read.
 
 Quick notes (sd:2549) are `sdw.quick-note` store items: `/api/notes/quick`
 lists them through `sd store list`, and `/api/notes/quick/add` keeps one
@@ -29,8 +29,10 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -152,10 +154,8 @@ class TheDocument(Fixture):
         self.assertEqual(doc["sources"], {"changes": "OperationalError: database is locked"})
         self.assertEqual(len(doc["days"]["2026-09-06"]["merges"]), 1)
 
-    def test_the_sources_no_reader_covers_are_named_with_their_reason(self):
-        unknown = self.doc()["unknown"]
-        self.assertEqual(sorted(unknown), ["mail"])
-        self.assertTrue(all(unknown.values()))
+    def test_every_source_has_a_reader_so_none_is_unknown(self):
+        self.assertNotIn("unknown", self.doc())
 
 
 class TheDailyNote(Fixture):
@@ -267,6 +267,11 @@ class ThePage(NoVault, BrowserSession):
 QUICK = [{"text": "Ring the vet", "title": "2026-09-05 180000"}, {"text": "Buy stamps", "title": "2026-09-06 050000"}]
 UNKNOWN_KIND = "sd: plugin 'sdw' declares no kind 'quick-note' (it declares blog-idea, tip, topic)\n"
 
+#: Two inbox messages as `/api/notes/mail` gives them, newest first (sd:3425).
+MAIL = {"state": "ok", "read": NOW, "days": 2, "rows": [
+    {"id": "m2", "from": "Pat Example", "subject": "Lunch <Friday>?", "at": "2026-09-06T11:15:00Z"},
+    {"id": "m1", "from": "builds@example.test", "subject": "Nightly report", "at": "2026-09-05T23:00:00Z"}], "missing": 0}
+
 NOTES_SHELL = r"""
 window.shell.row = () => null;
 window.shell.pages = { Tasks: '/tasks' };
@@ -276,12 +281,14 @@ window.shell.pages = { Tasks: '/tasks' };
 class TheScript(Fixture):
     """notes.js against the document `notes_screen` builds from the fixture database."""
 
-    def run_page(self, body, doc=None, status=200, quick=(200, {"notes": QUICK[::-1]}), kept=(200, {"title": "2026-09-06 060000", "text": "Call the plumber"})):
+    def run_page(self, body, doc=None, status=200, quick=(200, {"notes": QUICK[::-1]}), kept=(200, {"title": "2026-09-06 060000", "text": "Call the plumber"}),
+                 mail=(200, MAIL)):
         doc = doc if doc is not None else self.doc()
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + NOTES_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status}, QUICK = {json.dumps(list(quick))}, KEPT = {json.dumps(list(kept))};\n"
+                  + f"var MAIL = {json.dumps(list(mail))};\n"
                   + "ANSWER = (path, body) => path === '/api/notes' ? [STATUS, DOC] : path === '/api/notes/quick' ? QUICK"
-                  + " : path === '/api/notes/quick/add' ? KEPT : [404, { error: 'no answer' }];\n"
+                  + " : path === '/api/notes/mail' ? MAIL : path === '/api/notes/quick/add' ? KEPT : [404, { error: 'no answer' }];\n"
                   + NOTES_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -295,13 +302,13 @@ class TheScript(Fixture):
 
     def test_the_page_opens_on_today_with_its_tally_and_names_what_is_not_read(self):
         out = self.run_page("R.daily = ELS.daily.html; R.day = ELS['day-name'].textContent; R.next = ELS.next.disabled; R.prev = ELS.prev.disabled;")
-        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes"])
+        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes/mail"])
         r = out["R"]
         self.assertEqual((r["day"], r["next"], r["prev"]), ("Sunday, September 6", True, False))
         self.assertRegex(r["daily"], r'href="#merges"><b>1</b><span>merges in 1 repo</span>')
         self.assertRegex(r["daily"], r'href="#done"><b>0</b><span>tasks done · 0 opened</span>')
         self.assertRegex(r["daily"], r'href="#runs"><b>1</b><span>runs · 1 blocked</span>')
-        self.assertRegex(r["daily"], r'href="#mail" class="unk"><b>▨</b><span>mail not read')
+        self.assertRegex(r["daily"], r'href="#mail"><b>2</b><span>inbox mail · 2 days</span>')
         self.assertIn("<b>No daily note.</b> No daily note for 2026-09-06", r["daily"])
         self.assertEqual(re.findall(r'<li class="row" data-id="([^"]+)"', r["daily"]), [f"merge:{self.merges[0]}", f"run:{self.blocked}"])
         self.assertIsNone(out["states"][-1])
@@ -323,7 +330,28 @@ class TheScript(Fixture):
 
     def test_read_again_reads_the_week_again(self):
         out = self.run_page("ELS.reload.listeners.click[0](); await flush();")
-        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes"])
+        self.assertEqual(out["gets"], ["/api/notes/quick", "/api/notes", "/api/notes/mail", "/api/notes", "/api/notes/mail"])
+
+    def test_the_inbox_rows_show_sender_subject_and_age(self):
+        out = self.run_page("R.daily = ELS.daily.html;")
+        mail = out["R"]["daily"].split('id="mail"', 1)[1]
+        self.assertIn('<span class="src">Gmail inbox via workspace-mcp · the newest within 2 days</span>', mail)
+        self.assertIn('<time class="rel" datetime="2026-09-06T11:15:00Z"></time>', mail)
+        self.assertIn("Lunch &lt;Friday&gt;?<small>Pat Example</small>", mail)
+        self.assertLess(mail.index("Lunch"), mail.index("Nightly report"))
+
+    def test_mail_that_cannot_be_read_is_named_and_the_rest_of_the_page_still_draws(self):
+        down = {"state": "down", "why": "workspace-mcp did not answer at http://127.0.0.1:9/mcp within 8 s."}
+        out = self.run_page("R.daily = ELS.daily.html;", mail=(200, down))
+        r = out["R"]["daily"]
+        self.assertIn("<b>▨ workspace-mcp is down.</b> workspace-mcp did not answer at http://127.0.0.1:9/mcp within 8 s.", r)
+        self.assertRegex(r, r'href="#mail" class="unk"><b>▨</b><span>mail not read')
+        self.assertRegex(r, r'href="#merges"><b>1</b>')
+        self.assertNotIn("unknown", json.dumps(out["states"]))
+
+    def test_a_mail_route_that_fails_is_named_too(self):
+        out = self.run_page("R.daily = ELS.daily.html;", mail=(403, {"error": "Open a dashboard page before reading Notes."}))
+        self.assertIn("<b>▨ Mail not read.</b> Open a dashboard page before reading Notes.", out["R"]["daily"])
 
     def test_the_previous_day_shows_its_own_rows_and_details_names_the_source(self):
         out = self.run_page(f"""ELS.prev.listeners.click[0](); R.day = ELS['day-name'].textContent; R.daily = ELS.daily.html;
@@ -398,6 +426,176 @@ R.value = ELS['qn-in'].value;""", kept=(400, {"error": 'A quick note holds no do
         self.assertNotRegex(NOTES_JS, r"\.style\.")
         self.assertNotRegex(NOTES_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", NOTES_JS)
+
+
+SEARCH = """Found 3 messages matching 'in:inbox':
+
+\U0001F4E7 MESSAGES:
+  1. Message ID: aaa1
+     Thread ID: t1
+
+  2. Message ID: bbb2
+     Thread ID: t2
+
+  3. Message ID: ccc3
+     Thread ID: t3
+"""
+
+METADATA = """Retrieved 3 messages:
+
+Message ID: aaa1
+Subject: Nightly report
+From: builds@example.test
+Date: Sat, 05 Sep 2026 17:00:00 -0600
+To: operator@example.test
+
+---
+
+Message ID: bbb2
+Subject: Lunch Friday?
+From: "Pat Example" <pat@example.test>
+Date: Sun, 06 Sep 2026 05:15:00 -0600
+To: operator@example.test
+
+---
+
+⚠️ Message ccc3: <HttpError 429 when requesting messages/ccc3 returned "Too many concurrent requests for user.">
+"""
+
+
+class FakeWorkspace(BaseHTTPRequestHandler):
+    """workspace-mcp's HTTP shape, as `local-mail-intake` speaks to it: initialize gives a session id in a header."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):  # noqa: N802
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.calls.append(body)
+        time.sleep(self.server.delay)
+        if body["method"] == "initialize":
+            return self.answer({"jsonrpc": "2.0", "id": body["id"], "result": {}}, session="s-1")
+        if body["method"] == "notifications/initialized":
+            self.send_response(202)
+            self.end_headers()
+            return None
+        name = body["params"]["name"]
+        text, error = self.server.tools.get(name, ("no such tool", True))
+        return self.answer({"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": text}], "isError": error}})
+
+    def do_DELETE(self):  # noqa: N802
+        self.server.closed.append(self.headers.get("mcp-session-id"))
+        self.send_response(200)
+        self.end_headers()
+
+    def answer(self, value, session=None):
+        data = ("event: message\ndata: " + json.dumps(value) + "\n\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        if session:
+            self.send_header("mcp-session-id", session)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class TheMail(NoVault, Zoned, ScreenCase):
+    """sd:3425: the newest inbox mail through workspace-mcp, as `local-notify` and `local-mail-intake` reach it."""
+
+    def setUp(self):
+        super().setUp()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeWorkspace)
+        self.server.daemon_threads = True
+        self.server.calls, self.server.closed, self.server.delay = [], [], 0
+        self.server.tools = {"search_gmail_messages": (SEARCH, False), "get_gmail_messages_content_batch": (METADATA, False)}
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/mcp"
+        patch = mock.patch.dict(os.environ, {"WORKSPACE_MCP_URL": self.url, "EMAIL_FROM": "operator@example.test"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def tools(self):
+        return [(c["params"]["name"], c["params"]["arguments"]) for c in self.server.calls if c["method"] == "tools/call"]
+
+    def test_the_inbox_rows_are_newest_first_with_sender_subject_and_time(self):
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual(out["state"], "ok", out)
+        self.assertEqual([(r["from"], r["subject"], r["at"]) for r in out["rows"]],
+                         [("Pat Example", "Lunch Friday?", "2026-09-06T11:15:00Z"), ("builds@example.test", "Nightly report", "2026-09-05T23:00:00Z")])
+        self.assertEqual((out["missing"], out["days"], out["read"]), (1, notes_screen.MAIL_DAYS, NOW))
+
+    def test_the_search_is_the_inbox_bounded_in_count_and_time_and_reads_headers_only(self):
+        notes_screen.mail(now=NOW)
+        (search, arguments), (fetch, fetched) = self.tools()
+        self.assertEqual((search, arguments), ("search_gmail_messages", {
+            "query": f"in:inbox newer_than:{notes_screen.MAIL_DAYS}d", "user_google_email": "operator@example.test",
+            "page_size": notes_screen.MAIL_ROWS}))
+        self.assertEqual((fetch, fetched["format"], fetched["message_ids"]), ("get_gmail_messages_content_batch", "metadata", ["aaa1", "bbb2", "ccc3"]))
+
+    def test_the_session_is_closed_so_each_read_leaves_none_behind(self):
+        notes_screen.mail(now=NOW)
+        self.assertEqual(self.server.closed, ["s-1"])
+
+    def test_the_account_comes_from_local_notify_s_config_when_none_is_exported(self):
+        os.environ.pop("EMAIL_FROM")
+        (self.config / "notify").mkdir(parents=True)
+        (self.config / "notify" / ".env").write_text("EMAIL_FROM=from-config@example.test\n")
+        self.assertEqual(notes_screen.mail(now=NOW)["state"], "ok")
+        self.assertEqual(self.tools()[0][1]["user_google_email"], "from-config@example.test")
+
+    def test_no_account_is_mail_not_configured_and_calls_nothing(self):
+        os.environ.pop("EMAIL_FROM")
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual(out["state"], "unconfigured")
+        self.assertIn("EMAIL_FROM is not set", out["why"])
+        self.assertEqual(self.server.calls, [])
+
+    def test_a_server_that_is_not_listening_is_down(self):
+        os.environ["WORKSPACE_MCP_URL"] = "http://127.0.0.1:9/mcp"
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual(out["state"], "down")
+        self.assertIn("http://127.0.0.1:9/mcp", out["why"])
+
+    def test_a_server_that_stalls_on_one_call_is_down_within_the_bound(self):
+        self.server.delay = 2
+        started = time.monotonic()
+        with mock.patch.object(notes_screen, "MAIL_SECONDS", 0.5):
+            out = notes_screen.mail(now=NOW)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(out["state"], "down")
+        self.assertIn(self.url, out["why"])
+
+    def test_calls_that_each_answer_but_together_overrun_are_down_at_the_bound(self):
+        self.server.delay = 0.3  # each call inside the per-call timeout; four of them are not inside the whole read's
+        started = time.monotonic()
+        with mock.patch.object(notes_screen, "MAIL_SECONDS", 0.5):
+            out = notes_screen.mail(now=NOW)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(out["state"], "down")
+        self.assertIn("within 0.5 s", out["why"])
+
+    def test_a_tool_error_such_as_a_lapsed_grant_is_named_with_the_server_s_words(self):
+        self.server.tools["search_gmail_messages"] = ("ACTION REQUIRED: Google authentication needed for operator@example.test.", True)
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual(out["state"], "error")
+        self.assertIn("ACTION REQUIRED: Google authentication needed", out["why"])
+        self.assertEqual(self.server.closed, ["s-1"])
+
+    def test_an_empty_inbox_is_no_rows_not_an_error(self):
+        self.server.tools["search_gmail_messages"] = ("No messages found for query: 'in:inbox newer_than:2d'", False)
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual((out["state"], out["rows"], out["missing"]), ("ok", [], 0))
+        self.assertEqual([name for name, _ in self.tools()], ["search_gmail_messages"])
+
+
+class TheMailRoute(NoVault, BrowserSession):
+    def test_the_mail_route_needs_a_session_and_answers_a_named_state(self):
+        self.assertEqual(self.request("/api/notes/mail")[0], 403)
+        with mock.patch.dict(os.environ, {"WORKSPACE_MCP_URL": "http://127.0.0.1:9/mcp", "EMAIL_FROM": "operator@example.test"}):
+            status, _, body = self.request("/api/notes/mail", headers={"Cookie": self.cookie})
+        self.assertEqual((status, json.loads(body)["state"]), (200, "down"))
 
 
 STUB = """#!{python}
@@ -530,7 +728,7 @@ class QuickNotes(BrowserSession):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "notes", "Notes", "/notes", ("/api/notes", "/api/notes/quick", "/api/notes/quick/add")
+    page, section, route, api = "notes", "Notes", "/notes", ("/api/notes", "/api/notes/quick", "/api/notes/mail", "/api/notes/quick/add")
 
 
 if __name__ == "__main__":

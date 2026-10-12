@@ -199,7 +199,8 @@ def build_digests(*, library_root=None, dashboard_root=None):
         library = _build_manifest(library_root)
         dashboard = [("sd_dashboard/" + name, digest)
                      for name, digest in _build_manifest(dashboard_root / "sd_dashboard")]
-        # Ports uses these fixed repository dependencies outside the package.
+        # Ports uses these fixed repository dependencies outside the package;
+        # Notes loads local-mail-intake's workspace-mcp client (sd:3425).
         # Their absence is valid in isolated fixtures, but adding or removing
         # either must still invalidate the previously captured build identity.
         #
@@ -211,7 +212,7 @@ def build_digests(*, library_root=None, dashboard_root=None):
         # still distinguishes a launcher that was removed from one that never
         # shipped.
         for name in ("dashboard.sh", "collectors.py", "sd_tile.py",
-                     "../local-machine-setup/machine-setup.sh"):
+                     "../local-machine-setup/machine-setup.sh", "../local-mail-intake/mail_intake.py"):
             path = dashboard_root / name
             dashboard.append((name, _file_digest(path) if path.exists() or path.is_symlink() else None))
     except OSError as error:

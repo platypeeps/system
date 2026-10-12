@@ -1,7 +1,8 @@
 // Notes (sd:2120): the design source's products/system/designs/pages/notes.js, ported. Each change from the reference is
 // marked "build:". The days are /api/notes (notes_screen.py), read through the shared reader; none is sample data.
-// build: days are this machine's (the document's tz), times show in the viewer's own zone; mail is unknown on every day, with
-// the document's reason. The daily note is the day's text from the vault (sd:3426), or a named state: no note, no vault.
+// build: days are this machine's (the document's tz), times show in the viewer's own zone. The daily note is the day's text
+// from the vault (sd:3426), or a named state: no note, no vault. Mail is /api/notes/mail (sd:3425), read beside the week so a
+// slow server never holds the days: the newest inbox mail on every day, or a named state when it cannot be read.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -14,7 +15,7 @@
   const HM = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const local = s => HM.format(new Date(s));
   const stamp = s => s ? `${local(s)} · ${s.replace('T', ' ').replace('Z', ' UTC')}` : 'not recorded';
-  let DOC = null, DAYS = [], TODAY = null, day = null, selected = null, OBJS = [];
+  let DOC = null, DAYS = [], TODAY = null, day = null, selected = null, OBJS = [], MAIL = null;
   const expanded = new Set(), openRepos = new Set();
 
   // Objects for selection, the ⋯ menu and the palette. Activity rows are records: no write commands.
@@ -48,6 +49,22 @@
     return html`<div class="prose${kind ? ` ${kind}` : ''}" role="note"><p><b>${title}</b> ${n?.why || 'The document carries no daily note for this day.'}</p><p>The activity below is that day's record, read from its sources.</p></div>`;
   }
 
+  // Mail rows are read-only records with no Details: sender, subject and age; the subject is text, never a link.
+  const MAIL_DOWN = { unconfigured: '▨ Mail not configured.', down: '▨ workspace-mcp is down.', error: '▨ Mail not read.' };
+  const mailOk = () => MAIL?.state === 'ok';
+  function mailSect() {
+    if (!MAIL) return sect('mail', 'Mail', '…', 'Gmail inbox via workspace-mcp', html`<p class="why">Reading the inbox…</p>`);
+    if (!mailOk()) return sect('mail', 'Mail', '▨', 'not read', html`<div class="unknown"><b>${MAIL_DOWN[MAIL.state] || MAIL_DOWN.error}</b> ${MAIL.why || 'No reason given.'}</div>`);
+    const rows = MAIL.rows || [], gap = MAIL.missing ? html`<p class="why">${plural(MAIL.missing, 'message')} found but not read: Gmail throttled the fetch.</p>` : '';
+    return sect('mail', 'Mail', rows.length, `Gmail inbox via workspace-mcp · the newest within ${plural(MAIL.days, 'day')}`, rows.length
+      ? html`<ul class="rows" aria-label="inbox mail">${rows.map(m => html`<li class="row mail"><span class="t">${m.at ? html`<time class="rel" datetime="${m.at}"></time>` : 'no date'}</span><span class="g" aria-hidden="true"></span><span class="s"><span class="sr">mail · </span>${m.subject}<small>${m.from}</small></span></li>`)}</ul>${gap}`
+      : html`<p class="why">No inbox mail in the last ${plural(MAIL.days, 'day')}.</p>${gap}`);
+  }
+  const mailTally = () => !MAIL ? html`<a href="#mail"><b>…</b><span>reading mail</span></a>`
+    : mailOk() ? html`<a href="#mail"><b>${MAIL.rows.length}</b><span>inbox mail · ${plural(MAIL.days, 'day')}</span></a>`
+    : html`<a href="#mail" class="unk"><b>▨</b><span>mail not read</span></a>`;
+  const readMail = () => window.shell.getJSON('/api/notes/mail').then(doc => { MAIL = doc; }, e => { MAIL = { state: 'error', why: e.message }; }).then(() => { if (DOC) render(); });
+
   function render() {
     const el = $('daily');
     $('day-name').textContent = day ? long(day) : 'Notes not read';
@@ -67,12 +84,12 @@
         <a href="#merges"${failed('merges') ? html` class="unk"` : ''}><b>${failed('merges') ? '▨' : merges.length}</b><span>${failed('merges') ? 'merges not read' : `merges in ${plural(repos.length, 'repo')}`}</span></a>
         <a href="#done"${failed('changes') ? html` class="unk"` : ''}><b>${failed('changes') ? '▨' : done.length}</b><span>${failed('changes') ? 'status changes not read' : `tasks done · ${A.opened} opened`}</span></a>
         <a href="#runs"${failed('runs') ? html` class="unk"` : ''}><b>${failed('runs') ? '▨' : runs.length}</b><span>${failed('runs') ? 'runs not read' : `runs${blocked ? ` · ${blocked} blocked` : ''}`}</span></a>
-        <a href="#mail" class="unk"><b>▨</b><span>mail not read</span></a>
+        ${mailTally()}
       </nav>${sect('merges', 'Merges', failed('merges') ? '▨' : merges.length, `sd-ship delivery notes · read ${read} UTC`,
         failed('merges') ? notRead(failed('merges')) : repos.length ? html`${repos.map((r, i) => html`<details class="repo" data-repo="${r}"${i === 0 || openRepos.has(r) ? html` open` : ''}><summary><b>${r}</b><span class="n">${by[r].length}</span></summary>${list(by[r], 'merges ' + r)}</details>`)}` : html`<p class="why">No merges this day.</p>`)
       }${sect('done', 'Tasks done', failed('changes') ? '▨' : done.length, `sd.db status changes · read ${read} UTC`, failed('changes') ? notRead(failed('changes')) : done.length ? list(done, 'tasks done') : html`<p class="why">No task reached done this day.</p>`)
       }${sect('runs', 'Runs', failed('runs') ? '▨' : runs.length, `runner assignments by start or end · read ${read} UTC`, failed('runs') ? notRead(failed('runs')) : runs.length ? list(runs, 'runs') : html`<p class="why">No runner run started or ended this day.</p>`)
-      }${sect('mail', 'Mail', '▨', 'not read', html`<div class="unknown"><b>▨ Unknown.</b> ${DOC.unknown.mail}</div>`)}`);
+      }${mailSect()}`);
   }
   function renderDetails() {
     const el = $('details'), o = selected && window.shell.commands.get(selected);
@@ -147,7 +164,7 @@
     $('prev').addEventListener('click', () => window.notesDay(-1));
     $('next').addEventListener('click', () => window.notesDay(1));
     $('today').addEventListener('click', () => { if (TODAY) go(TODAY); });
-    $('reload').addEventListener('click', () => reader.load());
+    $('reload').addEventListener('click', () => { reader.load(); readMail(); });
     $('daily').addEventListener('click', e => {
       const m = e.target.closest('[data-more]');
       if (m) { const k = m.dataset.more; expanded.has(k) ? expanded.delete(k) : expanded.add(k); document.querySelectorAll('details.repo[open]').forEach(d => openRepos.add(d.dataset.repo)); render(); return; }
@@ -192,6 +209,7 @@
     paintQ(); readQ();
     S.suggest(['What did I merge today in system?', 'Which runs were blocked this week?', 'Draft this day\'s summary from its activity']);
     reader.load();
+    readMail();
   });
 })();
 // Top level, not inside DOMContentLoaded: shell.js builds the ? sheet from PAGE_KEYS when it loads.

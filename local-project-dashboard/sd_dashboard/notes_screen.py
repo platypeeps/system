@@ -23,9 +23,16 @@ machine's own time zone, from records the library already keeps:
   note says where it looked, and a vault that is not set says so: neither is
   shown as text.
 
-Mail has no reader here, and is in `unknown` with the reason, so the page
-draws it hatched: unknown is not zero. Mail needs a network call and a
-credential.
+Mail (sd:3425) is its own read, `mail`, behind `/api/notes/mail`, so a slow
+mail server never holds up the days: the newest `MAIL_ROWS` inbox messages of
+the last `MAIL_DAYS` days, sender, subject and time, from Gmail through
+workspace-mcp. It reaches the server with `local-mail-intake`'s client, at
+`WORKSPACE_MCP_URL` and as `EMAIL_FROM`, the account `local-notify` sends
+from: each exported, else from `<config>/notify/.env`. It asks for headers,
+never bodies, and closes its session. The whole read is bounded by
+`MAIL_SECONDS`; a server that is down or slower is `down`, an account not set
+is `unconfigured`, and a tool error such as a lapsed grant is `error`, each
+with the reason, never unknown.
 
 A source that raises is named in `sources` with its reason and adds no rows,
 so a failed read never looks like a quiet day. The document writes nothing.
@@ -42,13 +49,16 @@ the vault, and the next try adds ` 2`, ` 3` and so on.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import unicodedata
+import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -57,15 +67,19 @@ from sd_db.errors import SdDbError
 
 from . import activity_screen
 
-__all__ = ["DAILY_MAX", "DAYS", "QUICK_KIND", "QUICK_MAX", "KindMissing", "UNKNOWN", "daily_notes", "document", "quick_add",
-           "quick_notes", "quick_text"]
+__all__ = ["DAILY_MAX", "DAYS", "MAIL_DAYS", "MAIL_ROWS", "MAIL_SECONDS", "QUICK_KIND", "QUICK_MAX", "KindMissing", "daily_notes",
+           "document", "mail", "quick_add", "quick_notes", "quick_text"]
 
 #: Days the document carries, today included.
 DAYS = 7
 
-UNKNOWN = {
-    "mail": "No collector reads mail: brief and status mail stay in Gmail, and reading it needs a network call and a credential.",
-}
+#: The inbox the page lists: the newest `MAIL_ROWS` messages of the last `MAIL_DAYS` days.
+MAIL_ROWS = 15
+MAIL_DAYS = 2
+#: The whole mail read's ceiling, in seconds: session, search, header fetch and close.
+MAIL_SECONDS = 8
+#: workspace-mcp's address when neither the environment nor local-notify's config names one, as local-notify has it.
+MAIL_URL = "http://127.0.0.1:8083/mcp"
 
 #: The tools whose `<config>/<tool>/.env` may name the vault, in the order read; their scripts resolve it the same way.
 VAULT_TOOLS = ("obsidian-review", "obsidian-tasks")
@@ -243,6 +257,85 @@ def daily_notes(days, environ=None) -> dict:
     return out
 
 
+def _mail_intake():
+    # `local-mail-intake`'s workspace-mcp client and parsers, loaded by path: the file sits beside this folder in the
+    # checkout, as `collectors.py` does for the screens that load it.
+    path = Path(__file__).resolve().parents[2] / "local-mail-intake" / "mail_intake.py"
+    spec = importlib.util.spec_from_file_location("sd_dashboard_mail_intake", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+def _inbox(mi, url: str, account: str, budget: float) -> dict:
+    """One bounded read: a session, the inbox search, the found messages' headers, then the session closed."""
+    client = mi.Mcp(url, timeout=budget)
+    try:
+        client.connect()
+        found = client.call("search_gmail_messages", {"query": f"in:inbox newer_than:{MAIL_DAYS}d",
+                                                       "user_google_email": account, "page_size": MAIL_ROWS})
+        ids = list(dict.fromkeys(mid for mid, _ in mi.parse_search(found)))[:MAIL_ROWS]
+        blocks = []
+        for start in range(0, len(ids), mi.BATCH):
+            blocks += mi.parse_metadata(client.call("get_gmail_messages_content_batch", {
+                "message_ids": ids[start:start + mi.BATCH], "user_google_email": account, "format": "metadata"}))
+    finally:
+        if client.session:
+            try:
+                urllib.request.urlopen(urllib.request.Request(url, method="DELETE", headers={"mcp-session-id": client.session}),
+                                       timeout=3).close()
+            except OSError:
+                pass  # a session the server cannot close expires on its own; the read already has its answer
+    rows = []
+    for fields in blocks:
+        sent = mi.when(fields.get("Date", ""))
+        rows.append({"id": fields["Message ID"], "from": mi.display_name(fields.get("From", "")),
+                     "subject": fields.get("Subject") or "(no subject)", "at": _iso(sent.astimezone(timezone.utc)) if sent else None})
+    rows.sort(key=lambda row: row["at"] or "", reverse=True)
+    return {"rows": rows, "missing": len(ids) - len(rows)}
+
+
+def mail(*, now: str, environ=None) -> dict:
+    """The newest inbox mail: `ok` with rows, or `unconfigured`, `down` or `error` with the reason; never raises."""
+    environ = os.environ if environ is None else environ
+    lib = str(Path(__file__).resolve().parents[2] / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import system_tools_config
+
+    saved = system_tools_config.read_env("notify", environ)
+    url = environ.get("WORKSPACE_MCP_URL") or saved.get("WORKSPACE_MCP_URL") or MAIL_URL
+    account = environ.get("EMAIL_FROM") or saved.get("EMAIL_FROM") or ""
+    if not account:
+        return {"state": "unconfigured", "why": system_tools_config.missing("EMAIL_FROM", "notify", ".env", environ=environ)
+                + " It is the Google account workspace-mcp reads mail for."}
+    seconds = MAIL_SECONDS
+    box = {}
+
+    def read():
+        try:
+            mi = _mail_intake()
+            try:
+                box["answer"] = {"state": "ok", **_inbox(mi, url, account, seconds)}
+            except mi.McpError as error:
+                down = str(error).startswith("cannot reach")
+                box["answer"] = {"state": "down" if down else "error",
+                                 "why": f"workspace-mcp at {url}: {error}" if down else f"workspace-mcp could not read the inbox: {error}"}
+        except (OSError, ValueError, RuntimeError) as error:  # a socket timeout mid-reply is an OSError, not a McpError
+            box["answer"] = {"state": "down", "why": f"workspace-mcp at {url} stopped answering: {error.__class__.__name__}: {error}"}
+        except Exception as error:  # noqa: BLE001 - the page names any failure rather than lose the read
+            box["answer"] = {"state": "error", "why": f"The mail read failed: {error.__class__.__name__}: {error}"}
+
+    worker = threading.Thread(target=read, name="notes-mail", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    answer = box.get("answer") or {"state": "down", "why": f"workspace-mcp did not answer at {url} within {seconds} s."}
+    return {**answer, "read": now, "days": MAIL_DAYS}
+
+
 def _utc(stamp: str) -> datetime:
     return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
 
@@ -310,5 +403,4 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
         "tz": datetime.combine(today, time(12)).astimezone().tzname() or "local",
         "days": days,
         "sources": sources,
-        "unknown": dict(UNKNOWN),
     }

@@ -20,9 +20,18 @@ Obsidian vault that `local-obsidian-review` and `local-obsidian-tasks` read:
 page shows the text as plain text. A day with no note says where it looked;
 an unset vault reads "Vault not configured".
 
+Mail (sd:3425) is `GET /api/notes/mail` (`notes_screen.mail`), read beside
+the week so a slow mail server never holds up the days. It lists the newest 15
+inbox messages of the last two days, with sender, subject and age, from Gmail
+through workspace-mcp. It uses `local-mail-intake`'s client, at
+`WORKSPACE_MCP_URL` as `EMAIL_FROM`, the account `local-notify` sends from:
+each exported, else from `<config>/notify/.env`. It asks for headers only and
+closes its session. The whole read stops at 8 seconds. A server that is down
+or slower, an account not set, or a tool error such as a lapsed grant each
+shows as a named state with the reason.
+
 A source that raises is named, its section is unknown with that reason, and
-the page reports a partial read. Mail has no reader and always shows as
-unknown: it needs a network call and a credential.
+the page reports a partial read.
 
 Gaps from the design: quick notes stay on the page for the visit, as the
 design states, because sd store has no loose-note kind. Declaring a
