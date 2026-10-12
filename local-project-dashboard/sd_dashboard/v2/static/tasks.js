@@ -463,6 +463,14 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Rendering ----------
   let view = 'board', selected = null;
   let checked = new Set(); // mirror of the shell's picked rows
+  // build (sd:3440): a card's priority and due date are dropdowns, each the Details field's write (fieldChange). Due offers
+  // the near dates; Pick a date opens Edit. A row edit_item refuses, or one not read again, keeps the plain labels.
+  const tileF = t => EDITABLE(t) && live(t.key);
+  function dueSelect(t, dt, dc) {
+    const near = [[plus(0), 'Today'], [plus(1), 'Tomorrow'], [plus(7), 'In a week']].filter(([d]) => d !== t.due);
+    return html`<select class="tile-f due ${dc}" data-edit="due" data-key="${t.key}" aria-label="Due date of ${label(t)}"><option value="${String(t.due || '')}" selected>${t.due ? dt : 'No due date'}</option>${
+      near.map(([d, w]) => html`<option value="${d}">${w} · ${fmt(d)}</option>`)}${t.due && !repeats(t) ? html`<option value="">No due date</option>` : ''}<option value="pick">Pick a date…</option></select>`;
+  }
   function card(t, compact) {
     const st = state(t), [dt, dc] = dueText(t);
     return html`<article class="card" tabindex="0" data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
@@ -470,12 +478,13 @@ addEventListener('DOMContentLoaded', () => {
         <label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label>
         ${st ? html`<span class="g g-${st}" aria-hidden="true">${GLYPH[st]}</span>` : ''}
         <span class="id">${label(t)}</span>
-        <span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>
+        ${tileF(t) ? html`<select class="tile-f pri" data-edit="p" data-key="${t.key}" data-p="${String(t.p || '')}" aria-label="Priority of ${label(t)}">${t.p ? '' : html`<option value="" selected>P–</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select>`
+          : html`<span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>`}
         ${t.assignment === 'running' ? html`<span class="lock" title="Runner assignment running">${ICON('lock')}</span>` : ''}
         ${C.rowActions(t.key)}
       </div>
       <div class="t">${t.title}</div>
-      <div class="meta"><span class="repo">${t.repo}</span><span class="due ${dc}">${dt}</span>${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
+      <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
     </article>`;
   }
   function renderBoard() {
@@ -664,12 +673,15 @@ addEventListener('DOMContentLoaded', () => {
     if (open && innerWidth < 1240) openPane('tab-details');
   }
   document.getElementById('main').addEventListener('click', e => {
-    if (e.target.closest('.rowact, .pick')) return;
+    if (e.target.closest('.rowact, .pick, .tile-f')) return;
     const c = e.target.closest('.card'); if (c && !suppressClick) select(c.dataset.key, true);
   });
   // Selection follows focus on a card, so Enter, which the shell sends as shell:open, opens the focused one.
   document.getElementById('main').addEventListener('focusin', e => { const c = e.target.closest('.card'); if (c && e.target === c && c.dataset.key !== selected) select(c.dataset.key, false); });
   document.getElementById('main').addEventListener('change', e => {
+    const { edit: f, key } = e.target.dataset, t = f && byKey(key);
+    if (t) { if (f === 'due' && e.target.value === 'pick') { render(); askEdit(t); return; }
+      if (!fieldChange(t, `det-${f}`, e.target.value)) render(); return; }
     const k = e.target.dataset.check; if (!k) return;
     C.pick(k);
   });
@@ -806,7 +818,7 @@ addEventListener('DOMContentLoaded', () => {
   };
   document.addEventListener('pointerdown', e => {
     const c = e.target.closest('.card');
-    if (!c || e.button !== 0 || e.pointerType === 'touch' || e.target.closest('button, input')) return;
+    if (!c || e.button !== 0 || e.pointerType === 'touch' || e.target.closest('button, input, select')) return;
     drag = { key: c.dataset.key, el: c, x: e.clientX, y: e.clientY, on: false, over: null };
   });
   document.addEventListener('pointermove', e => {

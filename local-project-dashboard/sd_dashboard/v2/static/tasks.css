@@ -65,6 +65,14 @@
 .repo::before { content: "#"; color: var(--color-muted); }
 .due.warning { color: var(--color-warning); font-weight: 500; }
 .due.caution { color: var(--color-caution); }
+/* A card's priority and due dropdowns (sd:3440): they read as the labels they replace until hovered or focused. */
+.card .tile-f { appearance: none; -webkit-appearance: none; background: transparent; cursor: pointer; }
+.card select.due { font: inherit; color: inherit; border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); padding: 0 var(--space-2xs); }
+.card select.due.warning { color: var(--color-warning); }
+.card select.due.caution { color: var(--color-caution); }
+.card .tile-f:hover { border-color: var(--color-ink-2); }
+.card .tile-f:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+@media (pointer: coarse) { .card .tile-f { min-height: var(--row-touch); } }
 .tag { display: inline-block; padding: 0 4px; border: var(--rule-hair) dashed var(--color-rule); border-radius: var(--radius-sm); font: 500 var(--text-2xs)/1.4 var(--font-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-muted); }
 .tag.real { border-style: solid; color: var(--color-ink-2); }
 .lock { color: var(--color-muted); }

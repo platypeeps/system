@@ -687,6 +687,25 @@ change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush()
         self.assertIn(f"#{plan} title → Plan the big review · sd task edit {plan} --title 'Plan the big review'", msgs)
         self.assertIn(f"#{plan} description changed · sd task edit {plan} --body 'New words'", msgs)
 
+    def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
+        # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.row("port")["edit"] = {"allowed": False, "reason": "message items use their own editing workflow"}
+        tile = "const tile = (edit, key, value) => ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit, key: String(key) }, value } }));\n"
+        out = self.run_page(tile + f"""R.board = ELS['view-board'].html;
+tile('p', {plan}, '1'); await flush();
+tile('due', {plan}, ''); await flush();""", self.ECHO)
+        # Pick a date opens the Edit dialog, which the stand-in page cannot draw.
+        self.assertIn("if (f === 'due' && e.target.value === 'pick') { render(); askEdit(t); return; }", TASKS_JS)
+        board = out["R"]["board"]
+        self.assertIn(f'<select class="tile-f pri" data-edit="p" data-key="{plan}" data-p="2" aria-label="Priority of #{plan}">', board)
+        self.assertRegex(board, rf'<select class="tile-f due[^"]*" data-edit="due" data-key="{plan}" aria-label="Due date of #{plan}"><option value="2026-09-09" selected>')
+        self.assertIn('<option value="pick">Pick a date…</option>', board)
+        # A row edit_item refuses keeps the plain labels.
+        self.assertNotIn(f'data-key="{port}" aria-label="Priority', board)
+        bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
+        self.assertEqual(bodies, [{"priority": 1}, {"due": None}])
+
     def test_a_status_move_toasts_after_the_write_and_undo_posts_the_old_status_with_the_new_revision(self):
         ask = self.ids["ask"]
         row = next(r for r in self.doc["rows"] if r["id"] == ask)
