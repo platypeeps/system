@@ -311,12 +311,12 @@ var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
 // A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
-// empty keeps OK off, so nothing runs.
+// empty keeps OK off, so nothing runs. One that asks first (shell.js's asksFirst) records its confirm and runs.
 var FIELD_VALUES = {};
 function shellRun(c, o) {
   var off = c.when ? c.when(o) : true;
   if (off !== true) { OUT.toasts.push({ msg: 'off: ' + off }); return; }
-  if (c.risk === 'confirm' || c.fields) OUT.confirms.push(c.id);
+  if (c.risk === 'confirm' || c.fields || asksFirst(c, o)) OUT.confirms.push(c.id);
   var v = c.fields ? Object.fromEntries(c.fields(o).map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
   if (c.fields && c.fields(o).some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + c.fields(o).filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
   var msg = c.run ? c.run(o, v) : '';
@@ -332,7 +332,7 @@ C.run = shellRun;
 function shellBulk(c, objs) {
   if (handOver(c, objs, () => { OUT.cleared = (OUT.cleared || 0) + 1; })) return;
   var fs = c.fields ? c.fields({ id: 'bulk' }) : [], v = fs.length ? Object.fromEntries(fs.map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
-  if (c.risk === 'confirm' || fs.length || objs.length > 25) OUT.confirms.push(c.id);
+  if (c.risk === 'confirm' || fs.length || objs.length > 25 || objs.some(o => asksFirst(c, o))) OUT.confirms.push(c.id);
   if (fs.some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + fs.filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
   OUT.bulkCli = objs.map(o => c.cli ? c.cli(o, v || {}) : '').join(' && ');
   var rs = runEach(c, objs, v);
@@ -438,6 +438,18 @@ OUT.toasts[0].undo(); await flush();""")
         self.assertEqual(out["toasts"], [["Moved #1", True], ["#2 not changed: stale", False], ["Move undone · #1", False]])
         self.assertEqual(out["undone"], [["1", {"text": "Moved #1"}]])
 
+
+    def test_ask_first_is_a_flag_or_a_test_of_the_object(self):
+        """sd:3392: commands.md lets askFirst test the object (Retry after exit 127); a function is not itself a yes."""
+        out = self.settle("""OUT.got = [asksFirst({ askFirst: true }, obj(1)), asksFirst({}, obj(1)),
+  asksFirst({ askFirst: o => o.exit === 127 }, { exit: 127 }), asksFirst({ askFirst: o => o.exit === 127 }, { exit: 7 })];""")
+        self.assertEqual(out["got"], [True, False, True, False])
+
+    def test_run_and_bulk_ask_through_the_one_test(self):
+        """A guard: run() and runBulk() both read asksFirst, so neither treats a test as always yes or skips it."""
+        self.assertTrue("c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length" in SHELL_JS, "run() skips the test")
+        self.assertTrue("askFirst: objs.length > 25 || objs.some(o => asksFirst(c, o))" in SHELL_JS, "runBulk() skips the test")
+        self.assertIsNone(re.search(r"(?<!!)!c\.askFirst\b", SHELL_JS), "a test of the object read as a flag")
 
 class TheConfirmFields(unittest.TestCase):
     """shell.js's confirmAction with fields (sd:2200), run against a stand-in dialog: OK is off until a required field is typed."""

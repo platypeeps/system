@@ -352,6 +352,9 @@
   const thenable = v => !!v && typeof v.then === 'function';
   const textOf = (v, fallback) => (typeof v === 'string' && v) || (v && typeof v.text === 'string' && v.text) || fallback;
   const undoOne = (c, o, v) => Promise.resolve().then(() => c.undo(o, v));
+  // askFirst is a flag or a test of the object (commands.md): Retry asks only after exit 127 (sd:3392). A safe command that
+  // asks confirms first; a function is never itself a yes.
+  const asksFirst = (c, o) => typeof c.askFirst === 'function' ? !!c.askFirst(o) : !!c.askFirst;
   // One run per picked object, each its own promise: a run that throws is that row's rejection, so the rows after it
   // still run and the group's toast names it (review, PR #46). `v` is what the group's confirm took, the same for every row.
   const runEach = (c, objs, v) => objs.map(o => { try { return c.run?.(o, v); } catch (e) { return Promise.reject(e); } });
@@ -483,7 +486,7 @@
     // A command with fields always asks: the dialog is where the operator types them. Its colour follows the risk, or the
     // command's danger(o) where one object's outcome is graver than another's (Tasks' item.complete, sd:2250).
     const fields = c.fields ? c.fields(o) : [];
-    if (c.risk !== 'confirm' && !c.askFirst && !fields.length) return go();
+    if (c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length) return go();
     const act = actOf(c, o);
     confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.danger ? !!c.danger(o) : c.risk === 'confirm', fields })
       .then(({ yes, from, values }) => { if (!yes) return; go(values); const a = document.activeElement; if (!a || a === body) refocus(from); });
@@ -589,13 +592,13 @@
   });
   function runBulk(c, objs) {
     const group = { id: 'bulk', type: plural(2, c.on).replace(/^2 /, ''), label: plural(objs.length, c.on) };
-    // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats folded.
-    const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
+    // The confirm dialog gets the group, which has no row fields, so consequence is rebuilt from the real objects: one line each, repeats and blanks folded; the group asks first when any row would (sd:3392).
+    const consequence = c.consequence && (() => { const lines = [...new Set(objs.map(o => c.consequence(o)).filter(Boolean))]; return lines.length > 4 ? `${lines.slice(0, 4).join(' ')} And ${lines.length - 4} more.` : lines.join(' '); });
     // build (sd:2124): the group's toast and Undo wait for every run (settleBulk); run() sees null and toasts nothing itself.
     if (handOver(c, objs, () => { picked.clear(); renderBulk(); })) return;
     // A command with fields asks once for the group (run's confirm); each row's run and CLI line get what was typed.
     const one = { ...c, cli: (_, v) => objs.map(o => cliOf(c, o, v)).join(' && '), run: (_, v) => { const rs = runEach(c, objs, v); picked.clear(); renderBulk(); settleBulk(c, objs, rs, { toast, plural }); return null; },
-      consequence, askFirst: objs.length > 25, risk: c.risk };
+      consequence, askFirst: objs.length > 25 || objs.some(o => asksFirst(c, o)), risk: c.risk };
     run(one, group);
   }
   const commands = {

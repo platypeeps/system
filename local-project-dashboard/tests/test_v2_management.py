@@ -787,6 +787,24 @@ C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""",
         self.assertTrue(out["toasts"][1][0].startswith("off: "), out["toasts"])
 
 
+    def test_after_exit_127_retry_asks_first_naming_the_exit_and_print_is_the_rows_act(self):
+        """sd:3392, ruled 2026-09-30: the exit is the last run's, and a path fixed outside the dashboard needs Retry to test it."""
+        doc = json.loads(json.dumps(self.doc))
+        next(j for j in doc["jobs"] if j["name"] == "nightly-sync")["last_exit"] = 127
+        out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
+R.on = c.when(o); R.primary = !!c.primary(o); R.print = !!cmd('job.print').primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]", doc=doc)
+        self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["print"], out["R"]["ask"]), (True, False, True, True))
+        self.assertIn("exit 127", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["jobs.retry"])
+        self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
+        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
+
+    def test_after_another_exit_retry_is_the_rows_act_and_does_not_ask(self):
+        out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
+R.got = [!!c.primary(o), !!cmd('job.print').primary(o), !!c.askFirst(o)];""")
+        self.assertEqual(out["R"]["got"], [True, False, False])
+
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
         """sd:3388: a 200 carries launchctl's answer; only `accepted` started a retry."""
         cases = {
