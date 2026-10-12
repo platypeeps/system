@@ -377,6 +377,12 @@ class TheRailWidth(unittest.TestCase):
         self.assertIn("setWidth(store('sd.rail.width'), false);", SHELL_JS)
         self.assertIn("railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width'))", SHELL_JS)
 
+    def test_the_grip_sizes_come_from_tokens(self):
+        # Foundation tokens.css covers space and rules, so the grip's own rules carry no raw px (the 2px focus ring aside: no token).
+        rules = re.findall(r"^[^\n]*\.rail-grip[^{\n]*\{([^}]*)\}", SHELL_CSS, re.M)
+        self.assertTrue(rules)
+        self.assertEqual([r for r in rules if re.search(r"\d+px", r)], [])
+
 
 if __name__ == "__main__":
     unittest.main()
