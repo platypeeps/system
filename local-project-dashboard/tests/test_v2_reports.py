@@ -62,6 +62,7 @@ COMMANDS = [
     ["status mail.log", "status mail", "Show log", "l", "safe"],
     ["status mail.task", "status mail", "Make task", "k", "safe"],
     ["jobs.retry", "job", "Retry", "t", "safe"],
+    ["clean batch.ack", "clean batch", "Acknowledge", "a", "confirm"],  # sd:3386: the attributed batch, from the clean preview
 ]
 
 
@@ -263,6 +264,15 @@ class TheDocument(ScreenCase):
         with self.assertRaises(workflow.WorkflowError):
             reports_screen.clean(self.connection, "2026-09-08T01:00:00Z", now=LATER)
 
+    def test_the_clean_preview_carries_the_plan_the_batch_acknowledge_checks(self):
+        """sd:3386: the plan binds the batch to this selection at these revisions; no selection issues none."""
+        got = reports_screen.clean(self.connection, "2026-09-08", now=LATER)
+        library = reporting.clean_reports(self.connection, before="2026-09-08T00:00:00+00:00",
+                                          now=reports_screen.datetime.fromisoformat(LATER.replace("Z", "+00:00")))
+        self.assertEqual((got["before"], got["plan"]), ("2026-09-08T00:00:00+00:00", library["plan"]))
+        self.assertRegex(got["plan"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(reports_screen.clean(self.connection, "2026-09-01", now=LATER)["plan"])
+
 
 class ThePage(BrowserSession):
     def setUp(self):
@@ -308,6 +318,29 @@ class ThePage(BrowserSession):
         status, _, body = self.request("/api/reports/clean?before=2026-09-01", headers=cookie)
         self.assertEqual((status, json.loads(body)["selected"]), (200, []))
         self.assertEqual(self.snapshot(), before)
+
+    def test_the_batch_acknowledge_takes_the_plan_the_page_previewed_and_refuses_one_a_change_moved(self):
+        """sd:3386: the v2 preview's before and plan are what the attributed batch posts; a report that changed is another plan."""
+        from sd_db import create_item
+
+        def clean(job):
+            return create_item(self.connection, kind="report", title=f"{job}: run report", status="planning", source="cron-report",
+                               external_id=f"{job}:run", fields={"attention": False, "report": {"job": job, "ended": "2026-09-09T00:00:00+00:00"}},
+                               created_at="2026-09-09T00:00:00+00:00")
+
+        alpha, beta = clean("alpha"), clean("beta")
+        self.connection.commit()
+        preview = json.loads(self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})[2])
+        self.assertEqual((preview["selected"], preview["count"]), ([alpha, beta], 2))
+        # Another subject: beta was acknowledged after the preview, so the plan the page holds is refused and nothing moves.
+        reporting.acknowledge(self.connection, beta, expected_revision=workflow.item_state(self.connection, beta)["revision"], who="fixture")
+        before = self.snapshot()
+        status, _, body = self.post("/api/reports/acknowledge-clean", {"before": preview["before"], "plan": preview["plan"], "who": "operator"})
+        self.assertEqual((status, body["reload"]), (409, True))
+        self.assertEqual(self.snapshot(), before)
+        preview = json.loads(self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})[2])
+        status, _, body = self.post("/api/reports/acknowledge-clean", {"before": preview["before"], "plan": preview["plan"], "who": "operator"})
+        self.assertEqual((status, body["acknowledged"], body["actor"]["who"]), (200, [alpha], "operator"))
 
 
     def test_reopen_takes_the_revision_the_acknowledgement_answered(self):
@@ -364,7 +397,7 @@ class TheScript(ScreenCase):
         doc = doc or self.doc
         answer = answer or f"(path, body) => path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
         clean = {"before": "2026-09-08T00:00:00+00:00", "count": 1, "max_batch": 1000, "selected": [self.ids["clean"], 99999],
-                 "declined": [{"id": self.ids["failed"], "why": "it needs attention"}]}
+                 "declined": [{"id": self.ids["failed"], "why": "it needs attention"}], "plan": "a" * 64}
         script = (STAND_IN + f"var CLEAN = {json.dumps(clean)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
                   + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + "\n" + REPORTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
@@ -597,6 +630,63 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertEqual(out["R"]["shown"], [self.ids["clean"]])
         self.assertIn(f"#{self.ids['failed']}</b> nightly-sync: it needs attention", out["R"]["dec"])
         self.assertIn("1 more are older than the newest 200", out["R"]["sum"])
+
+    # sd:3386: the attributed batch (`--all-clean --who`), from the preview Select clean read.
+    BATCH = ("ELS['ack-date'].value = '2026-09-08'; await selectClean();"
+             " const o = C.get('clean:batch'), c = cmd('clean batch.ack');")
+    ACKED = ("(path, body) => path === '/api/reports/acknowledge-clean' ? [200, { item: { id: 77 }, acknowledged: [1], revision: 'r' }]"
+             " : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]")
+
+    def test_select_clean_offers_the_attributed_batch_with_the_previews_plan(self):
+        out = self.run_page(self.BATCH + """R.obj = [o.type, o.before, o.plan, o.count, o.label]; R.when = c.when(o); R.cli0 = c.cli(o, {});
+R.cli = c.cli(o, { who: "Op O'Erator" }); R.fields = c.fields(o).map(f => [f.name, f.label, !!f.required]); R.batch = ELS['ack-batch'].html;
+FIELD_VALUES.who = "Op O'Erator"; shellRun(c, o); await flush(); R.after = C.get('clean:batch').type; R.out = ELS['ack-out'].hidden;""",
+                            answer=self.ACKED.replace("DOC_JSON", json.dumps(self.doc)))
+        before, plan = "2026-09-08T00:00:00+00:00", "a" * 64
+        self.assertEqual(out["R"]["obj"], ["clean batch", before, plan, 1, "1 clean report before 2026-09-08"])
+        self.assertIs(out["R"]["when"], True)
+        self.assertEqual(out["R"]["fields"], [["who", "Acknowledged by", True]])
+        self.assertEqual(out["R"]["cli0"], f"sd reports acknowledge --all-clean --before {before} --apply --if-plan {plan} --who NAME")
+        self.assertEqual(out["R"]["cli"], f"sd reports acknowledge --all-clean --before {before} --apply --if-plan {plan} --who 'Op O'\\''Erator'")
+        self.assertIn('class="bar"', out["R"]["batch"])
+        self.assertEqual(out["confirms"], ["clean batch.ack"])
+        self.assertEqual(out["posts"], [["/api/reports/acknowledge-clean", {"before": before, "plan": plan, "who": "Op O'Erator"}, 64]])
+        self.assertEqual(out["toasts"][-1], ["Acknowledged 1 clean report in batch report #77", False])
+        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
+        # The batch landed: its plan is spent, so the object retires and the preview closes.
+        self.assertEqual((out["R"]["after"], out["R"]["out"]), ("not listed", True))
+        self.assertIn('id="ack-batch"', (V2 / "reports.html").read_text(encoding="utf-8"))
+
+    def test_the_batch_asks_who_and_runs_nothing_without_a_name(self):
+        out = self.run_page(self.BATCH + "FIELD_VALUES.who = '   '; shellRun(c, o); await flush();")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"][-1], ["not run: OK is off until Acknowledged by is typed", False])
+
+    def test_a_preview_with_no_plan_keeps_the_batch_off_with_the_reason(self):
+        out = self.run_page(self.BATCH + """R.none = c.when(o);
+CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.get('clean:batch'));""",
+                            prelude="CLEAN.plan = null; CLEAN.count = 0;")
+        self.assertEqual(out["R"]["none"], "nothing is clean before 2026-09-08")
+        self.assertEqual(out["R"]["over"], "1001 clean reports is more than one batch moves (1000); choose an earlier date")
+        self.assertEqual(out["posts"], [])
+
+    def test_a_stale_batch_writes_nothing_and_previews_again(self):
+        out = self.run_page(self.BATCH + "FIELD_VALUES.who = 'operator'; shellRun(c, o); await flush();",
+                            answer="(path, body) => path === '/api/reports/acknowledge-clean' ? [409, { error: 'the clean reports changed since the preview', reload: true }]"
+                                   f" : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]")
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertEqual(out["toasts"][-1], ["1 clean report before 2026-09-08 not changed: the clean reports changed since the preview."
+                                             " The preview is read again", False])
+        self.assertEqual([path for path in out["gets"] if path.startswith("/api/reports/clean")], ["/api/reports/clean?before=2026-09-08"] * 2)
+        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
+
+    def test_a_batch_with_no_answer_is_unknown_not_refused(self):
+        out = self.run_page(self.BATCH + "FIELD_VALUES.who = 'operator'; shellRun(c, o); await flush();",
+                            answer="(path, body) => path === '/api/reports/acknowledge-clean' ? Promise.reject(new TypeError('Load failed'))"
+                                   f" : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]")
+        self.assertEqual(out["toasts"][-1], ["1 clean report before 2026-09-08 not changed: no answer (Load failed), so whether the batch"
+                                             " landed is not known; the reports and the preview are read again", False])
+        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
 
     def test_details_show_the_report_its_source_from_home_and_the_diff_with_the_previous_one(self):
         out = self.run_page(f"open('r{self.ids['failed']}'); R.failed = ELS.details.html; open('r{self.ids['clean']}'); R.clean = ELS.details.html;")

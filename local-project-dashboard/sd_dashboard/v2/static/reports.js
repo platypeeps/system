@@ -348,7 +348,7 @@ async function selectClean() {
   const before = byId('ack-date').value;
   let preview;
   try { preview = await window.shell.getJSON(`/api/reports/clean?before=${encodeURIComponent(before)}`); }
-  catch (err) { byId('ack-out').hidden = false; byId('ack-sum').textContent = `No preview: ${err.message}`; put(byId('ack-sel'), html``); put(byId('ack-dec'), html``); return; }
+  catch (err) { retireBatch(); byId('ack-out').hidden = false; byId('ack-sum').textContent = `No preview: ${err.message}`; put(byId('ack-sel'), html``); put(byId('ack-dec'), html``); return; }
   const byN = Object.fromEntries(ROWS.map(r => [r.n, r]));
   const selected = preview.selected.filter(n => byN[n]), away = preview.selected.length - selected.length;
   byId('ack-sel-h').textContent = `Selected (${preview.selected.length})`;
@@ -356,15 +356,43 @@ async function selectClean() {
   put(byId('ack-sel'), html`${(selected.length ? selected.map(n => html`<li><b>#${n}</b> ${byN[n].what}</li>`) : html`<li>None.</li>`)}`);
   put(byId('ack-dec'), html`${(preview.declined.length ? preview.declined.map(d => html`<li><b>#${d.id}</b> ${byN[d.id]?.job || 'a report'}: ${d.why}</li>`) : html`<li>None.</li>`)}`);
   byId('ack-sum').textContent = selected.length
-    ? `${plural(selected.length, 'clean report')} picked and listed under Reports. The bar at the bottom acknowledges them.${away ? ` ${away} more are older than the newest ${DOC.limit || 200}; the classic Reports screen acknowledges those.` : ''}`
-    : preview.count ? `${preview.count} clean reports, none in the newest ${DOC.limit || 200}; the classic Reports screen acknowledges them.` : 'No clean open report before that date.';
+    ? `${plural(selected.length, 'clean report')} picked and listed under Reports. The bar at the bottom acknowledges them.${away ? ` ${away} more are older than the newest ${DOC.limit || 200}; the batch below acknowledges every one.` : ''}`
+    : preview.count ? `${preview.count} clean reports, none in the newest ${DOC.limit || 200}; the batch below acknowledges them.` : 'No clean open report before that date.';
   F.clean = new Set(selected); L.page = 1; byId('ack-out').hidden = false; byId('ack-clear').hidden = false;
   [...picks].forEach(id => window.shell.commands.pick(id));
   selected.forEach(n => window.shell.commands.pick('r' + n));
+  batch(preview);
   renderRows(); byId('led-h').scrollIntoView?.({ block: 'start' });
 }
 byId('ack-preview').addEventListener('submit', e => { e.preventDefault(); selectClean(); });
-function clearClean() { F.clean = ''; [...picks].forEach(id => window.shell.commands.pick(id)); byId('ack-out').hidden = true; byId('ack-clear').hidden = true; }
+// build (sd:3386): the attributed batch, `sd reports acknowledge --all-clean --who`, from the same preview. It posts
+// /api/reports/acknowledge-clean with the preview's stamped cutoff, its plan and the name typed; acknowledge_clean moves
+// every selected report or none, and refuses a plan that a changed report moved (409). The plan binds the batch to this
+// preview, so its object is the preview's, put here and not by the reader; a landed batch, a failed preview or Clear retires it.
+const BATCH = 'clean:batch';
+function batch(preview) {
+  const day = String(preview.before).slice(0, 10);
+  window.shell.commands.put({ id: BATCH, type: 'clean batch', label: `${plural(preview.count, 'clean report')} before ${day}`,
+    before: preview.before, plan: preview.plan, count: preview.count, max: preview.max_batch, day });
+  put(byId('ack-batch'), window.shell.commands.bar(BATCH));
+}
+function retireBatch() {
+  if (window.shell.commands.get(BATCH)) window.shell.commands.put({ id: BATCH, type: 'not listed', label: 'the clean batch (no longer previewed)' });
+  put(byId('ack-batch'), html``);
+}
+// A refused batch wrote nothing: the page reads the reports and the preview again, so the next plan is the current one.
+// A batch with no answer may have landed, so it says the outcome is not known rather than "refused".
+async function acknowledgeBatch(o, v) {
+  let out;
+  try { out = await window.shell.post('/api/reports/acknowledge-clean', { before: o.before, plan: o.plan, who: v.who }); } catch (err) {
+    await load(); await selectClean();
+    throw new Error(err.status ? `${err.message}. The preview is read again`
+      : `no answer (${err.message}), so whether the batch landed is not known; the reports and the preview are read again`);
+  }
+  clearClean(); await reload();
+  return `Acknowledged ${plural(out.acknowledged.length, 'clean report')} in batch report #${out.item.id}`;
+}
+function clearClean() { F.clean = ''; [...picks].forEach(id => window.shell.commands.pick(id)); byId('ack-out').hidden = true; byId('ack-clear').hidden = true; retireBatch(); }
 byId('ack-clear').addEventListener('click', () => { clearClean(); renderRows(); });
 
 // Shapeshift bar: filter / new task / ask, previewed before commit.
@@ -461,6 +489,15 @@ function registerCommands() {
       when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: async o => { await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }); return `Retry started · ${o.job}`; } },
+    // build (sd:3386): the attributed batch. It confirms: one batch may move up to the library's max_batch reports, and no
+    // dashboard Undo reopens a batch. The name typed is the batch report's `who`; the server records its own principal.
+    { id: 'clean batch.ack', on: 'clean batch', label: 'Acknowledge', key: 'a', risk: 'confirm', primary: () => true, executes: true,
+      when: o => !!o.plan || (o.count ? `${plural(o.count, 'clean report')} is more than one batch moves (${o.max}); choose an earlier date`
+        : `nothing is clean before ${o.day}`),
+      fields: () => [{ name: 'who', label: 'Acknowledged by', required: true, help: 'The name the batch report records.' }],
+      consequence: o => `Moves the ${plural(o.count, 'clean report')} the preview selected to done in one batch, and files a batch report naming who. A report that changed since the preview refuses the whole batch.`,
+      cli: (o, v = {}) => `sd reports acknowledge --all-clean --before ${o.before} --apply --if-plan ${o.plan} --who ${v.who ? shq(v.who) : 'NAME'}`,
+      run: acknowledgeBatch },
   );
 }
 document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });
