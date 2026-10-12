@@ -62,6 +62,7 @@ Decide routine choices yourself, record the decision and reason in `sd task note
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
 Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
+When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
