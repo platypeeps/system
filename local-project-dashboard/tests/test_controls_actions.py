@@ -256,10 +256,8 @@ class WorkflowControls(BrowserSession):
     def test_catalog_and_new_operations_reads_do_not_write(self):
         before = self.snapshot()
         with patch("subprocess.run", side_effect=AssertionError("catalog invoked a process")):
-            self.assertEqual(self.request("/classic/skills")[0], 200)
-            self.assertIn("Start 30-day trial", self.request("/classic/skills")[2])
-            self.assertEqual(self.request("/operations?area=reports")[0], 200)
-            self.assertEqual(self.request("/operations?area=progress")[0], 200)
+            self.assertEqual(self.request("/api/skills", headers={"Cookie": self.cookie})[0], 200)
+            self.assertEqual(self.request("/operations?area=usage")[0], 200)
         self.assertEqual(self.request("/favicon.ico")[0], 204)
         self.assertEqual(before, self.snapshot())
         skill = skills_catalog.catalog(self.connection)["skills"][0]
@@ -954,28 +952,22 @@ class BulkAcknowledge(BrowserSession):
         self.assertEqual(self.status_of(self.clean[1]), "planning")
 
     def test_the_preview_stamps_the_date_and_the_apply_takes_the_stamp_back(self):
-        """The one `before` contract, end to end: the page is asked with a
-        date, the hidden field and the pasted command carry the stamp
-        `cutoff` made of it, and the POST of those fields succeeds. A bare
-        date in the hidden field would fail at `stamp`; a stamp computed
-        differently would not match the plan."""
+        """The one `before` contract, end to end: the preview is asked with a
+        date, its answer carries the stamp `cutoff` made of it, and the POST
+        of that stamp and plan succeeds. A bare date would fail at `stamp`; a
+        stamp computed differently would not match the plan. The Reports page
+        asks `/api/reports/clean`; the classic Reports area that rendered this
+        preview as a form was retired in sd:3402."""
         before = self.snapshot()
-        status, _, page = self.request("/operations?area=reports&clean_before=2026-09-10")
+        status, _, body = self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})
         self.assertEqual(status, 200)
         self.assertEqual(before, self.snapshot())
-        self.assertIn("Would acknowledge (2)", page)
-        self.assertIn("Declined (1)", page)
-        self.assertIn("it needs attention, which waits for a person", page)
-        forms = re.findall(r'<form[^>]*action="/api/reports/acknowledge-clean"[^>]*>.*?</form>', page, re.S)
-        self.assertEqual(len(forms), 1, page)
-        form = forms[0]
-        stamped = re.search(r'name="before" value="([^"]*)"', form).group(1)
+        preview = json.loads(body)
+        self.assertEqual((len(preview["selected"]), len(preview["declined"])), (2, 1))
+        self.assertIn("it needs attention, which waits for a person", preview["declined"][0]["why"])
+        stamped, token = preview["before"], preview["plan"]
         self.assertEqual(stamped, CUTOFF)
-        token = re.search(r'name="plan" value="([^"]*)"', form).group(1)
         self.assertEqual(token, reporting.clean_reports(self.connection, before=CUTOFF)["plan"])
-        self.assertRegex(form, r'<input name="who" id="field-who" value="" type="text" required maxlength="200"')
-        self.assertIn(f"--before {CUTOFF} --apply --if-plan {token} --who NAME", form)
-        self.assertIn('data-reload-label="Preview again"', form)
         status, _, result = self.post(ACKNOWLEDGE_CLEAN, {"before": stamped, "plan": token, "who": "operator"})
         self.assertEqual(status, 200, result)
         self.assertEqual(result["acknowledged"], self.clean)

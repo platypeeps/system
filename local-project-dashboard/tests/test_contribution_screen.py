@@ -186,11 +186,3 @@ class ContributionScreen(ScreenCase):
             filtered = self.render("/classic/contributions", {"q": ["Contribution 65"]})
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', body), [row["key"] for row in rows[50:]])
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', filtered), [rows[0]["key"]])
-
-    def test_today_preview_discloses_its_limit_and_full_destination(self):
-        rows = [contribution(number) for number in range(8)]
-        with patch.object(contribution_screen.contributions, "projection", return_value=rows):
-            body = self.render("/classic/today")
-        self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', body), [row["key"] for row in rows[:5]])
-        self.assertIn("Showing 5 of 8 contributions", body)
-        self.assertIn('href="/contributions"', body)

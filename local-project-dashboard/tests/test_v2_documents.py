@@ -1,8 +1,8 @@
 """The v2 Documents page (sd:2114).
 
 What this slice promises: `/documents` answers under the shared policy and
-loads its script before `shell.js`, and the old listing moves to
-`/classic/documents`; `/api/documents` lists every root and every file the
+loads its script before `shell.js`, and the old listing is retired
+(sd:3402); `/api/documents` lists every root and every file the
 server serves (`documents.roots`, `documents.documents`), with each file's
 title, h1 and stand line, its derived kind and its render state, and names a
 key two checkouts claim. The page registers the design's Documents commands
@@ -181,13 +181,12 @@ class ThePage(BrowserSession):
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
-    def test_the_rail_opens_the_new_page_and_the_old_listing_moved(self):
+    def test_the_rail_opens_the_new_page_and_the_old_listing_is_retired(self):
         self.assertEqual(v2.SECTIONS.get("Documents"), "/documents")
         self.assertNotIn("Documents", v2.CLASSIC)
-        self.assertEqual(v2.SCREENS.get("Documents (classic)"), "/classic/documents")
-        status, _, body = self.request("/classic/documents")
-        self.assertEqual(status, 200)
-        self.assertIn("Documents — sd</title>", body)
+        # sd:3402 retired the classic listing; `test_classic_retired` holds the 404.
+        self.assertNotIn("Documents (classic)", v2.SCREENS)
+        self.assertEqual(self.request("/classic/documents")[0], 404)
 
     def test_the_data_route_needs_a_session_takes_no_query_and_reads_the_roots(self):
         self.assertEqual(self.request("/api/documents")[0], 403)

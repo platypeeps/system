@@ -1,6 +1,7 @@
 """Metrics (sd:2119): spend against budget, the week, providers, skill use, the month's usage and age in status, from
-the reads the classic Usage and Progress areas make. Its Cap and Configure post the routes the classic Usage area's forms
-post (sd:3387); that area stays in the palette until slice 10 of sd:1333 retires it."""
+the reads the classic Usage area and the retired Progress area make. Its Cap and Configure post the routes the classic
+Usage area's forms post (sd:3387). That area stays in the palette: its month picker reads past months, and this page
+reads the current month only."""
 
 from __future__ import annotations
 

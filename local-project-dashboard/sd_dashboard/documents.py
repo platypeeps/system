@@ -55,8 +55,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .markup import join, tag
-from .pages import empty, page
 
 def _config_dir() -> Path:
     """`<config>/project-dashboard`, by the checkout's shared rule."""
@@ -444,68 +442,3 @@ def documents(root: Root) -> list[dict]:
     return found
 
 
-def _age(when: datetime, now: datetime) -> str:
-    days = (now.date() - when.date()).days
-    if days <= 0:
-        return "today"
-    return "yesterday" if days == 1 else "%d days ago" % days
-
-
-def render(parameters=None, *, config_path: Path | None = None,
-           repo_root: Path | None = None, now=None) -> str:
-    """The listing. One section per root, each root's files newest first."""
-    del parameters  # The listing takes no facets; every root is always shown.
-    moment = now or datetime.now().astimezone()
-    configured = roots(config_path, repo_root)
-    contests = unresolved(config_path, repo_root)
-    if not configured and not contests:
-        return page("Documents", "documents",
-                    empty("No document roots are configured.",
-                          "publish into %s in a checkout under %s"
-                          % (PUBLISHED, _base(repo_root))))
-
-    sections: list[object] = []
-    for root in configured:
-        found = documents(root)
-        if not found:
-            sections.append(tag(
-                "section",
-                tag("h2", root.label),
-                tag("p", "Nothing generated yet in %s." % root.path, class_="notice"),
-            ))
-            continue
-        rows = [
-            tag("li", join([
-                tag("a", document["name"], href=document["href"]),
-                tag("span", " %s, %.0f KB" % (_age(document["modified"], moment),
-                                              document["bytes"] / 1024.0),
-                    class_="hint"),
-            ]))
-            for document in found
-        ]
-        sections.append(tag(
-            "section",
-            tag("h2", root.label),
-            tag("p", str(root.path), class_="hint"),
-            tag("ul", join(rows), class_="documents"),
-        ))
-
-    for key, paths in contests.items():
-        sections.append(tag(
-            "section",
-            tag("h2", _label(key)),
-            tag("p", "%d checkouts claim the key %s, so none of them is served. "
-                     "Name the one you mean with a root| line in "
-                     "%s." % (len(paths), key, CONFIG),
-                class_="notice"),
-            tag("ul", join([tag("li", str(path)) for path in paths]),
-                class_="documents"),
-        ))
-
-    return page(
-        "Documents", "documents",
-        tag("p", "Reports their own repositories generate. This page lists them and "
-                 "serves them unchanged; it never edits one, and a republish is the "
-                 "generating repository's business.", class_="hint"),
-        join(sections),
-    )

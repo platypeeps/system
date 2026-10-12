@@ -11,5 +11,4 @@ Promote and Demote ask first and post the old screen's routes with the
 skill's revision; no verb withdraws a trial or a queued request, so none has
 Undo. Run, Schedule, Adopt and Scan are copy only: no route creates the item
 a run carries, adds a job, adopts a skill or scans sessions. The page reads
-through the shell's reader, `read.js`. The old screen moved to
-`/classic/skills`; its "Run with agent" link opens Tasks with `?skill=` (sd:2590).
+through the shell's reader, `read.js`. The old screen was retired in sd:3402.

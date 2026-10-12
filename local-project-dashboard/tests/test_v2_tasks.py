@@ -17,14 +17,13 @@ look at 375 px -- is a manual check recorded on the pull request.
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
 import subprocess
 import unittest
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from unittest.mock import patch
 
 from sd_db import connect, reads, set_item_fields, upsert_repo, workflow
@@ -1500,7 +1499,10 @@ class TheFilterAddress(ScreenCase):
 
 
 class TheOperationsBars(ScreenCase):
-    """Operations' age histogram opens Tasks (sd:2589): follow every bar into tasks.js and compare the rows it lists."""
+    """Operations' age histogram opened Tasks (sd:2589); sd:3402 retired that area, and Tasks still takes its query.
+
+    Every query a bar carried, built as the bar built it, goes into tasks.js and lists exactly that bar's rows.
+    """
 
     run_page = TheScript.run_page
     DAYS = (0, 2, 5, 10, 20, 40, 90)
@@ -1519,13 +1521,15 @@ class TheOperationsBars(ScreenCase):
         self.details = {}
 
     def bars(self):
-        page = self.render("/operations", {"area": ["progress"]})
-        found = []
-        for opening in re.findall(r"<a\s[^>]*>", page):
-            href, age, series = (re.search(rf'{name}="([^"]*)"', opening) for name in ("href", "data-age", "data-series"))
-            if href and age and series:
-                found.append((html.unescape(href.group(1)), age.group(1), series.group(1)))
-        return found
+        """(href, bucket key, series) for each bar the retired histogram drew: a series of a bucket holding open rows."""
+        found = set()
+        for row in reads.backlog_items(self.connection, now=NOW):
+            if row["status"] != "done":
+                key = reads.age_bucket(row, now=NOW)
+                for series in ("other", "ready_to_send") if row["status"] == "ready_to_send" else ("other",):
+                    filters = {"view": "list", "active": "1", "age": key} | ({"status": series} if series == "ready_to_send" else {})
+                    found.add(("/tasks?" + urlencode(sorted(filters.items())), key, series))
+        return sorted(found)
 
     def test_every_bar_lists_exactly_its_own_rows_on_tasks(self):
         bars = self.bars()

@@ -58,14 +58,16 @@ class PaletteActions(BrowserSession):
         self.assertIn("<script>fixture output</script>", output["output"])
         self.assertEqual(self.post(f"/api/palette/{note}/execute", {})[0], 400)
         self.assertEqual(list(self.checkout.iterdir()), [])
-        self.assertNotIn("<script>fixture output</script>", self.request("/operations?area=commands")[2])
+        # Activity lists the execution, as the retired Commands area did (sd:3402), and never its output.
+        self.assertNotIn("<script>fixture output</script>", self.get("/api/activity")[2])
 
     def test_catalog_and_history_are_read_only_and_stale_revision_refuses(self):
         payload = self.payload(); before = self.snapshot()
         with patch("subprocess.Popen", side_effect=AssertionError("read started a process")):
             status, _, body = self.get(f"/api/palette?screen=item&item={self.identity}")
             self.assertEqual(status, 200); self.assertEqual(json.loads(body)["entries"][0]["name"], "inspect")
-            self.assertEqual(self.request("/operations?area=commands")[0], 200)
+        # Activity, which holds the history now (sd:3402), reads launchd's jobs, so it is read outside the patch.
+        self.assertEqual(self.get("/api/activity")[0], 200)
         self.assertEqual(before, self.snapshot())
         self.assertEqual(self.post("/api/palette/prepare", {**payload, "revision": "0" * 64})[0], 409)
         self.assertEqual(before, self.snapshot())
@@ -88,11 +90,11 @@ class PaletteActions(BrowserSession):
         self.assertIn("inspect · Unfinished · outcome pending", pending)
         self.assertNotIn("registry_sha256", pending)
         self.assertNotIn("entry_sha256", pending)
-        self.assertIn(f"/operations?area=commands#execution-{note}", pending)
+        self.assertIn(f"/activity?kind=command&amp;range=all&amp;row=cmd:{note}", pending)
         self.assertEqual(self.post(f"/api/palette/{note}/execute", {})[0], 200)
         finished = self.request(f"/item/{self.identity}")[2]
         self.assertIn("inspect · Finished · exit 0", finished)
         self.assertNotIn("registry_path", finished)
         self.assertEqual(self.connection.execute("SELECT body FROM note WHERE id=?", (note,)).fetchone()[0], recorded)
-        history = self.request("/operations?area=commands")[2]
-        self.assertIn(f'id="execution-{note}"', history)
+        history = [event for event in json.loads(self.get("/api/activity")[2])["events"] if event["k"] == "command"]
+        self.assertEqual([event["note"] for event in history], [note])

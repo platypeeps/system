@@ -1,6 +1,7 @@
 """HTTP operations proof using an in-memory observer; no launchctl calls."""
 
 import subprocess
+from unittest.mock import patch
 import re
 
 from sd_db import operations, record_state, workflow
@@ -48,108 +49,79 @@ class OperationsActions(BrowserSession):
         self.backend = FakeBackend()
         super().setUp()
 
-    def test_page_renders_observed_state_and_only_supported_controls(self):
+    def test_the_item_page_offers_cancel_only_where_the_library_allows_it(self):
+        # The jobs and assignments area was retired in sd:3402; an assignment's cancel form stays on its item's page.
         task = workflow.capture_task(self.connection, title="Delegated fixture", who="operator")["item"]["id"]
         queued = self.assignment(task, status="queued")
         running = self.assignment(task, status="running")
-        unassigned = self.assignment(None, status="queued")
         before = self.snapshot()
-        status, _, page = self.request("/operations")
+        status, _, page = self.request(f"/item/{task}")
         self.assertEqual(status, 200)
-        self.assertIn('action="/api/jobs/failed-fixture/retry"', page)
-        self.assertIn('action="/api/jobs/running-fixture/cancel"', page)
-        visible_sections = page.split('<details>', 1)[0]
-        self.assertIn('action="/api/jobs/running-fixture/cancel"', visible_sections)
-        self.assertNotIn('action="/api/jobs/idle-fixture/retry"', page)
         self.assertIn(f'action="/api/assignments/{queued}/cancel"', page)
         self.assertNotIn(f'action="/api/assignments/{running}/cancel"', page)
-        self.assertNotIn("prompt", page)
-        self.assertIn(f"Assignment #{unassigned}", page)
-        self.assertNotIn("/item/None", page)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.backend.calls, [])
 
-    def test_signal_ended_job_renders_its_signal_next_to_last_exit(self):
-        """A job whose last run ended in a signal has no exit code; the card names
+    def test_a_signal_ended_job_keeps_its_signal_and_only_our_cancel_reads_idle(self):
+        """A job whose last run ended in a signal has no exit code; its state names
         the signal. A crashed job and a SIGKILL'd one need attention with retry
         open and stop refused for the usual reason, not for the signal. Only a
-        run this dashboard's own accepted cancel ended reads Idle, among the
-        other jobs (sd:1344)."""
-        status, _, page = self.request("/operations")
-        self.assertEqual(status, 200)
+        run this dashboard's own accepted cancel ended reads Idle (sd:1344).
+        The classic Jobs card that drew this was retired in sd:3402; the state
+        is what Management reads."""
+        def job(name):
+            return operations.job_state(self.connection, name, backend=self.backend)
 
-        def card(page, name):
-            start = page.index(name.replace("-", " "))
-            return page[start:page.index("</article>", start)]
-
-        attention = page.split("<details>", 1)[0]
-        crashed = card(page, "crashed-fixture")
-        self.assertIn("Failed", crashed)
-        self.assertIn("Last signal SIGSEGV (11)", crashed)
-        self.assertNotIn("Last exit", crashed)
-        self.assertIn('action="/api/jobs/crashed-fixture/retry"', attention)
-        self.assertIn("Stop job: only a currently running job can cancel", crashed)
-        self.assertNotIn("last run ended", crashed)
-        interrupted = card(page, "interrupted-fixture")
-        self.assertIn("Interrupted", interrupted)
-        self.assertIn("Last signal SIGKILL (9)", interrupted)
-        self.assertNotIn("Last exit", interrupted)
-        self.assertIn('action="/api/jobs/interrupted-fixture/retry"', attention)
-        self.assertIn("Stop job: only a currently running job can cancel", interrupted)
-        self.assertIn("Last exit 1", card(page, "failed-fixture"))
-        self.assertNotIn("Last signal", card(page, "failed-fixture"))
-        self.assertEqual(self.backend.calls, [])
-        # Cancel the running job from here, then observe launchd's SIGTERM line
-        # on that same run: the stop was meant, so the job is Idle, out of the
-        # attention list and without a retry.
-        state = operations.job_state(self.connection, "running-fixture", backend=self.backend)
+        for name, state, signal in (("crashed-fixture", "failed", 11), ("interrupted-fixture", "interrupted", 9)):
+            with self.subTest(job=name):
+                observed = job(name)
+                self.assertEqual((observed["state"], observed["last_signal"], observed["last_exit"]), (state, signal, None))
+                self.assertTrue(observed["capabilities"]["retry"]["allowed"])
+                self.assertFalse(observed["capabilities"]["cancel"]["allowed"])
+                self.assertIn("only a currently running job can cancel", observed["capabilities"]["cancel"]["reason"])
+        self.assertEqual((job("failed-fixture")["last_exit"], job("failed-fixture")["last_signal"]), (1, None))
+        # Cancel the running job, then observe launchd's SIGTERM line on that
+        # same run: the stop was meant, so the job is Idle and without a retry.
+        state = job("running-fixture")
         self.assertEqual(self.post("/api/jobs/running-fixture/cancel", {"revision": state["revision"]})[0], 200)
         self.backend.states["running-fixture"], self.backend.signals["running-fixture"] = "interrupted", 15
-        page = self.request("/operations")[2]
-        cancelled = card(page, "running-fixture")
-        self.assertIn("Idle", cancelled)
-        self.assertIn("Last signal SIGTERM (15)", cancelled)
-        self.assertNotIn("running fixture", page.split("<details>", 1)[0])
-        self.assertNotIn('action="/api/jobs/running-fixture/', page)
+        cancelled = job("running-fixture")
+        self.assertEqual((cancelled["state"], cancelled["last_signal"]), ("idle", 15))
+        self.assertFalse(cancelled["capabilities"]["retry"]["allowed"])
         # Reload the label (a new lifetime, runs = 1 again) and observe an
         # external SIGTERM on the new run 1: the old cancel is no evidence for
-        # it, so the job is Interrupted and back in attention with its retry.
+        # it, so the job is Interrupted with its retry.
         self.backend.lifetimes["running-fixture"] = 47790
-        page = self.request("/operations")[2]
-        self.assertIn("Interrupted", card(page, "running-fixture"))
-        self.assertIn('action="/api/jobs/running-fixture/retry"', page.split("<details>", 1)[0])
+        reloaded = job("running-fixture")
+        self.assertEqual(reloaded["state"], "interrupted")
+        self.assertTrue(reloaded["capabilities"]["retry"]["allowed"])
         self.assertEqual(self.backend.calls, [("cancel", "fixture/running-fixture")])
 
-    def test_operations_tabs_select_one_area_and_default_to_jobs(self):
-        ports_calls = []
-
-        def ports_fixture():
-            ports_calls.append("observed")
-            return {"services": [{"name": "fixture-container", "ports": ["9010"],
-                                   "state": "running", "mark": "+"}],
-                    "listeners": {"9010": {"state": "listening", "source": "lsof"}},
-                    "complete": True}
-
-        self.listening.RequestHandlerClass.ports_backend = staticmethod(ports_fixture)
-        for area, heading in (("jobs", "Running jobs"), ("progress", "Age in status"),
-                              ("usage", "Week, cost and provider details"), ("ports", "fixture-container")):
+    def test_operations_tabs_select_one_kept_area_and_default_to_usage(self):
+        # sd:3402 retired Jobs, Ports, Progress, Repos, Reports and Commands. Services and Sessions stay; their
+        # reads are tested in test_services_actions and test_sessions_screen, with fixture backends.
+        headings = {"usage": "Week, cost and provider details", "resources": "<h2>Resources</h2>", "trackers": "<h2>Trackers</h2>"}
+        # Resources reads sd_tile in a child, which runs launchctl; the test reads a fixture instead.
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for area, heading in headings.items():
             with self.subTest(area=area):
                 status, _, page = self.request(f"/operations?area={area}")
                 self.assertEqual(status, 200)
                 navigation = re.search(r'<nav[^>]*aria-label="Operations areas"[^>]*>(.*?)</nav>', page).group(1)
-                for key, label in (("jobs", "Jobs"), ("services", "Services"), ("ports", "Ports"),
-                                   ("progress", "Progress"), ("usage", "Usage")):
-                    self.assertIn(f'href="/operations?area={key}"', navigation)
-                    self.assertIn(f">{label}</a>", navigation)
+                self.assertEqual(re.findall(r'href="/operations\?area=(\w+)"[^>]*>(\w+)</a>', navigation),
+                                 [("usage", "Usage"), ("services", "Services"), ("resources", "Resources"),
+                                  ("trackers", "Trackers"), ("sessions", "Sessions")])
                 active = re.findall(r'<a[^>]*href="([^"]+)"[^>]*aria-current="page"', navigation)
                 self.assertEqual(active, [f"/operations?area={area}"])
                 self.assertIn(heading, page)
-                for other in ("Running jobs", "Age in status", "Week, cost and provider details", "fixture-container"):
+                for other in headings.values():
                     if other != heading:
                         self.assertNotIn(other, page)
-        self.assertEqual(ports_calls, ["observed"])
-        for suffix in ("", "?area=unknown"):
-            self.assertIn("Running jobs", self.request("/operations" + suffix)[2])
+        self.assertIn(headings["usage"], self.request("/operations")[2])
+        for area in ("unknown", "jobs", "progress", "ports"):
+            self.assertEqual(self.request(f"/operations?area={area}")[0], 404, area)
         self.assertEqual(self.backend.calls, [])
 
     def test_retry_acceptance_is_distinct_from_observed_job_state(self):
@@ -164,10 +136,7 @@ class OperationsActions(BrowserSession):
         self.assertEqual(self.post("/api/jobs/failed-fixture/retry", {"revision": result["job"]["revision"]})[0], 400)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(len(self.backend.calls), 1)
-        page = self.request("/operations")[2]
-        self.assertIn("Last request: ", page)
-        self.assertIn("accepted", page)
-        self.assertIn("current state is observed separately", page)
+        self.assertEqual(operations.job_state(self.connection, "failed-fixture", backend=self.backend)["last_request"]["status"], "accepted")
 
     def test_restore_blocks_retry_but_running_cancel_remains_available(self):
         record_state(self.connection, "restore", key="fixture-restore")

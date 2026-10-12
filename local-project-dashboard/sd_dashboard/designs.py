@@ -51,8 +51,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-from .markup import join, tag
-from .pages import empty, page
 
 #: The checkout the tab serves. `DESIGNS_ROOT` moves it; the default follows
 #: `REPO_ROOT` the way the collectors and the documents scan do.
@@ -484,29 +482,3 @@ def read(target: Path, root: Path | None = None) -> bytes:
     return target.read_bytes()
 
 
-def render(parameters=None, *, root: Path | None = None) -> str:
-    """The listing: one section per product, each page linked at its tree path."""
-    del parameters  # No facets; every product is always shown.
-    base = Path(ROOT if root is None else root).expanduser()
-    found = designs(base)
-    if not found:
-        return page("Designs", "designs",
-                    empty("No design pages found in %s." % (base / PRODUCTS),
-                          "add an HTML page under %s/<product>/designs/" % PRODUCTS))
-    sections = []
-    for product, pages in found.items():
-        prefix = f"{PRODUCTS}/{product}/"
-        sections.append(tag(
-            "section",
-            tag("h2", product),
-            tag("ul", join(
-                tag("li", tag("a", path[len(prefix):], href=f"/designs/{path}"))
-                for path in pages
-            ), class_="documents"),
-        ))
-    return page(
-        "Designs", "designs",
-        tag("p", "Mockups from %s, served as drawn. Each page runs sandboxed: its script "
-                 "works, but it cannot act on this dashboard." % base, class_="hint"),
-        join(sections),
-    )

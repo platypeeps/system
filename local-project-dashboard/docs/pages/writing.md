@@ -11,7 +11,7 @@ by its folder name only. Stage asks first and posts
 because going back is a correction. Correct asks for a reason and posts the
 same route with `correct`. Park and Revive post `/park` and `/revive` and
 undo each other. Publish and Capture are copy only. The page reads through
-the shell's reader, `read.js`. The old list moved to `/classic/writing`.
+the shell's reader, `read.js`. The old list was retired in sd:3402.
 
 Not read yet, so drawn as gaps:
 

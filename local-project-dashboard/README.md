@@ -4,8 +4,8 @@ This directory contains the workflow dashboard and the six legacy collector
 commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
-the classic Today, Contributions, Writing,
-Operations, Protection, Skills, Documents, Designs, and individual Item pages.
+the classic Contributions, Operations (Usage, Services, Resources, Trackers and Sessions), Protection, and
+individual Item pages. sd:3402 retired the other classic screens; their controls are on the new pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
 Backlog was deleted in sd:2622. Its production launcher uses the
 command pack's provisioned Python interpreter and the pack checkout's `lib/sd_db`;
@@ -15,8 +15,7 @@ it refuses any other copy of `sd_db` or a mismatched database schema.
 details, priority and due date, change its status, and add or resolve notes.
 The CLI and the page call the same `sd_db.workflow` functions. Saving uses a
 revision checked inside the write transaction: an old tab gets a conflict
-instead of overwriting a newer change. Capture keeps its draft and offers
-Refresh related item; other item forms offer a reload link.
+instead of overwriting a newer change. Item forms offer a reload link.
 Tasks triages in bulk (sd:3012): pick rows, then set a priority or Close them with one reason (`sd task cancel`).
 Each row is written with its own revision, and the toast names the rows refused as stale and the rows that failed.
 
@@ -26,18 +25,18 @@ worktrees, and open pull requests waiting on you. The ranking is the pack
 dashboard's `dashboard/now.py`, carried across with its rank numbers, in
 `sd_dashboard/now_screen.py`; the band a row wears (`broken`, `look`,
 `queued`) is derived from the rank alone, never from the kind. The four
-sources are the ones the Operations tabs show in full: Repos and Sessions
+sources are the ones Management, Health and Trackers show in full: repos and sessions
 through the fleet child, Trackers' PRs through `sd_db.shadow` (`needs_you`
 rows only; the days a stale row shows count from the sync's first sighting,
 because the shadow table carries no `updated_at`), and Jobs through
 `sd_db.operations.inventory`. A failed job ranks 1, after a dark collector and
 before every other row; it names the exit code or signal, the time its log was
-last written, and its retry line, `launchctl kickstart <service>`, the one Operations Jobs sends
+last written, and its retry line, `launchctl kickstart <service>`, the one Management's Retry sends
 (a hand-run of `cron-jobs.sh run` does not clear launchd's record).
 A failed job's detail ends with a triage class from fixed rules in `sd_dashboard/job_failures.py`:
 `transient`, `probably transient`, `unclear` or `needs a person`, and the rule that matched (sd:1166).
 The rules read launchd's signal or exit code, then the last run's section of the job's log.
-The Operations Jobs card shows the same class. It is a label only: it changes no rank, retry or notification.
+It is a label only: it changes no rank, retry or notification.
 Jev is asked the same question in shadow, in the background, once per failed run (sd:2095, sd:2904).
 It sees the job name, the outcome and the rule's class, never a log line.
 `--shadow` hands back the rule's answer, so Jev's score is recorded in the judgment ledger and never shown.
@@ -86,9 +85,10 @@ So an edited asset reaches the browser after a restart, with no build step.
 CSS, script and text go gzipped when the browser accepts it; fonts, pages and
 API answers do not. `sd_dashboard/caching.py` says why.
 
-The old screens stay until their section is ported. A page that takes an old
-screen's path moves that screen under `/classic/`, as the old Today moved to
-`/classic/today`, and its page module says where. Every other old screen keeps its path.
+The old screens stayed until their section was ported. A page that took an old
+screen's path moved that screen under `/classic/`, and its page module says where.
+sd:3402 retired every classic screen whose controls had moved; `/classic/contributions`
+is the one left under `/classic/`, and the other kept screens keep their paths.
 A `/v2/` address that names a page or an asset answers 301 with its new one (`/v2/today` to
 `/today`, `/v2/static/<file>` to `/ui/<file>`); any other `/v2/` path is a 404.
 One map, built from the page registry and served as `/ui/sections.js`, says
@@ -99,24 +99,19 @@ Classic screens. `./dashboard.sh pages` prints that map, one line per section
 or screen; a section in none of the three, such as Notes or HOA, has no old
 screen, and the rail says it is not built yet. The classic screens' own nav links
 each ported section to its new page, read from the same registry (sd:2473); the
-palette still opens the classic screen.
+palette still opens the kept classic screens.
 
 Task controls need no repository, planning document, branch, or GitHub issue.
-Today and Backlog default to Task. The Type selector also offers Followup
-item, Followup note, Comment, Question, Decision and Proposal. The word
+The shell's Capture, on every new page, files a Task or a Followup item, or a
+comment note on the selected row's item. The Item page's note form attaches a
+Comment, Followup, Question, Decision or Proposal note. The word
 `followup` names two things in the store — an item kind and a note kind —
-and the form labels them apart: **Followup item** files an item of kind
-`followup`, what `sd task add --kind followup` creates, through the same two
-library calls that verb makes (`workflow.capture_task`, then
-`writes.set_item_fields(kind="followup")`); it stands alone, or names the
-related item it follows up, in which case the child carries
-`fields.followup_of` and the parent gets a comment note naming the child.
-**Followup note** and the other four attach a note to the Related item, which
-they require. The picker identifies parents by stable ID, repository and
-status, including completed and parked items. Adding a note does not reopen
-or unpark its parent. The short inline CLI hint follows the selected type and
-related item: `sd task add "Title"`, `sd task add --kind followup "Title"` or
-`sd task note ID --kind followup --body "Text"`.
+and the forms label them apart: a **Followup item** is an item of kind
+`followup`, what `sd task add --kind followup` creates; captured on a row with
+an item, the child carries `fields.followup_of` (`--followup-of`). A
+**Followup note** is a note on the item whose page it is added on. Adding a
+note does not reopen or unpark its parent. sd:3402 retired the classic Today's
+capture panel, with its related-item picker.
 The CLI's note default is Comment, matching the item note form.
 Work items keep their delivery rules and their repository's status ownership;
 the generic status control cannot complete code delivery or override an active
@@ -200,32 +195,32 @@ back to the active writing list.
 The page is `/writing`, the v2 Writing page (sd:2125): a board by stage with
 four gate lamps per piece, read from `GET /api/writing`
 (`writing_screen.document`). Its Stage, Correct, Park and Revive post the item
-routes above; Publish and Capture are copy only. The filtered list stays at
-`/classic/writing`; [`docs/pages/writing.md`](docs/pages/writing.md) names
+routes above; Publish and Capture are copy only. The classic filtered list was
+retired in sd:3402; [`docs/pages/writing.md`](docs/pages/writing.md) names
 what the page does not read yet.
 
 **Skills** is `/skills`, the v2 Skills page (sd:2123): the command pack's skill
 catalog with each skill's use in the last three weeks, read from
 `GET /api/skills` (`skills_screen.document`). Try, Review, Promote and Demote
-post the routes the classic screen posts; Run, Schedule, Adopt and Scan are copy
-only. The classic screen stays at `/classic/skills`; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
+post the routes the classic screen posted; Run, Schedule, Adopt and Scan are copy
+only. The classic screen was retired in sd:3402; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
 
-**Operations** has eleven tabs (`operations_screen.AREAS`). Jobs is the default;
+**Operations** has five tabs (`operations_screen.AREAS`). Usage is the default;
 the selected tab travels in the URL, for example `/operations?area=services`.
+Services stays for each service's last request and Sessions for the live worktree rows, which no new page shows yet.
+sd:3402 retired the other six, and each one's controls live on a new page:
+Jobs on Management and Activity, a queued assignment's cancel on its Item page,
+Ports on Health, Progress's age buckets as Tasks' `age` filter
+and its observed activity on Metrics, Reports on Reports, Repos on Management,
+and Commands on Activity. Any other `area=` is a 404.
 
 | Tab | Scope and controls |
 | --- | --- |
-| **Jobs** | Installed scheduled jobs and assignments; retry supported failed jobs, request a running job stop, or cancel a queued assignment. |
-| **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
-| **Ports** | Configured service ports and locally observed TCP listeners, with visible processes, PIDs and listening addresses. Read-only; filter by port, service or process. |
-| **Progress** | Age in status for all active items across repositories, excluding completed and parked items. A bar opens the corresponding active bucket in Tasks; task filters do not alter this chart. |
 | **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db usage` binds it. |
-| **Reports** | The newest 200 recorded reports — scheduled job output with its source and findings. Open one to follow up, assign work or acknowledge it. Preview the clean reports at a date and acknowledge them in one attributed batch; the emails keep going. |
+| **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
-| **Repos** | Every checkout under the repository root (`REPO_ROOT`, `~/repos` by default), one level of grouping deep, as git reports it at this read: branch, dirty files, ahead/behind its upstream, lag behind its origin's default branch, last commit. The default-branch lag is `git rev-list --count HEAD..origin/<default>` from local refs, counted on the default branch only; detached, another branch, no `origin/HEAD`, and a fetch missing or older than 24 hours each say why the count is unknown or a floor. The page never fetches or pulls: it shows the age of `.git/FETCH_HEAD`, and `git -C <path> pull --ff-only` only for a clean checkout on its default branch with no local commits. Read by `sd_dashboard/fleet.py` as a child under a 12-second budget; a checkout that does not answer, whose `.git` is gone, or whose git fails is a row that says why with no dirt count, and a status the child cut at its 64 KB ceiling is a row whose dirty count is a floor. Nothing is stored. |
-| **Sessions** | Every worktree the fleet's checkouts have registered under `.git/worktrees`, abandoned ones first — a registration whose directory is gone still holds its branch; one whose files cannot be read is unknown, not abandoned — and every `sd` or `sd-*` command in the process table. The same child and budget as Repos; a root that does not exist is said in place of the worktree count, and a `ps` that did not answer is said beside the worktrees that did. |
-| **Commands** | Execution history for palette commands and runner outcomes: the command, its item, when it started, its session and its exit code. A palette command keeps its recorded output; an unfinished response stays visible and can be reconciled. |
+| **Sessions** | Every worktree the fleet's checkouts have registered under `.git/worktrees`, abandoned ones first — a registration whose directory is gone still holds its branch; one whose files cannot be read is unknown, not abandoned — and every `sd` or `sd-*` command in the process table. Read by the fleet child under its 12-second budget; a root that does not exist is said in place of the worktree count, and a `ps` that did not answer is said beside the worktrees that did. |
 
 Every job or service control rechecks the observed state and revision. The last
 request's acceptance is shown separately from the current state; acceptance is
@@ -246,11 +241,11 @@ listener observations. Observed-only ports are included, multiple visible
 owners and addresses are retained, and unavailable or incomplete inspection is
 reported. A listening socket does not prove application health or identify the
 intended service; inspection is limited to what this user can see and performs
-no network scan. Within Operations, a collector runs only when its area is opened:
-Ports runs the listener inspection, a Resources view runs its tile, and Repos and
-Sessions run the fleet reader. Today's Now runs the fleet reader too, once per
+no network scan. A collector runs only when its page reads: Health runs the
+listener inspection, a Resources view runs its tile, and Management, Health and
+Operations > Sessions run the fleet reader. Today's Now runs the fleet reader too, once per
 `/api/now` read, for both areas, reads the shadow table, and reads the launchd
-jobs' last-run state as the Jobs area does. None of them
+jobs' last-run state as Management does. None of them
 exposes prompts, environment variables, output logs or arbitrary commands.
 
 The main server binds **local loopback**. Remote access requires an explicit
@@ -328,7 +323,7 @@ that order, with the filter applied before the paging.
 **The six legacy collectors** cover the vault, the launchd job table, research
 builds and the service port map. Their CLI commands remain available, and the
 workflow dashboard renders all six itself: Toolbox, Briefs, Vault, Research and
-Queues as Resources views through `sd_tile.py`, and Ports in-process. The
+Queues as Resources views through `sd_tile.py`, and Ports in-process on Health. The
 manifest no longer declares them as plugin tabs (sd:719 step 3). Retaining the
 collectors does not imply feature parity with the old dashboard.
 
@@ -345,9 +340,8 @@ The page is `/documents`, the v2 Documents page (sd:2114). It reads
 (research or report) and render state. Its facets, search and paged ledger come
 from the design source. Pin, hide and tag are off until a document store exists
 (docs/work/2026-09-28-documents-view-state); render and request are copy-only
-lines the dashboard does not run. The classic listing stays at
-`/classic/documents`, opened from the palette. Both read the same roots
-through the same readers, so the rules below hold for each.
+lines the dashboard does not run. The classic listing was retired in sd:3402;
+the page reads the roots through `documents.py`'s readers, so the rules below hold for it.
 
 A domain repository that publishes reports here follows
 `docs/html-reports.md` in this folder: a markdown twin and HTML page built
@@ -461,7 +455,7 @@ than one that omits the file, because the reader believes the first.
 
 The route sits ahead of the database connection in `do_GET`, beside `/static/`,
 so a report stays readable when the workflow database is down. The listings do
-not: `/api/documents` and `/classic/documents` sit behind it like every other page. That is the right way
+not: `/api/documents` sits behind it like every other page. That is the right way
 round, because the report is the thing somebody needs in front of them during
 an outage.
 
@@ -482,7 +476,7 @@ The page is `/designs`, the v2 Designs page (sd:2126). It reads
 `GET /api/designs` (`designs.ledger`): each drawn page's kind, last commit and
 screenshot state, and each product with a brief and no page. History, Retake
 screenshots and Read brief are copy-only lines the dashboard does not run. The
-classic listing stays at `/classic/designs`; [`docs/pages/designs.md`](docs/pages/designs.md) has the detail.
+classic listing was retired in sd:3402; [`docs/pages/designs.md`](docs/pages/designs.md) has the detail.
 
 A mockup is served at its path in the tree, under `/designs/`. Its relative
 links, such as `../../../foundation/tokens.css`, therefore resolve to files in

@@ -1,28 +1,29 @@
-"""Operations > Repos: the checkout fleet as git reports it (sd:719 step 5).
+"""The fleet's repos read: the checkout fleet as git reports it (sd:719 step 5).
 
 The rows come from `fleet.py` run as a child under the collectors' `Budget`,
-against a fixture root of `git init` checkouts. Nothing here opens a database
-of its own; the criterion 2 grep in `tests/test_markup.py` is the check.
+against a fixture root of `git init` checkouts. Management and Today read them.
+These tests read the document itself: the classic Operations > Repos area that
+drew it was retired in sd:3402.
 """
 
 import os
-import re
 from unittest.mock import patch
 
-from sd_dashboard import fleet, operations_screen, repos_screen
+from sd_dashboard import fleet
 
 from fleet_support import FleetCase, SlowStart
 
 
-class ReposArea(FleetCase):
+class ReposRead(FleetCase):
 
-    def repos(self, **parameters):
-        return self.render("/operations", {"area": ["repos"], **{key: [value] for key, value in parameters.items()}})
+    def repos(self):
+        return fleet.collect("repos")
 
-    def cells(self, page, css):
-        """The text of every `css` cell, in table order, tags stripped."""
-        return [re.sub(r"<[^>]+>", "", cell).strip()
-                for cell in re.findall(rf'<td class="{css}">(.*?)</td>', page, re.DOTALL)]
+    def column(self, document, field):
+        """Every row's `field`, in the document's order; `name` carries its group, as Management shows it."""
+        if field == "name":
+            return [row["name"] if row["group"] == "." else f"{row['group']}/{row['name']}" for row in document["repos"]]
+        return [row[field] for row in document["repos"]]
 
     def test_the_page_lists_every_checkout_with_its_branch_and_dirt(self):
         grouped = self.checkout("widgets", "acme", branch="feat/wider", when="2026-09-02T10:00:00+00:00")
@@ -30,16 +31,12 @@ class ReposArea(FleetCase):
         (solo / "scratch.txt").write_text("untracked\n")
         (self.root / "acme" / "not-a-checkout").mkdir()
         (self.root / ".hidden").mkdir()
-        page = self.repos()
-        self.assertEqual(self.cells(page, "repo-name"), ["acme/widgets", "solo"])
-        self.assertEqual(self.cells(page, "repo-branch"), ["feat/wider", "main"])
-        self.assertEqual(self.cells(page, "repo-dirty"), ["0", "1"])
-        self.assertEqual(self.cells(page, "repo-path"), [str(grouped), str(solo)])
-        self.assertIn("first commit in widgets", page)
-        self.assertNotIn("not-a-checkout", page)
-        self.assertNotIn(".hidden", page)
-        self.assertIn("2 checkouts under ", page)
-        self.assertIn(" · 1 dirty · 0 ahead", page)
+        document = self.repos()
+        self.assertEqual(self.column(document, "name"), ["acme/widgets", "solo"])
+        self.assertEqual(self.column(document, "branch"), ["feat/wider", "main"])
+        self.assertEqual(self.column(document, "dirty"), [0, 1])
+        self.assertEqual(self.column(document, "path"), [str(grouped), str(solo)])
+        self.assertIn("first commit in widgets", self.column(document, "subject"))
 
     def test_divergence_is_unknown_without_an_upstream_and_counted_with_one(self):
         origin = self.checkout("origin", "remote")
@@ -48,12 +45,11 @@ class ReposArea(FleetCase):
         self.configure(clone)
         (clone / "README").write_text("more\n")
         self.git(clone, "commit", "-q", "-am", "ahead by one")
-        page = self.repos()
-        by_name = dict(zip(self.cells(page, "repo-name"), self.cells(page, "repo-divergence")))
+        document = self.repos()
+        by_name = dict(zip(self.column(document, "name"), zip(self.column(document, "ahead"), self.column(document, "behind"))))
         self.assertEqual(sorted(by_name), ["clone", "remote/origin"])
-        self.assertEqual(by_name["clone"], "+1 / −0")
-        self.assertEqual(by_name["remote/origin"], "unknown")
-        self.assertIn(" · 1 ahead", page)
+        self.assertEqual(by_name["clone"], (1, 0))
+        self.assertEqual(by_name["remote/origin"], (None, None))
 
     def test_one_status_answers_the_branch_the_dirt_and_the_divergence(self):
         # Branch, dirt and divergence were three git commands per checkout,
@@ -76,20 +72,11 @@ class ReposArea(FleetCase):
         self.git(clone, "checkout", "-q", "--detach")
         self.assertEqual(fleet.facts(fleet._collectors(), clone)["branch"], "HEAD")
 
-    def test_the_area_is_in_the_navigation_and_the_subtitle_names_it(self):
-        page = self.repos()
-        navigation = re.search(r'<nav[^>]*aria-label="Operations areas"[^>]*>(.*?)</nav>', page).group(1)
-        self.assertIn('href="/operations?area=repos"', navigation)
-        self.assertIn(">Repos</a>", navigation)
-        self.assertIn(("repos", "Repos"), operations_screen.AREAS)
-        subtitle = re.search(r'<p class="subtitle">([^<]*)</p>', page).group(1)
-        self.assertIn("repos", subtitle)
-
     def test_a_missing_root_is_said_rather_than_shown_as_an_empty_fleet(self):
         with patch.dict("os.environ", {"REPO_ROOT": str(self.root / "elsewhere")}):
-            page = self.repos()
-        self.assertIn("does not exist", page)
-        self.assertNotIn("0 checkouts under", page)
+            document = self.repos()
+        self.assertFalse(document["rootExists"])
+        self.assertEqual(document["repos"], [])
 
     def cut(self):
         """The note a row gets when the child's deadline cuts its git.
@@ -106,13 +93,12 @@ class ReposArea(FleetCase):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*")
-        page = self.repos()
-        # The checkouts that answered are on the page; the one that did not
-        # is a row that says so, not a row with a branch it made up.
-        self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
-        self.assertEqual(self.cells(page, "repo-branch"), ["main", "?"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", self.cut()])
-        self.assertIn("1 checkout could not be read", page)
+        document = self.repos()
+        # The checkouts that answered are rows; the one that did not is a row
+        # that says so, not a row with a branch it made up.
+        self.assertEqual(self.column(document, "name"), ["fine", "stuck"])
+        self.assertEqual(self.column(document, "branch"), ["main", "?"])
+        self.assertEqual(self.column(document, "error"), ["", self.cut()])
         # Cut by the child at its own deadline, so the hung git is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).
         self.assertGone("git")
@@ -132,11 +118,10 @@ class ReposArea(FleetCase):
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*")
         with patch.object(fleet, "time", SlowStart(fleet.FLEET_SECONDS)):
-            page = self.repos()
-        self.assertNotIn("Repos could not be observed", page)
-        self.assertEqual(self.cells(page, "repo-name"), ["stuck"])
+            document = self.repos()
+        self.assertEqual(self.column(document, "name"), ["stuck"])
         # The row names the child's budget, not the page's.
-        self.assertEqual(self.cells(page, "repo-note"),
+        self.assertEqual(self.column(document, "error"),
                          [f"git was not started: the budget of {fleet.FLEET_SECONDS - fleet.FLEET_MARGIN:g} seconds was spent"])
         self.assertFalse((self.root.parent / "git.pids").exists(), "the child started git past its deadline")
 
@@ -150,19 +135,16 @@ class ReposArea(FleetCase):
     def test_a_status_that_outgrows_the_ceiling_is_a_truncated_row_and_not_a_refusal(self):
         self.checkout("tidy")
         self.messy()
-        page = self.repos()
-        self.assertEqual(self.cells(page, "repo-name"), ["messy", "tidy"])
+        document = self.repos()
+        self.assertEqual(self.column(document, "name"), ["messy", "tidy"])
         # The rest of the checkout was still read: the cut is the status's.
-        self.assertEqual(self.cells(page, "repo-branch"), ["main", "main"])
-        dirty = self.cells(page, "repo-dirty")
-        self.assertEqual(dirty[1], "0")
-        self.assertRegex(dirty[0], r"^≥ \d+$")
-        floor = int(dirty[0][2:])
-        self.assertGreater(floor, 0)
-        self.assertLess(floor, 1500)
-        self.assertEqual(self.cells(page, "repo-note"), ["git status was cut at 64 KB; the dirt count is a floor", ""])
-        self.assertNotIn("could not be read", page)
-        self.assertNotIn("Repos could not be observed", page)
+        self.assertEqual(self.column(document, "branch"), ["main", "main"])
+        dirty = self.column(document, "dirty")
+        self.assertEqual(dirty[1], 0)
+        self.assertGreater(dirty[0], 0)
+        self.assertLess(dirty[0], 1500)
+        self.assertEqual(self.column(document, "truncated"), [["status"], []])
+        self.assertEqual(self.column(document, "error"), ["", ""])
 
     def test_the_child_reads_each_git_answer_to_the_ceiling_and_no_further(self):
         messy = self.messy()
@@ -180,11 +162,11 @@ class ReposArea(FleetCase):
         self.checkout("fine")
         stuck = self.checkout("stuck")
         self.hanging("git", when=f"*{stuck}*", quiet=True)
-        page = self.repos()
+        document = self.repos()
         # stdout closed and the process stayed: that is a hang, said as one,
         # not a command that answered and not "was not started" for the next.
-        self.assertEqual(self.cells(page, "repo-name"), ["fine", "stuck"])
-        self.assertEqual(self.cells(page, "repo-note"), ["", self.cut()])
+        self.assertEqual(self.column(document, "name"), ["fine", "stuck"])
+        self.assertEqual(self.column(document, "error"), ["", self.cut()])
         self.assertGone("git")
 
     def test_a_checkout_that_cannot_be_read_is_unknown_and_not_clean(self):
@@ -205,28 +187,9 @@ class ReposArea(FleetCase):
         row = fleet._repo_row(collectors, ".", broken)
         self.assertIsNone(row["dirty"])
         self.assertIn("git log failed (exit 3)", row["error"])
-        page = self.repos()
-        by_name = dict(zip(self.cells(page, "repo-name"), self.cells(page, "repo-dirty")))
-        self.assertEqual(by_name["broken"], "?")
-        self.assertIn("1 checkout could not be read", page)
-        self.assertIn(" · 0 dirty · ", page)
-
-    def test_a_remote_is_linked_only_with_an_https_host(self):
-        linked = self.checkout("linked")
-        self.git(linked, "remote", "add", "origin", "https://github.com/acme/linked.git")
-        page = self.repos()
-        self.assertIn('<a href="https://github.com/acme/linked" rel="noopener noreferrer">linked</a>', page)
-        row = {"name": "x", "group": ".", "web": "https://@/x"}
-        self.assertEqual(repos_screen._link(row), "<span>x</span>")
-        row["web"] = "http://github.com/acme/x"
-        self.assertEqual(repos_screen._link(row), "<span>x</span>")
-        row["web"] = "https://github.com/acme/x"
-        self.assertIn('href="https://github.com/acme/x"', repos_screen._link(row))
-        # The malformed case the #427 nit named and the others did not cover:
-        # `urlsplit` raises for an unclosed IPv6 authority, and a raised
-        # parser is not a safe URL.
-        row["web"] = "https://[oops/acme/x"
-        self.assertEqual(repos_screen._link(row), "<span>x</span>")
+        document = self.repos()
+        by_name = dict(zip(self.column(document, "name"), self.column(document, "dirty")))
+        self.assertIsNone(by_name["broken"])
 
     def test_a_git_that_cannot_be_started_is_an_unread_row_and_not_a_clean_one(self):
         # `read_output` answers `code=None` for a command that never started.
@@ -239,10 +202,9 @@ class ReposArea(FleetCase):
         # "not here" and goes on to the real git. The child itself is started
         # by absolute path and does not need PATH.
         with patch.dict(os.environ, {"PATH": str(self.bin)}):
-            page = self.repos()
-        self.assertEqual(self.cells(page, "repo-dirty"), ["?"])
-        self.assertIn("git status did not run", page)
-        self.assertIn("1 checkout could not be read", page)
+            document = self.repos()
+        self.assertEqual(self.column(document, "dirty"), [None])
+        self.assertIn("git status did not run", document["repos"][0]["error"])
 
     def test_a_cut_log_is_named_and_leaves_the_dirt_count_exact(self):
         # `truncated` was one boolean, so any cut command reported "git status
@@ -257,15 +219,11 @@ class ReposArea(FleetCase):
         row = fleet.facts(collectors, wordy)
         self.assertEqual(row["truncated"], ["log"])
         self.assertEqual(row["dirty"], 0)
-        self.assertEqual(repos_screen._dirty(row), "0")
-        self.assertEqual(repos_screen._note({**row, "error": ""}), "git log was cut at 64 KB")
 
-    def test_a_collector_that_dies_leaves_a_refusal_and_not_a_calm_page(self):
+    def test_a_collector_that_dies_leaves_a_refusal_and_not_a_calm_read(self):
         self.checkout("fine")
-        with patch.object(fleet, "FLEET", self.root / "no-such-child.py"):
-            page = self.repos()
-        self.assertIn("Repos could not be observed: ", page)
-        self.assertNotIn('<td class="repo-name">', page)
+        with patch.object(fleet, "FLEET", self.root / "no-such-child.py"), self.assertRaises((OSError, ValueError)):
+            self.repos()
 
     def test_the_fleet_declares_one_budget_the_child_reads_inside(self):
         self.assertEqual(fleet.FLEET_SECONDS, 12.0)

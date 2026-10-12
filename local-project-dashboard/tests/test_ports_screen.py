@@ -15,7 +15,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_dashboard.ports_screen import port_rows, ports_panel
+from sd_dashboard import ports_screen
+from sd_dashboard.ports_screen import port_rows
 
 HERE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("ports_test_collectors", HERE / "collectors.py")
@@ -198,30 +199,6 @@ class PortInventory(unittest.TestCase):
         self.assertTrue(all(row["state"] == "unknown" for row in snapshot["services"]))
         self.assertNotIn("SECRET", json.dumps(snapshot))
 
-    def test_render_separates_observation_from_configuration_and_container_state(self):
-        # One scan answers every port alike, so a clean scan shows the free
-        # ports and a scan that reported an error shows them unknown.
-        html = ""
-        for extra in ({}, {"PORT_TEST_LSOF_ERROR": "1"}):
-            _, snapshot = self.collect(**extra)
-            snapshot["environment"] = {"API_TOKEN": "SECRET token"}
-            html += str(ports_panel(object(), now="2026-09-08T12:00:00Z", backend=lambda: snapshot))
-        for text in ("Listening", "No listener observed", "Unknown", "No port configured",
-                     "In profile", "Available", "Running", "Stopped", "fixture-server", "pid 321",
-                     "overlap is configured", "not been matched to this container", "Sources and scope"):
-            self.assertIn(text, html)
-        self.assertNotIn("SECRET", html)
-        self.assertNotIn("API_TOKEN", html)
-        self.assertNotIn('method="post"', html)
-        self.assertNotIn("/api/", html)
-
-    def test_filter_preserves_ports_subtab(self):
-        _, snapshot = self.collect()
-        html = str(ports_panel(now="today", backend=lambda: snapshot, parameters={"q": ["9102"]}))
-        self.assertIn('name="area" value="ports"', html)
-        self.assertIn("local-beta", html)
-        self.assertNotIn("local-alpha", html)
-
 
 class PortParser(unittest.TestCase):
     def legacy(self, names):
@@ -246,9 +223,6 @@ class PortParser(unittest.TestCase):
         snapshot = collectors.parse_ports(output)
         self.assertFalse(snapshot["complete"])
         self.assertEqual(snapshot["listeners"]["9000"]["state"], "unknown")
-        html = str(ports_panel(now="today", backend=lambda: snapshot))
-        self.assertIn("incomplete", html)
-        self.assertNotIn("No listener observed", html)
 
     def test_bad_or_contradictory_observations_never_claim_clear(self):
         output = self.legacy("alpha beta") + "  CLEAR port 9000 no TCP listener observed\n"
@@ -258,19 +232,10 @@ class PortParser(unittest.TestCase):
         self.assertEqual(snapshot["listeners"]["99"]["state"], "unknown")
         self.assertNotIn("SECRET", json.dumps(snapshot))
 
-    def test_unavailable_collector_does_not_claim_zero_healthy_ports(self):
-        for backend in (lambda: collectors.parse_ports(""), lambda: None):
-            html = str(ports_panel(now="today", backend=backend))
-            self.assertIn("Port inventory is unavailable", html)
-            self.assertNotIn("0 configured ports", html)
-
     def test_unproven_listener_claims_are_unknown_and_values_are_escaped(self):
         snapshot = {"services": [{"name": "local-<script>", "ports": ["9000"], "state": "running", "mark": "+"}],
                     "listeners": {"9000": {"state": "listening", "source": "guess"}}, "complete": True}
         self.assertEqual(port_rows(snapshot)[0]["listener"], "unknown")
-        html = str(ports_panel(now="today", backend=lambda: snapshot))
-        self.assertIn("local-&lt;script&gt;", html)
-        self.assertNotIn("<script>", html)
 
     def test_aggregate_listener_failure_is_unknown_without_exposing_error(self):
         calls = []
@@ -295,10 +260,6 @@ class PortParser(unittest.TestCase):
         rows = port_rows(snapshot)
         self.assertEqual([row["port"] for row in rows], ["8767", "9999"])
         self.assertFalse(rows[0]["configured"])
-        html = str(ports_panel(now="today", backend=lambda: snapshot))
-        for value in ("8767", "Python", "Other", "pid 100", "pid 200", "127.0.0.1:8767", "[::1]:8767", "*:8767", "Unknown process", "Observed only"):
-            self.assertIn(value, html)
-        self.assertIn("Not mapped", html)
 
     def test_candidate_and_observed_ports_merge_without_implying_process_ownership(self):
         snapshot = collectors.parse_ports(self.legacy("alpha beta"))
@@ -310,8 +271,6 @@ class PortParser(unittest.TestCase):
         self.assertIn("Unrelated", rows[0]["process"])
         self.assertEqual(rows[0]["listener"], "listening")
         self.assertTrue(rows[0]["configured"])
-        html = str(ports_panel(now="today", backend=lambda: snapshot))
-        self.assertIn("not been matched to this container", html)
 
     def test_malformed_listener_address_does_not_leak_arbitrary_stdout(self):
         observed = collectors.parse_tcp_listeners("p100\ncPython\nf3\nnSECRET:8767\n")
@@ -439,8 +398,8 @@ class CollectionBudget(unittest.TestCase):
 
     Nothing here replaces `collect_ports` itself: the fixtures stand in for the
     command it reads, and each caller is driven through its own entry point --
-    `ports_panel` with no backend for the in-process page, `sd_tile.main` for
-    the tile path. A caller that stops applying the collector's budget, or a
+    `ports_screen._collect` for the in-process read Health uses, `sd_tile.main`
+    for the tile path. A caller that stops applying the collector's budget, or a
     collector that stops enforcing it while reading, fails here.
     """
 
@@ -492,11 +451,14 @@ class CollectionBudget(unittest.TestCase):
                            "echo '  add by hand: profiles/common.service'\n")
 
     def page(self):
-        from sd_dashboard import ports_screen
+        """The in-process read as text: its rows, or the refusal Health shows."""
         with patch.object(ports_screen, "_collectors", lambda: self.module):
             started = time.monotonic()
-            html = str(ports_panel(now="today"))
-            return html, time.monotonic() - started
+            try:
+                text = json.dumps(port_rows(ports_screen._collect()))
+            except ports_screen.OverBudget as refused:
+                text = f"the port inventory exceeded its collection budget: {refused}"
+            return text, time.monotonic() - started
 
     def tile(self):
         import sd_tile

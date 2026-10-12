@@ -5,9 +5,9 @@ nothing drawn on the client, and a tap on a bar is a link the SVG carries and
 never a handler. A chart that is markup is read by a test without a browser,
 prints, and needs no second script under the policy.
 
-Four of the five are here -- the Backlog's age histogram, Today's day
-timeline, and the Usage screen's burn line and gauges (sd:234 slice 8d);
-the week timeline is still to come.
+Two are left: the Usage screen's burn line and gauges (sd:234 slice 8d).
+The age histogram and the day timeline went with the classic Progress area
+and the old Today (sd:3402); Metrics and Activity draw those now.
 
 Every dimension is in the SVG's own coordinate space with `viewBox` and no
 fixed width, so the chart scales to the column it sits in and no screen needs
@@ -16,204 +16,14 @@ a horizontal scroll to read it (`prd.md:722`).
 
 from __future__ import annotations
 
-import sqlite3
-from datetime import datetime, timedelta, timezone
 
 from .markup import Markup, join, tag
 
-__all__ = ["age_histogram_svg", "burn_svg", "gauge_svg", "timeline_svg"]
+__all__ = ["burn_svg", "gauge_svg"]
 
 BAR_HEIGHT = 26
-BAR_GAP = 8
 LABEL_WIDTH = 74
 CHART_WIDTH = 600
-
-
-def _parse(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
-def age_histogram_svg(buckets, *, link, selected: str | None = None) -> Markup:
-    """Open items by days in their current status, `ready_to_send` its own series.
-
-    `link(bucket, series)` returns the filter the bar stands for --
-    requirement 5's "a bar is a filter on the list" -- and it is an `a`
-    element wrapping the rect, so the tap is a navigation the browser performs
-    and not a script.
-
-    `selected` is the bucket key the list is currently narrowed to. It is
-    *marked*, with a class and `aria-current`, and never hidden: the other
-    bars stay tappable, because this is a picker and not a one-way door.
-    """
-    rows = [bucket for bucket in buckets]
-    biggest = max([bucket.total for bucket in rows] or [0]) or 1
-    height = len(rows) * (BAR_HEIGHT + BAR_GAP) + BAR_GAP
-    span = CHART_WIDTH - LABEL_WIDTH - 60
-    bars: list[object] = []
-    for index, bucket in enumerate(rows):
-        y = BAR_GAP + index * (BAR_HEIGHT + BAR_GAP)
-        x = LABEL_WIDTH
-        bars.append(
-            tag(
-                "text",
-                bucket.label,
-                x=LABEL_WIDTH - 8,
-                y=y + BAR_HEIGHT - 8,
-                class_="chart-label",
-                text_anchor="end",
-            )
-        )
-        here = selected is not None and bucket.key == selected
-        for series in ("ready_to_send", "other"):
-            count = bucket.counts.get(series, 0)
-            if not count:
-                continue
-            width = max(2, round(span * count / biggest))
-            classes = f"chart-bar chart-bar-{series.replace('_', '-')}"
-            if here:
-                classes += " chart-bar-selected"
-            bars.append(
-                tag(
-                    "a",
-                    tag(
-                        "rect",
-                        x=x,
-                        y=y,
-                        width=width,
-                        height=BAR_HEIGHT,
-                        class_=classes,
-                    ),
-                    tag(
-                        "title",
-                        f"{count} {series.replace('_', ' ')} at {bucket.label}",
-                    ),
-                    href=link(bucket, series),
-                    aria_current="true" if here else None,
-                    data_age=bucket.key,
-                    data_series=series,
-                )
-            )
-            x += width
-        bars.append(
-            tag(
-                "text",
-                str(bucket.total),
-                x=x + 6,
-                y=y + BAR_HEIGHT - 8,
-                class_="chart-value",
-            )
-        )
-    return tag(
-        "svg",
-        tag("title", "Open items by days in their current status"),
-        join(bars),
-        viewBox=f"0 0 {CHART_WIDTH} {height}",
-        role="img",
-        class_="chart chart-histogram",
-        preserveAspectRatio="xMinYMin meet",
-    )
-
-
-def timeline_svg(rows: list[sqlite3.Row], *, now: str, href) -> Markup:
-    """The day's assignments: one lane per repository, one bar per row.
-
-    A wait is drawn hatched with what it waited on, and `budget_minutes` is a
-    mark on the bar, so what ran, what waited and what overran is read from
-    position. A bar is a link to the row.
-    """
-    end = _parse(now) or datetime.now(timezone.utc)
-    start_of_day = end.replace(hour=0, minute=0, second=0, microsecond=0)
-    minutes = max(60, int((end - start_of_day).total_seconds() // 60) or 60)
-    lanes: dict[str, list[sqlite3.Row]] = {}
-    for row in rows:
-        lanes.setdefault(row["lane"], []).append(row)
-    height = len(lanes) * (BAR_HEIGHT + BAR_GAP) + BAR_GAP + 18
-    span = CHART_WIDTH - LABEL_WIDTH - 10
-
-    def position(stamp: str | None, fallback: datetime) -> float:
-        moment = _parse(stamp) or fallback
-        offset = (moment - start_of_day).total_seconds() / 60
-        return LABEL_WIDTH + max(0.0, min(1.0, offset / minutes)) * span
-
-    parts: list[object] = [
-        tag(
-            "defs",
-            Markup(
-                '<pattern id="wait" width="6" height="6" patternUnits="userSpaceOnUse" '
-                'patternTransform="rotate(45)">'
-                '<line x1="0" y1="0" x2="0" y2="6" class="chart-hatch" />'
-                "</pattern>"
-            ),
-        )
-    ]
-    for index, (lane, lane_rows) in enumerate(sorted(lanes.items())):
-        y = BAR_GAP + index * (BAR_HEIGHT + BAR_GAP)
-        parts.append(
-            tag(
-                "text",
-                lane.rsplit("/", 1)[-1],
-                x=LABEL_WIDTH - 8,
-                y=y + BAR_HEIGHT - 8,
-                class_="chart-label",
-                text_anchor="end",
-            )
-        )
-        for row in lane_rows:
-            left = position(row["started"], start_of_day)
-            right = position(row["ended"], end)
-            width = max(3.0, right - left)
-            waited = row["status"] == "queued"
-            bar = tag(
-                "rect",
-                x=round(left, 2),
-                y=y + 4,
-                width=round(width, 2),
-                height=BAR_HEIGHT - 8,
-                class_=f"chart-run chart-run-{row['status']}",
-                fill="url(#wait)" if waited else None,
-            )
-            label = f"assignment {row['id']} — {row['role']} — {row['status']}"
-            marks: list[object] = [bar, tag("title", label)]
-            budget = row["budget_minutes"]
-            if budget:
-                mark = position(row["started"], start_of_day) + span * min(
-                    1.0, float(budget) / minutes
-                )
-                marks.append(
-                    tag(
-                        "line",
-                        x1=round(min(mark, LABEL_WIDTH + span), 2),
-                        x2=round(min(mark, LABEL_WIDTH + span), 2),
-                        y1=y,
-                        y2=y + BAR_HEIGHT,
-                        class_="chart-budget",
-                    )
-                )
-            parts.append(tag("a", join(marks), href=href(row)))
-    parts.append(
-        tag(
-            "text",
-            f"00:00 to {end.strftime('%H:%M')}",
-            x=LABEL_WIDTH,
-            y=height - 4,
-            class_="chart-axis",
-        )
-    )
-    return tag(
-        "svg",
-        tag("title", "The day's assignments by repository"),
-        join(parts),
-        viewBox=f"0 0 {CHART_WIDTH} {height}",
-        role="img",
-        class_="chart chart-timeline",
-        preserveAspectRatio="xMinYMin meet",
-    )
 
 
 def burn_svg(bill, *, days: int, today: int | None) -> Markup:

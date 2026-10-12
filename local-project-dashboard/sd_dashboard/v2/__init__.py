@@ -44,27 +44,19 @@ STATIC = HERE / "static"
 #: Route path -> page file, from every registered page's routes. Today's include `/`: the new design is the default.
 PAGES = {route: entry.html for entry in registry.PAGES for route in entry.routes}
 
-#: The shell's map: a registered section opens its page's first route. A section not yet ported opens its old screen,
-#: marked "classic" on the rail (CLASSIC), until its page registers. A section in neither has no old screen and still
-#: says it is not built. The shell reads the three as /ui/sections.js.
+#: The shell's map: a registered section opens its page's first route. A section in neither map has no old screen and
+#: still says it is not built. CLASSIC held the sections that still opened an old screen, marked "classic" on the rail;
+#: every one has its page now, so it is empty, and the shell reads it beside the others as /ui/sections.js.
 SECTIONS = {entry.section: entry.routes[0] for entry in registry.PAGES}
-CLASSIC = {section: href for section, href in {
-    "Writing": "/writing",
-    "Skills": "/skills",
-    "Metrics": "/operations?area=usage",
-    "Designs": "/designs",
-}.items() if section not in SECTIONS}
+CLASSIC: dict[str, str] = {}
 #: Old screens with no rail section of their own; the palette offers them under "Classic screens". These belong to no
-#: page; Jobs, Services, Repos, Sessions and Protection stayed when Management moved (sd:2118). An old screen a page
-#: keeps (its `classic`, with the reason in its module) follows, by label.
+#: page: Services (each service's last request), Trackers (tracker issues), Sessions (live worktree rows) and Protection
+#: (Management links it as the gap matrix). The Jobs, Ports, Repos and Progress areas were retired in sd:3402. An old
+#: screen a page keeps (its `classic`, with the reason in its module) follows, by label.
 SCREENS = {
-    "Jobs": "/operations?area=jobs",
     "Services": "/operations?area=services",
-    "Ports": "/operations?area=ports",
     "Trackers": "/operations?area=trackers",
-    "Repos": "/operations?area=repos",
     "Sessions": "/operations?area=sessions",
-    "Progress": "/operations?area=progress",
     "Protection": "/protection",
 } | dict(sorted((label, href) for entry in registry.PAGES for label, href in entry.classic.items()))
 

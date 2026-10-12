@@ -1,7 +1,7 @@
 """The v2 Skills page (sd:2123).
 
 What this slice promises: `/skills` answers under the shared policy and loads the reader and its script before `shell.js`,
-and the old screen moves to `/classic/skills`, which the palette lists. `/api/skills` is the catalog the old screen reads,
+and the old screen is retired (sd:3402). `/api/skills` is the catalog the old screen read,
 each skill's use in the last three Monday-start weeks from `skill_use`, the rows that name a path instead of a skill, the
 rows by surface and the skills outside the pack that recorded use; it sends no local path and writes nothing. The page
 registers the design's Skills commands: Try, Review, Promote and Demote ask first and post the old screen's routes with the
@@ -135,13 +135,12 @@ class ThePage(Pack, BrowserSession):
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
-    def test_the_rail_opens_the_new_page_and_the_palette_keeps_the_old_one(self):
+    def test_the_rail_opens_the_new_page_and_the_old_one_is_retired(self):
         self.assertEqual(v2.SECTIONS.get("Skills"), "/skills")
         self.assertNotIn("Skills", v2.CLASSIC)
-        self.assertEqual(v2.SCREENS.get("Skills (classic)"), "/classic/skills")
-        status, _, body = self.request("/classic/skills")
-        self.assertEqual(status, 200)
-        self.assertIn("Start 30-day trial", body)
+        # sd:3402 retired the classic screen; `test_classic_retired` holds the 404.
+        self.assertNotIn("Skills (classic)", v2.SCREENS)
+        self.assertEqual(self.request("/classic/skills")[0], 404)
 
     def test_the_data_route_needs_a_session_takes_no_query_and_says_why_it_failed(self):
         self.assertEqual(self.request("/api/skills")[0], 403)

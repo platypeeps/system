@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from sd_db import reads, repos, workflow
+from sd_db import repos, workflow
 
 from .markup import Markup, join, tag
 
@@ -30,11 +30,7 @@ def textarea(label, name, value="", *, id=None, rows=4, required=False):
             required=required, maxlength=50000), class_="field")
 
 
-def form(action, *fields, label, command, revision=None, compact=False, changed_fields=False, reload_label=None):
-    # `reload_label` names the link the form script adds to a 409 answer,
-    # for a form whose reload is not "the current item": the bulk-acknowledge
-    # apply reloads its preview (sd:755). Omitted, the attribute is omitted,
-    # and the script keeps its own text.
+def form(action, *fields, label, command, revision=None, compact=False, changed_fields=False):
     return tag("form",
         tag("input", type="hidden", name="revision", value=revision) if revision else Markup(""),
         join(fields),
@@ -43,56 +39,7 @@ def form(action, *fields, label, command, revision=None, compact=False, changed_
         method="post", action=action, data_workflow_form=True,
         data_cli=command,
         data_changed_fields=changed_fields,
-        data_reload_label=reload_label,
         class_="workflow-form compact-form" if compact else "workflow-form")
-
-
-def capture(connection):
-    choices = [("", "Choose an item…")]
-    for row in reads.capture_items(connection):
-        status = "completed" if row["status"] == "done" else row["status"].replace("_", " ")
-        if row["parked_at"]:
-            status += "; parked"
-        choices.append((row["id"], f"#{row['id']} · {row['title']} · {row['kind']} · "
-                        f"{row['repo'] or 'No repository'} [{status}]"))
-    # Two controls for one word (sd:719 step 6a). "Followup item" files an
-    # item of kind `followup`, what `sd task add --kind followup` creates and
-    # what stands on its own; "Followup note" attaches a `followup` note to
-    # the related item, as the form always did. The value `followup_item` is
-    # the form's and never reaches the store: the script posts `kind:
-    # "followup"` to `/api/items`, and the note path posts `followup` as the
-    # note kind, so each side of the store sees its own word.
-    kinds = [("task", "Task"), ("followup_item", "Followup item"), ("followup", "Followup note"),
-             ("comment", "Comment"), ("question", "Question"), ("decision", "Decision"),
-             ("proposal", "Proposal")]
-    related = tag("div", tag("label", "Related item", for_="capture-related"),
-        tag("select", join(tag("option", label, value=value) for value, label in choices),
-            name="related_item", id="capture-related", disabled=True), class_="field")
-    return tag("section", tag("h2", "Capture"),
-        tag("p", "Get it out of your head. Add the details when you need them. CLI: ",
-            tag("code", 'sd task add "Title"', data_capture_cli=True), ".", class_="hint"),
-        tag("form", tag("div", select("Type", "capture_type", kinds, "task", id="capture-type"),
-                tag("p", "A task or a followup item stands alone. A note attaches to an item.", class_="hint"),
-                class_="capture-type-row"),
-            tag("div", field("What needs doing?", "title", id="capture-title", required=True, maxlength=500,
-                             placeholder="Something to finish…"), data_capture_task=True),
-            tag("div", related,
-                tag("p", "Notes keep the item's status. Parked items stay out of Today.", class_="hint"),
-                tag("p", "Choose an item to attach this note." if len(choices) > 1 else
-                    "No related items yet. Capture a task first.", class_="hint", data_capture_context=True,
-                    role="status", aria_live="polite"),
-                tag("button", "Refresh related item", type="button", class_="listing-go",
-                    data_capture_refresh=True, disabled=True, hidden=True),
-                tag("div", tag("label", "Note", for_="capture-body"),
-                    tag("textarea", "", name="body", id="capture-body", rows=4, maxlength=50000,
-                        disabled=True), class_="field"),
-                hidden=True, data_capture_note=True),
-            tag("input", type="hidden", name="revision", value="", disabled=True),
-            tag("div", tag("button", "Add task", type="submit", class_="primary"), class_="form-actions"),
-            tag("p", "", class_="form-result", role="status", aria_live="polite"),
-            method="post", action="/api/items", data_workflow_form=True, data_capture_form=True,
-            data_cli='sd task add "Title"', class_="workflow-form"),
-        class_="capture-panel", id="capture")
 
 
 def _checkouts(connection):

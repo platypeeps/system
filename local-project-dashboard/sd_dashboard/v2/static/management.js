@@ -554,7 +554,7 @@ function registerCommands() {
     { id: 'job.log', on: 'job', label: 'Show log', key: 'o', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`,
       run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } },
     { id: 'job.print', on: 'job', label: 'Print', key: 'l', risk: 'safe', primary: o => o.exit === 127, executes: false, cli: o => `launchctl print ${o.service}`,
-      run: () => 'Copy it into a terminal: the dashboard shows the launchd record in Operations › Jobs' },
+      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' },
   );
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }

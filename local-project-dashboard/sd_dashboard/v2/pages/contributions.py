@@ -1,8 +1,8 @@
 """Contributions (sd:2113): the projection v1 renders, open rows capped, and Make task. The old screen moved to
-/classic/contributions when this page took its path; it stays in the palette until sd:1333 slice 10 retires it, though
-Details now shows evidence, dependencies and notification delivery too (sd:3394). Acknowledge posts /api/contributions/acknowledge, which v1 posts too, so it
-stays in server.py's action_route. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207,
-`shadow_run`)."""
+/classic/contributions when this page took its path; it stays in the palette because this page caps its open rows and
+the old screen lists every one. Details shows evidence, dependencies and notification delivery (sd:3394). Acknowledge
+posts /api/contributions/acknowledge, which v1 posts too, so it stays in server.py's action_route. Re-run collector
+posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
 
 from __future__ import annotations
 

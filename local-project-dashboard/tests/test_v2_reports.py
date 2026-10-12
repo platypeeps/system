@@ -292,10 +292,12 @@ class ThePage(BrowserSession):
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
-    def test_the_rail_opens_the_new_page_and_the_old_screen_stays_in_the_palette(self):
+    def test_the_rail_opens_the_new_page_and_the_old_screen_is_retired(self):
         self.assertEqual(v2.SECTIONS.get("Reports"), "/reports")
         self.assertNotIn("Reports", v2.CLASSIC)
-        self.assertEqual(v2.SCREENS.get("Reports (classic)"), "/operations?area=reports")
+        # sd:3402 retired the classic Reports area; Resources, which Toolbox, Vault and Queues need, stays.
+        self.assertNotIn("Reports (classic)", v2.SCREENS)
+        self.assertEqual(v2.SCREENS.get("Resources (classic)"), "/operations?area=resources")
 
     def test_the_data_routes_need_a_session_and_the_reading_takes_no_query(self):
         self.assertEqual(self.request("/api/reports")[0], 403)
