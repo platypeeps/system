@@ -1,4 +1,4 @@
-/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · 2026-10-12 slop test: pass (tokens 48, inputs 39, mobile 34 and 49; contrast: token pairs only, not measured) */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · 2026-10-12 slop test: pass (tokens 48, inputs 39, mobile 34 and 49; contrast 40-41: lowest 5.92:1, measured) */
 /* Build (sd:2124): the design source's products/system/designs/v2/tasks.css at d82daa1, unchanged below this line but for the Details
  * External context block, which reuses the page's dl rules and adds none. */
 /* Tasks page. Tokens only. Structure: head + filter strip + one of three views (list, board, matrix) + details pane.

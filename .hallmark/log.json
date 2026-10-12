@@ -20,8 +20,8 @@
     "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
     "changes": "sd:3520/3521 capture files from the shell, P3 seg and repo select; sd:3439/3467 details fields as select, date and text inputs; sd:3440 card priority and due selects; sd:3441 Kind and Repo selects; sd:3444 section reads as help icons that copy; sd:3464 CLI lines in a closed details fold; sd:3457 command tips through the help popover after --delay-help",
     "constraints": "no build step; CSP default-src 'self'; shell classes reused (.seg, .help, .pop, .fld, .cli); no new token",
-    "slop_test": "pass: tokens (48) no raw colour or font; inputs (39) 1px border in every state, 2px focus outline, row-touch height beside buttons, disabled by attribute plus cursor plus colour; mobile (34, 49) no sideways scroll and no wrapped clickable label at 320-1440; contrast (40-41) uses existing foundation token pairs, not measured",
-    "viewports": "320 375 414 768 1024 1440 x dark, light, system/light, system/dark: 24 runs, 0 failures (Playwright on a copy of the workflow database)",
+    "slop_test": "pass: tokens (48) no raw colour or font; inputs (39) 1px border in every state, 2px focus outline, row-touch height beside buttons, disabled by attribute plus cursor plus colour; mobile (34, 49) no sideways scroll and no wrapped clickable label at 320-1440; contrast (40-41) measured in every run: lowest 5.92:1 for text (card dropdowns), 6.02:1 for help icons, against 4.5:1 and 3:1",
+    "viewports": "320 375 414 768 1024 1440 x dark, light, system/light, system/dark: 24 runs, 0 failures, served from the branch on a copy of the workflow database (Playwright, headless Chromium)",
     "critique": "P4 H4 E4 S4 R4 V3"
   }
 ]

@@ -2,7 +2,7 @@
  * theme: foundation tokens (dark default, blue-grey 250, cyan accent) · display/body: IBM Plex Sans · data: IBM Plex Mono · icons: Lucide
  * axes: dark / grotesk-sans / cool · nav: grouped rail with g-chords · footer: none (app) · studied: no
  * Shared by every v2 screen. Page files add only their own components. Tokens come from foundation/tokens.css.
- * 2026-10-12 (sd:3464, sd:3521): capture pickers and the CLI fold · slop test: pass (tokens 48, inputs 39, mobile 34 and 49)
+ * 2026-10-12 (sd:3464, sd:3521): capture pickers and the CLI fold · slop test: pass (tokens 48, inputs 39, mobile 34 and 49, contrast 40-41 measured)
  */
 
 html, body { overflow-x: clip; }
