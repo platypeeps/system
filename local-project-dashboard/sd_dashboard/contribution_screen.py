@@ -1,6 +1,7 @@
 """Contribution views consume the shared ordering and attention decisions."""
 
 import json
+import re
 import shlex
 import sqlite3
 from urllib.parse import urlsplit
@@ -165,11 +166,18 @@ OPEN_LANES = ("newly_unblocked", "awaiting_you", "awaiting_them")
 OPEN_LIMIT = 500
 #: Repositories with settled rows the document names at most; the rest fold into `settled_other`, per scope.
 SETTLED_REPOS = 100
-#: What the page may show of a row: the projection's fields it reads, nothing more (no evidence, argv, local paths or
-#: free-form notes such as `blocked_on`).
+#: What the page may show of a row: the projection's fields it reads, nothing more (no local paths or free-form notes
+#: such as `blocked_on`).
 #: `repo` is rewritten by `_shown` and `draft_path` becomes `has_draft`: the page only asks whether a draft exists.
+#: Evidence, dependencies and notification delivery (sd:3394) are shaped by `_row_evidence`, `_row_dependencies` and
+#: `_row_delivery`.
 ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "url", "external_state", "local_status",
-              "item_id", "local_branch", "observed_at")
+              "item_id", "local_branch", "tested_commit", "observed_at")
+#: The fields each dependency kind may carry, as the library's `_dependency` admits them.
+DEPENDENCY_FIELDS = {"item": ("kind", "item"), "merge": ("kind", "url"), "issue": ("kind", "url"),
+                     "release": ("kind", "repo", "tag", "contains_pull", "package")}
+#: A local path inside a recorded command word: at its start or after `=`, never inside a URL or a relative path.
+LOCAL_PATH = re.compile(r"(?<![\w:/.~-])~?/[^\s=]*")
 
 
 def _registered(connection):
@@ -197,12 +205,75 @@ def _scope(repo, remotes, places):
     return None if found is None else "managed" if found else "registered"
 
 
+def _place(path):
+    """A local path as the page shows it: `local: <last part>`, never the path itself."""
+    return "local: " + (str(path).rstrip("/").rpartition("/")[2] or "checkout")
+
+
 def _shown(repo):
     """The repository as the page shows it: `owner/name`, or `local: <folder>` for a checkout path, never the path itself."""
     text = str(repo or "")
     if not text or contributions.REPO.fullmatch(text):
         return text or None
-    return "local: " + (text.rstrip("/").rpartition("/")[2] or "checkout")
+    return _place(text)
+
+
+def _unknown(reason):
+    return {"state": "unknown", "reason": reason}
+
+
+def _row_evidence(row):
+    """The recorded checks, each path cut to its last part; a shape the library would refuse is unknown, never empty."""
+    checks = row.get("evidence")
+    if checks is None:
+        checks = []
+    if not isinstance(checks, list):
+        return _unknown("the recorded evidence is not a list")
+    if not all(isinstance(check, dict) for check in checks):
+        return _unknown("a recorded check is not a record")
+    hide = lambda word: LOCAL_PATH.sub(lambda found: "…/" + found[0].rstrip("/").rpartition("/")[2], str(word))
+    return {"state": "read", "verified": bool(row.get("evidence_verified")), "checks": [{
+        "command": " ".join(hide(word) for word in check["argv"]) or None if isinstance(check.get("argv"), list) else None,
+        "directory": _place(check["cwd"]) if check.get("cwd") else None,
+        "exit_code": check.get("exit_code"), "commit": check.get("commit"),
+        "artifact": _place(check["artifact"]) if check.get("artifact") else None,
+        "sha256": check.get("sha256")} for check in checks]}
+
+
+def _row_dependencies(row):
+    """Each dependency with the fields its kind records; one sd does not record reads as unknown with its kind."""
+    found = row.get("depends_on")
+    if found is None:
+        found = []
+    if not isinstance(found, list):
+        return _unknown("the recorded dependencies are not a list")
+    entries = []
+    for dependency in found:
+        kind = dependency.get("kind") if isinstance(dependency, dict) else None
+        if kind in DEPENDENCY_FIELDS:
+            entries.append({key: dependency.get(key) for key in DEPENDENCY_FIELDS[kind]})
+        else:
+            entries.append({"kind": "unknown", "reason": f"dependency kind {kind or 'missing'} is not one sd records"
+                            if isinstance(dependency, dict) else "a dependency is not a record"})
+    return {"state": "read", "entries": entries}
+
+
+def _row_delivery(row):
+    """Every notification per source, with its delivery status; a status not recorded is unknown."""
+    found = row.get("notification_state")
+    if found is None:
+        found = {}
+    if not isinstance(found, dict):
+        return _unknown("the notification state is not a record")
+    entries = []
+    for source, notices in found.items():
+        if not isinstance(notices, dict) or not all(isinstance(notice, dict) for notice in notices.values()):
+            return _unknown(f"the notifications for {source} are not a record")
+        for notice in notices.values():
+            event = notice.get("event") if isinstance(notice.get("event"), dict) else {}
+            entries.append({"source": source, "reason": str(event.get("reason") or "No reason recorded"),
+                            "status": notice.get("status") or "unknown", "acknowledged_at": notice.get("acknowledged_at")})
+    return {"state": "read", "entries": entries}
 
 
 def _freshness(connection, now):
@@ -240,7 +311,8 @@ def document(connection, *, now):
             opened.append({key: row.get(key) for key in ROW_FIELDS} | {
                 "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
-                "internal": why is not None, "why_internal": why})
+                "internal": why is not None, "why_internal": why,
+                "evidence": _row_evidence(row), "dependencies": _row_dependencies(row), "delivery": _row_delivery(row)})
         else:
             # Keyed on the repository as stored, shown by its label: two checkouts named alike stay two entries.
             entry = settled.setdefault(str(row.get("repo") or ""), {
