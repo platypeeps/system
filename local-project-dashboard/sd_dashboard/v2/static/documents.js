@@ -154,7 +154,8 @@ const storeOff = () => STORE || true;
 const view = (o, change) => window.shell.post('/api/documents/view', { root: o.key, file: o.file, ...change }).then(v => reading.reread().then(() => v));
 let lastTag = '', tagFocus = false;
 // A tag is one lower-case word: spaces become hyphens, as the reference has it.
-const tagDraft = () => (document.getElementById('tag-in')?.value || '').trim().toLowerCase().replace(/\s+/g, '-') || lastTag;
+const tagOf = s => String(s || '').trim().toLowerCase().replace(/\s+/g, '-');
+const tagDraft = () => tagOf(document.getElementById('tag-in')?.value) || lastTag;
 // build: Disable render has no switch to set. SD_SKIP_RENDER skips every render, and a skip|<key>|<file> or skip|<key> line in
 // documents.conf hides a document or a root from this list without stopping its render (sd:1904). Both are off with that reason.
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
@@ -163,10 +164,16 @@ const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new
 const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Run', key: 'r', icon: 'plus', risk: 'undo', primary: () => true, executes: false,
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
   run: () => 'Copy the line: the dashboard does not file document requests yet' };
-const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 'tag', risk: 'undo', bulk: true,
-  when: o => { const t = tagDraft(); return STORE || (!t ? 'no tag yet: type one under Tags' : o.tags.includes(t) ? `already tagged ${t}` : true); },
+// Tag asks for the tag in a field filled with the one typed under Tags, else the last one applied, so no tag lands unseen
+// (sd:3523); Enter in the Tags field runs it without asking, since that field shows the tag. The toast names the tag.
+const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 'tag', risk: 'undo', bulk: true, when: storeOff,
+  fields: () => [{ name: 'tag', label: 'Tag', required: true, value: tagDraft(), placeholder: 'one word, such as q4', help: 'Spaces become hyphens.' }],
   cli: () => NO_CLI,
-  run: o => { const t = tagDraft(), was = o.tags; lastTag = t; return view(o, { tags: [...was, t] }).then(() => ({ text: `Tagged ${t} · ${o.title}`, was })); },
+  run: (o, v) => {
+    const t = v ? tagOf(v.tag) : tagDraft(), was = o.tags;
+    if (was.includes(t)) return Promise.reject(new Error(`already tagged ${t}`));
+    lastTag = t; return view(o, { tags: [...was, t] }).then(() => ({ text: `Tagged ${t} · ${o.title}`, was }));
+  },
   undo: (o, v) => view(o, { tags: v.was }) };
 function registerCommands() {
   const C = shell.commands;
@@ -260,14 +267,13 @@ function writeURL() {
   shell.url(q); // the shell keeps ?row=
 }
 // build: no proposal card. The reference drafted a documents.conf line in chat; neither line it proposed stops a render.
-// The tag field feeds the Tag command: typing updates the Act bar, Enter runs Tag on this document.
-details.addEventListener('input', e => { if (e.target.id === 'tag-in') put(document.getElementById('act'), shell.commands.bar(selected)); });
+// The tag field feeds the Tag command: Enter runs Tag on this document with the typed tag.
 details.addEventListener('keydown', e => {
   if (e.target.id !== 'tag-in' || e.key !== 'Enter') return;
   e.preventDefault();
   const d = DOCS.find(x => x.id === selected);
   if (!e.target.value.trim() || !d || TAG.when(d) !== true) return;
-  tagFocus = true; shell.commands.run(TAG, d);
+  tagFocus = true; shell.commands.run({ ...TAG, fields: null }, d);
 });
 
 // ---------- Shapeshift: search + filters, or a request ----------
