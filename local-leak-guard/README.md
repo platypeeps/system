@@ -34,6 +34,23 @@ sh local-leak-guard/leak-guard.sh remove
 `install` writes the hook into `git rev-parse --git-path hooks`, so it honours
 `core.hooksPath`. It refuses to replace a `pre-push` hook it did not write.
 
+## Installed by machine-setup
+
+`local-machine-setup`'s `repos` stage runs `install` in every public managed
+repository checked out on the machine, so a new machine or a new clone needs
+no manual step. Private repositories stay without the hook.
+
+- The managed list is the pack's `sd-db repo list --managed`.
+- A repository is public when GitHub serves its refs to an unauthenticated
+  request (`200`); `401` or `404` is private. No credential is sent.
+- A failed list, a remote not on GitHub, no answer or any other answer is a
+  `SKIP` line: setup goes on and the next run asks again.
+- `status` reports a public repository without the hook as `MISSING`, and a
+  `pre-push` hook another tool wrote as `DIFFERS` until it runs
+  `leak-guard.sh hook "$@"` itself. Both count as drift.
+- A hook this tool wrote that is not executable, or that runs another
+  checkout's `leak-guard.sh`, is `STALE` and rewritten.
+
 ## What it checks
 
 For each commit a push adds:
