@@ -1,4 +1,4 @@
-"""Home (sd:2117): the design's Home Assistant tiles, from the config folder; no Home Assistant state is read yet."""
+"""Home (sd:2117): the design's Home Assistant tiles, from the config folder, with live state (sd:3427)."""
 
 from __future__ import annotations
 

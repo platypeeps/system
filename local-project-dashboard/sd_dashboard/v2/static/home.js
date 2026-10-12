@@ -1,7 +1,7 @@
 // Home (sd:2117): the design source's products/system/designs/v2/home.js at d82daa1, ported; home-kiosk.js sets the wall display flag. Each change from the reference is marked
-// "build:". The tiles are /api/home (home_screen.py): the entities <config>/project-dashboard/home-tiles.conf names, never sample
-// data. The dashboard reads no Home Assistant state yet, so every tile is unknown with the document's reason and every command is
-// off with it: the page sends nothing.
+// "build:". The tiles are /api/home (home_screen.py): the entities <config>/project-dashboard/home-tiles.conf names, each with its
+// live Home Assistant state and last change, or a named error (sd:3427), never sample data. Every command is off with the
+// document's write reason: the page sends nothing.
 const { html, put, plural } = window.markup;
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 window.PAGE_COMMANDS = [{ label: 'Wall display', icon: 'maximize-2', run: () => document.dispatchEvent(new CustomEvent('home:kiosk', { detail: true })) }];
@@ -14,18 +14,35 @@ addEventListener('DOMContentLoaded', () => {
   const domain = id => id.split('.')[0];
 
   // ---------- Data (build) ----------
-  // E: entity id -> { id, name, domain, group }. HEAD: the headline entity or null. REASON: why no tile has a state.
-  let E = {}, HEAD = null, GROUPS = [], REASON = '', READ = null, CONFIG = null;
-  // build: the reference's state grammar per entity kind waits for a reader. Until one exists every tile says why it is unknown.
-  const read = id => REASON || !E[id] ? ['unknown', 'no HA reader'] : ['unknown', 'no reading'];
+  // E: entity id -> { id, name, domain, group, state, error }. HEAD: the headline entity or null. REASON: why the read gave no
+  // state, '' when it did. WRITES: why no command runs.
+  let E = {}, HEAD = null, GROUPS = [], REASON = '', WRITES = '', READ = null, CONFIG = null;
+  // The reference's state grammar per entity kind: [lamp state, words]. A tile claims only a state it was given; one without
+  // says why (its error). build: the headline reads on/off (the reference counted a sample attribute), and a binary sensor is
+  // lit by its domain, not by an id that holds "wan" or "fault".
+  function read(id) {
+    const e = E[id];
+    if (!e?.state) return ['unknown', e?.error || REASON || 'no reading'];
+    const s = e.state.value;
+    if (s === 'unavailable' || s === 'unknown') return ['unknown', `${s} · no reading`];
+    if (id === HEAD?.id) return s === 'on' ? ['caution', 'active'] : ['ok', 'none'];
+    if (typeOf(id) === 'alarm') return s === 'triggered' ? ['warning', 'triggered'] : ['ok', s.replace(/_/g, ' ')];
+    if (typeOf(id) === 'lock') return s === 'locked' ? ['ok', 'locked'] : s === 'jammed' ? ['warning', 'jammed'] : ['caution', s];
+    if (id.startsWith('sensor.backup')) return (Date.now() - new Date(s)) / 3600000 > 36 ? ['warning', 'stale · over 36 h'] : ['ok', 'succeeded'];
+    if (typeOf(id) === 'toggle') return ['ok', s];
+    if (domain(id) === 'binary_sensor') return s === 'on' ? ['warning', 'detected'] : ['ok', 'clear'];
+    return ['ok', e.state.unit ? `${s} ${e.state.unit}` : s];
+  }
+  // The age: the shell's relative-time renderer fills each <time class="rel"> from its last change.
+  const changedAt = id => E[id]?.state ? html`<time class="rel" datetime="${E[id].state.changed}"></time>` : '';
   // build: one icon per domain; the reference picked one per sample entity.
   const ICONS = { alarm_control_panel: 'shield-check', lock: 'lock', input_boolean: 'circle-dot', sensor: 'gauge', binary_sensor: 'siren' };
   const iconOf = id => id === HEAD?.id ? 'bell-ring' : id.startsWith('sensor.backup') ? 'hard-drive-download' : ICONS[domain(id)] || 'circle-help';
 
   // ---------- Commands (products/system/commands.md) ----------
   // Home rule: safe toggles and lock run with Undo; arm, disarm and unlock ask first and get no Undo. The CLI line is the HA REST
-  // service call a reader will make. build: each write is off with the reader's reason, so none runs, and none declares an Undo
-  // it could not honour. Read state is copy only: its line names $HA_TOKEN and $HA_URL, never a value.
+  // service call a writer will make. build: each write is off with the document's write reason, so none runs, and none declares
+  // an Undo it could not honour. Read state is copy only: its line names $HA_TOKEN and $HA_URL, never a value.
   const svcCli = svc => o => `curl -X POST -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/services/${svc(o).replace('.', '/')}" -d '{"entity_id":"${o.id}"}'`;
   const TYPE = { alarm_control_panel: 'alarm', lock: 'lock', input_boolean: 'toggle' };
   // build: a tile's configured type wins (a virtual switch says toggle); otherwise the domain decides.
@@ -33,7 +50,7 @@ addEventListener('DOMContentLoaded', () => {
   // build: the reference read the place from sample names; the tile's configured group names it here.
   const place = o => E[o.id]?.group || 'home';
   const security = svc => o => `This calls ${svc} on ${o.id}. It changes physical security (${place(o)}).`;
-  const off = () => REASON || 'not read yet';
+  const off = () => WRITES || 'not read yet';
   const notSent = o => `Not sent: ${off()} · ${o.label}`;
   function registerCommands() {
     C.register(
@@ -49,7 +66,7 @@ addEventListener('DOMContentLoaded', () => {
     );
   }
   // build: a tile shows its commands only once one of them can run.
-  const actionable = id => !REASON && typeOf(id) !== 'sensor';
+  const actionable = id => !WRITES && typeOf(id) !== 'sensor';
 
   // ---------- Render ----------
   const groupsEl = document.getElementById('groups');
@@ -61,6 +78,7 @@ addEventListener('DOMContentLoaded', () => {
       <button class="open" type="button" aria-label="${t.name}: ${words}. Details">
         ${ICON(iconOf(t.id))}<span class="nm">${t.name}</span>
         <span class="st"><span class="g" aria-hidden="true">${GLYPH[st]}</span>${words}</span>
+        ${changedAt(t.id)}
       </button>
       <div class="act">${actionable(t.id) ? C.rowActions(t.id) : ''}</div>
     </div></li>`;
@@ -75,7 +93,7 @@ addEventListener('DOMContentLoaded', () => {
     if (HEAD) {
       const [hs, hw] = read(HEAD.id);
       hb.dataset.id = HEAD.id; hb.dataset.state = hs;
-      put(hb, html`${ICON('bell-ring')}<span class="what"><b>${HEAD.name}</b><span>${hs === 'unknown' ? off() : 'nothing reported'}</span></span><span class="st"><span aria-hidden="true">${GLYPH[hs]}</span> ${hw}</span>`);
+      put(hb, html`${ICON('bell-ring')}<span class="what"><b>${HEAD.name}</b><span>${hs === 'unknown' ? REASON || hw : hs === 'ok' ? 'nothing reported' : 'problems reported'}</span></span><span class="st"><span aria-hidden="true">${GLYPH[hs]}</span> ${hw}</span>`);
       hb.setAttribute('aria-label', `${HEAD.name}: ${hw}. Details`);
     }
     put(groupsEl, html`${GROUPS.map(g => html`<section class="group" aria-labelledby="${gid(g.name)}"><h2 class="label" id="${gid(g.name)}">${g.name}</h2><ul class="lamps">${g.tiles.map(tileHTML)}</ul></section>`)}`);
@@ -93,15 +111,14 @@ addEventListener('DOMContentLoaded', () => {
       <div class="kind"><span class="label">${domain(id).replace(/_/g, ' ')}</span></div>
       <h2>${e.name}</h2>
       <dl>
-        <dt>State</dt><dd class="g-${st}"><span aria-hidden="true">${GLYPH[st]}</span> ${words}</dd>
+        <dt>State</dt><dd class="g-${st}"><span aria-hidden="true">${GLYPH[st]}</span> ${words}${e.state ? html` <span class="g-queued">(${e.state.value})</span>` : ''}</dd>
         <dt>Entity</dt><dd><code>${id}</code></dd>
         <dt>Group</dt><dd>${e.group || 'headline'}</dd>
-        <dt>Last changed</dt><dd>not read</dd>
+        <dt>Last changed</dt><dd>${e.state ? changedAt(id) : 'not read'}</dd>
       </dl>
-      <h3 class="label">Attributes</h3>
-      <p class="why">Not read: ${off()}.</p>
+      ${e.state ? '' : html`<p class="why">Not read: ${REASON || e.error || 'no reading'}.</p>`}
       <h3 class="label">Act</h3>${C.bar(id)}
-      <p class="why">${typeOf(id) === 'sensor' ? 'Read-only sensor. Nothing to act on from here.' : typeOf(id) === 'toggle' ? 'Runs at once; Undo for 10 seconds, once a reader sends it.' : 'Arm, disarm and unlock ask first and name the target; they have no Undo. Lock runs at once with Undo.'}</p>`);
+      <p class="why">${typeOf(id) === 'sensor' ? 'Read-only sensor. Nothing to act on from here.' : typeOf(id) === 'toggle' ? 'Runs at once; Undo for 10 seconds, once the dashboard sends it.' : 'Arm, disarm and unlock ask first and name the target; they have no Undo. Lock runs at once with Undo.'}</p>`);
     details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
     C.select(id);
     if (open && !document.documentElement.hasAttribute('data-kiosk')) window.shell.openPane('tab-details');
@@ -145,22 +162,25 @@ addEventListener('DOMContentLoaded', () => {
   // The reader (read.js, sd:2418) holds the guards: only the newest read draws, a tile the read no longer lists runs no
   // command, a failed read clears the grid and Details, and the first read selects the ?row= tile.
   function adopt(doc) {
-    READ = doc.read; CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'no Home Assistant reader');
+    READ = doc.read; CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'Home Assistant not read');
+    WRITES = doc.writes?.available ? '' : (doc.writes?.reason || 'no Home Assistant writes');
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
     if (HEAD) E[HEAD.id] = { ...HEAD, group: null };
     GROUPS.forEach(g => g.tiles.forEach(t => { E[t.id] = { ...t, group: g.name }; }));
     const problems = CONFIG?.problems || [];
+    const unread = Object.values(E).filter(e => !e.state);
     const state = CONFIG?.state === 'missing' ? { kind: 'empty', title: 'No tile list', text: `Copy project-dashboard/home-tiles.conf.example to ${CONFIG.source} to list the entities worth a lamp.`, source: CONFIG.source }
       : CONFIG?.state === 'error' ? { kind: 'error', text: `The tile list was not read: ${problems.join('; ')}.`, source: CONFIG.source }
       : problems.length ? { kind: 'partial', text: `${plural(problems.length, 'line')} skipped: ${problems.join('; ')}. ${REASON ? `No tile has a state: ${REASON}.` : ''}`, source: CONFIG.source }
       : REASON ? { kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' }
+      : unread.length ? { kind: 'partial', title: 'Some tiles not read', text: `${plural(unread.length, 'tile')} without a state: ${unread.map(e => `${e.id} (${e.error || 'no reading'})`).join('; ')}.`, source: '/api/home' }
       : null;
     return { objects: Object.values(E).map(e => ({ id: e.id, type: typeOf(e.id), label: e.name })), state };
   }
-  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; }
+  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; }
   function unselect() {
     selected = null; markSelected();
-    put(details, html`<p class="why">Select a tile to see its entity and why it has no state.</p>`);
+    put(details, html`<p class="why">Select a tile to see its entity and its state.</p>`);
   }
   const reading = window.shell.read({
     source: '/api/home', what: 'the tiles', adopt, clear, draw: render, unselect,
