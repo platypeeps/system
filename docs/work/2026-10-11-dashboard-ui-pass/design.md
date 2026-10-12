@@ -88,7 +88,7 @@ Each slice is one PR in this repository unless it says otherwise. Each leaves ev
 9. **Contributions evidence.** `contribution_screen.py`, `contributions.js`: evidence, dependencies and delivery in Details. Rank 9. Size M.
 10. **Retire the classic screens whose controls moved.** Delete each `operations_screen.AREAS` entry, `SCREENS` and `classic` label that slices 5 to 9 made redundant; keep any screen that still holds a control. Rank 10. Size M.
 
-Slices 2 to 9 are independent once slice 1 lands; slice 10 runs last.
+Slices 2 to 9 run in parallel once slice 1 lands (operator ruling, question 7); slice 10 runs last.
 Slice 1 touches the headers of `health.css` and `contributions.css`, which slices 3 and 9 may touch later; landing slice 1 first avoids a rebase.
 
 ## Acceptance criteria
@@ -109,15 +109,19 @@ Slice 1 touches the headers of `health.css` and `contributions.css`, which slice
 
 ## Open questions
 
+All six are answered (2026-10-11). The operator ruled on 2, 4 and the slice order; the integrator decided 1, 3, 5 and 6 as recommended.
+
 1. The global instruction files already carry the hallmark line. Is the repository rule still wanted?
-   Recommendation: yes. It loads on dashboard paths for any agent in this checkout and names the design source, which the global line does not.
+   Answer (integrator): yes. It loads on dashboard paths for any agent in this checkout and names the design source; slice 1 adds it.
 2. Should Health run cleanup, or keep copy-only?
-   Recommendation: run it, behind a confirm with the count. The standing rule already authorizes post-merge cleanup, and git's own refusals guard each step.
+   Answer (operator): Health runs cleanup, behind a confirm that names the count.
 3. How should Health read the doctor?
-   Recommendation: parse the existing `ok`, `WARN`, `FAIL` line markers. Add no `--json` flag: each line already leads with its state.
+   Answer (integrator): parse the existing `ok`, `WARN`, `FAIL` line markers; add no `--json` flag.
 4. Should the dashboard enqueue new items, or only re-queue a cancelled entry?
-   Recommendation: re-queue only, through the pack's `lane retry`. Enqueue stays with the builder or the lead, who own the worktree.
+   Answer (operator): re-queue cancelled entries only. Enqueue stays with the builder or the lead.
 5. Should Commands become its own v2 page?
-   Recommendation: no. Fold it into Activity, which already lists command records; one fewer page and rail entry.
+   Answer (integrator): no. Activity takes it, as slice 7 says.
 6. Restyle the classic screens to the foundation, or retire them?
-   Recommendation: retire each once its control moves. Delete before you add; a restyle would be dead work.
+   Answer (integrator): retire each once its control moves, as slice 10 says.
+7. In what order do the slices run?
+   Answer (operator): slices 2 to 9 run in parallel once slice 1 lands; slice 10 runs last.
