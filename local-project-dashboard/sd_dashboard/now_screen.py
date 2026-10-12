@@ -89,10 +89,9 @@ from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
 from . import job_failures, snooze
-from .markup import join, tag
 from .operations_screen import _signal_name
 
-__all__ = ["band", "document", "now_panel"]
+__all__ = ["band", "document"]
 
 # Ranks, not severities. 0 is loudest, and the band is derived from the
 # number alone -- `kind` is a category and never a severity (the pack's
@@ -420,32 +419,3 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
             "work": work, "work_error": work_error}
 
 
-def now_panel() -> object:
-    """The section Today renders; the script fills its rows from `/api/now`.
-
-    What is in the HTML is what a reader without the script needs: the
-    heading, the four sources as the Operations areas that show them in
-    full, and the fact that the rows are on their way. The table's body is
-    the one placeholder row until the script replaces it.
-    """
-    areas = join((
-        tag("a", "Repos", href="/operations?area=repos"), ", ",
-        tag("a", "Sessions", href="/operations?area=sessions"), ", ",
-        tag("a", "Trackers", href="/operations?area=trackers"), " and ",
-        tag("a", "Jobs", href="/operations?area=jobs"),
-    ))
-    return tag("section",
-        tag("h2", "Now"),
-        tag("p", join(("Failed, interrupted, unloaded and unknown scheduled jobs, unpushed commits, uncommitted files, abandoned worktrees "
-                       "and pull requests waiting on you, ",
-                       "loudest first, read at this moment from ", areas, ". Nothing here is stored.")), class_="hint"),
-        tag("table",
-            tag("thead", tag("tr", tag("th", "Band"), tag("th", "What"), tag("th", "Detail"), tag("th", "Source"))),
-            tag("tbody", tag("tr", tag("td", "Reading the fleet…", colspan="4", class_="now-empty")), data_now_rows=True),
-            class_="listing-table now-table"),
-        tag("p", "", class_="hint", role="status", aria_live="polite", data_now_status=True),
-        tag("div", tag("button", "Refresh", type="button", class_="listing-go", data_now_refresh=True),
-            class_="form-actions"),
-        tag("noscript", tag("p", join(("Now is filled by the page script. Without it, the same facts are under Operations: ",
-                                        areas, ".")), class_="hint")),
-        id="now", class_="now-panel", data_now="/api/now")

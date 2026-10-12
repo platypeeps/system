@@ -24,7 +24,7 @@ source guarded on its own so one that fails is a reason and not an empty list
   launchd keeps no run time, and a log's write time is not one. Each job
   also carries `log`, the end of `<cron_root>/logs/<job>.log` (`job_log`),
   and `last_request`, the last retry or cancel the page or the CLI sent and
-  what launchctl answered, as v1 Operations > Jobs shows it.
+  what launchctl answered, as v1 Operations > Jobs showed it.
 - `grant`: the machine merge grant, `sd config get sd.assistant_merge`
   (sd:1629). It is machine-wide, so the document carries it once, not per
   repo; unset is a reading (`None`), not a failure.

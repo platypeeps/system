@@ -46,7 +46,8 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        for path in ("/classic/today", "/item/1"):
+        # Classic Today was retired in sd:3402; Operations is a classic screen that stays.
+        for path in ("/operations", "/item/1"):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
             self.assertIn("/static/dashboard.css", page)
@@ -71,7 +72,7 @@ class TheSections(ScreenCase):
         later = [section.key for section in SECTIONS if not section.built]
         self.assertEqual(later, [])
         self.assertEqual([section.key for section in SECTIONS], ["today", "backlog", "contributions", "writing", "operations", "protection", "item", "skills", "documents", "designs"])
-        page = self.render("/classic/today")
+        page = self.render("/operations")
         self.assertNotIn("nav-later", page)
         for section in SECTIONS:
             if not section.built:
@@ -79,7 +80,7 @@ class TheSections(ScreenCase):
 
     def test_a_ported_section_links_its_new_page_from_the_registry(self):
         """sd:2473: the classic nav opens the page the v2 registry ports; the palette keeps the classic screen."""
-        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/classic/today"), re.S)[0]
+        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/operations"), re.S)[0]
         links = {label: re.search(r'href="([^"]*)"', attributes)[1]
                  for attributes, label in re.findall(r"<a\b([^>]*)>([^<]*)</a>", nav)}
         ported = [section.label for section in SECTIONS if section.in_nav and section.label in v2.SECTIONS]
@@ -102,7 +103,7 @@ class DeliberateWriteControls(ScreenCase):
 
     def pages(self):
         return {
-            "/classic/today": self.render("/classic/today"),
+            "/operations": self.render("/operations"),
             f"/item/{self.id}": self.render(f"/item/{self.id}"),
         }
 
@@ -116,15 +117,12 @@ class DeliberateWriteControls(ScreenCase):
                 self.assertIn('action="/api/', form, path)
                 self.assertIn('data-workflow-form', form, path)
                 # The palette form shows the registered command it runs; the CLI that mirrored it went with the runner (sd:3041).
-                if "data-palette-form" not in form:
-                    self.assertRegex(form, r'data-cli="sd (task|note|work|writing|assignments) ', path)
+                # No pack verb sets a bill cap, so that form names none (`operations_screen._bill_caps`).
+                if "data-palette-form" not in form and "/cap\"" not in form:
+                    self.assertRegex(form, r'data-cli="sd (task|note|work|writing|assignments|providers) ', path)
                 self.assertNotIn('<code class="command">', form)
             if path.startswith("/item/"):
                 self.assertIn('<summary>CLI equivalents</summary>', page)
-            else:
-                self.assertNotIn('<summary>CLI equivalents</summary>', page)
-                self.assertIn("Add the details when you need them. CLI: <code data-capture-cli>", page)
-                self.assertIn('sd task add &quot;Title&quot;</code>', page)
 
     def test_a_run_form_is_bound_to_current_revisions_and_a_real_api(self):
         for path, page in self.pages().items():
@@ -276,6 +274,7 @@ class OnTheWire(ScreenCase):
     included". A test that reads `SECURITY_HEADERS` proves the constant; this
     one proves the socket, which is where a `send_header` call that never runs
     would show up. Five responses: three screens, the script, and a 404.
+    Classic Today was retired in sd:3402, so Operations stands in as a classic screen.
     """
 
     def setUp(self):
@@ -283,9 +282,8 @@ class OnTheWire(ScreenCase):
         self.id = self.item("a <b>live</b> item")
         from unittest.mock import Mock, patch
 
-        # An empty checkout root of its own: the Repos and Sessions links read
-        # `REPO_ROOT` in a child, and the machine's fleet is not this
-        # fixture's (sd:2411).
+        # An empty checkout root of its own: a fleet read takes `REPO_ROOT` in
+        # a child, and the machine's fleet is not this fixture's (sd:2411).
         root = Path(self.tmp.name) / "repos"
         root.mkdir()
         environment = patch.dict(os.environ, {"REPO_ROOT": str(root)})
@@ -309,7 +307,7 @@ class OnTheWire(ScreenCase):
 
     def test_every_response_carries_the_policy_and_the_frame_refusal(self):
         for path, expected in (
-            ("/", 200), ("/classic/today", 200), ("/classic/backlog", 404), (f"/item/{self.id}", 200),
+            ("/", 200), ("/operations", 200), ("/classic/today", 404), ("/classic/backlog", 404), (f"/item/{self.id}", 200),
             ("/static/dashboard.js", 200), ("/static/dashboard.css", 200),
             ("/item/999999", 404), ("/nowhere", 404),
         ):
@@ -331,37 +329,13 @@ class OnTheWire(ScreenCase):
         is not a screen -- the Item screen is one item and is reached from a
         row. A section is not the same thing as a destination.
 
-        sd:2718: Repos and Sessions start the fleet collector, which waits up
-        to its 12 s on a child; under a loaded gate that outlasted `fetch`'s
-        10 s. The route is the subject here, so their reads fail at once, and
-        a panel that cannot observe still answers 200.
+        sd:3402 retired classic Today and the Repos and Sessions areas, so
+        Operations is the classic page whose links are followed.
         """
-        from unittest.mock import patch
-
-        from sd_dashboard import repos_screen, sessions_screen
-
-        unread = OSError("not read by this test")
-        with patch.object(repos_screen, "collect", side_effect=unread), \
-                patch.object(sessions_screen, "collect", side_effect=unread):
-            _, _, body = self.fetch("/classic/today")
-            for href in set(re.findall(r'href="(/[^"]*)"', body)):
-                status, _, _ = self.fetch(href)
-                self.assertEqual(status, 200, href)
-
-    def test_the_navigation_reads_the_fixture_fleet_and_not_this_machines(self):
-        # Repos is one of the links above. Read against `~/repos` it ran git
-        # across every checkout on the machine, under a 12-second budget that
-        # outlasts `fetch`'s 10, and timed out at load 18 (sd:2411). The fixture
-        # root is empty, yet the child's start alone outlasted 10 s under a
-        # loaded gate (sd:2752). So the child gets a budget no load reaches, and
-        # the fetch outlasts it: a slow start is a slow pass, not a timeout.
-        from unittest.mock import patch
-
-        from sd_dashboard import fleet
-
-        with patch.object(fleet, "FLEET_SECONDS", 60.0):
-            _, _, body = self.fetch("/operations?area=repos", timeout=90)
-        self.assertIn(f"No checkouts under {Path(self.tmp.name) / 'repos'}.", body)
+        _, _, body = self.fetch("/operations")
+        for href in set(re.findall(r'href="(/[^"]*)"', body)):
+            status, _, _ = self.fetch(href.replace("&amp;", "&"))
+            self.assertEqual(status, 200, href)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -126,18 +126,6 @@ def card(row, *, details=True):
         data_contribution_key=row["key"], data_lane=row["lane"], class_="contribution-card")
 
 
-def preview(connection):
-    rows = contributions.projection(connection)
-    return tag("section", tag("h2", "Contributions"),
-        tag("p", "External activity and dependency readiness are separate from local task completion.", class_="hint"),
-        join(tag("div", tag("p", LABELS.get(row["lane"], row["lane"]), class_="contribution-lane"),
-            card(row, details=False)) for row in rows[:5]),
-        tag("p", f"Showing {min(5, len(rows))} of {len(rows)} contributions. ",
-            tag("a", "Open contributions and acknowledgments", href="/contributions"))
-        if rows else tag("p", "No contributions recorded. ", tag("a", "Open contributions", href="/contributions")),
-        class_="contribution-preview")
-
-
 def render(connection, *, parameters):
     rows = contributions.projection(connection)
     query, number, selected = Listing.read_query(parameters)

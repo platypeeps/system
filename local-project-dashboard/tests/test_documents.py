@@ -244,14 +244,6 @@ class Enumerated(unittest.TestCase):
         self.publish("research/alpha-research")
         self.assertEqual(self.keys(), ["alpha-research"])
 
-    def test_a_contested_key_is_named_on_the_page_not_dropped_in_silence(self):
-        self.publish("org-a/reports")
-        self.publish("org-b/reports")
-        body = documents.render(None, config_path=self.absent, repo_root=self.repos)
-        self.assertIn("claim the key reports", body)
-        self.assertIn(str(self.repos / "org-a" / "reports" / "docs" / "dashboard"), body)
-        self.assertIn(str(self.repos / "org-b" / "reports" / "docs" / "dashboard"), body)
-
     def test_a_root_line_settles_a_contest(self):
         self.publish("org-a/reports")
         self.publish("org-b/reports")
@@ -433,23 +425,6 @@ class Listing(unittest.TestCase):
     def test_an_unreadable_root_is_empty_not_an_exception(self):
         root = documents.Root("gone", "Gone", self.dir / "absent")
         self.assertEqual(documents.documents(root), [])
-
-    def test_the_page_links_every_file(self):
-        body = documents.render(None, config_path=self.conf, repo_root=self.repos)
-        self.assertIn("/documents/civic/new.html", body)
-        self.assertIn("/documents/civic/old.html", body)
-        self.assertIn("Civic Reports", body)
-
-    def test_no_roots_says_so_rather_than_rendering_an_empty_page(self):
-        body = documents.render(None, config_path=self.dir / "absent.conf",
-                                repo_root=self.repos)
-        self.assertIn("No document roots are configured", body)
-
-    def test_the_no_roots_page_names_the_tree_it_was_given(self):
-        """Not the module default, which is a different machine's answer."""
-        body = documents.render(None, config_path=self.dir / "absent.conf",
-                                repo_root=self.repos)
-        self.assertIn(str(self.repos), body)
 
 
 class Policy(unittest.TestCase):

@@ -4,8 +4,8 @@ What this slice promises: `/today` answers under the same policy as every
 other response; the shell's files are served from the package with their
 types; the page loads its data and script before `shell.js`, as the design's
 page contract requires; Today's rows are `now_screen.document`'s, read by the
-same `/api/now` v1 reads; the v1 files are as they were (sd:2163 moved the
-old Today to `/classic/today`; `test_default_routes` holds the moves); and
+same `/api/now` v1 read; the v1 files are as they were (sd:2163 moved the
+old Today aside and sd:3402 retired it; `test_classic_retired` holds that); and
 `markup.js`, run under JavaScriptCore, turns no value into markup and help
 text into bare <b> and <code> only. The browser half -- no console error, no policy refusal, no horizontal
 scroll at 375 px -- is a manual check recorded on the pull request.
@@ -204,7 +204,7 @@ class TheShellPort(BrowserSession):
 
     def test_the_v1_files_are_unchanged_and_no_page_names_a_v2_address(self):
         self.assertEqual(server.STATIC_FILES, ("dashboard.css", "dashboard.js"))
-        for path in ("/", "/today", "/classic/today", "/static/dashboard.js", "/static/dashboard.css"):
+        for path in ("/", "/today", "/operations", "/static/dashboard.js", "/static/dashboard.css"):
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, path)
             self.assertNotRegex(body, r"""["'(]/v2/""", path)

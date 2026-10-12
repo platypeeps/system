@@ -7,28 +7,20 @@ test that has to start a socket to read a page is a test that flakes.
 
 from __future__ import annotations
 
-import html
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-from urllib.parse import parse_qs, urlsplit
 
 from sd_db import reads, transition, update_assignment, upsert_shadow
 from sd_db.writes import record_cost
 from sd_dashboard.server import NotFound, route
 
 from support import ScreenCase
-
-
-def listing_content(page, name):
-    """Read the displayed list, separately from Capture's all-item selector."""
-    return re.search(r'<section[^>]*data-listing="' + name + r'"[^>]*>.*?</section>', page).group(0)
 
 
 def maintenance_children(checkout):
@@ -48,7 +40,7 @@ def maintenance_children(checkout):
             and {"maintenance", "gc"} & set(event.get("argv", []))]
 
 
-class Today(ScreenCase):
+class OperationsUsageNumbers(ScreenCase):
     def setUp(self):
         super().setUp()
         self.repo()
@@ -57,28 +49,6 @@ class Today(ScreenCase):
         self.running = self.item("in progress", status="planning", repo="/repos/system")
         transition(self.connection, self.running, "in_progress", who="the operator")
         self.later = self.item("planning, not due", status="planning")
-
-    def test_the_screen_renders_the_library_query_in_the_library_order(self):
-        """Criterion 4's shape, on the half this repository can assert.
-
-        `sd today` is the pack's verb and lands in the pack's half of this
-        pull request, so the two-surface comparison cannot run here. What runs
-        here is the half that makes it possible: the screen renders
-        `reads.today_items` and does not sort it again, asserted by reading
-        the ids off the page in the order they appear.
-        """
-        expected = [row["id"] for row in reads.today_items(self.connection, now=self.now)]
-        self.assertEqual(expected, [self.sent, self.running])
-
-        page = self.render("/classic/today")
-        positions = [page.index(f'href="/item/{item}"') for item in expected]
-        self.assertEqual(positions, sorted(positions))
-        self.assertNotIn(f'href="/item/{self.later}"', page)
-
-    def test_finished_unsent_comes_first_with_days_since_ready(self):
-        page = listing_content(self.render("/classic/today"), "today")
-        self.assertLess(page.index("finished, unsent"), page.index("in progress"))
-        self.assertIn("In status", page)
 
     def test_usage_has_the_four_weekly_numbers_with_inputs_in_a_detail_view(self):
         """Criterion 15's rendering clause, and requirement 5's hover rule.
@@ -99,38 +69,7 @@ class Today(ScreenCase):
     def test_the_cost_tile(self):
         self.assertIn("cost-tile", self.render("/operations", {"area": ["usage"]}))
 
-    def test_open_followups(self):
-        self.note(self.running, "chase the reviewer")
-        page = self.render("/classic/today")
-        self.assertIn("chase the reviewer", page)
-
-    def test_the_runner_board_renders_rows_the_runner_does_not_yet_write(self):
-        """The board exists before the runner does, which is the point of it."""
-        first = self.assignment(self.running, status="running", provider="opus")
-        second = self.assignment(self.sent, status="queued", after=first)
-        page = self.render("/classic/today")
-        self.assertIn("The runner", page)
-        for lane in ("queued", "running", "blocked", "done"):
-            self.assertIn(f"{lane} (", page)
-        self.assertIn(f"waiting on assignment {first}", page)
-        self.assertIn(str(second), page)
-
-    def test_a_queued_row_says_which_repository_holds_it(self):
-        held = self.assignment(self.running, status="running")
-        other = self.item("second in the same repo", repo="/repos/system")
-        self.assignment(other, status="queued")
-        page = self.render("/classic/today")
-        self.assertIn(f"held by assignment {held}", page)
-
-    def test_the_timeline_is_svg_the_server_rendered(self):
-        one = self.assignment(self.running, status="running", budget_minutes=30)
-        update_assignment(self.connection, one, started=f"{self.now[:10]}T09:00:00Z")
-        page = self.render("/classic/today")
-        self.assertIn("chart-timeline", page)
-        self.assertIn("<svg", page)
-        self.assertNotIn("<canvas", page)
-
-    def test_usage_contains_provider_ranks_and_today_omits_the_usage_section(self):
+    def test_usage_contains_provider_ranks(self):
         self.connection.execute(
             "INSERT INTO provider (name, enabled, author_rank) VALUES ('opus', 1, 1)"
         )
@@ -139,19 +78,6 @@ class Today(ScreenCase):
         self.assertIn("Providers this month", page)
         self.assertIn("opus", page)
         self.assertIn("$/pass", page)
-        today = self.render("/classic/today")
-        for label in ("Week, cost and provider details", "Providers this month",
-                      "cost per shipped item", "cost-tile"):
-            self.assertNotIn(label, today)
-
-    def test_an_empty_today_says_so(self):
-        from sd_db import progress, upsert_repo
-
-        upsert_repo(self.connection, "/repos/system")
-        progress.cancel_work(self.connection, self.sent, reason="Fixture complete", who="operator")
-        progress.cancel_work(self.connection, self.running, reason="Fixture complete", who="operator")
-        page = self.render("/classic/today")
-        self.assertIn("Nothing is due and nothing is in progress.", page)
 
 
 class OperationsUsage(ScreenCase):
@@ -180,9 +106,6 @@ class OperationsUsage(ScreenCase):
             self.assertIn(expected, page)
         self.assertNotIn("Age in status", page)
         self.assertNotIn("Jobs needing attention", page)
-        relocated = self.render("/classic/today")
-        self.assertNotIn("Week, cost and provider details", relocated)
-        self.assertNotIn("fixture-plan:", relocated)
         self.assertEqual(tuple(self.connection.iterdump()), before)
 
 
@@ -204,10 +127,6 @@ class Backlog(ScreenCase):
         rows = {row["id"]: row for row in reads.backlog_items(self.connection, now=self.now)}
         self.assertTrue(reads.is_urgent(rows[soon], now=self.now))
         self.assertFalse(reads.is_urgent(rows[self.ids[0]], now=self.now))
-
-    def test_ready_to_send_is_its_own_series_in_the_histogram(self):
-        page = self.render("/operations", {"area": ["progress"]})
-        self.assertIn("chart-bar-ready-to-send", page)
 
 
 class Item(ScreenCase):
@@ -307,87 +226,6 @@ class TheItemPageUnderASecondHome(ScreenCase):
         self.assertIn("Read from git", page)
         self.assertNotIn("the row&#x27;s own body", page)
         self.assertNotIn("the row's own body", page)
-
-
-class TheHistogramBarIsAFilter(ScreenCase):
-    """Requirement 5: "a bar is a filter on the list". Follow the bar and look.
-
-    The bar used to carry its own *label* into the list's text filter --
-    `q=3-6d`, matched against the rendered cells, where `In status` renders
-    `5d` and never `3-6d`. Every bar filtered to an empty page, and no test
-    noticed because no test followed a bar. `test_v2_tasks.TheOperationsBars`
-    follows every bar into Tasks; this class checks what each bar carries.
-    """
-
-    #: One row per bucket, plus two that make the `ready_to_send` series real.
-    DAYS = (0, 2, 5, 10, 20, 40, 90)
-
-    def setUp(self):
-        super().setUp()
-        for days in self.DAYS:
-            self.age(self.item(f"aged {days} days", status="planning"), days)
-        for days in (5, 20):
-            row = self.item(f"unsent for {days} days", status="planning")
-            transition(self.connection, row, "ready_to_send", who="sd-ship")
-            self.age(row, days)
-
-    # -- reading the page --------------------------------------------------
-
-    def progress(self, parameters=None):
-        return self.render("/operations", {"area": ["progress"], **(parameters or {})})
-
-    def bars(self, page: str) -> list[tuple[str, str, str]]:
-        """Every histogram bar as (href, bucket key, series), off the markup."""
-        found = []
-        for opening in re.findall(r"<a\s[^>]*>", page):
-            href = re.search(r'href="([^"]*)"', opening)
-            age = re.search(r'data-age="([^"]*)"', opening)
-            series = re.search(r'data-series="([^"]*)"', opening)
-            if href and age and series:
-                found.append((html.unescape(href.group(1)), age.group(1), series.group(1)))
-        return found
-
-    # -- the assertions ----------------------------------------------------
-
-    def test_the_fixture_actually_spans_buckets(self):
-        """Guard on the test itself: buckets that all collapse to one prove
-        nothing about a filter, and every freshly seeded row is zero days old
-        unless the fixture backdates it."""
-        rows = reads.backlog_items(self.connection, now=self.now)
-        buckets = {reads.age_bucket(row, now=self.now) for row in rows}
-        self.assertGreaterEqual(len(buckets), 5, sorted(buckets))
-
-    def test_a_bar_carries_a_facet_and_not_a_search_term(self):
-        """The regression in the form it was found in.
-
-        `q=3-6d` is the defect: a range label in a substring filter over the
-        rendered cells. The assertion is that no bar puts its label in `q`,
-        and that what it does carry is a bucket key the screen validates.
-        """
-        keys = {str(lower) for lower, _ in reads.age_bounds()}
-        for href, key, _ in self.bars(self.progress()):
-            query = parse_qs(urlsplit(href).query)
-            self.assertNotIn("q", query, f"{href} filters by text")
-            self.assertEqual(query.get("age"), [key])
-            self.assertEqual(query.get("active"), ["1"])
-            self.assertIn(key, keys)
-
-    def test_progress_scope_ignores_backlog_filters_and_excludes_done_and_parked(self):
-        done = self.item("recently completed", status="done")
-        self.age(done, 5)
-        parked = self.item("parked idea", kind="idea")
-        self.age(parked, 20)
-        self.connection.execute("UPDATE item SET parked_at=? WHERE id=?", (self.now, parked))
-        self.connection.commit()
-        page = self.progress({"q": ["unsent"], "status": ["ready_to_send"], "age": ["3"]})
-        self.assertIn("All active items across repositories", page)
-        self.assertIn("Task filters do not affect this chart", page)
-        self.assertIn('role="img"', page)
-        totals = re.findall(r'<text[^>]*class="chart-value"[^>]*>([0-9]+)</text>', page)
-        self.assertEqual([int(value) for value in totals], [1, 1, 2, 1, 2, 1, 1])
-        self.assertEqual(self.bars(page), self.bars(self.progress()))
-        for href, _, _ in self.bars(page):
-            self.assertNotIn("q=", href)
 
 
 if __name__ == "__main__":  # pragma: no cover

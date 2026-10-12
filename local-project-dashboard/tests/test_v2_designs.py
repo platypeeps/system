@@ -1,7 +1,7 @@
 """The v2 Designs page (sd:2126).
 
 What this slice promises: `/designs` answers under the shared policy and loads the reader and its script before `shell.js`,
-the old listing moves to `/classic/designs`, which the palette lists, and the files stay at `/designs/<path>`.
+the old listing is retired (sd:3402), and the files stay at `/designs/<path>`.
 `/api/designs` is `designs.ledger()`, the document the design's `data/designs-data.js` holds, read live. The page draws a
 row per drawn page and per brief with no page, marks a page uncommitted, without a screenshot or with a stale one, opens
 each page and screenshot at `/designs/<path>`, and registers the design's three commands, each copy only.
@@ -91,13 +91,12 @@ class ThePage(BrowserSession):
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
-    def test_the_rail_opens_the_new_page_the_palette_keeps_the_old_one_and_the_files_stay_put(self):
+    def test_the_rail_opens_the_new_page_the_old_one_is_retired_and_the_files_stay_put(self):
         self.assertEqual(v2.SECTIONS.get("Designs"), "/designs")
         self.assertNotIn("Designs", v2.CLASSIC)
-        self.assertEqual(v2.SCREENS.get("Designs (classic)"), "/classic/designs")
-        status, _, body = self.request("/classic/designs")
-        self.assertEqual(status, 200)
-        self.assertIn('href="/designs/products/system/designs/v1-today.html"', body)
+        # sd:3402 retired the classic listing; `test_classic_retired` holds the 404.
+        self.assertNotIn("Designs (classic)", v2.SCREENS)
+        self.assertEqual(self.request("/classic/designs")[0], 404)
         self.assertEqual(self.request("/designs/products/system/designs/v1-today.html")[0], 200)
 
     def test_the_data_route_needs_a_session_takes_no_query_and_is_the_ledger(self):

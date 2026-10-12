@@ -1,7 +1,7 @@
 """Reports (sd:2121): v1's report, job and clean-preview reads. Acknowledge, Retry and the attributed batch acknowledge
 (`--all-clean --who`, sd:3386) post routes v1 posts too, so they stay in server.py's action_route, beside the reopen route
-Acknowledge's Undo posts (sd:2395). The old screen stays in the palette: the page has no Toolbox, Briefs, Vault, Research
-or Queues view."""
+Acknowledge's Undo posts (sd:2395). The classic Reports area was retired in sd:3402; Toolbox, Vault and Queues stay
+on the classic Resources area, which the Research page keeps in the palette."""
 
 from __future__ import annotations
 
@@ -33,5 +33,4 @@ PAGE = Page(
     html="reports.html",
     item="sd:2121",
     api=(Api("/api/reports", _read), Api("/api/reports/clean", _clean, query=True)),
-    classic={"Reports (classic)": "/operations?area=reports"},
 )

@@ -1,17 +1,17 @@
-"""Operations > Repos: each checkout against its origin's default branch (sd:1676).
+"""Each checkout against its origin's default branch (sd:1676): `repos_screen.primary` over the fleet's repos read.
 
 Primary checkouts lagged `origin/main` after merges, and three sessions share
-them, so the dashboard flags the lag and never pulls. The fixture is a real
+them, so the dashboard flags the lag and never pulls; Management shows it. The
+classic Operations > Repos area that drew it first was retired in sd:3402. The fixture is a real
 origin and clones of it under a temp root: behind, dirty, detached, on another
 branch, without `origin/HEAD`, and with a stale or missing fetch.
 """
 
 import os
-import re
 import time
 from datetime import datetime, timedelta, timezone
 
-from sd_dashboard import repos_screen
+from sd_dashboard import fleet, repos_screen
 
 from fleet_support import FleetCase
 
@@ -23,15 +23,12 @@ class DefaultBranch(FleetCase):
         self.origin = self.checkout("origin", "remote")
 
     def repos(self):
-        return self.render("/operations", {"area": ["repos"]})
+        return fleet.collect("repos")
 
-    def cells(self, page):
-        """Checkout name to the Default branch cell's text, tags stripped."""
-        names = [re.sub(r"<[^>]+>", "", cell).strip()
-                 for cell in re.findall(r'<td class="repo-name">(.*?)</td>', page, re.DOTALL)]
-        cells = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", cell)).strip()
-                 for cell in re.findall(r'<td class="repo-default">(.*?)</td>', page, re.DOTALL)]
-        return dict(zip(names, cells))
+    def cells(self, document):
+        """Checkout name to its default-branch reading: headline, detail and remedy, as Management shows them."""
+        return {(row["name"] if row["group"] == "." else f"{row['group']}/{row['name']}"):
+                " ".join(part for part in repos_screen.primary(row)[1:] if part) for row in document["repos"]}
 
     def clone(self, name):
         path = self.root / name
@@ -52,21 +49,20 @@ class DefaultBranch(FleetCase):
 
     def test_a_clean_checkout_behind_its_default_shows_the_count_and_the_pull(self):
         path = self.behind("lagging")
-        page = self.repos()
-        cell = self.cells(page)["lagging"]
+        document = self.repos()
+        cell = self.cells(document)["lagging"]
         self.assertTrue(cell.startswith("behind 2 "), cell)
         self.assertIn("2 commits behind origin/main; fetched 0 min ago.", cell)
-        self.assertIn(f"<code>git -C {path} pull --ff-only</code>", page)
-        self.assertIn(" · 1 behind default", page)
+        self.assertIn(f"git -C {path} pull --ff-only", cell)
 
     def test_a_dirty_checkout_is_flagged_without_a_pull(self):
         path = self.behind("dirty")
         (path / "README").write_text("edited\n")
-        page = self.repos()
-        cell = self.cells(page)["dirty"]
+        document = self.repos()
+        cell = self.cells(document)["dirty"]
         self.assertTrue(cell.startswith("behind 2 "), cell)
         self.assertIn("No pull offered: 1 uncommitted file.", cell)
-        self.assertNotIn("pull --ff-only", page)
+        self.assertNotIn("pull --ff-only", cell)
 
     def test_local_commits_on_the_default_branch_withhold_the_pull(self):
         path = self.behind("diverged")
@@ -77,21 +73,20 @@ class DefaultBranch(FleetCase):
     def test_a_detached_head_says_it_cannot_count(self):
         path = self.behind("detached")
         self.git(path, "checkout", "-q", "--detach")
-        page = self.repos()
-        cell = self.cells(page)["detached"]
+        document = self.repos()
+        cell = self.cells(document)["detached"]
         self.assertTrue(cell.startswith("unknown "), cell)
         self.assertIn("HEAD is detached; the lag behind origin/main is counted on main only.", cell)
-        self.assertNotIn("pull --ff-only", page)
-        self.assertIn(" · 0 behind default", page)
+        self.assertNotIn("pull --ff-only", cell)
 
     def test_another_branch_says_which_and_that_it_cannot_count(self):
         path = self.behind("parked")
         self.git(path, "switch", "-q", "-c", "feat/parked")
-        page = self.repos()
-        cell = self.cells(page)["parked"]
+        document = self.repos()
+        cell = self.cells(document)["parked"]
         self.assertTrue(cell.startswith("not on main "), cell)
         self.assertIn("On feat/parked; the lag behind origin/main is counted on main only.", cell)
-        self.assertNotIn("pull --ff-only", page)
+        self.assertNotIn("pull --ff-only", cell)
 
     def test_no_origin_head_and_no_origin_say_so(self):
         path = self.behind("headless")
@@ -124,8 +119,8 @@ class DefaultBranch(FleetCase):
         # in the request and reporting the true lag.
         path = self.clone("unfetched")
         self.advance(3)
-        page = self.repos()
-        self.assertEqual(self.cells(page)["unfetched"],
+        document = self.repos()
+        self.assertEqual(self.cells(document)["unfetched"],
                          "unknown Level with origin/main as of the last fetch; no fetch recorded.")
         self.assertFalse((path / ".git" / "FETCH_HEAD").exists())
         # And a fetched one keeps its fetch time: the page read it, not rewrote it.

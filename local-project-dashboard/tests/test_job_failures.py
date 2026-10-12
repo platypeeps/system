@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import stat
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,8 +16,6 @@ from sd_dashboard import job_failures, now_screen
 
 from support import NOW, ScreenCase
 from test_now_screen import JobsBackend, fleet_document, repo
-from .test_operations_actions import FakeBackend
-from test_workflow_actions import BrowserSession
 
 #: A stub `jev`: one line of argv per call and the state it read, then
 #: `enabled` honours JEV_JOB_TRIAGE and `score` prints the loudest level, so a
@@ -201,17 +198,3 @@ class Shadow(ScreenCase):
         _, threads = self.document(None)
         self.assertEqual(threads, [None])
         self.assertEqual(self.calls_made(), [])
-
-
-class OperationsCard(BrowserSession):
-    def setUp(self):
-        self.backend = FakeBackend()
-        super().setUp()
-
-    def test_a_failed_job_card_shows_its_class_and_no_other_card_does(self):
-        status, _, page = self.request("/operations?area=jobs")
-        self.assertEqual(status, 200)
-        start = page.index("crashed fixture")
-        crashed = page[start:page.index("</article>", start)]
-        self.assertIn("Triage: needs a person, crashed with signal 11. Advisory only; nothing retries it.", crashed)
-        self.assertEqual(page.count("Advisory only; nothing retries it."), 2)

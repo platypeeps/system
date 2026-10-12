@@ -235,7 +235,7 @@
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
-    { label: 'Open Sessions in Operations', icon: 'folder-x', run: () => { location.href = '/operations?area=sessions'; } },
+    { label: 'Open sd-* processes in Management', icon: 'folder-x', run: () => { location.href = '/management'; } },
   ];
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected,
     select: id => select(id, false), clear: () => clearFilters() };

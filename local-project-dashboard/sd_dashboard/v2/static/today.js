@@ -19,12 +19,12 @@
   // now_screen bands → design.md state grammar.
   const STATE = { broken: 'warning', look: 'caution', queued: 'queued' };
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
-  const SRC = { jobs: ['Jobs', 'activity', 'jobs'], prs: ['Pull requests', 'git-pull-request', 'trackers'], sessions: ['Sessions', 'bot', 'sessions'], repos: ['Repos', 'hard-drive-download', 'repos'] };
+  // Each source's label, icon, and the page that shows it in full, with that page's name (sd:3402).
+  const SRC = { jobs: ['Jobs', 'activity', '/management', 'Management'], prs: ['Pull requests', 'git-pull-request', '/operations?area=trackers', 'Trackers'], sessions: ['Sessions', 'bot', '/fleet-health', 'Health'], repos: ['Repos', 'hard-drive-download', '/management', 'Management'] };
   const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
   const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', worktree: 'Sessions', dark: 'Collector' };
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
-  const area = s => `/operations?area=${SRC[s]?.[2] || s}`;
 
   let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], srcFilter = null, query = '';
   const $ = id => document.getElementById(id);
@@ -42,7 +42,7 @@
     put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
       <h2>${r.what}</h2>
       <dl>${Object.entries(facts(r)).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.now}"></time></dd></dl>
-      <p><a href="${area(r.source)}">Open ${SRC[r.source]?.[0] || r.source} in Operations</a></p>
+      ${SRC[r.source] ? html`<p><a href="${SRC[r.source][2]}">Open ${SRC[r.source][0]} in ${SRC[r.source][3]}</a></p>` : ''}
       <h3>Act</h3>${shell.commands.bar(id)}`);
     shell.commands.select(id);
     shell.suggest([`Why is ${r.what.split(' ')[0]} on this list?`, 'What else changed around this time?', 'Rank what I should do in the next hour']);
@@ -194,7 +194,6 @@
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
     { label: 'Read Now again', icon: 'rotate-ccw', run: () => load() },
-    { label: 'Open the classic Today', icon: 'layout-dashboard', run: () => { location.href = '/classic/today'; } },
   ];
 
   document.addEventListener('DOMContentLoaded', () => {

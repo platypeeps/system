@@ -1,9 +1,10 @@
-"""Today and Item, with all reads and writes owned by sd_db.
+"""Item, with all reads and writes owned by sd_db.
 
-Every row comes from `sd_db.reads`, including the Today query shared with
-`sd today`. Controls render the shared workflow's allowed transitions and
-current revision; they contain no independent status rules or SQL. Tasks
-took the Backlog, and its run selection, in sd:2622.
+Every row comes from `sd_db.reads`. Controls render the shared workflow's
+allowed transitions and current revision; they contain no independent status
+rules or SQL. Tasks took the Backlog, and its run selection, in sd:2622; the
+old Today was retired in sd:3402, once the v2 Today carried its capture and
+its rows.
 """
 
 from __future__ import annotations
@@ -19,16 +20,11 @@ sdpaths = None  # bound at the end of this module (sd:1439)
 from sd_db import reads, workflow
 
 from . import controls
-from .charts import timeline_svg
 from .listing import Column, Listing
 from .markup import Markup, join, markdown, tag
 from .pages import command_reference, page
 
-__all__ = ["item", "today"]
-
-
-def _cell(key: str):
-    return lambda row: row[key]
+__all__ = ["item"]
 
 
 def _repo_labels(paths):
@@ -46,24 +42,6 @@ def _repo_labels(paths):
     return lambda path: labels.get(path, "—")
 
 
-def _due(row, now):
-    value = row["due"]
-    if not value:
-        return "—"
-    try:
-        date = datetime.fromisoformat(value)
-    except ValueError:
-        return value
-    label = date.strftime("%b %-d")
-    if date.year != int(now[:4]):
-        label += f", {date.year}"
-    return tag("time", label, datetime=value, aria_label=value)
-
-
-def _status(row) -> Markup:
-    return tag("span", row["status"].replace("_", " "), class_=f"status status-{row['status']}")
-
-
 def readable_time(stamp):
     if not stamp:
         return Markup("—")
@@ -78,139 +56,6 @@ def readable_time(stamp):
 def _history_text(body):
     return re.sub(r"\b(in_progress|ready_to_send)\b", lambda match: match[0].replace("_", " "),
                   body).replace(" -> ", " → ")
-
-
-def _days(row, now: str) -> str:
-    days = reads.days_since_status(row, now=now)
-    return "—" if days is None else f"{days}d"
-
-
-# --------------------------------------------------------------------------
-# Today
-# --------------------------------------------------------------------------
-
-
-def _runner_board(board, now: str) -> Markup:
-    holders = board.get("_holders", {})
-    lanes = []
-    for lane in reads.BOARD_LANES:
-        rows = board.get(lane, [])
-        cards = []
-        for row in rows:
-            waits = reads.waiting_on(row, holders)
-            cards.append(
-                tag(
-                    "article",
-                    tag("h3", tag("a", row["item_title"] or f"item {row['item']}",
-                                  href=f"/item/{row['item']}")),
-                    tag("p", row["item_repo"] or "(no repository)", class_="card-repo"),
-                    tag("p", f"{row['role']} · {row['provider'] or 'unassigned'}",
-                        class_="card-role"),
-                    tag("p", f"waiting on {waits}", class_="card-wait") if waits else Markup(""),
-                    class_="card",
-                )
-            )
-        lanes.append(
-            tag(
-                "section",
-                tag("h3", f"{lane} ({len(rows)})", class_="lane-heading"),
-                join(cards) if cards else tag("p", "—", class_="lane-empty"),
-                class_=f"lane lane-{lane}",
-            )
-        )
-    return tag("div", join(lanes), class_="board board-runner")
-
-
-def today(connection, *, now: str, parameters) -> str:
-    """Items due or in progress, and the runner's day.
-
-    The list is `reads.today_items` in the order the library returned it. This
-    screen does not sort: criterion 4 asserts that `sd today` and this page
-    list the same ids *in the same order*, and a second sort here is exactly
-    how that assertion starts failing.
-    """
-    rows = reads.today_items(connection, now=now)
-    repo_label = _repo_labels(row["repo"] for row in rows)
-    query, page_number, selected = Listing.read_query(parameters)
-    listing = Listing(
-        name="today",
-        path="/classic/today",
-        query=query,
-        page_number=page_number,
-        selected=selected,
-        rows=rows,
-        row_id=lambda row: str(row["id"]),
-        row_href=lambda row: f"/item/{row['id']}",
-        columns=[
-            Column("title", "Item", _cell("title"), css="column-item"),
-            Column("status", "Status", _status, text=_cell("status"), css="column-meta column-status"),
-            Column("days", "In status", lambda row: _days(row, now), css="column-meta"),
-            Column("repo", "Repository", lambda row: repo_label(row["repo"]), text=_cell("repo"), css="column-meta column-repo"),
-            Column("due", "Due", lambda row: _due(row, now), text=_cell("due"), css="column-meta", hide_empty=True),
-            Column("kind", "Kind", _cell("kind"), hidden=True),
-        ],
-        empty="Nothing is due and nothing is in progress.",
-        empty_next="Choose the next task from Tasks, or capture something new.",
-    )
-
-    followups = reads.open_followups(connection)
-    followup_list = Listing(
-        name="followups",
-        path="/classic/today",
-        rows=followups,
-        row_href=lambda row: f"/item/{row['item']}",
-        columns=[
-            Column("body", "Followup", _cell("body")),
-            Column("item", "Item", _cell("item_title")),
-            Column("when", "Written", lambda row: row["timestamp"][:10]),
-        ],
-        empty="No open followups.",
-    )
-
-    board = reads.runner_board(connection, now=now)
-    running = sum(len(board.get(lane, [])) for lane in ("queued", "running"))
-    timeline_rows = reads.day_timeline(connection, now=now)
-
-    board_section: list[object] = []
-    if running:
-        board_section = [
-            tag("h2", "The runner"),
-            command_reference("sd today"),
-            _runner_board(board, now),
-        ]
-    if timeline_rows:
-        board_section.extend(
-            [
-                tag("h2", "The day"),
-                timeline_svg(
-                    timeline_rows, now=now, href=lambda row: f"/item/{row['item']}"
-                ),
-            ]
-        )
-
-    from .contribution_screen import preview
-    from .now_screen import now_panel
-
-    return page(
-        "Today",
-        "today",
-        tag("p", "A clear place to pick up, move forward, and finish.", class_="lead"),
-        # First, before capture: Now is what the fleet is asking for, and
-        # the pack put it above its own tabs for that reason. Its rows come
-        # by `/api/now` after the page is up (`now_screen` says why).
-        now_panel(),
-        controls.capture(connection),
-        preview(connection),
-        tag("h2", "Your work today"),
-        tag("p", "Due and in-progress items. Active assignments appear in the runner board below.", class_="hint"),
-        command_reference("sd today"),
-        listing.render(),
-        tag("h2", "Open followups"),
-        followup_list.render(),
-        tag("p", tag("a", "Choose the next task from Tasks", href="/tasks", class_="button-link")),
-        join(board_section),
-        cli_equivalents=False,
-    )
 
 
 # --------------------------------------------------------------------------

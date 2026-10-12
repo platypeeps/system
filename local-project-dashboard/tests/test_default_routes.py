@@ -2,8 +2,9 @@
 
 What this slice promises: `/` and `/today` serve the new Today; every `/v2/`
 page or file a bookmark can name answers 301 with its new address, and
-nothing else under `/v2/` redirects; the old Today lives at `/classic/today`
-and every other old screen keeps its path; and each rail section that is not
+nothing else under `/v2/` redirects; every old screen that stays keeps its
+path (sd:3402 retired classic Today and the others whose controls moved,
+`test_classic_retired`); and each rail section that is not
 ported opens its old screen, from one map (`v2.SECTIONS`, `v2.CLASSIC`,
 `v2.SCREENS`) that the shell reads as `/ui/sections.js`. Which sections are
 ported, and which old screens a page took the path of, is the page registry's
@@ -28,10 +29,9 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 
-#: Every old screen, and where it lives now. An old screen whose path a page took is where that page's module says.
+#: Every old screen that stays, and where it lives now. An old screen whose path a page took is where that page's module says.
 OLD_SCREENS = ("/protection", "/operations",
-               *(f"/operations?area={key}" for key in ("jobs", "services", "ports", "progress", "usage", "reports",
-                                                        "resources", "trackers", "repos", "sessions", "commands")),
+               *(f"/operations?area={key}" for key in ("usage", "resources", "trackers")),
                *(entry.path for page in v2.registry.PAGES for entry in page.takes))
 
 
@@ -46,18 +46,15 @@ class TheDefault(BrowserSession):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         self.backend = JobsBackend(root.name, jobs=[("nightly-sync", "failed", 7, None)])
-        # No collector child runs in a test: the repos, sessions and resources areas read fixtures.
-        for target, value in (("sd_dashboard.repos_screen.collect", lambda area: fleet_document(area)),
-                              ("sd_dashboard.sessions_screen.collect", lambda area: fleet_document(area)),
-                              ("sd_dashboard.reports_screen.collect", lambda area: "")):
-            patcher = patch(target, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # No collector child runs in a test: the resources area reads a fixture.
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         super().setUp()
         self.listening.RequestHandlerClass.ports_backend = staticmethod(ports_fixture)
         empty = Path(root.name) / "launchd"
         empty.mkdir()
-        # No service is installed, so the Services area makes no launchctl call.
+        # No service is installed, so no page read makes a launchctl call.
         self.listening.RequestHandlerClass.services_backend = services.ServiceBackend(
             user_agents=empty, system_daemons=empty, runner=lambda argv: self.fail(f"launchctl {argv}"))
 
@@ -100,14 +97,6 @@ class TheDefault(BrowserSession):
             self.assertNotIn("Location", headers, path)
             self.assertEqual(headers["Content-Security-Policy"], server.CSP, path)
 
-    def test_the_old_today_lives_at_classic_today_and_its_lists_stay_there(self):
-        status, _, body = self.raw("/classic/today")
-        self.assertEqual(status, 200)
-        self.assertIn("<title>Today — sd</title>", body)
-        actions = set(re.findall(r'<form[^>]*method="get"[^>]*action="([^"]*)"', body))
-        self.assertIn("/classic/today", actions)
-        self.assertNotIn("/", actions)
-
     def test_every_old_screen_answers_at_its_address(self):
         for path in OLD_SCREENS:
             status, headers, body = self.raw(path)
@@ -129,8 +118,8 @@ class TheDefault(BrowserSession):
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
-        for required in ("/operations?area=jobs", "/operations?area=trackers", "/operations?area=ports",
-                         "/operations?area=repos", "/protection", "/classic/designs"):
+        for required in ("/operations?area=usage", "/operations?area=resources", "/operations?area=trackers",
+                         "/protection", "/classic/contributions"):
             self.assertIn(required, reachable)
         # A ported section is never also classic, and no page script names a section's address.
         self.assertEqual(set(v2.SECTIONS) & set(v2.CLASSIC), set())

@@ -5,7 +5,7 @@ annunciator, a lane per kind and a ledger banded by hour. `GET /api/activity`
 (`activity_screen.document`) reads only what the library already records:
 merges are the delivery notes `sd-ship` writes, runs are runner assignments
 and launchd jobs placed at their log time, and commands are the execution
-journal v1 Operations > Commands lists, older records too for the "All read"
+journal v1 Operations > Commands listed, older records too for the "All read"
 range; palette and runner runs alike (sd:2183). Reviews are the review each
 merge carried, read from the same delivery note's `review_selection` and
 `review_clearance` (sd:2211): clean or advisory is ok, blocking findings whose
@@ -20,6 +20,6 @@ Management words it (sd:3391). Show output reads the
 execution record, page by page past 64 KiB (sd:2416). Reconcile, on an
 unfinished palette record, posts `/api/palette/<note>/reconcile`, which observes
 the target and never replays the command (sd:3391). With Show output it takes
-over v1 Operations > Commands, so the rail has no classic Commands entry. The page reads through
+over v1 Operations > Commands, which sd:3402 retired. The page reads through
 the shell's reader, `read.js` (sd:2489): a landed write rereads, and a failed
 reread keeps the rows and says the write landed.

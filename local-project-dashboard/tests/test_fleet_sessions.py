@@ -1,17 +1,15 @@
-"""Operations > Sessions: registered worktrees and running sd-* commands (sd:719 step 5).
+"""The fleet's sessions read: registered worktrees and running sd-* commands (sd:719 step 5).
 
 The rows come from `fleet.py` run as a child under the collectors' `Budget`:
 the worktree registrations git keeps under each checkout's `.git/worktrees/`,
-read from their files, and one `ps` for the process table. Nothing here opens
-a database of its own; the criterion 2 grep in `tests/test_markup.py` is the
-check.
+read from their files, and one `ps` for the process table. Health reads the
+worktrees and Management the processes. These tests read the document itself:
+the classic Operations > Sessions area that drew it was retired in sd:3402.
 """
 
-import re
 from unittest.mock import patch
 
-from sd_dashboard import fleet, operations_screen
-from sd_dashboard.sessions_screen import sessions_panel
+from sd_dashboard import fleet
 
 from fleet_support import FleetCase, SlowStart
 
@@ -21,28 +19,26 @@ PS = ("  4242 01:02:03 /Users/pat/repos/pack/bin/sd-review --json\n"
       "  4245    00:01 python3 -m unittest\n")
 
 
-class SessionsArea(FleetCase):
+class SessionsRead(FleetCase):
 
-    def sessions(self, **parameters):
-        return self.render("/operations", {"area": ["sessions"], **{key: [value] for key, value in parameters.items()}})
+    def sessions(self):
+        return fleet.collect("sessions")
 
-    def cells(self, page, css):
-        return [re.sub(r"<[^>]+>", "", cell).strip()
-                for cell in re.findall(rf'<td class="{css}">(.*?)</td>', page, re.DOTALL)]
+    def column(self, document, key, field):
+        return [row[field] for row in document[key]]
 
     def test_worktrees_are_listed_abandoned_first_with_their_branches(self):
         pack = self.checkout("pack", "acme")
         live = self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
         gone = self.abandoned(pack, "lane-b", "fix/sd-2-lane-b")
         self.shim("ps", "exit 0")
-        page = self.sessions()
-        self.assertEqual(self.cells(page, "worktree-repo"), ["acme/pack", "acme/pack"])
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-b", "lane-a"])
-        self.assertEqual(self.cells(page, "worktree-branch"), ["fix/sd-2-lane-b", "fix/sd-1-lane-a"])
-        self.assertEqual(self.cells(page, "worktree-state"), ["Abandoned", "Live"])
+        document = self.sessions()
+        self.assertEqual(self.column(document, "worktrees", "repo"), ["acme/pack", "acme/pack"])
+        self.assertEqual(self.column(document, "worktrees", "name"), ["lane-b", "lane-a"])
+        self.assertEqual(self.column(document, "worktrees", "branch"), ["fix/sd-2-lane-b", "fix/sd-1-lane-a"])
+        self.assertEqual(self.column(document, "worktrees", "state"), ["abandoned", "live"])
         # git records the worktree by its resolved path: /private/var on macOS.
-        self.assertEqual(self.cells(page, "worktree-path"), [str(gone), str(live.resolve())])
-        self.assertIn("2 registered worktrees · 1 abandoned", page)
+        self.assertEqual(self.column(document, "worktrees", "path"), [str(gone), str(live.resolve())])
 
     def test_an_unreadable_registration_is_unknown_and_not_abandoned(self):
         pack = self.checkout("pack")
@@ -53,73 +49,28 @@ class SessionsArea(FleetCase):
         gitdir.chmod(0)
         self.addCleanup(gitdir.chmod, 0o644)
         self.shim("ps", "exit 0")
-        page = self.sessions()
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-a", "lane-b", "lane-c"])
-        self.assertEqual(self.cells(page, "worktree-state"), ["Abandoned", "Unknown", "Live"])
-        self.assertEqual(self.cells(page, "worktree-path"), [str(blind.parent / "lane-a"), "(unreadable registration)", str(live.resolve())])
-        self.assertIn("3 registered worktrees · 1 abandoned · 1 unreadable", page)
-
-    def test_a_filter_that_matches_no_process_says_so_as_a_filter(self):
-        self.shim("ps", f"printf '{PS}'")
-        page = self.sessions(**{"processes-q": "nothing-like-this"})
-        self.assertIn("No sd-* command matches this filter.", page)
-        self.assertNotIn("No sd-* command is running.", page)
-
-    def test_each_listing_filters_and_pages_on_its_own_key(self):
-        # The two lists are independent row sets. Sharing `q` and `page` meant
-        # a process term also hid matching worktrees, and paging one table
-        # paged the other (PR #427 review).
-        pack = self.checkout("pack")
-        self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
-        self.shim("ps", f"printf '{PS}'")
-        page = self.sessions(**{"processes-q": "sd-review"})
-        self.assertEqual(self.cells(page, "process-pid"), ["4242"])
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
-        page = self.sessions(**{"worktrees-q": "lane-a"})
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
-        self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
-
-    def test_one_listings_filter_carries_the_others_state_past_it(self):
-        # Each list's form and links carry the sibling's key, so filtering one
-        # table does not drop the filter already on the other.
-        pack = self.checkout("pack")
-        self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
-        self.shim("ps", f"printf '{PS}'")
-        page = self.sessions(**{"processes-q": "sd-review"})
-        forms = re.findall(r'<form method="get" action="/operations"[^>]*>(.*?)</form>', page, re.DOTALL)
-        carrying = [form for form in forms if 'name="worktrees-q"' in form]
-        self.assertEqual(len(carrying), 1, forms)
-        self.assertIn('<input type="hidden" name="processes-q" value="sd-review">', carrying[0])
+        document = self.sessions()
+        self.assertEqual(self.column(document, "worktrees", "name"), ["lane-a", "lane-b", "lane-c"])
+        self.assertEqual(self.column(document, "worktrees", "state"), ["abandoned", "unknown", "live"])
+        self.assertEqual(self.column(document, "worktrees", "path"), [str(blind.parent / "lane-a"), "", str(live.resolve())])
 
     def test_running_sd_commands_are_listed_by_their_basename(self):
         self.shim("ps", f"printf '{PS}'")
-        page = self.sessions()
-        self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
-        self.assertEqual(self.cells(page, "process-elapsed"), ["01:02:03", "00:07"])
-        self.assertIn("/Users/pat/repos/pack/bin/sd-review --json", page)
-        self.assertNotIn("vim", page)
-        self.assertNotIn("unittest", page)
-        self.assertIn(" · 2 sd-* commands running", page)
-
-    def test_the_area_is_in_the_navigation_and_the_subtitle_names_it(self):
-        self.shim("ps", "exit 0")
-        page = self.sessions()
-        navigation = re.search(r'<nav[^>]*aria-label="Operations areas"[^>]*>(.*?)</nav>', page).group(1)
-        self.assertIn('href="/operations?area=sessions"', navigation)
-        self.assertIn(">Sessions</a>", navigation)
-        self.assertIn(("sessions", "Sessions"), operations_screen.AREAS)
-        subtitle = re.search(r'<p class="subtitle">([^<]*)</p>', page).group(1)
-        self.assertIn("sessions", subtitle)
+        document = self.sessions()
+        self.assertEqual(self.column(document, "processes", "pid"), ["4242", "4243"])
+        self.assertEqual(self.column(document, "processes", "elapsed"), ["01:02:03", "00:07"])
+        self.assertEqual(self.column(document, "processes", "command"),
+                         ["/Users/pat/repos/pack/bin/sd-review --json", "sd store item 719 --json"])
+        self.assertEqual((document["processes_error"], document["processes_truncated"]), ("", False))
 
     def test_a_missing_root_is_said_rather_than_shown_as_no_worktrees(self):
         self.shim("ps", f"printf '{PS}'")
         with patch.dict("os.environ", {"REPO_ROOT": str(self.root / "elsewhere")}):
-            page = self.sessions()
-        self.assertIn("does not exist", page)
-        self.assertNotIn("0 registered worktrees", page)
-        self.assertNotIn('<td class="worktree-name">', page)
+            document = self.sessions()
+        self.assertFalse(document["rootExists"])
+        self.assertEqual(document["worktrees"], [])
         # The process table does not depend on the root and is still read.
-        self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
+        self.assertEqual(self.column(document, "processes", "pid"), ["4242", "4243"])
 
     def test_a_hung_process_table_is_cut_at_the_budget_and_the_worktrees_still_render(self):
         pack = self.checkout("pack")
@@ -131,11 +82,11 @@ class SessionsArea(FleetCase):
         # counted from the page's start left a loaded machine no time to
         # start ps at all; here the child has the page's other 8 s to start.
         with patch.object(fleet, "FLEET_MARGIN", 8.0), patch.object(fleet, "time", SlowStart(-60)):
-            page = self.sessions()
-        # The half that answered is on the page; the half that did not says so.
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
-        self.assertIn("The process table could not be read: ps ran past the budget of 4 seconds and was stopped", page)
-        self.assertNotIn('<td class="process-pid">', page)
+            document = self.sessions()
+        # The half that answered is in the document; the half that did not says so.
+        self.assertEqual(self.column(document, "worktrees", "name"), ["lane-a"])
+        self.assertIn("ps ran past the budget of 4 seconds and was stopped", document["processes_error"])
+        self.assertEqual(document["processes"], [])
         # Cut by the child at its own deadline, so the hung ps is gone with
         # it rather than left holding a pipe (the `collectors.run` docstring).
         self.assertGone("ps")
@@ -151,10 +102,9 @@ class SessionsArea(FleetCase):
         (entry / "gitdir").write_bytes(b"/tmp/\xff\xfe/.git\n")
         (entry / "HEAD").write_bytes(b"ref: refs/heads/\xff\n")
         self.shim("ps", "exit 0")
-        page = self.sessions()
-        self.assertNotIn("Sessions could not be observed", page)
-        self.assertEqual(self.cells(page, "worktree-name"), ["lane-b", "lane-a"])
-        self.assertEqual(self.cells(page, "worktree-state"), ["Unknown", "Live"])
+        document = self.sessions()
+        self.assertEqual(self.column(document, "worktrees", "name"), ["lane-b", "lane-a"])
+        self.assertEqual(self.column(document, "worktrees", "state"), ["unknown", "live"])
 
     def test_a_process_table_past_the_ceiling_is_cut_and_the_count_is_a_floor(self):
         # `collectors.run` held the whole `ps` table in the child; only the
@@ -206,17 +156,6 @@ class SessionsArea(FleetCase):
         # One chunk past the ceiling is the whole of the overshoot.
         self.assertLessEqual(sum(read), collectors.BUDGET_BYTES + 65536)
 
-    def test_a_cut_table_is_drawn_as_a_floor_and_says_where_it_was_cut(self):
-        # The panel's half of the finding above. A document with the cut flag
-        # set is drawn here, because a real one large enough to be cut is
-        # refused at the child's budget before any page sees it.
-        panel = str(sessions_panel({}, backend=lambda: {
-            "root": str(self.root), "rootExists": True, "worktrees": [],
-            "processes": [{"pid": "4242", "elapsed": "01:02", "command": "sd-review --json"}],
-            "processes_error": "", "processes_truncated": True}))
-        self.assertIn(" · ≥ 1 sd-* command running", panel)
-        self.assertIn("The table was cut at 64 KB, so these are a floor.", panel)
-
     def test_other_processes_do_not_crowd_the_sd_commands_out_of_the_table(self):
         # 70 KB of unrelated processes ahead of the sd rows spent the whole
         # budget, so the rows this reads for were cut away before anything
@@ -225,11 +164,9 @@ class SessionsArea(FleetCase):
         self.shim("ps", "i=0; while [ $i -lt 1200 ]; do "
                         "printf '  %d 00:01 other-%050d\\n' $i $i; i=$((i+1)); done; "
                         f"printf '{PS}'")
-        page = self.sessions()
-        self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
-        self.assertIn(" · 2 sd-* commands running", page)
-        self.assertNotIn("≥ 2 sd-* commands", page)
-        self.assertNotIn("No sd-* command is running", page)
+        document = self.sessions()
+        self.assertEqual(self.column(document, "processes", "pid"), ["4242", "4243"])
+        self.assertFalse(document["processes_truncated"])
 
     def test_a_record_the_ceiling_cuts_in_half_is_not_a_running_command(self):
         # `sdiff /tmp/a /tmp/b` cut after `sd` passed the basename test and
@@ -269,23 +206,8 @@ class SessionsArea(FleetCase):
         self.assertEqual(rows, [])
         self.assertIn("gave no answer", error)
 
-    def test_a_cut_table_with_nothing_above_the_cut_does_not_claim_absence(self):
-        # A cut table holds an unknown number of rows past the ceiling, so
-        # "No sd-* command is running" is a claim the read cannot support,
-        # and a filter over it is narrower still (Codex review of PR #500).
-        def panel(**parameters):
-            return str(sessions_panel({key: [value] for key, value in parameters.items()}, backend=lambda: {
-                "root": str(self.root), "rootExists": True, "worktrees": [], "processes": [],
-                "processes_error": "", "processes_truncated": True}))
-
-        self.assertIn("The table was cut at 64 KB, so no command below the cut was read.", panel())
-        self.assertNotIn("No sd-* command is running.", panel())
-        filtered = panel(**{"processes-q": "sd-review"})
-        self.assertIn("Nothing above it matches this filter.", filtered)
-        self.assertNotIn("No sd-* command matches this filter.", filtered)
-
     def test_an_empty_process_table_is_a_failure_and_not_a_quiet_machine(self):
         self.shim("ps", "exit 0")
-        page = self.sessions()
-        self.assertIn("The process table could not be read: ps gave no answer", page)
-        self.assertNotIn("0 sd-* commands running", page)
+        document = self.sessions()
+        self.assertIn("ps gave no answer", document["processes_error"])
+        self.assertEqual(document["processes"], [])

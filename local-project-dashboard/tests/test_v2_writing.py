@@ -1,7 +1,7 @@
 """The v2 Writing page (sd:2125).
 
 What this slice promises: `/writing` answers under the shared policy and loads the reader and its script before `shell.js`,
-and the old list moves to `/classic/writing`, which the palette lists. `/api/writing` is every piece, parked ones too, with
+and the old list is retired (sd:3402). `/api/writing` is every piece, parked ones too, with
 the stage, gate problems, next and correction stages that `writing.piece_state` gives, each file's size, and the opening
 of the draft; it names the repository by its folder only and writes nothing. The page draws the board with four gate
 lamps per piece; Stage asks first and posts the item stage route with the piece's revision, Correct posts it with a
@@ -107,15 +107,12 @@ class ThePage(Pieces):
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
-    def test_the_rail_opens_the_new_page_and_the_palette_keeps_the_old_one(self):
+    def test_the_rail_opens_the_new_page_and_the_old_one_is_retired(self):
         self.assertEqual(v2.SECTIONS.get("Writing"), "/writing")
         self.assertNotIn("Writing", v2.CLASSIC)
-        self.assertEqual(v2.SCREENS.get("Writing (classic)"), "/classic/writing")
-        self.seed()
-        status, _, body = self.request("/classic/writing?parked=all")
-        self.assertEqual(status, 200)
-        self.assertIn('action="/classic/writing"', body)
-        self.assertIn("Fixture piece", body)
+        # sd:3402 retired the classic screen; `test_classic_retired` holds the 404.
+        self.assertNotIn("Writing (classic)", v2.SCREENS)
+        self.assertEqual(self.request("/classic/writing")[0], 404)
 
     def test_the_data_route_needs_a_session_and_takes_no_query(self):
         self.assertEqual(self.request("/api/writing")[0], 403)

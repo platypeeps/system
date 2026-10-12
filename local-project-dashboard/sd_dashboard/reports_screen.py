@@ -34,9 +34,8 @@ from pathlib import Path
 from sd_db import operations, reporting, workflow
 from sd_db.errors import SdDbError
 
-from .controls import field, form
+from .controls import form
 from .documents import _config_dir
-from .listing import Column, Listing
 from .markup import Markup, escape, join, tag
 
 # Queues joined this tuple rather than taking a screen of its own (sd:719 step
@@ -152,88 +151,6 @@ def resources(parameters, *, backend=None):
         tag("p", "Read-only observations from the existing local collectors. Nothing here starts jobs or edits vault notes.", class_="hint"), content)
 
 
-#: How many rows of each preview list the page renders; the counts are whole.
-PREVIEW_ROWS = 200
-
-
-def _preview_list(heading, rows, describe):
-    """One of the two preview lists: its whole count in the heading, its
-    first `PREVIEW_ROWS` rows, and how many the page does not show."""
-    shown = rows[:PREVIEW_ROWS]
-    return tag("section", tag("h3", f"{heading} ({len(rows)})"),
-        tag("ul", join(tag("li", tag("a", f"#{row['id']}", href=f"/item/{row['id']}"), " ", describe(row))
-                       for row in shown)) if shown else tag("p", "None.", class_="hint"),
-        tag("p", f"and {len(rows) - len(shown)} more", class_="hint") if len(rows) > len(shown) else "")
-
-
-def _clean_preview(connection, parameters, *, now):
-    """sd:755. Step one of the bulk acknowledge: a GET that writes nothing.
-
-    The date is asked for with a plain GET form, outside the form script, so
-    the page can be reloaded to the same preview. With `clean_before` the
-    panel runs the same `clean_reports` the CLI runs, at the stamp `cutoff`
-    makes of the date, and renders what it would move and what it declines.
-    The apply form carries that stamp and the plan in hidden fields; a
-    person types `who`. A date `cutoff` refuses, or one that has not begun
-    at `now`, is a notice and no form; so is a selection with no plan, empty
-    or above `MAX_BATCH`, which the apply would refuse as stale anyway.
-    """
-    requested = parameters.get("clean_before")
-    asked = tag("form", tag("input", type="hidden", name="area", value="reports"),
-        tag("div", tag("label", "Created before (00:00 UTC on)", for_="clean-before"),
-            tag("input", type="date", id="clean-before", name="clean_before", required=True,
-                value=requested[0] if requested else ""), class_="field"),
-        tag("div", tag("button", "Preview clean reports", type="submit", class_="primary"), class_="form-actions"),
-        method="get", action="/operations", class_="workflow-form compact-form")
-    body = ""
-    if requested:
-        try:
-            before = reporting.cutoff(requested[0])
-            # The dashboard clock is a `...Z` string; `clean_reports` takes
-            # an aware datetime, and refuses a cutoff later than it.
-            preview = reporting.clean_reports(connection, before=before, now=datetime.fromisoformat(now))
-        except workflow.WorkflowError as error:
-            body = tag("p", str(error), class_="notice")
-        else:
-            count, plan = preview["count"], preview["plan"]
-            if plan is None:
-                reason = (f"Nothing is clean before {before}." if count == 0 else
-                          f"That is more than {preview['max_batch']} clean reports, and one acknowledge moves at most "
-                          f"{preview['max_batch']}. Choose an earlier date.")
-                apply = tag("p", reason, class_="notice")
-            else:
-                apply = form("/api/reports/acknowledge-clean",
-                    tag("input", type="hidden", name="before", value=before),
-                    tag("input", type="hidden", name="plan", value=plan),
-                    field("Acknowledged by", "who", required=True, maxlength=200, autocomplete="off"),
-                    label=f"Acknowledge {count} report{'' if count == 1 else 's'}",
-                    command=f"sd reports acknowledge --all-clean --before {before} --apply --if-plan {plan} --who NAME",
-                    reload_label="Preview again")
-            body = join((
-                _preview_list("Would acknowledge", preview["selected"],
-                              lambda row: f"{row['job'] or 'unknown job'}, recorded {row['created_at']}"),
-                _preview_list("Declined", preview["declined"], lambda row: row["why"]),
-                apply))
-    return tag("section", tag("h2", "Acknowledge clean reports"),
-        tag("p", "Preview the reports retention would settle, then acknowledge them in one attributed batch. "
-                 "The preview writes nothing; the batch is recorded as a report of its own.", class_="hint"),
-        asked, body, class_="control-panel")
-
-
-def reports_panel(connection, parameters, *, now):
-    rows = reporting.reports(connection)
-    query, number, selected = Listing.read_query(parameters)
-    listing = Listing("reports", [Column("title", "Report", lambda row: row["title"]),
-        Column("created_at", "Recorded", lambda row: row["created_at"]),
-        Column("status", "Status", lambda row: row["status"])], rows, path="/operations",
-        extra={"area": "reports"}, query=query, page_number=number, selected=selected,
-        row_href=lambda row: f"/item/{row['id']}", empty="No reports have been recorded yet.")
-    return tag("section", tag("h2", "Reports"),
-        tag("p", "Scheduled job output, with its source and findings. Existing emails keep going. Open a report to follow up, assign work or acknowledge it.", class_="hint"),
-        _clean_preview(connection, parameters, now=now),
-        tag("p", "Showing up to the newest 200 reports.", class_="hint"), listing.render())
-
-
 def report_controls(connection, row, revision):
     if row["kind"] != "report":
         return ""
@@ -284,7 +201,6 @@ def report_controls(connection, row, revision):
         tag("p", "Output was truncated. The complete source remains in the log.", class_="notice") if provenance.get("truncated") else "",
         form(f"/api/reports/{row['id']}/acknowledge", label="Acknowledge report", command=f"sd reports acknowledge {row['id']}", revision=revision)
         if row["status"] != "done" else tag("p", "Acknowledged"), class_="control-panel")
-
 
 
 # ---------- The default UI's Reports page (sd:2121) ----------

@@ -147,8 +147,7 @@ class UsageScreen(Seeds, ScreenCase):
         for key, label in operations_screen.AREAS:
             with self.subTest(area=key):
                 self.assertIn(label.lower(), subtitle.lower())
-        self.assertEqual(subtitle, "Jobs, services, ports, workflow progress, usage, reports, resources, "
-                                   "trackers, repos, sessions and commands")
+        self.assertEqual(subtitle, "Usage, resources and trackers")
 
     def test_the_bound_rows_are_a_listing_with_the_filter_and_the_pager(self):
         """The `bound` rows grow all month, so they go through `Listing`:

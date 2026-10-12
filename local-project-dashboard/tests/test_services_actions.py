@@ -1,11 +1,13 @@
 """Real HTTP service controls with disposable plists and a fake launchctl."""
 
+import json
 import os
 import plistlib
 import subprocess
 from pathlib import Path
 
 from sd_db import services
+from sd_dashboard import management_screen
 from sd_dashboard.runtime import LABEL as DASHBOARD_LABEL
 
 from .test_workflow_actions import BrowserSession
@@ -88,49 +90,35 @@ class ServicesActions(BrowserSession):
     def state(self, label=None):
         return services.service_state(self.connection, label or self.label, backend=self.services_backend)
 
+    def rows(self):
+        """The services as Management serves them; the classic Services area was retired in sd:3402."""
+        return {(row["scope"], row["label"]): row for row in management_screen._services(self.connection, self.services_backend)}
+
     def test_services_show_safe_state_scope_and_only_supported_controls(self):
         before = self.snapshot()
-        status, _, page = self.request("/operations?area=services")
-        self.assertEqual(status, 200)
-        for text in ("Launchd services", "User LaunchAgent", "System daemon", "Running", "PID 111",
-                     "Stop unloads", "next login", f"sd services stop {self.label}"):
-            self.assertIn(text, page)
-        self.assertEqual(page.count(f'action="/api/services/{self.label}/stop"'), 1)
-        self.assertNotIn(f'action="/api/services/{DASHBOARD_LABEL}/', page)
-        self.assertNotIn('action="/api/services/com.example.scheduled/', page)
+        rows = self.rows()
+        self.assertIn(("system", self.label), {(scope, label) for scope, label in rows})
+        mine = next(row for (scope, label), row in rows.items() if label == self.label and scope != "system")
+        self.assertEqual((mine["state"], mine["pid"]), ("running", 111))
+        stoppable = sorted((scope, label) for (scope, label), row in rows.items() if row["capabilities"].get("stop", {}).get("allowed"))
+        self.assertEqual(stoppable, [(mine["scope"], self.label)])
         for secret in ("SECRET", "HIDDEN", "--secret", "ProgramArguments"):
-            self.assertNotIn(secret, page)
-        self.assertIn('name="area" value="services"', page)
-        self.assertNotIn("Age in status", page)
+            self.assertNotIn(secret, json.dumps(list(rows.values())))
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.actions(), [])
-        filtered = self.request("/operations?area=services&q=daemon")[2]
-        self.assertIn("System daemon", filtered)
-        self.assertNotIn("User LaunchAgent ·", filtered)
-        self.assertNotIn('action="/api/services/', filtered)
 
-    def test_signal_ended_service_renders_its_signal_and_keeps_controls(self):
-        """A SIGTERM'd, restarted service has no exit code; the card names the
+    def test_signal_ended_service_keeps_its_signal_and_its_controls(self):
+        """A SIGTERM'd, restarted service has no exit code; its row names the
         signal and the service stays controllable instead of reading unknown (sd:1331)."""
         self.observations[self.domain + "/" + self.label] = ["running", 31900, None, 6, "Terminated: 15"]
-        status, _, page = self.request("/operations?area=services")
-        self.assertEqual(status, 200)
-        card = page[page.index(self.label):]
-        self.assertIn("Last signal SIGTERM (15)", card)
-        self.assertIn("PID 31900", card)
-        self.assertNotIn("Last exit", card[:card.index("</article>")])
-        self.assertNotIn("Unknown", card[:card.index("</article>")])
-        self.assertEqual(page.count(f'action="/api/services/{self.label}/stop"'), 1)
-        # A stopped service that died of a crash signal is Failed on the card,
-        # named by signal, and still startable.
+        row = self.state()
+        self.assertEqual((row["state"], row["pid"], row["last_exit"], row["last_signal"]), ("running", 31900, None, 15))
+        self.assertTrue(row["capabilities"]["stop"]["allowed"])
+        # A stopped service that died of a crash signal is failed, named by signal, and still startable.
         self.observations[self.domain + "/" + self.label] = ["not running", None, None, 7, "Segmentation fault: 11"]
-        page = self.request("/operations?area=services")[2]
-        card = page[page.index(self.label):]
-        card = card[:card.index("</article>")]
-        self.assertIn("Failed", card)
-        self.assertIn("Last signal SIGSEGV (11)", card)
-        self.assertNotIn("Last exit", card)
-        self.assertEqual(page.count(f'action="/api/services/{self.label}/start"'), 1)
+        row = self.state()
+        self.assertEqual((row["state"], row["last_exit"], row["last_signal"]), ("failed", None, 11))
+        self.assertTrue(row["capabilities"]["start"]["allowed"])
         self.assertEqual(self.actions(), [])
 
     def test_stop_start_and_restart_use_exact_installed_service_and_revision(self):
@@ -155,10 +143,7 @@ class ServicesActions(BrowserSession):
         self.assertEqual(restarted["request"]["status"], "accepted")
         self.assertEqual([argv[1:] for argv in self.actions()][3:],
                          [["bootout", self.domain + "/" + self.label], *expected_start])
-        page = self.request("/operations?area=services")[2]
-        self.assertIn("Last request: ", page)
-        self.assertIn("accepted", page)
-        self.assertIn("not proof of application health", page)
+        self.assertEqual(self.state()["last_request"]["status"], "accepted")
         self.assertEqual(files, {path: path.read_bytes() for path in self.root.rglob("*.plist")})
 
     def test_auth_forgery_and_unsupported_targets_have_no_side_effects(self):

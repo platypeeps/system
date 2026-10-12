@@ -114,30 +114,6 @@ class Listing(unittest.TestCase):
         self.assertEqual(designs.designs(self.root),
                          {"system": ["products/system/designs/v1-today.html"]})
 
-    def test_the_page_links_each_mockup_at_its_tree_path(self):
-        body = designs.render(None, root=self.root)
-        self.assertIn('href="/designs/products/system/designs/v1-today.html"', body)
-        self.assertNotIn("config.html", body)
-        self.assertNotIn("README.md", body)
-
-    def test_the_tab_is_current_in_the_navigation(self):
-        body = designs.render(None, root=self.root)
-        self.assertRegex(body, r'<a[^>]*href="/designs"[^>]*aria-current="page"'
-                               r'|<a[^>]*aria-current="page"[^>]*href="/designs"')
-
-    def test_no_checkout_says_where_it_looked(self):
-        missing = Path(self.tmp.name) / "absent"
-        body = designs.render(None, root=missing)
-        self.assertIn("No design pages found", body)
-        self.assertIn(str(missing / "products"), body)
-
-    def test_the_router_serves_the_listing_without_a_database(self):
-        from sd_dashboard.server import route
-
-        with mock.patch.object(designs, "ROOT", self.root):
-            body = route(None, "/classic/designs", {}, now="2026-09-27T00:00:00Z")
-        self.assertIn("v1-today.html", body)
-
 
 class Policy(unittest.TestCase):
     def directives(self):

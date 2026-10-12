@@ -51,7 +51,7 @@
     }
     if (!d.age.error) d.age.buckets.forEach(b => put1(`age:${b.lower}`, { kind: 'Age in status', title: `${b.ready_to_send + b.other} items at ${b.label}`,
       facts: [['Ready to send', b.ready_to_send], ['Other statuses', b.other], ['Scope', 'active items, done and parked excluded']], cli: 'sd task list' }));
-    if (!d.observed.error) put1('observed', { kind: 'Observed activity', title: `${d.observed.since} → ${d.observed.until}`, facts: [['Requests recorded', d.observed.recorded_requests], ['Finished review attempts', d.observed.finished_review_attempts], ['Recorded deliveries', d.observed.recorded_deliveries]], note: d.observed.interpretation, cli: '/operations?area=progress' });
+    if (!d.observed.error) put1('observed', { kind: 'Observed activity', title: `${d.observed.since} → ${d.observed.until}`, facts: [['Requests recorded', d.observed.recorded_requests], ['Finished review attempts', d.observed.finished_review_attempts], ['Recorded deliveries', d.observed.recorded_deliveries], ['Source', 'reporting.metrics']], note: d.observed.interpretation, cli: '—' });
     d.unread.forEach(x => put1(`unread:${x.id}`, { kind: 'Not read', title: x.name, s: 'unknown', facts: [['Reason', x.reason]], cli: '—' }));
   }
   const numText = n => n.value == null ? '—' : n.unit === 'usd' ? money(n.value) : n.unit === 'hours' ? `${(+n.value).toFixed(1)} h` : n.value % 1 ? (+n.value).toFixed(1) : String(n.value);

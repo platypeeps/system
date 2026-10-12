@@ -10,7 +10,6 @@ here opens a database of its own; the criterion 2 grep in
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import tempfile
@@ -356,35 +355,6 @@ class DarkCollector(FleetCase):
         self.assertTrue((messy / ".git" / "worktrees" / "gone").is_dir())
         document = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name))
         self.assertIn((3, "worktrees:1"), [(row["rank"], row["id"]) for row in document["rows"]])
-
-
-class TodayPage(ScreenCase):
-    """The Now section sits at the top of Today and says how it is filled."""
-
-    def test_now_is_the_first_section_of_today_and_names_its_sources(self):
-        page = self.render("/classic/today")
-        section = re.search(r'<section[^>]*id="now"[^>]*>.*?</section>', page, re.DOTALL)
-        self.assertIsNotNone(section, "no Now section")
-        self.assertLess(page.index('id="now"'), page.index("Your work today"))
-        self.assertLess(page.index('id="now"'), page.index('id="capture"'))
-        self.assertIn('data-now="/api/now"', section.group(0))
-        self.assertIn("<h2>Now</h2>", section.group(0))
-        self.assertIn("<noscript>", section.group(0))
-        for area in ("Repos", "Sessions", "Trackers", "Jobs"):
-            self.assertIn(area, section.group(0))
-        self.assertIn("Reading the fleet", section.group(0))
-        self.assertIn('data-now-refresh', section.group(0))
-
-    def test_the_page_render_reads_no_fleet(self):
-        with patch.object(fleet, "collect", side_effect=AssertionError("Today ran the fleet child")):
-            self.render("/classic/today")
-
-    def test_the_script_paints_the_band_the_server_computed(self):
-        script = (Path(now_screen.__file__).parent / "static" / "dashboard.js").read_text(encoding="utf-8")
-        self.assertIn("data-now", script)
-        self.assertIn("row.band", script)
-        # The band is a server-side number's name; the script holds no threshold of its own.
-        self.assertNotRegex(script, r"rank\s*<=?\s*[0-9]")
 
 
 class NowApi(BrowserSession):

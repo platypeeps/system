@@ -1,10 +1,8 @@
-"""The finite command picker and a read-only execution history."""
+"""The finite command picker on v1 screens. Its history is in Activity, which lists the execution journal (sd:3402)."""
 
 import json
 
-from sd_db import runner_exec
-
-from .markup import join, tag
+from .markup import tag
 
 
 def note_summary(note):
@@ -18,7 +16,7 @@ def note_summary(note):
         name = "Command execution"
     state = f"Finished · exit {note['exit_code']}" if note["ended"] else "Unfinished · outcome pending"
     text = f"{name} · {state}"
-    return tag("span", text, " · ", tag("a", "Execution history", href=f"/operations?area=commands#execution-{note['id']}")), text
+    return tag("span", text, " · ", tag("a", "Open in Activity", href=f"/activity?kind=command&range=all&row=cmd:{note['id']}")), text
 
 
 def dialog(screen):
@@ -37,20 +35,7 @@ def dialog(screen):
             tag("button", "Run command", type="submit"), method="post", action="/api/palette/prepare",
             data_workflow_form=True, data_palette_form=True),
         tag("pre", data_palette_output=True, aria_live="polite", tabindex="0"),
-        tag("a", "Execution history", href="/operations?area=commands"),
+        tag("a", "Command history in Activity", href="/activity?kind=command&range=all"),
         id="command-palette", data_screen=screen, aria_labelledby="palette-title")
 
 
-def history(connection):
-    rows = runner_exec.executions(connection)
-    return tag("section", tag("h2", "Execution history"),
-        tag("p", "Commands are recorded before they start. An unfinished response stays visible until its outcome is known.", class_="hint"),
-        join(tag("article", tag("h3", row["command"]),
-            tag("p", tag("a", f"#{row['item']} · {row['title']}", href=f"/item/{row['item']}")),
-            tag("p", f"{row['started']} · {row['session']} · " +
-                (f"Exit {row['exit_code']}" if row["ended"] else "Unfinished") +
-                (" · output expired" if row.get("output_expired") else "")),
-            tag("button", "Read output", type="button", data_execution=row["id"]),
-            tag("button", "Reconcile outcome", type="button", data_execution_reconcile=row["id"]) if not row["ended"] else "",
-            tag("pre", data_execution_output=row["id"], tabindex="0"), class_="execution-record", id=f"execution-{row['id']}") for row in rows)
-        if rows else tag("p", "No palette commands have run yet."))

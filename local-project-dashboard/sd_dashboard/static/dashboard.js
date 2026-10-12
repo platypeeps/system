@@ -27,200 +27,7 @@
   document.querySelectorAll("[data-changed-fields] input, [data-changed-fields] select, [data-changed-fields] textarea")
     .forEach(function (node) { node.dataset.initialValue = node.value; });
 
-  var captureForms = new WeakMap();
-  document.querySelectorAll("[data-capture-form]").forEach(function (form) {
-    var type = form.elements.namedItem("capture_type");
-    var title = form.elements.namedItem("title");
-    var body = form.elements.namedItem("body");
-    var related = form.elements.namedItem("related_item");
-    var revision = form.elements.namedItem("revision");
-    var button = form.querySelector("button[type=submit]");
-    var refresh = form.querySelector("[data-capture-refresh]");
-    var context = form.querySelector("[data-capture-context]");
-    var cli = form.closest(".capture-panel").querySelector("[data-capture-cli]");
-    // The note kinds, and `followup` is one of them: a followup NOTE. The
-    // followup ITEM is the form's own value below, `followup_item`, and it
-    // posts to `/api/items` as `kind: "followup"` (sd:719 step 6a). One word,
-    // two controls, each labelled for what it writes.
-    var noteKinds = ["followup", "comment", "question", "decision", "proposal"];
-    var target = null, requestNumber = 0, loading = false, saving = false, needsRefresh = false;
-
-    function update() {
-      var task = type.value === "task";
-      var followupItem = type.value === "followup_item";
-      var note = noteKinds.includes(type.value);
-      // A followup item may name the item it follows up; a note must.
-      var linking = note || (followupItem && Boolean(related.value));
-      form.querySelector("[data-capture-task]").hidden = !(task || followupItem);
-      form.querySelector("[data-capture-note]").hidden = !(note || followupItem);
-      body.closest(".field").hidden = followupItem;
-      type.disabled = saving;
-      title.disabled = !(task || followupItem) || saving;
-      title.required = task || followupItem;
-      body.disabled = !note || saving;
-      body.required = note;
-      related.disabled = !(note || followupItem) || saving || related.options.length < 2;
-      related.required = note;
-      revision.disabled = !note || !target;
-      revision.value = target ? target.revision : "";
-      button.textContent = task ? "Add task" : followupItem ? "Add followup item" : "Add " + type.value + " note";
-      button.disabled = saving || (linking && (loading || !target)) || (!task && !followupItem && !note);
-      refresh.disabled = saving || loading || !linking || !related.value;
-      refresh.hidden = !needsRefresh;
-      form.setAttribute("action", task || followupItem ? "/api/items" : "/api/items/" + (related.value || "0") + "/notes");
-      cli.textContent = task ? 'sd task add "Title"' :
-        followupItem ? 'sd task add --kind followup "Title"' :
-        'sd task note ' + (related.value || "ITEM_ID") + ' --kind ' + type.value + ' --body "Text"';
-      form.dataset.cli = cli.textContent;
-    }
-
-    async function loadContext() {
-      var ticket = ++requestNumber;
-      var id = related.value;
-      target = null;
-      loading = false;
-      needsRefresh = false;
-      context.removeAttribute("data-error");
-      var followupItem = type.value === "followup_item";
-      if (!(noteKinds.includes(type.value) || followupItem) || !/^[1-9][0-9]*$/.test(id)) {
-        context.textContent = related.options.length < 2 ? "No related items yet. Capture a task first." :
-          followupItem ? "Optional: choose the item this followup follows up. Left blank, it stands alone." :
-          "Choose an item to attach this note.";
-        update();
-        return;
-      }
-      loading = true;
-      context.textContent = "Loading current item…";
-      update();
-      try {
-        var response = await fetch("/api/items/" + encodeURIComponent(id) + "/capture-context", {
-          credentials: "same-origin", cache: "no-store"
-        });
-        var result = await response.json();
-        if (ticket !== requestNumber) { return; }
-        if (!response.ok) { throw new Error(result.error || "Could not load the related item."); }
-        if (!result.item || String(result.item.id) !== id || !/^[a-f0-9]{64}$/.test(result.revision) ||
-            ![result.item.title, result.item.kind, result.item.status].every(function (value) { return typeof value === "string"; })) {
-          throw new Error("The item response was incomplete. Refresh the item before saving.");
-        }
-        target = { item: result.item, revision: result.revision };
-        var status = result.item.status === "done" ? "completed" : result.item.status.replaceAll("_", " ");
-        if (result.item.parked_at) { status += "; parked"; }
-        var label = "#" + result.item.id + " · " + result.item.title + " · " + result.item.kind +
-          " · " + (result.item.repo || "No repository") + " [" + status + "]";
-        related.selectedOptions[0].textContent = label;
-        context.textContent = (followupItem ? "Follows up " : "Attached to ") + label;
-      } catch (problem) {
-        if (ticket !== requestNumber) { return; }
-        context.textContent = problem.message || "Could not load the item. Refresh it before saving.";
-        context.setAttribute("data-error", "true");
-        needsRefresh = true;
-      } finally {
-        if (ticket === requestNumber) { loading = false; update(); }
-      }
-    }
-
-    function changed() {
-      if (saving) { return; }
-      form.querySelector(".form-result").textContent = "";
-      loadContext();
-    }
-    type.addEventListener("change", changed);
-    related.addEventListener("change", changed);
-    refresh.addEventListener("click", changed);
-    captureForms.set(form, {
-      submission: function () {
-        if (saving || loading) { return null; }
-        if (type.value === "task") { return { action: "/api/items", values: { title: title.value } }; }
-        if (type.value === "followup_item") {
-          if (!related.value) { return { action: "/api/items", values: { title: title.value, kind: "followup" } }; }
-          if (!target || String(target.item.id) !== related.value) { return null; }
-          return { action: "/api/items", values: { title: title.value, kind: "followup", followup_of: target.item.id } };
-        }
-        if (!noteKinds.includes(type.value) || !target || String(target.item.id) !== related.value) { return null; }
-        return { action: "/api/items/" + target.item.id + "/notes",
-          values: { body: body.value, kind: type.value, revision: target.revision } };
-      },
-      saving: function (value) { saving = value; update(); },
-      stale: function (message) {
-        target = null;
-        needsRefresh = true;
-        context.textContent = message || "The item changed. Refresh the item to review its current context before saving again.";
-        context.setAttribute("data-error", "true");
-        update();
-      }
-    });
-    update();
-  });
-
-  // Now (sd:719 step 6). The rows come merged, ranked and banded from
-  // `/api/now`; the script paints them and decides nothing. `row.band` is
-  // the server's name for the rank, and it becomes a class and a pill's
-  // text -- no threshold lives here (`now_screen.band` holds the pack's).
-  document.querySelectorAll("[data-now]").forEach(function (panel) {
-    var rows = panel.querySelector("[data-now-rows]");
-    var status = panel.querySelector("[data-now-status]");
-    var refresh = panel.querySelector("[data-now-refresh]");
-    var address = panel.getAttribute("data-now");
-
-    function cell(text, className) {
-      var td = document.createElement("td");
-      td.textContent = text;
-      if (className) { td.className = className; }
-      return td;
-    }
-
-    function empty(text) {
-      rows.replaceChildren();
-      var tr = document.createElement("tr");
-      tr.appendChild(cell(text, "now-empty")).setAttribute("colspan", "4");
-      rows.appendChild(tr);
-    }
-
-    function paint(document_) {
-      var all = Array.isArray(document_.rows) ? document_.rows : [];
-      var loud = all.filter(function (row) { return row.band !== "queued"; }).length;
-      status.textContent = all.length ?
-        all.length + " thing" + (all.length === 1 ? "" : "s") + " \u00b7 " + loud + " above the fold" :
-        "Nothing is asking for anything.";
-      if (!all.length) { empty("Nothing is asking for anything."); return; }
-      rows.replaceChildren();
-      all.forEach(function (row) {
-        var tr = document.createElement("tr");
-        var pill = document.createElement("span");
-        pill.className = "status band-" + row.band;
-        pill.textContent = row.band;
-        var band = document.createElement("td");
-        band.className = "now-band";
-        band.appendChild(pill);
-        if (row.band === "broken") { tr.className = "now-broken"; }
-        tr.append(band, cell(row.what, "now-what"), cell(row.detail || "", "now-detail"), cell(row.source, "now-source"));
-        rows.appendChild(tr);
-      });
-    }
-
-    async function draw() {
-      refresh.disabled = true;
-      status.textContent = "Reading the fleet\u2026";
-      try {
-        var response = await fetch(address, { credentials: "same-origin", cache: "no-store" });
-        var result = await response.json();
-        if (!response.ok) { throw new Error(result.error || "Now could not be read."); }
-        paint(result);
-      } catch (problem) {
-        // A Now that cannot be reached is itself the loudest thing there is:
-        // every source has gone quiet at once, and an empty table would say
-        // the opposite (the pack's `drawNow`).
-        paint({ rows: [{ band: "broken", what: "cannot reach the server", detail: String(problem.message || problem), source: "dashboard" }] });
-      } finally {
-        refresh.disabled = false;
-      }
-    }
-    refresh.addEventListener("click", draw);
-    draw();
-  });
-
-  document.querySelectorAll("[data-workflow-form]:not([data-capture-form])").forEach(function (form) {
+  document.querySelectorAll("[data-workflow-form]").forEach(function (form) {
     var match = /^\/api\/items\/([1-9][0-9]*)\/notes$/.exec(form.getAttribute("action"));
     var kind = form.elements.namedItem("kind");
     if (!match || !kind) { return; }
@@ -314,10 +121,7 @@
     var output = form.querySelector(".form-result");
     var button = form.querySelector("button[type=submit]");
     if (button.disabled) { return; }
-    var capture = captureForms.get(form);
-    var submission = capture ? capture.submission() : null;
-    if (capture && !submission) { return; }
-    var action = submission ? submission.action : form.getAttribute("action");
+    var action = form.getAttribute("action");
     var values = {};
     new FormData(form).forEach(function (value, key) {
       var input = form.elements.namedItem(key);
@@ -325,7 +129,6 @@
           input && value === input.dataset.initialValue) { return; }
       values[key] = value;
     });
-    if (submission) { values = submission.values; }
     ["priority", "due", "repo", "parked_at"].forEach(function (key) {
       if (Object.prototype.hasOwnProperty.call(values, key) && values[key] === "") {
         values[key] = null;
@@ -369,10 +172,8 @@
     }
     var token = document.querySelector('meta[name="sd-csrf"]');
     button.disabled = true;
-    if (capture) { capture.saving(true); }
     output.textContent = "Saving…";
     output.removeAttribute("data-error");
-    var completed = false, uncertain = false;
     try {
       var response = await fetch(action, {
         method: "POST", credentials: "same-origin",
@@ -381,60 +182,28 @@
       });
       var result = await response.json();
       if (!response.ok) {
-        output.textContent = capture && result.reload ?
-          "The related item changed. Refresh it below before saving this draft." :
-          result.error || "The change could not be saved.";
-        if (capture && (result.reload || response.status === 404)) {
-          capture.stale(response.status === 404 ? "The related item is no longer available. Refresh it or choose another item." : null);
-        }
-        if (result.reload && !capture) {
+        output.textContent = result.error || "The change could not be saved.";
+        if (result.reload) {
           var reload = document.createElement("a");
           reload.href = window.location.pathname + window.location.search;
-          reload.textContent = " " + (form.dataset.reloadLabel || "Reload current item");
+          reload.textContent = " Reload current item";
           output.appendChild(reload);
         }
         output.setAttribute("data-error", "true");
         return;
       }
-      completed = true;
       output.textContent = "Saved.";
       window.location.assign(action === "/api/contributions/acknowledge" ? window.location.pathname + window.location.search :
         result.item && typeof result.item === "object" ?
         "/item/" + encodeURIComponent(result.item.id) :
         action.startsWith("/api/skills/") ? "/skills" :
         action === "/api/providers/configure" || action.startsWith("/api/bills/") ? "/operations?area=usage" :
-        result.service ? "/operations?area=services" : "/operations?area=jobs");
+        window.location.pathname + window.location.search);
     } catch (problem) {
-      if (completed && capture) {
-        output.textContent = "Saved. Open the item from Tasks to continue.";
-        return;
-      }
       output.textContent = "The response was interrupted. Reload to check whether it saved before trying again.";
       output.setAttribute("data-error", "true");
-      if (capture) {
-        uncertain = true;
-        output.textContent = "The response was interrupted; this may already be saved. Check the outcome before retrying. ";
-        var check = document.createElement("a");
-        check.href = values.revision ? "/item/" + form.elements.namedItem("related_item").value :
-          "/tasks?q=" + encodeURIComponent(values.title);
-        check.target = "_blank";
-        check.rel = "noopener";
-        check.textContent = "Check in a new tab";
-        output.appendChild(check);
-        var retry = document.createElement("button");
-        retry.type = "button";
-        retry.className = "listing-go";
-        retry.textContent = "Retry after checking";
-        retry.addEventListener("click", function () {
-          capture.saving(false);
-          output.textContent = "Review the draft before submitting it again.";
-        }, { once: true });
-        output.appendChild(retry);
-      }
     } finally {
-      if (capture) {
-        if (!completed && !uncertain) { capture.saving(false); }
-      } else { button.disabled = false; }
+      button.disabled = false;
     }
   });
 
@@ -642,7 +411,7 @@
       var note = prepared.execution.note;
       output.textContent = "Execution #" + note + " recorded before dispatch.";
       if (prepared.assignments.length) {
-        message.textContent = "Queued assignment #" + prepared.assignments[0].id + ". Follow it on the item or in execution history.";
+        message.textContent = "Queued assignment #" + prepared.assignments[0].id + ". Follow it on the item or in Activity.";
       } else {
         message.textContent = "Running execution #" + note + "…";
         polling = setInterval(function () { readOutput(note, output).catch(function (error) { message.textContent = error.message; }); }, 1000);
@@ -651,26 +420,10 @@
         message.textContent = "Execution #" + note + " ended with exit " + ended.exit_code + ".";
       }
     } catch (error) {
-      message.textContent = error.message + " Inspect execution history before retrying an unfinished command.";
+      message.textContent = error.message + " Inspect the command in Activity before retrying an unfinished one.";
     } finally {
       clearInterval(polling); busy = false; form.querySelector("button[type=submit]").disabled = true;
       // A fresh snapshot is required for another authorization after this note changed the item.
     }
-  });
-  document.querySelectorAll("[data-execution]").forEach(function (button) {
-    button.addEventListener("click", async function () {
-      var target = document.querySelector('[data-execution-output="' + button.dataset.execution + '"]');
-      try { await readOutput(button.dataset.execution, target); } catch (error) { target.textContent = error.message; }
-    });
-  });
-  document.querySelectorAll("[data-execution-reconcile]").forEach(function (button) {
-    button.addEventListener("click", async function () {
-      var target = document.querySelector('[data-execution-output="' + button.dataset.executionReconcile + '"]');
-      button.disabled = true;
-      try {
-        var result = await request("/api/palette/" + button.dataset.executionReconcile + "/reconcile", {});
-        target.textContent = "Outcome reconciled: exit " + result.exit_code + ". " + result.output;
-      } catch (error) { target.textContent = error.message; button.disabled = false; }
-    });
   });
 }());

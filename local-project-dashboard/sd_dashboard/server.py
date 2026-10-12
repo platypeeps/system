@@ -88,8 +88,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
-          operations_backend=None, services_backend=None, ports_backend=None) -> str:
+def route(connection: sqlite3.Connection, path: str, parameters, *, now: str) -> str:
     """One request, one page. The router is a function so a test can call it.
 
     A test that has to start a socket to assert a page is a test that runs
@@ -99,8 +98,8 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     from . import v2
 
     # The new design is the default (sd:2163): each registered page serves its routes, and an old screen whose path a
-    # page took is served where its page module says (sd:2418); every other old screen keeps its path until its section
-    # is ported. `v2.CLASSIC` maps each unported rail section to its old screen.
+    # page took is served where its page module says (sd:2418). The old screens that are left keep their paths; the
+    # ones whose controls moved were retired (sd:3402) and answer 404.
     found = v2.page(path)
     if found is not None:
         return found
@@ -114,8 +113,10 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str,
     if path == "/operations":
         from .operations_screen import operations_page
 
-        return operations_page(connection, parameters=parameters, now=now, backend=operations_backend,
-                               services_backend=services_backend, ports_backend=ports_backend)
+        rendered = operations_page(connection, parameters=parameters, now=now)
+        if rendered is None:
+            raise NotFound("/operations?area=" + (parameters.get("area") or [""])[0])
+        return rendered
     if path.startswith("/item/"):
         tail = path[len("/item/") :].strip("/")
         if not tail.isdigit():
@@ -611,8 +612,7 @@ class Dashboard(BaseHTTPRequestHandler):
 
                 location = from_backlog(connection, parameters, now=self.clock())
                 return self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
-            body = route(connection, path, parameters, now=self.clock(), operations_backend=self.operations_backend,
-                         services_backend=self.services_backend, ports_backend=self.ports_backend)
+            body = route(connection, path, parameters, now=self.clock())
         except workflow.MissingItem:
             return self._json(404, {"error": "The related item no longer exists. Choose another item."})
         except NotFound as missing:

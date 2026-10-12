@@ -1,18 +1,20 @@
-"""Current operations and only the controls the shared backend can honor."""
+"""Operations: the classic areas whose data no v2 page shows yet, and the helpers other screens import.
+
+Usage keeps its past-month picker (Metrics reads the current month only), Resources keeps Toolbox, Vault and Queues,
+and Trackers keeps the tracker issues. The Jobs, Services, Ports, Progress, Reports, Repos, Sessions and Commands
+areas were retired in sd:3402, once Management, Health, Metrics, Reports and Activity carried their controls; an
+address naming one is a 404.
+"""
 
 import contextlib
 import re
 import signal
-from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from sd_db import operations, reads, registry, usage
 from sd_db.errors import SdDbError
 
-from . import job_failures
-from .charts import age_histogram_svg
 from .controls import field, form, select
-from .listing import Column, Listing
 from .markup import Markup, join, tag
 from .pages import page, tile
 
@@ -27,9 +29,7 @@ from .pages import page, tile
 #: it matches, so no form posts to a path that answers 404.
 BILL_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
 
-AREAS = (("jobs", "Jobs"), ("services", "Services"), ("ports", "Ports"), ("progress", "Progress"),
-         ("usage", "Usage"), ("reports", "Reports"), ("resources", "Resources"), ("trackers", "Trackers"),
-         ("repos", "Repos"), ("sessions", "Sessions"), ("commands", "Commands"))
+AREAS = (("usage", "Usage"), ("resources", "Resources"), ("trackers", "Trackers"))
 
 
 def _navigation(area):
@@ -37,30 +37,6 @@ def _navigation(area):
         class_="toggle-current" if area == key else None,
         aria_current="page" if area == key else None) for key, label in AREAS),
         class_="view-toggle", aria_label="Operations areas")
-
-
-def _progress(connection, now):
-    from sd_db import reporting
-
-    observed = reporting.metrics(connection, now=now)
-    rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done"]
-
-    # Tasks reads the query v1 /backlog read: view, active, age and status (sd:2589).
-    def tasks_link(bucket, series):
-        filters = {"view": "list", "active": "1", "age": bucket.key}
-        if series == "ready_to_send":
-            filters["status"] = "ready_to_send"
-        return "/tasks?" + urlencode(sorted(filters.items()))
-
-    return tag("section", tag("h2", "Observed workflow activity"),
-        tag("p", f"{observed['since']} through {observed['until']}", class_="hint"),
-        tag("div", tile("requests recorded", observed["recorded_requests"]),
-            tile("finished review attempts", observed["finished_review_attempts"]),
-            tile("recorded deliveries", observed["recorded_deliveries"]), class_="tiles"),
-        tag("p", observed["interpretation"], class_="hint"), tag("h2", "Age in status"),
-        tag("p", "All active items across repositories, excluding completed and parked items. Task filters do not affect this chart.", class_="hint"),
-        tag("p", "Select a bar to open that age bucket in Tasks.", class_="hint"),
-        age_histogram_svg(reads.age_histogram(rows, now=now), link=tasks_link))
 
 
 def _number_detail(number: reads.Number):
@@ -220,65 +196,6 @@ def _bill_caps(connection, current):
         warnings, join(rows), class_="bill-caps")
 
 
-def _action(entity, identifier, action, capability, revision, label):
-    if capability["allowed"]:
-        return form(f"/api/{entity}/{identifier}/{action}", label=label,
-                    revision=revision, compact=True,
-                    command=f"sd {'jobs' if entity == 'jobs' else 'assignments'} {action} {identifier}")
-    return tag("p", label, ": ", capability["reason"], class_="hint")
-
-
-def _schedule(schedule):
-    if not schedule:
-        return "No calendar schedule"
-    descriptions = []
-    weekdays = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-    for entry in schedule:
-        hour, minute = entry.get("Hour"), entry.get("Minute")
-        if hour is not None and minute is not None:
-            timing = f"At {hour:02d}:{minute:02d}"
-        elif minute is not None:
-            timing = f"Every hour at :{minute:02d}"
-        elif hour is not None:
-            timing = f"Every minute during the {hour:02d}:00 hour"
-        else:
-            timing = "Every minute"
-        weekday = entry.get("Weekday")
-        if weekday is not None:
-            timing += " on " + (weekdays[weekday] if 0 <= weekday < len(weekdays) else f"weekday {weekday}")
-        if "Day" in entry:
-            timing += f", day {entry['Day']}"
-        if "Month" in entry:
-            timing += f", month {entry['Month']}"
-        descriptions.append(timing)
-    return "; ".join(descriptions) + " · Mac local time"
-
-
-def _job(job, cron_root=None):
-    request = job["last_request"]
-    previous = (tag("div", tag("strong", "Last request: "),
-        f"{request['action']} · {request['status']}",
-        tag("p", request["message"]), class_="operation-request") if request else "")
-    return tag("article", tag("h3", job["name"].replace("-", " ").replace("_", " ")),
-        tag("p", tag("strong", job["state"].capitalize()),
-            f" · Last exit {job['last_exit']}" if job["last_exit"] is not None else "",
-            # A last run that ended in a signal has no exit code; launchd records the
-            # signal instead. .get(): the served sd_db may predate the field (sd:1344).
-            f" · Last signal {_signal_name(job['last_signal'])}" if job.get("last_signal") is not None else ""),
-        _triage(job, cron_root), tag("p", _schedule(job["schedule"]), class_="hint"), previous,
-        tag("div", _action("jobs", job["name"], "retry", job["capabilities"]["retry"], job["revision"], "Retry job"),
-            _action("jobs", job["name"], "cancel", job["capabilities"]["cancel"], job["revision"], "Stop job"),
-            class_="operation-actions"), class_="operation-card")
-
-
-def _triage(job, cron_root):
-    """A failed job's rule-based class (sd:1166): a label only, and nothing acts on it."""
-    if job["state"] != "failed":
-        return ""
-    found = job_failures.classify(job, None if cron_root is None else cron_root / "logs" / f"{job['name']}.log")
-    return tag("p", f"Triage: {found['class']}, {found['why']}. Advisory only; nothing retries it.", class_="hint")
-
-
 def assignment_cancel(connection, identity: int):
     """`sd assignments cancel` as a form, where `operations.cancel_assignment` takes it; else nothing.
 
@@ -291,46 +208,6 @@ def assignment_cancel(connection, identity: int):
                 command=f"sd assignments cancel {identity}", revision=state["revision"], compact=True)
 
 
-def _assignment(assignment, connection):
-    title = assignment["title"] or f"Assignment #{assignment['id']}"
-    heading = tag("a", title, href=f"/item/{assignment['item']}") if assignment["item"] is not None else title
-    return tag("article", tag("h3", heading),
-        tag("p", tag("strong", assignment["status"].replace("_", " ").capitalize()),
-            f" · {assignment['role']} · {assignment['provider']}"),
-        assignment_cancel(connection, assignment["id"]), class_="operation-card")
-
-
-def _jobs(connection, backend):
-    backend = backend or operations.LaunchdBackend()
-    root = getattr(backend, "cron_root", None)
-    cron_root = Path(root) if isinstance(root, (str, Path)) else None
-    current = operations.inventory(connection, backend=backend)
-    jobs = current["jobs"]
-    needs_attention = [job for job in jobs if job["state"] in ("failed", "interrupted", "unknown", "unloaded")]
-    running = [job for job in jobs if job["state"] == "running"]
-    other = [job for job in jobs if job not in needs_attention and job not in running]
-    assignments = current["assignments"]
-    active = [assignment for assignment in assignments if assignment["status"] in ("queued", "running", "ending")]
-    history = [assignment for assignment in assignments if assignment not in active]
-    return join((
-        tag("p", "Job state is observed from this Mac. An accepted request is not proof that a job finished.", class_="hint"),
-        tag("p", tag("a", "Refresh observations", href="/operations?area=jobs")),
-        tag("section", tag("h2", "Jobs needing attention"),
-            tag("div", join(_job(job, cron_root) for job in needs_attention), class_="operations-grid")
-            if needs_attention else tag("p", "No installed jobs need attention.")),
-        tag("section", tag("h2", "Running jobs"),
-            tag("div", join(_job(job) for job in running), class_="operations-grid")
-            if running else tag("p", "No installed jobs are running.")),
-        tag("section", tag("h2", "Active assignments"),
-            tag("div", join(_assignment(row, connection) for row in active), class_="operations-grid")
-            if active else tag("p", "No queued or running assignments.")),
-        tag("details", tag("summary", f"Other jobs ({len(other)})"),
-            tag("div", join(_job(job) for job in other), class_="operations-grid")),
-        tag("details", tag("summary", f"Assignment history ({len(history)})"),
-            tag("div", join(_assignment(row, connection) for row in history), class_="operations-grid")),
-    ))
-
-
 def _signal_name(number):
     """`SIGTERM (15)` when Python knows the number, the bare number otherwise."""
     try:
@@ -339,111 +216,27 @@ def _signal_name(number):
         return str(number)
 
 
-def _service(entry):
-    request = entry["last_request"]
-    previous = (tag("div", tag("strong", "Last request: "),
-        f"{request['action']} · {request['status']}", tag("p", request["message"]),
-        class_="operation-request") if request else "")
-    actions, reasons = [], []
-    for action, label in (("start", "Start service"), ("restart", "Restart service"), ("stop", "Stop service")):
-        capability = entry["capabilities"][action]
-        if capability["allowed"]:
-            actions.append(form(f"/api/services/{quote(entry['label'], safe='')}/{action}",
-                label=label, command=f"sd services {action} {entry['label']}",
-                revision=entry["revision"], compact=True))
-        elif capability["reason"] and capability["reason"] not in reasons:
-            reasons.append(capability["reason"])
-    scope = "System daemon" if entry["scope"] == "system" else "User LaunchAgent"
-    return tag("article", tag("h3", entry["name"]),
-        tag("p", entry["label"], class_="hint") if entry["label"] != entry["name"] else "",
-        tag("p", f"{scope} · {entry['domain']} · {entry['category']}", class_="hint"),
-        tag("p", tag("strong", entry["state"].capitalize()),
-            f" · PID {entry['pid']}" if entry["pid"] is not None else "",
-            f" · Last exit {entry['last_exit']}" if entry["last_exit"] is not None else "",
-            # A last run that ended in a signal has no exit code; launchd records the
-            # signal instead. .get(): the served sd_db may predate the field (sd:1331).
-            f" · Last signal {_signal_name(entry['last_signal'])}" if entry.get("last_signal") is not None else ""),
-        previous,
-        tag("div", join(actions), class_="operation-actions") if actions else "",
-        join(tag("p", reason, class_="hint") for reason in reasons), class_="operation-card")
-
-
-def _services(connection, parameters, backend):
-    from sd_db import services
-
-    current = services.inventory(connection, backend=backend)
-    query, number, selected = Listing.read_query(parameters)
-    listing = Listing("services", (
-        Column("name", "Service", lambda row: row["name"]),
-        Column("label", "Label", lambda row: row["label"]),
-        Column("scope", "Scope", lambda row: row["scope"]),
-        Column("domain", "Domain", lambda row: row["domain"]),
-        Column("category", "Category", lambda row: row["category"]),
-        Column("state", "State", lambda row: row["state"]),
-    ), current["services"], path="/operations", query=query, page_number=number,
-        selected=selected, extra={"area": "services"})
-    shown, paged = listing.page()
-    return tag("section", tag("h2", "Launchd services"),
-        tag("p", "User LaunchAgents and third-party system daemons installed on this Mac. System daemons and protected services are read-only.", class_="hint"),
-        tag("p", "Stop unloads a user service for this login. Its plist stays installed and may load again at the next login. An accepted request is not proof of application health.", class_="hint"),
-        tag("p", tag("a", "Refresh observations", href=listing.link())),
-        listing.controls(paged),
-        tag("div", join(_service(entry) for entry in shown), class_="operations-grid") if shown else
-            tag("p", "No services match this filter." if query else "No installed services were found."),
-        listing.pager(paged), class_="listing", data_listing="services")
-
-
-def operations_page(connection, *, parameters, now, backend=None, services_backend=None, ports_backend=None):
-    area = (parameters.get("area") or ["jobs"])[0]
+def operations_page(connection, *, parameters, now):
+    """The area `?area=` names, the first by default; None for an area that is not one, so the server answers 404."""
+    area = (parameters.get("area") or [AREAS[0][0]])[0]
     if area not in dict(AREAS):
-        area = "jobs"
-    if area == "progress":
-        content = _progress(connection, now)
-    elif area == "usage":
+        return None
+    if area == "usage":
         content = _usage(connection, now, parameters)
-    elif area == "jobs":
-        content = _jobs(connection, backend)
-    elif area == "services":
-        content = _services(connection, parameters, services_backend)
-    elif area == "ports":
-        from .ports_screen import ports_panel
-
-        content = ports_panel(connection, now=now, parameters=parameters, backend=ports_backend)
-    elif area == "reports":
-        from .reports_screen import reports_panel
-
-        content = reports_panel(connection, parameters, now=now)
     elif area == "resources":
         from .reports_screen import resources
 
         content = resources(parameters)
-    elif area == "trackers":
+    else:
         from .trackers_screen import trackers_panel
 
         content = trackers_panel(connection, parameters, now=now)
-    elif area == "repos":
-        from .repos_screen import repos_panel
-
-        content = repos_panel(parameters)
-    elif area == "sessions":
-        from .sessions_screen import sessions_panel
-
-        content = sessions_panel(parameters)
-    elif area == "commands":
-        from .palette import history
-
-        content = history(connection)
     return page("Operations", "operations", _navigation(area), content,
                 subtitle=_subtitle())
 
 
 def _subtitle():
-    """The areas, from `AREAS`, so the summary names every tab the nav draws.
-
-    A written sentence named ten of eleven: `commands` joined `AREAS` and not
-    the sentence (PR #427 review). `Progress` reads as "workflow progress"
-    here, which is what the tab holds.
-    """
-    words = ["workflow progress" if key == "progress" else label.lower() for key, label in AREAS]
+    """The areas, from `AREAS`, so the summary names every tab the nav draws."""
+    words = [label.lower() for _, label in AREAS]
     words[0] = words[0].capitalize()
     return ", ".join(words[:-1]) + " and " + words[-1]

@@ -552,7 +552,7 @@ function registerCommands() {
     { id: 'job.log', on: 'job', label: 'Show log', key: 'o', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`,
       run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } },
     { id: 'job.print', on: 'job', label: 'Print', key: 'l', risk: 'safe', primary: o => o.exit === 127, executes: false, cli: o => `launchctl print ${o.service}`,
-      run: () => 'Copy it into a terminal: the dashboard shows the launchd record in Operations › Jobs' },
+      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' },
   );
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
@@ -634,7 +634,7 @@ function renderSessions() {
     && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
   const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
-    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Agent processes by name (claude, codex) are not read yet.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${hhmm(READ)} UTC</span>` : ''}</p></div>
+    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, from the fleet's sessions read. Agent processes by name (claude, codex) are not read yet.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${hhmm(READ)} UTC</span>` : ''}</p></div>
     ${!SESS ? unknown('Sessions were not read', why('sessions'), 'fleet sessions')
       : SESS.processes.length ? html`<table class="ledger" aria-labelledby="agents-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Command</th><th scope="col">Running for</th><th scope="col">PID</th></tr></thead>
       <tbody>${SESS.processes.map((p, i) => html`<tr data-id="proc:${i}"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${p.command}</button></td><td class="d mono" data-k="up">${p.elapsed}</td><td class="d num">${p.pid}</td></tr>`)}</tbody></table>`

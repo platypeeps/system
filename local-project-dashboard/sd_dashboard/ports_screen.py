@@ -5,9 +5,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from .listing import Column, Listing
-from .markup import join, tag
-
 
 def _collectors():
     # The path is owned by this dashboard checkout, never supplied by a page.
@@ -112,74 +109,3 @@ def port_rows(snapshot):
     return sorted(grouped.values(), key=lambda row: (int(row["port"] or 0), row["service"]))
 
 
-LABELS = {"listening": "Listening", "not_listening": "No listener observed",
-          "unknown": "Unknown", "unconfigured": "No port configured"}
-
-
-def _listener(row):
-    detail = "Observed TCP listener" if row["listener"] == "listening" and row["observed"] else (
-        "No TCP listener visible to this user" if row["listener"] == "not_listening" and row["observed"] else
-        "Listener inspection unavailable" if row["listener"] == "unknown" else "")
-    return tag("div", tag("strong", LABELS[row["listener"]]),
-               tag("p", detail, class_="hint") if detail else "",
-               tag("p", row["process"], class_="hint") if row["process"] else "")
-
-
-def _notes(row):
-    notes = []
-    if row["clash"]:
-        notes.append("Shared by candidate services; overlap is configured, not an observed collision.")
-    if row["busy"]:
-        notes.append("Port occupied; the listener has not been matched to this container.")
-    return " ".join(notes)
-
-
-def ports_panel(connection=None, *, now, backend=None, parameters=None):
-    """Compose one Operations panel; backend is a no-argument fixture seam."""
-    try:
-        snapshot = (backend or _collect)()
-        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("services"), list):
-            raise ValueError("invalid collector output")
-        rows = port_rows(snapshot)
-        if not rows and not snapshot.get("complete"):
-            raise ValueError("port inventory is unavailable")
-    except OverBudget as refused:
-        return tag("section", tag("h2", "Ports"),
-            tag("p", "Port inventory exceeded its collection budget and was stopped rather than waited on.", role="status"),
-            tag("p", str(refused)[:200], class_="hint"),
-            tag("p", "No listener or service state is inferred from a refused inspection.", class_="hint"))
-    except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
-        return tag("section", tag("h2", "Ports"),
-            tag("p", "Port inventory is unavailable. Refresh to try the read-only collector again.", role="status"),
-            tag("p", "No listener or service state is inferred from a failed inspection.", class_="hint"))
-    query, number, selected = Listing.read_query(parameters or {})
-    listing = Listing("ports", (
-        Column("service", "Service", lambda row: tag("div", tag("strong", row["service"]),
-            tag("p", row["profile"], class_="hint")), text=lambda row: row["service"] + " " + row["profile"]),
-        Column("port", "Port", lambda row: row["port"] or "—"),
-        Column("listener", "Listener", _listener,
-               text=lambda row: LABELS[row["listener"]] + " " + row["process"]),
-        Column("container", "Container", lambda row: row["container_display"]),
-        Column("notes", "Notes", _notes, hide_empty=True),
-    ), rows, path="/operations", query=query, page_number=number, selected=selected,
-        extra={"area": "ports"}, empty="No services match this filter." if query else "No service ports were reported.")
-    unique = {row["port"]: row for row in rows if row["port"]}
-    configured = sum(row["configured"] for row in unique.values())
-    listening = sum(row["listener"] == "listening" for row in unique.values())
-    unknown = sum(row["listener"] == "unknown" for row in unique.values())
-    warnings = []
-    if not snapshot.get("complete"):
-        warnings.append("Inventory collection was incomplete; listed observations may be partial.")
-    if unknown:
-        warnings.append(f"Listener state is unknown for {unknown} configured ports.")
-    if not snapshot.get("observed", {}).get("complete"):
-        warnings.append("The wider TCP listener inventory is incomplete or unavailable; positive observations remain visible.")
-    return tag("section", tag("h2", "Ports"),
-        tag("p", f"{configured} configured ports · {listening} listening · {unknown} unknown", class_="hint"),
-        join(tag("p", warning, role="status") for warning in warnings),
-        listing.render(),
-        tag("details", tag("summary", "Sources and scope"),
-            tag("p", "Service candidates and effective host ports come from machine-setup's existing service inventory, including script defaults, exported port overrides and Compose declarations."),
-            tag("p", "Profile membership is configuration. Container state comes from Docker; TCP listeners come from lsof and are limited to what this user can observe. A listening port does not prove application health or identify its intended owner."),
-            tag("p", "Configured services are Docker candidates under system/local-*. Observed-only rows come from one local TCP listener inventory, including launchd services and other processes; no network scan is performed. Multiple visible owners and addresses are retained."),
-            tag("p", "Collected for this request: ", now, class_="hint")))
