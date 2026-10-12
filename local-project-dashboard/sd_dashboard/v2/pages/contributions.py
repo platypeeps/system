@@ -1,8 +1,8 @@
 """Contributions (sd:2113): the projection v1 renders, open rows capped, and Make task. The old screen moved to
 /classic/contributions when this page took its path; it stays in the palette because this page caps its open rows and
 the old screen lists every one. Details shows evidence, dependencies and notification delivery (sd:3394). Acknowledge
-posts /api/contributions/acknowledge, which v1 posts too, so it stays in server.py's action_route. Re-run collector
-posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
+posts /api/contributions/acknowledge, which v1 posts too, so it stays in server.py's action_route. Dismiss (sd:3432) closes
+a row with no item. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
 
 from __future__ import annotations
 
@@ -29,6 +29,17 @@ def _task(payload, principal):
         raise ValueError("Only a contribution filed on GitHub takes a task; local work already has one.")
     changes = {field: values["key"].split(":", 1)[1]}
     return lambda connection: contributions.capture(connection, title=values["title"].strip(), changes=changes, who="dashboard")
+
+
+def _dismiss(payload, principal):
+    from sd_db import contributions
+
+    # Dismiss (sd:3432): the operator closes a row with no item that will never settle, such as a pull request that 404s.
+    # The library refuses a row with an item and a stale revision; nothing calls this but the operator's click.
+    values = dict(payload)
+    if set(values) != {"key", "revision"} or not isinstance(values["key"], str) or not isinstance(values["revision"], str):
+        raise ValueError("Provide the contribution key and current revision.")
+    return lambda connection: contributions.dismiss(connection, values["key"], expected_revision=values["revision"], who="dashboard")
 
 
 def _sync_status(read):
@@ -58,6 +69,7 @@ PAGE = Page(
     html="contributions.html",
     item="sd:2113",
     api=(Api("/api/contributions/page", _read), Api("/api/contributions/task", write=_task),
+         Api("/api/contributions/dismiss", write=_dismiss),
          Api("/api/shadow/sync", write=_sync), Api("/api/shadow/state", _sync_status)),
     classic={"Contributions (classic)": "/classic/contributions"},
     takes=(Old("/classic/contributions", _classic),),

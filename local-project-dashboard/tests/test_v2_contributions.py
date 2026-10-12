@@ -45,6 +45,7 @@ COMMANDS = [
     ["contribution.nudge", "contribution", "Draft nudge", "d", "safe"],
     ["contribution.task", "contribution", "Make task", "k", "confirm"],
     ["contribution.open", "contribution", "Open on GitHub", "o", "safe"],
+    ["contribution.dismiss", "contribution", "Dismiss", "x", "confirm"],
     ["collector.sync", "collector", "Re-run collector", "r", "safe"],
 ]
 
@@ -274,6 +275,48 @@ class ThePage(BrowserSession):
         self.assertIn("already belongs", again["error"])
         self.assertEqual(self.post("/api/contributions/task", {"key": "item:4", "title": "x"})[0], 400)
 
+    def test_dismiss_moves_a_row_with_no_item_out_of_the_open_rows(self):
+        # sd:3432: a pull request whose repository was re-created 404s, so its row read "awaiting them" forever.
+        url = "https://github.com/example/project/pull/22"
+        contributions.observe_pull(self.connection, url, {"complete": True, "observed_at": "2026-09-09T12:00:00Z",
+            "operator": {"id": "1", "login": "author"}, "author": {"id": "1", "login": "author"}, "repo": "example/project",
+            "title": "Stale patch", "state": "open", "head": "a" * 40, "base": "b" * 40, "draft": False,
+            "mergeable": "mergeable", "ci": "success", "ci_head": "a" * 40, "ci_ids": ["check:1"], "why": ["author"],
+            "blocking_labels": [], "labels": [], "reviews": [], "events": []},
+            expected_revision=contributions.snapshot(self.connection, "github:" + url)["revision"])
+        self.connection.commit()
+        read = lambda: json.loads(self.request("/api/contributions/page", headers={"Cookie": self.cookie})[2])
+        [row] = [r for r in read()["rows"] if r["url"] == url]
+        payload = {"key": row["key"], "revision": row["revision"]}
+        before = self.snapshot()
+        for changes in ({"revision": None}, {"key": 22}, {"all": True}):
+            self.assertEqual(self.post("/api/contributions/dismiss", {**payload, **changes})[0], 400)
+        self.assertEqual(self.post("/api/contributions/dismiss", payload, Origin="https://example.invalid")[0], 403)
+        self.assertEqual(self.snapshot(), before)
+        status, _, out = self.post("/api/contributions/dismiss", payload)
+        self.assertEqual(status, 200, out)
+        page = read()
+        self.assertEqual([r for r in page["rows"] if r["url"] == url], [])
+        self.assertEqual(page["lanes"]["closed"], 1)
+        status, _, again = self.post("/api/contributions/dismiss", payload)
+        self.assertEqual(status, 409)
+        self.assertTrue(again["reload"])
+        # A row with an item closes through its task.
+        item = contributions.capture(self.connection, title="Tracked", changes={"pull_url": url.replace("22", "23")}, who="operator")
+        self.connection.commit()
+        key = "github:" + url.replace("22", "23")
+        contributions.observe_pull(self.connection, url.replace("22", "23"), {"complete": True, "observed_at": "2026-09-09T12:00:00Z",
+            "operator": {"id": "1", "login": "author"}, "author": {"id": "1", "login": "author"}, "repo": "example/project",
+            "title": "Tracked", "state": "open", "head": "a" * 40, "base": "b" * 40, "draft": False,
+            "mergeable": "mergeable", "ci": "success", "ci_head": "a" * 40, "ci_ids": ["check:1"], "why": ["author"],
+            "blocking_labels": [], "labels": [], "reviews": [], "events": []},
+            expected_revision=contributions.snapshot(self.connection, key)["revision"])
+        self.connection.commit()
+        [tracked] = [r for r in read()["rows"] if r["item_id"] == item["item"]["id"]]
+        status, _, refused = self.post("/api/contributions/dismiss", {"key": tracked["key"], "revision": tracked["revision"]})
+        self.assertEqual(status, 400)
+        self.assertIn("close the item", refused["error"])
+
 
 SHELL_MORE = r"""
 window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
@@ -341,6 +384,18 @@ shellRun(cmd('contribution.task'), C.get('github:""" + EXTERNAL + """')); await 
         self.assertEqual(out["confirms"], ["contribution.task"])
         self.assertEqual(out["posts"], [["/api/contributions/task", {"key": "github:" + EXTERNAL, "title": "Contribution 3"}, 64]])
         self.assertEqual(out["toasts"][-1][0], "Task #42 filed · Contribution 3")
+
+    def test_dismiss_asks_first_posts_the_rows_checkpoint_and_is_off_for_a_tracked_or_unfiled_row(self):
+        out = self.run_page("""R.when = [cmd('contribution.dismiss').when(C.get('issue:""" + ISSUE + """')), cmd('contribution.dismiss').when(C.get('item:4'))];
+const ext = C.get('github:""" + EXTERNAL + """'); R.cli = cmd('contribution.dismiss').cli(ext);
+shellRun(cmd('contribution.dismiss'), ext); await flush(); R.off = cmd('contribution.dismiss').when(ext);""")
+        self.assertEqual(out["R"]["when"], ["tracked as item #7; close the item instead", "not filed on GitHub"])
+        self.assertEqual(out["R"]["cli"], f"sd task contribution dismiss 'github:{EXTERNAL}' --if-revision {'a' * 64}")
+        self.assertEqual(out["confirms"], ["contribution.dismiss"])
+        self.assertEqual(out["posts"], [["/api/contributions/dismiss", {"key": "github:" + EXTERNAL, "revision": "a" * 64}, 64]])
+        self.assertEqual(out["gets"], ["/api/contributions/page", "/api/contributions/page"], "the page did not reread after the write")
+        self.assertEqual(out["toasts"][-1], ["Dismissed · Contribution 3", False])
+        self.assertEqual(out["R"]["off"], "dismissed; the page reads again")
 
     def test_a_landed_write_whose_reread_fails_still_says_it_landed_and_turns_its_command_off(self):
         # Review 2 of PR #72 (84cde549031a): the reread sat inside the write's promise, so a failed GET reported a committed
@@ -574,7 +629,7 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/shadow/sync"])
+        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/contributions/dismiss", "/api/shadow/sync"])
         for route in routes:
             self.assertIn(f"POST {route}", page)
         self.assertNotIn("/api/items", page)
@@ -688,7 +743,8 @@ shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.on = where()
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task", "/api/shadow/sync", "/api/shadow/state")
+    page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task", "/api/contributions/dismiss",
+                                                                         "/api/shadow/sync", "/api/shadow/state")
 
 
 if __name__ == "__main__":
