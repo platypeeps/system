@@ -478,7 +478,10 @@ The listing shows every `.html` page under `products/`, one section per product.
 The page is `/designs`, the v2 Designs page (sd:2126). It reads
 `GET /api/designs` (`designs.ledger`): each drawn page's kind, last commit and
 screenshot state, and each product with a brief and no page. History, Retake
-screenshots and Read brief are copy-only lines the dashboard does not run. The
+screenshots and Read brief are copy-only lines the dashboard does not run.
+Hide and Unhide (sd:3447) post `/api/designs/view`, the same view state as
+Documents' Hide, keyed `designs/<path>` or `designs/product:<name>`; the Hidden
+lamp shows the hidden rows, and a hidden row leaves the other lamps and the badge. The
 classic listing was retired in sd:3402; [`docs/pages/designs.md`](docs/pages/designs.md) has the detail.
 
 A mockup is served at its path in the tree, under `/designs/`. Its relative

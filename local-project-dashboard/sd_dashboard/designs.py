@@ -482,3 +482,51 @@ def read(target: Path, root: Path | None = None) -> bytes:
     return target.read_bytes()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Hide and unhide (sd:3447): the workflow database's `view` state, the store Documents' Pin, Hide and Tag use (sd:3428),
+# keyed `designs/<page path>` or `designs/product:<name>` for a product with a brief and no page. A Documents key is
+# `<root key>/<file>`, one file name with no slash, so it never meets a page path; a product key holds no `.html`.
+
+#: The key prefix of a Designs row's view state.
+VIEW_ROOT = "designs"
+
+
+def view_key(row: str) -> str:
+    return f"{VIEW_ROOT}/{row}"
+
+
+def with_views(doc: dict, connection) -> dict:
+    """`doc` (a ledger) with each page's and product's `hidden`, and `store` saying whether the view state was read.
+
+    A read that fails hides nothing: every row shows, and `store.reason` says why Hide is off.
+    """
+    from .documents_screen import views
+
+    kept, unread = views(connection)
+    for page in doc["pages"]:
+        page["hidden"] = kept.get(view_key(page["path"]), {}).get("hidden", False)
+    for product in doc["products"]:
+        product["hidden"] = kept.get(view_key(f"product:{product['name']}"), {}).get("hidden", False)
+    doc["store"] = {"available": not unread, "reason": unread}
+    return doc
+
+
+def request(payload: dict, root: Path | None = None):
+    """`POST /api/designs/view`: `{"id", "hidden"}` for a page path or `product:<name>` the ledger lists; the write as
+    `action_route` returns one. A row the checkout no longer has is refused, so a stale page writes nothing."""
+    from sd_db import writes
+
+    if set(payload) != {"id", "hidden"} or not isinstance(payload["id"], str) or not isinstance(payload["hidden"], bool):
+        raise ValueError("Send the design row's id and hidden, true or false.")
+    row = payload["id"]
+    base = Path(ROOT if root is None else root).expanduser()
+    listed = designs(base)
+    known = row in {path for pages in listed.values() for path in pages} or (
+        row.startswith("product:") and SEGMENT.fullmatch(row[8:]) is not None and (base / PRODUCTS / row[8:]).is_dir())
+    if not known:
+        raise ValueError(f"No design row {row} is listed: read the designs again.")
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+    return lambda connection: {"id": row, **writes.set_view(connection, view_key(row), hidden=payload["hidden"])}

@@ -1,13 +1,16 @@
 // ---------- Page script: data, render, Details, commands. Read design.md § Page contract and § Commands. ----------
 // Designs (sd:2126). Built from the design source's products/system/designs/pages/designs.js at 2729265.
 // build: the ledger comes from /api/designs through shell.read, not from data/designs-data.js; links open /designs/<path>.
+// build (sd:3447): Hide and Unhide post /api/designs/view, the workflow database's view state that Documents' Hide writes.
+// A hidden row leaves the ledger, its lamps and the badge; the Hidden lamp shows only the hidden rows. An unread store hides
+// nothing and turns both commands off with its reason.
 const { html, put, cells } = window.markup;
 const I = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
 const DAY = 864e5;
 // build: the tab serves the checkout root at /designs/, so a page and its screenshots sit at /designs/<path>.
 const UP = '/designs/';
-let D = null, READ = 0, ROWS = [], PRODUCTS = [];
+let D = null, READ = 0, ROWS = [], PRODUCTS = [], STORE = '';
 
 // Rows: one per page, plus one per product that has a brief and no page (the classic tab lists nothing for it).
 const shotStale = p => (p.shotStale || []).length;
@@ -18,9 +21,9 @@ function rowsOf(doc) {
       // when it draws the same pixels.
       const why = p.dirty ? 'uncommitted change in the working tree' : !p.shots.length ? 'no screenshot'
         : shotStale(p) ? `stale screenshot: ${p.shotStale.map(f => f.split('/').pop()).join(', ')}` : '';
-      return { ...p, id: p.path, type: 'page', local: p.path.slice(`products/${p.product}/`.length), state: why ? 'caution' : 'ok', why };
+      return { ...p, hidden: !!p.hidden, id: p.path, type: 'page', local: p.path.slice(`products/${p.product}/`.length), state: why ? 'caution' : 'ok', why };
     }),
-    ...doc.products.filter(pr => !pr.pages).map(pr => ({ id: `product:${pr.name}`, type: 'brief', product: pr.name, local: pr.brief.split('/').pop() || '(no brief)',
+    ...doc.products.filter(pr => !pr.pages).map(pr => ({ id: `product:${pr.name}`, type: 'brief', hidden: !!pr.hidden, product: pr.name, local: pr.brief.split('/').pop() || '(no brief)',
       kind: 'brief only', state: 'queued', why: 'a brief and no page yet', changed: '', shots: [], dirty: false })),
   ];
 }
@@ -30,11 +33,14 @@ const FILTERS = {
   noshot:  { lbl: 'No screenshot', icon: 'eye-off', test: r => r.type === 'page' && !r.shots.length, warn: true },
   dirty:   { lbl: 'Uncommitted', icon: 'pen-line', test: r => r.dirty, warn: true },
   brief:   { lbl: 'Brief only', icon: 'file-text', test: r => r.type === 'brief' },
+  hidden:  { lbl: 'Hidden', icon: 'eye-off', test: r => r.hidden },
 };
+// Every lamp but Hidden counts and shows the rows that are not hidden; Hidden shows only the hidden ones.
+const shown = r => (F.f === 'hidden') === r.hidden;
 const tbody = document.getElementById('rows'), details = document.getElementById('details');
 let selected = null, F = { f: '', q: '' };
 let pickedIds = new Set();
-const match = r => (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
+const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
 // Order: product, then the drawn pages before the skeleton and captures, then path. The state is a lamp and a glyph, not the sort.
 const KIND = { 'v2 mockup': 0, 'v1 mockup': 1, design: 2, final: 0, reference: 3, skeleton: 4, 'brief only': 5 };
 const ranked = () => ROWS.filter(match).sort((a, b) => PRODUCTS.indexOf(a.product) - PRODUCTS.indexOf(b.product) || (KIND[a.kind] ?? 9) - (KIND[b.kind] ?? 9) || a.local.localeCompare(b.local));
@@ -43,12 +49,12 @@ const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time
 
 function renderAnnunciator() {
   // No "all pages" lamp: the head counts the pages and the view row's All chip clears a filter.
-  const n = k => ROWS.filter(FILTERS[k].test).length;
+  const n = k => ROWS.filter(r => (k === 'hidden' || !r.hidden) && FILTERS[k].test(r)).length;
   const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl,
     mark: state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon), val });
   const [hh, day] = [D.read.slice(11, 16), `${+D.read.slice(8, 10)} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[+D.read.slice(5, 7) - 1]}`];
   // build: Observed rereads /api/designs instead of reloading the page.
-  put(document.getElementById('annunciator'), cells([...Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : 'page')}`); }),
+  put(document.getElementById('annunciator'), cells([...Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : k === 'hidden' ? 'row' : 'page')}`); }),
     { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: html`<span class="ph"><b>${hh}</b> UTC</span> · <span class="ph">${day} · ${D.head || 'no commit'}</span>` }]));
 }
 function renderRows() {
@@ -67,7 +73,7 @@ function renderRows() {
     <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`;
   })}`);
   const empty = document.getElementById('empty');
-  empty.hidden = rows.length > 0; empty.textContent = F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
+  empty.hidden = rows.length > 0; empty.textContent = F.f === 'hidden' && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
   document.getElementById('tally').textContent = `${rows.length} of ${ROWS.length} rows`;
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
@@ -127,6 +133,15 @@ function update() {
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
 // build: every command is copy only; the dashboard runs no git, no shots.mjs and no pager.
 const pageName = o => o.path.split('/').pop().slice(0, -5);
+const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/designs/view)';
+const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }).then(v => reading.reread().then(() => v));
+// One Hide and one Unhide for each row type, a page and a brief-only product.
+const hiding = on => [
+  { id: 'design.hide', on, label: 'Hide', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : STORE || true,
+    cli: () => NO_CLI, run: o => view(o, true).then(() => `Hidden: ${o.label}. The Hidden lamp shows it.`), undo: o => view(o, false) },
+  { id: 'design.unhide', on, label: 'Unhide', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : STORE || true,
+    cli: () => NO_CLI, run: o => view(o, false).then(() => `Unhidden: ${o.label}`), undo: o => view(o, true) },
+];
 function registerCommands() {
   const C = shell.commands, REPO = () => D?.root || '~/repos/ui-design';
   C.register(
@@ -138,6 +153,7 @@ function registerCommands() {
       cli: o => `node ${REPO()}/products/system/designs/tools/shots.mjs ${pageName(o)}`, run: o => `Copy the line to retake ${o.label} at 1440 and 375; the dashboard does not run it` },
     { id: 'design.brief', on: 'brief', label: 'Read brief', key: 'b', icon: 'file-text', risk: 'safe', primary: () => true, executes: false,
       when: o => !!o.brief || 'this product has no brief', cli: o => `less ${REPO()}/${o.brief}`, run: o => `Copy the line to read the ${o.product} brief` },
+    ...hiding('page'), ...hiding('brief'),
   );
 }
 document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });
@@ -164,7 +180,7 @@ window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current:
 // The badge counts what a commit or a retake clears: uncommitted pages, and pages with no or a stale screenshot.
 const WHAT = 'pages uncommitted or without a current screenshot';
 function attention() {
-  const n = ROWS.filter(r => r.state === 'caution').length;
+  const n = ROWS.filter(r => r.state === 'caution' && !r.hidden).length;
   window.PAGE_ATTENTION = !D ? { state: 'unknown', n: 0, what: 'designs not read' } : { state: n ? 'caution' : 'ok', n, what: WHAT };
   shell.attention?.(window.PAGE_ATTENTION);
 }
@@ -184,12 +200,13 @@ function adopt(doc) {
   // Products with drawn pages first, then brief-only ones; the first visible row is then a page, not an empty product.
   PRODUCTS = [...D.products].sort((a, b) => !a.pages - !b.pages || a.name.localeCompare(b.name)).map(p => p.name);
   ROWS = rowsOf(D);
-  const objects = ROWS.map(r => ({ id: r.id, type: r.type, label: r.local, path: r.path || '', product: r.product, kind: r.kind,
+  STORE = D.store && !D.store.available ? `Hide is off: ${D.store.reason}` : '';
+  const objects = ROWS.map(r => ({ id: r.id, type: r.type, label: r.local, path: r.path || '', product: r.product, kind: r.kind, hidden: r.hidden,
     brief: D.products.find(p => p.name === r.product).brief }));
   return { objects, state: ROWS.length ? null : { kind: 'empty', title: 'No designs', source: '/api/designs', text: `No design pages found in ${D.root}/products.` } };
 }
 function clear() {
-  D = null; ROWS = []; PRODUCTS = []; delete document.body.dataset.observed;
+  D = null; ROWS = []; PRODUCTS = []; STORE = ''; delete document.body.dataset.observed;
   put(document.getElementById('annunciator'), html``); put(tbody, html``);
   document.getElementById('tally').textContent = '';
   document.getElementById('sub').textContent = 'Not read';

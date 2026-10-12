@@ -20,6 +20,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from sd_db import writes
+
 from sd_dashboard import designs, server, v2
 
 from test_designs import tree
@@ -66,6 +68,9 @@ COMMANDS = [
     ["design.log", "page", "History", "l", "safe"],
     ["design.shots", "page", "Retake screenshots", "s", "safe"],
     ["design.brief", "brief", "Read brief", "b", "safe"],
+    # sd:3447: Hide and Unhide, the view state Documents' Hide writes, on each row type.
+    ["design.hide", "page", "Hide", "h", "undo"], ["design.unhide", "page", "Unhide", "h", "undo"],
+    ["design.hide", "brief", "Hide", "h", "undo"], ["design.unhide", "brief", "Unhide", "h", "undo"],
 ]
 
 
@@ -108,7 +113,26 @@ class ThePage(BrowserSession):
         doc = json.loads(body)
         self.assertEqual([p["path"] for p in doc["pages"]], ["products/system/designs/v1-today.html"])
         self.assertEqual({p["name"]: p["pages"] for p in doc["products"]}, {"empty": 0, "system": 1})
-        self.assertEqual(set(doc), set(designs.ledger(self.root)))
+        self.assertEqual(set(doc), set(designs.ledger(self.root)) | {"store"})
+        self.assertEqual(doc["store"], {"available": True, "reason": ""})
+        self.assertEqual([p["hidden"] for p in doc["pages"]], [False])
+
+    def test_hide_writes_the_view_state_the_ledger_reads_back_and_refuses_an_unlisted_row(self):
+        # sd:3447: the write is Documents' view store, keyed designs/<path>; a row the checkout does not list writes nothing.
+        cookie = {"Cookie": self.cookie}
+        status, _, out = self.post("/api/designs/view", {"id": "products/system/designs/v1-today.html", "hidden": True})
+        self.assertEqual((status, out), (200, {"id": "products/system/designs/v1-today.html", "pinned": False, "hidden": True, "tags": []}))
+        status, _, out = self.post("/api/designs/view", {"id": "product:empty", "hidden": True})
+        self.assertEqual(status, 200, out)
+        self.assertEqual(self.post("/api/designs/view", {"id": "products/system/designs/gone.html", "hidden": True})[0], 400)
+        self.assertEqual(self.post("/api/designs/view", {"id": "product:..", "hidden": True})[0], 400)
+        self.assertEqual(self.post("/api/designs/view", {"id": "products/system/designs/v1-today.html", "hidden": "yes"})[0], 400)
+        self.assertEqual(self.post("/api/designs/view", {"id": "products/system/designs/v1-today.html", "hidden": False},
+                                   **{"X-SD-CSRF": "0" * 64})[0], 403)
+        doc = json.loads(self.request("/api/designs", headers=cookie)[2])
+        self.assertEqual([p["hidden"] for p in doc["pages"]], [True])
+        self.assertEqual({p["name"]: p["hidden"] for p in doc["products"]}, {"empty": True, "system": False})
+        self.assertEqual(writes.views(self.connection)["designs/products/system/designs/v1-today.html"]["hidden"], True)
 
 
 SHELL_MORE = r"""
@@ -139,7 +163,8 @@ class TheScript(unittest.TestCase):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.exec = REG.map(c => c.executes);"
                             " R.cli = cmd('design.log').cli(C.get('" + PAGES + "/today.html'));")
         self.assertEqual(out["R"]["reg"], COMMANDS)
-        self.assertEqual(out["R"]["exec"], [False, False, False])
+        # The three design commands are copy only; Hide and Unhide (sd:3447) write view state, as Documents' do.
+        self.assertEqual(out["R"]["exec"], [False, False, False, None, None, None, None])
         self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
 
     def test_the_copy_only_commands_post_nothing_and_say_so(self):
@@ -162,13 +187,41 @@ class TheScript(unittest.TestCase):
         self.assertIn("v1 mockup · uncommitted change in the working tree", rows)
         self.assertIn("brief only · a brief and no page yet", rows)
         self.assertEqual(re.findall(r'data-filter="(\w+)" data-state="(\w+)"', lamps),
-                         [("recent", "ok"), ("stale", "caution"), ("noshot", "caution"), ("dirty", "caution"), ("brief", "ok")])
-        self.assertEqual(cell_grammar(self, lamps), [("button", s) for s in ("ok", "caution", "caution", "caution", "ok", None)])
+                         [("recent", "ok"), ("stale", "caution"), ("noshot", "caution"), ("dirty", "caution"), ("brief", "ok"), ("hidden", "ok")])
+        self.assertEqual(cell_grammar(self, lamps), [("button", s) for s in ("ok", "caution", "caution", "caution", "ok", "ok", None)])
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', lamps, re.S),
-                         [("recent", "2"), ("stale", "1"), ("noshot", "1"), ("dirty", "1"), ("brief", "1")])
+                         [("recent", "2"), ("stale", "1"), ("noshot", "1"), ("dirty", "1"), ("brief", "1"), ("hidden", "0")])
         self.assertEqual(out["text"]["sub"], "4 pages in 2 products")
         self.assertEqual(out["text"]["src"], "~/repos/example/ui-design at abc1234")
         self.assertEqual(out["page_attention"], {"state": "caution", "n": 3, "what": "pages uncommitted or without a current screenshot"})
+
+    def test_a_hidden_row_leaves_the_ledger_the_lamps_and_the_badge_and_the_hidden_lamp_shows_it(self):
+        # sd:3447: the stale page is hidden, so the Shot stale lamp and the badge drop it; Hidden lists it alone.
+        doc = json.loads(json.dumps(DOC))
+        doc["pages"][1]["hidden"] = True
+        doc["store"] = {"available": True, "reason": ""}
+        out = self.run_page("R.lamps = ELS.annunciator.html; click({ s: '.annunciator .cell', dataset: { filter: 'hidden' } });"
+                            " R.hidden = ELS.rows.html; R.unhide = cmd('design.unhide').when(C.get('" + PAGES + "/tasks.html'));"
+                            " R.hide = cmd('design.hide').when(C.get('" + PAGES + "/tasks.html'));", answer=f"(path) => [200, {json.dumps(doc)}]")
+        self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', out["R"]["lamps"], re.S),
+                         [("recent", "2"), ("stale", "0"), ("noshot", "1"), ("dirty", "1"), ("brief", "1"), ("hidden", "1")])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["hidden"]), [f"{PAGES}/tasks.html"])
+        self.assertEqual((out["R"]["unhide"], out["R"]["hide"]), (True, "already hidden"))
+        self.assertEqual(out["page_attention"]["n"], 2)
+
+    def test_hide_posts_the_row_and_undo_posts_it_back(self):
+        out = self.run_page(f"shellRun(cmd('design.hide'), C.get('{PAGES}/notes.html')); await flush();"
+                            " cmd('design.hide').undo(C.get('" + PAGES + "/notes.html')); await flush();")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": True}],
+                                                         ["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": False}]])
+        self.assertEqual(out["toasts"][0], "Hidden: designs/pages/notes.html. The Hidden lamp shows it.")
+
+    def test_an_unread_store_hides_nothing_and_turns_hide_off_with_its_reason(self):
+        doc = json.loads(json.dumps(DOC))
+        doc["store"] = {"available": False, "reason": "the view store was not read: locked"}
+        out = self.run_page("R.off = cmd('design.hide').when(C.get('" + PAGES + "/notes.html'));", answer=f"(path) => [200, {json.dumps(doc)}]")
+        self.assertEqual(out["R"]["off"], "Hide is off: the view store was not read: locked")
+        self.assertEqual(len(re.findall(r'<tr data-id=', out["html"]["rows"])), 5)
 
     def test_a_lamp_filters_the_ledger_and_the_url_keeps_it(self):
         out = self.run_page("click({ s: '.annunciator .cell', dataset: { filter: 'stale' } }); R.rows = ELS.rows.html;")
@@ -206,7 +259,7 @@ class TheScript(unittest.TestCase):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "designs", "Designs", "/designs", ("/api/designs",)
+    page, section, route, api = "designs", "Designs", "/designs", ("/api/designs", "/api/designs/view")
 
 
 if __name__ == "__main__":
