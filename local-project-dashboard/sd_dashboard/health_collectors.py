@@ -139,12 +139,14 @@ def merged_branches(walk: Walk, path: Path) -> tuple[str, list[tuple[str, str, s
     if state != "ok":
         return state, [], []
     refs = walk.git(path, "for-each-ref", "--merged=refs/remotes/origin/HEAD",
-                    "--format=%(refname:short)%09%(committerdate:short)%09%(worktreepath)%09%(objectname)", "refs/heads/")
+                    "--format=%(refname)%09%(committerdate:short)%09%(worktreepath)%09%(objectname)", "refs/heads/")
     if refs is None or refs.returncode != 0:
         return "unread", [], []
     deletable, checked_out = [], []
     for line in refs.stdout.splitlines():
-        name, date, tree, tip = (line.split("\t") + ["", "", ""])[:4]
+        ref, date, tree, tip = (line.split("\t") + ["", "", ""])[:4]
+        # The exact branch name: %(refname:short) prints heads/foo or refs/heads/foo when a tag or branch shares it.
+        name = ref.removeprefix("refs/heads/")
         if not name or name == default:
             continue
         (checked_out.append((name, tree)) if tree else deletable.append((name, date, tip)))

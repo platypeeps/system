@@ -190,6 +190,20 @@ class DeleteMerged(Isolated, ScreenCase):
                          {"ok": True, "row": f"br:{self.alpha}", "done": ["feat/one", "feat/two"], "refused": []})
         self.assertEqual(self.branches(), ["main"])
 
+    def test_a_tag_named_like_a_branch_deletes_that_branch_and_never_a_heads_branch(self):
+        # With a tag feat/one, %(refname:short) prints heads/feat/one; the delete must still name refs/heads/feat/one
+        # and leave the distinct, unmerged branch heads/feat/one alone.
+        repo = str(self.alpha)
+        git("-C", repo, "tag", "feat/one")
+        side = git("-C", repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "unmerged")
+        git("-C", repo, "update-ref", "refs/heads/heads/feat/one", side)
+        row = self.row(self.alpha)
+        self.assertEqual(row["branches"], ["feat/one", "feat/two"])
+        self.assertEqual(self.write(row["id"], row["revision"]),
+                         {"ok": True, "row": f"br:{self.alpha}", "done": ["feat/one", "feat/two"], "refused": []})
+        self.assertEqual(git("-C", repo, "for-each-ref", "--format=%(refname)", "refs/heads/").splitlines(),
+                         ["refs/heads/heads/feat/one", "refs/heads/main"])
+
     def test_a_tip_moved_since_the_read_is_stale_and_nothing_is_deleted(self):
         row = self.row(self.alpha)
         git("-C", str(self.alpha), "commit", "-q", "--allow-empty", "-m", "main moves")
