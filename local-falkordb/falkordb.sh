@@ -5,23 +5,26 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 6380, not redis's 6379: FalkorDB speaks the Redis protocol, so the two used
-# to fight over one port and only one could be listed per profile.
-PORT="${FALKORDB_PORT:-6380}"
-UI_PORT="${FALKORDB_UI_PORT:-3003}"
-
 # <config>/falkordb/.env (see lib/config.sh) provides defaults only —
 # already-exported values win (same precedence rule as local-notify). The file is optional; without it the
 # baked-in local dev values apply.
 ENV_FALKORDB_USER="${FALKORDB_USER:-}"
 ENV_FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-}"
+ENV_FALKORDB_PORT="${FALKORDB_PORT:-}"
+ENV_FALKORDB_UI_PORT="${FALKORDB_UI_PORT:-}"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env falkordb
 if [ -n "$ENV_FALKORDB_USER" ]; then FALKORDB_USER="$ENV_FALKORDB_USER"; fi
 if [ -n "$ENV_FALKORDB_PASSWORD" ]; then FALKORDB_PASSWORD="$ENV_FALKORDB_PASSWORD"; fi
+if [ -n "$ENV_FALKORDB_PORT" ]; then FALKORDB_PORT="$ENV_FALKORDB_PORT"; fi
+if [ -n "$ENV_FALKORDB_UI_PORT" ]; then FALKORDB_UI_PORT="$ENV_FALKORDB_UI_PORT"; fi
 FALKORDB_USER="${FALKORDB_USER:-default}"
 FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-verysecure}"
+# 6380, not redis's 6379: FalkorDB speaks the Redis protocol, so the two used
+# to fight over one port and only one could be listed per profile.
+PORT="${FALKORDB_PORT:-6380}"
+UI_PORT="${FALKORDB_UI_PORT:-3003}"
 
 case "$1" in
   start)

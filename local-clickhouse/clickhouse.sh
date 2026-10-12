@@ -5,25 +5,30 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# The MCP port is 8002, not 8001: 8001 is the redis-stack convention that
-# RedisInsight in local-redis publishes, and the two used to be mutually
-# exclusive.
-HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
-NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
-MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
-
 # <config>/clickhouse/.env (see lib/config.sh) provides defaults only —
 # already-exported values win (same precedence rule as local-notify). The file is optional; without it the
 # baked-in local dev values apply.
 ENV_CLICKHOUSE_USER="${CLICKHOUSE_USER:-}"
 ENV_CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
+ENV_CLICKHOUSE_HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-}"
+ENV_CLICKHOUSE_NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-}"
+ENV_CLICKHOUSE_MCP_PORT="${CLICKHOUSE_MCP_PORT:-}"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env clickhouse
 if [ -n "$ENV_CLICKHOUSE_USER" ]; then CLICKHOUSE_USER="$ENV_CLICKHOUSE_USER"; fi
 if [ -n "$ENV_CLICKHOUSE_PASSWORD" ]; then CLICKHOUSE_PASSWORD="$ENV_CLICKHOUSE_PASSWORD"; fi
+if [ -n "$ENV_CLICKHOUSE_HTTP_PORT" ]; then CLICKHOUSE_HTTP_PORT="$ENV_CLICKHOUSE_HTTP_PORT"; fi
+if [ -n "$ENV_CLICKHOUSE_NATIVE_PORT" ]; then CLICKHOUSE_NATIVE_PORT="$ENV_CLICKHOUSE_NATIVE_PORT"; fi
+if [ -n "$ENV_CLICKHOUSE_MCP_PORT" ]; then CLICKHOUSE_MCP_PORT="$ENV_CLICKHOUSE_MCP_PORT"; fi
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-verysecure}"
+HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
+NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
+# The MCP port is 8002, not 8001: 8001 is the redis-stack convention that
+# RedisInsight in local-redis publishes, and the two used to be mutually
+# exclusive.
+MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 
 case "$1" in
   start)
@@ -71,8 +76,8 @@ usage: clickhouse.sh start|stop|update|client
                (next start pulls the latest)
   client       open clickhouse-client inside the running container
 
-CLICKHOUSE_USER (default: default) and CLICKHOUSE_PASSWORD (default: a local
-dev value) come from the environment or
+CLICKHOUSE_USER (default: default), CLICKHOUSE_PASSWORD (default: a local
+dev value) and the ports below come from the environment or
 <config>/clickhouse/.env (copy .env.example there; <config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; exported
 values win) and are applied to the server, the MCP server, and the client.
