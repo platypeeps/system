@@ -70,6 +70,11 @@ check_config() {
   return 1
 }
 
+# sed_escape <value>: escape \, & and | so sed's s|...|value| inserts it as is.
+sed_escape() {
+  printf '%s' "$1" | sed -e 's/[\&|]/\\&/g'
+}
+
 running() {
   [ -n "$(docker ps -q -f "name=^${CONTAINER}$" 2>/dev/null)" ]
 }
@@ -80,13 +85,15 @@ case "${1:-}" in
     check_config
     split_url 1
     split_url 2
-    sed -e "s|\${FLUENTBIT_EXPORT_AUTH_1}|$FLUENTBIT_EXPORT_AUTH_1|" \
-        -e "s|\${FLUENTBIT_EXPORT_AUTH_2}|$FLUENTBIT_EXPORT_AUTH_2|" \
-        -e "s|\${EXPORT_HOST_1}|$EXPORT_HOST_1|" -e "s|\${EXPORT_HOST_2}|$EXPORT_HOST_2|" \
-        -e "s|\${EXPORT_PORT_1}|$EXPORT_PORT_1|" -e "s|\${EXPORT_PORT_2}|$EXPORT_PORT_2|" \
-        -e "s|\${EXPORT_URI_1}|$EXPORT_URI_1|" -e "s|\${EXPORT_URI_2}|$EXPORT_URI_2|" \
-        -e "s|\${EXPORT_TLS_1}|$EXPORT_TLS_1|" -e "s|\${EXPORT_TLS_2}|$EXPORT_TLS_2|" \
-        "$DIR/config.yaml.template" > "$DIR/config.yaml"
+    script=""
+    for name in FLUENTBIT_EXPORT_AUTH_1 FLUENTBIT_EXPORT_AUTH_2 \
+                EXPORT_HOST_1 EXPORT_HOST_2 EXPORT_PORT_1 EXPORT_PORT_2 \
+                EXPORT_URI_1 EXPORT_URI_2 EXPORT_TLS_1 EXPORT_TLS_2; do
+      eval "value=\$$name"
+      script="$script
+s|\\\${$name}|$(sed_escape "$value")|"
+    done
+    sed -e "$script" "$DIR/config.yaml.template" > "$DIR/config.yaml"
     docker run -d --rm --name "$CONTAINER" \
       -v "$DIR:/fluent-bit/etc" \
       cr.fluentbit.io/fluent/fluent-bit:latest \
