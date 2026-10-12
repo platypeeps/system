@@ -486,6 +486,16 @@ function registerCommands() {
     { id: 'report.show', on: 'report', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => { location.href = `/item/${o.n}`; return `#${o.n} opens on its item page`; } },
     log('report'), task('report'),
+    // Fix (sd:3456): the declaration Tasks makes, on a report: a herdr workspace with claude on a debug session for it. It
+    // asks first and posts /api/items/<n>/fix with the report's revision; a post with no answer may have started one.
+    { id: 'report.fix', on: 'report', label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot',
+      when: o => !o.open ? 'already acknowledged' : true,
+      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
+      sends: o => `POST /api/items/${o.n}/fix {revision}`,
+      consequence: o => `Opens a herdr workspace and starts claude on report #${o.n}: the sd-debug skill finds the cause and fixes it, and acknowledges the report after a clean run.`,
+      run: o => write(`/api/items/${o.n}/fix`, { revision: o.source.revision }).then(
+        out => `Fix started · #${o.n} · ${out.fix.session} session in herdr pane ${out.fix.pane}`,
+        err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) },
     // build: no status mail object is put (no reader), so these two never show; they keep the design's declarations.
     { id: 'mail.ack', on: 'status mail', label: 'Acknowledge', key: 'a', risk: 'undo', journal: () => null, bulk: true, when: () => 'the message store is not built; Gmail holds the only copy', cli: o => `sd message ack ${o.source.gid}` },
     { id: 'mail.open', on: 'status mail', label: 'Open in Gmail', key: 'o', risk: 'safe', executes: false, primary: o => o.act, cli: o => `open https://mail.google.com/mail/u/0/#all/${o.source.gid}`, run: () => 'Opens in Gmail, read-only' },

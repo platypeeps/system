@@ -6,13 +6,13 @@
 # those ids beside herdr's own, so a session that herdr could not restore --
 # stopped and deleted, or a pane closed by hand -- is still resumable from a
 # record this repository owns. See README.md for the state file's shape.
-# Usage: herdr.sh start|resume|snapshot|record|list|forget|status|test|help
+# Usage: herdr.sh start|resume|launch|snapshot|record|list|forget|status|test|help
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
   cat <<'HELPEOF'
-usage: herdr.sh start|resume|snapshot|record <pane> <agent> <id> [cwd]|list|forget <pane>|status|test|help
+usage: herdr.sh start|resume|launch <dir> <label> <prompt>|snapshot|record <pane> <agent> <id> [cwd]|list|forget <pane>|status|test|help
 
   start      attach the one named persistent session (default `sd`,
              HERDR_SESSION overrides), creating it when absent. When the
@@ -26,6 +26,10 @@ usage: herdr.sh start|resume|snapshot|record <pane> <agent> <id> [cwd]|list|forg
              (`claude --resume <id>`, `codex resume <id>`) in the recorded
              directory, creating a workspace at that directory when the pane
              is gone. Exits 1 when any pane could not be resumed.
+  launch     launch <dir> <label> <prompt>: a new workspace at <dir> named
+             <label>, a fresh `claude` started in it, and <prompt> sent to it
+             as typed text (the dashboard's Fix). Exits 3 when herdr is not
+             installed, 1 when the session is not running or a step failed.
   snapshot   write every live agent that reports a session id into the
              state file (`herdr agent list`); the thin path, since herdr's
              integrations already know the ids.
@@ -53,7 +57,7 @@ HELPEOF
 }
 
 case "${1:-}" in
-  start|resume|snapshot|record|list|forget|status)
+  start|resume|launch|snapshot|record|list|forget|status)
     exec "${PYTHON:-python3}" "$DIR/herdr_wrap.py" "$@"
     ;;
   test)

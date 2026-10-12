@@ -47,6 +47,8 @@ have carried.
     herdr.sh start      attach the session (default `sd`), creating it when absent;
                         runs `resume` first when the session is already running
     herdr.sh resume     bring every recorded pane back that is not already live
+    herdr.sh launch <dir> <label> <prompt>
+                        a new workspace at <dir>, a fresh claude in it, and one prompt
     herdr.sh snapshot   record every live agent that reports a session id
     herdr.sh record <pane> <claude|codex> <session-id> [cwd]
     herdr.sh list       print the state file
@@ -75,6 +77,15 @@ with no agent, `herdr pane process-info`:
 | is gone (`pane_not_found`)                 | `workspace create --cwd <recorded>`, `agent start` in its root pane, and the record moves to the new pane id |
 
 Exit 1 when any pane failed; `start` attaches anyway and says so.
+
+`launch` is the dashboard's Fix (sd:3456): `workspace create --cwd <dir>
+--label <label> --no-focus`, `agent start` with `--kind claude` in its root
+pane, then `agent prompt` with the text. `resume` cannot do this, since it
+only starts a recorded session. The prompt is typed to the agent and never
+reaches the pane's shell. It records nothing: the new session's id reaches
+the state file through `snapshot`. Exit 3 when herdr is not installed, and 1
+when the session is not running (the message names `herdr.sh start`) or a
+step failed; a refused `agent start` leaves the new workspace at its prompt.
 
 `start` when the session is **not** running just attaches (`herdr --session
 sd`), because herdr's own restore runs as the client attaches and resuming
@@ -177,7 +188,7 @@ machine with `herdr` and both agents installed:
 
 `./local-herdr/herdr.sh test -v`. `tests/doubles/herdr` is a POSIX-sh
 stand-in for the 0.9.0 CLI: it journals every argv line and answers `session
-list --json`, `pane get`, `agent list`, `agent start`, `pane run` and
+list --json`, `pane get`, `agent list`, `agent start`, `agent prompt`, `pane run` and
 `workspace create` and `pane process-info` from files the tests write under a
 fixture directory. The
 suite prepends that directory to PATH and asserts the double is the `herdr`
@@ -190,6 +201,8 @@ binary's help, changelog and embedded schema, never from a live session:
 `agent_session`, `cwd` and `foreground_cwd` in `pane get` and `agent list`;
 `socket_path` and `running` in `session list --json`; `shell_pid`,
 `foreground_process_group_id` and `foreground_processes` in `pane
-process-info`; and that `HERDR_SOCKET_PATH` selects the session. Only the
+process-info`; that `HERDR_SOCKET_PATH` selects the session; and, for `launch`, read from
+the 0.9.3 help, that `workspace create` takes `--label` and that `agent
+prompt` takes the name `agent start` gave as its target. Only the
 hand run above checks them against a live session, and until it is recorded
 the restart and delete flow is unverified.

@@ -186,6 +186,14 @@ A second start is refused while a run is live, or while another `sd shadow sync`
 A satellite refuses a start: the lock sits beside the hub's database file.
 The run calls `gh` with the LaunchAgent's environment; gh's keychain login under launchd is not yet verified.
 
+Fix on Tasks, Reports and Today (sd:3456, `fix_session.py`) runs
+`local-herdr/herdr.sh launch` from this checkout: a new workspace in the
+operator's herdr session, with claude given a builder prompt for a task or an
+`sd-debug` prompt for a report. It never starts a process of its own: with
+herdr missing or its session down it answers 503 naming `herdr.sh start`.
+`herdr` must be on the LaunchAgent's PATH (`/opt/homebrew/bin` is). A launch
+that does not answer in 90 seconds is a 504 whose outcome is not known.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists

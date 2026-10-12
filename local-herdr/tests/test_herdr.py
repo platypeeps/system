@@ -14,6 +14,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -543,6 +544,72 @@ class TestStatus(HerdrCase):
         proc = self.run_sh("status")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("2 recorded pane(s) live", proc.stdout)
+
+
+class TestLaunch(HerdrCase):
+    """`launch <dir> <label> <prompt>`: a new workspace at the directory, claude started in it, then the prompt."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.work = self.tmp / "work"
+        self.work.mkdir()
+
+    def test_launch_creates_a_workspace_starts_claude_and_sends_the_prompt(self) -> None:
+        self.session_running()
+        proc = self.run_sh("launch", str(self.work), "sd-3456", "Build sd:3456; it's 'quoted' $(not run)")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), f"launched w9:p1: claude in {self.work}")
+        self.assertEqual(self.herdr_calls()[1:], [
+            ["workspace", "create", "--cwd", str(self.work), "--label", "sd-3456", "--no-focus"],
+            ["agent", "start", "sd-w9-p1", "--kind", "claude", "--pane", "w9:p1"],
+            ["agent", "prompt", "sd-w9-p1", "Build sd:3456; it's 'quoted' $(not run)"],
+        ])
+        # Every call goes to the named session's socket, as the other verbs do.
+        self.assertTrue(all(line[:2] == ["sd", "/tmp/sd/herdr.sock"] for line in self.journal_lines()[1:]))
+        # A launch records nothing: herdr's integration reports the new session id, and `snapshot` keeps it.
+        self.assertFalse((self.state / "sd.json").exists())
+
+    def test_launch_without_herdr_names_herdr_sh_start_and_exits_3(self) -> None:
+        bare = self.tmp / "bin"
+        bare.mkdir()
+        for tool in ("sh", "dirname"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        self.assertIsNone(shutil.which("herdr", path=str(bare)))
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1", PATH=str(bare), PYTHON=sys.executable)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("herdr is not installed", proc.stderr)
+        self.assertIn("herdr.sh start", proc.stderr)
+
+    def test_launch_without_a_running_session_names_herdr_sh_start_and_creates_nothing(self) -> None:
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("session sd is not running; run herdr.sh start first", proc.stderr)
+        self.assertEqual([c[:2] for c in self.herdr_calls()], [["session", "list"]])
+
+    def test_a_refused_start_says_the_workspace_is_left_and_sends_no_prompt(self) -> None:
+        self.session_running()
+        (self.fixture / "agent-start-fail").write_text("")
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("w9:p1: claude did not start", proc.stderr)
+        self.assertIn("left at its shell prompt", proc.stderr)
+        self.assertNotIn("prompt", [c[1] for c in self.herdr_calls() if c[0] == "agent"])
+
+    def test_a_refused_prompt_says_claude_runs_without_it(self) -> None:
+        self.session_running()
+        (self.fixture / "agent-prompt-fail").write_text("")
+        proc = self.run_sh("launch", str(self.work), "sd-1", "Build sd:1")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("w9:p1: claude started, but the prompt was not sent", proc.stderr)
+
+    def test_launch_refuses_a_missing_directory_or_an_empty_argument_before_asking_herdr(self) -> None:
+        self.session_running()
+        for args in ((str(self.tmp / "absent"), "sd-1", "Build"), ("work", "sd-1", "Build"),
+                     (str(self.work), "", "Build"), (str(self.work), "sd-1", ""), (str(self.work), "sd-1")):
+            with self.subTest(args=args):
+                proc = self.run_sh("launch", *args, cwd=str(self.tmp))
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(self.herdr_calls(), [])
 
 
 if __name__ == "__main__":
