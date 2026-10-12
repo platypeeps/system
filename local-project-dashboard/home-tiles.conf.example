@@ -14,9 +14,9 @@
 # gets. Without it the domain decides; a virtual binary sensor that works as
 # a switch says toggle.
 #
-# The dashboard reads no Home Assistant state yet, so every tile shows as
-# unknown ("no Home Assistant reader"). Every command that changes a device is
-# off with that reason; Read state shows its curl line for Copy only. A line the page cannot read is named on the page and skipped.
+# The page reads each tile's state and its age from Home Assistant, with the
+# URL and token local-ha-mcp uses (<config>/ha-mcp/.env); a tile it cannot read
+# names why. Every command that changes a device is off; Read state shows its curl line for Copy only. A line the page cannot read is named on the page and skipped.
 
 headline|binary_sensor.problems_active|Problems active
 
