@@ -268,8 +268,8 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     not once per outcome (sd:2904). A row with a retry also carries what
     Today's Retry posts and reads (sd:3386): the job's `revision`, which
     `operations.retry_job` checks, so a job that changed since the read is
-    refused; its retry `capability`; and its last `exit`, as 127 keeps
-    Retry off.
+    refused; its retry `capability`; and its last `exit`, as Retry asks
+    first after 127 (sd:3392).
     """
     out = []
     for job in jobs:
