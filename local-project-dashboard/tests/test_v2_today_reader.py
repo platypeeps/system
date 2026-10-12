@@ -287,3 +287,63 @@ class TheBadge(TheReader):
         """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""
         out = self.run_badge("", [self.DECISION], keep_job=True)
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
+
+
+class TheRetry(TheReader):
+    """sd:3386: a failed job's Retry posts /api/jobs/<job>/retry with the row's revision, as Management and Activity do."""
+
+    def test_retry_posts_the_job_route_with_the_rows_revision_and_reads_now_again(self):
+        row = self.doc["rows"][0]
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
+R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();
+R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync:7')); R.sends = cmd('jobs.retry').sends(C.get('job:nightly-sync:7'));""")
+        self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": row["revision"]}, 64]])
+        self.assertEqual(out["toasts"][-1]["msg"], "Retry started · nightly-sync")
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+        self.assertEqual((out["R"]["primary"], out["R"]["cli"], out["R"]["sends"]),
+                         (True, "sd jobs retry nightly-sync", "launchctl kickstart fixture/nightly-sync"))
+
+    def test_exit_127_keeps_retry_off_and_posts_nothing(self):
+        self.doc["rows"][0]["exit"] = 127
+        out = self.run_page("""R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"][-1]["msg"], "off: exit 127: command not found; fix the path first")
+        self.assertFalse(out["R"]["primary"])
+
+    def test_a_retry_the_read_refuses_is_off_with_the_reason(self):
+        self.doc["rows"][0]["capability"] = {"allowed": False, "reason": "an unresolved restore prevents starting jobs"}
+        out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"][-1]["msg"], "off: an unresolved restore prevents starting jobs")
+
+    def test_a_stale_retry_writes_nothing_says_so_and_reads_now_again(self):
+        out = self.run_page("""ANSWER = path => path === '/api/now' ? [200, DOC0] : [409, { error: 'state changed; refresh before trying again' }];
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertEqual(out["toasts"][-1]["msg"], "nightly-sync failed with exit 7 not changed: state changed; refresh before trying again")
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_retry_with_no_answer_is_unknown_not_refused(self):
+        out = self.run_page("""ANSWER = path => path === '/api/now' ? [200, DOC0] : Promise.reject(new TypeError('Load failed'));
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+        self.assertEqual(out["toasts"][-1]["msg"], "nightly-sync failed with exit 7 not changed: no answer (Load failed), so whether"
+                         " launchd started it is not known; Now is read again")
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
+        """sd:3386, as sd:3388 words Management's: a 200 carries launchctl's answer; only `accepted` started a retry."""
+        cases = {
+            "{ request: { status: 'failed', message: 'launchctl refused the request (exit 3)' } }":
+                "nightly-sync not retried: launchctl refused the request (exit 3)",
+            "{ request: { status: 'unknown', message: 'launchctl timed out; the request outcome is unknown' } }":
+                "Not known whether nightly-sync was retried: launchctl timed out; the request outcome is unknown",
+            "{}": "Not known whether nightly-sync was retried: the answer named no outcome",
+        }
+        for answer, said in cases.items():
+            with self.subTest(said=said):
+                out = self.run_page(f"""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, {answer}];
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+                self.assertEqual(out["toasts"][-1]["msg"], said)
+                self.assertEqual(out["gets"], ["/api/now", "/api/now"])

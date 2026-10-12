@@ -112,7 +112,9 @@
             <div><h3 id="ack-sel-h">Selected</h3><ul id="ack-sel"></ul></div>
             <div><h3 id="ack-dec-h">Declined</h3><ul id="ack-dec"></ul></div>
           </div>
-          <p class="note">The selection is the classic screen's dry run. The bar acknowledges each picked report with its own revision, so a report that changed since is refused by name. The classic screen's attributed batch (<code>--all-clean --who</code>) carries the dry run's plan; use it for more than the newest 200.</p>
+          <p class="note">The selection is the classic screen's dry run. The bar acknowledges each picked report with its own revision, so a report that changed since is refused by name. The attributed batch (<code>--all-clean --who</code>) carries the dry run's plan and moves every selected report, beyond the newest 200 too, or none.</p>
+          <h3>Acknowledge in one batch</h3>
+          <div id="ack-batch"></div>
         </div>
       </div>
     </section>

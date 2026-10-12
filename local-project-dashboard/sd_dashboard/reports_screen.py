@@ -13,7 +13,8 @@ page (`v2/reports.html`, at `/reports`); the page holds no rows:
   `report-families.conf` names. Each source is guarded on its own: a failed
   one is `null` with its reason in `sources`, never an empty list.
 - `/api/reports/clean?before=YYYY-MM-DD` is `clean`: the selection
-  `reporting.clean_reports` makes for v1's preview, which writes nothing.
+  `reporting.clean_reports` makes for v1's preview, which writes nothing,
+  and the plan the attributed batch acknowledge posts (sd:3386).
 
 Status mail has no reader: the dashboard holds no message store, so
 `mail.available` is false with the reason.
@@ -524,9 +525,12 @@ def clean(connection, before: str, *, now: str) -> dict:
     """v1's clean preview for one date: which open reports retention would settle, and why each other one waits.
 
     Writes nothing. A date `reporting.cutoff` refuses, or one later than `now`, raises `WorkflowError`.
+    `plan` is the token the attributed batch posts with `before` (sd:3386): `acknowledge_clean` refuses it once the
+    selection or a selected report's revision moves. It is None when no batch can succeed: nothing selected, or over
+    `max_batch`.
     """
     preview = reporting.clean_reports(connection, before=reporting.cutoff(before),
                                       now=datetime.fromisoformat(now.replace("Z", "+00:00")))
-    return {"before": preview["before"], "count": preview["count"], "max_batch": preview["max_batch"],
+    return {"before": preview["before"], "count": preview["count"], "max_batch": preview["max_batch"], "plan": preview["plan"],
             "selected": [entry["id"] for entry in preview["selected"]],
             "declined": [{"id": entry["id"], "why": entry["why"]} for entry in preview["declined"]]}

@@ -79,7 +79,7 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
-             repo: pr && pr[1], number: pr && +pr[2], seen: r.seen };
+             exit: r.exit, revision: r.revision, capability: r.capability, repo: pr && pr[1], number: pr && +pr[2], seen: r.seen };
   }
 
   function render() {
@@ -183,6 +183,13 @@
 
   function clearSource() { srcFilter = null; document.querySelectorAll('.cell[data-src]').forEach(x => x.setAttribute('aria-pressed', 'false')); applyFilter(); }
 
+  // A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
+  function answered(out, name, verb, done) {
+    const r = out && out.request || {};
+    return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+      : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
+  }
+
   window.PAGE_COMMANDS = [
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
@@ -193,11 +200,19 @@
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
     C.register(
-      // jobs.retry: one declaration with ui-design commands.md. The v2 page runs no command yet, so it says where Retry runs.
-      { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
+      // jobs.retry: one declaration with ui-design commands.md. build (sd:3386): it posts /api/jobs/<job>/retry with the
+      // revision the Now read brought, as Management does; launchd starts the run. Exit 127 is "command not found": a retry
+      // fails the same way until the path is fixed, so Retry is off, as in Management. A refused retry reads Now again; one
+      // with no answer may have started, so it says the outcome is not known. A 200 carries launchctl's answer, worded as
+      // Management words it (sd:3388): only `accepted` started a retry; `failed` sent nothing; anything else is not known.
+      { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
         when: o => !o.retry ? 'launchd refuses a retry for a job that is not failed or interrupted; the row says what to run'
-          : 'v2 runs no commands yet; Retry runs from Operations › Jobs, and the retry line is above',
-        cli: o => o.retry },
+          : o.exit === 127 ? 'exit 127: command not found; fix the path first'
+          : o.capability?.allowed || o.capability?.reason || 'launchd refuses a retry now',
+        cli: o => `sd jobs retry ${o.job}`, sends: o => o.retry,
+        run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
+          out => reading.reread().then(() => answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
+          err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) },
       { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: o => !!o.repo,
         when: o => !!(o.repo && o.number) || 'the row names no pull request',
         cli: o => `gh pr view --web --repo ${o.repo} ${o.number}`,

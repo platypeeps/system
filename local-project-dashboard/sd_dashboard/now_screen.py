@@ -265,7 +265,11 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
     failed job also carries `triage`, `job_failures.classify`'s label, at the
     end of its detail; it changes neither the rank nor the retry. Its `run`
     is the job's, launchd's last run, so Jev's shadow asks once per run and
-    not once per outcome (sd:2904).
+    not once per outcome (sd:2904). A row with a retry also carries what
+    Today's Retry posts and reads (sd:3386): the job's `revision`, which
+    `operations.retry_job` checks, so a job that changed since the read is
+    refused; its retry `capability`; and its last `exit`, as 127 keeps
+    Retry off.
     """
     out = []
     for job in jobs:
@@ -279,7 +283,8 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
         if state in ("failed", "interrupted"):
             logged = _log_time(log)
             retry = f"launchctl kickstart {service}" if service else "retry from Operations Jobs"
-            row.update(detail=f"{logged} · retry: {retry}", retry=retry)
+            row.update(detail=f"{logged} · retry: {retry}", retry=retry, job=name, exit=code,
+                       revision=job.get("revision"), capability=(job.get("capabilities") or {}).get("retry"))
         if state == "failed":
             # launchd can report `last exit code = 0` beside a terminating signal;
             # the signal is the cause, so it names the row.
