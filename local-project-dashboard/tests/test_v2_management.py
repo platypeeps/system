@@ -130,6 +130,59 @@ class TheDocument(ScreenCase):
         quiet = {job["name"]: job["last_run"] for job in self.document()["jobs"]}["quiet"]
         self.assertEqual((quiet["state"], quiet["reason"]), ("unread", "the run stamp has an end without an exit code"))
 
+    def test_a_job_carries_the_end_of_its_log_from_a_whole_line(self):
+        """sd:3388: the page reads a job's log as v1's Jobs card could not: the end of logs/<job>.log, whole lines only."""
+        lines = [f"[nightly-sync] line {n:04d} of the run" for n in range(400)]
+        (self.jobs.cron_root / "logs" / "nightly-sync.log").write_text("\n".join(lines) + "\n")
+        jobs = {job["name"]: job["log"] for job in self.document()["jobs"]}
+        log = jobs["nightly-sync"]
+        self.assertEqual((log["state"], log["cut"], log["reason"]), ("read", True, ""))
+        self.assertTrue(log["text"].endswith(lines[-1] + "\n"))
+        self.assertIn(log["text"].splitlines()[0], lines)
+        self.assertLessEqual(len(log["text"].encode()), management_screen.LOG_BYTES)
+        self.assertEqual((jobs["quiet"]["state"], jobs["quiet"]["text"]), ("none", ""))
+        self.assertIn("no log", jobs["quiet"]["reason"])
+
+    def test_a_short_log_is_read_whole_and_a_log_that_is_not_a_file_is_unread_without_blocking(self):
+        import os
+        import threading
+
+        (self.jobs.cron_root / "logs" / "nightly-sync.log").write_text("one run\nFAILED rc=7\n")
+        os.mkfifo(self.jobs.cron_root / "logs" / "quiet.log")
+        alone = {}
+        # The connection belongs to this thread, so the bounded read is tried alone in another first.
+        reader = threading.Thread(target=lambda: alone.update(management_screen.job_log(self.jobs.cron_root, "quiet")), daemon=True)
+        reader.start()
+        reader.join(5)
+        self.assertFalse(reader.is_alive(), "reading a FIFO log blocked the document")
+        got = {job["name"]: job["log"] for job in self.document()["jobs"]}
+        self.assertEqual(alone, got["quiet"])
+        self.assertEqual(got["nightly-sync"], {"state": "read", "text": "one run\nFAILED rc=7\n", "cut": False, "reason": ""})
+        self.assertEqual((got["quiet"]["state"], got["quiet"]["reason"]), ("unread", "the log is not a regular file"))
+        self.assertEqual(management_screen.job_log(None, "quiet")["reason"], "the jobs backend names no logs folder")
+
+    def test_a_job_carries_the_last_request_and_launchctls_answer(self):
+        """sd:3388: a cancel's outcome is what the next read shows, as v1's Last request line did."""
+        from sd_db import operations
+
+        class Sends(JobsBackend):
+            calls = []
+
+            def perform(self, action, service):
+                self.calls.append((action, service))
+                return subprocess.CompletedProcess([], 0, "", "")
+
+        backend = Sends(self.tmp.name, jobs=[("running-fixture", "running", None, None)])
+        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices(), grant=GRANTED)
+        running = next(job for job in doc["jobs"] if job["name"] == "running-fixture")
+        self.assertIsNone(running["last_request"])
+        self.assertTrue(running["capabilities"]["cancel"]["allowed"])
+        operations.cancel_job(self.connection, "running-fixture", expected_revision=running["revision"], who="dashboard", backend=backend)
+        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices(), grant=GRANTED)
+        request = next(job for job in doc["jobs"] if job["name"] == "running-fixture")["last_request"]
+        self.assertEqual((request["action"], request["status"], request["who"]), ("cancel", "accepted", "dashboard"))
+        self.assertEqual(backend.calls, [("cancel", "fixture/running-fixture")])
+
     def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}
         checkout = rows[self.ids["checkout"]]
@@ -562,6 +615,8 @@ class TheScript(PageScript):
             ["svc.stop", "service", "confirm", "s", None, False],
             ["svc.start", "service", "safe", "a", None, False],
             ["jobs.retry", "job", "safe", "t", None, False],
+            ["jobs.cancel", "job", "confirm", "x", None, False],
+            ["job.log", "job", "safe", "o", False, False],
             ["job.print", "job", "safe", "l", False, False],
         ])
 
@@ -975,6 +1030,98 @@ class TheLastRun(PageScript):
         out = self.run_page("R.lane = ELS['view-lane'].html;", search="?view=lane")
         self.assertNotIn('<span class="label">Runner</span>', out["R"]["lane"])
         self.assertNotIn('<span class="label">Archive refresh</span>', out["R"]["lane"])
+
+
+class TheJobLogAndCancel(PageScript):
+    """sd:3388: Management reads a job's log, cancels a running job, and filters and pages services."""
+
+    def running_doc(self):
+        jobs = JobsBackend(self.tmp.name, jobs=[("busy", "running", None, None), ("quiet", "idle", 0, None)])
+        (jobs.cron_root / "logs" / "busy.log").write_text("[busy] started\nstep 2 <of> 3\n")
+        return management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(), grant=GRANTED)
+
+    CANCEL = "C.run(cmd('jobs.cancel'), C.get('cron:busy')); await flush();"
+
+    def test_a_running_job_cancels_through_its_route_with_its_revision_after_a_confirm_that_names_it(self):
+        doc = self.running_doc()
+        revision = next(j for j in doc["jobs"] if j["name"] == "busy")["revision"]
+        out = self.run_page("R.why = cmd('jobs.cancel').consequence(C.get('cron:busy')); R.cli = cmd('jobs.cancel').cli(C.get('cron:busy'));"
+                            + self.CANCEL + " C.run(cmd('jobs.cancel'), C.get('cron:quiet')); await flush();",
+                            doc=doc, answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]")
+        self.assertEqual(out["confirms"], ["jobs.cancel"])
+        self.assertIn("busy (PID 7)", out["R"]["why"])
+        self.assertEqual(out["R"]["cli"], "sd jobs cancel busy")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/busy/cancel", {"revision": revision})])
+        self.assertEqual(out["toasts"][0], ["Cancel sent · busy", False])
+        self.assertEqual(out["toasts"][1], ["off: only a currently running job can cancel", False])
+        self.assertEqual(out["gets"], ["/api/management", "/api/management"])
+
+    def test_a_refusal_says_not_changed_and_any_other_failure_says_the_outcome_is_not_known(self):
+        doc = self.running_doc()
+        cases = {
+            "(p, b) => [409, {error: 'state changed; refresh before trying again'}]": "busy not changed: state changed; refresh before trying again",
+            "(p, b) => [400, {error: 'only a currently running job can cancel'}]": "busy not changed: only a currently running job can cancel",
+            "(p, b) => [502, {error: 'the hub did not answer'}]": "Not known whether busy was cancelled: the hub did not answer.",
+            "(p, b) => Promise.reject(new TypeError('Load failed'))": "Not known whether busy was cancelled: Load failed.",
+            "(p, b) => [200, {request: {status: 'failed', message: 'launchctl refused the request (exit 3)'}}]":
+                "busy not cancelled: launchctl refused the request (exit 3)",
+            "(p, b) => [200, {request: {status: 'unknown', message: 'launchctl timed out; the request outcome is unknown'}}]":
+                "Not known whether busy was cancelled: launchctl timed out; the request outcome is unknown",
+        }
+        for answer, said in cases.items():
+            with self.subTest(said=said):
+                out = self.run_page(self.CANCEL, doc=doc, answer=answer)
+                self.assertTrue(out["toasts"][0][0].startswith(said), out["toasts"])
+                # A 400 wrote nothing and reads nothing; every other answer reads the jobs again.
+                self.assertEqual(len(out["gets"]), 1 if said.endswith("can cancel") else 2, out["gets"])
+
+    def test_the_details_show_the_end_of_the_log_and_the_last_request(self):
+        doc = self.running_doc()
+        busy = next(j for j in doc["jobs"] if j["name"] == "busy")
+        busy["last_request"] = {"action": "cancel", "status": "accepted", "at": "2026-09-06T02:20:00Z", "who": "dashboard",
+                                "message": "launchctl accepted the request"}
+        quiet = next(j for j in doc["jobs"] if j["name"] == "quiet")
+        quiet["log"] = {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"}
+        out = self.run_page("selectRow('cron:busy', false); R.busy = ELS.details.html; selectRow('cron:quiet', false); R.quiet = ELS.details.html;"
+                            " R.shown = cmd('job.log').run(C.get('cron:busy')); R.after = ELS.details.html;", doc=doc, search="?view=schedules")
+        self.assertIn('<pre class="code" tabindex="0" aria-label="busy log">[busy] started\nstep 2 &lt;of&gt; 3\n</pre>', out["R"]["busy"])
+        self.assertIn("local-cron-jobs/logs/busy.log", out["R"]["busy"])
+        self.assertIn("<dt>Last request</dt><dd>cancel · accepted · dashboard · 2026-09-06T02:20:00Z · launchctl accepted the request</dd>",
+                      out["R"]["busy"])
+        self.assertIn("The log was not read", out["R"]["quiet"])
+        self.assertIn("the log is not a regular file", out["R"]["quiet"])
+        self.assertIn("<dt>Last request</dt><dd>none recorded</dd>", out["R"]["quiet"])
+        self.assertEqual(out["R"]["shown"], "busy's log is in Details")
+        self.assertIn("busy log", out["R"]["after"])
+
+    def services(self, n):
+        """The document with n services: every third one failed, the rest running."""
+        rows = [{"name": f"svc-{i:02d}", "label": f"local.example.svc-{i:02d}", "scope": "user", "domain": "gui/501",
+                 "category": "tool", "state": "failed" if i % 3 == 0 else "running", "pid": None, "last_exit": None,
+                 "last_signal": None, "revision": "0" * 64, "capabilities": {}} for i in range(n)]
+        return dict(self.doc, services=rows)
+
+    def test_services_page_through_the_shells_pager_and_keep_the_page_in_the_url(self):
+        click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"
+        out = self.run_page("R.a = ELS['view-deploys'].html;" + click % ("'.list-pager [data-page]'", "{ page: '2' }")
+                            + " R.b = ELS['view-deploys'].html;", doc=self.services(30), search="?view=deploys")
+        self.assertIn('<span class="range">1–25 of 30</span>', out["R"]["a"])
+        self.assertIn('<span class="range">26–30 of 30</span>', out["R"]["b"])
+        self.assertIn("svc-29", out["R"]["b"])
+        self.assertNotIn("svc-00", out["R"]["b"])
+        self.assertIn("view=deploys&page=2", out["qs"])
+
+    def test_services_filter_by_a_state_chip_and_by_any_column(self):
+        click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === '[data-svc-state]' ? { dataset: { svcState: 'failed' } } : null } });"
+        out = self.run_page("R.a = ELS['view-deploys'].html;" + click + " R.b = ELS['view-deploys'].html; R.box = ELS.shift.value;",
+                            doc=self.services(30), search="?view=deploys")
+        self.assertEqual(re.findall(r'data-svc-state="(\w+)"', out["R"]["a"]), ["failed", "running"])
+        self.assertIn("10 of 30", out["R"]["b"])
+        self.assertEqual(out["R"]["box"], "state:failed")
+        self.assertEqual(out["qs"][-1], "view=deploys&q=state%3Afailed")
+        out = self.run_page("R.a = ELS['view-deploys'].html;", doc=self.services(30), search="?view=deploys&q=gui/501 svc-1")
+        self.assertIn("10 of 30", out["R"]["a"])
+        self.assertIn("svc-19", out["R"]["a"])
 
 
 class TheRegistration(Registers, unittest.TestCase):
