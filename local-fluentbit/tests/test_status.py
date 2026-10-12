@@ -152,6 +152,26 @@ class Config(StatusCase):
         done = self.run_verb("start", expect=1)
         self.assertIn("placeholder", done.stderr)
 
+    def test_ampersand_pipe_and_backslash_in_a_value_render_verbatim(self):
+        # sd:3550: sed treated & as the match and | as the delimiter.
+        self.env["FLUENTBIT_EXPORT_URL_1"] = "https://ingest.example.invalid/v1/x?a=1&b=2"
+        self.env["FLUENTBIT_EXPORT_AUTH_1"] = "tok|en&more\\end"
+        self.run_verb("start", expect=0)
+        rendered = (self.folder / "config.yaml").read_text(encoding="utf-8")
+        self.assertIn("uri: '/v1/x?a=1&b=2'", rendered)
+        self.assertIn("header: 'Authorization: tok|en&more\\end'", rendered)
+        self.assertNotIn("${", rendered)
+
+
+class Ignored(unittest.TestCase):
+    def test_the_rendered_config_is_gitignored(self):
+        # sd:3550: config.yaml holds the Authorization value.
+        done = subprocess.run(
+            ["git", "check-ignore", "-q", "local-fluentbit/config.yaml"],
+            cwd=FOLDER.parent, capture_output=True, text=True,
+        )
+        self.assertEqual(done.returncode, 0, "local-fluentbit/config.yaml is not gitignored")
+
 
 if __name__ == "__main__":
     unittest.main()

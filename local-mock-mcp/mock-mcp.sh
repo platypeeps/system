@@ -126,6 +126,7 @@ case "$1" in
     else
       echo "container:  not running"
       echo "scenario:   -"
+      stopped=1
     fi
     echo "endpoint:   $URL"
     if curl -fsS -m 2 "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
@@ -139,6 +140,8 @@ case "$1" in
       echo "claude:     not registered — run: $(basename "$0") register"
     fi
     echo "source:     $SRC"
+    # Not running is convention 6's "nothing to check".
+    [ -z "${stopped:-}" ] || exit 3
     ;;
   logs)
     shift
@@ -157,8 +160,8 @@ case "$1" in
     ;;
   update)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    # By IMAGE ID ($3), not tag ($2) — locally built, so nothing to pull back.
-    imgs="$(docker images -a | grep "^$IMAGE " | awk '{print $3}' || true)"
+    # By image ID (-q), not tag — locally built, so nothing to pull back.
+    imgs="$(docker images -aq --filter "reference=$IMAGE" | sort -u)"
     [ -z "$imgs" ] || echo "$imgs" | xargs docker rmi -f >/dev/null
     need_src
     docker build -t "$IMAGE" "$SRC"
@@ -178,7 +181,8 @@ usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario <name>|log
   restart [scen]    restart, keeping the scenario it is already serving
   scenario <name>   serve a different scenario (restarts the container)
   scenarios         list scenarios in the checkout; * marks the active one
-  status            container, scenario, endpoint, health, Claude Code entry
+  status            container, scenario, endpoint, health, Claude Code entry;
+                    exits 3 when the container is not running
   logs [args]       follow container logs (extra args go to docker logs)
   register [scope]  add the server to Claude Code (scope: user|local|project,
                     default user), then reconnect with /mcp

@@ -126,6 +126,29 @@ python3 tests/test_one_double.py
 # (sd:3281). Git and stdlib only, so it runs here before the venv.
 python3 tests/test_retired_folder.py
 
+# Every docker `update` lists images by `-aq --filter reference=` and not by
+# a column of the image listing (sd:3549). Git and stdlib only, so it runs here
+# before the venv, and the guard below demands this line.
+python3 tests/test_docker_update.py
+
+# The Milvus launcher publishes its ports on loopback only (sd:3551). Stdlib
+# only, so it runs here before the venv, and the guard below demands this line.
+python3 tests/test_milvus_bind.py
+
+# Entrypoints that took `help` for an argument now answer it (sd:3554). Stdlib
+# only, so it runs here before the venv, and the guard below demands this line.
+python3 tests/test_help_forms.py
+
+# Small convention gaps: the graphiti password placeholder, LLAMA_DIR, the
+# webhook signer's mode, the langchain smoke test's help (sd:3555). Stdlib and
+# git only, so it runs here before the venv, and the guard below demands it.
+python3 tests/test_conventions_small.py
+
+# An exported value beats the config .env in the docker wrappers that lost their
+# own snapshots to st_source_env (sd:3553). Stdlib only, so it runs here before
+# the venv, and the guard below demands this line.
+python3 tests/test_env_precedence.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below

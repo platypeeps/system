@@ -7,6 +7,8 @@
 # Usage: health-check.sh run|check|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
 
 NOTIFY="$DIR/../local-notify/notify.sh"
 STATE="${HEALTH_CHECK_STATE:-$HOME/.config/health-check}"
@@ -18,7 +20,7 @@ TOOLS_ROOT="${HEALTH_CHECK_TOOLS_ROOT:-$DIR/..}"
 SYSTEM_REPORTS="${HEALTH_CHECK_SYSTEM_REPORTS:-/Library/Logs/DiagnosticReports}"
 # The launchd label prefix this repository's jobs and agents carry; cron jobs
 # are "$LABEL_PREFIX.cron.<job>".
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 
 case "${1:-}" in
   run)   EMAIL=1 ;;

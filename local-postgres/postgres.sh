@@ -6,15 +6,11 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # <config>/postgres/.env (see lib/config.sh) provides defaults only —
-# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
-# baked-in local dev values apply.
-ENV_POSTGRES_USER="${POSTGRES_USER:-}"
-ENV_POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
+# already-exported values win (st_source_env's one rule). The file is optional;
+# without it the baked-in local dev values apply.
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env postgres
-if [ -n "$ENV_POSTGRES_USER" ]; then POSTGRES_USER="$ENV_POSTGRES_USER"; fi
-if [ -n "$ENV_POSTGRES_PASSWORD" ]; then POSTGRES_PASSWORD="$ENV_POSTGRES_PASSWORD"; fi
 POSTGRES_USER="${POSTGRES_USER:-admin}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-verysecure}"
 
@@ -39,7 +35,7 @@ case "$1" in
     ;;
   update)
     docker stop postgres 2>/dev/null || true
-    docker images -a | grep "^postgres " | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=postgres" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

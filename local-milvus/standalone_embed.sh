@@ -51,9 +51,9 @@ EOF
         -v $(pwd)/volumes/milvus:/var/lib/milvus \
         -v $(pwd)/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml \
         -v $(pwd)/user.yaml:/milvus/configs/user.yaml \
-        -p 19530:19530 \
-        -p 9091:9091 \
-        -p 2379:2379 \
+        -p 127.0.0.1:19530:19530 \
+        -p 127.0.0.1:9091:9091 \
+        -p 127.0.0.1:2379:2379 \
         --health-cmd="curl -f http://localhost:9091/healthz" \
         --health-interval=30s \
         --health-start-period=90s \

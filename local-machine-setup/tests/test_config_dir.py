@@ -49,6 +49,14 @@ class ConfigDirTest(unittest.TestCase):
                 self.assertIn(f"no profile directory at {config}/machine-setup/profiles", result.stderr)
                 self.assertIn(f"cp -R {FOLDER}/examples/.", result.stderr)
 
+    def test_status_with_no_config_dir_is_nothing_to_check(self):
+        # sd:3552. Convention 6: a machine never given a profile directory has
+        # nothing to compare, so status exits 3. Drift keeps its own exit.
+        config = self.base / "nowhere"
+        result = self.run_script("status", config=config)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn(f"no profile directory at {config}/machine-setup/profiles", result.stderr)
+
     def test_the_profiles_are_read_from_the_config(self):
         result = self.run_script("profiles", config=fixture_config.CONFIG)
         self.assertEqual(result.returncode, 0, result.stderr)
