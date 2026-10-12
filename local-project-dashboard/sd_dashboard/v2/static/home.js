@@ -12,6 +12,7 @@ addEventListener('DOMContentLoaded', () => {
   const C = window.shell.commands;
   const GLYPH = { ok: '●', caution: '▲', warning: '■', unknown: '▨' };
   const domain = id => id.split('.')[0];
+  const EVERY = 60 * 1000; // how often a visible page reads the tiles again
 
   // ---------- Data (build) ----------
   // E: entity id -> { id, name, domain, group, state, error }. HEAD: the headline entity or null. REASON: why the read gave no
@@ -162,7 +163,8 @@ addEventListener('DOMContentLoaded', () => {
   // The reader (read.js, sd:2418) holds the guards: only the newest read draws, a tile the read no longer lists runs no
   // command, a failed read clears the grid and Details, and the first read selects the ?row= tile.
   function adopt(doc) {
-    READ = doc.read; CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'Home Assistant not read');
+    // body[data-observed] and data-interval (minutes) give the shell's staleness band on #refresh its reading time and cadence.
+    READ = doc.read; document.body.dataset.observed = doc.read; document.body.dataset.interval = String(EVERY / 60000); CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'Home Assistant not read');
     WRITES = doc.writes?.available ? '' : (doc.writes?.reason || 'no Home Assistant writes');
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
     if (HEAD) E[HEAD.id] = { ...HEAD, group: null };
@@ -177,7 +179,7 @@ addEventListener('DOMContentLoaded', () => {
       : null;
     return { objects: Object.values(E).map(e => ({ id: e.id, type: typeOf(e.id), label: e.name })), state };
   }
-  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; }
+  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; delete document.body.dataset.observed; }
   function unselect() {
     selected = null; markSelected();
     put(details, html`<p class="why">Select a tile to see its entity and its state.</p>`);
@@ -191,6 +193,10 @@ addEventListener('DOMContentLoaded', () => {
   const load = () => reading.load();
   registerCommands();
   load();
+  // Live state (sd:3522): Read again reads /api/home now, and a visible page reads it each minute, so the wall display follows
+  // Home Assistant without a reload.
+  document.getElementById('refresh').addEventListener('click', () => load());
+  setInterval(() => { if (!document.hidden) load(); }, EVERY);
   suggest([
     'Why is binary_sensor.problems_active on?',
     'What changed in the Home Assistant config this week?',

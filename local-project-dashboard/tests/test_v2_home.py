@@ -359,7 +359,8 @@ ROOT = r"""
 var ROOT_ATTRS = {};
 document.documentElement = { setAttribute(k, v) { ROOT_ATTRS[k] = v; }, removeAttribute(k) { delete ROOT_ATTRS[k]; },
   hasAttribute(k) { return k in ROOT_ATTRS; } };
-function setInterval() { return 0; }
+var INTERVALS = [];
+function setInterval(f, ms) { INTERVALS.push([f, ms]); return 0; }
 """
 SHELL_MORE = r"""
 window.shell.row = () => new URLSearchParams(location.search).get('row'); window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
@@ -542,8 +543,8 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
 
 
 class TheReader(TheScript):
-    """sd:2486: Home reads /api/home through shell.read (read.js, sd:2418). Home reads once and has no refresh, so the
-    reader's generation and retirement have nothing to race yet; what it changes is who reads, the failed read and ?row=."""
+    """sd:2486: Home reads /api/home through shell.read (read.js, sd:2418): who reads, the failed read and ?row=. sd:3522:
+    it reads again on Read again and each minute while visible, and gives the shell's staleness band its reading time."""
 
     def test_the_page_reads_through_the_shared_reader(self):
         out = self.run_page("")
@@ -557,6 +558,20 @@ class TheReader(TheScript):
         self.assertEqual(out["states"][-1], {"kind": "error", "text": "The tiles were not read: boom. Reload retries it.", "source": "/api/home"})
         self.assertEqual(out["R"]["groups"], "")
         self.assertIn("Select a tile", out["R"]["det"])
+
+    def test_the_tiles_are_read_again_each_minute_and_on_read_again(self):
+        # REGRESSION sd:3522: Home read /api/home once, so a wall display kept its first state until a reload.
+        out = self.run_page("""R.observed = [document.body.dataset.observed, document.body.dataset.interval];
+(document.getElementById('refresh').listeners.click || []).forEach(f => f()); await flush();
+const every = INTERVALS.filter(i => i[1] === 60 * 1000).map(i => i[0]);
+every.forEach(f => f()); await flush();
+document.hidden = true; every.forEach(f => f()); await flush();""")
+        self.assertEqual(out["R"]["observed"], [self.doc["read"], "1"])
+        self.assertEqual(out["gets"], ["/api/home"] * 3, "the first read, Read again and one minute, and none while hidden")
+
+    def test_a_failed_read_leaves_no_reading_time_for_the_staleness_band(self):
+        out = self.run_page("R.observed = document.body.dataset.observed;", answer="() => [500, { error: 'boom' }]")
+        self.assertIsNone(out["R"].get("observed"))
 
     def test_the_linked_tile_is_selected_and_opened_and_an_unlisted_one_is_not(self):
         """A guard: ?row= selected its tile before the reader; it still does, and only for a listed tile outside the wall display."""
