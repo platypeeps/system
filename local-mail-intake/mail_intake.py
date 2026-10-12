@@ -1018,6 +1018,13 @@ def cmd_status(config_path: Path, state_dir: Path, url: str, out) -> int:
 
     config = load_config(config_path, out)
     if config is None:
+        # A conf never copied in is nothing to check; an unreadable or bad one is broken.
+        try:
+            config_path.stat()
+        except FileNotFoundError:
+            return EXIT_NONE
+        except OSError:
+            pass
         return EXIT_ERROR
     print(f"account: {config.account}", file=out)
     for label, address in sorted(config.aliases.items()):

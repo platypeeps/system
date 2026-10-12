@@ -164,6 +164,19 @@ sd=$(newstub); printf '%s' "$STATE_RESP" > "$sd/resp.1.body"
 out=$(runc "$sd" state get 2>&1); rc=$?
 [ $rc -eq 0 ] && pass "values are read from the config .env" \
   || fail "values are read from the config .env" "got $rc: $out"
+
+# The API host default is assigned before the file loads. A base set in the
+# file must beat that default; an exported one must beat the file (sd:3553).
+printf 'MEZMO_API_BASE=https://file.example.test\n' >> "$TMP/config/mezmo-pipeline/.env"
+base=$(env -i PATH="/usr/bin:/bin" HOME="$TMP" SYSTEM_TOOLS_CONFIG="$TMP/config" sh -c \
+  '. "$1/lib.sh"; mz_load_env "$1"; echo "$MEZMO_API_BASE"' _ "$FOLDER")
+[ "$base" = "https://file.example.test" ] && pass "a base in the config .env beats the default" \
+  || fail "a base in the config .env beats the default" "got $base"
+base=$(env -i PATH="/usr/bin:/bin" HOME="$TMP" SYSTEM_TOOLS_CONFIG="$TMP/config" \
+  MEZMO_API_BASE=https://exported.example.test sh -c \
+  '. "$1/lib.sh"; mz_load_env "$1"; echo "$MEZMO_API_BASE"' _ "$FOLDER")
+[ "$base" = "https://exported.example.test" ] && pass "an exported base beats the config .env" \
+  || fail "an exported base beats the config .env" "got $base"
 rm -rf "$TMP/config"
 
 # --- request bodies ---------------------------------------------------------

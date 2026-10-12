@@ -532,7 +532,9 @@ class TheConventions(HoldsCase):
         for flag in ("help", "-h", "--help"):
             done = subprocess.run(["/bin/sh", str(ENTRYPOINT), flag], capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, flag)
-            self.assertIn("holds", done.stderr)
+            # sd:3554. Help is the answer, so it goes to stdout and `help | less` works.
+            self.assertIn("holds", done.stdout)
+            self.assertEqual(done.stderr, "", flag)
 
     def test_the_watcher_exits_1_only_when_it_cannot_run_at_all(self):
         del self.state["viewer_login"]
@@ -704,7 +706,7 @@ class HelpNeedsNoPython(unittest.TestCase):
             with self.subTest(word=word):
                 done = self.run_entrypoint(word)
                 self.assertEqual(done.returncode, 0, done.stderr)
-                self.assertIn("Usage: dependabot.sh <command>", done.stderr)
+                self.assertIn("Usage: dependabot.sh <command>", done.stdout)
 
     def test_no_argument_prints_usage_not_the_python_error(self):
         done = self.run_entrypoint()

@@ -86,8 +86,8 @@ Attribute, Show biggest, Show use and Inspect listener are CLI lines for Copy,
 and Re-check reads the document again. Re-run collector posts `/api/shadow/sync`, as
 Contributions does, and reads Health again when the run ends (sd:2894).
 
-Snooze, on every row that is not ok, hides the row for 1 hour, until the next
-08:00 or for 1 week (sd:1896). It posts `/api/snooze`, as Today does, and the
+Snooze, on every row that is not ok, hides the row until the next 08:00, for
+1 hour or for 1 week, chosen in its dialog (sd:1896, sd:3450). It posts `/api/snooze`, as Today does, and the
 row waits under Snoozed with its time and an Unsnooze until then. A snooze
 holds only while the row reads as it did: more alerts, a worse state or another
 count shows it again. A snooze read that fails hides nothing and says so.

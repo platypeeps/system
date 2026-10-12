@@ -20,6 +20,14 @@
 # It takes no arguments.
 set -eu
 
+case "${1:-}" in
+  -h|--help|help)
+    echo "usage: profile-autocapture.sh   (takes no arguments)"
+    echo "Record additive profile-roster changes: machine-setup.sh capture --apply --additive."
+    echo "Exit 0 when it wrote or had nothing to do, 3 when a removal was held."
+    exit 0 ;;
+esac
+
 # Same idiom as machine-setup.sh, deliberately, so the two agree.
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # The profile directory machine-setup.sh reads, resolved the same way.
