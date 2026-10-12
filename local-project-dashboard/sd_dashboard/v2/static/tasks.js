@@ -565,7 +565,10 @@ addEventListener('DOMContentLoaded', () => {
     if (!d) return html`<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
     const it = d.item, src = s => html`<p class="src">${s}</p>`;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;
-    return html`<h3>Status history</h3>${src(`sd task show ${t.id} --json · notes of kind status_change`)}
+    const docs = d.documents || [];
+    return html`<h3>Documents</h3>${src(`/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}
+      ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
+      <h3>Status history</h3>${src(`sd task show ${t.id} --json · notes of kind status_change`)}
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
       <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span></h3>${src(`sd task show ${t.id} --json · every other note kind`)}
       ${d.notes.length ? html`<ol class="rec">${d.notes.map(n => html`<li data-note="${String(n.id)}"><time class="rel" datetime="${n.at}"></time><span><b>${n.kind}</b>${n.kind === 'followup' ? (n.resolved ? ' · resolved' : ' · open') : ''} ${n.body}</span>${C.rowActions('note:' + n.id)}</li>`)}</ol>` : html`<p class="why">No notes on this item.</p>`}
