@@ -217,8 +217,8 @@ class ConfirmPageTest(unittest.TestCase):
         else:
             self.fail("the server did not start")
 
-    def signed(self, action, days="3"):
-        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "Pay rent", action, days],
+    def signed(self, action, days="3", name="Pay rent"):
+        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", name, action, days],
                              env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout.strip()
@@ -318,6 +318,27 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertIn("marked done", page)
         self.assertIn("\u25cf", page)  # normal
         self.assertIn("status: done", (self.vault / "TaskNotes" / "Tasks" / "Pay rent.md").read_text())
+
+    def mark_done(self, name, scheduled, rule):
+        task = self.vault / "TaskNotes" / "Tasks" / f"{name}.md"
+        task.write_text(f"---\nstatus: open\nscheduled: {scheduled}\nrecurrence: {rule}\n---\nbody\n")
+        data = urllib.parse.parse_qs(urllib.parse.urlparse(self.signed("done", name=name)).query)
+        form = urllib.parse.urlencode({k: v[0] for k, v in data.items()}).encode()
+        with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=form), timeout=10) as r:
+            return r.read().decode(), task.read_text()
+
+    def test_mark_done_on_a_month_end_or_leap_day_moves_to_the_last_day_that_exists(self):
+        # REGRESSION sd:3559: date.replace raised on the 29th to 31st, the POST got no page and the task stayed as it was.
+        for scheduled, rule, nxt in (("2026-01-31", "FREQ=MONTHLY", "2026-02-28"),
+                                     ("2026-10-31", "FREQ=MONTHLY;INTERVAL=4", "2027-02-28"),
+                                     ("2028-02-29", "FREQ=YEARLY", "2029-02-28"),
+                                     ("2026-02-28", "FREQ=MONTHLY;BYMONTHDAY=31", "2026-03-31"),
+                                     ("2026-01-15", "FREQ=MONTHLY", "2026-02-15")):
+            with self.subTest(scheduled=scheduled, rule=rule):
+                page, text = self.mark_done("Pay card", scheduled, rule)
+                self.assertIn(f"occurrence {scheduled} done, next {nxt}", page)
+                self.assertIn(f"scheduled: {nxt}", text)
+                self.assertIn(f"complete_instances: ['{scheduled}']", text)
 
     def test_a_refusal_says_nothing_changed_with_a_glyph_and_words(self):
         url = self.signed("done").replace("t=", "t=0")
