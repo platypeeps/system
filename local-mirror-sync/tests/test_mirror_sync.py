@@ -296,6 +296,65 @@ class UnmountedShare(Fixture):
         self.assertFalse(absent.exists())
         self.assertFalse(absent.parent.exists())
 
+    def run_on_volumes(self, conf: Path, mounted: str = "", backup_root: Path | None = None) -> subprocess.CompletedProcess:
+        """mirror-sync.sh from a copy whose /Volumes is a folder here, with a stub `mount` printing `mounted`."""
+        repo = self.work / "repo"
+        (repo / "local-mirror-sync").mkdir(parents=True, exist_ok=True)
+        (repo / "lib").mkdir(exist_ok=True)
+        shutil.copy(FOLDER.parent / "lib" / "config.sh", repo / "lib" / "config.sh")
+        script = repo / "local-mirror-sync" / "mirror-sync.sh"
+        script.write_text(MIRROR_SYNC.read_text().replace("\nVOLUMES=/Volumes\n", f"\nVOLUMES={self.work / 'Volumes'}\n"))
+        stubs = self.work / "stubs"
+        stubs.mkdir(exist_ok=True)
+        self.write(stubs / "mount", f"#!/bin/sh\nprintf '%s' '{mounted}'\n").chmod(0o755)
+        environment = dict(os.environ, MIRROR_SYNC_CONF=str(conf), PATH=f"{stubs}:{os.environ['PATH']}")
+        environment.pop("MIRROR_SYNC_ADDITIVE", None)
+        environment.pop("MIRROR_SYNC_BACKUP_ROOT", None)
+        if backup_root is not None:
+            environment["MIRROR_SYNC_BACKUP_ROOT"] = str(backup_root)
+        return subprocess.run(["/bin/sh", str(script), "sync"], capture_output=True, text=True, env=environment)
+
+    def test_an_empty_mountpoint_left_by_an_ejected_disk_is_refused(self) -> None:
+        # REGRESSION sd:3540: the parent exists, so the copy landed on the system disk under the stale mountpoint.
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Offsite"
+        volume.mkdir(parents=True)
+        dest = volume / "mirror"
+        conf = self.write(self.work / "pairs.conf", f"{source}|{dest}\n")
+
+        result = self.run_on_volumes(conf, mounted="/dev/disk3s1 on / (apfs, local)\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"destination volume not mounted: {volume}", result.stderr)
+        self.assertIn(f"{dest} (volume not mounted)", result.stdout)
+        self.assertEqual(list(volume.iterdir()), [])
+
+    def test_a_mounted_volume_is_mirrored(self) -> None:
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Offsite Disk"
+        volume.mkdir(parents=True)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        result = self.run_on_volumes(conf, mounted=f"/dev/disk9s1 on {volume} (apfs, local, journaled)\n")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((volume / "mirror" / "keep.txt").read_text(), "keep\n")
+
+    def test_a_backup_root_on_an_unmounted_volume_stops_the_pass(self) -> None:
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Offsite"
+        volume.mkdir(parents=True)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{self.work}/mirror\n")
+
+        result = self.run_on_volumes(conf, backup_root=volume / "replaced")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"MIRROR_SYNC_BACKUP_ROOT is on {volume}, which is not mounted", result.stderr)
+        self.assertFalse((self.work / "mirror").exists())
+
     def test_missing_source_fails_rather_than_emptying_the_destination(self) -> None:
         mirror = self.work / "mirror"
         self.write(mirror / "precious.txt", "precious\n")

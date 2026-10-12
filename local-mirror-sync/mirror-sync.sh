@@ -94,6 +94,8 @@ Safety rails before each pair runs:
   - source must exist and be non-empty (an empty directory would wipe the
     destination), and file destinations must already be directories
   - a directory destination's parent must exist
+  - a destination or backup root under /Volumes/<name> needs that volume
+    mounted; an empty mountpoint left by an ejected disk is refused
   - source and destination must not be the same path or nested in each other,
     by text and by identity (device and inode, as for the backup root)
 HELPEOF
@@ -189,6 +191,18 @@ physical_path() {
   # read as "does not resolve".
   resolved="$base$rest"
   printf '%s\n' "${resolved:-/}"
+}
+# A path under /Volumes/<name> needs that volume mounted. An ejected or
+# unplugged disk can leave its mountpoint behind as a plain directory; the
+# parent checks pass there and the copy fills the system disk (sd:3540).
+# Print the volume when it is not mounted, nothing when the path is not under
+# /Volumes or its volume is mounted. A mount table that cannot be read names
+# the volume too: the pair is refused, not run.
+VOLUMES=/Volumes
+unmounted_volume() {
+  case "$1/" in "$VOLUMES"/?*/*) ;; *) return 0 ;; esac
+  vol="${1#"$VOLUMES"/}"; vol="$VOLUMES/${vol%%/*}"
+  mount 2>/dev/null | grep -qF " on $vol " || printf '%s\n' "$vol"
 }
 # Physical path TEXT does not identify a folder. A case-folding volume (APFS
 # by default) takes /Backups for /backups, and a firmlink gives one folder
@@ -321,6 +335,11 @@ check_backup_root() {
     *) echo "!!! refusing: MIRROR_SYNC_BACKUP_ROOT must be an absolute path: $root" >&2
        exit 1 ;;
   esac
+  vol=$(unmounted_volume "$root")
+  if [ -n "$vol" ]; then
+    echo "!!! refusing: MIRROR_SYNC_BACKUP_ROOT is on $vol, which is not mounted: $root" >&2
+    exit 1
+  fi
   REAL_ROOT=$(physical_path "$root")
   root_chain=""
   [ -z "$REAL_ROOT" ] || root_chain=$(identity_chain "$REAL_ROOT")
@@ -637,6 +656,11 @@ pairs | while IFS='|' read -r src dst excl; do
   if chain_encloses "$dst_chain" "$src_chain"; then
     echo "!!! source lies inside destination, by identity: $src" >&2
     echo "$src (nested by identity)" >> "$FAILLOG"; continue
+  fi
+  vol=$(unmounted_volume "$dst")
+  if [ -n "$vol" ]; then
+    echo "!!! destination volume not mounted: $vol" >&2
+    echo "$dst (volume not mounted)" >> "$FAILLOG"; continue
   fi
   if [ -d "$src" ]; then
     if [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
