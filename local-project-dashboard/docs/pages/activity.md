@@ -13,7 +13,10 @@ dispositions were accepted are a caution, and a merge with no review record is
 counted, not drawn. A review that never reached a merge is not recorded, and a
 review's time is its merge's. Deploys and mail have no collector; the document
 names each with its reason and the page draws it unknown, not zero. Job retry posts the job's revision
-and is off for exit 127, command not found (sd:2415); Show output reads the
+and is off for exit 127, command not found (sd:2415). Its toast says "Retry
+started" only when launchctl accepted the request; a refusal names launchctl's
+message, and a timeout or a lost answer says the outcome is not known, as
+Management words it (sd:3391). Show output reads the
 execution record, page by page past 64 KiB (sd:2416). The page reads through
 the shell's reader, `read.js` (sd:2489): a landed write rereads, and a failed
 reread keeps the rows and says the write landed.

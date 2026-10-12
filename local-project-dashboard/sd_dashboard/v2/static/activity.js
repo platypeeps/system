@@ -359,7 +359,7 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).exit === 127 ? 'exit 127: command not found; fix the path first'
         : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
+      run: retry },
     // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
     // Details show the exit and the schedule, and the line to copy still reads the log. The filter puts the row on page one.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => openSchedule(o.job) },
@@ -385,6 +385,26 @@ addEventListener('DOMContentLoaded', () => {
       }
       OUTPUT[o.id] = { state: out.state, output: text, expired: !!out.output_expired };
     } catch (err) { OUTPUT[o.id] = { error: `The output was not read: ${err.message}` }; throw err; } finally { select(o.id, true); }
+  }
+  // A retry's outcome (sd:3391), worded as Management words it (sd:3388): a 4xx wrote nothing and says why; any other failure,
+  // or no answer, may follow a kickstart that was sent, so the page reads again and the toast says the outcome is not known.
+  async function retry(o) {
+    let out;
+    try { out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }); }
+    catch (err) {
+      if (err.status >= 400 && err.status < 500) { if (err.stale) load(); throw err; }
+      load();
+      return { text: `Not known whether ${o.job} was retried: ${err.message}` };
+    }
+    await reread();
+    return { text: answered(out, o.job, 'retried', `Retry started · ${o.job}`) };
+  }
+  // A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
+  // Copied from management.js (sd:3388); no shared module holds it.
+  function answered(out, name, verb, done) {
+    const r = out && out.request || {};
+    return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+      : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
   }
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
   document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
