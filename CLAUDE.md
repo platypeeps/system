@@ -80,7 +80,14 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Do not list the declaring tools in prose; lists go stale.
 7. **launchd labels** use the prefix in `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); never hardcode a personal prefix.
 
-Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` and `tests/ci-native.sh` are bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`; `local-genai-traces` uses compose with `restart: unless-stopped`, not `--rm`, to stay always on.
+Deliberate deviations:
+
+- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-opentelemetry-traces` runs the generator; `local-agent-meter` appends a reading.
+- Bash, not POSIX sh: `local-cswap` and `tests/ci-native.sh`.
+- Compose, not `--rm` and `docker run`: `local-genai-traces` (`restart: unless-stopped`, to stay always on), `local-graphiti-mcp` and `mezmo-aura`.
+- Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.
+- `local-cswap` reads the tracked `cswap-auto.conf`, which holds defaults only.
+- `local-cron-jobs` uses `local`.
 
 ## Planned work lives in `docs/work/`
 

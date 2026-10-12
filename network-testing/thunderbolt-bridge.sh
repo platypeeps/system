@@ -47,6 +47,17 @@ hosts_names() {
 
 case "${1:-}" in
   "") echo "usage: $0 <name>|<ip>" >&2; exit 1 ;;
+  -h|--help|help)
+     cat <<HELPEOF
+usage: sudo $0 <name>|<ip>
+       $0 -h|--help|help
+
+Recreate the Thunderbolt Bridge interface with a fixed /24 address.
+  <name>  a \`bridge\` record in the hosts file ($HOSTS_FILE)
+  <ip>    any other address
+Run it as root. Safe to re-run.
+HELPEOF
+     exit 0 ;;
   *.*.*.*) IP="$1" ;;
   *) require_hosts
      IP="$(hosts_lookup bridge "$1")" || {
