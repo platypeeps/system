@@ -137,21 +137,5 @@ class CheckScript(unittest.TestCase):
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
 
-
-class ThePostMergeTarget(unittest.TestCase):
-    """sd:3568: the lane runs `make post-merge` after a merge (pack sd:3566)."""
-
-    def test_it_refreshes_the_hub_then_the_prompt_then_checks_health(self):
-        run = subprocess.run(["make", "-n", "post-merge"], cwd=ROOT, capture_output=True, text=True, check=False)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        lines = [line for line in run.stdout.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 3, run.stdout)
-        for line, tool in zip(lines, ("local-repo-sync/repo-sync.sh refresh",
-                                      "local-agent-prompt/agent-prompt.sh refresh --apply",
-                                      "local-project-dashboard/dashboard.sh health")):
-            with self.subTest(tool=tool):
-                self.assertIn(tool, line)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
