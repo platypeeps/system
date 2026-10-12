@@ -19,6 +19,9 @@ The six states, from each entry's `status`:
   cancelled the newest entry of an item that was `cancelled`, in the last `BLOCKED_DAYS`, with its head.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
+An item's newest entry is the one with the highest `enqueue_seq`, not the last one listed: `lane move` can list a newer
+entry above older ones (sd:3419). `newest` is the one place that picks it.
+
 Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel|retry`, the queue's only writers. It compares the
 page's revision (a digest of the pending order, the holds and each blocked or cancelled entry's head) with a fresh `lane list` first
 and refuses a stale one. `move`, `hold`, `release` and `cancel` then pass the fresh list's lane revision (the pending
@@ -151,13 +154,22 @@ def lane_revision(entries: list[dict]) -> str:
     return hashlib.sha256(json.dumps(pending).encode()).hexdigest()[:16]
 
 
+def newest(entries: list[dict]) -> dict:
+    """Each item's newest entry, by item: the highest `enqueue_seq`, since a `move` can list it above older ones."""
+    # sd:3419 fallback: a pack that gives some entry no `enqueue_seq` lists an item's entries oldest first, so the last
+    # listed wins. Delete the conditional once the installed pack's `lane list` gives every entry `enqueue_seq`.
+    ordered = (sorted(entries, key=lambda row: row["enqueue_seq"])
+               if all(type(row.get("enqueue_seq")) is int for row in entries) else entries)
+    return {row.get("item"): row for row in ordered}
+
+
 def revision(entries: list[dict]) -> str:
     """The page's revision: the lane revision and the head of each item's newest entry when it is blocked.
 
     A run that ends blocked at another head leaves the pending order alone; this still changes (sd:3012 review).
     """
-    newest = {row.get("item"): row for row in entries}
-    heads = [[item, row.get("expected_head")] for item, row in newest.items() if row.get("status") in (*BLOCKED, "cancelled")]
+    heads = [[item, row.get("expected_head")] for item, row in newest(entries).items()
+             if row.get("status") in (*BLOCKED, "cancelled")]
     return hashlib.sha256(json.dumps([lane_revision(entries), heads]).encode()).hexdigest()[:16]
 
 
@@ -207,7 +219,7 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
     """The lane's rows in page order: merging, next, building, blocked, cancelled, landed."""
     today = time.strftime("%Y-%m-%d", time.localtime(now))
     merging, following, blocked, cancelled, landed = [], [], [], [], []
-    newest = {row.get("item"): row for row in entries}  # later entries of an item replace earlier ones
+    latest = newest(entries)
     for entry in entries:
         status, item = entry.get("status"), entry.get("item")
         base = {"item": item, "title": entry.get("title") or ""}
@@ -227,7 +239,7 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
             following.append({**base, "state": "next", "position": len(following) + 1, "held": bool(entry.get("held")),
                               "head": str(entry.get("expected_head") or "")[:12],
                               "gate": gate.get("status") or "not gated", "gate_summary": gate.get("summary") or gate.get("reason")})
-        elif status in BLOCKED and newest.get(item) is entry:
+        elif status in BLOCKED and latest.get(item) is entry:
             finished = _when(entry.get("finished_at"))
             if finished and now - finished <= BLOCKED_DAYS * 86400:
                 who = WHO.get((status, entry.get("step"))) or WHO.get((status, None), "lane")
@@ -236,7 +248,7 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
                 blocked.append({**base, "state": "blocked", "status": status, "step": entry.get("step"),
                                 "reason": reason, "who": who, "finished": entry.get("finished_at"),
                                 "head": head[:12], "expected_head": head})
-        elif status == "cancelled" and newest.get(item) is entry:
+        elif status == "cancelled" and latest.get(item) is entry:
             finished = _when(entry.get("finished_at"))
             if finished and now - finished <= BLOCKED_DAYS * 86400:
                 head = str(entry.get("expected_head") or "")
@@ -323,10 +335,10 @@ def move(payload: dict):
         if revision(entries) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
-        last = [row for row in entries if row.get("item") == values["item"]][-1:]
-        if action == "requeue" and not (last and last[0].get("status") == "cancelled"):
+        found = newest(entries).get(values["item"])
+        if action == "requeue" and not (found and found.get("status") == "cancelled"):
             # The operator's ruling (sd:3398): Re-queue takes back a cancel; it enqueues nothing new.
-            raise ValueError(f"sd:{item}'s last entry in this lane is {last[0].get('status') if last else 'missing'}; "
+            raise ValueError(f"sd:{item}'s newest entry in this lane is {found.get('status') if found else 'missing'}; "
                              "Re-queue takes only a cancelled one.")
         verb = (["move", item, action] if action in ("up", "down", "top")
                 else ["retry", item, "--expected-head", values["head"]] if again
