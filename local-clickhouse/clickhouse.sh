@@ -13,15 +13,11 @@ NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
 MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 
 # <config>/clickhouse/.env (see lib/config.sh) provides defaults only —
-# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
-# baked-in local dev values apply.
-ENV_CLICKHOUSE_USER="${CLICKHOUSE_USER:-}"
-ENV_CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
+# already-exported values win (st_source_env's one rule). The file is optional;
+# without it the baked-in local dev values apply.
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env clickhouse
-if [ -n "$ENV_CLICKHOUSE_USER" ]; then CLICKHOUSE_USER="$ENV_CLICKHOUSE_USER"; fi
-if [ -n "$ENV_CLICKHOUSE_PASSWORD" ]; then CLICKHOUSE_PASSWORD="$ENV_CLICKHOUSE_PASSWORD"; fi
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-verysecure}"
 

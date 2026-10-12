@@ -88,6 +88,23 @@ class EnvFile(unittest.TestCase):
         done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', self.envv)
         self.assertEqual(done.stdout, "1|two words|3")
 
+    def test_an_exported_value_wins_over_the_file(self):
+        # sd:3553. One rule for every caller: `VAR=x tool start` overrides the
+        # file. The file fills only the names that are unset; an exported empty
+        # value wins too, as it switches a setting off (local-kev).
+        env = dict(self.envv, A="from-shell", C="")
+        done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
+        self.assertEqual(done.stdout, "from-shell|two words|")
+
+    def test_an_exported_value_with_odd_characters_survives(self):
+        odd = "a b'c\"d$E`f\\g\nh"
+        done = shell('st_source_env notify; printf %s "$B"', dict(self.envv, B=odd))
+        self.assertEqual(done.stdout, odd)
+
+    def test_sourcing_leaves_no_helper_variables_behind(self):
+        done = shell('st_source_env notify; set | grep -c "^_st_" || true', dict(self.envv, A="x"))
+        self.assertEqual(done.stdout.strip(), "0")
+
     def test_shell_absent_is_fine(self):
         self.assertEqual(shell("st_source_env nothing; echo ok", self.envv).stdout.strip(), "ok")
 

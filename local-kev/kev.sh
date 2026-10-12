@@ -12,19 +12,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 
 # <config>/kev/.env provides defaults only: a value already in the environment
-# wins. Read it before anything below uses a value it may set. Set-ness is
-# kept apart from the value, so an exported empty value wins too: KEV_API_KEY=
-# switches auth off and HF_HOME= clears a cache path the file names.
-for var in KEV_MODEL KEV_PORT KEV_DIR KEV_REPO_URL KEV_API_KEY HF_HOME \
-           SYSTEM_TOOLS_LABEL_PREFIX; do
-  eval "SET_$var=\${$var+set}; ENV_$var=\"\${$var:-}\""
-done
+# wins, an empty one too (st_source_env's one rule): KEV_API_KEY= switches auth
+# off and HF_HOME= clears a cache path the file names. Read it before anything
+# below uses a value it may set.
 st_source_env kev
-for var in KEV_MODEL KEV_PORT KEV_DIR KEV_REPO_URL KEV_API_KEY HF_HOME \
-           SYSTEM_TOOLS_LABEL_PREFIX; do
-  eval "was=\"\${SET_$var:-}\"; saved=\"\${ENV_$var:-}\""
-  [ "$was" != set ] || eval "$var=\"\$saved\""
-done
 
 KEV_MODEL="${KEV_MODEL:-jaredpalmer/kev-4b@v1.0}"
 KEV_PORT="${KEV_PORT:-8009}"

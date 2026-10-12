@@ -20,8 +20,9 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 . "$BASE/../lib/config.sh"
 VALUES_FILE="$BASE/collector-values.yaml"
 # Shell -> Secret -> collector env. $SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env
-# is sourced when present, and it wins over OTLP_EXPORT_* already exported in
-# the calling shell; optional when they are exported.
+# is sourced when present; OTLP_EXPORT_* already exported in the calling shell
+# win over it (st_source_env's one rule); the file is optional when they are
+# exported.
 st_source_env opentelemetry-demo
 # The upstream opentelemetry-demo checkout for repo-start / repo-stop.
 DEMO_REPO="${OTEL_DEMO_REPO:-}"

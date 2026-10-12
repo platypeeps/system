@@ -66,6 +66,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Resolve it with `lib/config.sh` (`st_config_dir`, `st_source_env`, `st_missing`) or `lib/system_tools_config.py`; do not repeat the rule.
    - Commit `<folder>/.env.example` or `<file>.example` with `change-me` values.
    - Source `.env` only if it exists, then check the needed variables; a missing `.env` is fine when the values are exported.
+   - An exported value wins over the file, an empty one too; `st_source_env` keeps that rule, so keep no snapshot of your own.
    - On a missing variable, fail with its name and both remedies: export it, or copy the `.example` to the config path.
    - Keep the root `.gitignore` lines for in-folder config files as a safety net.
    - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.

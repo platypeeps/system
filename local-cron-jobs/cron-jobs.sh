@@ -68,18 +68,8 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # Put the values in <config>/cron-jobs/.env so install and the scheduled run
 # agree. st_source_env exports what it reads, so a job inherits the values
 # too: a health check or runner status a job calls needs the same label
-# prefix as this script. The three named here are put back afterwards,
-# because an exported value must win over the file.
-_cj_extra="${CRON_JOBS_EXTRA_DIRS:-}"
-_cj_prefix="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
-_cj_host="${CRON_JOBS_HOST:-}"
-_cj_timeout="${CRON_JOBS_JOB_TIMEOUT:-}"
+# prefix as this script. An exported value wins over the file.
 st_source_env cron-jobs
-[ -z "$_cj_extra" ] || CRON_JOBS_EXTRA_DIRS="$_cj_extra"
-[ -z "$_cj_prefix" ] || SYSTEM_TOOLS_LABEL_PREFIX="$_cj_prefix"
-[ -z "$_cj_host" ] || CRON_JOBS_HOST="$_cj_host"
-[ -z "$_cj_timeout" ] || CRON_JOBS_JOB_TIMEOUT="$_cj_timeout"
-unset _cj_extra _cj_prefix _cj_host _cj_timeout
 LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does

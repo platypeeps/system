@@ -26,7 +26,7 @@ cp .env.example ~/.config/system/mezmo-pipeline/.env   # once, fill in the servi
 are required, so `state get` does not demand the source ids. All may come from
 `~/.config/system/mezmo-pipeline/.env` (`$SYSTEM_TOOLS_CONFIG/mezmo-pipeline/` when that is set) or straight from the
 environment — the file is optional when they are already exported. When both
-are present, the file wins.
+are present, the exported value wins.
 
 `state` and `source webhook` need `jq`.
 
