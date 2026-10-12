@@ -56,3 +56,22 @@ st_missing() {
         "$_st_folder" "$3" "$SYSTEM_TOOLS_CONFIG" "$2" "$3" >&2
     unset _st_folder
 }
+
+# st_main_checkout <root>: the main checkout of the git repository whose top
+# level is <root>, so a hook or job names a path that outlives a linked
+# worktree (sd:3390). git gives the path with symlinks resolved. A <root>
+# without .git is a copy outside git and prints unchanged. Returns 1 when git
+# cannot name the main checkout.
+st_main_checkout() {
+    if [ ! -e "$1/.git" ]; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    _st_common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null </dev/null) ||
+        { unset _st_common; return 1; }
+    case "$_st_common" in
+        */.git) printf '%s\n' "${_st_common%/.git}" ;;
+        *) unset _st_common; return 1 ;;
+    esac
+    unset _st_common
+}

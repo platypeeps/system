@@ -2,11 +2,12 @@
 // Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
 // Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
-// health_collectors (disk and merged branches, sd:2202 and sd:2204).
+// health_collectors (disk and merged branches, sd:2202 and sd:2204, and the machine-setup doctor, sd:3393).
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
-// Every fix is a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
-// the server's shadow sync (sd:2894), and Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them.
+// Most fixes are a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
+// the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, and
+// the three cleanups (sd:3393), each behind a confirm that names what goes, posting the row's revision.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put, plural, cells } = window.markup;
@@ -22,6 +23,7 @@
     dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived managed repos, as the nightly sync stored them. A repo whose alerts could not be read is unknown, never clean.'],
     sec: ['shield-alert', '<b>Secret scanning, public repos only.</b> Private repos are not scanned, by policy. A public repo with scanning off is a finding.'],
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
+    doc: ['shield-check', '<b>What machine-setup doctor says.</b> Its WARN and FAIL lines, one row each, and the lines that pass. The doctor runs <code>brew doctor</code>, so an answer stands for ten minutes; a run still going, stopped at its deadline or failed is unknown, never clean.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
   };
   // Protection has no lamp: the annunciator holds 2 to 8 (the design's rule), and its matrix is Health's evidence strip.
@@ -58,7 +60,7 @@
     : a.id === 'disk' ? fullest(a)
     : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
     : a.id === 'dep' || a.id === 'sec' ? alerts(a)
-    : a.id === 'cred' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
+    : a.id === 'cred' || a.id === 'doc' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
@@ -220,10 +222,23 @@
   };
 
   // ---------- Commands (the design source's commands.md) ----------
-  // Ids, labels, keys and risks are the design's. The build runs none of the lines: the dashboard has no route that prunes a
-  // worktree, deletes a branch or removes build output, so each is copy only and its run says where the
-  // line runs. A row with `disabled` (a merged branch a worktree holds) names why the line would be refused.
+  // Ids, labels and keys are the design's. Prune, Delete merged and Remove build output run here (sd:3393): each confirms
+  // with the count and the names, then posts the row and the revision it showed; the server reads the subject again and
+  // refuses a changed one. A row with `disabled` (a merged branch a worktree holds) names why git would refuse it.
+  // None runs in bulk: the bulk confirm names four rows at most, and its tally counts an unknown outcome as landed.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
+  const names = xs => xs.length > 6 ? `${xs.slice(0, 6).join(', ')} and ${xs.length - 6} more` : xs.join(', ');
+  // A 4xx wrote nothing (health_cleanup); a 502 or no answer may follow a step that landed, so the page reads again either way.
+  const cleanup = o => shell.post('/api/health/cleanup', { row: o.id, revision: o.revision }).then(out => {
+    load();
+    const kept = out.refused.map(x => `${x.name} (${x.why})`);
+    return `${o.label}: ${out.done.length} done${kept.length ? ` · kept ${kept.length}: ${kept.join(', ')}` : ''}`;
+  }, e => {
+    load();
+    if (e.status >= 400 && e.status < 500) throw e;
+    return `Not known what changed · ${o.label}: ${e.message}. Health was read again; check the row before you act again.`;
+  });
+  const revised = o => !!o.revision || 'the row carries no revision: read Health again';
   // As contributions.js's: success is quiet, since the reread shows it; a failed tracker or a broken run stays as a toast.
   const SYNC_POLL = 5000;
   const awaitSync = () => setTimeout(() => shell.getJSON('/api/shadow/state').then(s => {
@@ -250,17 +265,20 @@
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
       { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'build output.rm', on: 'build output', label: 'Remove build output', key: 'r', risk: 'confirm', executes: false, primary: () => true,
-        cli: o => o.cli, consequence: o => `Deletes the build output of ${o.facts.Found} merged worktrees: ${o.detail}. This cannot be undone from here.`, run: copyOnly },
+      { id: 'build output.rm', on: 'build output', label: 'Remove build output', key: 'r', risk: 'confirm', executes: true, primary: () => true,
+        when: o => revised(o) === true ? (o.remove.length ? true : 'every merged worktree has uncommitted changes: nothing is removed') : revised(o),
+        cli: o => o.cli, consequence: o => `Deletes ${o.remove.length} build output folders in merged, clean worktrees: ${names(o.remove)}.`
+          + (o.kept.length ? ` Keeps ${o.kept.length} with uncommitted changes: ${names(o.kept)}.` : '') + ' Each worktree is checked again first. This cannot be undone.', run: cleanup },
       // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
       { id: 'volume.df', on: 'volume', label: 'Show use', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', key: 'p', risk: 'confirm', bulk: true,
-        executes: false, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
-        consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone. No directory is touched.`, run: copyOnly },
-      { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', key: 'd', risk: 'safe', bulk: true, executes: false,
-        primary: () => true, when: o => !o.disabled || o.disabled, cli: o => o.cli,
-        consequence: o => `Deletes ${o.facts.Merged || o.facts.Count} local branches already in origin's default branch. git branch -d refuses any unmerged one.`, run: copyOnly },
+      { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', key: 'p', risk: 'confirm',
+        executes: true, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
+        when: o => o.unreadable ? `${plural(o.unreadable, 'registration')} of this checkout could not be read, and prune would judge them itself` : revised(o),
+        consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone: ${names(o.list)}. No directory is touched.`, run: cleanup },
+      { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', key: 'd', risk: 'confirm', executes: true,
+        primary: () => true, when: o => o.disabled || revised(o), cli: o => o.cli,
+        consequence: o => `Deletes ${o.facts.Merged} local branches already in origin's default branch: ${names(o.branches)}. git branch -d refuses any unmerged one.`, run: cleanup },
     );
     // Ports and Protection are read-only: each line is copy only.
     C.register(

@@ -716,6 +716,20 @@ CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.
                 self.assertEqual(out["toasts"][-1], [said, False])
                 self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
 
+    def test_after_exit_127_retry_asks_first_and_names_the_exit(self):
+        """sd:3392, ruled 2026-09-30: the exit is the last run's, and a path fixed outside the dashboard needs Retry to test it."""
+        doc = json.loads(json.dumps(self.doc))
+        next(j for j in doc["jobs"] if j["name"] == "nightly-sync")["last_exit"] = 127
+        out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('job:nightly-sync');
+R.on = c.when(o); R.primary = !!c.primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+R.other = !!c.askFirst(C.get('job:weekly-scan')); shellRun(c, o); await flush();""", doc=doc,
+                            answer=self.LAUNCHCTL.replace("ANSWER", "{ request: { status: 'accepted', message: 'launchctl accepted the request' } }").replace("DOC_JSON", json.dumps(doc)))
+        self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["ask"], out["R"]["other"]), (True, False, True, False))
+        self.assertIn("exit 127", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["jobs.retry"])
+        self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
+        self.assertEqual(out["toasts"][-1], ["Retry started · nightly-sync", False])
+
     def test_retry_posts_the_job_route_with_its_revision(self):
         job = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")
         out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush(); R.off = cmd('jobs.retry').when(C.get('job:weekly-scan'));",

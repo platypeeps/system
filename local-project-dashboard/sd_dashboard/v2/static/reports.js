@@ -491,9 +491,11 @@ function registerCommands() {
     { id: 'mail.open', on: 'status mail', label: 'Open in Gmail', key: 'o', risk: 'safe', executes: false, primary: o => o.act, cli: o => `open https://mail.google.com/mail/u/0/#all/${o.source.gid}`, run: () => 'Opens in Gmail, read-only' },
     log('status mail'), task('status mail'),
     // build: the declaration Management makes (sd:2118): it posts /api/jobs/<name>/retry with the job's revision, and
-    // operations.inventory's capability is the off reason. Exit 127 is "command not found": Retry is off, not asked first.
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
-      when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
+    // operations.inventory's capability is the off reason. Exit 127 is "command not found": Retry is not the row's act, and
+    // it asks first, naming the exit, so a path fixed outside the dashboard can be tested (sd:3392).
+    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
+      when: o => capWhy(o, 'retry', o.failed || 'no failed run to retry'),
+      askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: async o => answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Retry started · ${o.job}`) },
     // build (sd:3386): the attributed batch. It confirms: one batch may move up to the library's max_batch reports, and no
