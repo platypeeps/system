@@ -809,6 +809,124 @@ stage_repos() {
     echo "  local-repo-sync missing from the repo"
   fi
   local_blocks
+  leak_guards
+}
+
+# Whether GitHub serves a repository's refs to anyone: `public`, `private`,
+# `offline` or `unknown <code>`. One unauthenticated request for the refs a
+# clone reads first: -q skips ~/.curlrc and nothing sends a credential, so a
+# private repository answers 401 (404 when gone). Any other answer is unknown,
+# never private: a 403 is GitHub limiting the rate, not a verdict. `offline`
+# is no connection at all, so the caller stops asking.
+repo_visibility() { # owner/repo
+  code=$(curl -q -s -L -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 \
+    "https://github.com/$1.git/info/refs?service=git-upload-pack" </dev/null) || :
+  case $code in
+    200) echo public ;;
+    401|404) echo private ;;
+    ''|000) echo offline ;;
+    *) echo "unknown $code" ;;
+  esac
+}
+
+# owner/repo for a remote on GitHub; nothing, and exit 1, for any other.
+github_slug() { # remote url
+  case $1 in
+    git@github.com:*) s=${1#git@github.com:} ;;
+    ssh://git@github.com/*) s=${1#ssh://git@github.com/} ;;
+    https://github.com/*) s=${1#https://github.com/} ;;
+    *) return 1 ;;
+  esac
+  s=${s%/}
+  s=${s%.git}
+  case $s in
+    */*/*|/*|*/) return 1 ;;
+    ?*/?*) printf '%s\n' "$s" ;;
+    *) return 1 ;;
+  esac
+}
+
+# local-leak-guard's pre-push hook in each public managed repo checked out
+# here (sd:3384); a private one stays without it. Only the exact hook
+# `leak-guard.sh install` writes for this checkout, executable, is ok: text
+# that names the guard does not prove it runs (review round 1). A hook with
+# leak-guard's MARKER that differs is STALE and rewritten whatever the
+# visibility. A hook another tool wrote is never replaced: in a public repo
+# it is DIFFERS for the operator to review. Only a repo without the guard asks
+# GitHub, so status touches the network for those alone; a failed list or
+# probe is SKIP, never "private".
+leak_guards() {
+  guard="$ROOT/local-leak-guard/leak-guard.sh"
+  if [ ! -f "$guard" ]; then
+    echo "  SKIP    leak guard hooks: local-leak-guard missing from the repo"
+    return 0
+  fi
+  if ! rows=$("$SD_PACK_ROOT/bin/sd-db" repo list --managed 2>/dev/null </dev/null); then
+    echo "  SKIP    leak guard hooks: sd-db repo list --managed failed"
+    return 0
+  fi
+  offline=0
+  # `sd-db: <path>  <remote>  ...`: two spaces between fields, and a path may
+  # hold one.
+  printf '%s\n' "$rows" | sed -n 's/^sd-db: //p' |
+  while IFS= read -r row; do
+    repo=${row%%  *}
+    url=${row#*  }
+    url=${url%%  *}
+    case $repo in
+      "~/"*) dir="$HOME/${repo#\~/}" ;;
+      *) dir=$repo ;;
+    esac
+    [ -e "$dir/.git" ] || continue
+    if ! hooks=$(git -C "$dir" rev-parse --git-path hooks 2>/dev/null </dev/null); then
+      echo "  SKIP    $repo leak guard: git cannot name its hooks folder"
+      continue
+    fi
+    case $hooks in /*) ;; *) hooks="$dir/$hooks" ;; esac
+    hook="$hooks/pre-push"
+    # What cmd_install in leak-guard.sh writes, MARKER and all;
+    # test_leak_guard_hooks installs through it, so a change there fails here.
+    if [ -f "$hook" ] && [ -x "$hook" ] &&
+      printf '#!/bin/sh\n# installed by local-leak-guard\nexec sh '\''%s'\'' hook "$@"\n' "$guard" |
+        cmp -s - "$hook"; then
+      echo "  ok      $repo leak guard"
+      continue
+    fi
+    if [ -f "$hook" ] && grep -qF "# installed by local-leak-guard" "$hook"; then
+      echo "  STALE   $repo leak guard pre-push hook: not the executable hook leak-guard.sh install writes"
+      run sh "$guard" install "$dir" ||
+        echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
+      continue
+    fi
+    if ! slug=$(github_slug "$url"); then
+      echo "  SKIP    $repo leak guard: its remote is not on GitHub, so its visibility is unknown"
+      continue
+    fi
+    if [ "$offline" -eq 1 ]; then
+      echo "  SKIP    $repo leak guard: GitHub did not answer; the next run asks again"
+      continue
+    fi
+    visibility=$(repo_visibility "$slug")
+    case $visibility in
+      private) continue ;;
+      offline)
+        offline=1
+        echo "  SKIP    $repo leak guard: GitHub did not answer; the next run asks again"
+        continue
+        ;;
+      unknown*)
+        echo "  SKIP    $repo leak guard: GitHub answered ${visibility#unknown }; the next run asks again"
+        continue
+        ;;
+    esac
+    if [ -e "$hook" ]; then
+      echo "  DIFFERS $repo has a pre-push hook local-leak-guard did not write; review it, then merge it with \`sh '$guard' hook \"\$@\"\` or remove it"
+      continue
+    fi
+    echo "  MISSING $repo leak guard pre-push hook"
+    run sh "$guard" install "$dir" ||
+      echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
+  done
 }
 
 # The shared CLAUDE.local.md keys, SHARED_LOCAL_KEYS in claude_settings.py, in
