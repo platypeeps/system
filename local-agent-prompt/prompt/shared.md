@@ -6,7 +6,7 @@ Limit reply sentences to 20 words, one idea each.
 Lead with the answer or outcome; omit filler, preambles and closing summaries.
 Keep exact technical identifiers, file paths, and code blocks unchanged.
 Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
-**Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in a linked file.
+**Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in an `sd task note` or the dashboard, not a new file.
 Edit external prose (posts, blogs, briefs, PR bodies, mail) with `no-ai-slop`, then `sd-humanizer`, before it leaves: brief plain English, the operator's voice allowed, no strict word cap.
 
 # Instruction files
@@ -63,8 +63,9 @@ Decide routine and high-certainty choices yourself, record the decision and reas
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
 Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work.
 Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
+In an unattended run (builder, lane, scheduled job), file the question with `sd task note --kind question` for the dashboard and continue with work that does not depend on it.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
-When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time.
+When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time; show up to five per section, the rest stay in the database for `sd today` and the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
@@ -82,7 +83,7 @@ Until sd:3014 lands, end each commit with the single line `Authored-with: claude
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
-Favor fewer, larger PRs: bundle a repo's ready items and their implementation into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate.
+Favor fewer, larger PRs: bundle a repo's ready items and their implementation into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
 Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
