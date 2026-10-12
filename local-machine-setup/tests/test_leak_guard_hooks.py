@@ -11,9 +11,11 @@ request that gets no answer skips the repository and never fails the run.
 that answers per repository; the repositories are fixtures.
 """
 
+import os
 import pathlib
 import shutil
 import subprocess
+from unittest import mock
 
 from tests import fixture_config
 from tests import test_claude_settings as base
@@ -57,7 +59,8 @@ class LeakGuardHooks(base.SyntheticHome):
     def checkout(self, name, url, code):
         path = self.home / "repos" / name
         path.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(path)], check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "init", "-q", str(path)], check=True, env=self.git_env(),
+                       capture_output=True, stdin=subprocess.DEVNULL)
         self.rows.append(f"sd-db: ~/repos/{name}  {url}  yes  local  hub  auto")
         base.write_exec(self.pack / "bin/sd-db",
                         "#!/bin/sh\n[ \"$*\" = 'repo list --managed' ] || exit 9\ncat <<'EOF'\n"
@@ -74,9 +77,22 @@ class LeakGuardHooks(base.SyntheticHome):
     def write_hook(self, repo, text):
         base.write_exec(self.hook(repo), text)
 
+    def git_env(self):
+        """Every subprocess's base: the synthetic HOME and no git config.
+
+        Built from nothing, so no inherited GIT_* variable reaches git, and an
+        operator's global core.hooksPath cannot send a fixture's hook into the
+        operator's real hooks folder.
+        """
+        return {"HOME": str(self.home), "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+                "LANG": "en_US.UTF-8", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def install(self, repo):
+        subprocess.run(["sh", str(self.script), "install", str(repo)], check=True, env=self.git_env(),
+                       capture_output=True, stdin=subprocess.DEVNULL)
+
     def env(self):
-        return {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
-                "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
+        return {**self.git_env(), "MACHINE_SETUP_STATE": str(self.state),
                 **fixture_config.env(), "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX,
                 "SD_PACK_ROOT": str(self.pack), "CURL_LOG": str(self.curl_log),
                 "CURL_ANSWERS": str(self.answers), "CURL_OFFLINE": self.offline}
@@ -136,21 +152,65 @@ class LeakGuardHooks(base.SyntheticHome):
         self.assertIn("MISSING ~/repos/open leak guard pre-push hook", before)
         self.assertNotIn("~/repos/open leak guard pre-push hook", after)
         self.assertEqual(drift_before - drift_after, 1, before + after)
-        # The foreign hook stays drift until the operator chains the guard.
+        # A foreign hook stays drift: the operator reviews it.
         self.assertIn("DIFFERS ~/repos/hooked", after)
 
-    def test_a_foreign_hook_that_chains_the_guard_is_ok(self):
-        self.write_hook(self.foreign, FOREIGN + f"sh '{self.script}' hook \"$@\" || exit 1\n")
+    def test_a_foreign_hook_naming_the_guard_is_still_differs(self):
+        # Review round 1: text that names the guard does not prove it runs.
+        for text in (FOREIGN + f"sh '{self.script}' hook \"$@\" || exit 1\n",
+                     FOREIGN + f"sh '{self.script.parent}/not-leak-guard.sh' hook \"$@\"\n"):
+            with self.subTest(text=text):
+                self.write_hook(self.foreign, text)
+
+                out = self.run_repos("--apply")
+
+                self.assertIn("DIFFERS ~/repos/hooked has a pre-push hook local-leak-guard did not write", out)
+                self.assertNotIn("ok      ~/repos/hooked", out)
+                self.assertEqual(self.hook(self.foreign).read_text(), text)
+
+    def test_a_non_executable_copy_of_the_guard_is_not_ok(self):
+        self.hook(self.foreign).unlink()
+        self.install(self.foreign)
+        text = self.hook(self.foreign).read_text().replace(MARKER + "\n", "")
+        self.hook(self.foreign).write_text(text)
+        self.hook(self.foreign).chmod(0o644)
 
         out = self.run_repos("--apply")
 
-        self.assertIn("ok      ~/repos/hooked leak guard, chained in its own pre-push hook", out)
-        self.assertNotIn("DIFFERS ~/repos/hooked", out)
+        self.assertIn("DIFFERS ~/repos/hooked", out)
+        self.assertNotIn("ok      ~/repos/hooked", out)
+
+    def test_a_commented_out_guard_of_ours_is_stale_and_rewritten(self):
+        self.install(self.public)
+        installed = self.hook(self.public).read_text()
+        self.hook(self.public).write_text(installed.replace("exec sh", "# exec sh"))
+
+        out = self.run_repos("--apply")
+
+        self.assertIn("STALE   ~/repos/open leak guard pre-push hook", out)
+        self.assertNotIn("ok      ~/repos/open", out)
+        self.assertEqual(self.hook(self.public).read_text(), installed)
+
+    def test_the_operators_global_git_config_is_never_read(self):
+        # Review round 1: a fixture subprocess that inherited the operator's
+        # global core.hooksPath wrote its hook into the operator's folder.
+        sentinel = self.home.parent / "operator-hooks"
+        sentinel.mkdir()
+        operator = self.home.parent / "operator.gitconfig"
+        operator.write_text(f"[core]\n\thooksPath = {sentinel}\n")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(operator),
+                                          "GIT_DIR": str(self.public / ".git")}):
+            late = self.checkout("late", "https://github.com/example/late", 200)
+            self.install(self.public)
+            self.run_repos("--apply")
+
+        self.assertEqual(list(sentinel.iterdir()), [])
+        self.assertTrue(self.hook(self.public).exists())
+        self.assertTrue(self.hook(late).exists())
 
     def test_a_guard_from_another_checkout_or_not_executable_is_stale_and_rewritten(self):
         self.write_hook(self.private, f"#!/bin/sh\n{MARKER}\nexec sh '/gone/leak-guard.sh' hook \"$@\"\n")
-        subprocess.run(["sh", str(self.script), "install", str(self.public)], check=True,
-                       capture_output=True, stdin=subprocess.DEVNULL)
+        self.install(self.public)
         self.hook(self.public).chmod(0o644)
         probed = len(self.probes())
 

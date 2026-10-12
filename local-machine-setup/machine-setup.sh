@@ -847,12 +847,12 @@ github_slug() { # remote url
 }
 
 # local-leak-guard's pre-push hook in each public managed repo checked out
-# here (sd:3384); a private one stays without it. The hook is the one
-# `leak-guard.sh install` writes: its MARKER line and this checkout's
-# leak-guard.sh path, executable, since git skips a hook that is not. A hook
-# of ours that fails that is STALE and rewritten whatever the visibility.
-# A hook another tool wrote is never replaced: it is DIFFERS in a public
-# repo until it runs the guard itself. Only a repo without the guard asks
+# here (sd:3384); a private one stays without it. Only the exact hook
+# `leak-guard.sh install` writes for this checkout, executable, is ok: text
+# that names the guard does not prove it runs (review round 1). A hook with
+# leak-guard's MARKER that differs is STALE and rewritten whatever the
+# visibility. A hook another tool wrote is never replaced: in a public repo
+# it is DIFFERS for the operator to review. Only a repo without the guard asks
 # GitHub, so status touches the network for those alone; a failed list or
 # probe is SKIP, never "private".
 leak_guards() {
@@ -884,19 +884,18 @@ leak_guards() {
     fi
     case $hooks in /*) ;; *) hooks="$dir/$hooks" ;; esac
     hook="$hooks/pre-push"
-    # MARKER in leak-guard.sh; test_leak_guard_hooks installs through it.
-    if [ -f "$hook" ] && grep -qF "# installed by local-leak-guard" "$hook"; then
-      if [ -x "$hook" ] && grep -qF "'$guard' hook" "$hook"; then
-        echo "  ok      $repo leak guard"
-        continue
-      fi
-      echo "  STALE   $repo leak guard pre-push hook: not executable or another checkout's"
-      run sh "$guard" install "$dir" ||
-        echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
+    # What cmd_install in leak-guard.sh writes, MARKER and all;
+    # test_leak_guard_hooks installs through it, so a change there fails here.
+    if [ -f "$hook" ] && [ -x "$hook" ] &&
+      printf '#!/bin/sh\n# installed by local-leak-guard\nexec sh '\''%s'\'' hook "$@"\n' "$guard" |
+        cmp -s - "$hook"; then
+      echo "  ok      $repo leak guard"
       continue
     fi
-    if [ -f "$hook" ] && grep -qE "leak-guard\.sh'? hook" "$hook"; then
-      echo "  ok      $repo leak guard, chained in its own pre-push hook"
+    if [ -f "$hook" ] && grep -qF "# installed by local-leak-guard" "$hook"; then
+      echo "  STALE   $repo leak guard pre-push hook: not the executable hook leak-guard.sh install writes"
+      run sh "$guard" install "$dir" ||
+        echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
       continue
     fi
     if ! slug=$(github_slug "$url"); then
@@ -921,7 +920,7 @@ leak_guards() {
         ;;
     esac
     if [ -e "$hook" ]; then
-      echo "  DIFFERS $repo has a pre-push hook local-leak-guard did not write; add \`sh '$guard' hook \"\$@\"\` to it"
+      echo "  DIFFERS $repo has a pre-push hook local-leak-guard did not write; review it, then merge it with \`sh '$guard' hook \"\$@\"\` or remove it"
       continue
     fi
     echo "  MISSING $repo leak guard pre-push hook"

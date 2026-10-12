@@ -46,10 +46,11 @@ no manual step. Private repositories stay without the hook.
 - A failed list, a remote not on GitHub, no answer or any other answer is a
   `SKIP` line: setup goes on and the next run asks again.
 - `status` reports a public repository without the hook as `MISSING`, and a
-  `pre-push` hook another tool wrote as `DIFFERS` until it runs
-  `leak-guard.sh hook "$@"` itself. Both count as drift.
-- A hook this tool wrote that is not executable, or that runs another
-  checkout's `leak-guard.sh`, is `STALE` and rewritten.
+  `pre-push` hook another tool wrote as `DIFFERS`, for the operator to
+  review. Both count as drift. Only the exact executable hook `install`
+  writes reads `ok`: a hook that merely names the guard may not run it.
+- A hook with this tool's marker that differs from that, or is not
+  executable, is `STALE` and rewritten.
 
 ## What it checks
 
