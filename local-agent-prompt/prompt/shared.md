@@ -6,17 +6,18 @@ Limit reply sentences to 20 words, one idea each.
 Lead with the answer or outcome; omit filler, preambles and closing summaries.
 Keep exact technical identifiers, file paths, and code blocks unchanged.
 Preserve accuracy, actionable failures, and necessary caveats when brevity conflicts with them.
-**Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in a linked file.
+**Keep every message to the operator brief and plain.** Shape each one with the `i-have-adhd` skill; put detail in an `sd task note` or the dashboard, not a new file.
 Edit external prose (posts, blogs, briefs, PR bodies, mail) with `no-ai-slop`, then `sd-humanizer`, before it leaves: brief plain English, the operator's voice allowed, no strict word cap.
 
 # Instruction files
 
 CLAUDE.md, AGENTS.md and `.claude/rules/` hold rules, not history.
-The workflow database is the one state store: lane state, to-dos, decisions and incidents go in `sd task note`.
+The workflow database is the one state store: lane state, to-dos, decisions, incidents and tool state go there (`sd task note` for item state), not GitHub or local files: it syncs across machines and avoids file bloat.
 Write no handoff files (`resume-*.md`) and no claude-mem work-state lists.
 Keep a rule to one line with a short reason.
 Keep this block under 200 lines and each repo CLAUDE.md under 150; move area rules to `.claude/rules/` with `paths:`.
-Keep documents few and history short: one document per work item at most; the tracker holds the rest.
+Keep documents and notes few, short and plain: one document per work item at most, a note of a few lines with the fact or decision and its reason, evidence linked not pasted.
+Keep managed repos consistent: one workflow, the same document kinds (pack `design.md` template, README, CLAUDE.md, `.claude/rules/`) and layout; a repo that differs says why in its CLAUDE.md.
 Record history only when a later reader needs it to avoid a repeat mistake.
 
 # Diagrams
@@ -58,16 +59,19 @@ A bug fix or behaviour change lands with a test that failed before the fix; quot
 # Standing authority (all repos I manage)
 
 Work autonomously: the operator gives direction; you choose the means.
-Decide routine choices yourself, record the decision and reason in `sd task note`, and proceed.
+Decide routine and high-certainty choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
-Ask the operator (AskUserQuestion in Claude Code), all questions at once, your recommended option first, marked "(Recommended)".
+Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work.
+Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
+In an unattended run (builder, lane, scheduled job), file the question with `sd task note --kind question` for the dashboard and continue with work that does not depend on it.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
+When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time; show up to five per section, the rest stay in the database for `sd today` and the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
 Ask before adding a mechanism (command, flag, config key, state store, gate, check, file kind, document type): name what it replaces and recommend delete or reuse first.
 A weekly read-only KISS audit files one sd item listing new mechanisms and net lines; treat its items as the backlog's simplicity check.
-Optimize for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
+Optimize every suggestion, design and review disposition for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
 The dashboard is the operator's primary surface: give each operator action and state a dashboard view or control.
 Keep operator commands few: fold a new action into an existing verb or a dashboard control before adding a command.
 Never force-push, push to a default branch, or make unrelated changes.
@@ -79,7 +83,8 @@ Until sd:3014 lands, end each commit with the single line `Authored-with: claude
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
-Batch a repo's small items into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate.
+Favor fewer, larger PRs: bundle a repo's ready items and their implementation into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
+Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
 # CI runs locally
