@@ -136,7 +136,10 @@ DISK = {
     ],
     "build": {"checked": 4, "unread": [],
               "merged": [{"path": "/work/wt-old", "head": "0" * 40, "branch": "feat/done", "repo": "/checkouts/alpha",
-                          "dirs": ["target", "node_modules"]}]},
+                          "dirs": ["target", "node_modules"], "status": ""},
+                         {"path": "/work/wt-dirty", "head": "1" * 40, "branch": "feat/wip", "repo": "/checkouts/alpha",
+                          "dirs": ["target"], "status": "?? notes.txt\n"}],
+              "revision": "b" * 64},
     "storage": [{"root": "/Volumes/store/repo-storage", "error": "",
                  "folders": [{"path": "/Volumes/store/repo-storage/alpha", "kb": 5 * GIB},
                              {"path": "/Volumes/store/repo-storage/beta", "kb": 2 * GIB},
@@ -148,11 +151,29 @@ BRANCHES = {
     "repos": 2, "no_default": ["/checkouts/beta"], "unread": [],
     "merged": [{"repo": "/checkouts/alpha", "path": "/checkouts/alpha",
                 "deletable": [["feat/one", "2026-08-01"], ["feat/two", "2026-09-01"], ["fix/three", "2026-07-15"]],
-                "checked_out": [["feat/live", "/work/wt-live"]]}],
+                "checked_out": [["feat/live", "/work/wt-live"]], "revision": "a" * 64}],
 }
+#: The doctor's lines as `parse_doctor` reads them: one FAIL, one WARN with its continuation, passes, a skip and context.
+DOCTOR_OUT = """== doctor
+  ok      profile recorded: hub
+  FAIL    Xcode CLT missing — run: xcode-select --install
+  WARN    brew doctor has warnings — run: brew doctor
+  ok      fnm (v24.1.0)
+  --      docker not checked (not installed, no services in this profile)
+  WARN    set here but not in shell-env.example: EXAMPLE_TOKEN
+          add the name (value change-me) so a rebuild gets it
+
+  folders without a filled .env (.env.example present, .env absent):
+    --      local-redis/.env  (copy .env.example)
+
+  1 hard failure(s)
+"""
+DOCTOR = health_collectors.parse_doctor(DOCTOR_OUT, 1)
+CLEAN_DOCTOR = health_collectors.parse_doctor("== doctor\n  ok      profile recorded: hub\n\n  no hard failures\n", 0)
 CLEAN_DISK = {**DISK, "volumes": [DISK["volumes"][1]], "build": {"checked": 4, "merged": [], "unread": []}}
 CLEAN_BRANCHES = {"repos": 2, "merged": [], "no_default": [], "unread": []}
-REAL_DISK_SCAN, REAL_BRANCH_SCAN = health_collectors.disk_scan, health_collectors.branch_scan
+REAL_DISK_SCAN, REAL_BRANCH_SCAN, REAL_DOCTOR_SCAN = (health_collectors.disk_scan, health_collectors.branch_scan,
+                                                     health_collectors.doctor_scan)
 
 
 def scan_of(scan):
@@ -186,6 +207,10 @@ class Collectors:
             patcher = patch.object(health_collectors, name, scan_of(scan))
             patcher.start()
             self.addCleanup(patcher.stop)
+        # No test runs the machine's doctor (sd:3393): the default reader reads this fixture.
+        patcher = patch.object(health_collectors, "doctor_scan", lambda **_: CLEAN_DOCTOR)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 def git(*args, cwd=None):
@@ -211,15 +236,16 @@ class TheDocument(Collectors, ScreenCase):
         return health_screen.document(self.connection, now=NOW, fleet=kwargs.get("fleet") or fleet_of(trees),
                                       ports=kwargs.get("ports") or ports_snapshot,
                                       protection=kwargs.get("protection") or protection_of(PROTECTION),
-                                      disk=kwargs.get("disk"), branches=kwargs.get("branches"))
+                                      disk=kwargs.get("disk"), branches=kwargs.get("branches"),
+                                      doctor=kwargs.get("doctor"))
 
     def test_every_design_area_is_there_in_order_and_says_whether_a_reader_covers_it(self):
         areas = self.doc()["areas"]
         self.assertEqual([(a["id"], a["read"]) for a in areas],
                          [("disk", True), ("cred", True), ("wt", True),
-                          ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True)])
+                          ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("doc", True)])
         for area in areas:
-            if area["id"] not in ("br", "ports", "prot", "cred", "dep", "sec"):
+            if area["id"] not in ("br", "ports", "prot", "cred", "dep", "sec", "doc"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -559,8 +585,12 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((folder["state"], folder["type"], folder["what"]), ("queued", "storage folder", "repo-storage/alpha holds 5.0 GiB"))
         self.assertEqual(folder["cli"], "du -sh /Volumes/store/repo-storage/alpha/* | sort -h | tail -5")
         build = rows["build:merged"]
-        self.assertEqual((build["state"], build["type"], build["what"]), ("caution", "build output", "1 merged worktree keeps build output"))
+        self.assertEqual((build["state"], build["type"], build["what"]), ("caution", "build output", "2 merged worktrees keep build output"))
+        # sd:3393: only a clean worktree's folders are offered; one with uncommitted changes is listed and kept.
         self.assertEqual(build["cli"], "rm -rf /work/wt-old/target\nrm -rf /work/wt-old/node_modules")
+        self.assertEqual((build["remove"], build["kept"], build["revision"]),
+                         (["/work/wt-old/target", "/work/wt-old/node_modules"], ["/work/wt-dirty"], "b" * 64))
+        self.assertEqual(build["list"][1], "/work/wt-dirty · target/ · feat/wip · uncommitted changes: kept")
         self.assertEqual([volume["name"] for volume in disk["extra"]["volumes"]], ["Mac data", "store"])
         full = {**DISK, "volumes": [{**DISK["volumes"][1], "capacity": 90}], "build": {"checked": 2, "merged": [], "unread": []}}
         rows = {row["id"]: row for row in self.doc(disk=scan_of(full))["areas"][0]["rows"]}
@@ -712,7 +742,7 @@ class TheDocument(Collectors, ScreenCase):
         doc = self.doc(fleet=slow(fleet_of(TREES)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot")])
+                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "doc")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -743,6 +773,95 @@ class TheDocument(Collectors, ScreenCase):
             doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of([]), ports=ports_snapshot, protection=protection_of([]), disk=scan_of(DISK))
         br = doc["areas"][3]
         self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
+
+
+class TheDoctor(Collectors, ScreenCase):
+    """The Doctor area (sd:3393): `machine-setup.sh doctor` lines, read in a bounded child. A stub stands in for the script."""
+
+    def area(self, doc):
+        return next(area for area in doc["areas"] if area["id"] == "doc")
+
+    def doc(self, doctor=None, now=NOW):
+        return health_screen.document(self.connection, now=now, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                      protection=protection_of(PROTECTION), doctor=doctor)
+
+    def script(self, body):
+        path = Path(self.tmp.name) / "machine-setup.sh"
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def test_each_warn_and_fail_line_is_a_row_and_the_rest_are_one_ok_row(self):
+        area = self.area(self.doc(doctor=lambda: DOCTOR))
+        rows = [(row["state"], row["what"], row["kind"]) for row in area["rows"]]
+        self.assertEqual(rows, [("warning", "Xcode CLT missing", "Doctor · FAIL"),
+                                ("caution", "brew doctor has warnings", "Doctor · WARN"),
+                                ("caution", "set here but not in shell-env.example: EXAMPLE_TOKEN", "Doctor · WARN"),
+                                ("ok", "2 doctor checks pass", "Doctor")])
+        self.assertEqual(area["rows"][2]["detail"], "set here but not in shell-env.example: EXAMPLE_TOKEN "
+                                                    "add the name (value change-me) so a rebuild gets it")
+        self.assertEqual(area["rows"][3]["detail"], "2 not checked here · 1 hard failure")
+        self.assertIn("folders without a filled .env (.env.example present, .env absent):", area["rows"][3]["list"])
+        self.assertEqual(area["error"], "")
+
+    def test_the_doctor_runs_in_a_child_and_its_closing_line_and_exit_must_agree(self):
+        clean = self.script("echo '== doctor'\necho '  ok      fnm (v24)'\necho\necho '  no hard failures'\n")
+        found = REAL_DOCTOR_SCAN(script=clean, within=10)
+        self.assertEqual((found["checks"], found["fails"]), ([{"mark": "ok", "text": "fnm (v24)", "more": []}], 0))
+        for body, why in (
+                ("echo '  ok      fnm'\n", "machine-setup.sh doctor exited 0 without its closing line: ok      fnm"),
+                ("echo 'machine-setup: no config' >&2\nexit 1\n", "exited 1 without its closing line (machine-setup: no config)"),
+                ("echo '  no hard failures'\nexit 2\n", "exited 2 without its closing line: no hard failures")):
+            with self.subTest(body=body):
+                area = self.area(self.doc(doctor=lambda body=body: REAL_DOCTOR_SCAN(script=self.script(body), within=10)))
+                self.assertEqual(area["rows"], [])
+                self.assertIn(why, area["error"])
+
+    def test_a_doctor_past_its_deadline_is_stopped_and_unknown_not_clean(self):
+        marker = Path(self.tmp.name) / "doctor-finished"
+        slow = self.script(f"sleep 5 >/dev/null 2>&1\ntouch '{marker}'\necho '  no hard failures'\n")
+        with patch.object(health_screen, "DOCTOR_WAIT_SECONDS", 10.0):
+            area = self.area(self.doc(doctor=lambda: REAL_DOCTOR_SCAN(script=slow, within=0.5)))
+        self.assertFalse(marker.exists(), "the page waited the doctor out instead of stopping it")
+        self.assertEqual(area["rows"], [])
+        self.assertRegex(area["error"], r"^machine-setup.sh doctor was stopped: .* and was stopped rather than waited on$")
+
+    def test_a_doctor_still_running_is_unknown_and_the_page_does_not_wait_for_it(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def running():
+            release.wait(10)
+            return CLEAN_DOCTOR
+        started = time.monotonic()
+        with patch.object(health_screen, "DOCTOR_WAIT_SECONDS", 0.2):
+            area = self.area(self.doc(doctor=running))
+        self.assertLess(time.monotonic() - started, health_screen.PAGE_SECONDS)
+        self.assertEqual(area["rows"], [])
+        self.assertIn(f"machine-setup.sh doctor started at {NOW} and is still running", area["error"])
+
+    def test_an_answer_stands_for_ten_minutes_and_a_failed_run_drops_it(self):
+        runs, release = [], threading.Event()
+        self.addCleanup(release.set)
+
+        def counted():
+            runs.append(1)
+            if len(runs) == 2:
+                raise ValueError("machine-setup.sh doctor exited 2 without its closing line")
+            if len(runs) == 3:
+                release.wait(10)
+            return CLEAN_DOCTOR
+        self.area(self.doc(doctor=counted))
+        self.assertEqual(self.area(self.doc(doctor=counted, now="2026-09-06T12:09:00Z"))["at"], NOW)
+        self.assertEqual(len(runs), 1, "a fresh answer started a second doctor")
+        failed = self.area(self.doc(doctor=counted, now="2026-09-06T12:11:00Z"))
+        self.assertEqual((len(runs), failed["rows"]), (2, []))
+        self.assertIn("exited 2", failed["error"])
+        # The next run is still going: the answer from before the failure must not stand in for it.
+        with patch.object(health_screen, "DOCTOR_WAIT_SECONDS", 0.2):
+            running = self.area(self.doc(doctor=counted, now="2026-09-06T12:12:00Z"))
+        self.assertEqual((len(runs), running["rows"], running["stale"]), (3, [], ""))
+        self.assertIn("is still running", running["error"])
 
 
 class OneScanPerArea(Collectors, ScreenCase):
@@ -876,10 +995,10 @@ class TheScript(Collectors, ScreenCase):
         self.assertEqual(out["R"]["reg"], [
             ["check.recheck", "check", "safe", "e", False, False],
             ["storage folder.du", "storage folder", "safe", "b", False, False],
-            ["build output.rm", "build output", "confirm", "r", False, False],
+            ["build output.rm", "build output", "confirm", "r", True, False],
             ["volume.df", "volume", "safe", "b", False, False],
-            ["worktree registrations.prune", "worktree registrations", "confirm", "p", False, True],
-            ["merged branches.delete", "merged branches", "safe", "d", False, True],
+            ["worktree registrations.prune", "worktree registrations", "confirm", "p", True, False],
+            ["merged branches.delete", "merged branches", "confirm", "d", True, False],
             ["port.inspect", "port", "safe", "i", False, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
             ["collector.sync", "collector", "safe", "r", None, False],
@@ -910,7 +1029,7 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
         self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("8 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
+        self.assertIn("9 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
 
@@ -1010,7 +1129,7 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 20 rows.", out["R"]["note"])
+        self.assertIn("Filtered to Credentials only: 1 of 21 rows.", out["R"]["note"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
                          ["cred", "wt", "br", "dep", "sec", "ports", "prot"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
@@ -1080,17 +1199,50 @@ R.unread = ELS.details.html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:
         self.assertIn("No cell is shown: token does not reach it.", out["R"]["unread"])
         self.assertNotIn("<dl class=\"checks\">", out["R"]["unread"])
 
-    def test_prune_confirms_first_is_copy_only_and_posts_nothing(self):
-        out = self.run_page("""var o = C.get('gone:group/alpha'); R.cli = cmd('worktree registrations.prune').cli(o);
-R.why = cmd('worktree registrations.prune').consequence(o); R.snooze = cmd('worktree registrations.snooze').when(o);
-shellRun(cmd('worktree registrations.prune'), o); await flush();""")
+    CLEANED = "ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path === '/api/health/cleanup' ? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n"
+
+    def cleanup(self, row, body, status=200, answer=None):
+        """Run a cleanup on `row` as the page does: the confirm, then one post of the row and its revision."""
+        answer = answer if answer is not None else {"ok": True, "row": row, "done": ["x"], "refused": []}
+        return self.run_page(f"var STATUS_W = {status}, WROTE = {json.dumps(answer)};\n" + self.CLEANED
+                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body)
+
+    def test_prune_confirms_with_the_names_then_posts_the_row_and_its_revision(self):
+        """sd:3393: the operator ruled that Health runs the prune, behind a confirm that names what goes."""
+        out = self.cleanup("gone:group/alpha", """R.cli = cmd('worktree registrations.prune').cli(o);
+R.why = cmd('worktree registrations.prune').consequence(o); R.rev = o.revision;
+shellRun(cmd('worktree registrations.prune'), o); await flush();""",
+                           answer={"ok": True, "row": "gone:group/alpha", "done": ["a"], "refused": [{"name": "b", "why": "locked"}]})
         self.assertEqual(out["R"]["cli"], "git -C '/checkouts/group/alpha' worktree prune -v")
-        self.assertEqual(out["R"]["why"], "Removes 2 worktree registrations whose directories are gone. No directory is touched.")
-        self.assertIs(out["R"]["snooze"], True)
+        self.assertEqual(out["R"]["why"], "Removes 2 worktree registrations whose directories are gone: /work/wt-a (feat/a), "
+                                          "/work/wt-b (fix/b). No directory is touched.")
+        self.assertRegex(out["R"]["rev"], r"^[0-9a-f]{64}$")
         self.assertEqual(out["confirms"], ["worktree registrations.prune"])
+        self.assertEqual([post[:2] for post in out["posts"]],
+                         [["/api/health/cleanup", {"row": "gone:group/alpha", "revision": out["R"]["rev"]}]])
+        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["toasts"][-1][0], "group/alpha: 2 worktrees registered, directory gone: 1 done · kept 1: b (locked)")
+
+    def test_a_refused_cleanup_says_not_changed_and_an_unknown_one_says_so(self):
+        stale = self.cleanup("gone:group/alpha", "shellRun(cmd('worktree registrations.prune'), o); await flush();",
+                             status=409, answer={"error": "The registrations changed since the page read it.", "reload": True})
+        self.assertEqual(stale["toasts"][-1][0], "group/alpha: 2 worktrees registered, directory gone not changed: "
+                                                 "The registrations changed since the page read it.")
+        self.assertEqual(stale["gets"], ["/api/health"])
+        unknown = self.cleanup("build:merged", "shellRun(cmd('build output.rm'), o); await flush();",
+                               status=502, answer={"error": "/work/wt-old/target was removed only in part", "outcome": "unknown"})
+        self.assertRegex(unknown["toasts"][-1][0], r"^Not known what changed · 2 merged worktrees keep build output: "
+                                                    r"/work/wt-old/target was removed only in part\. Health was read again")
+        self.assertEqual(unknown["gets"], ["/api/health"])
+
+    def test_a_row_without_a_revision_or_with_an_unreadable_registration_runs_nothing(self):
+        out = self.cleanup("gone:group/alpha", """var p = cmd('worktree registrations.prune');
+R.old = p.when({ ...o, revision: undefined }); R.unread = p.when({ ...o, unreadable: 1 });
+R.dirty = cmd('build output.rm').when({ ...C.get('build:merged'), remove: [] });""")
+        self.assertEqual(out["R"]["old"], "the row carries no revision: read Health again")
+        self.assertEqual(out["R"]["unread"], "1 registration of this checkout could not be read, and prune would judge them itself")
+        self.assertEqual(out["R"]["dirty"], "every merged worktree has uncommitted changes: nothing is removed")
         self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
-                                               "group/alpha: 2 worktrees registered, directory gone")
 
     def test_snooze_posts_the_row_and_its_time_then_reads_health_again_and_undo_clears_it(self):
         """sd:1896: the server judges the time, so the page sends one it computed, and Undo writes the same key with none."""
@@ -1155,8 +1307,8 @@ OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); a
         out = self.sync({"running": False, "error": "OperationalError: database is locked", "trackers": []})
         self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: OperationalError: database is locked")
 
-    def test_disk_draws_a_bar_per_volume_and_its_lines_are_copy_only(self):
-        out = self.run_page("""R.areas = ELS.areas.html; var o = C.get('build:merged');
+    def test_disk_draws_a_bar_per_volume_and_remove_names_the_folders_it_deletes(self):
+        out = self.cleanup("build:merged", """R.areas = ELS.areas.html;
 R.rm = cmd('build output.rm').cli(o); R.why = cmd('build output.rm').consequence(o);
 R.du = cmd('storage folder.du').cli(C.get('rs:/Volumes/store/repo-storage/alpha'));
 shellRun(cmd('build output.rm'), o); await flush();""")
@@ -1166,23 +1318,27 @@ shellRun(cmd('build output.rm'), o); await flush();""")
         self.assertIn('<rect class="fill" x="0.5" y="0.5" width="85.0%" height="11" rx="2"/>', areas)
         self.assertIn('<span class="v">85% · 150.0 GiB free</span>', areas)
         self.assertEqual(out["R"]["rm"], "rm -rf /work/wt-old/target\nrm -rf /work/wt-old/node_modules")
-        self.assertIn("Deletes the build output of 1 merged worktrees: /work/wt-old.", out["R"]["why"])
+        self.assertEqual(out["R"]["why"], "Deletes 2 build output folders in merged, clean worktrees: /work/wt-old/target, "
+                                          "/work/wt-old/node_modules. Keeps 1 with uncommitted changes: /work/wt-dirty. "
+                                          "Each worktree is checked again first. This cannot be undone.")
         self.assertEqual(out["R"]["du"], "du -sh /Volumes/store/repo-storage/alpha/* | sort -h | tail -5")
         self.assertEqual(out["confirms"], ["build output.rm"])
-        self.assertEqual(out["posts"], [])
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/health/cleanup", {"row": "build:merged", "revision": "b" * 64}]])
 
-    def test_delete_merged_is_copy_only_and_a_checked_out_branch_says_why_git_refuses(self):
-        out = self.run_page("""var o = C.get('br:/checkouts/alpha'), held = C.get('brs:/checkouts/alpha');
+    def test_delete_merged_confirms_with_the_branch_names_and_a_checked_out_branch_says_why_git_refuses(self):
+        out = self.cleanup("br:/checkouts/alpha", """var held = C.get('brs:/checkouts/alpha');
 R.cli = cmd('merged branches.delete').cli(o); R.why = cmd('merged branches.delete').consequence(o);
 R.on = cmd('merged branches.delete').when(o); R.held = cmd('merged branches.delete').when(held);
 shellRun(cmd('merged branches.delete'), o); await flush();""")
         self.assertEqual(out["R"]["cli"], "git -C /checkouts/alpha branch -d feat/one feat/two fix/three")
-        self.assertEqual(out["R"]["why"], "Deletes 3 local branches already in origin's default branch. git branch -d refuses any unmerged one.")
+        self.assertEqual(out["R"]["why"], "Deletes 3 local branches already in origin's default branch: feat/one, feat/two, "
+                                          "fix/three. git branch -d refuses any unmerged one.")
         self.assertIs(out["R"]["on"], True)
         self.assertEqual(out["R"]["held"], "checked out in a worktree: git branch -d refuses it until the worktree is removed")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][-1][0], "Not run here: copy the line from Details and run it in a terminal · "
-                                               "alpha: 3 merged branches not deleted")
+        self.assertEqual(out["confirms"], ["merged branches.delete"])
+        self.assertEqual([post[:2] for post in out["posts"]],
+                         [["/api/health/cleanup", {"row": "br:/checkouts/alpha", "revision": "a" * 64}]])
+        self.assertEqual(out["toasts"][-1][0], "alpha: 3 merged branches not deleted: 1 done")
 
     def test_details_show_the_facts_and_the_registrations_behind_a_row(self):
         out = self.run_page("document.dispatchEvent(new CustomEvent('shell:open', { detail: 'gone:group/alpha' })); R.d = ELS.details.html;")
@@ -1206,7 +1362,7 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health",)
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/cleanup")
 
 
 if __name__ == "__main__":

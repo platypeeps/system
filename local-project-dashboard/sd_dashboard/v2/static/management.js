@@ -538,9 +538,11 @@ function registerCommands() {
     { id: 'svc.start', on: 'service', label: 'Start', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // launchd calendar jobs. Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration). build: it posts
-    // /api/jobs/<name>/retry; operations.inventory's capability is the off reason. Exit 127 is "command not found": Retry is off.
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
-      when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
+    // /api/jobs/<name>/retry; operations.inventory's capability is the off reason. Exit 127 is "command not found": Print is the
+    // row's act, and Retry asks first, naming the exit, so a path fixed outside the dashboard can be tested (sd:3392).
+    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
+      when: o => capWhy(o, 'retry', o.failed || 'no failed run to retry'),
+      askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: o => landing(job(o, 'retry'), out => answered(out, o.job, 'retried', `Retry started · ${o.job}`)) },
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts

@@ -1,12 +1,14 @@
 """The v2 Queue page (sd:2585).
 
 What this slice promises: `/api/queue` draws each managed repository's lane from `sd-ship lane list`, one row per
-item in one of five states (merging, next, building, blocked, landed), with load5 and the gate slots in the header.
+item in one of six states (merging, next, building, blocked, cancelled, landed), with load5 and the gate slots in the header.
 The only write is `/api/queue/move`: it runs `sd-ship lane move|hold|release|cancel|retry` with exactly the page's item and
 place, under the session cookie, CSRF and Origin checks, and refuses a revision the queue has moved past. Retry and Approve
 (`retry --manual`) show on blocked rows only when `sd-ship lane retry --help` names `--expected-head` (sd:3012); Approve
 only on a manual repo. Both carry the head the row showed. Release on a running row runs `lane cancel` with the claim the
 row showed as `--expected-claim` (sd:3337), and a claim that moved on since is a 409.
+Re-queue on a cancelled row runs `lane retry --expected-head` with the head the row showed (sd:3398), shows only when
+`lane retry --help` names a cancelled entry (pack sd:3389), and runs nothing for an item whose newest entry is not cancelled.
 
 `sd-ship` and `sd` are stubs on PATH that answer from a fixture and log their arguments; no test reaches a real lane.
 One test runs the pinned pack's own `sd-ship` on a queue under a temporary `SD_LANE_ROOT`, so the order the page asks
@@ -48,7 +50,8 @@ printf '%s\\n' "$*" >> "$QUEUE_LOG"
 case "$*" in
   *"lane list") if [ -f "$QUEUE_FIXTURE.$(basename "$2")" ]; then cat "$QUEUE_FIXTURE.$(basename "$2")"; else cat "$QUEUE_FIXTURE"; fi ;;
   "lane retry --help") if [ -n "$QUEUE_NO_RETRY" ]; then echo "invalid choice: 'retry'" >&2; exit 2; fi
-     if [ -n "$QUEUE_OLD_RETRY" ]; then echo "usage: sd-ship lane retry [--manual] item"; else echo "usage: sd-ship lane retry [--manual] [--expected-head EXPECTED_HEAD] item"; fi ;;
+     if [ -n "$QUEUE_OLD_RETRY" ]; then echo "usage: sd-ship lane retry [--manual] item"; else echo "usage: sd-ship lane retry [--manual] [--expected-head EXPECTED_HEAD] item"; fi
+     if [ -z "$QUEUE_OLD_REQUEUE$QUEUE_OLD_RETRY" ]; then echo "  --expected-head  ...; a cancelled entry needs it (sd:3389)"; fi ;;
   "gate status --json") printf '{"slots": 4, "holders": [{"slot": 1}], "waiters": [], "load": [1, 2, 3]}\\n' ;;
   *) if [ -n "$QUEUE_SLEEP" ]; then exec sleep "$QUEUE_SLEEP"; fi
      if [ -n "$QUEUE_CRASH" ]; then echo "Traceback: $QUEUE_CRASH" >&2; exit 1; fi
@@ -123,7 +126,8 @@ class Lane:
             {"item": 9, "title": "Old failure, since retried", "status": "pending", "expected_head": "b" * 40,
              "speculation": {"status": "success", "summary": "sd-check pass"}},
             {"item": 12, "title": "Queue page", "status": "pending", "expected_head": "c" * 40, "held": True},
-            {"item": 1, "title": "Cancelled", "status": "cancelled", "finished_at": "2026-09-06T07:00:00Z"},
+            {"item": 1, "title": "Cancelled", "status": "cancelled", "expected_head": "1" * 40, "branch": "b1",
+             "finished_at": "2026-09-06T07:00:00Z"},
         ]
 
     def calls(self):
@@ -136,11 +140,11 @@ class TheRows(Lane, ScreenCase):
     def doc(self):
         return queue_screen.document(self.connection, now=NOW)
 
-    def test_each_of_the_five_states_has_its_row(self):
+    def test_each_of_the_six_states_has_its_row(self):
         rows = self.doc()["lanes"][0]["rows"]
         self.assertEqual([(row["state"], row.get("item") or row.get("builder")) for row in rows], [
             ("merging", 3), ("next", 9), ("next", 12), ("building", "queue-notes-1"), ("building", "sd1775-2"),
-            ("blocked", 5), ("blocked", 4), ("landed", 7)])
+            ("blocked", 5), ("blocked", 4), ("cancelled", 1), ("landed", 7)])
 
     def test_merging_names_its_step_host_claim_age_and_lease(self):
         merging = self.doc()["lanes"][0]["rows"][0]
@@ -241,6 +245,45 @@ class TheRows(Lane, ScreenCase):
         self.assertNotEqual(before, after)
         self.assertEqual(queue_screen.lane_revision(self.entries()),
                          queue_screen.lane_revision(json.loads(self.fixture.read_text())["entries"]))
+
+    # sd:3398: a cancelled entry is a row, so Re-queue can name the head the operator cancelled.
+    def test_a_cancelled_entry_carries_its_head_and_when_it_was_cancelled(self):
+        cancelled = next(row for row in self.doc()["lanes"][0]["rows"] if row["state"] == "cancelled")
+        self.assertEqual((cancelled["item"], cancelled["head"], cancelled["expected_head"], cancelled["finished"]),
+                         (1, "1" * 12, "1" * 40, "2026-09-06T07:00:00Z"))
+
+    def test_a_cancelled_entry_that_is_not_its_items_newest_or_is_old_has_no_row(self):
+        later = {"item": 1, "title": "Cancelled", "status": "pending", "expected_head": "1" * 40}
+        old = {"item": 16, "title": "Cancelled last week", "status": "cancelled", "expected_head": "6" * 40,
+               "finished_at": "2026-08-30T07:00:00Z"}
+        self.list(self.entries() + [later, old])
+        rows = self.doc()["lanes"][0]["rows"]
+        self.assertEqual([row["item"] for row in rows if row["state"] == "cancelled"], [])
+
+    def test_a_cancelled_head_is_part_of_the_page_revision(self):
+        # Re-queue carries the head the row showed; a later entry cancelled at another head must change the revision.
+        before = self.doc()["lanes"][0]["revision"]
+        self.list(self.entries() + [{"item": 1, "title": "Cancelled", "status": "cancelled", "expected_head": "f" * 40,
+                                     "finished_at": "2026-09-06T08:00:00Z"}])
+        self.assertNotEqual(self.doc()["lanes"][0]["revision"], before)
+
+    def test_a_pack_whose_retry_takes_a_cancelled_entry_offers_requeue(self):
+        doc = self.doc()
+        self.assertEqual((doc["requeue"], doc["requeue_off"]), (True, None))
+
+    def test_a_pack_whose_retry_takes_no_cancelled_entry_leaves_requeue_off_with_its_reason(self):
+        # Before pack sd:3389, `lane retry --help` does not name a cancelled entry.
+        with mock.patch.dict(os.environ, {"QUEUE_OLD_REQUEUE": "1"}):
+            doc = self.doc()
+        self.assertEqual((doc["retry"], doc["requeue"]), (True, False))
+        self.assertIn("sd:3389", doc["requeue_off"])
+
+    def test_a_failed_help_probe_leaves_requeue_off_as_unknown_not_as_absent(self):
+        with mock.patch.dict(os.environ, {"QUEUE_NO_RETRY": "1"}):
+            doc = self.doc()
+        self.assertIs(doc["requeue"], False)
+        self.assertIn("exited 2", doc["requeue_off"])
+        self.assertIn("invalid choice", doc["requeue_off"])
 
     def test_landed_today_carries_the_pull_request_and_merge_commit(self):
         landed = self.doc()["lanes"][0]["rows"][-1]
@@ -404,6 +447,51 @@ class TheMove(Lane, BrowserSession):
             with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "refused before the write", "QUEUE_CODE": code}):
                 status, _, answer = self.move("retry", item=4, head="4" * 40)
             self.assertEqual((code, status, answer), (code, 400, {"error": "refused before the write"}))
+
+    # sd:3398: Re-queue runs `lane retry` on a cancelled entry with the head the row showed (pack sd:3389).
+    def test_requeue_calls_exactly_lane_retry_with_the_item_and_its_head(self):
+        status, _, answer = self.move("requeue", item=1, head="1" * 40)
+        self.assertEqual((status, answer["ok"], answer["action"]), (200, True, "requeue"), answer)
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"],
+                                        ["-C", str(self.checkout), "lane", "retry", "1", "--expected-head", "1" * 40]])
+
+    def test_requeue_without_a_full_head_runs_nothing(self):
+        for head in (None, "1" * 12, "HEAD"):
+            status, _, _ = self.move("requeue", item=1, head=head)
+            self.assertEqual((head, status, self.calls()), (head, 400, []))
+
+    def test_requeue_of_an_entry_that_is_not_cancelled_runs_no_verb(self):
+        # The operator's ruling: the page re-queues a cancelled entry and enqueues nothing else.
+        for item, head in ((4, "4" * 40), (12, "c" * 40), (77, "7" * 40)):
+            self.log.write_text("")
+            status, _, answer = self.move("requeue", item=item, head=head)
+            self.assertEqual((item, status, self.calls()), (item, 400, [["-C", str(self.checkout), "lane", "list"]]))
+            self.assertIn("cancelled", answer["error"])
+
+    def test_requeue_after_the_item_was_cancelled_again_at_another_head_is_refused_before_any_verb(self):
+        revision = self.revision()
+        self.list(self.entries() + [{"item": 1, "title": "Cancelled", "status": "cancelled", "expected_head": "f" * 40,
+                                     "finished_at": "2026-09-06T08:00:00Z"}])
+        status, _, answer = self.post("/api/queue/move", {"repo": str(self.checkout), "item": 1, "action": "requeue",
+                                                          "revision": revision, "head": "1" * 40})
+        self.assertEqual((status, answer.get("reload")), (409, True), answer)
+        self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
+
+    def test_a_requeue_the_lane_refuses_answers_with_the_packs_reason(self):
+        # Each refusal of pack sd:3389 writes nothing: a stale head or a newer entry asks the page to read again.
+        for code, want in (("stale_head", 409), ("superseded", 409), ("head_moved", 400), ("already_merged", 400)):
+            with mock.patch.dict(os.environ, {"QUEUE_REFUSE": f"refused {code}; nothing was queued", "QUEUE_CODE": code}):
+                status, _, answer = self.move("requeue", item=1, head="1" * 40)
+            self.assertEqual((code, status), (code, want), answer)
+            if code != "stale_head":
+                self.assertEqual(answer["error"], f"refused {code}; nothing was queued")
+
+    def test_a_requeue_whose_publish_is_unknown_is_an_unknown_outcome(self):
+        # `publish_unknown` also follows a push that may have landed on origin; the page cannot tell which.
+        with mock.patch.dict(os.environ, {"QUEUE_REFUSE": "origin did not answer; nothing was queued",
+                                          "QUEUE_CODE": "publish_unknown"}):
+            status, _, answer = self.move("requeue", item=1, head="1" * 40)
+        self.assertEqual((status, answer), (502, {"error": "origin did not answer; nothing was queued", "outcome": "unknown"}))
 
     def test_a_post_without_the_csrf_token_runs_nothing(self):
         status, _, _ = self.move(**{"X-SD-CSRF": "0" * 64})
@@ -701,7 +789,8 @@ class TheScript(Lane, ScreenCase):
         self.assertEqual([tuple(f) for f in found], [
             ("merging", "live", "●", "MERGING"), ("next", "queued", "◌", "NEXT"), ("next", "caution", "▲", "HELD"),
             ("building", "live", "●", "BUILDING"), ("building", "ok", "●", "BUILDING"),
-            ("blocked", "caution", "▲", "BLOCKED"), ("blocked", "caution", "▲", "BLOCKED"), ("landed", "ok", "●", "LANDED")])
+            ("blocked", "caution", "▲", "BLOCKED"), ("blocked", "caution", "▲", "BLOCKED"),
+            ("cancelled", "queued", "◌", "CANCELLED"), ("landed", "ok", "●", "LANDED")])
         self.assertIn("<b>operator acts</b>", lanes)
         self.assertIn("PR #161", lanes)
 
@@ -828,6 +917,13 @@ class TheScript(Lane, ScreenCase):
         self.assertEqual(out["posts"][0][1]["action"], "cancel")
         self.assertIn("sd:9 cancelled.", out["R"]["lanes"])
 
+    def test_cancel_names_requeue_as_the_way_back(self):
+        self.assertIn("Re-queue", self.cancel(True)["asked"]["body"])
+        with mock.patch.dict(os.environ, {"QUEUE_OLD_REQUEUE": "1"}):
+            body = self.cancel(True)["asked"]["body"]
+        self.assertIn("enqueue it again from its worktree", body)
+        self.assertNotIn("Re-queue", body)
+
     def test_cancel_kept_at_the_confirm_posts_nothing(self):
         out = self.cancel(False)
         self.assertEqual((out["posts"], out["gets"]), ([], ["/api/queue"]))
@@ -872,6 +968,43 @@ class TheScript(Lane, ScreenCase):
         with mock.patch.dict(os.environ, {"QUEUE_NO_RETRY": "1"}):
             lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
         self.assertEqual((lanes.count('data-act="retry"'), lanes.count('data-act="approve"')), (0, 0))
+
+    # sd:3398: a cancelled row offers Re-queue when the pack's retry takes a cancelled entry.
+    def test_a_cancelled_row_offers_requeue_with_its_head(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertEqual(re.findall(r'data-act="requeue" data-item="(\d+)" data-head="(\w+)"', lanes), [("1", "1" * 40)])
+        row = next(row for row in lanes.split("<li ")[1:] if 'data-state="cancelled"' in row)
+        self.assertIn('data-act="requeue"', row)
+        self.assertIn("cancelled at 07:00 · head " + "1" * 12, row)
+
+    def test_a_pack_without_requeue_shows_the_row_and_says_why_requeue_is_off(self):
+        with mock.patch.dict(os.environ, {"QUEUE_OLD_REQUEUE": "1"}):
+            lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
+        self.assertNotIn('data-act="requeue"', lanes)
+        row = next(row for row in lanes.split("<li ")[1:] if 'data-state="cancelled"' in row)
+        self.assertIn("Re-queue off:", row)
+        self.assertIn("sd:3389", row)
+
+    def test_requeue_posts_at_once_with_its_head_and_revision_and_reads_again(self):
+        revision = queue_screen.document(self.connection, now=NOW)["lanes"][0]["revision"]
+        out = self.click("requeue", 1)
+        self.assertNotIn("asked", out)
+        self.assertEqual(out["posts"][0][1], {"repo": str(self.checkout), "item": 1, "action": "requeue",
+                                              "revision": revision, "head": "1" * 40})
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
+        self.assertIn("sd:1 re-queued.", out["R"]["lanes"])
+
+    def test_a_refused_requeue_shows_the_packs_reason(self):
+        out = self.click("requeue", 1, move=(400, {"error": "origin/b1 moved; nothing was queued."}))
+        self.assertIn('<p class="fail" role="alert">sd:1 not re-queued: origin/b1 moved; nothing was queued. The queue is unchanged.</p>',
+                      out["R"]["lanes"])
+        out = self.click("requeue", 1, move=(409, {"error": "sd:1 has a newer entry.", "reload": True}))
+        self.assertIn('<p class="fail" role="alert">sd:1 not re-queued: sd:1 has a newer entry.</p>', out["R"]["lanes"])
+
+    def test_a_requeue_with_an_unknown_outcome_says_so_and_reads_again(self):
+        out = self.click("requeue", 1, move=(502, {"error": "origin did not answer.", "outcome": "unknown"}))
+        self.assertIn("Not known whether sd:1 was re-queued: origin did not answer.", out["R"]["lanes"])
+        self.assertEqual(out["gets"], ["/api/queue", "/api/queue"])
 
     def click(self, act, item, answer=True, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."})):
         """Click a blocked row's button, which carries its entry's head; a confirm answers `answer` and records what it asked."""

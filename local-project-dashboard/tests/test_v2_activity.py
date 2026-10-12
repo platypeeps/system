@@ -597,14 +597,35 @@ R.rows = ELS.rows.html; R.type = C.get('{n}').type; R.details = ELS.details.html
         self.assertEqual(len(out["posts"]), 4)
         self.assertLessEqual(out["gets"].count("/api/activity"), 3, out["gets"])
 
-    def test_retry_is_off_for_a_command_not_found(self):
-        """sd:2415. Exit 127 fails the same way on every retry until the path is fixed, as Management says."""
+    def test_retry_asks_first_and_names_the_exit_after_a_command_not_found(self):
+        """sd:3392, ruled 2026-09-30: after exit 127 Retry stays on, asks first and names the exit, and is not the row's act.
+
+        The exit is the last run's; a path fixed outside the dashboard needs Retry to test it."""
         doc = json.loads(json.dumps(self.doc))
         next(e for e in doc["events"] if e["id"] == "job:nightly-sync")["exit"] = 127
-        out = self.run_page("R.off = cmd('jobs.retry').when(C.get('job:nightly-sync'));"
-                            "R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync'));", doc=doc)
-        self.assertEqual(out["R"]["off"], "exit 127: command not found; fix the path first")
-        self.assertFalse(out["R"]["primary"])
+        out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('job:nightly-sync');
+R.on = c.when(o); R.primary = !!c.primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+shellRun(c, o); await flush();""", ACCEPTED, doc=doc)
+        self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["ask"]), (True, False, True))
+        self.assertIn("exit 127", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["jobs.retry"])
+        self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
+        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]], "the launchctl answer's wording stays")
+
+    def test_retry_after_another_exit_does_not_ask(self):
+        out = self.run_page("const c = cmd('jobs.retry'), o = C.get('job:nightly-sync'); R.ask = !!c.askFirst(o);"
+                            " R.primary = !!c.primary(o); shellRun(c, o); await flush();", ACCEPTED)
+        self.assertEqual((out["R"]["ask"], out["R"]["primary"], out["confirms"]), (False, True, []))
+
+    def test_a_bulk_retry_with_a_command_not_found_row_asks_first(self):
+        """sd:3392. A 127 row was off and left out of a bulk retry; now it is in it, so the group asks first."""
+        doc = json.loads(json.dumps(self.doc))
+        failed = next(e for e in doc["events"] if e["id"] == "job:nightly-sync")
+        doc["events"].append(dict(failed, id="job:lost-path", job="lost-path", ref="lost-path", exit=127))
+        out = self.run_page("shellBulk(cmd('jobs.retry'), [C.get('job:nightly-sync'), C.get('job:lost-path')]); await flush();",
+                            ACCEPTED, doc=doc)
+        self.assertEqual(out["confirms"], ["jobs.retry"])
+        self.assertEqual(len(out["posts"]), 2)
 
     def test_retry_words_its_toast_from_launchctls_answer(self):
         """sd:3391, as Management words it (sd:3388): a 200 carries launchctl's answer; only `accepted` started a retry."""

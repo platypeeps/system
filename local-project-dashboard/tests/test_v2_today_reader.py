@@ -304,13 +304,23 @@ R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync:7')); R.sends = cmd('jobs.
         self.assertEqual((out["R"]["primary"], out["R"]["cli"], out["R"]["sends"]),
                          (True, "sd jobs retry nightly-sync", "launchctl kickstart fixture/nightly-sync"))
 
-    def test_exit_127_keeps_retry_off_and_posts_nothing(self):
+    def test_exit_127_keeps_retry_on_and_asks_first_naming_the_exit(self):
+        """sd:3392, ruled 2026-09-30: the exit is the last run's, and a path fixed outside the dashboard needs Retry to test it."""
         self.doc["rows"][0]["exit"] = 127
-        out = self.run_page("""R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
-shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][-1]["msg"], "off: exit 127: command not found; fix the path first")
-        self.assertFalse(out["R"]["primary"])
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
+const c = cmd('jobs.retry'), o = C.get('job:nightly-sync:7');
+R.on = c.when(o); R.primary = !!c.primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+shellRun(c, o); await flush();""")
+        self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["ask"]), (True, False, True))
+        self.assertIn("exit 127", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["jobs.retry"])
+        self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
+        self.assertEqual(out["toasts"][-1]["msg"], "Retry started · nightly-sync")
+
+    def test_another_exit_retries_without_asking(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
+R.ask = !!cmd('jobs.retry').askFirst(C.get('job:nightly-sync:7')); shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+        self.assertEqual((out["R"]["ask"], out["confirms"]), (False, []))
 
     def test_a_retry_the_read_refuses_is_off_with_the_reason(self):
         self.doc["rows"][0]["capability"] = {"allowed": False, "reason": "an unresolved restore prevents starting jobs"}

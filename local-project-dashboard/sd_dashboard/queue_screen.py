@@ -1,4 +1,4 @@
-"""Queue (sd:2585): each repository's `sd-ship lane` queue, one row per item in one of five states, and its reorder.
+"""Queue (sd:2585): each repository's `sd-ship lane` queue, one row per item in one of six states, and its reorder.
 
 Reads, per request: `sd-ship -C <repo> lane list` for each managed repository, `READERS` at a time, the builder gate
 logs (`gate-*.log`) in its lane folder, `sd gate status --json` for the gate slots, and `os.getloadavg()` (macOS
@@ -6,7 +6,7 @@ logs (`gate-*.log`) in its lane folder, `sd gate status --json` for the gate slo
 no folder here; every managed repository gets its section (sd:3284). The pack owns the lane root; one `lane list`
 names it, as its `queue` path `<root>/<repo>/lane/queue/queue.json`, so this file repeats no rule for where lanes live.
 
-The five states, from each entry's `status`:
+The six states, from each entry's `status`:
 
   merging   `running`: its holder's host, its `step` and claim age (since `started_at`), and its lease's end, each as
             `lane list` prints it; a field an earlier pack did not write reads as not recorded, never guessed. A lease
@@ -16,10 +16,11 @@ The five states, from each entry's `status`:
   building  a builder gate log in the lane folder, changed in the last `BUILDING_HOURS`: empty while its gate runs.
   blocked   the newest entry of an item that `failed`, was `skipped` or stopped `prepared`, in the last `BLOCKED_DAYS`,
             with the first line of its reason.
+  cancelled the newest entry of an item that was `cancelled`, in the last `BLOCKED_DAYS`, with its head.
   landed    `merged` today, in this machine's zone, with the merge commit and the pull request its subject names.
 
 Writes: `move` runs `sd-ship -C <repo> lane move|hold|release|cancel|retry`, the queue's only writers. It compares the
-page's revision (a digest of the pending order, the holds and each blocked entry's head) with a fresh `lane list` first
+page's revision (a digest of the pending order, the holds and each blocked or cancelled entry's head) with a fresh `lane list` first
 and refuses a stale one. `move`, `hold`, `release` and `cancel` then pass the fresh list's lane revision (the pending
 order and holds, the one `lane list` prints) as `--expected-revision`, and the verb checks it again under the queue's
 lock, so a write that lands between the two checks is refused too. `cancel` needs it most: it also releases a running
@@ -34,6 +35,13 @@ the body copy the lane kept (pack sd:3254); Approve adds `--manual`, the merge g
 `runner_merge` is manual takes it. Both carry the head the row showed as `--expected-head`, which the verb checks under
 the queue's lock (pack sd:3268), so neither acts on an entry that ended at another head after the page read it. The
 page offers both only when `sd-ship lane retry --help` names `--expected-head`: an older pack cannot check the head.
+
+Re-queue acts on a cancelled row (sd:3398): `lane retry <item> --expected-head <head>` queues the cancelled entry
+again, last, at the head the row showed (pack sd:3389). The page checks first that the item's newest entry is still that
+cancelled one, so it re-queues a cancel and enqueues nothing else (operator ruling, 2026-10-11). The verb refuses a
+moved branch (`head_moved`), a newer entry (`superseded`) and a merged head (`already_merged`), each writing nothing.
+The page offers Re-queue only when `lane retry --help` names a cancelled entry; otherwise the row says why it is off,
+and a probe that failed says so, since that is not an answer.
 
 Release acts on a running row (sd:3337, D3 of pack sd:3174): `lane cancel <item> --expected-claim <claim>` releases the
 claim the row showed, in the verb's transaction (pack sd:3330). At prepare the entry goes back to pending; at merge it
@@ -63,8 +71,9 @@ GIT_SECONDS = 5
 BUILDING_HOURS = 6
 BLOCKED_DAYS = 3
 #: What the page sends as `action`: `move`'s relative places, the two hold verbs, cancel, a blocked row's retry and
-#: approve (`retry --manual`), and a running row's Release (`reclaim`, which runs `lane cancel --expected-claim`).
-ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve", "reclaim")
+#: approve (`retry --manual`), a cancelled row's Re-queue (`requeue`, which runs `lane retry`), and a running row's
+#: Release (`reclaim`, which runs `lane cancel --expected-claim`).
+ACTIONS = ("up", "down", "top", "hold", "release", "cancel", "retry", "approve", "requeue", "reclaim")
 #: The ends short of a merge that the page shows as blocked and `lane retry` takes.
 BLOCKED = ("failed", "skipped", "prepared")
 #: Who acts on a blocked entry, by its status and failed step.
@@ -72,7 +81,8 @@ WHO = {("prepared", None): "operator", ("skipped", None): "builder", ("failed", 
        ("failed", "merge"): "lane", ("failed", None): "lane"}
 #: The refusal codes of the verbs the page runs that wrote nothing: a stale check, or a definite answer before the write.
 #: Not `hub_unavailable` (a write may have landed) or `publish_unknown` (origin may have moved): those are unknown.
-REFUSED = ("stale_revision", "stale_head", "stale_claim", "holder_alive", "head_gone", "branch_diverged", "default_branch")
+REFUSED = ("stale_revision", "stale_head", "stale_claim", "holder_alive", "head_gone", "branch_diverged", "default_branch",
+           "head_moved", "superseded", "already_merged")
 EDITS = "Edits take effect at the next item boundary: the runner reads the queue again before each item, never mid-merge."
 
 
@@ -116,14 +126,23 @@ def lane_list(path: str) -> dict:
     return _run([command("sd-ship"), "-C", path, "lane", "list"], LIST_SECONDS)
 
 
-def has_retry() -> bool:
-    """Whether the installed pack's `lane retry` takes `--expected-head` (sd:3254, sd:3268); a failed probe counts as no."""
+def retry_help() -> dict:
+    """What the installed pack's `lane retry` takes, from its `--help`: `retry` when it names `--expected-head` (sd:3254,
+    sd:3268), `requeue` when it also names a cancelled entry (pack sd:3389). A failed probe offers neither; `requeue_off`
+    says why Re-queue is off, and names a failed probe as one, not as a pack without it."""
     try:
         done = subprocess.run([command("sd-ship"), "lane", "retry", "--help"], capture_output=True, text=True,
                               timeout=LIST_SECONDS, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0 and "--expected-head" in done.stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"retry": False, "requeue": False, "requeue_off": f"sd-ship lane retry --help gave no answer ({error})."}
+    if done.returncode != 0:
+        said = (done.stderr or done.stdout).strip()[-200:]
+        return {"retry": False, "requeue": False,
+                "requeue_off": f"sd-ship lane retry --help exited {done.returncode}{f': {said}' if said else ''}."}
+    retry = "--expected-head" in done.stdout
+    requeue = retry and "cancelled" in done.stdout
+    return {"retry": retry, "requeue": requeue, "requeue_off": None if requeue else
+            "the installed pack's lane retry takes no cancelled entry; it needs pack sd:3389. Enqueue it again from its worktree."}
 
 
 def lane_revision(entries: list[dict]) -> str:
@@ -138,7 +157,7 @@ def revision(entries: list[dict]) -> str:
     A run that ends blocked at another head leaves the pending order alone; this still changes (sd:3012 review).
     """
     newest = {row.get("item"): row for row in entries}
-    heads = [[item, row.get("expected_head")] for item, row in newest.items() if row.get("status") in BLOCKED]
+    heads = [[item, row.get("expected_head")] for item, row in newest.items() if row.get("status") in (*BLOCKED, "cancelled")]
     return hashlib.sha256(json.dumps([lane_revision(entries), heads]).encode()).hexdigest()[:16]
 
 
@@ -185,9 +204,9 @@ def _building(lane: Path, now: float) -> list[dict]:
 
 
 def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict]:
-    """The lane's rows in page order: merging, next, building, blocked, landed."""
+    """The lane's rows in page order: merging, next, building, blocked, cancelled, landed."""
     today = time.strftime("%Y-%m-%d", time.localtime(now))
-    merging, following, blocked, landed = [], [], [], []
+    merging, following, blocked, cancelled, landed = [], [], [], [], []
     newest = {row.get("item"): row for row in entries}  # later entries of an item replace earlier ones
     for entry in entries:
         status, item = entry.get("status"), entry.get("item")
@@ -217,13 +236,19 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
                 blocked.append({**base, "state": "blocked", "status": status, "step": entry.get("step"),
                                 "reason": reason, "who": who, "finished": entry.get("finished_at"),
                                 "head": head[:12], "expected_head": head})
+        elif status == "cancelled" and newest.get(item) is entry:
+            finished = _when(entry.get("finished_at"))
+            if finished and now - finished <= BLOCKED_DAYS * 86400:
+                head = str(entry.get("expected_head") or "")
+                cancelled.append({**base, "state": "cancelled", "finished": entry.get("finished_at"),
+                                  "head": head[:12], "expected_head": head})
         elif status == "merged":
             finished = _when(entry.get("finished_at"))
             if finished and time.strftime("%Y-%m-%d", time.localtime(finished)) == today:
                 commit = str(entry.get("merge_commit") or "")
                 landed.append({**base, "state": "landed", "commit": commit[:12] or None,
                                "pr": _pr(path, commit) if commit else None, "finished": entry.get("finished_at")})
-    return merging + following + _building(lane, now) + blocked + landed[::-1]
+    return merging + following + _building(lane, now) + blocked + cancelled + landed[::-1]
 
 
 def _load() -> dict:
@@ -263,13 +288,14 @@ def document(connection, *, now: str = "") -> dict:
                       "rows": rows(entries, path=path, lane=lane, now=clock)})
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": _gates(),
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
-            "managed": len(managed), "retry": has_retry() if lanes else False}
+            "managed": len(managed),
+            **(retry_help() if lanes else {"retry": False, "requeue": False, "requeue_off": None})}
 
 
 def move(payload: dict):
     """Check the page's request, then return the write: a best-effort revision check, then one lane verb."""
     values = dict(payload)
-    again, reclaim = values.get("action") in ("retry", "approve"), values.get("action") == "reclaim"
+    again, reclaim = values.get("action") in ("retry", "approve", "requeue"), values.get("action") == "reclaim"
     if (set(values) != {"repo", "item", "action", "revision", *(("head",) if again else ()), *(("claim",) if reclaim else ())}
             or not isinstance(values["repo"], str)
             or type(values["item"]) is not int or not 1 <= values["item"] <= 9223372036854775807
@@ -277,9 +303,9 @@ def move(payload: dict):
             or (again and not (isinstance(values["head"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", values["head"])))
             or (reclaim and not (isinstance(values["claim"], str) and len(values["claim"]) <= 200
                                  and all(values["claim"].partition(":")[::2])))):
-        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry, approve or "
-                         "reclaim, the lane's revision, for retry or approve the full head the row showed, and for "
-                         "reclaim the claim it showed.")
+        raise ValueError("Name the repository, the item, one of up, down, top, hold, release, cancel, retry, approve, "
+                         "requeue or reclaim, the lane's revision, for retry, approve or requeue the full head the row "
+                         "showed, and for reclaim the claim it showed.")
 
     def write(connection):
         from sd_db import repos, workflow
@@ -297,6 +323,11 @@ def move(payload: dict):
         if revision(entries) != values["revision"]:
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
         item, action = str(values["item"]), values["action"]
+        last = [row for row in entries if row.get("item") == values["item"]][-1:]
+        if action == "requeue" and not (last and last[0].get("status") == "cancelled"):
+            # The operator's ruling (sd:3398): Re-queue takes back a cancel; it enqueues nothing new.
+            raise ValueError(f"sd:{item}'s last entry in this lane is {last[0].get('status') if last else 'missing'}; "
+                             "Re-queue takes only a cancelled one.")
         verb = (["move", item, action] if action in ("up", "down", "top")
                 else ["retry", item, "--expected-head", values["head"]] if again
                 else ["cancel", item, "--expected-claim", values["claim"]] if reclaim else [action, item])
@@ -311,6 +342,8 @@ def move(payload: dict):
             return 502, {"error": answer.get("error") or "sd-ship lane gave no answer.", "outcome": "unknown"}
         if answer.get("code") in ("stale_revision", "stale_head"):
             raise workflow.StaleItem("The queue changed since the page read it. Read it again, then retry.")
+        if answer.get("code") == "superseded":
+            raise workflow.StaleItem(answer.get("error") or f"sd:{item} has a newer entry than the cancelled one.")
         if answer.get("code") == "stale_claim":
             raise workflow.StaleItem(f"sd:{item} moved on since the page read it: its step changed, another claim holds "
                                      "it, or it ended. Nothing was released. Read it again, then retry.")
