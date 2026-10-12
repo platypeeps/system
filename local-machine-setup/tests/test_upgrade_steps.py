@@ -29,13 +29,16 @@ LIB = FOLDER.parent / "lib"
 # One formula is outdated, so upgrade-report runs the sweep. With BREW_HANG
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
 # BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
-# outdated only when asked with --greedy.
+# outdated only when asked with --greedy. BREW_DEPENDENT names an outdated
+# formula that depends on the pinned one (awscli on python@3.14).
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula
-                                [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
+                                [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED"
+                                [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "list --pinned") [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
+  "uses --installed --recursive $BREW_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
@@ -162,7 +165,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
         self.assertIn("timed out after 2s: brew upgrade", result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
@@ -174,7 +177,8 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "upgrade", "upgrade --cask --greedy", "claude update", "cleanup --prune=all"])
+                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "claude update",
+                          "cleanup --prune=all"])
         self.assertRegex(result.stderr, STEP.format(re.escape(str(self.home / ".local/bin/claude")) + " update", 600))
 
     def test_a_quiet_week_still_updates_claude_code(self):
@@ -327,6 +331,30 @@ class UpgradeStepTest(unittest.TestCase):
         body = "\n".join(mail)
         self.assertIn("held (pinned):\n  python@3.14", body)
         self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
+        self.assertIn("upgrade: 0 upgraded, 1 still outdated", mail[1])
+
+    def test_a_formula_a_pin_holds_back_is_left_out_of_the_upgrade(self):
+        """sd:3329: brew upgrade refused awscli while python@3.14 was pinned
+        and outdated ("You must `brew unpin python@3.14`") and exited 1, so
+        the step failed every week. The sweep now upgrades the rest by name."""
+        result = self.run_verb("upgrade", "--apply", BREW_PINNED="python@3.14", BREW_DEPENDENT="awscli")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.brew_calls()
+        self.assertIn("upgrade example-formula", calls)
+        self.assertNotIn("upgrade", calls)
+        self.assertEqual([c for c in calls if c.startswith("upgrade") and "awscli" in c], [])
+        self.assertIn("held    awscli python@3.14", result.stdout)
+
+    def test_the_report_lists_a_formula_a_pin_holds_back_as_held(self):
+        result = self.run_verb("upgrade-report", BREW_PINNED="python@3.14", BREW_DEPENDENT="awscli")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mail = self.sends()[0]
+        body = "\n".join(mail)
+        self.assertIn("held (pinned):\n  awscli\n  python@3.14", body)
+        self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n", body)
+        self.assertNotIn("failed steps", body)
         self.assertIn("upgrade: 0 upgraded, 1 still outdated", mail[1])
 
     def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
