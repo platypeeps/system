@@ -22,6 +22,11 @@ port adds no collector:
 - Credentials (sd:2203): the latest `credentials:nightly` heartbeat that
   `sd-db credentials` writes each night: presence, validity and expiry,
   never a value. Expiry is judged against the request's time.
+- Doctor (sd:3393): `health_collectors.doctor_scan`, `machine-setup.sh
+  doctor` in a child under its own deadline. Its answer is kept for
+  `DOCTOR_FRESH_SECONDS`, since the doctor runs `brew doctor`; the page waits
+  at most `DOCTOR_WAIT_SECONDS` for a run, and a run still going, stopped or
+  failed is the area's error, never a clean lamp.
 
 The design source shows nine areas; the page leaves out its Attribution
 (sd:3011). The parts no reader covers are in the
@@ -30,12 +35,14 @@ the page says what it does not read instead of showing a clean lamp. A
 reader that fails is its area's `error`, never an empty area: a fleet
 nobody could read must not look like a fleet with nothing wrong.
 
-Nothing here writes. The page's fixes are CLI lines for Copy; no route
-prunes a worktree.
+Nothing here writes. Prune, Delete merged and Remove build output post
+`/api/health/cleanup` (`health_cleanup`) with the row's `revision`, which
+`health_collectors` computes the same way the write does.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import shlex
 import sqlite3
@@ -69,6 +76,7 @@ AREAS = (
     ("sec", "Security", "sd shadow sync → repo_protection alerts · security_and_analysis · secret-scanning/alerts per public managed repo", ()),
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
+    ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
 )
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
 CHECKS = GAPS + FLAGS
@@ -95,6 +103,9 @@ def _worktree_rows(document) -> list[dict]:
     for tree in trees:
         if tree["state"] in ("abandoned", "unknown"):
             by_repo.setdefault((tree["state"], tree["repo"]), []).append(tree)
+    # What Prune acts on: every registration of the checkout that is not live, as the write reads it again.
+    revisions = {repo: health_collectors.registrations_revision(repo, [tree for tree in trees if tree["repo"] == repo])
+                 for _, repo in by_repo}
     rows = []
     for (state, repo), found in sorted(by_repo.items()):
         path = str(Path(root) / repo)
@@ -106,7 +117,8 @@ def _worktree_rows(document) -> list[dict]:
                 "what": f"{repo}: {count} {_plural(count, 'worktree', 'worktrees')} registered, directory gone",
                 "detail": " · ".join(tree.get("branch") or "?" for tree in found),
                 "kind": "Worktrees · directory gone", "facts": {"Repo": path, "Registered": str(count)},
-                "list": listed,
+                "list": listed, "revision": revisions[repo],
+                "unreadable": len(by_repo.get(("unknown", repo), [])),
             })
         else:
             rows.append({
@@ -264,6 +276,7 @@ def _branch_rows(scan: dict) -> list[dict]:
                           "Newest": dates[-1] if dates else "—"},
                 "list": [f"{branch} · {date or '?'}" for branch, date in found],
                 "cli": f"git -C {shlex.quote(path)} branch -d {' '.join(shlex.quote(branch) for branch in names)}",
+                "branches": names, "revision": repo.get("revision"),
             })
         if repo["checked_out"]:
             found = repo["checked_out"]
@@ -356,14 +369,20 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
     build = scan["build"]
     if build["merged"]:
         merged = build["merged"]
+        # Only a clean worktree's folders go; one with uncommitted changes is listed and kept.
+        clean = [tree for tree in merged if not tree.get("status")]
+        remove = [f"{tree['path']}/{name}" for tree in clean for name in tree["dirs"]]
         rows.append({
             "id": "build:merged", "state": "caution", "type": "build output",
             "what": f"{len(merged)} merged {_plural(len(merged), 'worktree keeps', 'worktrees keep')} build output",
             "detail": " · ".join(tree["path"] for tree in merged), "kind": "Disk · worktree build output",
             "facts": {"Rule": "delete build output once the PR merges (2026-09-25)", "Checked": f"{build['checked']} worktrees",
-                      "Found": str(len(merged))},
-            "list": [f"{tree['path']} · {', '.join(name + '/' for name in tree['dirs'])} · {tree['branch'] or 'detached'}" for tree in merged],
-            "cli": "\n".join(f"rm -rf {shlex.quote(tree['path'] + '/' + name)}" for tree in merged for name in tree["dirs"]),
+                      "Found": str(len(merged)), "Clean": str(len(clean))},
+            "list": [f"{tree['path']} · {', '.join(name + '/' for name in tree['dirs'])} · {tree['branch'] or 'detached'}"
+                     + ("" if tree in clean else " · uncommitted changes: kept") for tree in merged],
+            "cli": "\n".join(f"rm -rf {shlex.quote(path)}" for path in remove) or "no clean worktree: nothing to remove",
+            "remove": remove, "kept": [tree["path"] for tree in merged if tree not in clean],
+            "revision": build.get("revision"),
         })
     else:
         rows.append({
@@ -378,7 +397,7 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
     if build["unread"]:
         rows.append({"id": "build:unread", "state": "unknown", "type": "check",
                      "what": f"{len(build['unread'])} {_plural(len(build['unread']), 'worktree', 'worktrees')} with build output: merge not read",
-                     "detail": "git merge-base --is-ancestor failed, so nobody can say whether the branch merged",
+                     "detail": "git merge-base --is-ancestor or git status failed, so nobody can say whether it may go",
                      "kind": "Disk · worktree build output", "facts": {"Worktrees": str(len(build["unread"]))},
                      "list": list(build["unread"])})
     return rows, {"volumes": volumes}
@@ -619,12 +638,40 @@ def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[
     return rows, {"at": stamp}
 
 
+DOCTOR_CLI = "local-machine-setup/machine-setup.sh doctor"
+DOCTOR_STATE = {"FAIL": "warning", "WARN": "caution"}
+
+
+def _doctor_rows(found: dict) -> tuple[list[dict], dict]:
+    """A row per WARN and FAIL line, then one row with the lines that pass, are skipped or are context."""
+    rows = []
+    for check in found["checks"]:
+        if check["mark"] in DOCTOR_STATE:
+            text = check["text"]
+            rows.append({"id": "doc:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
+                         "state": DOCTOR_STATE[check["mark"]], "type": "check", "what": text.split(" — ")[0],
+                         "detail": " ".join([text, *check["more"]]), "kind": f"Doctor · {check['mark']}",
+                         "facts": {"Line": check["mark"]}, "cli": DOCTOR_CLI})
+    passed = [check for check in found["checks"] if check["mark"] == "ok"]
+    rest = [check for check in found["checks"] if check["mark"] in ("--", "SKIP")]
+    rows.append({"id": "doc:ok", "state": "ok", "type": "check",
+                 "what": f"{len(passed)} doctor {_plural(len(passed), 'check passes', 'checks pass')}",
+                 "detail": f"{len(rest)} not checked here · {found['fails']} hard {_plural(found['fails'], 'failure', 'failures')}",
+                 "kind": "Doctor", "facts": {"Passed": str(len(passed)), "Not checked": str(len(rest))},
+                 "list": [f"{check['mark']} · {check['text']}" for check in passed + rest] + found["other"],
+                 "cli": DOCTOR_CLI})
+    return rows, {}
+
+
 #: The whole document's budget. The readers run at once, each inside its own budget, the fleet's 12 seconds the
 #: longest, so this is that figure and a margin; a reader still running at it is its area's error.
 PAGE_SECONDS = 13.0
 #: The areas whose reader walks subprocesses, each on its own scan thread; Protection, Dependencies, Security and
 #: Credentials read only the database, on this thread.
-POOLED = ("disk", "wt", "br", "ports")
+POOLED = ("disk", "wt", "br", "ports", "doc")
+#: How long a doctor answer stands before a page read starts another run, and how long a page waits on a run in flight.
+DOCTOR_FRESH_SECONDS = 600
+DOCTOR_WAIT_SECONDS = 2.0
 
 
 class _Scans:
@@ -644,13 +691,22 @@ class _Scans:
         self.running: dict[str, tuple[str, Future]] = {}
         self.last: dict[str, tuple[str, object]] = {}
 
-    def start(self, key: str, read, *, now: str) -> tuple[str, Future, bool]:
-        """The area's scan, the time it started and whether it was already running."""
+    def start(self, key: str, read, *, now: str, fresh: float | None = None) -> tuple[str, Future, bool]:
+        """The area's scan, the time it started and whether it was already running.
+
+        With `fresh`, an answer younger than that many seconds is handed back as a finished scan and nothing runs; a
+        failed run drops the kept answer, so the next read runs again rather than show the answer before the failure.
+        """
         with self.lock:
             running, last = self.running, self.last
             held = running.get(key)
             if held and not held[1].done():
                 return held[0], held[1], True
+            kept = last.get(key)
+            if fresh is not None and kept and 0 <= (_when(now) - _when(kept[0])).total_seconds() < fresh:
+                future = Future()
+                future.set_result(kept[1])
+                return kept[0], future, False
             future: Future = Future()
             running[key] = (now, future)
 
@@ -658,6 +714,9 @@ class _Scans:
             try:
                 found = read()
             except BaseException as failure:  # noqa: BLE001 - the request that reads the future settles it
+                if fresh is not None:
+                    with self.lock:
+                        last.pop(key, None)
                 future.set_exception(failure)
             else:
                 with self.lock:
@@ -692,7 +751,7 @@ def _settle(area: dict, name: str, read) -> None:
 
 
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
-             disk=None, branches=None, credentials=None) -> dict:
+             disk=None, branches=None, credentials=None, doctor=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, `ports`
@@ -733,6 +792,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     read_creds = credentials or read_credentials
     scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
     scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
+    read_doctor = doctor or (lambda: health_collectors.doctor_scan())
     readers = {
         "disk": lambda: _disk_rows(scan_disk(connection)),
         "wt": lambda: _worktree_rows(read_fleet("sessions")),
@@ -742,9 +802,11 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "dep": lambda: _dependency_rows(read_protection(connection), now=now),
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
+        "doc": lambda: _doctor_rows(read_doctor()),
     }
     snoozes, snooze_error = snooze.held(connection, now=now)
-    running = {key: _SCANS.start(key, readers[key], now=now) for key in POOLED}
+    running = {key: _SCANS.start(key, readers[key], now=now, fresh=DOCTOR_FRESH_SECONDS if key == "doc" else None)
+               for key in POOLED}
     stop = time.monotonic() + PAGE_SECONDS
     areas = []
     for key, name, source, missing in AREAS:
@@ -752,10 +814,14 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                 "rows": [], "missing": list(missing), "at": now if key in readers else None, "extra": {}}
         if key in running:
             since, scan, joined = running[key]
+            # The doctor is last in AREAS: the page has waited on the others, and gives it only a short wait more.
+            wait = max(0.0, stop - time.monotonic())
             try:
-                scan.result(timeout=max(0.0, stop - time.monotonic()))
+                scan.result(timeout=min(wait, DOCTOR_WAIT_SECONDS) if key == "doc" else wait)
             except FutureTimeout:
-                why = (f"the {name} reader was still running at the page's budget of {PAGE_SECONDS:g} "
+                why = (f"machine-setup.sh doctor started at {since} and is still running (its deadline is "
+                       f"{health_collectors.DOCTOR_SECONDS:g} seconds); read Health again for its answer" if key == "doc" else
+                       f"the {name} reader was still running at the page's budget of {PAGE_SECONDS:g} "
                        "seconds and was left rather than waited on")
                 if joined:
                     why += f"; that scan started at {since}, and no second one starts while it runs"
