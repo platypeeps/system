@@ -944,9 +944,9 @@ addEventListener('DOMContentLoaded', () => {
       await write(t.key, x => `/api/items/${x.id}/notes`, { body: title, kind: 'comment' }); redrawDet(t.id);
       return `Note added to ${label(t)}`;
     }
-    const out = await window.shell.post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+    const said = await window.shell.fileCapture({ kind, title, item });
     await reread();
-    return `Captured #${out.item?.id}: ${out.item?.title || title}`;
+    return said;
   };
 
   // ---------- Start (build, sd:2484: shell.read reads /api/tasks, then draws; it rereads after each landed write) ----------

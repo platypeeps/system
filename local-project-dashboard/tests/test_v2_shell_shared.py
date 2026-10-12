@@ -19,7 +19,7 @@ import re
 import subprocess
 import unittest
 
-from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, STAND_IN, V2
+from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SHELL_JS, STAND_IN, V2
 from test_v2_today import OSASCRIPT
 
 STATIC = V2 / "static"
@@ -125,6 +125,65 @@ class TheFetchHelpers(unittest.TestCase):
         self.assertEqual(out["bad"], ["HTTP 400", False])
         self.assertEqual(out["read"], "changed since")
         self.assertEqual(out["posts"][0], ["/fine", {"a": 1}, 64])
+
+
+# sd:3520: the shell files every capture. A page hook only adds to it; with none, the dialog still files a row.
+CAPTURE = re.search(r"^  // capture:start\n(.*?)^  // capture:end$", SHELL_JS, re.S | re.M)
+
+
+def run_capture(case, body):
+    case.assertIsNotNone(CAPTURE, "shell.js has no capture:start block, so a page without SHELL_CAPTURE files nothing")
+    return run_js(CAPTURE.group(1) + body)
+
+
+class TheDefaultCapture(unittest.TestCase):
+    """sd:3520: a capture on a page without its own hook files a row, and a toast says Captured only with the new id."""
+
+    def test_a_task_or_followup_posts_to_api_items_and_names_the_new_id(self):
+        out = run_capture(self, """ANSWER = (path, body) => [201, { item: { id: 77, title: body.title } }];
+  R.task = await fileCapture({ kind: 'task', title: 'Read it' });
+  R.followup = await fileCapture({ kind: 'followup', title: 'Then this', item: 12 });
+  R.p = await fileCapture({ kind: 'task', title: 'Ship it p1 today' });
+  R.posts = OUT.posts;""")
+        self.assertEqual(out["task"], "Captured sd:77: Read it")
+        self.assertEqual(out["followup"], "Captured sd:77: Then this")
+        self.assertEqual(out["posts"], [["/api/items", {"title": "Read it"}, 64],
+                                        ["/api/items", {"title": "Then this", "kind": "followup", "followup_of": 12}, 64],
+                                        ["/api/items", {"title": "Ship it today", "priority": 1}, 64]])
+        self.assertEqual(out["p"], "Captured sd:77: Ship it today")
+
+    def test_a_note_reads_the_items_revision_then_posts_the_note(self):
+        out = run_capture(self, """ANSWER = path => path === '/api/items/12/capture-context' ? [200, { item: { id: 12 }, revision: 'r'.repeat(64) }] : [200, {}];
+  R.note = await fileCapture({ kind: 'note', title: 'Seen it', item: 12 });
+  R.gets = OUT.gets; R.posts = OUT.posts;""")
+        self.assertEqual(out["note"], "Note added to sd:12")
+        self.assertEqual(out["gets"], ["/api/items/12/capture-context"])
+        self.assertEqual(out["posts"], [["/api/items/12/notes", {"body": "Seen it", "kind": "comment", "revision": "r" * 64}, 64]])
+
+    def test_a_refusal_says_not_filed_and_no_answer_says_not_known(self):
+        out = run_capture(self, """ANSWER = path => [400, { error: 'A title is required.' }];
+  R.refused = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  ANSWER = path => { throw new TypeError('Load failed'); };
+  R.lost = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  ANSWER = path => [201, {}];
+  R.empty = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  R.noRow = await fileCapture({ kind: 'note', title: 'x', item: null }).catch(e => e.message);""")
+        self.assertEqual(out["refused"], "Not filed: A title is required.")
+        self.assertEqual(out["lost"], "Not known if it filed: Load failed. Look in Tasks before you capture it again.")
+        self.assertEqual(out["empty"], "Not known if it filed: the server named no item. Look in Tasks before you capture it again.")
+        self.assertEqual(out["noRow"], "Not filed: select a row that has an item first")
+
+    def test_the_dialog_files_through_the_page_hook_or_the_default_and_never_toasts_captured_itself(self):
+        close = re.search(r"cap\.onclose = .*?\n    modal\(cap, inp\);", SHELL_JS, re.S)
+        self.assertIsNotNone(close)
+        self.assertIn("(window.SHELL_CAPTURE || fileCapture)(", close.group(0))
+        self.assertNotIn("'Captured'", close.group(0))
+        self.assertNotIn("Note added", close.group(0))
+
+    def test_only_tasks_keeps_a_page_hook(self):
+        # Today's and Briefs' hooks filed the same POST the shell now files; Tasks keeps its own to reread its board.
+        hooks = sorted(name for name, js in PAGE_JS.items() if re.search(r"window\.SHELL_CAPTURE\s*=", js))
+        self.assertEqual(hooks, ["tasks.js"])
 
 
 class TheSharedRules(unittest.TestCase):

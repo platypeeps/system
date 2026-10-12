@@ -629,6 +629,30 @@
   put(cap, html`<h2 id="cap-h"></h2>`);
   body.append(cap); trap(cap);
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
+  // capture:start
+  // build (sd:3520): the shell files every capture, so no page drops one. A task or followup is POST /api/items; a note is
+  // POST /api/items/<id>/notes with the revision /api/items/<id>/capture-context reads. It answers "Captured sd:N" with the
+  // new id, or throws "Not filed" with the reason; an error with no status got no answer, so whether it filed is not known.
+  async function fileCapture({ kind, title, item }) {
+    const unknown = why => new Error(`Not known if it filed: ${why}. Look in Tasks before you capture it again.`);
+    try {
+      if (kind === 'note') {
+        if (!item) throw Object.assign(new Error('select a row that has an item first'), { status: 0 });
+        const { revision } = await getJSON(`/api/items/${item}/capture-context`).catch(e => { throw Object.assign(e, { status: 0 }); });
+        await post(`/api/items/${item}/notes`, { body: title, kind: 'comment', revision });
+        return `Note added to sd:${item}`;
+      }
+      // A p1 to p4 in the text is the priority, as Today's field shows it, and leaves the title.
+      const p = title.match(/\bp([1-4])\b/i), named = p ? title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim() : title;
+      const out = await post('/api/items', { title: named, ...(p ? { priority: +p[1] } : {}), ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+      if (!out.item?.id) throw unknown('the server named no item');
+      return `Captured sd:${out.item.id}: ${out.item.title || named}`;
+    } catch (e) {
+      if (e.message.startsWith('Not known')) throw e;
+      throw e.status === undefined ? unknown(e.message) : new Error(`Not filed: ${e.message}`);
+    }
+  }
+  // capture:end
   // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
   function openCapture(target, text = '') {
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
@@ -655,9 +679,11 @@
       cli.textContent = k === 'note' ? `sd task note ${about.item} --kind comment --body ${t}` : `sd task add${k === 'followup' ? ' --kind followup' : ''} ${t}${o && o.item ? ` --followup-of ${o.item}` : ''}`;
     };
     inp.value = text; f.addEventListener('input', upd); upd();
-    // build: a page that files captures sets window.SHELL_CAPTURE({ kind, title, item, about }) → Promise<toast text>.
-    cap.onclose = () => { if (cap.returnValue === 'yes' && inp.value.trim() && window.SHELL_CAPTURE) { window.SHELL_CAPTURE({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, about: o }).then(toast, e => toast(String(e.message || e))); return; }
-      if (cap.returnValue === 'yes' && inp.value.trim()) { const v = inp.value.trim(); toast(`${f.kind.value === 'note' ? 'Note added' : 'Captured'}: ${v}`, () => { toast('Capture removed. The text is back in Capture.'); openCapture(o, v); }); } };
+    // build: a page that must do more (Tasks rereads its board) sets window.SHELL_CAPTURE({ kind, title, item, about }) →
+    // Promise<toast text>; every other page files through fileCapture. A refusal opens the dialog again with the text.
+    cap.onclose = () => { if (cap.returnValue !== 'yes' || !inp.value.trim()) return; const v = inp.value.trim();
+      (window.SHELL_CAPTURE || fileCapture)({ kind: f.kind.value, title: v, item: about ? about.item : null, about: o })
+        .then(toast, e => { const m = String(e.message || e); toast(m); if (m.startsWith('Not filed')) openCapture(o, v); }); };
     modal(cap, inp);
   }
 
@@ -1067,7 +1093,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);
