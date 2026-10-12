@@ -6,9 +6,12 @@ loads its script before `shell.js`, and the old listing is retired
 server serves (`documents.roots`, `documents.documents`), with each file's
 title, h1 and stand line, its derived kind and its render state, and names a
 key two checkouts claim. The page registers the design's Documents commands
-with the design's ids, labels, keys and risks. Pin, hide and tag are off with
-the store's reason, Disable render is off because no switch exists, Render and
-Request are copy only, and no command declares an Undo: the page sends nothing.
+with the design's ids, labels, keys and risks. Pin, hide and tag are the
+workflow database's view state (sd:3428): each row carries it, each command
+posts `/api/documents/view` with Undo, the Hidden filter shows the hidden
+files, and a store that was not read turns the six off with its reason.
+Disable render is off because no switch exists, and Render and Request are
+copy only.
 
 `documents.js` runs under JavaScriptCore (osascript) against the stand-in page
 and shell `test_v2_tasks` uses. The browser half is a manual check: the pull
@@ -23,9 +26,12 @@ import os
 import re
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from sd_db import connect, writes
 
 from sd_dashboard import documents, documents_screen, server, v2
 
@@ -164,9 +170,74 @@ class TheDocument(ScreenCase):
                      '<body><p class="lede">The lede line.</p></body></html>', T0)
         self.assertEqual(documents_screen.facts(path)["desc"], "The lede line.")
 
-    def test_no_store_is_claimed(self):
-        self.assertEqual(self.doc["store"], {"available": False, "reason": documents_screen.STORE_REASON})
+    def test_with_no_connection_the_store_is_not_claimed(self):
+        self.assertEqual(self.doc["store"]["available"], False)
+        self.assertIn("not read", self.doc["store"]["reason"])
         self.assertEqual((self.doc["read"], self.doc["config"]), (NOW, "<config>/project-dashboard/documents.conf"))
+
+
+class TheViewState(ScreenCase):
+    """Pin, hide and tag (sd:3428): the pack's `view` rows, keyed `<root key>/<file>`, on each row the page lists."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture(self.base)
+        self.conf = self.base / "none.conf"
+
+    def read(self, connection):
+        doc = documents_screen.document(connection, now=NOW, config_path=self.conf, repo_root=self.base)
+        return doc, {f"{r['key']}/{r['file']}": r for r in doc["documents"]}
+
+    def test_each_row_carries_its_pin_hide_and_tags(self):
+        writes.set_view(self.connection, "lab/plan.html", pinned=True, tags=["q4", "board"])
+        writes.set_view(self.connection, "civic/brief.html", hidden=True)
+        doc, rows = self.read(self.connection)
+        self.assertEqual(doc["store"], {"available": True, "reason": ""})
+        state = {key: (row["pinned"], row["hidden"], row["tags"]) for key, row in rows.items()}
+        self.assertEqual(state, {"civic/brief.html": (False, True, []), "lab/orphan.html": (False, False, []),
+                                 "lab/plan.html": (True, False, ["q4", "board"]), "lab/overview.html": (False, False, [])})
+
+    def test_a_view_for_a_file_no_longer_served_lists_nothing(self):
+        writes.set_view(self.connection, "lab/gone.html", pinned=True)
+        doc, rows = self.read(self.connection)
+        self.assertNotIn("lab/gone.html", rows)
+        self.assertTrue(doc["store"]["available"])
+
+    def test_an_unread_store_hides_nothing_and_says_why(self):
+        # A failed read is not a negative answer: the page must know the hidden file shows only because nothing was read.
+        writes.set_view(self.connection, "civic/brief.html", hidden=True)
+        closed = connect(self.path)
+        closed.close()
+        doc, rows = self.read(closed)
+        self.assertEqual(doc["store"]["available"], False)
+        self.assertIn("not read", doc["store"]["reason"])
+        self.assertEqual(rows["civic/brief.html"]["hidden"], False)
+
+    def test_a_pack_without_the_view_store_says_to_pull_it(self):
+        # A command pack from before sd:3430 has neither reader nor writer; the page still lists every file.
+        with mock.patch.object(documents_screen, "writes", types.SimpleNamespace()):
+            doc, rows = self.read(self.connection)
+            self.assertEqual(len(rows), 4)
+            self.assertIn("pull it", doc["store"]["reason"])
+            with self.assertRaisesRegex(ValueError, "pull it"):
+                documents_screen.request({"root": "lab", "file": "plan.html", "pinned": True},
+                                         config_path=self.conf, repo_root=self.base)
+
+    def test_a_write_names_a_served_file_and_a_field(self):
+        ask = lambda payload: documents_screen.request(payload, config_path=self.conf, repo_root=self.base)
+        for payload in ({}, {"root": "lab", "file": "plan.html"}, {"root": "lab", "file": "plan.html", "pinned": True, "seen": 1},
+                        {"root": "lab", "pinned": True}, {"root": 1, "file": "plan.html", "pinned": True},
+                        {"root": "lab", "file": "gone.html", "pinned": True}, {"root": "lab", "file": "../x.html", "hidden": True},
+                        {"root": "twin", "file": "x.html", "pinned": True}):
+            with self.assertRaises(ValueError, msg=payload):
+                ask(payload)
+        write = ask({"root": "lab", "file": "plan.html", "pinned": True, "tags": ["q4"]})
+        self.assertEqual(write(self.connection), {"key": "lab/plan.html", "pinned": True, "hidden": False, "tags": ["q4"]})
+        # A field left out keeps its value: Undo of a pin posts pinned alone.
+        self.assertEqual(ask({"root": "lab", "file": "plan.html", "pinned": False})(self.connection),
+                         {"key": "lab/plan.html", "pinned": False, "hidden": False, "tags": ["q4"]})
+        self.assertEqual(writes.views(self.connection), {"lab/plan.html": {"pinned": False, "hidden": False, "tags": ["q4"]}})
 
 
 class ThePage(BrowserSession):
@@ -180,6 +251,25 @@ class ThePage(BrowserSession):
         self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "documents.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
+
+    def test_a_view_write_lands_and_the_next_read_carries_it(self):
+        base = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture(base)
+        cookie = {"Cookie": self.cookie}
+        with mock.patch.object(documents, "REPO_ROOT", base), mock.patch.object(documents, "CONFIG", base / "none.conf"):
+            status, _, out = self.post("/api/documents/view", {"root": "lab", "file": "plan.html", "hidden": True})
+            self.assertEqual((status, out), (200, {"key": "lab/plan.html", "pinned": False, "hidden": True, "tags": []}))
+            # The pack judges the values: a tag past its limit is the library's 400, and nothing is written.
+            status, _, out = self.post("/api/documents/view", {"root": "lab", "file": "plan.html", "tags": ["x" * 65]})
+            self.assertEqual(status, 400, out)
+            self.assertEqual(self.post("/api/documents/view", {"root": "lab", "file": "gone.html", "pinned": True})[0], 400)
+            # The session and CSRF rules every write keeps.
+            self.assertEqual(self.post("/api/documents/view", {"root": "lab", "file": "plan.html", "pinned": True},
+                                       **{"X-SD-CSRF": "0" * 64})[0], 403)
+            doc = json.loads(self.request("/api/documents", headers=cookie)[2])
+        rows = {f"{r['key']}/{r['file']}": r for r in doc["documents"]}
+        self.assertEqual((rows["lab/plan.html"]["hidden"], rows["lab/plan.html"]["tags"]), (True, []))
+        self.assertEqual(doc["store"], {"available": True, "reason": ""})
 
     def test_the_rail_opens_the_new_page_and_the_old_listing_is_retired(self):
         self.assertEqual(v2.SECTIONS.get("Documents"), "/documents")
@@ -220,6 +310,13 @@ class TheScript(ScreenCase):
         # The page shows the paths the document gives; a fixed one keeps the expected lines readable.
         for root in self.doc["roots"]:
             root["path"] = f"~/repos/{root['key']}/docs/dashboard"
+        # The view store answered (sd:3428); the case that it did not sets its own.
+        self.doc["store"] = {"available": True, "reason": ""}
+
+    def rows_of(self, **views):
+        """The document with each named row's view state set, as the server lists it after a write."""
+        for row in self.doc["documents"]:
+            row.update(views.get(f"{row['key']}/{row['file']}", {}))
 
     def run_page(self, body, answer=None, search="", row="null", shell_more=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
@@ -289,20 +386,89 @@ class TheScript(ScreenCase):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
 
-    def test_view_state_is_off_with_the_store_reason_and_nothing_declares_an_undo(self):
+    def test_an_unread_store_turns_view_state_off_with_its_reason_and_posts_nothing(self):
+        reason = "the view store was not read: boom"
+        self.doc["store"], self.doc["contested"] = {"available": False, "reason": reason}, []
         out = self.run_page("""const d = C.get('lab/plan.html');
-C.put({ id: 'tag:x', type: 'document tag', doc: d, tag: 'x', label: 'x' });
+C.put({ id: 'tag:x', type: 'document tag', doc: d, tag: 'x', label: 'x' }); document.getElementById('tag-in').value = 'q4';
 const ids = ['document.pin', 'document.unpin', 'document.hide', 'document.unhide', 'document.tag', 'document.untag'];
 R.when = ids.map(id => cmd(id).when(cmd(id).on === 'document tag' ? C.get('tag:x') : d));
-R.undo = REG.filter(c => c.undo).map(c => c.id);
-REG.forEach(c => shellRun(c, c.on === 'document tag' ? C.get('tag:x') : c.on === 'document' ? d : C.get('draft:request'))); await flush();""")
-        reason = documents_screen.STORE_REASON
-        # Unpin and Unhide say first that the row is not pinned or hidden; the store is why it never is.
+ids.forEach(id => shellRun(cmd(id), cmd(id).on === 'document tag' ? C.get('tag:x') : d)); await flush();
+R.det = ELS.details.html; F.hidden = true; render(); R.empty = ELS.empty.html;""", row="'lab/plan.html'")
+        # Unpin and Unhide say first that the row is not pinned or hidden; the unread store is why none is.
         self.assertEqual(out["R"]["when"], [reason, "not pinned", reason, "not hidden", reason, reason])
-        self.assertEqual(out["R"]["undo"], [])
         self.assertEqual(out["posts"], [])
         self.assertEqual(out["gets"], ["/api/documents"])
-        self.assertTrue(all(not undo for _, undo in out["toasts"]), out["toasts"])
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn(f"were not read: {reason}. Every document shows.", out["states"][-1]["text"])
+        self.assertIn(f"Tags were not read: {reason}.", out["R"]["det"])
+        self.assertNotIn('id="tag-in"', out["R"]["det"])
+        self.assertIn(reason, out["R"]["empty"])
+
+    VIEW = "(path, body) => path === '/api/documents/view' ? [200, { key: body.root + '/' + body.file }] : [200, %s]"
+
+    def view_posts(self, out):
+        return [body for path, body, _ in out["posts"] if path == "/api/documents/view"]
+
+    def test_pin_and_hide_post_the_field_they_change_and_undo_posts_it_back(self):
+        self.rows_of(**{"lab/overview.html": {"pinned": True, "hidden": True}})
+        out = self.run_page("""const plan = C.get('lab/plan.html'), over = C.get('lab/overview.html');
+for (const [id, o] of [['document.pin', plan], ['document.hide', plan], ['document.unpin', over], ['document.unhide', over]]) {
+  shellRun(cmd(id), o); await flush(); lastToast().undo(); await flush(); }
+R.when = [cmd('document.pin').when(over), cmd('document.hide').when(over)];""", answer=self.VIEW % json.dumps(self.doc))
+        at = lambda file, **change: {"root": "lab", "file": file, **change}
+        self.assertEqual(self.view_posts(out), [
+            at("plan.html", pinned=True), at("plan.html", pinned=False), at("plan.html", hidden=True), at("plan.html", hidden=False),
+            at("overview.html", pinned=False), at("overview.html", pinned=True), at("overview.html", hidden=False),
+            at("overview.html", hidden=True)])
+        self.assertEqual([t for t in out["toasts"] if t[1]], [["Pinned The plan", True], ["Hidden: The plan. The Hidden filter shows it.", True],
+                                                             ["Unpinned Overview", True], ["Unhidden: Overview", True]])
+        self.assertEqual([t for t in out["toasts"] if not t[1]], [["Pin undone · The plan", False], ["Hide undone · The plan", False],
+                                                                 ["Unpin undone · Overview", False], ["Unhide undone · Overview", False]])
+        # Every landed write and every Undo reads the list again, so the rows show what the store now holds.
+        self.assertEqual(out["gets"], ["/api/documents"] * 9)
+        self.assertEqual(out["R"]["when"], ["already pinned", "already hidden"])
+
+    def test_a_refused_write_says_why_offers_no_undo_and_reads_nothing_again(self):
+        out = self.run_page("""shellRun(cmd('document.pin'), C.get('lab/plan.html')); await flush();""",
+                            answer="(path, body) => path === '/api/documents/view' ? [400, { error: 'boom' }] : [200, %s]" % json.dumps(self.doc))
+        self.assertEqual(out["toasts"], [["The plan not changed: boom", False]])
+        self.assertEqual(out["gets"], ["/api/documents"])
+
+    def test_tag_posts_the_list_with_the_typed_tag_and_untag_posts_it_without(self):
+        self.rows_of(**{"lab/plan.html": {"tags": ["board"]}})
+        out = self.run_page("""const d = C.get('lab/plan.html'), tag = cmd('document.tag');
+R.det = ELS.details.html; document.getElementById('tag-in').value = 'board'; R.dup = tag.when(d);
+document.getElementById('tag-in').value = '  Q4 Plan '; R.when = tag.when(d);
+ELS.details.listeners.keydown.forEach(f => f({ target: { id: 'tag-in', value: document.getElementById('tag-in').value }, key: 'Enter', preventDefault() {} }));
+await flush(); lastToast().undo(); await flush();
+C.put({ id: 'tag:b', type: 'document tag', doc: d, tag: 'board', label: 'board on The plan' });
+shellRun(cmd('document.untag'), C.get('tag:b')); await flush(); lastToast().undo(); await flush();""",
+                            answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
+        self.assertIn('id="tag-in"', out["R"]["det"])
+        self.assertIn('data-cmd="document.untag"', out["R"]["det"])
+        self.assertEqual((out["R"]["dup"], out["R"]["when"]), ("already tagged board", True))
+        tags = lambda *t: {"root": "lab", "file": "plan.html", "tags": list(t)}
+        self.assertEqual(self.view_posts(out), [tags("board", "q4-plan"), tags("board"), tags(), tags("board")])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Tagged q4-plan · The plan", "Tag undone · The plan",
+                                                        "Removed tag board", "Untag undone · board on The plan"])
+
+    def test_the_hidden_filter_shows_the_hidden_documents_and_only_them(self):
+        self.rows_of(**{"civic/brief.html": {"hidden": True}, "lab/plan.html": {"pinned": True}})
+        click = "ELS.facets.listeners.click[0]({ target: { closest: () => ({ id: 'f-hidden', dataset: {}, getAttribute: () => null }) } });"
+        out = self.run_page(f"""R.rows = ELS.rows.html; R.facets = ELS.facets.html; {click}
+R.hidden = ELS.rows.html; R.url = {self.URL}; {click} R.back = ELS.rows.html;""")
+        ids = lambda rows: re.findall(r'data-id="([^"]+)"', rows)
+        # Pinned first; the hidden one is out of the list until the filter shows it.
+        self.assertEqual(ids(out["R"]["rows"]), ["lab/plan.html", "lab/orphan.html", "lab/overview.html"])
+        self.assertRegex(out["R"]["facets"], r'id="f-hidden"[^>]*>.*Hidden <span class="n">1</span>')
+        self.assertEqual(ids(out["R"]["hidden"]), ["civic/brief.html"])
+        self.assertIn('class="hid"', out["R"]["hidden"])
+        self.assertEqual(out["R"]["url"], "hidden=1")
+        self.assertEqual(ids(out["R"]["back"]), ids(out["R"]["rows"]))
+        # A link to the hidden view opens it.
+        out = self.run_page("R.rows = ELS.rows.html;", search="?hidden=1")
+        self.assertEqual(ids(out["R"]["rows"]), ["civic/brief.html"])
 
     def test_disable_render_is_off_and_render_is_a_copy_only_line_for_a_research_root(self):
         out = self.run_page("""const plan = C.get('lab/plan.html'), brief = C.get('civic/brief.html');
@@ -410,7 +576,7 @@ R.picked = [...F.kind, ...F.repo];""")
         self.assertIn("render-stale", det)
         self.assertIn("notes/PLAN.md", det)
         self.assertIn("What we build next.", det)
-        self.assertIn(documents_screen.STORE_REASON, det)
+        self.assertIn('id="tag-in"', det)
 
     def test_a_linked_row_that_is_not_first_survives_the_first_render(self):
         # The real shell: reconcile selects the first shown row when nothing is selected, and select rewrites ?row=.
@@ -481,7 +647,7 @@ R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAG
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents",)
+    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view")
 
 
 if __name__ == "__main__":

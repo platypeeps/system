@@ -23,28 +23,37 @@ checkout's `research.conf.py` (`src` and `out`, read with the collectors'
 with the page's name. A file with no source has an unknown render state, and
 the page says so.
 
-**No view state.** Pins, hidden documents and tags need a store that does not
-exist (docs/work/2026-09-28-documents-view-state). `store.available` is false
-and `store.reason` says so; nothing here writes.
+**View state.** Pin, Hide and Tag are the workflow database's `view` state
+(sd:3428, the pack's `sd_db.writes.set_view` and `views`), one row per file
+keyed `<root key>/<file>`. Each row carries its `pinned`, `hidden` and `tags`.
+A read that fails pins, hides and tags nothing: `store.available` is false and
+`store.reason` says why, so the page shows every file and turns the commands
+off. `request` is `POST /api/documents/view`, `{"root", "file"}` and any of
+`pinned`, `hidden` and `tags`: a file the server does not serve is refused,
+and the pack judges the values. A field left out keeps its value.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 from datetime import timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
+from sd_db import writes
+from sd_db.errors import SdDbError
+
 from . import documents
 
-__all__ = ["HEAD_BYTES", "STORE_REASON", "document", "facts"]
+__all__ = ["HEAD_BYTES", "VIEW_FIELDS", "document", "facts", "request", "views"]
 
 #: How much of a file the title, h1 and stand line are read from.
 HEAD_BYTES = 256 * 1024
 
-#: Why pin, hide and tag are off: the one reason the page shows for each.
-STORE_REASON = "no document store yet: pins, hidden documents and tags are not kept (docs/work/2026-09-28-documents-view-state)"
+#: What a view write may set (sd:3428); a field left out keeps its value.
+VIEW_FIELDS = ("pinned", "hidden", "tags")
 
 #: The folders under a research checkout that never hold a source Markdown; dot folders are skipped too.
 SKIP_FOLDERS = ("build", "node_modules", "dist", "storage")
@@ -176,8 +185,36 @@ def _iso(moment) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def document(*, now: str, config_path: Path | None = None, repo_root: Path | None = None) -> dict:
+def views(connection) -> tuple[dict[str, dict], str]:
+    """Every file's pin, hide and tags, keyed `<root key>/<file>`, and the reason when they could not be read."""
+    if connection is None:
+        return {}, "the view store was not read: no database connection"
+    if not hasattr(writes, "views"):
+        # A command pack from before sd:3430 has no view kind; pulling it is the remedy.
+        return {}, "the command pack has no view store yet (sd:3430): pull it and restart the dashboard"
+    try:
+        return writes.views(connection), ""
+    except (SdDbError, sqlite3.Error) as failure:
+        return {}, f"the view store was not read: {failure}"
+
+
+def request(payload: dict, *, config_path: Path | None = None, repo_root: Path | None = None):
+    """The POST's checks, before the server opens a writer; the write as `action_route` returns one."""
+    if (not isinstance(payload.get("root"), str) or not isinstance(payload.get("file"), str)
+            or set(payload) - {"root", "file", *VIEW_FIELDS} or not set(payload) & set(VIEW_FIELDS)):
+        raise ValueError("Send the document's root and file, and pinned, hidden or tags.")
+    if documents.resolve(payload["root"], payload["file"], config_path, repo_root) is None:
+        raise ValueError(f"No document {payload['root']}/{payload['file']} is served: read the documents again.")
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+    key = f"{payload['root']}/{payload['file']}"
+    fields = {name: payload[name] for name in VIEW_FIELDS if name in payload}
+    return lambda connection: {"key": key, **writes.set_view(connection, key, **fields)}
+
+
+def document(connection=None, *, now: str, config_path: Path | None = None, repo_root: Path | None = None) -> dict:
     """The Documents page's document: every root, every file the server serves, and what was not read."""
+    kept, unread = views(connection)
     rows: list[dict] = []
     listed: list[dict] = []
     for root in documents.roots(config_path, repo_root):
@@ -198,6 +235,8 @@ def document(*, now: str, config_path: Path | None = None, repo_root: Path | Non
                 "modified": _iso(entry["modified"]), "kind": "research" if research else "report",
                 "src": source.relative_to(checkout).as_posix() if source else "", "stale": stale,
                 **facts(root.path.expanduser() / entry["name"]),
+                # Unread or never set: shown, unpinned, untagged, the pack's VIEW_CLEAR (spelled here for a pack without it).
+                **kept.get(f"{root.key}/{entry['name']}", {"pinned": False, "hidden": False, "tags": []}),
             })
     rows.sort(key=lambda row: row["modified"], reverse=True)
     contested = [{"key": key, "label": documents._label(key), "paths": [_tilde(path) for path in paths]}
@@ -209,6 +248,6 @@ def document(*, now: str, config_path: Path | None = None, repo_root: Path | Non
         "config": "<config>/project-dashboard/documents.conf",
         "roots": listed,
         "contested": contested,
-        "store": {"available": False, "reason": STORE_REASON},
+        "store": {"available": not unread, "reason": unread},
         "documents": rows,
     }
