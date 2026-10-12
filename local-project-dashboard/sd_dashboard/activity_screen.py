@@ -63,7 +63,7 @@ KINDS = ("merge", "run", "review", "deploy", "mail", "command")
 #: Kinds with no collector, and why. The page shows each as unknown, never as zero.
 UNKNOWN = {
     "deploy": "No collector reads deploys. No repository records GitHub deployments, and no deploy log is read.",
-    "mail": "No collector reads mail. Brief and status mail stay in Gmail; the dashboard reads no mail.",
+    "mail": "No collector reads mail activity. Brief and status mail stay in Gmail; Notes lists the inbox, but nothing records sent mail here.",
 }
 
 _DELIVERY = re.compile(r"Code delivery (https://github\.com/([^/\s]+)/([^/\s]+)/pull/([0-9]+)) at ([0-9a-f]{7,64})")

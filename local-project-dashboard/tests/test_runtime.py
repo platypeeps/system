@@ -618,7 +618,7 @@ class BuildIdentity(unittest.TestCase):
 
     def test_collector_dependency_addition_replacement_and_removal_change_build_identity(self):
         before = self.digests()  # Minimal fixtures intentionally omit collectors.
-        for relative in ("collectors.py", "../local-machine-setup/machine-setup.sh"):
+        for relative in ("collectors.py", "../local-machine-setup/machine-setup.sh", "../local-mail-intake/mail_intake.py"):
             with self.subTest(dependency=relative):
                 path = self.dashboard / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
