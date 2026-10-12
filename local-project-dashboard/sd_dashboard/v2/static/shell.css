@@ -46,13 +46,6 @@ body[data-rail="min"] .rail nav a .count { position: absolute; top: 1px; right: 
 body[data-rail="min"] .rail nav ul { gap: 0; }
 body[data-rail="min"] .rail nav a { min-height: 2rem; }
 body[data-rail="min"] .rail nav { gap: var(--space-xs); }
-body[data-rail="min"] .rail nav .theme { grid-template-columns: minmax(0, 1fr); }
-.rail nav > .menu-theme { display: none; }
-@media (max-width: 899px) { .rail .rail-theme { display: none !important; } .rail[data-menu] nav > .menu-theme { display: grid; } }
-body[data-rail="min"] .rail .rail-theme { grid-template-columns: minmax(0, 1fr); gap: 0; }
-body[data-rail="min"] .rail .theme button { min-height: 1.5rem; }
-body[data-rail="min"] .rail .theme button { padding: 0; justify-content: center; font-size: 0; }
-body[data-rail="min"] .rail .theme button .i { font-size: 1rem; }
 body[data-rail="min"] .rail .cmd { justify-content: center; padding: 0; min-height: 2.25rem; }
 body[data-rail="min"] .rail { gap: var(--space-xs); padding-top: var(--space-sm); padding-bottom: var(--space-xs); }
 body[data-rail="min"] .rail .foot { gap: var(--space-2xs); }
@@ -93,9 +86,9 @@ body[data-rail="min"] .rail-grip { display: none; }
 .mark { display: flex; align-items: baseline; gap: var(--space-xs); text-decoration: none; }
 .mark b { font: 500 var(--text-lg)/1 var(--font-data); letter-spacing: -0.02em; }
 .mark span { font: 600 var(--text-xs)/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-muted); }
-/* The sections scroll inside the rail, so the head (Reload, fold) and the foot (Chat, ⌘K, theme) stay on screen at any height (review 2026-09-29, 22). */
+/* The sections scroll inside the rail, so the head (Reload, fold) and the foot (Chat, ⌘K) stay on screen at any height (review 2026-09-29, 22). */
 .rail nav { display: grid; align-content: start; gap: var(--space-sm); flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.rail nav a:focus-visible, .rail nav .theme button:focus-visible { outline-offset: -2px; } /* inside the scroller, so the ring is not clipped */
+.rail nav a:focus-visible { outline-offset: -2px; } /* inside the scroller, so the ring is not clipped */
 .rail nav .label { padding: 0 var(--space-xs); }
 .rail nav ul { list-style: none; margin: var(--space-2xs) 0 0; padding: 0; display: grid; gap: 1px; }
 .rail nav a {
@@ -150,7 +143,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .cmd kbd { margin-left: auto; font-size: var(--text-xs); color: var(--color-muted); }
 .menu { display: none; }
 
-/* Theme control: one segmented control, three choices. */
+/* Theme control: one segmented control, three choices. Settings holds it (sd:3438); theme.js wires it. */
 .theme { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); }
 .theme button {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2xs);
@@ -410,12 +403,10 @@ dialog.palette::backdrop { background: var(--color-scrim); }
   .shell { grid-template-columns: minmax(0, 1fr); }
   .rail { position: sticky; top: 0; z-index: 8; height: auto; overflow: visible; flex-direction: row; align-items: center; gap: var(--space-sm); padding: var(--space-xs) var(--space-md); border-right: 0; border-bottom: var(--rule-hair) solid var(--color-rule); background: var(--color-paper); }
   .rail nav { display: none; }
-  .rail .theme { display: none; }
   .menu { display: inline-flex; }
   .menu[aria-expanded="true"] { border-color: var(--color-accent); background: var(--color-accent-bg); }
   .rail[data-menu] nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); position: absolute; inset: 100% 0 auto 0; max-height: 80dvh; overflow-y: auto; padding: var(--space-sm) var(--space-md) var(--space-md); background: var(--color-panel); border-bottom: var(--rule-hair) solid var(--color-rule); }
   .rail[data-menu] nav a { min-height: var(--row-touch); }
-  .rail[data-menu] .theme { display: grid; grid-column: 1 / -1; }
   .rail .foot { margin: 0 0 0 auto; display: flex; align-items: center; gap: var(--space-xs); }
   .rail #fold-rail { display: none; }
   body[data-rail="min"] .shell { grid-template-columns: minmax(0, 1fr); }
@@ -448,7 +439,7 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 @media (pointer: coarse) {
   .rail .mark { display: inline-flex; align-items: center; min-height: var(--row-touch); }
   .cmd, body[data-rail="min"] .rail .cmd { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
-  body[data-rail="min"] .rail nav a, body[data-rail="min"] .rail .theme button { min-height: var(--row-touch); }
+  body[data-rail="min"] .rail nav a { min-height: var(--row-touch); }
   .tabs [role="tab"], .shift input { min-height: var(--row-touch); }
   .cli-line { min-height: var(--row-touch); }
 }
@@ -493,9 +484,6 @@ body[data-only-new] [data-changed]:not([data-new]) { display: none; }
 .asked .q .i { color: var(--color-muted); margin-top: 0.2em; }
 .asked .a { margin: 0 0 0 calc(var(--icon-sm) + var(--space-2xs)); }
 
-/* build (sd:2110): the reference shell.js injected this rule as a <style>; the dashboard CSP refuses inline style. */
-.rail nav > .menu-theme { display: none; }
-@media (max-width: 899px) { .rail .rail-theme { display: none !important; } .rail[data-menu] nav > .menu-theme { display: grid; } }
 
 /* ---------- Annunciator and ledger: one of each on every page that draws one (sd:2588, sd:2680) ---------- */
 /* Hallmark · component: annunciator lamp + ledger · genre: modern-minimal · theme: design.md instrument panel · states: default,

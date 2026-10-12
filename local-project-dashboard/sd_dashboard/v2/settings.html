@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  Settings (sd:3438), at /settings. No design source page: built on the v2 shell and ui-design foundation/.
+  Data: none from the server. Each setting lives in this browser's storage: the theme as "theme" (theme.js, which wires
+  every data-theme-choice button) and the sections width as sd.rail.width (shell.railWidth, sd:3445). The theme moved here
+  from the rail's foot.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Settings · system</title>
+<link rel="stylesheet" href="/ui/fonts.css">
+<link rel="stylesheet" href="/ui/tokens.css">
+<script src="/ui/theme.js"></script>
+<script src="/ui/markup.js"></script>
+<link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/settings.css">
+</head>
+<body data-page="Settings" data-scope="fleet">
+<script src="/ui/icons.js"></script>
+<div class="shell">
+<main id="main">
+  <div class="head">
+    <div>
+      <h1>Settings</h1>
+      <p>This browser keeps these; another browser keeps its own.</p>
+    </div>
+  </div>
+  <div id="state" hidden></div>
+  <ul class="settings">
+    <li>
+      <div class="what"><h2 id="theme-h">Theme</h2><p>Dark is the default. System follows the device.</p></div>
+      <div class="theme" role="group" aria-labelledby="theme-h">
+        <button type="button" data-theme-choice="dark"><svg class="i" aria-hidden="true"><use href="#i-moon"/></svg>Dark</button>
+        <button type="button" data-theme-choice="light"><svg class="i" aria-hidden="true"><use href="#i-sun"/></svg>Light</button>
+        <button type="button" data-theme-choice="system"><svg class="i" aria-hidden="true"><use href="#i-monitor"/></svg>System</button>
+      </div>
+    </li>
+    <li>
+      <div class="what"><h2><label for="rail-width">Sections width</label></h2><p>The rail beside every page, 176 to 384 px. Its right edge drags too.</p></div>
+      <div class="width">
+        <input type="range" id="rail-width" min="176" max="384" step="8" value="216">
+        <output id="rail-width-out" for="rail-width">default</output>
+        <button class="btn quiet sm" type="button" id="rail-reset">Default</button>
+      </div>
+    </li>
+  </ul>
+</main>
+<div class="details" id="details"><p class="note">Settings stay in this browser's storage. Nothing here reads or writes the workflow database.</p></div>
+</div>
+<script src="/ui/sections.js"></script>
+<script src="/ui/settings.js"></script>
+<script src="/ui/shell.js"></script>
+</body>
+</html>

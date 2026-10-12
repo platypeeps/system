@@ -138,6 +138,9 @@ The shared library supplies this order to both the dashboard and `sd-status`.
 Each acknowledgement binds exact event IDs and the displayed revision; stale submissions refuse.
 Acknowledgement leaves notification delivery history and local task status separate.
 
+**Settings** at `/settings` holds what each browser keeps for the dashboard (sd:3438): the theme and the sections width.
+The rail's right edge also drags the width (sd:3445); both stay in browser storage, and the page writes nothing to the server.
+
 **Queue** at `/queue` shows each managed repository's `sd-ship lane` queue (sd:2585), with the host that runs it.
 The queue lives in the hub database, so a lane hosted on another machine shows too, folder or not (sd:3284); lanes with no row share one Idle line.
 The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.

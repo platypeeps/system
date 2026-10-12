@@ -37,7 +37,7 @@
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
-    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Queue', 'git-merge', 'u']]],
+    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Queue', 'git-merge', 'u'], ['Settings', 'sun-moon', 'v']]],
   ];
   // build: a page that is built sets window.SHELL_PAGES; a section missing from it shows as not built yet.
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html' };
@@ -67,24 +67,12 @@
         const href = hrefOf(name) || '#';
         return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
       })}</ul></div>`)}
-      <div class="theme" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
-        <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
-        <button type="button" data-theme-choice="system">${ICON('monitor')}System</button>
-      </div>
     </nav>
     <div class="foot">
-      <div class="theme rail-theme" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
-        <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
-        <button type="button" data-theme-choice="system">${ICON('monitor')}System</button>
-      </div>
       <button class="cmd menu" type="button" id="open-menu" aria-expanded="false" aria-controls="sections">Sections</button>
       <button class="cmd" type="button" id="open-chat" aria-controls="pane" aria-label="Chat (c)">${ICON('message-square')}<span class="txt">Chat</span><kbd>c</kbd></button>
       <button class="cmd" type="button" id="open-palette" aria-label="Commands (⌘K)">${ICON('command')}<span class="txt">Commands</span><kbd>⌘K</kbd></button>
     </div>`);
-  // The in-nav theme copy shows only inside the narrow-screen Sections menu.
-  rail.querySelector('nav > .theme').classList.add('menu-theme');
   const shell = document.querySelector('.shell');
   shell.prepend(rail);
   // Skip link: the first tab stop, ahead of the rail's 26 (review 2026-09-29, 24). main is its target.
