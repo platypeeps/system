@@ -715,8 +715,9 @@
   let repoList = null; // /api/capture-repos, read once per page; a failed read is retried on the next open
   const readRepos = () => repoList || (repoList = getJSON('/api/capture-repos').then(d => d.repos || [], e => { repoList = null; throw e; }));
   // capture:end
-  // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
-  function openCapture(target, text = '') {
+  // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row. A refused
+  // capture reopens with its text and picks (kind, priority, repo), so nothing the operator chose is lost.
+  function openCapture(target, text = '', picks = null) {
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
     const about = o && o.item ? o : null;
     put(cap, html`<form method="dialog" class="confirm-body" id="cap-form">
@@ -748,19 +749,20 @@
         : o ? `Files to the inbox; not linked to ${o.label}` : 'No row selected · files to the inbox';
       cli.textContent = captureCli(fields());
     };
+    if (picks) { if (!f.querySelector(`[name="kind"][value="${picks.kind}"]`)?.disabled) f.kind.value = picks.kind; f.priority.value = String(picks.priority); }
     inp.value = text; f.addEventListener('input', upd); f.addEventListener('change', upd); upd();
     f.addEventListener('keydown', e => { if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sel.focus(); } });
     // The page's repo is the default once the list is read; a failed read leaves No repo and says so.
     let hint = null; try { hint = window.PAGE_REPO ? window.PAGE_REPO(o) : null; } catch { hint = null; }
     readRepos().then(list => { if (!cap.open) return;
       put(sel, html`<option value="">No repo</option>${list.map(r => html`<option value="${r.path}">${r.name}</option>`)}`);
-      sel.value = captureRepo(list, hint); upd(); },
+      sel.value = captureRepo(list, picks ? picks.repo : hint); upd(); },
     e => { if (!cap.open) return; put(sel, html`<option value="">No repo (list not read: ${e.message})</option>`); });
     // build: a page that must do more (Tasks rereads its board) sets window.SHELL_CAPTURE({ kind, title, item, about }) →
     // Promise<toast text>; every other page files through fileCapture. A refusal opens the dialog again with the text.
-    cap.onclose = () => { if (cap.returnValue !== 'yes' || !inp.value.trim()) return; const v = inp.value.trim();
-      (window.SHELL_CAPTURE || fileCapture)({ ...fields(), about: o })
-        .then(toast, e => { const m = String(e.message || e); toast(m); if (m.startsWith('Not filed')) openCapture(o, v); }); };
+    cap.onclose = () => { if (cap.returnValue !== 'yes' || !inp.value.trim()) return; const v = inp.value.trim(), picks = fields();
+      (window.SHELL_CAPTURE || fileCapture)({ ...picks, about: o })
+        .then(toast, e => { const m = String(e.message || e); toast(m); if (m.startsWith('Not filed')) openCapture(o, v, picks); }); };
     modal(cap, inp);
   }
 

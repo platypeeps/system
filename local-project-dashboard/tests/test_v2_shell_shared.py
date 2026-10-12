@@ -173,6 +173,19 @@ class TheDefaultCapture(unittest.TestCase):
         self.assertEqual(out["empty"], "Not known if it filed: the server named no item. Look in Tasks before you capture it again.")
         self.assertEqual(out["noRow"], "Not filed: select a row that has an item first")
 
+    def test_a_refused_capture_reopens_with_the_kind_priority_and_repo_the_operator_picked(self):
+        # Review 2026-10-12 class pass: the reopened dialog kept the text but reset Kind, Priority and Repo to the defaults.
+        reopen = re.search(r"if \(m\.startsWith\('Not filed'\)\) openCapture\(o, v(, [^)]*)?\)", SHELL_JS)
+        self.assertIsNotNone(reopen)
+        self.assertEqual(reopen.group(1), ", picks", "a refusal reopens without the operator's picks")
+        self.assertIn("function openCapture(target, text = '', picks = null) {", SHELL_JS)
+        self.assertIn("if (picks) { if (!f.querySelector(`[name=\"kind\"][value=\"${picks.kind}\"]`)?.disabled) f.kind.value = picks.kind; f.priority.value = String(picks.priority); }", SHELL_JS)
+        self.assertIn("sel.value = captureRepo(list, picks ? picks.repo : hint);", SHELL_JS)
+        # A repo the operator picked resolves from the list as any hint does; No repo stays No repo.
+        out = run_capture(self, """const LIST = [{ path: '~/repos/one', name: 'one' }];
+  R.got = [captureRepo(LIST, '~/repos/one'), captureRepo(LIST, '')];""")
+        self.assertEqual(out["got"], ["~/repos/one", ""])
+
     def test_the_repo_and_priority_go_with_the_capture_and_a_typed_p_wins(self):
         # sd:3521: the box's picks (the page's repo, P3 unless changed) are fields of the new item; p1 to p4 typed in the
         # title still sets the priority.
