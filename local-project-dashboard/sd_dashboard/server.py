@@ -727,7 +727,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"{page.section} does not accept query parameters."})
         answer = entry.read(v2.registry.Read(connection=connection, now=self.clock(), path=split.path, parameters=parameters,
                                              fleet=self.fleet_backend, jobs=self.operations_backend,
-                                             services=self.services_backend, ports=self.ports_backend))
+                                             services=self.services_backend, ports=self.ports_backend,
+                                             served_commit=self.served_commit))
         status, document = answer if isinstance(answer, tuple) else (200, answer)
         return self._json(status, document)
 
