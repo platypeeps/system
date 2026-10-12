@@ -205,6 +205,27 @@ class LeakGuardHooks(base.SyntheticHome):
         self.assertFalse(self.hook(none).exists())
         self.assertEqual([p for p in self.probes() if "example.test" in p], [])
 
+    def test_a_failed_install_is_reported_and_the_stage_goes_on(self):
+        hooks = self.public / ".git/hooks"
+        hooks.chmod(0o555)
+        self.addCleanup(hooks.chmod, 0o755)
+
+        out = self.run_repos("--apply")
+
+        self.assertIn("MISSING ~/repos/open leak guard pre-push hook", out)
+        self.assertIn("FAILED  ~/repos/open leak guard: leak-guard.sh install did not finish", out)
+        self.assertIn("DIFFERS ~/repos/hooked", out)
+
+    def test_a_checkout_git_cannot_read_is_a_skip(self):
+        broken = self.checkout("broken", "https://github.com/example/broken", 200)
+        shutil.rmtree(broken / ".git")
+        (broken / ".git").write_text("gitdir: /nonexistent/example\n")
+
+        out = self.run_repos("--apply")
+
+        self.assertIn("SKIP    ~/repos/broken leak guard: git cannot name its hooks folder", out)
+        self.assertIn("MISSING ~/repos/open leak guard pre-push hook", out)
+
     def test_a_failed_repo_list_is_a_skip(self):
         base.write_exec(self.pack / "bin/sd-db", "#!/bin/sh\nexit 1\n")
 
