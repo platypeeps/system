@@ -4,6 +4,7 @@
   contributions.js and contributions.css at b2b8c2b, with design.md and commands.md.
   Data: /api/contributions/page (contribution_screen.document: the projection v1 /classic/contributions renders, open rows
   capped, settled rows counted per repository, and the GitHub tracker's freshness), read when the page opens and after a write.
+  Details shows each row's dependencies, test evidence and notification delivery (sd:3394), every local path cut to its last part.
   Writes: Acknowledge (POST /api/contributions/acknowledge) and Make task (POST /api/contributions/task, a task linked to the
   contribution by its GitHub URL), each asked first. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
   sd shadow sync in a thread, on one 120 s deadline and one run at a time; the page reads GET /api/shadow/state until it ends.
