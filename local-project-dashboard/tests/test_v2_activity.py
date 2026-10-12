@@ -324,6 +324,7 @@ class TheScript(ScreenCase):
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
             ["jobs.log", "job", "safe", "l", False, True, False, False],
+            ["command.reconcile", "command", "safe", "r", None, True, False, False],
             ["command.output", "command", "safe", "o", None, True, False, False],
             ["command.item", "command", "safe", "i", None, True, False, False],
         ])
@@ -628,6 +629,56 @@ R.rows = ELS.rows.html; R.type = C.get('{n}').type; R.details = ELS.details.html
         self.assertEqual(len(out["toasts"]), 1)
         self.assertIn("not changed: launchd refuses a retry now", out["toasts"][0][0])
 
+    def unfinished(self):
+        """The seeded stopped record, as the journal shows one whose response never came back."""
+        doc = json.loads(json.dumps(self.doc))
+        row = next(e for e in doc["events"] if e["id"] == f"cmd:{self.ids['stopped']}")
+        row.update(ended=None, exit=None, s="queued")
+        return doc
+
+    def test_reconcile_is_on_only_for_an_unfinished_palette_record(self):
+        """sd:3391: Activity takes the Commands section's Reconcile outcome (palette.history)."""
+        doc = self.unfinished()
+        out = self.run_page(f"""const r = cmd('command.reconcile');
+R.on = r.when(C.get('cmd:{self.ids['stopped']}')); R.primary = r.primary(C.get('cmd:{self.ids['stopped']}'));
+R.ended = r.when(C.get('cmd:{self.ids['ok_run']}')); R.endedPrimary = r.primary(C.get('cmd:{self.ids['ok_run']}'));
+R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.get('cmd:{self.ids['stopped']}')) : null;""", doc=doc)
+        self.assertIs(out["R"]["on"], True)
+        self.assertTrue(out["R"]["primary"])
+        self.assertEqual(out["R"]["ended"], "the run ended; its outcome is recorded")
+        self.assertFalse(out["R"]["endedPrimary"])
+        self.assertEqual(out["R"]["runner"], "a runner record is the runner's to finish; no palette request waits on it")
+        self.assertIsNone(out["R"]["cli"], "no sd verb reconciles; the line would be invented")
+
+    def test_reconcile_posts_the_old_route_shows_the_outcome_and_reads_again(self):
+        note = self.ids["stopped"]
+        answer = ("(p, b) => [200, { note: %d, state: 'finished', ended: '2026-09-06T09:40:00Z', exit_code: 125,"
+                  " output: 'Prepared request closed before dispatch. No command was replayed.', output_expired: null }]" % note)
+        out = self.run_page(f"shellRun(cmd('command.reconcile'), C.get('cmd:{note}')); await flush(); R.details = ELS.details.html;",
+                            answer, doc=self.unfinished())
+        self.assertEqual(out["posts"], [[f"/api/palette/{note}/reconcile", {}, 64]])
+        self.assertEqual(out["toasts"], [[f"Outcome of note {note} recorded · exit 125", False]])
+        self.assertEqual(out["gets"].count("/api/activity"), 2)
+        self.assertIn("Prepared request closed before dispatch.", out["R"]["details"])
+
+    def test_a_reconcile_with_no_answer_is_not_known_and_reads_again(self):
+        note = self.ids["stopped"]
+        for answer, why in (("(p, b) => Promise.reject(new TypeError('Load failed'))", "Load failed"),
+                            ("(p, b) => [502, {error: 'the hub did not answer'}]", "the hub did not answer")):
+            with self.subTest(answer=answer):
+                out = self.run_page(f"shellRun(cmd('command.reconcile'), C.get('cmd:{note}')); await flush();", answer,
+                                    doc=self.unfinished())
+                self.assertEqual(out["toasts"], [[f"Not known whether note {note} was reconciled: {why}", False]])
+                self.assertEqual(out["gets"].count("/api/activity"), 2)
+
+    def test_a_reconcile_the_target_has_not_proved_says_why(self):
+        note = self.ids["stopped"]
+        out = self.run_page(f"shellRun(cmd('command.reconcile'), C.get('cmd:{note}')); await flush();",
+                            "(p, b) => [400, {error: 'the target has not proved this outcome; it remains uncertain'}]",
+                            doc=self.unfinished())
+        self.assertEqual(len(out["toasts"]), 1)
+        self.assertIn("not changed: the target has not proved this outcome", out["toasts"][0][0])
+
     def test_show_output_follows_next_offset_past_one_page(self):
         """sd:2416. read_execution answers 64 KiB a read; a full page means more follows at next_offset."""
         note = self.ids["bad_run"]
@@ -667,6 +718,13 @@ R.rows = ELS.rows.html; R.type = C.get('{n}').type; R.details = ELS.details.html
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "activity", "Activity", "/activity", ("/api/activity",)
 
+    def test_activity_took_the_commands_section_so_the_rail_has_no_commands_entry(self):
+        """sd:3391: Read output and Reconcile live on Activity's command rows; the classic Commands entry goes."""
+        self.assertNotIn("Commands", v2.CLASSIC)
+        shell_js = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
+        groups = re.search(r"const GROUPS = \[(.*?)\n  \];", shell_js, re.S).group(1)
+        self.assertNotIn("'Commands'", groups)
+        self.assertNotRegex(shell_js, r"Commands: 'commands\.html'")
 
 
 if __name__ == "__main__":

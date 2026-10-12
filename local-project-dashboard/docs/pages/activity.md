@@ -17,6 +17,9 @@ and is off for exit 127, command not found (sd:2415). Its toast says "Retry
 started" only when launchctl accepted the request; a refusal names launchctl's
 message, and a timeout or a lost answer says the outcome is not known, as
 Management words it (sd:3391). Show output reads the
-execution record, page by page past 64 KiB (sd:2416). The page reads through
+execution record, page by page past 64 KiB (sd:2416). Reconcile, on an
+unfinished palette record, posts `/api/palette/<note>/reconcile`, which observes
+the target and never replays the command (sd:3391). With Show output it takes
+over v1 Operations > Commands, so the rail has no classic Commands entry. The page reads through
 the shell's reader, `read.js` (sd:2489): a landed write rereads, and a failed
 reread keeps the rows and says the write landed.
