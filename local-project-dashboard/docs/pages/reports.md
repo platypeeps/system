@@ -20,6 +20,10 @@ to the status it was acknowledged from (sd:2395). The page reads
 lists every job the reading names, with or without a report (sd:2430).
 Select clean reads `GET /api/reports/clean?before=<date>`,
 v1's preview, and the bulk bar acknowledges the picked reports one by one.
+The preview's Acknowledge is the attributed batch (`--all-clean --who`,
+sd:3386): it asks who, then posts `/api/reports/acknowledge-clean` with the
+preview's cutoff and plan. It moves every selected report or none; a report that
+changed since the preview refuses the batch, and the page previews again.
 Retry posts the job route, as Management does. No status mail is read: the
 dashboard holds no message store. The old screen stays in the palette as
-Reports (classic) for the Resources views and the attributed batch.
+Reports (classic) for the Resources views.

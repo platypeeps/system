@@ -9,6 +9,10 @@ on its own, so one that fails is that part's error and the page shows it as
 unknown with the reason. By model, CI health and flaky tests have no reader:
 the document names each with its reason, and the page never draws them empty.
 
+Cap and Configure (sd:3387) post `/api/bills/<bill>/cap` and
+`/api/providers/configure` with the registry revision `/api/metrics` read. A
+400 or 409 wrote nothing; any other failure leaves the outcome unknown.
+
 `metrics.js` runs under JavaScriptCore (osascript) against the stand-in page
 and shell `test_v2_tasks` defines, with the document above as its fetch answer.
 The browser half -- the look at 375 px -- is a manual check recorded on the
@@ -25,7 +29,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import reads, transition, usage, workflow
+from sd_db import provider_controls, reads, transition, usage, workflow
 from sd_db.writes import record_skill_use
 
 from sd_dashboard import metrics_screen, server, v2
@@ -91,6 +95,28 @@ class Fixture(ScreenCase):
         return metrics_screen.document(self.connection, now=NOW)
 
 
+#: `kimi` calls a URL on the capped company bill; `claude` is a `start` entry on `sub`, so `sub` takes no cap.
+REGISTRY = """bills:
+  capped: {cost: company}
+  plan: {cost: plan}
+  sub: {cost: subscription}
+providers:
+  claude: {start: "claude -p", vendor: anthropic, bill: sub, roles: [author, reviewer], reader: claude-json}
+  kimi: {url: "https://example.invalid/v1", model: fixture, vendor: moonshot, bill: capped, roles: [author, reviewer]}
+roles:
+  author: [claude, kimi]
+  reviewer: [kimi, claude]
+"""
+
+
+class Controlled(Fixture):
+    """The fixture with a provider registry beside its database, as the server finds it."""
+
+    def setUp(self):
+        super().setUp()
+        (self.path.parent / "providers.yaml").write_text(REGISTRY)
+
+
 class TheDocument(Fixture):
     def test_the_month_is_sd_usage_s_own_document(self):
         doc = self.doc()["usage"]
@@ -127,6 +153,68 @@ class TheDocument(Fixture):
         self.assertEqual(sorted(unread), ["ci", "flaky", "model"])
         self.assertTrue(all(unread.values()))
 
+    def test_no_registry_is_the_controls_error_and_the_rest_still_answer(self):
+        doc = self.doc()
+        self.assertEqual(doc["controls"], {"error": f"RegistryError: no provider registry at {self.path.parent.resolve() / 'providers.yaml'}"})
+        self.assertEqual(doc["usage"]["error"], "")
+
+
+class TheControls(Controlled):
+    def test_the_controls_carry_the_revision_the_routes_check_and_each_bills_write(self):
+        controls = self.doc()["controls"]
+        self.assertEqual(controls["revision"], provider_controls.snapshot(self.connection)["revision"])
+        self.assertEqual(controls["orders"], {"author": ["claude", "kimi"], "reviewer": ["kimi", "claude"]})
+        self.assertEqual([(p["name"], p["enabled"]) for p in controls["providers"]], [("claude", True), ("kimi", True)])
+        self.assertEqual({b["name"]: (b["cap_usd_month"], b["write"], b["why"]) for b in controls["bills"]},
+                         {"capped": (100.0, "set", ""), "plan": (None, "set", ""),
+                          "sub": (None, "", "a 'start' entry is billed to it, so no cap can be set")})
+
+    def test_a_legacy_cap_on_a_start_bill_takes_the_clear_alone(self):
+        self.doc()  # the first read seeds the `sub` row
+        with self.connection:
+            self.connection.execute("UPDATE bill SET cap_usd_month = 5.0 WHERE name = 'sub'")
+        controls = self.doc()["controls"]
+        sub = next(b for b in controls["bills"] if b["name"] == "sub")
+        self.assertEqual((sub["cap_usd_month"], sub["write"]), (None, "clear"))
+        self.assertIn("holds a cap of $5.00 that nothing enforces", sub["why"])
+        self.assertEqual(len(controls["warnings"]), 1)
+
+    def test_a_bill_name_the_route_does_not_take_has_no_write(self):
+        self.assertEqual(metrics_screen._writes("a/b", set(), {}), ("", "its name is outside what the cap route accepts"))
+
+
+class TheWrites(BrowserSession):
+    """The revision the served `/api/metrics` read, posted back to the routes: the page's writes end to end."""
+
+    def setUp(self):
+        super().setUp()
+        (self.path.parent / "providers.yaml").write_text(REGISTRY)
+
+    def controls(self):
+        status, _, body = self.request("/api/metrics", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        return json.loads(body)["controls"]
+
+    def test_the_cap_lands_on_the_read_revision_and_a_second_post_of_it_is_stale(self):
+        read = self.controls()
+        status, _, answer = self.post("/api/bills/capped/cap", {"revision": read["revision"], "cap_usd_month": 50})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.connection.execute("SELECT cap_usd_month FROM bill WHERE name = 'capped'").fetchone()[0], 50.0)
+        before = self.snapshot()
+        self.assertEqual(self.post("/api/bills/capped/cap", {"revision": read["revision"], "cap_usd_month": 60})[0], 409)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.controls()["revision"], answer["revision"])
+
+    def test_configure_lands_on_the_read_revision_and_a_refusal_writes_nothing(self):
+        read = self.controls()
+        before = self.snapshot()
+        refused = {"revision": read["revision"], "enabled": {"claude": True, "kimi": True}, "orders": {"author": ["kimi"], "reviewer": ["kimi"]}}
+        self.assertEqual(self.post("/api/providers/configure", refused)[0], 400)
+        self.assertEqual(self.snapshot(), before)
+        status, _, answer = self.post("/api/providers/configure", {**refused, "orders": {"author": ["kimi", "claude"], "reviewer": ["claude", "kimi"]}})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.controls()["orders"], {"author": ["kimi", "claude"], "reviewer": ["claude", "kimi"]})
+
 
 class ThePage(BrowserSession):
     def test_the_route_answers_under_the_shared_policy(self):
@@ -159,7 +247,7 @@ window.shell.pages = { Tasks: '/tasks' };
 """
 
 
-class TheScript(Fixture):
+class TheScript(Controlled):
     """metrics.js against the document `metrics_screen` builds from the fixture database."""
 
     def run_page(self, body, doc=None, status=200):
@@ -180,8 +268,8 @@ class TheScript(Fixture):
 
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.risk, c.key, c.executes]);")
-        self.assertEqual(out["R"]["reg"], [["providers.configure", "provider", "undo", "f", False],
-                                           ["bill.cap", "bill", "undo", "p", False]])
+        self.assertEqual(out["R"]["reg"], [["providers.configure", "provider", "undo", "f", True],
+                                           ["bill.cap", "bill", "undo", "p", True]])
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html;")
@@ -208,14 +296,14 @@ R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
 
-    def test_the_cap_is_off_for_a_window_bill_and_has_no_cli(self):
-        out = self.run_page("""var c = REG.find(x => x.id === 'bill.cap');
-R.plan = c.when(OBJ.get('bill:plan')); R.capped = c.when(OBJ.get('bill:capped')); R.cli = c.cli(OBJ.get('bill:capped'));
-R.run = c.run(OBJ.get('bill:capped')); R.href = location.href;""")
-        self.assertEqual(out["R"]["plan"], "a plan bill spends a window, not dollars")
-        self.assertIs(out["R"]["capped"], True)
-        self.assertEqual(out["R"]["cli"], "no CLI: sd has no verb for bill caps (bill.cap_usd_month, capped, now $100.00)")
-        self.assertEqual(out["R"]["href"], "/operations?area=usage")
+    def test_without_a_registry_cap_and_configure_are_off_with_the_reason(self):
+        (self.path.parent / "providers.yaml").unlink()
+        out = self.run_page("""R.cap = cmd('bill.cap').when(OBJ.get('bill:capped')); R.cf = cmd('providers.configure').when(OBJ.get('sc:kimi'));
+C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush();""")
+        self.assertTrue(out["R"]["cap"].startswith("the provider registry was not read: RegistryError: no provider registry at "))
+        self.assertEqual(out["R"]["cf"], out["R"]["cap"])
+        self.assertEqual(out["posts"], [])
+        self.assertIn("controls: RegistryError", out["states"][-1]["text"])
 
     def test_a_part_that_failed_is_a_partial_read_and_its_panel_is_unknown(self):
         doc = self.doc()
@@ -249,6 +337,102 @@ R.lamps = ELS.annunciator.html; R.bills = ELS.bills.html;""")
         self.assertNotRegex(METRICS_JS, r"\.style\.")
         self.assertNotRegex(METRICS_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", METRICS_JS)
+
+
+WRITE = """
+var POSTED = (path, body) => [200, { revision: 'after-' + OUT.posts.length }];
+ANSWER = (path, body) => path === '/api/metrics' ? [STATUS, DOC] : POSTED(path, body);
+const said = () => (ELS.details.html.match(/data-said="([a-z]+)"[^>]*>(?:<span class="g-unknown" aria-hidden="true">▨<\\/span> )?(.*?)<\\/p>/) || []).slice(1);
+"""
+
+
+class TheControlsScript(Controlled):
+    """Cap and Configure in metrics.js: what each posts, and what the page says for each answer."""
+
+    run_page = TheScript.run_page
+
+    def write(self, body, doc=None):
+        return self.run_page(WRITE + body, doc)
+
+    def test_cap_posts_the_typed_number_with_the_read_revision_and_undo_posts_the_old_cap(self):
+        revision = self.doc()["controls"]["revision"]
+        out = self.write("""open('bill:capped'); FIELD_VALUES = { cap: '50' }; C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush();
+R.said = said(); lastUndo().undo(); await flush();""")
+        self.assertEqual(out["posts"][0][:2], ["/api/bills/capped/cap", {"revision": revision, "cap_usd_month": 50}])
+        self.assertEqual(out["posts"][1][:2], ["/api/bills/capped/cap", {"revision": "after-1", "cap_usd_month": 100.0}])
+        self.assertEqual(out["confirms"], ["bill.cap"])
+        self.assertEqual(out["toasts"][:1], [["Cap set to $50.00 · capped bill", True]])
+        self.assertEqual(out["toasts"][-1], ["Cap set to $50.00 undone · capped bill", False])
+        self.assertEqual(out["R"]["said"], ["landed", "Cap set to $50.00."])
+
+    def test_none_clears_the_cap_and_a_start_bill_is_off_with_the_reason(self):
+        self.doc()  # the first read seeds the `sub` row the cost below names
+        self.cost("run", "2026-09-04T10:00:00Z", provider="claude", bill="sub", role="author", usd=1)
+        out = self.write("""FIELD_VALUES = { cap: 'none' }; C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush();
+R.sub = cmd('bill.cap').when(OBJ.get('bill:sub'));""")
+        self.assertEqual(out["posts"][0][1]["cap_usd_month"], None)
+        self.assertEqual(out["toasts"][0], ["Cap cleared · capped bill", True])
+        self.assertEqual(out["R"]["sub"], "a 'start' entry is billed to it, so no cap can be set")
+
+    def test_a_legacy_clear_asks_first_posts_null_and_offers_no_undo(self):
+        self.doc()
+        self.cost("run", "2026-09-04T10:00:00Z", provider="claude", bill="sub", role="author", usd=1)
+        with self.connection:
+            self.connection.execute("UPDATE bill SET cap_usd_month = 5.0 WHERE name = 'sub'")
+        out = self.write("""R.fields = cmd('bill.cap').fields(OBJ.get('bill:sub')); R.ask = cmd('bill.cap').askFirst;
+C.run(cmd('bill.cap'), OBJ.get('bill:sub')); await flush();""")
+        self.assertEqual((out["R"]["fields"], out["R"]["ask"]), ([], True))
+        self.assertEqual(out["posts"][0][:2], ["/api/bills/sub/cap", {"revision": self.doc()["controls"]["revision"], "cap_usd_month": None}])
+        self.assertEqual(out["toasts"], [["Cap cleared · sub bill", False]])
+
+    def test_a_400_or_a_409_says_nothing_was_written_and_reads_again(self):
+        for status, error in ((400, "a cap must be a finite number"), (409, "provider configuration changed; reload before saving")):
+            with self.subTest(status=status):
+                out = self.write(f"""POSTED = () => [{status}, {{ error: '{error}' }}];
+open('bill:capped'); FIELD_VALUES = {{ cap: '50' }}; C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush(); R.said = said();""")
+                text = f"capped bill not changed: {error}. Nothing was written."
+                self.assertEqual(out["toasts"], [[text, False]])
+                self.assertEqual(out["R"]["said"], ["refused", text])
+                self.assertEqual(out["gets"], ["/api/metrics", "/api/metrics"])
+
+    def test_any_other_failure_or_no_answer_leaves_the_outcome_unknown(self):
+        for answer, error in (("[503, { error: 'database is locked' }]", "database is locked"), ("(() => { throw new Error('connection reset'); })()", "connection reset"),
+                              ("[403, { error: 'Open the dashboard again before saving.' }]", "Open the dashboard again before saving.")):
+            with self.subTest(error=error):
+                out = self.write(f"""POSTED = () => {answer};
+open('bill:capped'); FIELD_VALUES = {{ cap: '50' }}; C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush(); R.said = said(); R.det = ELS.details.html;""")
+                text = f"Not known whether capped bill changed: {error.rstrip('.')}. Metrics was read again; check it before you act again."
+                self.assertEqual(out["toasts"], [[text, False]])
+                self.assertEqual(out["R"]["said"], ["unknown", text])
+                self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span>', out["R"]["det"])
+                self.assertNotIn("not changed", json.dumps(out["toasts"]))
+
+    def test_an_undo_that_fails_unknown_is_not_called_not_undone(self):
+        out = self.write("""FIELD_VALUES = { cap: '50' }; C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush();
+POSTED = () => [502, { error: 'bad gateway' }]; lastUndo().undo(); await flush();""")
+        self.assertEqual(out["toasts"][-1], ["Not known whether the undo landed on capped bill: bad gateway. Metrics was read again; check it before you act again.", False])
+
+    def test_configure_posts_the_whole_configuration_with_blank_fields_kept(self):
+        revision = self.doc()["controls"]["revision"]
+        out = self.write("""FIELD_VALUES = { enabled: 'kimi, claude', reviewer: 'claude, kimi' }; C.run(cmd('providers.configure'), OBJ.get('sc:kimi')); await flush();
+lastUndo().undo(); await flush();""")
+        self.assertEqual(out["posts"][0][:2], ["/api/providers/configure", {"revision": revision, "enabled": {"claude": True, "kimi": True},
+                                                                         "orders": {"author": ["claude", "kimi"], "reviewer": ["claude", "kimi"]}}])
+        self.assertEqual(out["posts"][1][:2], ["/api/providers/configure", {"revision": "after-1", "enabled": {"claude": True, "kimi": True},
+                                                                         "orders": {"author": ["claude", "kimi"], "reviewer": ["kimi", "claude"]}}])
+        self.assertEqual(out["toasts"][0], ["Providers configured · kimi", True])
+
+    def test_configure_disables_the_providers_left_out_and_refuses_an_unknown_name_before_posting(self):
+        out = self.write("""FIELD_VALUES = { enabled: 'kimi' }; C.run(cmd('providers.configure'), OBJ.get('sc:kimi')); await flush();
+FIELD_VALUES = { enabled: 'kimi, opus' }; C.run(cmd('providers.configure'), OBJ.get('sc:kimi')); await flush();""")
+        self.assertEqual(out["posts"][0][1]["enabled"], {"claude": False, "kimi": True})
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertEqual(out["toasts"][-1], ["kimi not changed: no provider opus; the registry names claude, kimi.", False])
+
+    def test_a_providers_details_name_its_place_in_each_order(self):
+        out = self.write("open('sc:kimi'); R.det = ELS.details.html;")
+        self.assertIn("<dt>Author order</dt><dd>2 of 2</dd>", out["R"]["det"])
+        self.assertIn("<dt>Reviewer order</dt><dd>1 of 2</dd>", out["R"]["det"])
 
 
 class TheRegistration(Registers, unittest.TestCase):
