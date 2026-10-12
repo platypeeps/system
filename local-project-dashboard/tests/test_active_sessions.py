@@ -1,0 +1,229 @@
+"""Today's Working now (sd:3466): each open item's live sessions, when each started and how long it has run.
+
+The join is `active_sessions.document`: lane entries and Fix's launch notes from the database, live herdr agents, and
+the fleet's worktrees and `sd-*` processes. Every source is a seam here; nothing runs the real herdr or `ps`.
+"""
+
+import json
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+from sd_dashboard import active_sessions, fix_session, fleet, now_screen
+
+from fleet_support import FleetCase
+from support import NOW, ScreenCase
+from test_now_screen import JobsBackend, fleet_document
+import test_v2_today_reader
+
+
+def lane(connection, item, *, worktree, status="running", started="2026-09-06T11:00:00Z",
+         enqueued="2026-09-06T10:30:00Z", step="prepare", host="hub", entry=None):
+    body = {"id": entry or f"e{item}", "item": item, "worktree": worktree, "branch": f"b{item}", "status": status,
+            "enqueued_at": enqueued, "repository": "example/project"}
+    if status == "running":
+        body.update(started_at=started, step=step, holder={"host": host, "pid": 1, "token": "t"})
+    connection.execute("INSERT INTO state(kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                       (f"lane:v1:example/project:{body['id']}", NOW, json.dumps(body)))
+    connection.commit()
+
+
+def tree(path, branch, *, created="2026-09-06T09:00:00Z", live=True):
+    return {"repo": "project", "name": Path(path).name, "path": path, "branch": branch, "live": live,
+            "state": "live" if live else "abandoned", "created": created}
+
+
+def sessions(trees=(), procs=()):
+    return {"root": "/repos", "rootExists": True, "worktrees": list(trees), "processes": list(procs),
+            "processes_error": "", "processes_truncated": False}
+
+
+def agent(pane, cwd, status="working"):
+    return {"agent": "claude", "pane_id": pane, "cwd": cwd, "foreground_cwd": cwd, "agent_status": status}
+
+
+class Join(ScreenCase):
+
+    def setUp(self):
+        super().setUp()
+        self.wt = os.path.realpath(self.tmp.name) + "/wt"
+
+    def read(self, *, fleet_doc=None, fleet_error="", herdr=list):
+        return active_sessions.document(self.connection, now=NOW, sessions=fleet_doc or sessions(),
+                                        sessions_error=fleet_error, herdr=herdr)
+
+    def launch(self, item, pane, when):
+        body = fix_session.NOTE.format(session="builder", item=item, pane=pane, where="~/repos/project")
+        note = self.note(item, body, kind="comment")
+        self.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", (when, note))
+        self.connection.commit()
+
+    def test_a_running_lane_entry_ties_its_worktree_and_a_process_to_its_item(self):
+        item = self.item("lane work", status="in_progress")
+        lane(self.connection, item, worktree=f"{self.wt}/a")
+        found = self.read(fleet_doc=sessions(
+            [tree(f"{self.wt}/a", "unrelated-branch")],
+            [{"pid": "77", "elapsed": "05:00", "command": f"/pack/bin/sd-ship -C {self.wt}/a prepare"}]))
+        self.assertEqual({key: "" for key in ("fleet", "lane", "launch", "herdr")}, found["sources"])
+        rows = [(row["item"], row["kind"], row["started"], row["elapsed"]) for row in found["rows"]]
+        self.assertEqual([(item, "worktree", "2026-09-06T09:00:00Z", "3h 0m"),
+                          (item, "lane", "2026-09-06T11:00:00Z", "1h 0m"),
+                          (item, "process", "2026-09-06T11:55:00Z", "5m")], rows)
+        self.assertTrue(all(row["title"] == "lane work" for row in found["rows"]))
+        self.assertIn("lane entry", found["rows"][0]["via"])
+        self.assertEqual(f"-C {self.wt}/a", found["rows"][2]["via"])
+        self.assertEqual("Lane prepare on hub", found["rows"][1]["session"])
+
+    def test_a_branch_number_ties_a_worktree_and_an_item_flag_ties_a_process(self):
+        branch_item = self.item("by branch")
+        flag_item = self.item("by flag")
+        found = self.read(fleet_doc=sessions(
+            [tree(f"{self.wt}/b", f"sessions-view-{branch_item}"), tree(f"{self.wt}/c", "no-number-here")],
+            [{"pid": "8", "elapsed": "1-00:00:00", "command": f"sd-ship merge --item {flag_item}"},
+             {"pid": "9", "elapsed": "00:01", "command": "sd today"}]))
+        # Longest-running item first: the process has run a day, the worktree three hours.
+        self.assertEqual([(flag_item, "process", f"--item {flag_item}"),
+                          (branch_item, "worktree", f"branch sessions-view-{branch_item}")],
+                         [(row["item"], row["kind"], row["via"]) for row in found["rows"]])
+        self.assertEqual("1d 0h", found["rows"][0]["elapsed"])
+        self.assertEqual("sd-ship merge (pid 8)", found["rows"][0]["session"])
+
+    def test_a_launch_note_is_a_session_while_herdr_lists_its_pane(self):
+        live, ended = self.item("live fix"), self.item("ended fix")
+        self.launch(live, "w9:p1", "2026-09-06T11:30:00+00:00")
+        self.launch(ended, "w9:p2", "2026-09-06T10:00:00+00:00")
+        found = self.read(herdr=lambda: [agent("w9:p1", "/somewhere")])
+        self.assertEqual([(live, "agent", "2026-09-06T11:30:00Z", "30m", True)],
+                         [(row["item"], row["kind"], row["started"], row["elapsed"], row["verified"]) for row in found["rows"]])
+        self.assertIn("w9:p1", found["rows"][0]["session"])
+
+    def test_herdr_that_did_not_answer_leaves_launches_unverified_not_ended(self):
+        item = self.item("fix")
+        self.launch(item, "w9:p1", "2026-09-06T11:30:00+00:00")
+
+        def broken():
+            raise ValueError("herdr agent list gave no answer in 5 s")
+        found = self.read(herdr=broken)
+        self.assertEqual("herdr agent list gave no answer in 5 s", found["sources"]["herdr"])
+        self.assertEqual([(item, False)], [(row["item"], row["verified"]) for row in found["rows"]])
+
+    def test_herdr_is_not_asked_when_nothing_could_join_it(self):
+        asked = []
+        self.read(herdr=lambda: asked.append(1) or [])
+        # A worktree whose branch names no item in this database ties nothing either.
+        self.read(fleet_doc=sessions([tree(f"{self.wt}/h", "sd99999-elsewhere")]), herdr=lambda: asked.append(1) or [])
+        self.assertEqual([], asked)
+
+    def test_an_agent_in_a_joined_worktree_is_that_items_session(self):
+        item = self.item("worked in a worktree")
+        found = self.read(fleet_doc=sessions([tree(f"{self.wt}/d", f"sd{item}-thing")]),
+                          herdr=lambda: [agent("w2:p1", f"{self.wt}/d/sub")])
+        self.assertEqual([("worktree", item), ("agent", item)], [(row["kind"], row["item"]) for row in found["rows"]])
+        self.assertEqual("", found["rows"][1]["started"])
+
+    def test_a_done_item_has_no_sessions(self):
+        item = self.item("finished")
+        # The status alone: the pack's delivery evidence is not what this join reads.
+        self.connection.execute("UPDATE item SET status = 'done' WHERE id = ?", (item,))
+        self.connection.commit()
+        found = self.read(fleet_doc=sessions([tree(f"{self.wt}/e", f"fix-{item}")]))
+        self.assertEqual([], found["rows"])
+
+    def test_a_fleet_that_could_not_be_read_is_a_reason_and_the_lane_still_answers(self):
+        item = self.item("lane only")
+        lane(self.connection, item, worktree=f"{self.wt}/f", status="pending")
+        found = self.read(fleet_doc={}, fleet_error="fleet collection was stopped at its budget")
+        self.assertEqual("fleet collection was stopped at its budget", found["sources"]["fleet"])
+        self.assertEqual([(item, "lane", "Lane queue (pending)", "2026-09-06T10:30:00Z")],
+                         [(row["item"], row["kind"], row["session"], row["started"]) for row in found["rows"]])
+
+    def test_now_carries_the_sessions(self):
+        item = self.item("on today")
+        doc = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
+                                  fleet=lambda area: sessions([tree(f"{self.wt}/g", f"x-{item}")]) if area == "sessions"
+                                  else {"repos": []})
+        self.assertEqual([item], [row["item"] for row in doc["active"]["rows"]])
+
+
+class WorktreeStart(FleetCase):
+
+    def test_a_worktree_carries_when_git_registered_it(self):
+        pack = self.checkout("pack")
+        self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
+        self.abandoned(pack, "lane-b", "fix/sd-2-lane-b")
+        stamp = time.mktime((2026, 9, 6, 9, 0, 0, 0, 0, -1))
+        os.utime(pack / ".git" / "worktrees" / "lane-a" / "commondir", (stamp, stamp))
+        rows = {row["name"]: row for row in fleet.read_worktrees(".", pack)}
+        self.assertEqual(datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), rows["lane-a"]["created"])
+        self.assertEqual("", rows["lane-b"]["created"])
+
+
+class HerdrReader(ScreenCase):
+    """`herdr_agents` against local-herdr's double on PATH, never the real binary."""
+
+    def setUp(self):
+        super().setUp()
+        self.fixture = Path(self.tmp.name) / "herdr"
+        self.fixture.mkdir()
+        self.journal = Path(self.tmp.name) / "journal"
+        doubles = fix_session.CHECKOUT / "local-herdr" / "tests" / "doubles"
+        environment = patch.dict(os.environ, {"PATH": f"{doubles}{os.pathsep}/usr/bin:/bin", "HERDR_SESSION": "sd",
+                                              "HERDR_DOUBLE_FIXTURE": str(self.fixture),
+                                              "HERDR_DOUBLE_JOURNAL": str(self.journal)})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_a_running_session_answers_its_agents_through_its_socket(self):
+        (self.fixture / "session-list.json").write_text(json.dumps(
+            {"sessions": [{"name": "sd", "running": True, "socket_path": "/tmp/example.sock"}]}))
+        (self.fixture / "agent-list.json").write_text(json.dumps(
+            {"result": {"agents": [agent("w1:p1", "/somewhere")], "type": "agent_list"}}))
+        self.assertEqual(["w1:p1"], [row["pane_id"] for row in active_sessions.herdr_agents()])
+        self.assertIn("sd\t/tmp/example.sock\tagent\tlist", self.journal.read_text())
+
+    def test_a_session_that_is_not_running_has_no_agents_and_is_not_asked(self):
+        self.assertEqual([], active_sessions.herdr_agents())
+        self.assertNotIn("agent", self.journal.read_text())
+
+    def test_an_answer_that_is_not_json_is_unknown_not_empty(self):
+        (self.fixture / "session-list.json").write_text("not json")
+        with self.assertRaisesRegex(ValueError, "herdr session list --json: exit 0, no JSON answer"):
+            active_sessions.herdr_agents()
+
+
+class TodayDraws(ScreenCase):
+    """today.js draws Working now from the document, under JavaScriptCore with the Today stand-in (`test_v2_today_reader`)."""
+
+    run_page = test_v2_today_reader.TheReader.run_page
+
+    def setUp(self):
+        super().setUp()
+        self.doc = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name), fleet=fleet_document)
+
+    def session(self, item, kind, session, *, verified=True, started="2026-09-06T09:00:00Z", elapsed="3h 0m"):
+        return {"item": item, "title": f"Item {item}", "status": "in_progress", "kind": kind, "session": session,
+                "started": started, "elapsed": elapsed, "seconds": 10800, "via": f"via {kind}", "verified": verified}
+
+    def test_an_items_sessions_are_one_row_and_an_unread_source_is_said(self):
+        self.doc["active"] = {"rows": [self.session(7, "worktree", "Worktree wt-7"),
+                                       self.session(7, "agent", "herdr pane w1:p1", verified=False, started="", elapsed=""),
+                                       self.session(9, "lane", "Lane queue (pending)", elapsed="5m")],
+                              "sources": {"fleet": "", "lane": "", "launch": "", "herdr": "herdr agent list gave no answer in 5 s"},
+                              "error": ""}
+        out = self.run_page("R.active = ELS.active.html; R.tally = ELS['active-tally'].html; "
+                            "R.note = ELS['active-note'].textContent; R.hidden = ELS['active-note'].hidden;")
+        self.assertEqual(2, out["R"]["active"].count("<tr data-item="))
+        self.assertIn('href="/tasks?row=7"', out["R"]["active"])
+        self.assertIn("Worktree wt-7 · 3h 0m", out["R"]["active"])
+        self.assertIn("▨", out["R"]["active"])
+        self.assertIn("2 items · 3 sessions", out["R"]["tally"])
+        self.assertEqual("herdr agents not read: herdr agent list gave no answer in 5 s", out["R"]["note"])
+        self.assertFalse(out["R"]["hidden"])
+
+    def test_sessions_that_could_not_be_read_say_so_and_are_not_an_empty_list(self):
+        self.doc["active"] = {"rows": [], "sources": {}, "error": "database is locked"}
+        out = self.run_page("R.active = ELS.active.html;")
+        self.assertIn("Sessions could not be read: database is locked", out["R"]["active"])
+        self.assertNotIn("No open item", out["R"]["active"])

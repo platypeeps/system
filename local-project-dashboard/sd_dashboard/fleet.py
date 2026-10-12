@@ -512,6 +512,13 @@ def read_worktrees(group, repo):
         # parent. Reported even when unreadable, as the empty string, because
         # "registered and unnameable" is a state and not an absence.
         path = str(Path(gitdir).parent) if gitdir else ""
+        # When git registered it: `worktree add` writes `commondir` once and
+        # nothing rewrites it. Today's Working now (sd:3466) counts a
+        # worktree's age from here; a registration without one says "".
+        try:
+            created = datetime.fromtimestamp((entry / "commondir").stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except OSError:
+            created = ""
         out.append({
             "repo": where,
             "name": entry.name,
@@ -519,6 +526,7 @@ def read_worktrees(group, repo):
             "branch": branch_of(head),
             "live": state == "live",
             "state": state,
+            "created": created,
         })
     return out
 

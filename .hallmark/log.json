@@ -1,6 +1,17 @@
 [
   {
     "date": "2026-10-12",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/today.html Working now section (static/today.js, today.css)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3466 Working now ledger between Now and Your work: one row per open item, its sessions listed in the Session cell, Started and Elapsed from the longest session; ▨ for an unconfirmed launch, a line under the table for a source not read; Your work's row grid below 900 px"
+  },
+  {
+    "date": "2026-10-12",
     "artifact": "local-task-actions/confirm.css, task-actions.sh pages; design_docs.py figure; obsidian-tasks and obsidian-review HTML mails",
     "scope": "component",
     "genre": "modern-minimal",

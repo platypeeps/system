@@ -15,3 +15,6 @@ keyed `today:item:<id>`, and the item shows again early when its status or due d
 Retry on a failed or interrupted job posts `/api/jobs/<job>/retry` with the job's revision from the same read, as
 Management does (sd:3386); a job that changed since is refused and Now is read again.
 After exit 127, command not found, Retry asks first and names the exit (sd:3392).
+Working now lists each open item with a live session, longest-running first, from the same `/api/now` document (sd:3466).
+A session is a worktree, a lane entry, a running `sd-*` command or a herdr agent; each row names what tied it to its item.
+A source that could not be read is said under the table; a Fix launch herdr could not confirm shows as ▨.

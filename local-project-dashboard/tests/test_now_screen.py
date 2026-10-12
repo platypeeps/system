@@ -185,7 +185,7 @@ class Document(ScreenCase):
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
-        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error"})
+        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error", "active"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),
