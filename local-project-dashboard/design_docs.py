@@ -16,9 +16,9 @@ argument applies to a second set of pages on the same shelf. Markdown in,
 one code path out.
 
 **Not a second visual identity.** The page shell reuses the pack's
-`TOKENS_CSS` and `FONTS_CSS` verbatim, read from `$SD_PACK_ROOT` on each run.
-A missing pack checkout is a SKIP with a plain fallback stylesheet, never a
-failure: the pack is a different repository and may not be cloned here.
+`TOKENS_CSS`, `FONTS_CSS` and `THEME_JS` verbatim, read from `$SD_PACK_ROOT` on each run.
+A missing pack checkout is a SKIP for every page, never a page in a stylesheet
+of this file's own: the pack is a different repository and may not be cloned here.
 
 **Not an inventory.** The documents are whatever `docs/design/*.md` holds,
 and each page's title comes from its own frontmatter. A list in this file is
@@ -69,6 +69,13 @@ STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 #: this renderer's, not a document's.
 RESERVED = "diagram-"
 
+#: The foundation's Dark / Light / System control, which the pack's page
+#: stylesheet styles and its theme.js wires up.
+THEME_CONTROL = ('<div class="theme" role="group" aria-label="Theme">'
+                 + "".join(f'<button type="button" data-theme-choice="{c}">{c.title()}</button>'
+                           for c in ("dark", "light", "system"))
+                 + "</div>")
+
 #: The five Archify diagram types, each with its own schema.
 TYPES = ("architecture", "workflow", "sequence", "dataflow", "lifecycle")
 
@@ -88,17 +95,6 @@ PLACEHOLDER = re.compile(r"<!--DIAGRAM:([A-Za-z0-9][A-Za-z0-9._-]*)-->")
 #: A job's blurb is its first sentence. `;` was in this class, so two live
 #: blurbs published with a dangling semicolon (#471, found in audit).
 SENTENCE = re.compile(r"(?<=\.)\s")
-
-FALLBACK_CSS = """
-:root{--ink:#0F1617;--ink-soft:#465658;--ground:#EEF2F2;--surface:#fff;--line:#D3DEDE;--accent:#0E7C86}
-@media (prefers-color-scheme:dark){:root{--ink:#E3EAE9;--ink-soft:#A1B2B1;--ground:#0C1112;--surface:#131A1B;--line:#2A3637;--accent:#3FB3BC}}
-body{background:var(--ground);color:var(--ink);font:16px/1.6 Georgia,serif;margin:0}
-.wrap{max-width:52rem;margin:0 auto;padding:3rem 1.5rem 6rem}
-a{color:var(--accent)} code,pre{font-family:ui-monospace,Menlo,monospace}
-pre{background:var(--surface);border:1px solid var(--line);padding:1rem;overflow-x:auto}
-table{border-collapse:collapse;width:100%} th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left}
-"""
-
 
 class Skip(Exception):
     """A dependency this machine does not have. Reported, never fatal."""
@@ -374,29 +370,36 @@ def build_diagrams(root: Path, out_dir: Path, notes: list[str],
 # Pages
 
 
-def house_css() -> tuple[str, str]:
-    """The pack's stylesheet and embedded fonts, or a plain local fallback."""
+def house_css() -> tuple[str, str, str]:
+    """The pack's stylesheet, embedded fonts and theme script.
+
+    A machine without the pack renders nothing: a stylesheet of this file's own
+    was a second palette that outlived the identity it stood in for. The theme
+    script is empty on a pack older than the foundation; the page then carries
+    no control that cannot work.
+    """
     tokens = PACK_ROOT / "bin" / "sd_research_tokens.py"
     fonts = PACK_ROOT / "bin" / "sd_research_fonts.py"
     if not tokens.is_file():
-        return FALLBACK_CSS, ""
+        raise Skip(f"no command pack at {PACK_ROOT}")
     scope: dict = {}
     exec(compile(tokens.read_text(), str(tokens), "exec"), scope)  # nosec B102
-    css = scope.get("TOKENS_CSS", FALLBACK_CSS)
+    if "TOKENS_CSS" not in scope:
+        raise Skip(f"{tokens} defines no TOKENS_CSS")
     embedded = ""
     if fonts.is_file():
-        scope = {}
-        exec(compile(fonts.read_text(), str(fonts), "exec"), scope)  # nosec B102
-        embedded = scope.get("FONTS_CSS", "")
-    return css, embedded
+        font_scope: dict = {}
+        exec(compile(fonts.read_text(), str(fonts), "exec"), font_scope)  # nosec B102
+        embedded = font_scope.get("FONTS_CSS", "")
+    return scope["TOKENS_CSS"], embedded, scope.get("THEME_JS", "")
 
 
 DIAGRAM_CSS = """
-.diagram{margin:2rem 0;padding:0;border:1px solid var(--line,#ccc);border-radius:4px;
-  background:var(--surface,#fff);overflow:hidden}
+.diagram{margin:var(--space-xl) 0;padding:0;border:var(--rule-hair) solid var(--color-rule);
+  border-radius:var(--radius-md);background:var(--color-panel);overflow:hidden}
 .diagram .diagram-svg{display:block;width:100%;height:auto}
-.diagram figcaption{font-family:var(--sans,sans-serif);font-size:.78rem;color:var(--ink-faint,#777);
-  padding:.55rem .8rem;border-top:1px solid var(--line-soft,#eee)}
+.diagram figcaption{font-family:var(--font-ui);font-size:var(--text-xs);color:var(--color-muted);
+  padding:var(--space-xs) var(--space-sm);border-top:var(--rule-hair) solid var(--color-rule-2)}
 .diagram figcaption a{color:inherit}
 """
 
@@ -749,7 +752,7 @@ def expand_jobs(body: str, root: Path, notes: list[str],
     return "\n".join(out)
 
 
-def build_page(source: Path, embeds: dict[str, str], css: str, fonts: str,
+def build_page(source: Path, embeds: dict[str, str], css: str, fonts: str, theme_js: str,
                siblings: list[tuple[str, str]], notes: list[str],
                root: Path, failures: list[str], gaps: list[str] | None = None) -> str:
     meta, body = frontmatter(source.read_text())
@@ -784,6 +787,9 @@ def build_page(source: Path, embeds: dict[str, str], css: str, fonts: str,
 
     head = "\n".join(filter(None, [
         f"<title>{html.escape(title)}</title>",
+        # In <head> and not deferred, so the stored theme applies before first
+        # paint. The dashboard runs it only because its policy pins this text.
+        f"<script>{theme_js}</script>" if theme_js else "",
         f"<style>{fonts}</style>" if fonts else "",
         f"<style>{css}</style>",
         f"<style>{DIAGRAM_CSS}</style>",
@@ -794,6 +800,7 @@ def build_page(source: Path, embeds: dict[str, str], css: str, fonts: str,
         f"  <nav>{''.join(nav)}</nav>",
         f'  <div class="railnote"><strong>The other documents</strong>{others}</div>' if others else "",
         f'  <div class="railnote"><strong>Source</strong><code>{SOURCES}/{source.name}</code></div>',
+        f"  {THEME_CONTROL}" if theme_js else "",
         "</aside>", "<main>",
         f'  <p class="eyebrow">{html.escape(meta["eyebrow"])}</p>' if meta.get("eyebrow") else "",
         f"  <h1>{html.escape(title)}</h1>",

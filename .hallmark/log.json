@@ -1,5 +1,16 @@
 [
   {
+    "date": "2026-10-12",
+    "artifact": "local-task-actions/confirm.css, task-actions.sh pages; design_docs.py figure; obsidian-tasks and obsidian-review HTML mails",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged); mails use the light values as sRGB hex",
+    "macrostructure": "component scope: skipped",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3591 confirm and result pages on tokens and theme.js; sd:3593 diagram figure on token names, theme script pinned; sd:3590 mail palette, glyph beside each colour, no purple button"
+  },
+  {
     "date": "2026-10-05",
     "artifact": "local-project-dashboard/sd_dashboard/v2/reports.html (static/reports.js, reports.css; shared shell.css, shell.js)",
     "scope": "page",

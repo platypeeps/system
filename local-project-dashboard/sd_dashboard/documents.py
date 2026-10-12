@@ -96,9 +96,16 @@ DIAGRAM_SCRIPTS = (
     "sha256-Hf2euWzsppfIgB74TEEv3Gtu0cBIeeq/DW08HLPSEn4=",
 )
 
+#: The foundation's theme control script (`THEME_JS` in the pack's
+#: `sd_research_tokens.py`), inline in the head of every research and design
+#: page. One text for every page, so it is pinned like the two above. Unpinned,
+#: the policy blocked it and the page hid its Dark / Light / System control.
+#: Re-pin when the pack adopts a new foundation `theme.js`.
+THEME_SCRIPT = "sha256-PUz0/EtUwWghIyXRLF1gtUh/7ueDKRMcnk6hfQKbOiQ="
+
 #: The document's own policy, replacing the dashboard's for that one response.
 #: Strictly tighter where it counts: the dashboard allows same-origin script by
-#: origin, and this allows only two exact scripts by digest. It has to permit
+#: origin, and this allows only three exact scripts by digest. It has to permit
 #: inline style, because a standalone report carries its stylesheet in its head
 #: -- that is what makes it standalone, and what lets it open from a mail
 #: client or a Drive preview. `blob:` in img-src is the diagram's PNG export,
@@ -106,7 +113,7 @@ DIAGRAM_SCRIPTS = (
 #: script, since script-src names digests and nothing else.
 POLICY = (
     "default-src 'none'; "
-    "script-src " + " ".join(f"'{digest}'" for digest in DIAGRAM_SCRIPTS) + "; "
+    "script-src " + " ".join(f"'{digest}'" for digest in (*DIAGRAM_SCRIPTS, THEME_SCRIPT)) + "; "
     "style-src 'unsafe-inline'; img-src data: blob:; "
     "font-src data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 )
