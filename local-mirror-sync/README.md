@@ -244,7 +244,9 @@ pair is about to update, asks `brctl download` for the evicted ones among
 them and waits for them. The wait is bounded per pair by
 `MIRROR_SYNC_MATERIALIZE_WAIT` seconds in total (default 300). It logs each
 downloaded file and runs the pair once more. Nothing is deleted. A file still
-evicted after the wait fails the pair by name.
+evicted after the wait fails the pair by name. The dry run lists a
+non-ASCII name with octal escapes (`\#342\#200\#224` for an em dash);
+`sync` decodes them before it looks for the file (sd:3404).
 
 A live source loses files while a pass reads it: a cron attempt file, a git
 ref that a fetch prunes. GNU rsync exits 24 for that; openrsync exits 23 and
