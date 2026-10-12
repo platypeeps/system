@@ -53,6 +53,7 @@ After finishing, run it and quote the decisive output line; a partial pass is a 
 If the check changed, say why; if nothing ran, say "not verified".
 If it cannot be verified (external service, human decision), say what can be and what would settle the rest.
 Scope the check to everywhere the changed thing appears (every repo, inventory, derived store), enumerated from disk or the database, not from the string you typed.
+A bug fix or behaviour change lands with a test that failed before the fix; quote its failing line in the PR body's Test plan. Exempt: docs, deletions, renames, visual-only UI.
 
 # Standing authority (all repos I manage)
 
