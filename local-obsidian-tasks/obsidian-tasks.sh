@@ -368,9 +368,21 @@ overdue = sum(1 for d, *_ in due if d < today)
 today_n = len(due) - overdue
 lines.append(f"{len(due)} open task(s) need attention ({overdue} overdue, {today_n} due today)\n")
 
-BTN = ('<a href="{href}" style="display:inline-block;padding:7px 14px;'
-       'margin:0 6px 6px 0;border-radius:6px;text-decoration:none;'
-       'font-size:13px;font-weight:600;color:#fff;background:{bg}">{label}</a>')
+# Email-safe foundation palette: the ui-design light values as sRGB hex, since
+# a mail client has no custom properties, no light-dark() and no oklch(). One
+# glyph sits beside each state colour; colour alone carries nothing. The
+# test pins each value against the dashboard's tokens.css.
+PALETTE = {
+    "paper": "#eff2f6", "panel": "#f8fbfd", "rule": "#c6cbd1",
+    "ink": "#14191f", "ink-2": "#3d434a", "muted": "#5b6168",
+    "ok": "#287c42", "caution": "#8a5600", "warning": "#b71824",
+}
+# Single quotes: a double quote would end the style="..." attribute it sits in.
+FONT = "'IBM Plex Sans',-apple-system,Helvetica,Arial,sans-serif"
+
+BTN = ('<a href="{href}" style="display:inline-block;padding:13px 16px;'
+       'margin:0 6px 6px 0;border-radius:5px;text-decoration:none;line-height:18px;'
+       'font-size:13px;font-weight:600;color:' + PALETTE["panel"] + ';background:{bg}">{label}</a>')
 cards = []
 for d, prio, title, link, stem in due:
     age = (today - d).days
@@ -379,37 +391,38 @@ for d, prio, title, link, stem in due:
     lines.append(f"- {title}{ptag} — scheduled {d}, {when}")
     lines.append(f"  {link}")
 
-    when_color = "#c0392b" if age > 0 else "#2c7a2c"
+    # Overdue is a warning, due today a caution; each carries its glyph.
+    when_color, when_glyph = (PALETTE["warning"], "\u25a0") if age > 0 else (PALETTE["caution"], "\u25b2")
     # Gmail strips custom-scheme hrefs, so Open goes through the service's
     # https /open redirect when available and falls back to the raw
     # obsidian:// URI otherwise.
     open_url = action_url(stem, "open") or link
-    buttons = [BTN.format(href=html.escape(open_url), bg="#7c5cbf", label="Open in Obsidian")]
+    buttons = [BTN.format(href=html.escape(open_url), bg=PALETTE["ink"], label="\u2197 Open in Obsidian")]
     done_url = action_url(stem, "done")
     post_url = action_url(stem, "postpone", "3")
     if done_url:
-        buttons.append(BTN.format(href=html.escape(done_url), bg="#2c7a2c", label="✓ Mark done"))
+        buttons.append(BTN.format(href=html.escape(done_url), bg=PALETTE["ok"], label="✓ Mark done"))
     if post_url:
-        buttons.append(BTN.format(href=html.escape(post_url), bg="#8a6d1a", label="Postpone 3 days"))
+        buttons.append(BTN.format(href=html.escape(post_url), bg=PALETTE["caution"], label="\u2192 Postpone 3 days"))
     cards.append(
-        '<div style="border:1px solid #ddd;border-radius:8px;padding:14px 16px;'
-        'margin:0 0 12px 0;background:#fafafa">'
-        f'<div style="font-size:15px;font-weight:600;margin-bottom:2px">'
+        f'<div style="border:1px solid {PALETTE["rule"]};border-radius:5px;padding:14px 16px;'
+        f'margin:0 0 12px 0;background:{PALETTE["panel"]}">'
+        f'<div style="font-size:15px;font-weight:600;margin-bottom:2px;color:{PALETTE["ink"]}">'
         f'{html.escape(title)}{html.escape(ptag)}</div>'
-        f'<div style="font-size:12px;color:#666;margin-bottom:10px">scheduled '
-        f'{d} · <span style="color:{when_color};font-weight:600">{html.escape(when)}</span></div>'
+        f'<div style="font-size:12px;color:{PALETTE["muted"]};margin-bottom:10px">scheduled '
+        f'{d} · <span style="color:{when_color};font-weight:600">{when_glyph} {html.escape(when)}</span></div>'
         + "".join(buttons) + '</div>')
 
 if by_jev:
     lines.append("(ordered by Jev, most urgent first)")
 
 doc = (
-    '<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
-    'max-width:560px;margin:0 auto">'
+    f'<div style="font-family:{FONT};background:{PALETTE["paper"]};color:{PALETTE["ink"]};'
+    'max-width:560px;margin:0 auto;padding:16px">'
     f'<p style="font-size:14px">{len(due)} open task(s) need attention '
     f'(<b>{overdue} overdue</b>, {today_n} due today)</p>'
     + "".join(cards) +
-    '<p style="font-size:11px;color:#999">Buttons work from any device '
+    f'<p style="font-size:11px;color:{PALETTE["muted"]}">Buttons work from any device '
     '(Mark done / Postpone ask for one confirming tap) and expire after '
     '7 days.'
     + (' Ordered by Jev, most urgent first.' if by_jev else '')

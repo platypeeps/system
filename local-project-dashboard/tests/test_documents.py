@@ -434,7 +434,8 @@ class Policy(unittest.TestCase):
         An archify diagram page is interactive -- zoom, pan, PNG export -- and
         that is two inline scripts, byte-identical on every such page whatever
         the diagram. So the blanket `no script-src` became `script-src` naming
-        those two digests and nothing else, which is a weaker rule than the one
+        those two digests and nothing else (since sd:3593 the foundation's theme
+        script is a third), which is a weaker rule than the one
         it replaced and a far stronger one than `'self'`: a document may run the
         script the renderer put there, and no other, because any edit to it
         changes the digest and the browser refuses it.
@@ -448,7 +449,8 @@ class Policy(unittest.TestCase):
         sources = [d for d in documents.POLICY.split(";")
                    if d.strip().startswith("script-src ")][0].split()[1:]
         self.assertEqual(sources,
-                         [f"'{digest}'" for digest in documents.DIAGRAM_SCRIPTS])
+                         [f"'{digest}'" for digest in (*documents.DIAGRAM_SCRIPTS,
+                                                       documents.THEME_SCRIPT)])
         for source in sources:
             self.assertRegex(source, r"^'sha256-[A-Za-z0-9+/]{43}='$")
 

@@ -65,6 +65,11 @@ every one of them against 127.0.0.1 (sd:1203).
   the one thing that reads as "one-time" and is not. `task-actions.sh status`
   probes the public URL too. GET never mutates (confirmation page + POST),
   links are HMAC-signed and expire, everything else 404s.
+  The pages wear the ui-design foundation (sd:3591): `/static/<name>` serves
+  `tokens.css`, `theme.js`, `fonts.css` and the Plex Sans font from the
+  dashboard's `sd_dashboard/v2/static/`, plus this folder's `confirm.css`,
+  from a fixed list under a policy that runs only those files. Restart the
+  agent (`start`) after pulling a change to the page.
 - **Replacing tailscaled can drop the funnel silently.** A daemon that
   starts from an empty state directory (for example after moving tailscale
   from the App Store build to the Homebrew formula) answers

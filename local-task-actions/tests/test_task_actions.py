@@ -13,11 +13,18 @@ is checkable with TASK_ACTIONS_TEST_SCRIPT:
 
 import os
 import pathlib
+import re
 import shutil
+import socket
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+import urllib.error
+import urllib.parse
+import urllib.request
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = pathlib.Path(os.environ.get("TASK_ACTIONS_TEST_SCRIPT") or FOLDER / "task-actions.sh")
@@ -163,6 +170,156 @@ class LabelPrefixTest(unittest.TestCase):
         agent = (self.home / "Library" / "LaunchAgents"
                  / "local.system-tools.task-actions.plist")
         self.assertNotIn("ProcessType", plistlib.loads(agent.read_bytes()))
+
+
+class ConfirmPageTest(unittest.TestCase):
+    """The pages the server sends wear the foundation: its tokens, its theme control, no colour of their own.
+
+    These run the real `run` from the real folder, because the stylesheets
+    it serves sit beside it and in the dashboard's static folder.
+    """
+
+    RAW_COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(|\bpurple\b|\bindigo\b|\bviolet\b")
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="task-actions-page."))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / "config" / "task-actions").mkdir(parents=True)
+        home = self.tmp / "home"
+        home.mkdir()
+        vault = self.tmp / "vault"
+        (vault / "TaskNotes" / "Tasks").mkdir(parents=True)
+        (vault / "TaskNotes" / "Tasks" / "Pay rent.md").write_text(
+            "---\nstatus: open\nscheduled: 2026-10-12\n---\nbody\n")
+        self.vault = vault
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            self.port = sock.getsockname()[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        path = os.pathsep.join([os.path.dirname(sys.executable), "/usr/bin", "/bin"])
+        self.env = {"PATH": path, "HOME": str(home),
+                    "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
+                    "TASK_ACTIONS_PORT": str(self.port),
+                    "OBSIDIAN_VAULT": str(vault),
+                    "TASK_ACTIONS_SECRET_FILE": str(self.tmp / "secret"),
+                    "TASK_ACTIONS_BASE_URL": self.base}
+        self.server = subprocess.Popen(
+            ["sh", str(FOLDER / "task-actions.sh"), "run"], env=self.env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.server.wait)
+        self.addCleanup(self.server.terminate)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            self.fail("the server did not start")
+
+    def signed(self, action, days="3"):
+        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "Pay rent", action, days],
+                             env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.strip()
+
+    def get(self, url):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.headers, e.read()
+
+    def page(self, url):
+        status, headers, body = self.get(url)
+        return status, headers, body.decode()
+
+    def test_the_confirm_page_loads_the_foundation_and_carries_no_style_of_its_own(self):
+        status, _, page = self.page(self.signed("done"))
+        self.assertEqual(status, 200)
+        self.assertIn('href="/static/tokens.css"', page)
+        self.assertIn('src="/static/theme.js"', page)
+        self.assertNotIn("style=", page)
+        self.assertNotIn("<style", page)
+        self.assertNotRegex(page, self.RAW_COLOUR)
+
+    def test_the_confirm_page_names_the_action_and_asks_for_the_button(self):
+        _, _, page = self.page(self.signed("postpone", "5"))
+        self.assertIn("Postpone 5 day(s)", page)
+        self.assertIn('method="POST"', page)
+        self.assertIn("Nothing changes until you press the button", page)
+
+    def test_decline_is_the_danger_button_and_the_rest_are_not(self):
+        db = urllib.parse.quote("blog")
+        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "-b", db, "Idea", "decline"],
+                             env=self.env, capture_output=True, text=True, timeout=60)
+        _, _, decline = self.page(out.stdout.strip())
+        _, _, done = self.page(self.signed("done"))
+        self.assertIn('class="btn danger"', decline)
+        self.assertNotIn("danger", done)
+
+    def test_the_theme_control_is_on_the_page(self):
+        _, _, page = self.page(self.signed("done"))
+        for choice in ("dark", "light", "system"):
+            self.assertIn(f'data-theme-choice="{choice}"', page)
+
+    def test_the_pages_send_a_policy_that_runs_only_their_own_files(self):
+        _, headers, _ = self.get(self.signed("done"))
+        policy = headers["Content-Security-Policy"]
+        for directive in ("default-src 'none'", "script-src 'self'", "style-src 'self'",
+                          "font-src 'self'", "form-action 'self'", "frame-ancestors 'none'"):
+            self.assertIn(directive, policy)
+        self.assertNotIn("unsafe-inline", policy)
+
+    def test_every_stylesheet_and_script_the_page_names_is_served(self):
+        _, _, page = self.page(self.signed("done"))
+        wanted = re.findall(r'(?:href|src)="(/static/[^"]+)"', page)
+        self.assertGreaterEqual(len(wanted), 3)
+        for name in wanted:
+            status, headers, body = self.get(self.base + name)
+            self.assertEqual(status, 200, name)
+            self.assertTrue(body, name)
+            self.assertIn("Content-Security-Policy", headers, name)
+        _, _, fonts = self.page(self.base + "/static/fonts.css")
+        for face in re.findall(r"url\(([^)]+\.woff2)\)", fonts):
+            if "ibm-plex-sans-var" in face:
+                self.assertEqual(self.get(f"{self.base}/static/{face}")[0], 200, face)
+
+    def test_nothing_outside_the_list_is_served(self):
+        for name in ("/static/../task-actions.sh", "/static/%2e%2e/task-actions.sh",
+                     "/static/secret", "/static/", "/static/fonts/OFL.txt", "/static/tokens.css/x"):
+            self.assertEqual(self.get(self.base + name)[0], 404, name)
+
+    def test_the_stylesheet_names_foundation_tokens_and_no_colour(self):
+        _, _, css = self.page(self.base + "/static/confirm.css")
+        _, _, tokens = self.page(self.base + "/static/tokens.css")
+        self.assertNotRegex(css, self.RAW_COLOUR)
+        self.assertNotRegex(css, r"var\([^)]*,", "a var() fallback is a second palette")
+        defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", tokens))
+        used = set(re.findall(r"var\((--[a-z0-9-]+)\)", css))
+        self.assertTrue(used)
+        self.assertEqual(used - defined, set(), "a token the foundation does not define")
+
+    def test_a_done_task_says_so_with_a_glyph_and_words(self):
+        url = self.signed("done")
+        data = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        form = urllib.parse.urlencode({k: v[0] for k, v in data.items()}).encode()
+        with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=form),
+                                    timeout=10) as r:
+            page = r.read().decode()
+        self.assertIn("marked done", page)
+        self.assertIn("\u25cf", page)  # normal
+        self.assertIn("status: done", (self.vault / "TaskNotes" / "Tasks" / "Pay rent.md").read_text())
+
+    def test_a_refusal_says_nothing_changed_with_a_glyph_and_words(self):
+        url = self.signed("done").replace("t=", "t=0")
+        status, _, page = self.page(url)
+        self.assertEqual(status, 403)
+        self.assertIn("Bad signature", page)
+        self.assertIn("\u25a0", page)  # warning
+        self.assertIn("Nothing changed", page)
+        self.assertNotRegex(page, self.RAW_COLOUR)
 
 
 if __name__ == "__main__":
