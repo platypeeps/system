@@ -425,5 +425,85 @@ class TheFilterChips(unittest.TestCase):
         self.assertEqual(out["none"], "")
 
 
+SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
+#: The rail's markup as shell.js draws it: its head row (the mark and its controls) and its foot.
+RAIL = re.search(r"put\(rail, html`(.*?)`\);", SHELL_JS, re.S).group(1)
+RAIL_HEAD = re.search(r'<div class="rail-head">(.*?)\n    </div>', RAIL, re.S)
+RAIL_FOOT = re.search(r'<div class="foot">(.*?)</div>\s*$', RAIL, re.S).group(1)
+
+
+class TheRailHead(unittest.TestCase):
+    """sd:3442, sd:3443: the rail's fold and Reload are small icon buttons beside the title, not rows in the foot."""
+
+    def test_the_fold_sits_in_the_head_beside_the_mark_and_not_in_the_foot(self):
+        self.assertIsNotNone(RAIL_HEAD, "the rail has no head row")
+        head = RAIL_HEAD.group(1)
+        self.assertLess(head.index('class="mark"'), head.index('id="fold-rail"'))
+        self.assertRegex(head, r'<button class="icon-btn" type="button" id="fold-rail"[^>]* aria-label="Collapse sections \(\[\)"')
+        self.assertNotIn("fold-rail", RAIL_FOOT)
+
+    def test_reload_sits_in_the_head_between_the_mark_and_the_fold(self):
+        # sd:3443: Reload moves up beside the fold; the shell still binds it by id within the rail.
+        self.assertIsNotNone(RAIL_HEAD, "the rail has no head row")
+        head = RAIL_HEAD.group(1)
+        self.assertLess(head.index('class="mark"'), head.index('id="reload"'))
+        self.assertLess(head.index('id="reload"'), head.index('id="fold-rail"'))
+        self.assertRegex(head, r'<button class="icon-btn" type="button" id="reload"[^>]* aria-label="Reload this page \(r\)"')
+        self.assertNotIn('id="reload"', RAIL_FOOT)
+        self.assertIn("rail.querySelector('#reload').addEventListener('click', () => location.reload());", SHELL_JS)
+
+
+WIDTH = re.search(r"^  // width:start\n(.*?)^  // width:end$", SHELL_JS, re.S | re.M)
+
+
+class TheRailWidth(unittest.TestCase):
+    """sd:3445: the rail's width is set on its edge, clamped, kept per browser as sd.rail.width, and reset to the default."""
+
+    def run_width(self, body, stored=None):
+        self.assertIsNotNone(WIDTH, "shell.js has no width block")
+        script = ("var OUT = {}, STORE = " + json.dumps({} if stored is None else {"sd.rail.width": stored}) + ", ATTR = {}, PROPS = {};\n"
+                  "var EVENTS = []; function CustomEvent(type, o) { this.type = type; this.detail = o.detail; }\n"
+                  "var document = { documentElement: { style: { setProperty: (k, v) => { PROPS[k] = v; }, removeProperty: k => { delete PROPS[k]; } } },\n"
+                  "  dispatchEvent: e => EVENTS.push([e.type, e.detail]) };\n"
+                  "const store = (k, v) => { if (v === undefined) return k in STORE ? STORE[k] : null; STORE[k] = v; return v; };\n"
+                  "const rail = { getBoundingClientRect: () => ({ width: 216 }) }, grip = { setAttribute: (k, v) => { ATTR[k] = v; } };\n"
+                  + WIDTH.group(1) + "\nvar R = {};\n" + body
+                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, PROPS, EVENTS }); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_width_is_clamped_set_on_the_root_and_kept(self):
+        out = self.run_width("R.set = setWidth(250.4); R.low = railWidth(20); R.high = railWidth('900'); R.junk = railWidth('wide');")
+        self.assertEqual(out["R"], {"set": 250, "low": 176, "high": 384, "junk": None})
+        self.assertEqual(out["PROPS"], {"--rail": "250px"})
+        self.assertEqual(out["STORE"], {"sd.rail.width": "250"})
+        self.assertEqual((out["ATTR"]["role"], out["ATTR"]["aria-valuenow"], out["ATTR"]["aria-valuemin"], out["ATTR"]["aria-valuemax"]),
+                         ("separator", "250", "176", "384"))
+
+    def test_a_drag_moves_without_storing_and_a_reset_clears_the_kept_width(self):
+        out = self.run_width("setWidth(300, false); R.moved = Object.assign({}, PROPS); setWidth(null);", stored="240")
+        self.assertEqual(out["R"]["moved"], {"--rail": "300px"})
+        self.assertEqual(out["PROPS"], {})
+        self.assertEqual(out["STORE"], {"sd.rail.width": ""})
+        self.assertEqual(out["ATTR"]["aria-valuenow"], "216")
+
+    def test_a_kept_width_tells_the_page_and_a_drag_in_progress_does_not(self):
+        # Settings shows the width the edge set; without the event its control kept the old preset checked.
+        out = self.run_width("setWidth(300, false); setWidth(250); setWidth(null);")
+        self.assertEqual(out["EVENTS"], [["shell:rail-width", 250], ["shell:rail-width", None]])
+
+    def test_the_shell_applies_the_kept_width_on_load_and_hands_pages_the_setter(self):
+        self.assertIn("setWidth(store('sd.rail.width'), false);", SHELL_JS)
+        self.assertIn("railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width'))", SHELL_JS)
+
+    def test_the_grip_sizes_come_from_tokens(self):
+        # Foundation tokens.css covers space and rules, so the grip's own rules carry no raw px (the 2px focus ring aside: no token).
+        rules = re.findall(r"^[^\n]*\.rail-grip[^{\n]*\{([^}]*)\}", SHELL_CSS, re.M)
+        self.assertTrue(rules)
+        self.assertEqual([r for r in rules if re.search(r"\d+px", r)], [])
+
+
 if __name__ == "__main__":
     unittest.main()

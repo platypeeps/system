@@ -189,6 +189,21 @@ class TheScript(unittest.TestCase):
         self.assertIn('href="/tasks?row=3012"', rows)
         self.assertIn("1 waiting", out["R"]["tally"])
 
+    def test_the_recommended_option_comes_first_as_the_filled_button_with_a_tag_and_posts_its_text(self):
+        # sd:3451: a question note marks its recommendation "(Recommended)"; the marker was plain text in the button.
+        doc = json.dumps({"decisions": [decision_row(options=["Leave as is", "Map it to its report (Recommended)"])]})
+        out = self.run_page("R.rows = ELS.decisions.html; click(7, 1); await flush();",
+                            f"""(path, body) => path === '/api/decisions' ? [200, {doc}]
+                                : [200, {{ revision: '{"b" * 64}', ruling: {{ id: 99, kind: 'decision', body: 'x' }} }}]""")
+        rows = out["R"]["rows"]
+        first, second = rows.index('data-option="1"'), rows.index('data-option="0"')
+        self.assertLess(first, second)
+        self.assertIn('class="btn sm rec" data-note="7" data-option="1"', rows)
+        self.assertIn('class="btn quiet sm" data-note="7" data-option="0"', rows)
+        self.assertIn('<span>Map it to its report</span><span class="tag">Recommended</span>', rows)
+        self.assertNotIn("(Recommended)</span>", rows)
+        self.assertEqual(out["posts"][0][1]["option"], "Map it to its report (Recommended)")
+
     def test_no_decisions_says_so_and_a_failed_read_says_why(self):
         empty = self.run_page("R.rows = ELS.decisions.html;", "(path, body) => [200, { decisions: [] }]")
         self.assertIn("No decision waits on you", empty["R"]["rows"])

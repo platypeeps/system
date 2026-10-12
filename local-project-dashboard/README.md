@@ -142,6 +142,9 @@ The shared library supplies this order to both the dashboard and `sd-status`.
 Each acknowledgement binds exact event IDs and the displayed revision; stale submissions refuse.
 Acknowledgement leaves notification delivery history and local task status separate.
 
+**Settings** at `/settings` holds what each browser keeps for the dashboard (sd:3438): the theme and the sections width.
+The rail's right edge also drags the width (sd:3445); both stay in browser storage, and the page writes nothing to the server.
+
 **Queue** at `/queue` shows each managed repository's `sd-ship lane` queue (sd:2585), with the host that runs it.
 The queue lives in the hub database, so a lane hosted on another machine shows too, folder or not (sd:3284); lanes with no row share one Idle line.
 The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.
@@ -479,7 +482,10 @@ The listing shows every `.html` page under `products/`, one section per product.
 The page is `/designs`, the v2 Designs page (sd:2126). It reads
 `GET /api/designs` (`designs.ledger`): each drawn page's kind, last commit and
 screenshot state, and each product with a brief and no page. History, Retake
-screenshots and Read brief are copy-only lines the dashboard does not run. The
+screenshots and Read brief are copy-only lines the dashboard does not run.
+Hide and Unhide (sd:3447) post `/api/designs/view`, the same view state as
+Documents' Hide, keyed `designs/<path>` or `designs/product:<name>`; the Hidden
+lamp shows the hidden rows, and a hidden row leaves the other lamps and the badge. The
 classic listing was retired in sd:3402; [`docs/pages/designs.md`](docs/pages/designs.md) has the detail.
 
 A mockup is served at its path in the tree, under `/designs/`. Its relative

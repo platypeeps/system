@@ -14,6 +14,17 @@
   },
   {
     "date": "2026-10-12",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/settings.html (static/settings.js, settings.css); shared shell.css, shell.js (rail head, rail grip); today.css (Decisions tag); designs.js (Hidden lamp)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "changes": "sd:3438 Settings list: theme control and the shell .seg for the sections width (no slider: patterns.md has none), autosave with a quiet Saved (patterns.md Forms); sd:3445 rail grip sized from space tokens; sd:3451 Recommended tag padding on the space scale; below 900px the top bar keeps its height on a short page",
+    "slop_test": "universal subset: no colour or font literal outside tokens (48); spacing on the named scale (24); no transition on layout properties, focus ring not animated (14, 15); state colour unchanged, accent only for selection and focus; labels one line at 320-1440 (49); no horizontal scroll at 320, 375, 414, 768, 1024, 1440 (34); 44px targets under a coarse pointer",
+    "constraints": "no build step; CSP default-src 'self', so no inline style or script; foundation gap: no pane-resize pattern for the rail grip",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
+    "date": "2026-10-12",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.css, shell.js, tasks.css, tasks.js (capture dialog on every page; Tasks details, cards and filters)",
     "scope": "component",
     "genre": "modern-minimal",
