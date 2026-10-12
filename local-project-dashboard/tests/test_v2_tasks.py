@@ -719,6 +719,18 @@ tile('due', {plan}, ''); await flush();""", self.ECHO)
         bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
         self.assertEqual(bodies, [{"priority": 1}, {"due": None}])
 
+    def test_each_sections_read_is_a_help_icon_that_copies_it_and_act_has_no_explanations(self):
+        # sd:3444: the read under each Details heading moved into a popover beside the heading; pressing the icon copies it.
+        plan = self.ids["plan"]
+        out = self.run_page(f"open({plan}); await flush(); R.html = ELS.details.html;")
+        html = out["R"]["html"]
+        self.assertNotIn('<p class="src">', html)
+        self.assertIn(f'<h3>Status history <button class="help src" type="button" aria-label="Read: sd task show {plan} --json" '
+                      f'data-help="&lt;code&gt;sd task show {plan} --json&lt;/code&gt; · notes of kind status_change. Press to copy." '
+                      f'data-copy="sd task show {plan} --json">', html)
+        self.assertIn('data-copy="sd shadow"', html)
+        self.assertNotIn("Delete asks first", html)
+
     def test_a_status_move_toasts_after_the_write_and_undo_posts_the_old_status_with_the_new_revision(self):
         ask = self.ids["ask"]
         row = next(r for r in self.doc["rows"] if r["id"] == ask)
@@ -1744,7 +1756,7 @@ class TheDocumentLinks(ScreenCase):
         self.assertEqual([doc["path"] for doc in got], [str(self.outside)])
 
     def test_the_panel_renders_the_documents_section(self):
-        self.assertIn("<h3>Documents</h3>", TASKS_JS)
+        self.assertIn("<h3>Documents ${src(", TASKS_JS)
         self.assertIn("d.documents", TASKS_JS)
 
 

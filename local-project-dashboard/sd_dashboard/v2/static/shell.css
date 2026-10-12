@@ -233,6 +233,12 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
   background: var(--color-well); border-radius: var(--radius-sm); font: 400 var(--text-xs)/1.4 var(--font-data); overflow-wrap: anywhere;
 }
 .cli .icon-btn { flex-shrink: 0; }
+/* The CLI lines fold under one summary, closed by default (sd:3464). */
+.cli-all { margin: var(--space-sm) 0 0; }
+.cli-all > summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-muted); }
+.cli-all > summary:hover { color: var(--color-ink-2); }
+.cli-all > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.cli-all[open] > summary { margin-bottom: var(--space-xs); }
 .cli.fold { padding-left: 0; }
 .cli-line { flex: 1 1 auto; min-width: 0; padding: 0 0 0 var(--space-sm); border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .cli-line code { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

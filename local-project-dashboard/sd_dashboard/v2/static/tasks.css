@@ -1,6 +1,6 @@
 /* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 */
 /* Build (sd:2124): the design source's products/system/designs/v2/tasks.css at d82daa1, unchanged below this line but for the Details
- * External context block, which reuses the page's .src and dl rules and adds none. */
+ * External context block, which reuses the page's dl rules and adds none. */
 /* Tasks page. Tokens only. Structure: head + filter strip + one of three views (list, board, matrix) + details pane.
  * Statuses and move rules mirror sd_db.workflow (TASK_STATUSES, allowed_statuses); urgency mirrors sd_db.reads.is_urgent. */
 .views { display: inline-flex; align-items: center; gap: var(--space-2xs); }
@@ -204,8 +204,7 @@
 /* Title and description (sd:3467): full width; the description wraps and grows by hand. */
 .details #det-title { width: 100%; }
 .details textarea.fld { display: block; width: 100%; min-height: 5rem; margin: 0 0 var(--space-lg); padding: var(--space-xs) var(--space-sm); font: 400 var(--text-sm)/1.5 var(--font-ui); resize: vertical; }
-/* Details records (sd:2180): status history, notes, assignments. Each section names its read in .src. */
-.details .src { margin: calc(-1 * var(--space-2xs)) 0 var(--space-xs); font: var(--text-xs) var(--font-data); color: var(--color-muted); overflow-wrap: anywhere; }
+/* Details records (sd:2180): status history, notes, assignments. Each heading names its read in a help icon (sd:3444). */
 .details h3 .n { font-weight: 400; color: var(--color-muted); font-size: var(--text-xs); }
 .details ol.rec { list-style: none; margin: 0 0 var(--space-md); padding: 0; display: grid; gap: var(--space-xs); font-size: var(--text-sm); }
 .details ol.rec li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-2xs) var(--space-sm); align-items: baseline; padding-bottom: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule-2); }

@@ -299,10 +299,16 @@
     document.querySelectorAll('.help[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     pinned = null;
   }
+  // A help icon that names a command (data-copy, sd:3444) copies it when pressed, and pins its text as any help does.
+  function copy(text) {
+    const w = navigator.clipboard?.writeText(text);
+    (w || Promise.reject(new Error('no clipboard'))).then(() => toast('Copied.'), () => toast('Copy failed: select the line and copy it.'));
+  }
   document.addEventListener('click', e => {
     const b = e.target.closest('.help');
     if (b) {
       e.preventDefault(); e.stopPropagation();
+      if (b.dataset.copy) copy(b.dataset.copy);
       if (pinned === b) return hideHelp();
       hideHelp(); pinned = b; b.setAttribute('aria-expanded', 'true'); showHelp(b); return;
     }
@@ -519,14 +525,14 @@
     if (!L.length) return html`<span class="rowact"></span>`;
     return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command, off ones with their reason, each with its CLI line.
+  // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
+  // closed until opened (sd:3464).
   function bar(id) {
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
     return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
-      ${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}
-      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}`;
+      <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
   const menuEl = document.createElement('div');
@@ -570,7 +576,7 @@
     const fold = e.target.closest('.cli-line');
     if (fold) { const open = fold.getAttribute('aria-expanded') !== 'true'; fold.setAttribute('aria-expanded', open); fold.title = open ? 'Show one line' : 'Show the full command'; return; }
     const cp = e.target.closest('[data-copy]');
-    if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => toast('Copied.'), () => toast('Copy failed: select the line and copy it.')); return; }
+    if (cp) { copy(cp.dataset.copy); return; }
     if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu();
   }, true);
   // Bulk: x adds the selected row; the bar offers commands that every picked object shares.

@@ -224,6 +224,23 @@ class TheDefaultCapture(unittest.TestCase):
         self.assertEqual(hooks, ["tasks.js"])
 
 
+class TheActBar(unittest.TestCase):
+    """sd:3464, sd:3444: the Details Act area holds the buttons; the CLI lines and the off and copy-only notes fold away."""
+
+    def test_the_cli_section_is_a_details_element_closed_by_default(self):
+        bar = re.search(r"  function bar\(id\) \{.*?\n  \}\n", SHELL_JS, re.S).group(0)
+        self.assertIn('<details class="cli-all"><summary>Same thing from the CLI</summary>', bar)
+        self.assertNotIn("<details class=\"cli-all\" open", bar)
+        self.assertNotIn("<h3>Same thing from the CLI</h3>", bar)
+        # Nothing explains a command between the buttons and the fold: the off reasons are inside it.
+        self.assertRegex(bar, r'</div>\s*<details class="cli-all">')
+
+    def test_a_help_icon_with_a_command_copies_it_when_pressed(self):
+        click = re.search(r"document\.addEventListener\('click', e => \{\n    const b = e\.target\.closest\('\.help'\);.*?\}, true\);", SHELL_JS, re.S)
+        self.assertIsNotNone(click)
+        self.assertIn("if (b.dataset.copy) copy(b.dataset.copy);", click.group(0))
+
+
 class TheSharedRules(unittest.TestCase):
     """sd:2588: shell.css holds each shared annunciator and ledger rule once; no page repeats one."""
 
