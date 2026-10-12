@@ -338,13 +338,15 @@ class OnTheWire(ScreenCase):
         from unittest.mock import patch
 
         from sd_db import services
-        from sd_dashboard import sessions_screen
+        from sd_dashboard import reports_screen, sessions_screen
 
         empty = Path(self.tmp.name) / "launchd"
         empty.mkdir()
         self.listening.RequestHandlerClass.services_backend = services.ServiceBackend(
             user_agents=empty, system_daemons=empty, runner=lambda argv: self.fail(f"launchctl {argv}"))
-        with patch.object(sessions_screen, "collect", side_effect=OSError("not read by this test")):
+        # Resources reads sd_tile in a child, which runs launchctl; it reads nothing here.
+        with patch.object(sessions_screen, "collect", side_effect=OSError("not read by this test")), \
+                patch.object(reports_screen, "collect", lambda area: ""):
             _, _, body = self.fetch("/operations")
             for href in set(re.findall(r'href="(/[^"]*)"', body)):
                 status, _, _ = self.fetch(href.replace("&amp;", "&"))

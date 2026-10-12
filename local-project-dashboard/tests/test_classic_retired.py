@@ -15,6 +15,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sd_db import runner_exec
 
@@ -68,6 +69,10 @@ class TheRetiredScreens(ScreenCase):
         self.assertEqual(found, [])
 
     def test_the_kept_screens_still_answer(self):
+        # Resources reads sd_tile in a child, which runs launchctl; the test reads a fixture instead.
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for area in KEPT_AREAS:
             with self.subTest(area=area):
                 self.assertIn("<title>Operations — sd</title>", self.render("/operations", {"area": [area]}))

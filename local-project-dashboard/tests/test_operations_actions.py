@@ -1,6 +1,7 @@
 """HTTP operations proof using an in-memory observer; no launchctl calls."""
 
 import subprocess
+from unittest.mock import patch
 import re
 
 from sd_db import operations, record_state, workflow
@@ -100,6 +101,10 @@ class OperationsActions(BrowserSession):
         # sd:3402 retired Jobs, Ports, Progress, Repos, Reports and Commands. Services and Sessions stay; their
         # reads are tested in test_services_actions and test_sessions_screen, with fixture backends.
         headings = {"usage": "Week, cost and provider details", "resources": "<h2>Resources</h2>", "trackers": "<h2>Trackers</h2>"}
+        # Resources reads sd_tile in a child, which runs launchctl; the test reads a fixture instead.
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for area, heading in headings.items():
             with self.subTest(area=area):
                 status, _, page = self.request(f"/operations?area={area}")
