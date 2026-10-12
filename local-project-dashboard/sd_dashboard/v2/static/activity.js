@@ -359,10 +359,19 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).exit === 127 ? 'exit 127: command not found; fix the path first'
         : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }).then(() => reread()), () => `Retry started · ${o.job}`) },
+      run: retry },
     // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
     // Details show the exit and the schedule, and the line to copy still reads the log. The filter puts the row on page one.
     { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => openSchedule(o.job) },
+    // build (sd:3391): Reconcile outcome, from v1 Operations > Commands, which this page replaces. It posts
+    // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
+    // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.
+    { id: 'command.reconcile', on: 'command', label: 'Reconcile', key: 'r', risk: 'safe',
+      primary: o => ev(o).source !== 'runner' && !ev(o).ended,
+      when: o => ev(o).source === 'runner' ? "a runner record is the runner's to finish; no palette request waits on it"
+        : ev(o).ended ? 'the run ended; its outcome is recorded' : true,
+      run: o => landing(reconcile(o), out => out.unknown
+        || `Outcome of note ${o.note} recorded · ${out.exit_code == null ? 'no exit code' : `exit ${out.exit_code}`}`) },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
     { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
@@ -385,6 +394,42 @@ addEventListener('DOMContentLoaded', () => {
       }
       OUTPUT[o.id] = { state: out.state, output: text, expired: !!out.output_expired };
     } catch (err) { OUTPUT[o.id] = { error: `The output was not read: ${err.message}` }; throw err; } finally { select(o.id, true); }
+  }
+  // The reconcile answers with the record as read_execution reads it: its first page goes to Details, as Show output's does.
+  // A 4xx recorded nothing and says why. Any other failure, or no answer, may follow an outcome that was recorded, so the page
+  // reads again and says the outcome is not known; a second Reconcile on a recorded outcome only reads it.
+  async function reconcile(o) {
+    let out;
+    try { out = await window.shell.post(`/api/palette/${o.note}/reconcile`, {}); }
+    catch (err) {
+      if (err.status >= 400 && err.status < 500) { if (err.stale) load(); throw err; }
+      load();
+      return { unknown: `Not known whether note ${o.note} was reconciled: ${err.message}` };
+    }
+    OUTPUT[o.id] = { state: out.state, output: out.output || '', expired: !!out.output_expired };
+    await reread();
+    select(o.id, true);
+    return out;
+  }
+  // A retry's outcome (sd:3391), worded as Management words it (sd:3388): a 4xx wrote nothing and says why; any other failure,
+  // or no answer, may follow a kickstart that was sent, so the page reads again and the toast says the outcome is not known.
+  async function retry(o) {
+    let out;
+    try { out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: ev(o).revision }); }
+    catch (err) {
+      if (err.status >= 400 && err.status < 500) { if (err.stale) load(); throw err; }
+      load();
+      return { text: `Not known whether ${o.job} was retried: ${err.message}` };
+    }
+    await reread();
+    return { text: answered(out, o.job, 'retried', `Retry started · ${o.job}`) };
+  }
+  // A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
+  // Copied from management.js (sd:3388); no shared module holds it.
+  function answered(out, name, verb, done) {
+    const r = out && out.request || {};
+    return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+      : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
   }
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
   document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));

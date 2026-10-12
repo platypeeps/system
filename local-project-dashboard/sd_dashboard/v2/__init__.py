@@ -52,7 +52,6 @@ CLASSIC = {section: href for section, href in {
     "Writing": "/writing",
     "Skills": "/skills",
     "Metrics": "/operations?area=usage",
-    "Commands": "/operations?area=commands",
     "Designs": "/designs",
 }.items() if section not in SECTIONS}
 #: Old screens with no rail section of their own; the palette offers them under "Classic screens". These belong to no
