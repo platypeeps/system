@@ -201,14 +201,14 @@
     const C = shell.commands;
     C.register(
       // jobs.retry: one declaration with ui-design commands.md. build (sd:3386): it posts /api/jobs/<job>/retry with the
-      // revision the Now read brought, as Management does; launchd starts the run. Exit 127 is "command not found": a retry
-      // fails the same way until the path is fixed, so Retry is off, as in Management. A refused retry reads Now again; one
+      // revision the Now read brought, as Management does; launchd starts the run. Exit 127 is "command not found": Retry is
+      // not the row's act, and it asks first, naming the exit, as in Management (sd:3392). A refused retry reads Now again; one
       // with no answer may have started, so it says the outcome is not known. A 200 carries launchctl's answer, worded as
       // Management words it (sd:3388): only `accepted` started a retry; `failed` sent nothing; anything else is not known.
       { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
         when: o => !o.retry ? 'launchd refuses a retry for a job that is not failed or interrupted; the row says what to run'
-          : o.exit === 127 ? 'exit 127: command not found; fix the path first'
           : o.capability?.allowed || o.capability?.reason || 'launchd refuses a retry now',
+        askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
         cli: o => `sd jobs retry ${o.job}`, sends: o => o.retry,
         run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
           out => reading.reread().then(() => answered(out, o.job, 'retried', `Retry started · ${o.job}`)),

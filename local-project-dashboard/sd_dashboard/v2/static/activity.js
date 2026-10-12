@@ -354,10 +354,11 @@ addEventListener('DOMContentLoaded', () => {
     // jobs.retry is the one declaration in commands.md; Management, Reports, Today and Briefs declare it the same way.
     // Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration, as Management declares it).
     // build: retry posts to /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts the run.
-    // Exit 127 is "command not found": a retry fails the same way until the path is fixed, so Retry is off, as in Management.
+    // Exit 127 is "command not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside
+    // the dashboard can be tested, as in Management (sd:3392).
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => !!ev(o).failed && ev(o).exit !== 127,
-      when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).exit === 127 ? 'exit 127: command not found; fix the path first'
-        : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
+      when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
+      askFirst: o => ev(o).exit === 127, consequence: o => ev(o).exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
       run: retry },
     // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
