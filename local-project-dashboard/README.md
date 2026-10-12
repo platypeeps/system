@@ -146,11 +146,14 @@ Acknowledgement leaves notification delivery history and local task status separ
 **Queue** at `/queue` shows each managed repository's `sd-ship lane` queue (sd:2585), with the host that runs it.
 The queue lives in the hub database, so a lane hosted on another machine shows too, folder or not (sd:3284); lanes with no row share one Idle line.
 The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.
-Each item is one row: merging (step, holder host, claim age, lease end; a passed lease lights caution), next (order, gate, head), building, blocked (status, step, the reason's first line, who acts), or landed today (pull request, merge commit).
-Blocked entries show for three days; older ones drop off.
+Each item is one row: merging (step, holder host, claim age, lease end; a passed lease lights caution), next (order, gate, head), building, blocked (status, step, the reason's first line, who acts), cancelled (when, head), or landed today (pull request, merge commit).
+Blocked and cancelled entries show for three days; older ones drop off.
 Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
-Cancel asks first: no verb takes it back, so the entry must be enqueued again from its worktree.
+Cancel asks first. A cancelled row offers Re-queue (sd:3398): `lane retry <item> --expected-head <head>` queues the cancelled entry again, last, at the head the row showed (pack sd:3389).
+It acts only on an item whose newest entry is that cancelled one: the page re-queues a cancel and enqueues nothing new.
+The verb refuses a moved branch, a newer entry or a merged head, and writes nothing; the page shows its reason.
+Re-queue stays off, with that reason on the row, until `sd-ship lane retry --help` names a cancelled entry.
 A running row offers Release, which asks first, then runs `lane cancel <item> --expected-claim <token>:<step>` with the claim the row showed (sd:3337, D3 of pack sd:3174).
 At prepare the entry goes back to pending; at merge it fails, and a merge already started may still land.
 The pack checks the claim under the queue's lock (pack sd:3330): a step that moved on, a claim taken again or an entry that ended releases nothing, and the page reads again.
@@ -159,7 +162,7 @@ A blocked row offers Retry, `sd-ship lane retry <item>`: its last entry is queue
 On a repository whose `runner_merge` is manual it also offers Approve, `lane retry <item> --manual`, which asks first: it grants the merge.
 Both pass the head the row showed as `--expected-head`; the verb refuses under the queue's lock an entry that ended at another head since the read.
 Both stay hidden until `sd-ship lane retry --help` names `--expected-head`, so a pack before sd:3268 shows neither.
-The page sends its revision, which covers the pending order, the holds and each blocked entry's head; a queue that changed since the read is refused, and the page reads it again.
+The page sends its revision, which covers the pending order, the holds and each blocked or cancelled entry's head; a queue that changed since the read is refused, and the page reads it again.
 Move, hold, release and cancel pass the lane revision `lane list` prints as `--expected-revision`, so the verb checks it again under the queue's lock.
 Cancel needs it most: `lane cancel` also releases a running entry, so a Cancel on a row the runner claimed since is refused.
 Only a refusal the verb reports as written-nothing says the queue is unchanged (sd:3339).
