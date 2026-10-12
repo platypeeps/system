@@ -7,8 +7,8 @@ and the statuses the library allows it. `GET /api/tasks/<id>`
 (`tasks_screen.details`) splits the `sd task show --json` reading into status
 history and notes, and adds the item's assignments and its external context. A
 command that runs posts to the route v1 already answers, and its toast comes
-after the write lands. The Details edit status, priority, due date, repo and
-quadrant in place, each change one write with its toast (sd:3439); a field the
+after the write lands. The Details edit the title, description, status, priority, due date, repo and
+quadrant in place (the description saves on leaving it, sd:3467), each change one write with its toast (sd:3439); a field the
 row cannot take is off with the reason. Status, priority, due, repo and recurrence edits
 carry Undo; resolving a followup note and cancelling an assignment ask first.
 Completing a repeating task asks first and names the outcome (sd:2250): the next

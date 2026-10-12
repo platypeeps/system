@@ -670,6 +670,23 @@ change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
         self.assertIn(f"#{plan} repo → none · sd task edit {plan} --no-repo", msgs)
         self.assertIn(f"#{plan} due removed · sd task edit {plan} --clear-due", msgs)
 
+    def test_the_title_and_description_edit_in_place_with_undo(self):
+        # sd:3467: the v2 Details lost the classic item page's Details textarea; the title and body are fields again.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = "Old words"
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html;
+change('det-title', '   '); await flush();
+change('det-title', ' Plan the big review '); await flush(); lastUndo().undo(); await flush();
+change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush();""", self.ECHO)
+        self.assertIn('<input id="det-title" class="fld" value="Plan the review" required>', out["R"]["html"])
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', out["R"]["html"])
+        bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
+        self.assertEqual(bodies, [{"title": "Plan the big review"}, {"title": "Plan the review"}, {"body": "New words"}, {"body": "Old words"}])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertEqual(msgs[0], f"#{plan} not changed: a title is required")
+        self.assertIn(f"#{plan} title → Plan the big review · sd task edit {plan} --title 'Plan the big review'", msgs)
+        self.assertIn(f"#{plan} description changed · sd task edit {plan} --body 'New words'", msgs)
+
     def test_a_status_move_toasts_after_the_write_and_undo_posts_the_old_status_with_the_new_revision(self):
         ask = self.ids["ask"]
         row = next(r for r in self.doc["rows"] if r["id"] == ask)

@@ -48,7 +48,7 @@ addEventListener('DOMContentLoaded', () => {
     if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = undefined; // not known until the rows are read again
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
-      anchor: state.item.recurrence_anchor ?? null, revision: state.revision });
+      anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title });
     if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
       repo: state.item.repo ? tasks.find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
@@ -139,6 +139,8 @@ addEventListener('DOMContentLoaded', () => {
     if ('p' in ch) a.push(ch.p ? `--priority ${ch.p}` : '--clear-priority');
     if ('due' in ch) a.push(ch.due ? `--due ${ch.due}` : '--clear-due');
     if ('repo' in ch) a.push(ch.repo ? `--belongs-to ${window.shell.shq(ch.repo)}` : '--no-repo');
+    if ('title' in ch) a.push(`--title ${window.shell.shq(ch.title)}`);
+    if ('body' in ch) a.push(`--body ${window.shell.shq(ch.body)}`);
     return `sd task edit ${t.id} ${a.join(' ')}`;
   }
 
@@ -329,9 +331,10 @@ addEventListener('DOMContentLoaded', () => {
   // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
   // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
   const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
-  function editRun(t, ch, msg, { check, keep = Object.keys(ch) } = {}) {
+  // `before` holds a field the row does not carry (the description, read with the Details).
+  function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = {} } = {}) {
     let was = {};
-    const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, r[k] ?? null])); };
+    const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : before[k] ?? null])); };
     return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
   C.register(
@@ -552,6 +555,7 @@ addEventListener('DOMContentLoaded', () => {
       <h2>${t.title}</h2>
       <dl class="fields">
         <dt>Id</dt><dd>#${t.id}</dd>
+        <dt><label for="det-title">Title</label></dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
         <dt><label for="det-status">Status</label></dt><dd><select id="det-status" class="fld"${gone ? html` disabled aria-describedby="det-off"` : ''}>${STATUSES.map(([s, name]) => { const L = legal(t, s);
           return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
         <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
@@ -563,7 +567,7 @@ addEventListener('DOMContentLoaded', () => {
       </dl>
       ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
-      ${more(t)}
+      ${more(t, dis)}
       <p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
     if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.(); // a redraw keeps the field the operator is on
@@ -580,6 +584,11 @@ addEventListener('DOMContentLoaded', () => {
   // and the rest edit the item. `check` refuses a change a write queued before it already made. A refused change redraws,
   // so the field shows the row as it is.
   function fieldChange(t, id, v) {
+    if (id === 'det-title') { const n = v.trim(); if (n === t.title) return false;
+      if (!n) { toast(`${label(t)} not changed: a title is required`); return false; }
+      commitEdit(t, { title: n }, `title → ${n}`, { check: r => r.title !== n || 'the title is already that' }); return true; }
+    if (id === 'det-body') { const was = detOf(t)?.item.body ?? ''; if (v === was) return false;
+      commitEdit(t, { body: v }, 'description changed', { before: { body: was } }); return true; }
     if (id === 'det-status') return v !== t.status && move(t.key, v);
     if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
     if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
@@ -597,14 +606,16 @@ addEventListener('DOMContentLoaded', () => {
     if (!fieldChange(t, id, e.target.value)) renderDetails();
   });
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
-  function more(t) {
+  function more(t, dis = '') {
     if (!t.id) return '';
     const d = detOf(t);
     if (!d) return html`<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
     const it = d.item, src = s => html`<p class="src">${s}</p>`;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;
     const docs = d.documents || [];
-    return html`<h3>Documents</h3>${src(`/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}
+    // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
+    return html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${it.body || ''}</textarea>
+      <h3>Documents</h3>${src(`/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
       <h3>Status history</h3>${src(`sd task show ${t.id} --json · notes of kind status_change`)}
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
