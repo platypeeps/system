@@ -79,7 +79,8 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
-             exit: r.exit, revision: r.revision, capability: r.capability, repo: pr && pr[1], number: pr && +pr[2], seen: r.seen };
+             exit: r.exit, revision: r.revision, capability: r.capability, repo: pr && pr[1], number: pr && +pr[2], seen: r.seen,
+             item: r.item, itemKind: r.item_kind };
   }
 
   function render() {
@@ -217,6 +218,18 @@
         cli: o => `gh pr view --web --repo ${o.repo} ${o.number}`,
         run: o => { window.open(`https://github.com/${o.repo}/pull/${o.number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } },
     );
+    // Fix (sd:3456): the declaration Tasks makes, on a work row: a herdr workspace with claude on a builder session for a
+    // task, or a debug session for a report. It asks first and posts /api/items/<id>/fix with the revision the Now read
+    // gave; a refused one reads Now again, and one with no answer may have started a session, so it says that.
+    C.register({ id: 'work item.fix', on: 'work item', label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot',
+      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
+      sends: o => `POST /api/items/${o.item}/fix {revision}`,
+      consequence: o => o.itemKind === 'report'
+        ? `Opens a herdr workspace and starts claude on report #${o.item}: the sd-debug skill finds the cause and fixes it, and acknowledges the report after a clean run.`
+        : `Opens a herdr workspace in the item's checkout and starts claude as a builder on #${o.item}: a worktree, commits, a pull-request body and the lane.`,
+      run: o => window.shell.post(`/api/items/${o.item}/fix`, { revision: o.revision }).then(
+        out => reading.reread().then(() => `Fix started · #${o.item} · ${out.fix.session} session in herdr pane ${out.fix.pane}`),
+        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) });
     // Snooze (sd:1896) on every row type: the row leaves Now until its time, and Unsnooze brings it back sooner.
     window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 

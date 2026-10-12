@@ -376,6 +376,21 @@ addEventListener('DOMContentLoaded', () => {
       when: o => !!T(o) || 'the task is no longer listed',
       cli: o => rowOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
+    // Fix (sd:3456): one declaration, copied on Tasks, Reports and Today; only run differs. It opens a herdr workspace in the
+    // item's checkout and starts claude there: a builder session for a task, a debug session for a report. It asks first,
+    // naming that, and posts /api/items/<id>/fix with the row's revision, so a click from a page read before an earlier
+    // Fix's note is stale. A post with no answer may have started one, so it says that. No Undo: a session runs on.
+    { id: 'item.fix', on: 'item', label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot',
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.status === 'done' ? 'it is done' : true; },
+      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
+      sends: o => `POST /api/items/${T(o).id}/fix {revision}`,
+      consequence: o => { const t = T(o); return t.kind === 'report'
+        ? `Opens a herdr workspace and starts claude on report #${t.id}: the sd-debug skill finds the cause and fixes it, and acknowledges the report after a clean run.`
+        : `Opens a herdr workspace in the item's checkout and starts claude as a builder on #${t.id}: a worktree, commits, a pull-request body and the lane.`; },
+      run: o => { const t = must(o);
+        return landing(write(t.key, x => `/api/items/${x.id}/fix`, {}).then(v => { redrawDet(t.id); return v; },
+          err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }),
+          v => `Fix started · ${label(t)} · ${v.fix.session} session in herdr pane ${v.fix.pane}`); } },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => rowOr(o, t => `sd task delete ${t.id}`),

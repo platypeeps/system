@@ -136,6 +136,43 @@ R.sel = selected(); R.details = ELS.details.html;""", search="?row=job%3Anightly
 
 
 
+class TheFix(TheReader):
+    """sd:3456: Fix on a work row Today lists posts /api/items/<id>/fix with the revision the Now read gave."""
+
+    def setUp(self):
+        super().setUp()
+        from sd_db import workflow
+
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.task = self.item("Write the brief", kind="task", status="in_progress")
+        self.report = self.item("nightly: needs attention", kind="report", status="in_progress")
+        jobs = JobsBackend(root.name, jobs=[("nightly-sync", "failed", 7, None)])
+        self.doc = now_screen.document(self.connection, now=NOW, jobs=jobs,
+                                       fleet=lambda area: fleet_document(area, repos=[repo("pushy", ahead=1)]))
+        self.revisions = {n: workflow.item_state(self.connection, n)["revision"] for n in (self.task, self.report)}
+
+    def test_fix_asks_first_names_the_session_by_the_item_kind_and_posts_the_revision(self):
+        out = self.run_page(f"""ANSWER = (path, body) => path.endsWith('/fix') ? [200, {{ revision: 'e'.repeat(64), fix: {{ session: 'builder', pane: 'w9:p1' }} }}] : [200, DOC0];
+R.task = cmd('work item.fix').consequence(C.get('item:{self.task}')); R.report = cmd('work item.fix').consequence(C.get('item:{self.report}'));
+R.on = !cmd('work item.fix').when; // a listed work row is open, so Fix is always on
+shellRun(cmd('work item.fix'), C.get('item:{self.task}')); await flush();""")
+        self.assertIn(f"starts claude as a builder on #{self.task}", out["R"]["task"])
+        self.assertIn(f"starts claude on report #{self.report}: the sd-debug skill", out["R"]["report"])
+        self.assertTrue(out["R"]["on"])
+        self.assertEqual(out["confirms"], ["work item.fix"])
+        self.assertEqual(out["posts"], [[f"/api/items/{self.task}/fix", {"revision": self.revisions[self.task]}, 64]])
+        self.assertEqual(out["toasts"][-1]["msg"], f"Fix started · #{self.task} · builder session in herdr pane w9:p1")
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_stale_fix_reads_now_again_and_says_why(self):
+        out = self.run_page("""ANSWER = (path, body) => path.endsWith('/fix') ? [409, { error: 'item changed; reload it before applying this change', reload: true }] : [200, DOC0];
+shellRun(cmd('work item.fix'), C.get('item:""" + str(self.task) + """')); await flush();""")
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+        self.assertIn("reload it", out["toasts"][-1]["msg"])
+
+
 class TheSnooze(TheReader):
     """sd:1896: Snooze on every Today row, the snoozed rows apart with Unsnooze, and the fixed times."""
 
