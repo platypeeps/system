@@ -212,7 +212,12 @@ addEventListener('DOMContentLoaded', () => {
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
     const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
-    put(document.getElementById('filters'), html`${grp('kind', 'Kind', kinds.map(k => [k, k]))}${grp('repo', 'Repo', repos.map(r => [r, r]))}${
+    // build (sd:3441): Kind and Repo, which grow with the rows, are comboboxes: one value or All. Values the address names
+    // that no row has are options too, and more than one shows as a count until one is picked.
+    const combo = (key, name, opts) => { const all = [...new Set([...opts, ...F[key]])], n = F[key].size;
+      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>All</option>${
+        all.map(v => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${v}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select></div>`; };
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${combo('repo', 'Repo', repos)}${
       grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
       grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
       grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
@@ -234,6 +239,10 @@ addEventListener('DOMContentLoaded', () => {
     const [k, v] = u.dataset.unfilter.split(/:(.*)/);
     if (k === 'q') { Q = ''; find.value = ''; } else F[k].delete(v);
     L.page = 1; render();
+  });
+  document.getElementById('filters').addEventListener('change', e => {
+    const k = e.target.dataset.fsel; if (!k) return;
+    F[k].clear(); if (e.target.value) F[k].add(e.target.value); L.page = 1; render();
   });
   function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; L.page = 1; render(); }
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.

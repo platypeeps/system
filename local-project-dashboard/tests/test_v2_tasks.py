@@ -597,16 +597,29 @@ class TheScript(ScreenCase):
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         filters = out["R"]["filters"]
-        for kind in ("followup", "task", "work"):
-            self.assertIn(f'data-f="kind" data-v="{kind}"', filters)
-        self.assertIn('data-f="repo" data-v="system"', filters)
+        # sd:3441: Kind and Repo are comboboxes; the other groups keep their chips.
+        self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-fsel="kind"><option value="" selected>All</option>'
+                      '<option value="followup">followup</option><option value="task">task</option><option value="work">work</option></select>', filters)
+        self.assertIn('<select id="f-repo" class="fsel" data-fsel="repo"><option value="" selected>All</option><option value="no repo">no repo</option><option value="system">system</option></select>', filters)
+        self.assertNotIn('data-f="kind"', filters)
+        self.assertIn('data-f="p" data-v="1"', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
         # The seeded due date is in the past on any day this runs after 2026-09-09: one overdue task lights the page.
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "overdue tasks"})
 
+    def test_a_combobox_picks_one_value_and_all_clears_it(self):
+        out = self.run_page("""const pick = (fsel, value) => ELS.filters.listeners.change[0]({ target: { dataset: { fsel }, value } });
+pick('repo', 'system'); R.one = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];
+pick('repo', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,work")
+        self.assertIn('<option value="system" selected>system</option>', out["R"]["one"])
+        # Two kinds from the address show as a count until one is picked.
+        self.assertIn('<option value="" disabled selected>2 picked</option>', out["R"]["one"])
+        self.assertIn("repo=system", out["R"]["url"])
+        self.assertNotIn("repo=", out["R"]["url2"])
+
     def test_the_kind_filter_narrows_the_rows(self):
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'work' } } : null } });
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } });
 R.board = ELS['view-board'].html;""")
         self.assertIn("Port the page", out["R"]["board"])
         self.assertNotIn("Plan the review", out["R"]["board"])
@@ -1397,7 +1410,7 @@ R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
         # Selection stays on a visible task: a new task the filters hide is added and named, not selected (review, PR #46).
         new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "repo": None, "repo_path": None}
         answer = f"(path) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}]) : [404, {{}}]"
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'work' } } : null } }); await flush();
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } }); await flush();
 var box = document.getElementById('shift-in'); box.value = 'Call the bank';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""", answer)
         self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])

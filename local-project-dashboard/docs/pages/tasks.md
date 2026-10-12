@@ -1,8 +1,8 @@
 # Tasks
 
 Tasks is the second page, at `/tasks` (sd:2124): the rows v1 `/backlog` reads,
-as a board, an Eisenhower matrix and a list, filtered by kind, repo, priority
-and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
+as a board, an Eisenhower matrix and a list, filtered by kind and repo (two
+comboboxes, sd:3441), priority and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
 and the statuses the library allows it. `GET /api/tasks/<id>`
 (`tasks_screen.details`) splits the `sd task show --json` reading into status
 history and notes, and adds the item's assignments and its external context. A
