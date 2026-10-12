@@ -186,6 +186,16 @@ class TheDefaultCapture(unittest.TestCase):
   R.got = [captureRepo(LIST, '~/repos/one'), captureRepo(LIST, '')];""")
         self.assertEqual(out["got"], ["~/repos/one", ""])
 
+    def test_enter_in_the_capture_box_files_it_and_does_not_cancel(self):
+        # Review 2026-10-12 edit-during-refresh check: the form's first button is Cancel, so the browser's implicit submit on
+        # Enter closed the box with "no" and dropped the typed text. Enter in a field submits with the Capture button, as the
+        # confirm dialog does; the required text still blocks an empty capture.
+        box = SHELL_JS[SHELL_JS.index("function openCapture("):SHELL_JS.index("modal(cap, inp);")]
+        self.assertLess(box.index('value="no" formnovalidate>Cancel'), box.index('value="yes">Capture'))
+        enter = ("if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') { e.preventDefault(); "
+                 "f.requestSubmit(f.querySelector('[value=\"yes\"]')); }")
+        self.assertTrue(enter in box, "Enter in the capture box cancels it and drops the text")
+
     def test_the_repo_and_priority_go_with_the_capture_and_a_typed_p_wins(self):
         # sd:3521: the box's picks (the page's repo, P3 unless changed) are fields of the new item; p1 to p4 typed in the
         # title still sets the priority.

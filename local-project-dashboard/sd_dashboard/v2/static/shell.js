@@ -751,7 +751,9 @@
     };
     if (picks) { if (!f.querySelector(`[name="kind"][value="${picks.kind}"]`)?.disabled) f.kind.value = picks.kind; f.priority.value = String(picks.priority); }
     inp.value = text; f.addEventListener('input', upd); f.addEventListener('change', upd); upd();
-    f.addEventListener('keydown', e => { if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sel.focus(); } });
+    // Enter in a field captures, as in the confirm dialog: the browser's own Enter presses the first button, Cancel.
+    f.addEventListener('keydown', e => { if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sel.focus(); }
+      if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') { e.preventDefault(); f.requestSubmit(f.querySelector('[value="yes"]')); } });
     // The page's repo is the default once the list is read; a failed read leaves No repo and says so.
     let hint = null; try { hint = window.PAGE_REPO ? window.PAGE_REPO(o) : null; } catch { hint = null; }
     readRepos().then(list => { if (!cap.open) return;
