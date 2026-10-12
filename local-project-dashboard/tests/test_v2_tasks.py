@@ -580,6 +580,7 @@ class TheScript(ScreenCase):
             ["item.close", "item", "confirm", None, True, True, False],
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
+            ["item.fix", "item", "safe", "f", True, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
             ["work.cancel", "item", "confirm", "w", True, True, False],
@@ -926,6 +927,29 @@ C.runBulk(cmd('item.unpark'), [C.get('{parked}'), C.get('{other}')]); await flus
                                         [f"/api/items/{other}", {"parked_at": None, "revision": revisions[other]}, 64]])
         self.assertEqual(out["bulkCli"], f"sd task edit {parked} --unpark && sd task edit {other} --unpark")
         self.assertEqual(out["toasts"], [["Unpark · 2 items", False]])
+
+    def test_fix_asks_first_posts_the_row_revision_and_names_the_session(self):
+        """sd:3456. Fix asks first, naming a builder session for a task; the post carries only the row's revision."""
+        plan = self.ids["plan"]
+        answer = f"""(path, body) => [200, {{ item: {{ id: {plan}, status: 'planning', priority: 2, due: '2026-09-09', recurrence: null }},
+  notes: [], revision: 'd'.repeat(64), fix: {{ session: 'builder', pane: 'w9:p1', checkout: '/repos/system' }} }}]"""
+        out = self.run_page(f"""R.what = cmd('item.fix').consequence(C.get('{plan}')); R.cli = cmd('item.fix').cli(C.get('{plan}'));
+shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
+        self.assertEqual(out["confirms"], ["item.fix"])
+        self.assertIn(f"starts claude as a builder on #{plan}", out["R"]["what"])
+        self.assertTrue(out["R"]["cli"].startswith("no sd verb:"))
+        self.assertEqual(out["posts"], [[f"/api/items/{plan}/fix", {"revision": self.row("plan")["revision"]}, 64]])
+        self.assertEqual(out["toasts"], [[f"Fix started · #{plan} · builder session in herdr pane w9:p1", False]])
+
+    def test_a_refused_fix_says_why_and_offers_no_undo(self):
+        plan = self.ids["plan"]
+        answer = """(path, body) => [503, { error: 'No session started: herdr.sh launch: session sd is not running; run herdr.sh start first' }]"""
+        out = self.run_page(f"""R.on = cmd('item.fix').when(C.get('{plan}'));
+shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
+        self.assertTrue(out["R"]["on"])
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertIn("run herdr.sh start first", out["toasts"][-1][0])
+        self.assertFalse(out["toasts"][-1][1])
 
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]

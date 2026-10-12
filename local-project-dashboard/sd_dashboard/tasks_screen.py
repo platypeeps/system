@@ -30,7 +30,8 @@ Every write the page makes goes through a route `server.action_route`
 already answered for v1: status, edit (priority, due, recurrence), note
 resolve, work relink and cancel, task cancel (`/cancel-task`, the bulk
 Close of sd:3012), and Unpark (the edit route with `parked_at: null`, sd:3012).
-Nothing here writes.
+Fix (`/fix`, sd:3456) is new, and Reports and Today post it too: `fix_session`
+starts a herdr session for the item and adds a note. Nothing here writes.
 """
 
 from __future__ import annotations

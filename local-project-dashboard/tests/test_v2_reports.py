@@ -57,6 +57,7 @@ COMMANDS = [
     ["report.show", "report", "Open item", "o", "safe"],
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
+    ["report.fix", "report", "Fix", "f", "safe"],  # sd:3456: a debug session in herdr; asks first
     ["mail.ack", "status mail", "Acknowledge", "a", "undo"],
     ["mail.open", "status mail", "Open in Gmail", "o", "safe"],
     ["status mail.log", "status mail", "Show log", "l", "safe"],
@@ -430,6 +431,21 @@ class TheScript(ScreenCase):
         self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
         self.assertEqual(out["gets"], ["/api/reports", "/api/reports"])
         self.assertEqual(out["confirms"], [])
+
+    def test_fix_asks_first_posts_the_report_revision_and_names_the_debug_session(self):
+        """sd:3456. Fix on a report: a debug session, asked first; it is off once the report is acknowledged."""
+        n, done = self.ids["failed"], self.ids["done"]
+        revision = workflow.item_state(self.connection, n)["revision"]
+        answer = ("(path, body) => path.endsWith('/fix') ? [200, { revision: 'after-fix', fix: { session: 'debug', pane: 'w9:p1' } }]"
+                  f" : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]")
+        out = self.run_page(f"""R.what = cmd('report.fix').consequence(C.get('r{n}')); R.off = cmd('report.fix').when(C.get('r{done}'));
+shellRun(cmd('report.fix'), C.get('r{n}')); await flush();""", answer=answer)
+        self.assertEqual(out["confirms"], ["report.fix"])
+        self.assertIn(f"starts claude on report #{n}: the sd-debug skill", out["R"]["what"])
+        self.assertEqual(out["R"]["off"], "already acknowledged")
+        self.assertEqual(out["posts"], [[f"/api/items/{n}/fix", {"revision": revision}, 64]])
+        self.assertEqual(out["toasts"][-1], [f"Fix started · #{n} · debug session in herdr pane w9:p1", False])
+        self.assertEqual(out["gets"], ["/api/reports", "/api/reports"])
 
     def test_undo_reopens_the_report_under_the_revision_the_acknowledgement_answered(self):
         n = self.ids["clean"]

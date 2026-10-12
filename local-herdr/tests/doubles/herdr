@@ -13,6 +13,7 @@
 #                             absent: the shell alone in the foreground
 #   workspace-create.json     answer to `workspace create`
 #   agent-start-fail          when present, `agent start` answers an error
+#   agent-prompt-fail         when present, `agent prompt` answers an error
 #   on-agent-start            when present, `agent start` runs it first, as
 #                             the started agent's own startup hook would
 # Never the real binary: the suite prepends this directory to PATH.
@@ -71,6 +72,13 @@ case "${1:-}" in
           "$FIX/on-agent-start" >/dev/null
         fi
         echo '{"id":"cli:agent:start","result":{"agent":{"name":"'"${3:-}"'"},"type":"agent_started"}}'
+        ;;
+      prompt)
+        if [ -f "$FIX/agent-prompt-fail" ]; then
+          echo '{"error":{"code":"agent_blocked","message":"double: refused"},"id":"cli:agent:prompt"}' >&2
+          exit 1
+        fi
+        echo '{"id":"cli:agent:prompt","result":{"agent":{"name":"'"${3:-}"'"},"type":"agent_prompted"}}'
         ;;
       *) echo '{"error":{"code":"unsupported","message":"double: agent '"${2:-}"'"}}' >&2; exit 1 ;;
     esac
