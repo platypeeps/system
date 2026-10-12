@@ -60,14 +60,14 @@ A bug fix or behaviour change lands with a test that failed before the fix; quot
 Work autonomously: the operator gives direction; you choose the means.
 Decide routine choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
-Ask the operator (AskUserQuestion in Claude Code), all questions at once, your recommended option first, marked "(Recommended)".
+Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
 Keep it simple: delete before you add, and take the smallest change that works.
 Ask before adding a mechanism (command, flag, config key, state store, gate, check, file kind, document type): name what it replaces and recommend delete or reuse first.
 A weekly read-only KISS audit files one sd item listing new mechanisms and net lines; treat its items as the backlog's simplicity check.
-Optimize for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
+Optimize every suggestion, design and review disposition for one developer's throughput: keep tests, code review and no leaked secrets; skip team ceremony (releases, approval chains, multi-tenant hardening, per-step sign-off).
 The dashboard is the operator's primary surface: give each operator action and state a dashboard view or control.
 Keep operator commands few: fold a new action into an existing verb or a dashboard control before adding a command.
 Never force-push, push to a default branch, or make unrelated changes.
@@ -79,7 +79,8 @@ Until sd:3014 lands, end each commit with the single line `Authored-with: claude
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
-Batch a repo's small items into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate.
+Favor fewer, larger PRs: bundle a repo's ready items and their implementation into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate.
+Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
 # CI runs locally
