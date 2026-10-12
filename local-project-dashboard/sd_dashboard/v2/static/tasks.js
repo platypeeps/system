@@ -558,9 +558,10 @@ addEventListener('DOMContentLoaded', () => {
     const o = e.target.closest('[data-open]'); if (o) select(o.dataset.open, true);
   });
 
+  let detKey = null; // the task whose Details are on screen, so a redraw of another one carries nothing over
   function renderDetails() {
     const t = byKey(selected), el = document.getElementById('details');
-    if (!t) { put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
+    if (!t) { detKey = null; put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
       : tasks.some(x => !live(x.key)) ? 'The tasks were not read again after the change, so nothing is selected. Reload reads them.'
       : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
       : 'Select a task to see its fields and moves.'}</p>`); return; }
@@ -568,7 +569,12 @@ addEventListener('DOMContentLoaded', () => {
     // build (sd:3439): status, priority, due, repo and quadrant are fields; a change writes at once (fieldChange below).
     const off = gone ? 'this task was not read again after the change' : EDITABLE(t) ? '' : noEdit(t);
     const dis = off ? html` disabled aria-describedby="det-off"` : '';
-    const focused = document.activeElement?.id;
+    // A redraw (a Details read, a refresh, another field's write) keeps the field the operator is in, as it stands: when its
+    // text differs from the saved value, or a date is half typed, the live field moves into the new Details with its caret.
+    // Review 2026-10-12 (high): the title and description were redrawn from saved data mid-edit.
+    const a = document.activeElement, focused = a?.id, mine = detKey === t.key && focused?.startsWith('det-') && a.isConnected && a.closest?.('#details');
+    const caret = mine ? (() => { try { return [a.selectionStart, a.selectionEnd]; } catch { return [null, null]; } })() : null;
+    detKey = t.key;
     put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
       <dl class="fields">
@@ -587,7 +593,13 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
       ${more(t, dis)}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
-    if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.(); // a redraw keeps the field the operator is on
+    if (mine) {
+      const fresh = document.getElementById(focused), keep = fresh && !fresh.disabled && (a.value !== fresh.value || a.validity?.badInput);
+      const f = keep ? a : fresh;
+      if (keep) fresh.replaceWith(a);
+      f?.focus?.();
+      if (f && caret[0] != null) try { f.setSelectionRange(caret[0], caret[1]); } catch { /* a date or select has no caret */ }
+    } else if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.();
     if (!off) window.shell.repos?.().then(list => { const r = document.getElementById('det-repo'); if (r && selected === t.key && !r.disabled) put(r, repoOptions(t, list)); }, () => {});
   }
   // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.

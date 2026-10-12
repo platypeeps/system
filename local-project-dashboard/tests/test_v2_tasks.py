@@ -724,6 +724,38 @@ change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush()
         self.assertIn(f"#{plan} title → Plan the big review · sd task edit {plan} --title 'Plan the big review'", msgs)
         self.assertIn(f"#{plan} description changed · sd task edit {plan} --body 'New words'", msgs)
 
+    # A field the operator is in when Details redraws: its live node, the text and the caret, as the redraw found them.
+    EDITING = """const editing = (id, value, extra) => { const n = Object.assign(El(id), { value, selectionStart: 4, selectionEnd: 6 }, extra || {});
+  n.closest = sel => sel === '#details' ? ELS.details : null; n.focus = () => { R.focused = id; };
+  n.setSelectionRange = (a, b) => { R.range = [a, b]; }; document.activeElement = n; n.isConnected = true;
+  // A redraw detaches the old field, as the browser does, unless the page moves it back in.
+  const rc = ELS.details.replaceChildren; ELS.details.replaceChildren = f => { n.isConnected = false; rc(f); };
+  // The redraw's fresh field: its value is the saved one; replaceWith records what took its place.
+  ELS[id] = Object.assign(El(id), { value: SAVED[id] || '', replaceWith: m => { R.kept = m === n ? id : 'other'; m.isConnected = true; },
+    focus: () => { R.focused = 'fresh ' + id; } });
+  return n; };
+"""
+
+    def test_a_redraw_keeps_the_field_the_operator_is_editing(self):
+        # Review 2026-10-12 (high): a Details read or a refresh that lands mid-edit redrew the title from saved data and
+        # dropped the typed text. The redraw now moves the live field into the new Details, with its caret.
+        plan, port = self.ids["plan"], self.ids["port"]
+        cases = {
+            "title": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the half'); open({plan}); await flush();",
+            "body": f"var SAVED = {{ 'det-body': '' }}; open({plan}); await flush(); editing('det-body', 'Typed words'); open({plan}); await flush();",
+            "date": f"var SAVED = {{ 'det-due': '' }}; open({plan}); await flush(); editing('det-due', '', {{ type: 'date', validity: {{ badInput: true }} }}); open({plan}); await flush();",
+            "saved": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the review'); open({plan}); await flush();",
+            "other": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the half'); open({port}); await flush();",
+        }
+        got = {k: self.run_page(self.EDITING + body)["R"] for k, body in cases.items()}
+        self.assertEqual(got["title"].get("kept"), "det-title", "a redraw dropped the typed title")
+        self.assertEqual((got["title"].get("focused"), got["title"].get("range")), ("det-title", [4, 6]))
+        self.assertEqual(got["body"].get("kept"), "det-body", "a redraw dropped the typed description")
+        self.assertEqual(got["date"].get("kept"), "det-due", "a redraw dropped a half-typed date")
+        self.assertIsNone(got["saved"].get("kept"), "a field that holds the saved value takes the fresh one")
+        self.assertEqual(got["saved"].get("focused"), "fresh det-title")
+        self.assertIsNone(got["other"].get("kept"), "another task's Details took the old task's text")
+
     def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
         # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
         plan, port = self.ids["plan"], self.ids["port"]
