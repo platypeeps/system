@@ -84,7 +84,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from sd_db import operations, progress, reads
+from sd_db import operations, progress, reads, workflow
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
@@ -367,11 +367,13 @@ def work_rows(connection: sqlite3.Connection, now: str) -> list[dict]:
     """The items `sd today` lists, in its order, as rows a snooze can hold (sd:3271).
 
     The id is `item:<id>`, so the key is `today:item:<id>`. The row's problem is its status and due date: a changed
-    item is not the one the operator snoozed, and a new title is not a new problem.
+    item is not the one the operator snoozed, and a new title is not a new problem. `item_kind` and `revision` are what
+    Today's Fix reads and posts (sd:3456): the item's kind names the session, and the revision binds the click to this read.
     """
     return [{"id": f"item:{row['id']}", "kind": "item", "item": row["id"], "what": f"#{row['id']} {row['title']}",
              "detail": f"{row['status']} · due {row['due']}" if row["due"] else row["status"],
-             "state": row["status"], "due": row["due"], "problem": [row["status"], row["due"]]}
+             "state": row["status"], "due": row["due"], "problem": [row["status"], row["due"]],
+             "item_kind": row["kind"], "revision": workflow.item_state(connection, row["id"])["revision"]}
             for row in reads.today_items(connection, now=now)]
 
 

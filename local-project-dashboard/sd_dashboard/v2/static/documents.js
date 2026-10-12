@@ -1,7 +1,7 @@
 // Documents (sd:2114): the design source's products/system/designs/v2/documents.js at 7f50ad4, ported. Each change from the
 // reference is marked "build:". The rows are /api/documents (documents_screen.py): the files /documents/<key>/<file> serves,
-// never sample data. Pins, hidden documents and tags have no store yet, so those commands are off with the document's reason,
-// and nothing on this page writes.
+// never sample data. Pin, Hide and Tag are the workflow database's view state (sd:3428): each posts /api/documents/view,
+// offers Undo, and the reader reads the list again. When the store was not read, those commands are off with its reason.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
@@ -111,8 +111,8 @@ function render() {
   put(tbody, html`${slice.map(row)}`);
   const empty = document.getElementById('empty');
   empty.hidden = list.length > 0;
-  // build: nothing can be hidden until a store keeps it, and the empty Hidden view says so.
-  put(empty, html`${F.hidden ? html`Nothing is hidden: ${STORE || 'no document store yet'}.` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
+  // build: an unread store hides nothing, and the empty Hidden view says why.
+  put(empty, html`${F.hidden ? html`Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a document from its row or from Details.'}` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
   put(document.getElementById('chips'), L_.chips(activeFilters(), list.length, DOCS.filter(d => d.hidden === F.hidden).length));
   put(document.getElementById('pager'), L_.pager(list.length, L, 'documents'));
   // A filter that hides the selected row moves the selection to the first shown row, or clears it (design.md, Page contract).
@@ -146,11 +146,15 @@ tbody.addEventListener('click', e => {
 });
 
 // ---------- Commands (products/system/commands.md) ----------
-// Each row is a document; each tag on the open document is a document tag. Pin, hide, tag and untag are view state.
-// build: no document store exists, so those six are off with the store's reason and declare no Undo; the reference kept them in
-// page memory, which a reload loses.
-const NO_STORE = 'no CLI: view state; no document store yet';
-const storeOff = () => STORE || 'no document store yet';
+// Each row is a document; each tag on the open document is a document tag. Pin, hide, tag and untag are view state: they act at
+// once with Undo. build: the reference kept them in page memory; here each is one POST of the fields it changes (sd:3428), and
+// Undo posts the value the page showed before. A store the read could not reach turns all six off with its reason.
+const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/documents/view)';
+const storeOff = () => STORE || true;
+const view = (o, change) => window.shell.post('/api/documents/view', { root: o.key, file: o.file, ...change }).then(v => reading.reread().then(() => v));
+let lastTag = '', tagFocus = false;
+// A tag is one lower-case word: spaces become hyphens, as the reference has it.
+const tagDraft = () => (document.getElementById('tag-in')?.value || '').trim().toLowerCase().replace(/\s+/g, '-') || lastTag;
 // build: Disable render has no switch to set. SD_SKIP_RENDER skips every render, and a skip|<key>|<file> or skip|<key> line in
 // documents.conf hides a document or a root from this list without stopping its render (sd:1904). Both are off with that reason.
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
@@ -160,7 +164,10 @@ const REQUEST = { id: 'document.request', on: 'document request draft', label: '
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
   run: () => 'Copy the line: the dashboard does not file document requests yet' };
 const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 'tag', risk: 'undo', bulk: true,
-  when: storeOff, cli: () => 'no CLI: tags live in the document store, which does not exist yet' };
+  when: o => { const t = tagDraft(); return STORE || (!t ? 'no tag yet: type one under Tags' : o.tags.includes(t) ? `already tagged ${t}` : true); },
+  cli: () => NO_CLI,
+  run: o => { const t = tagDraft(), was = o.tags; lastTag = t; return view(o, { tags: [...was, t] }).then(() => ({ text: `Tagged ${t} · ${o.title}`, was })); },
+  undo: (o, v) => view(o, { tags: v.was }) };
 function registerCommands() {
   const C = shell.commands;
   C.register(
@@ -171,13 +178,19 @@ function registerCommands() {
     // build: the document's own address on this dashboard, not a fixed host.
     { id: 'document.open', on: 'document', label: 'Open document', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
       cli: o => `open ${location.origin}${o.href}`, run: o => { window.open(o.href, '_blank', 'noopener'); return `Opened in a new tab · ${o.title}`; } },
-    { id: 'document.pin', on: 'document', label: 'Pin', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(), cli: () => NO_STORE },
-    { id: 'document.unpin', on: 'document', label: 'Unpin', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(), cli: () => NO_STORE },
-    { id: 'document.hide', on: 'document', label: 'Hide', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : storeOff(), cli: () => NO_STORE },
-    { id: 'document.unhide', on: 'document', label: 'Unhide', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : storeOff(), cli: () => NO_STORE },
+    { id: 'document.pin', on: 'document', label: 'Pin', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
+      cli: () => NO_CLI, run: o => view(o, { pinned: true }).then(() => `Pinned ${o.title}`), undo: o => view(o, { pinned: false }) },
+    { id: 'document.unpin', on: 'document', label: 'Unpin', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(),
+      cli: () => NO_CLI, run: o => view(o, { pinned: false }).then(() => `Unpinned ${o.title}`), undo: o => view(o, { pinned: true }) },
+    // Hiding the shown document moves Details to the next row (the reader's reconcile); Undo brings the row back.
+    { id: 'document.hide', on: 'document', label: 'Hide', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : storeOff(),
+      cli: () => NO_CLI, run: o => view(o, { hidden: true }).then(() => `Hidden: ${o.title}. The Hidden filter shows it.`), undo: o => view(o, { hidden: false }) },
+    { id: 'document.unhide', on: 'document', label: 'Unhide', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : storeOff(),
+      cli: () => NO_CLI, run: o => view(o, { hidden: false }).then(() => `Unhidden: ${o.title}`), undo: o => view(o, { hidden: true }) },
     TAG,
-    { id: 'document.untag', on: 'document tag', label: 'Untag', key: 'u', icon: 'x', risk: 'undo', when: storeOff,
-      cli: () => 'no CLI: tags live in the document store, which does not exist yet' },
+    { id: 'document.untag', on: 'document tag', label: 'Untag', key: 'u', icon: 'x', risk: 'undo', when: storeOff, cli: () => NO_CLI,
+      run: o => view(o.doc, { tags: o.doc.tags.filter(x => x !== o.tag) }).then(() => `Removed tag ${o.tag}`),
+      undo: o => view(o.doc, { tags: o.doc.tags }) },
     { id: 'document.skip', on: 'document', label: 'Disable render', key: 's', icon: 'ban', risk: 'safe',
       when: () => `${NO_SWITCH}, and skip|<key>|<file> in documents.conf hides a document from this list without stopping its render`,
       cli: o => `no CLI: proposes skip|${o.key}|${o.file} in documents.conf` },
@@ -213,13 +226,16 @@ function show(id) {
       <dt>Label</dt><dd>${LABEL[d.key] || d.key}${root.research ? ' · research repo' : ''}</dd></dl>
     <h3>Tags</h3>
     <div class="tagedit" id="tagedit">${d.tags.map(t => { const tid = `tag:${d.id}:${t}`; shell.commands.put({ id: tid, type: 'document tag', label: `${t} on ${d.title}`, doc: d, tag: t });
-      return html`<button class="chip" type="button" data-cmd="document.untag" data-obj="${tid}" aria-label="Untag ${t}">${t}${I('x')}</button>`; })}</div>
-    <p class="why">No tags: ${storeOff()}.</p>`);
-  // build: no tag field, since Tag is off until a store keeps tags; the reason stands where the field was.
+      return html`<button class="chip" type="button" data-cmd="document.untag" data-obj="${tid}" aria-label="Untag ${t}">${t}${I('x')}</button>`; })}
+      ${STORE ? '' : html`<label class="sr" for="tag-in">Tag</label><input id="tag-in" placeholder="Type a tag, Enter tags" autocomplete="off">`}</div>
+    ${STORE ? html`<p class="why">Tags were not read: ${STORE}.</p>` : ''}`);
+  // build: with no store read there is no tag field; the reason stands where the field was.
   shell.commands.select(d.id);
   shell.setContext(d.file);
   shell.suggest([`Summarise ${d.title} in five lines`, `What changed since the previous ${LABEL[d.key] || d.key} render?`, 'Which documents here have not been opened in a month?']);
   details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
+  // Enter in the tag field tagged this document; the reread drew a new field, so focus goes back to it.
+  if (tagFocus) { tagFocus = false; document.getElementById('tag-in')?.focus(); }
 }
 function select(id, open) { show(id); writeURL(); if (open) shell.openPane('tab-details'); }
 // The URL carries facets, search, sort, page and the row, as on Tasks and Reports, so a filtered list can be bookmarked or sent.
@@ -244,6 +260,15 @@ function writeURL() {
   shell.url(q); // the shell keeps ?row=
 }
 // build: no proposal card. The reference drafted a documents.conf line in chat; neither line it proposed stops a render.
+// The tag field feeds the Tag command: typing updates the Act bar, Enter runs Tag on this document.
+details.addEventListener('input', e => { if (e.target.id === 'tag-in') put(document.getElementById('act'), shell.commands.bar(selected)); });
+details.addEventListener('keydown', e => {
+  if (e.target.id !== 'tag-in' || e.key !== 'Enter') return;
+  e.preventDefault();
+  const d = DOCS.find(x => x.id === selected);
+  if (!e.target.value.trim() || !d || TAG.when(d) !== true) return;
+  tagFocus = true; shell.commands.run(TAG, d);
+});
 
 // ---------- Shapeshift: search + filters, or a request ----------
 const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
@@ -372,9 +397,9 @@ function adopt(doc) {
   DOC = doc;
   OBSERVED = Date.parse(DOC.read) || Date.now();
   document.body.dataset.observed = DOC.read; // shell time cells count from the reading, not from now
-  ROOTS = DOC.roots || []; LABEL = Object.fromEntries(ROOTS.map(r => [r.key, r.label])); STORE = DOC.store?.available ? '' : (DOC.store?.reason || 'no document store yet');
+  ROOTS = DOC.roots || []; LABEL = Object.fromEntries(ROOTS.map(r => [r.key, r.label])); STORE = DOC.store?.available ? '' : (DOC.store?.reason || 'the view store was not read');
   DOCS = (DOC.documents || []).map(r => ({ id: `${r.key}/${r.file}`, type: 'document', label: r.title || r.file, key: r.key, file: r.file, href: r.href,
-    bytes: r.bytes, mod: r.modified, kind: r.kind, src: r.src, stale: !!r.stale, title: r.title || r.file, h1: r.h1, desc: r.desc, tags: [], pinned: false, hidden: false }));
+    bytes: r.bytes, mod: r.modified, kind: r.kind, src: r.src, stale: !!r.stale, title: r.title || r.file, h1: r.h1, desc: r.desc, tags: r.tags || [], pinned: !!r.pinned, hidden: !!r.hidden }));
   if (!linked) {
     // The address is read before the first draw: that draw's reconcile selects the first shown row, and selecting rewrites
     // ?row=, so a link to any other row would be lost. A linked row the filters show moves the list to its page.
@@ -388,6 +413,8 @@ function adopt(doc) {
   // build: a key two checkouts claim is served by neither (documents.py, contested); the state slot names each one.
   const state = !ROOTS.length && !contested.length ? { kind: 'empty', title: 'No document roots', text: `Publish into ${DOC.published} in a checkout under ${DOC.base}, or add a root| line to ${DOC.config}.`, source: DOC.config }
     : contested.length ? { kind: 'partial', text: `${contested.map(c => `${plural(c.paths.length, 'checkout')} claim the key ${c.key} (${c.paths.join(', ')}), so none is served`).join('; ')}. Name the one you mean with a root| line in ${DOC.config}.`, source: DOC.config }
+    // build: an unread view store pins and hides nothing, so every document shows; the slot says so (sd:3428).
+    : STORE ? { kind: 'partial', text: `Pins, hidden documents and tags were not read: ${STORE}. Every document shows.`, source: '/api/documents' }
     : null;
   return { objects: [...DOCS, DRAFT], state };
 }
@@ -396,7 +423,7 @@ function unselect() {
   put(details, html`<p class="why">${!DOC ? 'The documents were not read, so nothing is selected.'
     : !DOCS.length ? 'No document is published yet, so nothing is selected.' : 'No document matches these filters. Clear them to see the list.'}</p>`);
 }
-// Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
+// Only the newest of overlapping loads draws; a view write rereads through `view`.
 const load = () => reading.load();
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();

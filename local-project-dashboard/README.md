@@ -338,9 +338,9 @@ The page is `/documents`, the v2 Documents page (sd:2114). It reads
 `GET /api/documents` (`documents_screen.document`), which lists every file
 `/documents/<key>/<file>` serves with its title, h1, stand line, derived kind
 (research or report) and render state. Its facets, search and paged ledger come
-from the design source. Pin, hide and tag are off until a document store exists
-(docs/work/2026-09-28-documents-view-state); render and request are copy-only
-lines the dashboard does not run. The classic listing was retired in sd:3402;
+from the design source. Pin, hide and tag keep the workflow database's `view`
+state through `POST /api/documents/view` (sd:3428); render and request are
+copy-only lines the dashboard does not run. The classic listing was retired in sd:3402;
 the page reads the roots through `documents.py`'s readers, so the rules below hold for it.
 
 A domain repository that publishes reports here follows

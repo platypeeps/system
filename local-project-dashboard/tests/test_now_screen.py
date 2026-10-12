@@ -263,6 +263,18 @@ class Document(ScreenCase):
         self.assertEqual([row["id"] for row in document["rows"]], ["ahead:pushy:1"])
         self.assertEqual((document["snoozed"], document["snooze_error"]), ([], "database is locked"))
 
+    def test_a_work_row_carries_the_kind_and_revision_fix_posts(self):
+        """sd:3456. Today's Fix posts /api/items/<id>/fix with the revision this read gave, as Tasks and Reports do;
+        `kind` stays the row's (`item`), and `item_kind` is the item's."""
+        from sd_db import workflow
+
+        task = self.item("Write the brief", kind="task", status="in_progress")
+        report = self.item("nightly: needs attention", kind="report", status="in_progress")
+        document = now_screen.document(self.connection, now=NOW, jobs=self.quiet, fleet=self.fixture_fleet())
+        self.assertEqual([(row["item"], row["item_kind"], row["revision"]) for row in document["work"]],
+                         [(task, "task", workflow.item_state(self.connection, task)["revision"]),
+                          (report, "report", workflow.item_state(self.connection, report)["revision"])])
+
     def test_a_work_item_snoozes_by_its_status_and_due_and_shows_again_when_either_moves(self):
         """sd:3271. The key is today:item:<id>; `seen` reads status and due, so a changed item is not the one snoozed."""
         fleet = self.fixture_fleet()

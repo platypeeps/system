@@ -471,6 +471,38 @@ def verb_start(session: str, argv: list[str]) -> int:
     return 1  # not reached
 
 
+def verb_launch(session: str, argv: list[str]) -> int:
+    """A new workspace at a directory, claude started in its root pane, then one prompt (sd:3456).
+
+    `resume` starts only a recorded session (`--resume <id>`); this starts a
+    fresh one. The prompt goes through `agent prompt`, as text typed to the
+    agent, never through the pane's shell. Nothing is recorded: herdr's
+    integration reports the new session id, and `snapshot` keeps it.
+    """
+    if len(argv) != 3 or not all(argv):
+        raise Fail("usage: herdr.sh launch <directory> <label> <prompt>", 2)
+    directory, label, prompt = argv
+    if not os.path.isabs(directory) or not os.path.isdir(directory):
+        raise Fail(f"{directory}: not an absolute path to a directory", 2)
+    if not herdr_installed():
+        raise Fail("herdr is not installed; install it, then run herdr.sh start", 3)
+    if not session_running(session):
+        raise Fail(f"session {session} is not running; run herdr.sh start first")
+    created = herdr_json(session, "workspace", "create", "--cwd", directory, "--label", label, "--no-focus")
+    pane = None if created.get("error") else created.get("result", {}).get("root_pane", {}).get("pane_id")
+    if not pane:
+        raise Fail(f"workspace create failed: {created.get('error') or 'no root_pane in the answer'}")
+    name = agent_name_for(pane)
+    started = herdr_json(session, "agent", "start", name, "--kind", "claude", "--pane", pane)
+    if started.get("error"):
+        raise Fail(f"{pane}: claude did not start: {started['error']}; the workspace is left at its shell prompt")
+    rc, out, err = herdr_cmd(session, "agent", "prompt", name, prompt)
+    if rc != 0:
+        raise Fail(f"{pane}: claude started, but the prompt was not sent: {err.strip() or out.strip()}")
+    print(f"launched {pane}: claude in {directory}")
+    return 0
+
+
 def verb_status(session: str, argv: list[str]) -> int:
     if not herdr_installed():
         print("herdr is not installed; nothing to check")
@@ -509,6 +541,7 @@ VERBS = {
     "list": verb_list,
     "forget": verb_forget,
     "status": verb_status,
+    "launch": verb_launch,
 }
 
 

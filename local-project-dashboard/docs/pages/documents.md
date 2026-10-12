@@ -10,8 +10,13 @@ after the page. The source is the one `research.conf.py` names, else the one
 `.md` with the page's name anywhere in the checkout, outside dot folders and
 build, node_modules, dist and storage (sd:2417). Open document opens the served page. Render is
 copy only. Request a document is copy only: the page files no item. Pin, hide
-and tag are off: no document store exists yet. Disable render is off: no
-render switch exists. The page reads through the
+and tag (sd:3428) are the workflow database's `view` state, keyed
+`<root key>/<file>`: each row carries `pinned`, `hidden` and `tags`, and each
+command posts `/api/documents/view` with the fields it changes, offers Undo
+and reads the list again. Pinned files sort first; the Hidden filter (or
+`is:hidden`, `?hidden=1`) shows the hidden files and only them. A view read
+that fails hides nothing, turns the six commands off and says why in the
+state slot. Disable render is off: no render switch exists. The page reads through the
 shell's reader, `read.js` (sd:2490): only the newest read draws, a document
 the read no longer lists runs no command, and a failed read clears the rows.
 `?page=` takes a whole page number only (sd:2427).

@@ -75,3 +75,7 @@ store and an endpoint, not an `sd` verb.
   a repository, not a root, and a path names no machine; the identity now
   carries the root's directory relative to the checkout, and the remote-less
   fallback carries an installation id. Two criteria added.
+- 2026-10-12 operator ruling (sd:3428): the key is `<root key>/<file>` in the
+  pack's `view` state kind (sd:3430), with no remote identity and no
+  installation id. The three identity criteria do not apply. Built in sd:3428,
+  with a Hidden filter folded in from sd:3448.
