@@ -339,5 +339,44 @@ class TheRailHead(unittest.TestCase):
         self.assertIn("rail.querySelector('#reload').addEventListener('click', () => location.reload());", SHELL_JS)
 
 
+WIDTH = re.search(r"^  // width:start\n(.*?)^  // width:end$", SHELL_JS, re.S | re.M)
+
+
+class TheRailWidth(unittest.TestCase):
+    """sd:3445: the rail's width is set on its edge, clamped, kept per browser as sd.rail.width, and reset to the default."""
+
+    def run_width(self, body, stored=None):
+        self.assertIsNotNone(WIDTH, "shell.js has no width block")
+        script = ("var OUT = {}, STORE = " + json.dumps({} if stored is None else {"sd.rail.width": stored}) + ", ATTR = {}, PROPS = {};\n"
+                  "var document = { documentElement: { style: { setProperty: (k, v) => { PROPS[k] = v; }, removeProperty: k => { delete PROPS[k]; } } } };\n"
+                  "const store = (k, v) => { if (v === undefined) return k in STORE ? STORE[k] : null; STORE[k] = v; return v; };\n"
+                  "const rail = { getBoundingClientRect: () => ({ width: 216 }) }, grip = { setAttribute: (k, v) => { ATTR[k] = v; } };\n"
+                  + WIDTH.group(1) + "\nvar R = {};\n" + body
+                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, PROPS }); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_width_is_clamped_set_on_the_root_and_kept(self):
+        out = self.run_width("R.set = setWidth(250.4); R.low = railWidth(20); R.high = railWidth('900'); R.junk = railWidth('wide');")
+        self.assertEqual(out["R"], {"set": 250, "low": 176, "high": 384, "junk": None})
+        self.assertEqual(out["PROPS"], {"--rail": "250px"})
+        self.assertEqual(out["STORE"], {"sd.rail.width": "250"})
+        self.assertEqual((out["ATTR"]["role"], out["ATTR"]["aria-valuenow"], out["ATTR"]["aria-valuemin"], out["ATTR"]["aria-valuemax"]),
+                         ("separator", "250", "176", "384"))
+
+    def test_a_drag_moves_without_storing_and_a_reset_clears_the_kept_width(self):
+        out = self.run_width("setWidth(300, false); R.moved = Object.assign({}, PROPS); setWidth(null);", stored="240")
+        self.assertEqual(out["R"]["moved"], {"--rail": "300px"})
+        self.assertEqual(out["PROPS"], {})
+        self.assertEqual(out["STORE"], {"sd.rail.width": ""})
+        self.assertEqual(out["ATTR"]["aria-valuenow"], "216")
+
+    def test_the_shell_applies_the_kept_width_on_load_and_hands_pages_the_setter(self):
+        self.assertIn("setWidth(store('sd.rail.width'), false);", SHELL_JS)
+        self.assertIn("railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width'))", SHELL_JS)
+
+
 if __name__ == "__main__":
     unittest.main()

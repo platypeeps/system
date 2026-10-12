@@ -80,6 +80,16 @@ main { min-width: 0; padding: var(--space-lg) var(--space-xl) var(--space-3xl); 
 .rail-head .mark { margin-right: auto; }
 body[data-rail="min"] .rail-head { flex-direction: column; gap: var(--space-xs); }
 body[data-rail="min"] .rail-head .mark { margin-right: 0; }
+/* sd:3445: the rail's right edge resizes it (shell.js, width block). The hit area straddles the border; a line shows on hover,
+ * while dragging and on focus. Folded, below 900px and on touch it is hidden: Settings sets the width there. */
+.rail-grip { position: absolute; top: 0; bottom: 0; right: -5px; width: 9px; z-index: 2; cursor: col-resize; touch-action: none; }
+.rail-grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; }
+.rail-grip:hover::after, body[data-resizing] .rail-grip::after { background: var(--color-accent); }
+.rail-grip:focus-visible { outline: none; }
+.rail-grip:focus-visible::after { left: 2px; width: 4px; background: var(--color-focus); }
+body[data-resizing] { cursor: col-resize; user-select: none; }
+body[data-rail="min"] .rail-grip { display: none; }
+@media (max-width: 899px), (pointer: coarse) { .rail-grip { display: none; } }
 .mark { display: flex; align-items: baseline; gap: var(--space-xs); text-decoration: none; }
 .mark b { font: 500 var(--text-lg)/1 var(--font-data); letter-spacing: -0.02em; }
 .mark span { font: 600 var(--text-xs)/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-muted); }

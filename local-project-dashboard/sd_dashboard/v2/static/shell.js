@@ -211,6 +211,43 @@
   pane.querySelector('.tabs').addEventListener('click', e => { if (body.dataset.pane && e.target.closest('[role="tab"]')) setPane(false); });
   if (store('sd.rail') === 'min') setRail(true);
   if (store('sd.pane') === 'min') setPane(true);
+  // Width: the rail's right edge is a separator (WAI-ARIA window splitter). Drag it, or step it with ← → (Home, End) when it
+  // has focus; a double-click goes back to the default. Hidden while the rail is folded, below 900px and on touch, where
+  // a page sets it through shell.railWidth instead.
+  const grip = document.createElement('div');
+  grip.className = 'rail-grip'; grip.tabIndex = 0; grip.title = 'Drag to resize the sections; double-click resets';
+  rail.append(grip);
+  // width:start
+  // sd:3445: each browser keeps the width as sd.rail.width, as it keeps the fold. A value is clamped to RAIL_BOUNDS (px); one
+  // that is not a positive number, or none, leaves --rail at its tokens.css default. keep=false moves without storing (a drag).
+  const RAIL_BOUNDS = [176, 384];
+  const railWidth = v => { const n = Math.round(parseFloat(v)); return n > 0 ? Math.min(RAIL_BOUNDS[1], Math.max(RAIL_BOUNDS[0], n)) : null; };
+  function setWidth(v, keep = true) {
+    const w = railWidth(v), root = document.documentElement;
+    w ? root.style.setProperty('--rail', `${w}px`) : root.style.removeProperty('--rail');
+    if (keep) store('sd.rail.width', w ? String(w) : '');
+    for (const [k, x] of [['role', 'separator'], ['aria-orientation', 'vertical'], ['aria-controls', 'sections'], ['aria-label', 'Sections width'],
+      ['aria-valuemin', RAIL_BOUNDS[0]], ['aria-valuemax', RAIL_BOUNDS[1]], ['aria-valuenow', w || Math.round(rail.getBoundingClientRect().width)]]) grip.setAttribute(k, String(x));
+    return w;
+  }
+  // width:end
+  setWidth(store('sd.rail.width'), false);
+  grip.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault(); grip.setPointerCapture(e.pointerId); body.dataset.resizing = '';
+    const left = rail.getBoundingClientRect().left;
+    let last = null;
+    const move = m => { last = setWidth(m.clientX - left, false); };
+    const up = () => { ['pointermove', 'pointerup', 'pointercancel'].forEach((t, i) => grip.removeEventListener(t, i ? up : move)); delete body.dataset.resizing; if (last) setWidth(last); };
+    grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
+  });
+  grip.addEventListener('keydown', e => {
+    const now = +grip.getAttribute('aria-valuenow');
+    const to = { ArrowLeft: now - 16, ArrowRight: now + 16, Home: RAIL_BOUNDS[0], End: RAIL_BOUNDS[1] }[e.key];
+    if (to === undefined) return;
+    e.preventDefault(); e.stopPropagation(); setWidth(to);
+  });
+  grip.addEventListener('dblclick', () => setWidth(null));
   const wide = () => matchMedia('(min-width: 1240px)').matches;
   let paneReturn = null;
   // Below 1240 the pane is a bottom sheet, last in the DOM: focus moves into it, or 89 stops sit between the row and the sheet.
@@ -1071,7 +1108,9 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+    // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
+    railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);
