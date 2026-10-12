@@ -848,7 +848,7 @@ github_slug() { # remote url
 
 # local-leak-guard's pre-push hook in each public managed repo checked out
 # here (sd:3384); a private one stays without it. Only the exact hook
-# `leak-guard.sh install` writes for this checkout, executable, is ok: text
+# `leak-guard.sh install` writes, executable, is ok: text
 # that names the guard does not prove it runs (review round 1). A hook with
 # leak-guard's MARKER that differs is STALE and rewritten whatever the
 # visibility. A hook another tool wrote is never replaced: in a public repo
@@ -856,9 +856,20 @@ github_slug() { # remote url
 # GitHub, so status touches the network for those alone; a failed list or
 # probe is SKIP, never "private".
 leak_guards() {
-  guard="$ROOT/local-leak-guard/leak-guard.sh"
-  if [ ! -f "$guard" ]; then
+  if [ ! -f "$ROOT/local-leak-guard/leak-guard.sh" ]; then
     echo "  SKIP    leak guard hooks: local-leak-guard missing from the repo"
+    return 0
+  fi
+  # The main checkout's guard, as cmd_install resolves it: a linked worktree's
+  # path fails every push once the worktree is removed (sd:3390).
+  . "$ROOT/lib/config.sh"
+  if ! main=$(st_main_checkout "$ROOT"); then
+    echo "  SKIP    leak guard hooks: git cannot name the main checkout of $ROOT"
+    return 0
+  fi
+  guard="$main/local-leak-guard/leak-guard.sh"
+  if [ ! -f "$guard" ]; then
+    echo "  SKIP    leak guard hooks: $guard is missing from the main checkout"
     return 0
   fi
   if ! rows=$("$SD_PACK_ROOT/bin/sd-db" repo list --managed 2>/dev/null </dev/null); then

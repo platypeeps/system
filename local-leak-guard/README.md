@@ -33,6 +33,8 @@ sh local-leak-guard/leak-guard.sh remove
 
 `install` writes the hook into `git rev-parse --git-path hooks`, so it honours
 `core.hooksPath`. It refuses to replace a `pre-push` hook it did not write.
+The hook names the main checkout's script, even when `install` runs from a
+linked worktree: a worktree's path breaks every push once it is removed.
 
 ## Installed by machine-setup
 
