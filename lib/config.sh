@@ -15,6 +15,12 @@
 
 SYSTEM_TOOLS_CONFIG="${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}"
 
+# st_label_prefix: the launchd label prefix of every job and agent here
+# (convention 7): SYSTEM_TOOLS_LABEL_PREFIX, else local.system-tools.
+st_label_prefix() {
+    printf '%s\n' "${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+}
+
 # st_config_dir <tool>: the tool's config directory. It may not exist.
 st_config_dir() {
     printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1"

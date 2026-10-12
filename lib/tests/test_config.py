@@ -52,6 +52,26 @@ class Location(unittest.TestCase):
                          str(self.home / "c/privacy-patterns"))
 
 
+class LabelPrefix(unittest.TestCase):
+    """The launchd label prefix default lives in one place per language (sd:3574)."""
+
+    def test_default_and_override_agree_in_shell_and_python(self):
+        for extra, want in (({}, "local.system-tools"), ({"SYSTEM_TOOLS_LABEL_PREFIX": "example.test"}, "example.test")):
+            env = {"PATH": os.environ["PATH"], "HOME": "/nonexistent", **extra}
+            self.assertEqual(shell("st_label_prefix", env).stdout.strip(), want)
+            self.assertEqual(stc.label_prefix(env), want)
+
+    def test_no_tracked_script_repeats_the_default(self):
+        done = subprocess.run(
+            ["git", "grep", "-nE", r"SYSTEM_TOOLS_LABEL_PREFIX(:-|\",[[:space:]]*)\"?local\.system-tools", "--",
+             "*.sh", "*.py", ":(exclude)tests", ":(exclude)*/tests/*"],
+            cwd=LIB.parent, capture_output=True, text=True)
+        hits = sorted({line.split(":")[0] for line in done.stdout.splitlines()})
+        # The dashboard package installs into its own venv, with no lib/ beside
+        # it, so runtime.py keeps the one literal (see the comment there).
+        self.assertEqual(hits, ["lib/config.sh", "local-project-dashboard/sd_dashboard/runtime.py"])
+
+
 class EnvFile(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

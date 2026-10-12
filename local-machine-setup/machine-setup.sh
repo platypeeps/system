@@ -44,7 +44,9 @@ fi
 
 # launchd labels this repository's tools install: <prefix>.<name>, and
 # <prefix>.cron.<job> for local-cron-jobs.
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+# shellcheck source=../lib/config.sh
+. "$ROOT/lib/config.sh"
+LABEL_PREFIX="$(st_label_prefix)"
 
 # The Directory Service node that holds local user records (dscl paths, not
 # file paths: the record is there whatever the home directory is).

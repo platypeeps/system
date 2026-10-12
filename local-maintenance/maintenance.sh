@@ -30,7 +30,7 @@ fi
 
 usage() { echo "usage: $(basename "$0") run|check|uv-prune|uv-prune-plist|test" >&2; exit 1; }
 
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 UV_PRUNE_LABEL="$LABEL_PREFIX.uv-cache-prune"
 
 # uv-prune: run at login by the uv-cache-prune LaunchAgent ($UV_PRUNE_LABEL,

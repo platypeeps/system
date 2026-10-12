@@ -70,7 +70,7 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # too: a health check or runner status a job calls needs the same label
 # prefix as this script. An exported value wins over the file.
 st_source_env cron-jobs
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
 # not depend on how the machine happens to capitalise itself. The same rule is

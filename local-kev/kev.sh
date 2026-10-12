@@ -33,7 +33,7 @@ if [ -z "${HF_HOME+set}" ] && [ -d /Volumes/models/huggingface ]; then
 fi
 if [ -n "${HF_HOME:-}" ]; then export HF_HOME; else unset HF_HOME; fi
 
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 LABEL="$LABEL_PREFIX.kev"
 SRC_PLIST="$DIR/kev.plist.template"
 AGENT_DIR="$HOME/Library/LaunchAgents"

@@ -14,7 +14,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # before anything below uses a value it may set.
 st_source_env task-actions
 
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 LABEL="$LABEL_PREFIX.task-actions"
 SRC_PLIST="$DIR/task-actions.plist.template"
 AGENT_DIR="$HOME/Library/LaunchAgents"
