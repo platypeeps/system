@@ -213,7 +213,8 @@
   function setWidth(v, keep = true) {
     const w = railWidth(v), root = document.documentElement;
     w ? root.style.setProperty('--rail', `${w}px`) : root.style.removeProperty('--rail');
-    if (keep) store('sd.rail.width', w ? String(w) : '');
+    // A kept width tells the page (Settings shows it); a drag in progress does not.
+    if (keep) { store('sd.rail.width', w ? String(w) : ''); document.dispatchEvent(new CustomEvent('shell:rail-width', { detail: w })); }
     for (const [k, x] of [['role', 'separator'], ['aria-orientation', 'vertical'], ['aria-controls', 'sections'], ['aria-label', 'Sections width'],
       ['aria-valuemin', RAIL_BOUNDS[0]], ['aria-valuemax', RAIL_BOUNDS[1]], ['aria-valuenow', w || Math.round(rail.getBoundingClientRect().width)]]) grip.setAttribute(k, String(x));
     return w;

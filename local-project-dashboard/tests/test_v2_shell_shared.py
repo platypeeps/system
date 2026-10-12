@@ -348,11 +348,13 @@ class TheRailWidth(unittest.TestCase):
     def run_width(self, body, stored=None):
         self.assertIsNotNone(WIDTH, "shell.js has no width block")
         script = ("var OUT = {}, STORE = " + json.dumps({} if stored is None else {"sd.rail.width": stored}) + ", ATTR = {}, PROPS = {};\n"
-                  "var document = { documentElement: { style: { setProperty: (k, v) => { PROPS[k] = v; }, removeProperty: k => { delete PROPS[k]; } } } };\n"
+                  "var EVENTS = []; function CustomEvent(type, o) { this.type = type; this.detail = o.detail; }\n"
+                  "var document = { documentElement: { style: { setProperty: (k, v) => { PROPS[k] = v; }, removeProperty: k => { delete PROPS[k]; } } },\n"
+                  "  dispatchEvent: e => EVENTS.push([e.type, e.detail]) };\n"
                   "const store = (k, v) => { if (v === undefined) return k in STORE ? STORE[k] : null; STORE[k] = v; return v; };\n"
                   "const rail = { getBoundingClientRect: () => ({ width: 216 }) }, grip = { setAttribute: (k, v) => { ATTR[k] = v; } };\n"
                   + WIDTH.group(1) + "\nvar R = {};\n" + body
-                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, PROPS }); }\n")
+                  + "\nfunction run() { return JSON.stringify({ R, STORE, ATTR, PROPS, EVENTS }); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
         if result.returncode:
             raise AssertionError(result.stderr)
@@ -372,6 +374,11 @@ class TheRailWidth(unittest.TestCase):
         self.assertEqual(out["PROPS"], {})
         self.assertEqual(out["STORE"], {"sd.rail.width": ""})
         self.assertEqual(out["ATTR"]["aria-valuenow"], "216")
+
+    def test_a_kept_width_tells_the_page_and_a_drag_in_progress_does_not(self):
+        # Settings shows the width the edge set; without the event its control kept the old preset checked.
+        out = self.run_width("setWidth(300, false); setWidth(250); setWidth(null);")
+        self.assertEqual(out["EVENTS"], [["shell:rail-width", 250], ["shell:rail-width", None]])
 
     def test_the_shell_applies_the_kept_width_on_load_and_hands_pages_the_setter(self):
         self.assertIn("setWidth(store('sd.rail.width'), false);", SHELL_JS)

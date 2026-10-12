@@ -31,18 +31,25 @@
   <ul class="settings">
     <li>
       <div class="what"><h2 id="theme-h">Theme</h2><p>Dark is the default. System follows the device.</p></div>
-      <div class="theme" role="group" aria-labelledby="theme-h">
+      <div class="control">
+      <div class="theme" id="theme" role="group" aria-labelledby="theme-h">
         <button type="button" data-theme-choice="dark"><svg class="i" aria-hidden="true"><use href="#i-moon"/></svg>Dark</button>
         <button type="button" data-theme-choice="light"><svg class="i" aria-hidden="true"><use href="#i-sun"/></svg>Light</button>
         <button type="button" data-theme-choice="system"><svg class="i" aria-hidden="true"><use href="#i-monitor"/></svg>System</button>
       </div>
+      <span class="saved" id="theme-saved" role="status"></span>
+      </div>
     </li>
     <li>
-      <div class="what"><h2><label for="rail-width">Sections width</label></h2><p>The rail beside every page, 176 to 384 px. Its right edge drags too.</p></div>
-      <div class="width">
-        <input type="range" id="rail-width" min="176" max="384" step="8" value="216">
-        <output id="rail-width-out" for="rail-width">default</output>
-        <button class="btn quiet sm" type="button" id="rail-reset">Default</button>
+      <div class="what"><h2 id="width-h">Sections width</h2><p>The rail beside every page. Its right edge drags to any width from 176 to 384 px.</p></div>
+      <div class="control">
+      <fieldset class="seg" id="rail-width" aria-labelledby="width-h">
+        <label><input type="radio" name="rail-width" value="176"><span>Narrow</span></label>
+        <label><input type="radio" name="rail-width" value=""><span>Default</span></label>
+        <label><input type="radio" name="rail-width" value="288"><span>Wide</span></label>
+        <label><input type="radio" name="rail-width" value="384"><span>Widest</span></label>
+      </fieldset>
+      <span class="saved" id="rail-width-out" role="status"></span>
       </div>
     </li>
   </ul>
