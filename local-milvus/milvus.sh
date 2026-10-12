@@ -6,7 +6,8 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Attu, the Milvus web UI. Milvus' own ports come from the vendored
-# standalone_embed.sh, which must not be hand-edited (refresh with `install`).
+# standalone_embed.sh, which must not be hand-edited (refresh with `install`);
+# loopback_binds below is the one patch, re-applied on every run.
 ATTU_PORT="${MILVUS_UI_PORT:-8000}"
 cd "$DIR"
 
@@ -18,7 +19,16 @@ SHIM="$DIR/.sudo-shim"
 mkdir -p "$SHIM"
 printf '#!/bin/sh\nexec "$@"\n' > "$SHIM/sudo"
 chmod +x "$SHIM/sudo"
-run_embed() { PATH="$SHIM:$PATH" ./standalone_embed.sh "$@"; }
+
+# Upstream publishes 19530, 9091 and 2379 on every interface. Prefix each
+# bare `-p PORT:PORT` with 127.0.0.1 so nothing off this machine reaches them;
+# a line that already has an address does not match, so a rerun is a no-op.
+loopback_binds() {
+  sed 's/-p \([0-9][0-9]*:[0-9]\)/-p 127.0.0.1:\1/' standalone_embed.sh > standalone_embed.sh.new
+  chmod +x standalone_embed.sh.new
+  mv standalone_embed.sh.new standalone_embed.sh
+}
+run_embed() { loopback_binds; PATH="$SHIM:$PATH" ./standalone_embed.sh "$@"; }
 
 case "$1" in
   start)
@@ -43,6 +53,7 @@ case "$1" in
   install)
     curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
     chmod +x standalone_embed.sh
+    loopback_binds
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

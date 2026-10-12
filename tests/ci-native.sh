@@ -131,6 +131,10 @@ python3 tests/test_retired_folder.py
 # before the venv, and the guard below demands this line.
 python3 tests/test_docker_update.py
 
+# The Milvus launcher publishes its ports on loopback only (sd:3551). Stdlib
+# only, so it runs here before the venv, and the guard below demands this line.
+python3 tests/test_milvus_bind.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below

@@ -15,7 +15,9 @@ refreshed with `install`) plus the Attu web UI on `:8000`. Data lives in
 
 - Published on `127.0.0.1` only. These are local dev services, several with a
   credential written into this repo, so nothing off this machine can reach
-  them. Change the bind in the script if you deliberately want LAN access.
+  them. `milvus.sh` rewrites the three bare `-p` lines of the vendored
+  `standalone_embed.sh` to `127.0.0.1:` on every run and after `install`.
+  Drop `loopback_binds` from `run_embed` if you deliberately want LAN access.
 
 - `standalone_embed.sh` hardcodes `sudo docker` (Linux assumption); `milvus.sh` no-ops it with a PATH shim (`.sudo-shim/`, gitignored), so no sudo prompt on macOS.
 - It also regenerates `embedEtcd.yaml` / `user.yaml` on every start; both are gitignored.
