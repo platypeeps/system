@@ -503,6 +503,16 @@ is_dataless() {
   case "$flags" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
   [ $(( 0x$flags & 0x40000000 )) -ne 0 ]
 }
+# openrsync lists a name byte it will not print as "\#" and three octal
+# digits: an em dash is \#342\#200\#224. Print the name with those decoded,
+# or the listing never matches the file (sd:3404). It does not escape a
+# backslash, so a real name can hold "\#101" too: the caller tries the name
+# as listed when the decoded one is not evicted. %b reads \0ooo as a byte;
+# every other backslash is doubled first so it prints as itself.
+unescape_listed() {
+  printf '%b\n' "$(printf '%s\n' "$1" \
+    | sed -e 's/\\/\\\\/g' -e 's/\\\\#\([0-7][0-7][0-7]\)/\\0\1/g')"
+}
 materialize_pending() {
   : > "$PENDING"
   # A dry run lists, one per line, the paths this pair would copy.
@@ -511,7 +521,12 @@ materialize_pending() {
     --exclude "$ICON_CR" --exclude .tmp.drivedownload \
     --exclude-from "$EXCLUDES" "$src_arg" "$dst/" 2>/dev/null \
     | while IFS= read -r name; do
-        if [ -n "$name" ] && is_dataless "$dst/$name"; then
+        [ -n "$name" ] || continue
+        real=$name
+        case "$name" in *'\#'[0-7][0-7][0-7]*) real=$(unescape_listed "$name") ;; esac
+        if is_dataless "$dst/$real"; then
+          printf '%s\n' "$dst/$real" >> "$PENDING"
+        elif [ "$real" != "$name" ] && is_dataless "$dst/$name"; then
           printf '%s\n' "$dst/$name" >> "$PENDING"
         fi
       done
