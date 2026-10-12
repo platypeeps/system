@@ -1,6 +1,6 @@
 """Notes (sd:2120): the last week, a day at a time: merges, items done and opened, and runner runs, from the records
-Activity reads. Mail and the daily note text have no reader; the page shows each as unknown. Quick notes (sd:2549) are
-`sdw.quick-note` store items, listed and kept through `sd store` (notes_screen)."""
+Activity reads, and each day's daily note from the Obsidian vault (sd:3426). Mail has no reader; the page shows it as
+unknown. Quick notes (sd:2549) are `sdw.quick-note` store items, listed and kept through `sd store` (notes_screen)."""
 
 from __future__ import annotations
 

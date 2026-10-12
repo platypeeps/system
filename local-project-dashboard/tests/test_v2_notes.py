@@ -4,9 +4,10 @@ What this slice promises: `/notes` answers under the shared policy and loads
 its script before `shell.js`; `/api/notes` carries the last seven days, each a
 day in this machine's own zone, with its sd-ship merges, the items that
 reached done, the count opened, and the runner runs. A source that raises is
-named and adds no rows, so a failed read never looks like a quiet day. Mail and
-the daily note text have no reader: the document names each with its reason,
-and the page draws them as unknown.
+named and adds no rows, so a failed read never looks like a quiet day. Each day
+carries its daily note from a vault of the test's own (sd:3426), or a named
+state. Mail has no reader: the document names it with its reason, and the page
+draws it as unknown.
 
 Quick notes (sd:2549) are `sdw.quick-note` store items: `/api/notes/quick`
 lists them through `sd store list`, and `/api/notes/quick/add` keeps one
@@ -66,7 +67,26 @@ class Zoned:
         time.tzset()
 
 
-class Fixture(Zoned, ScreenCase):
+class NoVault:
+    """An empty vault and config folder of the test's own, so no read reaches the machine's real vault (sd:3426)."""
+
+    def setUp(self):
+        super().setUp()
+        self.vault = Path(self.tmp.name) / "vault"
+        self.vault.mkdir()
+        self.config = Path(self.tmp.name) / "config"
+        patch = mock.patch.dict(os.environ, {"OBSIDIAN_VAULT": str(self.vault), "SYSTEM_TOOLS_CONFIG": str(self.config)})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def write(self, relative, text):
+        path = self.vault / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+
+class Fixture(NoVault, Zoned, ScreenCase):
     """Two merges either side of local midnight, an item opened and done on two days, and one blocked run."""
 
     def setUp(self):
@@ -134,8 +154,79 @@ class TheDocument(Fixture):
 
     def test_the_sources_no_reader_covers_are_named_with_their_reason(self):
         unknown = self.doc()["unknown"]
-        self.assertEqual(sorted(unknown), ["daily", "mail"])
+        self.assertEqual(sorted(unknown), ["mail"])
         self.assertTrue(all(unknown.values()))
+
+
+class TheDailyNote(Fixture):
+    """sd:3426: each day's daily note, read from the vault the obsidian tools read, named as Obsidian's daily-notes settings name it."""
+
+    def daily(self, day="2026-09-06"):
+        return self.doc()["days"][day]["daily"]
+
+    def test_the_note_at_obsidian_s_default_name_is_read(self):
+        self.write("2026-09-06.md", "Walk the dog.\nShip the page.\n")
+        self.assertEqual(self.daily(), {"state": "ok", "file": "2026-09-06.md", "text": "Walk the dog.\nShip the page.", "cut": False})
+
+    def test_the_folder_and_format_come_from_the_vault_s_daily_notes_settings(self):
+        self.write(".obsidian/daily-notes.json", json.dumps({"folder": "Journal/", "format": "YYYY/MM/[Day] DD ddd"}))
+        self.write("Journal/2026/09/Day 05 Sat.md", "Saturday's note")
+        self.assertEqual(self.daily("2026-09-05")["file"], "Journal/2026/09/Day 05 Sat.md")
+        self.assertEqual(self.daily("2026-09-05")["text"], "Saturday's note")
+
+    def test_a_day_folder_holding_the_note_of_the_same_name_is_read(self):
+        self.write(".obsidian/daily-notes.json", json.dumps({"folder": "Notes/Daily", "template": "Templates/Daily"}))
+        self.write("Notes/Daily/2026-09-06/2026-09-06-summary.md", "not the note")
+        self.write("Notes/Daily/2026-09-06/2026-09-06.md", "The day's own note")
+        self.assertEqual(self.daily(), {"state": "ok", "file": "Notes/Daily/2026-09-06/2026-09-06.md", "text": "The day's own note", "cut": False})
+
+    def test_front_matter_is_not_note_text(self):
+        self.write("2026-09-06.md", "---\ntags: [daily]\n---\n\nThe text.\n")
+        self.assertEqual(self.daily()["text"], "The text.")
+
+    def test_a_long_note_is_cut_and_says_so(self):
+        self.write("2026-09-06.md", "x" * (notes_screen.DAILY_MAX + 5))
+        note = self.daily()
+        self.assertEqual((len(note["text"]), note["cut"]), (notes_screen.DAILY_MAX, True))
+
+    def test_no_note_for_the_day_is_its_own_state_naming_where_it_looked(self):
+        self.write("2026-09-05.md", "yesterday")
+        note = self.daily()
+        self.assertEqual(note["state"], "none")
+        self.assertIn("No daily note for 2026-09-06", note["why"])
+        self.assertIn("2026-09-06.md", note["why"])
+
+    def test_the_vault_comes_from_the_obsidian_tools_config_when_none_is_exported(self):
+        os.environ.pop("OBSIDIAN_VAULT")
+        (self.config / "obsidian-tasks").mkdir(parents=True)
+        (self.config / "obsidian-tasks" / ".env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        self.write("2026-09-06.md", "from the tool's vault")
+        self.assertEqual(self.daily()["text"], "from the tool's vault")
+
+    def test_no_vault_anywhere_is_vault_not_configured(self):
+        os.environ.pop("OBSIDIAN_VAULT")
+        with mock.patch.dict(os.environ, {"HOME": str(Path(self.tmp.name) / "home")}):
+            note = self.daily()
+        self.assertEqual(note["state"], "unconfigured")
+        self.assertIn("OBSIDIAN_VAULT is not set", note["why"])
+
+    def test_a_named_vault_that_is_not_a_folder_is_an_error_not_a_quiet_day(self):
+        os.environ["OBSIDIAN_VAULT"] = str(Path(self.tmp.name) / "gone")
+        note = self.daily()
+        self.assertEqual(note["state"], "error")
+        self.assertIn("is not a folder", note["why"])
+
+    def test_a_format_this_page_cannot_read_is_an_error(self):
+        self.write(".obsidian/daily-notes.json", json.dumps({"format": "gggg-[W]ww"}))
+        note = self.daily()
+        self.assertEqual(note["state"], "error")
+        self.assertIn("gggg-[W]ww", note["why"])
+
+    def test_a_folder_that_leaves_the_vault_is_refused(self):
+        self.write(".obsidian/daily-notes.json", json.dumps({"folder": "../outside"}))
+        (Path(self.tmp.name) / "outside").mkdir()
+        (Path(self.tmp.name) / "outside" / "2026-09-06.md").write_text("outside the vault")
+        self.assertEqual(self.daily()["state"], "error")
 
 
 class InUtc(Fixture):
@@ -146,7 +237,7 @@ class InUtc(Fixture):
         self.assertEqual([m["ref"] for m in days["2026-09-06"]["merges"]], ["system#41", "system#7"])
 
 
-class ThePage(BrowserSession):
+class ThePage(NoVault, BrowserSession):
     def test_the_route_answers_under_the_shared_policy(self):
         status, headers, body = self.request("/notes")
         self.assertEqual(status, 200)
@@ -211,11 +302,24 @@ class TheScript(Fixture):
         self.assertRegex(r["daily"], r'href="#done"><b>0</b><span>tasks done · 0 opened</span>')
         self.assertRegex(r["daily"], r'href="#runs"><b>1</b><span>runs · 1 blocked</span>')
         self.assertRegex(r["daily"], r'href="#mail" class="unk"><b>▨</b><span>mail not read')
-        self.assertIn("<b>▨ Daily note text unknown.</b> No collector reads the daily note", r["daily"])
+        self.assertIn("<b>No daily note.</b> No daily note for 2026-09-06", r["daily"])
         self.assertEqual(re.findall(r'<li class="row" data-id="([^"]+)"', r["daily"]), [f"merge:{self.merges[0]}", f"run:{self.blocked}"])
         self.assertIsNone(out["states"][-1])
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": ""})
         self.assertIn('<span class="t" title="2026-09-06 09:30:00 UTC">', r["daily"])
+
+    def test_the_day_s_note_text_is_shown_as_text(self):
+        self.write("2026-09-06.md", "Plan <b>the</b> week.\nCall the vet.")
+        out = self.run_page("R.daily = ELS.daily.html;")
+        self.assertIn('<b>Daily note</b><small>2026-09-06.md</small>', out["R"]["daily"])
+        self.assertIn("Plan &lt;b&gt;the&lt;/b&gt; week.\nCall the vet.</div>", out["R"]["daily"])
+        self.assertNotIn("Daily note text unknown", out["R"]["daily"])
+
+    def test_a_vault_that_is_not_configured_is_named(self):
+        doc = self.doc()
+        doc["days"]["2026-09-06"]["daily"] = {"state": "unconfigured", "why": "OBSIDIAN_VAULT is not set."}
+        out = self.run_page("R.daily = ELS.daily.html;", doc)
+        self.assertIn("<b>▨ Vault not configured.</b> OBSIDIAN_VAULT is not set.", out["R"]["daily"])
 
     def test_read_again_reads_the_week_again(self):
         out = self.run_page("ELS.reload.listeners.click[0](); await flush();")

@@ -1,7 +1,7 @@
 // Notes (sd:2120): the design source's products/system/designs/pages/notes.js, ported. Each change from the reference is
 // marked "build:". The days are /api/notes (notes_screen.py), read through the shared reader; none is sample data.
-// build: days are this machine's (the document's tz), times show in the viewer's own zone; mail and the daily note text are
-// unknown on every day, with the document's reason.
+// build: days are this machine's (the document's tz), times show in the viewer's own zone; mail is unknown on every day, with
+// the document's reason. The daily note is the day's text from the vault (sd:3426), or a named state: no note, no vault.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -40,6 +40,13 @@
   const sect = (id, title, n, src, body) => html`<section class="act" id="${id}" aria-labelledby="${id}-h"><header><h2 id="${id}-h">${title}</h2><span class="n">${n}</span><span class="src">${src}</span></header>${body}</section>`;
   const failed = name => DOC?.sources?.[name];
   const notRead = why => html`<div class="unknown"><b>▨ Not read.</b> ${why}</div>`;
+  // The daily note as plain text: the markup escapes it, and no Markdown is drawn. No note is a known answer, not hatched.
+  const NOTE = { none: ['read', 'No daily note.'], unconfigured: ['', '▨ Vault not configured.'], error: ['', '▨ Daily note not read.'] };
+  function noteHtml(n) {
+    if (n?.state === 'ok') return html`<div class="prose read" role="note"><p class="dn"><b>Daily note</b><small>${n.file}</small></p><div class="text" tabindex="0" aria-label="Daily note text">${n.text}</div>${n.cut ? html`<p class="why">Cut at ${String(n.text.length)} characters; open the note in Obsidian for the rest.</p>` : ''}</div>`;
+    const [kind, title] = NOTE[n?.state] || NOTE.error;
+    return html`<div class="prose${kind ? ` ${kind}` : ''}" role="note"><p><b>${title}</b> ${n?.why || 'The document carries no daily note for this day.'}</p><p>The activity below is that day's record, read from its sources.</p></div>`;
+  }
 
   function render() {
     const el = $('daily');
@@ -48,9 +55,9 @@
     $('prev').disabled = !day || day <= DAYS[0]; $('prev').title = day && day <= DAYS[0] ? `The read starts ${DAYS[0]}` : '';
     $('today').disabled = !day || day === TODAY;
     if (!DOC) { put(el, html``); return; }
-    const prose = html`<div class="prose" role="note"><p><b>▨ Daily note text unknown.</b> ${DOC.unknown.daily}</p><p>The activity below is that day's record, read from its sources.</p></div>`;
     const A = DOC.days[day];
-    if (!A) { put(el, html`${prose}${notRead(`The read covers ${long(DAYS[0])} to ${long(TODAY)} only.`)}`); return; }
+    if (!A) { put(el, notRead(`The read covers ${long(DAYS[0])} to ${long(TODAY)} only.`)); return; }
+    const prose = noteHtml(A.daily);
     const merges = OBJS.filter(o => o.type === 'merge'), done = OBJS.filter(o => o.type === 'done task'), runs = OBJS.filter(o => o.type === 'run');
     const by = {}; merges.forEach(o => (by[o.repo] ||= []).push(o));
     const repos = Object.keys(by).sort((a, b) => by[b].length - by[a].length || a.localeCompare(b));
