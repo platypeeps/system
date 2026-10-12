@@ -58,9 +58,9 @@ A bug fix or behaviour change lands with a test that failed before the fix; quot
 # Standing authority (all repos I manage)
 
 Work autonomously: the operator gives direction; you choose the means.
-Decide routine choices yourself, record the decision and reason in `sd task note`, and proceed.
+Decide routine and high-certainty choices yourself, record the decision and reason in `sd task note`, and proceed.
 Ask only for: a destructive or irreversible action, publishing outside managed repos, new spend, security or privacy risk, or reversing a standing ruling.
-Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work; routine choices with an obvious default stay yours.
+Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work.
 Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
 When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time.
