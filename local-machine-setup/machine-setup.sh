@@ -4307,7 +4307,22 @@ cmd_upgrade() {
   failed=""
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
-    run_step 1800 brew upgrade || failed="$failed, brew upgrade"
+    holds=""
+    [ "$APPLY" -eq 0 ] || holds=$(pinned_holds)
+    if [ -z "$holds" ]; then
+      run_step 1800 brew upgrade || failed="$failed, brew upgrade"
+    else
+      # One line: a newline in an awk -v value is an error in macOS awk.
+      holds=$(printf '%s\n' "$holds" | tr '\n' ' ' | sed 's/ $//')
+      echo "  held    $holds"
+      rest=$(run_step 300 brew outdated --formula --quiet 2>/dev/null |
+        awk -v holds="$holds" 'BEGIN { n = split(holds, h, " "); for (i = 1; i <= n; i++) held[h[i]] = 1 }
+          { name = $0; sub(/.*\//, "", name); if (!(name in held)) print }') || :
+      if [ -n "$rest" ]; then
+        # shellcheck disable=SC2086 # one word per formula name
+        run_step 1800 brew upgrade $rest || failed="$failed, brew upgrade"
+      fi
+    fi
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062).
     run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
@@ -4335,6 +4350,23 @@ cmd_upgrade() {
   fi
 }
 
+# pinned_holds: what a pin holds back, one sorted short name per line: each
+# pinned formula, and each installed formula that depends on a pinned formula
+# with a newer version. brew upgrade refuses such a dependent ("You must `brew
+# unpin python@3.14` as installing awscli requires the latest version of
+# pinned dependencies") and exits 1, so cmd_upgrade leaves these out and
+# upgrades the rest by name (sd:3329).
+pinned_holds() {
+  _pins=$(run_step 300 brew list --pinned 2>/dev/null | sed 's|.*/||') || :
+  [ -n "$_pins" ] || return 0
+  _outdated=$(run_step 300 brew outdated --formula --quiet 2>/dev/null | sed 's|.*/||') || :
+  for _p in $_pins; do
+    echo "$_p"
+    printf '%s\n' "$_outdated" | grep -qx "$_p" || continue
+    run_step 300 brew uses --installed --recursive "$_p" 2>/dev/null | sed 's|.*/||' || :
+  done | sort -u
+}
+
 # outdated_lists before|after: what brew and mas call outdated, one sorted
 # file per kind under $tmp. Each query is a bounded step; one that fails or
 # times out leaves its file empty. Casks are asked with --greedy, as
@@ -4342,8 +4374,9 @@ cmd_upgrade() {
 outdated_lists() {
   run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.all.$1" || :
   # A pinned formula with a newer version is held on purpose (BREW_PINNED),
-  # not left over: it goes to its own list, out of the counts.
-  run_step 300 brew list --pinned 2>/dev/null | sed 's|.*/||' | sort > "$tmp/pinned" || :
+  # not left over: it and the formulae it holds back go to their own list,
+  # out of the counts.
+  pinned_holds > "$tmp/pinned"
   comm -12 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/held.$1"
   comm -23 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/formula.$1"
   run_step 300 brew outdated --cask --greedy --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
