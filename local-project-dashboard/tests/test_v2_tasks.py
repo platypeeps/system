@@ -444,6 +444,26 @@ OUT.toasts[0].undo(); await flush();""")
   asksFirst({ askFirst: o => o.exit === 127 }, { exit: 127 }), asksFirst({ askFirst: o => o.exit === 127 }, { exit: 7 })];""")
         self.assertEqual(out["got"], [True, False, True, False])
 
+    def test_a_command_button_hover_help_names_the_line_it_runs_and_whether_it_asks_or_undoes(self):
+        """sd:3457: each command button carries a title, which the browser shows after a hover delay."""
+        out = self.settle("""OUT.got = [
+  tipOf({ label: 'Ready', cli: o => `sd task status ${o.id} ready`, risk: 'undo', undo() {} }, obj(7)),
+  tipOf({ label: 'Remove', cli: () => 'git worktree remove /tmp/x', risk: 'confirm' }, obj(7)),
+  tipOf({ label: 'Retry', cli: () => 'sd jobs run x', askFirst: true }, obj(7)),
+  tipOf({ label: 'Ask in chat' }, obj(7)),
+  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7))];""")
+        self.assertEqual(out["got"], [
+            "Ready: runs sd task status 7 ready. Undo offered.",
+            "Remove: copy only, the dashboard does not run git worktree remove /tmp/x. Asks first.",
+            "Retry: runs sd jobs run x. Asks first.",
+            "Ask in chat: dashboard only, no CLI line.",
+            "Pin: dashboard only, no CLI line.",
+        ])
+        for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" title=\"${tipOf(c, o)}\"",
+                      "data-cmd=\"${p.id}\" data-obj=\"${id}\" title=\"${tipOf(p, o)}\""):
+            self.assertIn(where, SHELL_JS)
+        self.assertEqual(SHELL_JS.count("title=\"${tipOf(c, o)}\""), 2, "the bar and the menu each carry the hover help")
+
     def test_run_and_bulk_ask_through_the_one_test(self):
         """A guard: run() and runBulk() both read asksFirst, so neither treats a test as always yes or skips it."""
         self.assertTrue("c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length" in SHELL_JS, "run() skips the test")

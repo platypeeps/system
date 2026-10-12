@@ -401,20 +401,26 @@
     c.batch(objs, done);
     return true;
   }
-  // bulk:end
-  // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
-  const { plural } = window.markup;
-  let selId = null;
   // A command without cli is dashboard-only (chat, navigation); it shows no CLI line.
   // A command with fields passes what the operator typed; the line shows each field's placeholder until then.
   const cliOf = (c, o, v) => c.cli ? c.cli(o, v || {}) : '';
   // A cli string that starts with "no CLI:" or "no sd verb:" is a reason, not a command.
   const noCli = s => !s || /^no (CLI|sd verb)\b/.test(s);
   const shownCli = (c, o) => { const s = cliOf(c, o); return noCli(s) ? '' : s; };
-  const offWhy = (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); };
   // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
   // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
   const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
+  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. A title, so the
+  // browser waits before it shows and a pass over the buttons shows nothing.
+  const tipOf = (c, o) => {
+    const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
+    return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
+  };
+  // bulk:end
+  // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
+  const { plural } = window.markup;
+  let selId = null;
+  const offWhy = (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); };
   const cmdsFor = o => o ? REG.filter(c => c.on === o.type) : [];
   const live = o => cmdsFor(o).filter(c => !offWhy(c, o));
   // Every shell dialog opens through modal(): Tab and Shift+Tab cycle inside it, Esc closes it (native), and focus goes back
@@ -523,7 +529,7 @@
     const o = OBJ.get(id); if (!o) return html``;
     const L = live(o), p = L.find(c => c.primary?.(o));
     if (!L.length) return html`<span class="rowact"></span>`;
-    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
+    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" title="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
   // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
   // closed until opened (sd:3464).
@@ -531,7 +537,7 @@
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" title="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
@@ -545,7 +551,7 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}" title="${tipOf(c, o)}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
       <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
       <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;
