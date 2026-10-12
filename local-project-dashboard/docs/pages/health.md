@@ -4,7 +4,7 @@ Health is at `/fleet-health` (sd:2115); `/health` stays the service's own
 check. `GET /api/health` (`health_screen.document`) lists eight of the
 design's nine areas in its order, then Doctor (sd:3393); it leaves out
 Attribution (sd:3011). Each has a reader. Three read what the dashboard had: Worktrees (registrations whose
-directory is gone, from the fleet child), Ports (`ports_screen`'s reader, which the retired Operations > Ports used, with
+directory is gone, from the fleet child Sessions reads), Ports (`ports_screen`'s reader, which the retired Operations > Ports used, with
 its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
 with one column per repository and a table carrying the same cells; an unread
 repository shows no cell).

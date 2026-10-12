@@ -50,11 +50,13 @@ PAGES = {route: entry.html for entry in registry.PAGES for route in entry.routes
 SECTIONS = {entry.section: entry.routes[0] for entry in registry.PAGES}
 CLASSIC: dict[str, str] = {}
 #: Old screens with no rail section of their own; the palette offers them under "Classic screens". These belong to no
-#: page: Trackers (tracker issues) and Protection (Management links it as the gap matrix). The Jobs, Services, Ports,
-#: Repos, Sessions and Progress areas were retired in sd:3402. An old screen a page keeps (its `classic`, with the
-#: reason in its module) follows, by label.
+#: page: Services (each service's last request), Trackers (tracker issues), Sessions (live worktree rows) and Protection
+#: (Management links it as the gap matrix). The Jobs, Ports, Repos and Progress areas were retired in sd:3402. An old
+#: screen a page keeps (its `classic`, with the reason in its module) follows, by label.
 SCREENS = {
+    "Services": "/operations?area=services",
     "Trackers": "/operations?area=trackers",
+    "Sessions": "/operations?area=sessions",
     "Protection": "/protection",
 } | dict(sorted((label, href) for entry in registry.PAGES for label, href in entry.classic.items()))
 

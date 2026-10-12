@@ -69,7 +69,7 @@ The generated launch environment includes the standard system tool directories
 needed for listener inspection. It also carries the
 installing shell's `sd` directory and `OBSIDIAN_VAULT`, which Notes' quick
 notes need (sd:2549); `install` prints one line for each it cannot find, and
-still installs. Management's service controls act only on
+still installs. Service controls on Management and Operations > Services act only on
 eligible user LaunchAgents; system daemons and dashboard/access services remain
 read-only. See [README.md](README.md) for the Operations tabs, one per entry of
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet

@@ -951,8 +951,7 @@ class ThePage(Collectors, BrowserSession):
     def test_the_rail_opens_health_at_its_page(self):
         self.assertEqual(v2.SECTIONS["Health"], "/fleet-health")
         self.assertNotIn("Health", v2.CLASSIC)
-        # sd:3402 retired the classic Sessions area: Health and Management show the fleet's sessions.
-        self.assertNotIn("/operations?area=sessions", v2.SCREENS.values())
+        self.assertIn("/operations?area=sessions", v2.SCREENS.values())
 
 
 # Extras the Health script reads from the shell that the Tasks stand-in does not carry.

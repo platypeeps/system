@@ -97,7 +97,8 @@ class OperationsActions(BrowserSession):
         self.assertEqual(self.backend.calls, [("cancel", "fixture/running-fixture")])
 
     def test_operations_tabs_select_one_kept_area_and_default_to_usage(self):
-        # sd:3402 retired Jobs, Services, Ports, Progress, Repos, Sessions, Reports and Commands.
+        # sd:3402 retired Jobs, Ports, Progress, Repos, Reports and Commands. Services and Sessions stay; their
+        # reads are tested in test_services_actions and test_sessions_screen, with fixture backends.
         headings = {"usage": "Week, cost and provider details", "resources": "<h2>Resources</h2>", "trackers": "<h2>Trackers</h2>"}
         for area, heading in headings.items():
             with self.subTest(area=area):
@@ -105,7 +106,8 @@ class OperationsActions(BrowserSession):
                 self.assertEqual(status, 200)
                 navigation = re.search(r'<nav[^>]*aria-label="Operations areas"[^>]*>(.*?)</nav>', page).group(1)
                 self.assertEqual(re.findall(r'href="/operations\?area=(\w+)"[^>]*>(\w+)</a>', navigation),
-                                 [("usage", "Usage"), ("resources", "Resources"), ("trackers", "Trackers")])
+                                 [("usage", "Usage"), ("services", "Services"), ("resources", "Resources"),
+                                  ("trackers", "Trackers"), ("sessions", "Sessions")])
                 active = re.findall(r'<a[^>]*href="([^"]+)"[^>]*aria-current="page"', navigation)
                 self.assertEqual(active, [f"/operations?area={area}"])
                 self.assertIn(heading, page)

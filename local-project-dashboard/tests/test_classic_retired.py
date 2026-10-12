@@ -3,7 +3,8 @@
 What this slice promises: each retired address answers 404, as `/classic/backlog` does (`test_backlog_retired`), the
 palette no longer offers it, and no page, script or server module links to it. A link built from a variable
 (`/operations?area=${...}`) counts as a link to a retired area: only the kept areas may follow `area=`. The kept
-screens still answer: Contributions (classic), Usage, Resources, Trackers and Protection hold data no v2 page shows.
+screens still answer: Contributions (classic), Usage, Services, Resources, Trackers, Sessions and Protection hold data
+no v2 page shows; Services holds each service's last request and Sessions the live worktree rows.
 Commands retired because Activity reads the same journal, `runner_exec.execution_journal` under the same cap, as
 `runner_exec.executions`, which the classic area listed; the last test holds that.
 """
@@ -24,9 +25,9 @@ from support import NOW, ScreenCase
 PACKAGE = Path(server.__file__).resolve().parent
 
 RETIRED_CLASSIC = ("designs", "documents", "skills", "today", "writing")
-RETIRED_AREAS = ("jobs", "services", "ports", "progress", "repos", "sessions", "reports", "commands")
+RETIRED_AREAS = ("jobs", "ports", "progress", "repos", "reports", "commands")
 KEPT_CLASSIC = ("contributions",)
-KEPT_AREAS = ("usage", "resources", "trackers")
+KEPT_AREAS = ("usage", "services", "resources", "trackers", "sessions")
 
 
 def sources():

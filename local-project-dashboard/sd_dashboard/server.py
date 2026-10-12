@@ -88,7 +88,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def route(connection: sqlite3.Connection, path: str, parameters, *, now: str) -> str:
+def route(connection: sqlite3.Connection, path: str, parameters, *, now: str, services_backend=None) -> str:
     """One request, one page. The router is a function so a test can call it.
 
     A test that has to start a socket to assert a page is a test that runs
@@ -113,7 +113,7 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str) ->
     if path == "/operations":
         from .operations_screen import operations_page
 
-        rendered = operations_page(connection, parameters=parameters, now=now)
+        rendered = operations_page(connection, parameters=parameters, now=now, services_backend=services_backend)
         if rendered is None:
             raise NotFound("/operations?area=" + (parameters.get("area") or [""])[0])
         return rendered
@@ -612,7 +612,7 @@ class Dashboard(BaseHTTPRequestHandler):
 
                 location = from_backlog(connection, parameters, now=self.clock())
                 return self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
-            body = route(connection, path, parameters, now=self.clock())
+            body = route(connection, path, parameters, now=self.clock(), services_backend=self.services_backend)
         except workflow.MissingItem:
             return self._json(404, {"error": "The related item no longer exists. Choose another item."})
         except NotFound as missing:

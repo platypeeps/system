@@ -329,13 +329,26 @@ class OnTheWire(ScreenCase):
         is not a screen -- the Item screen is one item and is reached from a
         row. A section is not the same thing as a destination.
 
-        sd:3402 retired classic Today and the Repos and Sessions areas, so
-        Operations is the classic page whose links are followed.
+        sd:3402 retired classic Today, so Operations is the classic page whose
+        links are followed. Sessions starts the fleet collector, which waits up
+        to its 12 s on a child; under a loaded gate that outlasted `fetch`'s
+        10 s (sd:2718). The route is the subject here, so its read fails at
+        once, and Services reads an empty launchd fixture, not this Mac's.
         """
-        _, _, body = self.fetch("/operations")
-        for href in set(re.findall(r'href="(/[^"]*)"', body)):
-            status, _, _ = self.fetch(href.replace("&amp;", "&"))
-            self.assertEqual(status, 200, href)
+        from unittest.mock import patch
+
+        from sd_db import services
+        from sd_dashboard import sessions_screen
+
+        empty = Path(self.tmp.name) / "launchd"
+        empty.mkdir()
+        self.listening.RequestHandlerClass.services_backend = services.ServiceBackend(
+            user_agents=empty, system_daemons=empty, runner=lambda argv: self.fail(f"launchctl {argv}"))
+        with patch.object(sessions_screen, "collect", side_effect=OSError("not read by this test")):
+            _, _, body = self.fetch("/operations")
+            for href in set(re.findall(r'href="(/[^"]*)"', body)):
+                status, _, _ = self.fetch(href.replace("&amp;", "&"))
+                self.assertEqual(status, 200, href)
 
 
 if __name__ == "__main__":  # pragma: no cover

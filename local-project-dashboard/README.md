@@ -4,7 +4,7 @@ This directory contains the workflow dashboard and the six legacy collector
 commands. They are separate surfaces.
 
 **The workflow dashboard** (`sd_dashboard/`) opens on the new design's Today, and keeps
-the classic Contributions, Operations (Usage, Resources and Trackers), Protection, and
+the classic Contributions, Operations (Usage, Services, Resources, Trackers and Sessions), Protection, and
 individual Item pages. sd:3402 retired the other classic screens; their controls are on the new pages.
 A `/backlog` address opens Tasks with the same filters (sd:2356); the classic
 Backlog was deleted in sd:2622. Its production launcher uses the
@@ -205,19 +205,22 @@ catalog with each skill's use in the last three weeks, read from
 post the routes the classic screen posted; Run, Schedule, Adopt and Scan are copy
 only. The classic screen was retired in sd:3402; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
 
-**Operations** has three tabs (`operations_screen.AREAS`). Usage is the default;
-the selected tab travels in the URL, for example `/operations?area=trackers`.
-sd:3402 retired the other eight, and each one's controls live on a new page:
+**Operations** has five tabs (`operations_screen.AREAS`). Usage is the default;
+the selected tab travels in the URL, for example `/operations?area=services`.
+Services stays for each service's last request and Sessions for the live worktree rows, which no new page shows yet.
+sd:3402 retired the other six, and each one's controls live on a new page:
 Jobs on Management and Activity, a queued assignment's cancel on its Item page,
-Services on Management, Ports on Health, Progress's age buckets as Tasks' `age` filter
+Ports on Health, Progress's age buckets as Tasks' `age` filter
 and its observed activity on Metrics, Reports on Reports, Repos on Management,
-Sessions on Health and Management, and Commands on Activity. Any other `area=` is a 404.
+and Commands on Activity. Any other `area=` is a 404.
 
 | Tab | Scope and controls |
 | --- | --- |
 | **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db usage` binds it. |
+| **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
+| **Sessions** | Every worktree the fleet's checkouts have registered under `.git/worktrees`, abandoned ones first — a registration whose directory is gone still holds its branch; one whose files cannot be read is unknown, not abandoned — and every `sd` or `sd-*` command in the process table. Read by the fleet child under its 12-second budget; a root that does not exist is said in place of the worktree count, and a `ps` that did not answer is said beside the worktrees that did. |
 
 Every job or service control rechecks the observed state and revision. The last
 request's acceptance is shown separately from the current state; acceptance is
@@ -227,8 +230,8 @@ Queued assignments can be cancelled without completing their item, with
 done. A restore
 blocks starting jobs and starting or restarting services, while supported stop
 controls remain available. Stopping a service unloads it for the current login;
-its plist stays installed and may load again at the next login. Management's
-command palette names the `sd services` command each control sends.
+its plist stays installed and may load again at the next login. Equivalent
+`sd services` commands are in the page's collapsible CLI help.
 
 Ports combines `machine-setup` service candidates with one local `lsof`
 listener snapshot. It reads `../local-machine-setup/machine-setup.sh` when that
@@ -239,8 +242,8 @@ owners and addresses are retained, and unavailable or incomplete inspection is
 reported. A listening socket does not prove application health or identify the
 intended service; inspection is limited to what this user can see and performs
 no network scan. A collector runs only when its page reads: Health runs the
-listener inspection, a Resources view runs its tile, and Management and Health
-run the fleet reader. Today's Now runs the fleet reader too, once per
+listener inspection, a Resources view runs its tile, and Management, Health and
+Operations > Sessions run the fleet reader. Today's Now runs the fleet reader too, once per
 `/api/now` read, for both areas, reads the shadow table, and reads the launchd
 jobs' last-run state as Management does. None of them
 exposes prompts, environment variables, output logs or arbitrary commands.

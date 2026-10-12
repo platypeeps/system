@@ -31,7 +31,7 @@ V2 = Path(v2.__file__).resolve().parent
 
 #: Every old screen that stays, and where it lives now. An old screen whose path a page took is where that page's module says.
 OLD_SCREENS = ("/protection", "/operations",
-               *(f"/operations?area={key}" for key in ("usage", "resources", "trackers")),
+               *(f"/operations?area={key}" for key in ("usage", "services", "resources", "trackers", "sessions")),
                *(entry.path for page in v2.registry.PAGES for entry in page.takes))
 
 
@@ -46,15 +46,17 @@ class TheDefault(BrowserSession):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         self.backend = JobsBackend(root.name, jobs=[("nightly-sync", "failed", 7, None)])
-        # No collector child runs in a test: the resources area reads a fixture.
-        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # No collector child runs in a test: the sessions and resources areas read fixtures.
+        for target, value in (("sd_dashboard.sessions_screen.collect", lambda area: fleet_document(area)),
+                              ("sd_dashboard.reports_screen.collect", lambda area: "")):
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         super().setUp()
         self.listening.RequestHandlerClass.ports_backend = staticmethod(ports_fixture)
         empty = Path(root.name) / "launchd"
         empty.mkdir()
-        # No service is installed, so no page read makes a launchctl call.
+        # No service is installed, so the Services area makes no launchctl call.
         self.listening.RequestHandlerClass.services_backend = services.ServiceBackend(
             user_agents=empty, system_daemons=empty, runner=lambda argv: self.fail(f"launchctl {argv}"))
 
@@ -118,8 +120,9 @@ class TheDefault(BrowserSession):
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
-        for required in ("/operations?area=usage", "/operations?area=resources", "/operations?area=trackers",
-                         "/protection", "/classic/contributions"):
+        for required in ("/operations?area=usage", "/operations?area=services", "/operations?area=resources",
+                         "/operations?area=trackers", "/operations?area=sessions", "/protection",
+                         "/classic/contributions"):
             self.assertIn(required, reachable)
         # A ported section is never also classic, and no page script names a section's address.
         self.assertEqual(set(v2.SECTIONS) & set(v2.CLASSIC), set())

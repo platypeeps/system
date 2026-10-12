@@ -1,9 +1,9 @@
 """Operations: the classic areas whose data no v2 page shows yet, and the helpers other screens import.
 
-Usage keeps its past-month picker (Metrics reads the current month only), Resources keeps Toolbox, Vault and Queues,
-and Trackers keeps the tracker issues. The Jobs, Services, Ports, Progress, Reports, Repos, Sessions and Commands
-areas were retired in sd:3402, once Management, Health, Metrics, Reports and Activity carried their controls; an
-address naming one is a 404.
+Usage keeps its past-month picker (Metrics reads the current month only), Services keeps each service's last request,
+Resources keeps Toolbox, Vault and Queues, Trackers keeps the tracker issues, and Sessions keeps the live worktree
+rows. The Jobs, Ports, Progress, Reports, Repos and Commands areas were retired in sd:3402, once Management, Health,
+Metrics, Reports and Activity carried their controls; an address naming one is a 404.
 """
 
 import contextlib
@@ -15,6 +15,7 @@ from sd_db import operations, reads, registry, usage
 from sd_db.errors import SdDbError
 
 from .controls import field, form, select
+from .listing import Column, Listing
 from .markup import Markup, join, tag
 from .pages import page, tile
 
@@ -29,7 +30,8 @@ from .pages import page, tile
 #: it matches, so no form posts to a path that answers 404.
 BILL_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
 
-AREAS = (("usage", "Usage"), ("resources", "Resources"), ("trackers", "Trackers"))
+AREAS = (("usage", "Usage"), ("services", "Services"), ("resources", "Resources"), ("trackers", "Trackers"),
+         ("sessions", "Sessions"))
 
 
 def _navigation(area):
@@ -216,21 +218,81 @@ def _signal_name(number):
         return str(number)
 
 
-def operations_page(connection, *, parameters, now):
+def _service(entry):
+    request = entry["last_request"]
+    previous = (tag("div", tag("strong", "Last request: "),
+        f"{request['action']} · {request['status']}", tag("p", request["message"]),
+        class_="operation-request") if request else "")
+    actions, reasons = [], []
+    for action, label in (("start", "Start service"), ("restart", "Restart service"), ("stop", "Stop service")):
+        capability = entry["capabilities"][action]
+        if capability["allowed"]:
+            actions.append(form(f"/api/services/{quote(entry['label'], safe='')}/{action}",
+                label=label, command=f"sd services {action} {entry['label']}",
+                revision=entry["revision"], compact=True))
+        elif capability["reason"] and capability["reason"] not in reasons:
+            reasons.append(capability["reason"])
+    scope = "System daemon" if entry["scope"] == "system" else "User LaunchAgent"
+    return tag("article", tag("h3", entry["name"]),
+        tag("p", entry["label"], class_="hint") if entry["label"] != entry["name"] else "",
+        tag("p", f"{scope} · {entry['domain']} · {entry['category']}", class_="hint"),
+        tag("p", tag("strong", entry["state"].capitalize()),
+            f" · PID {entry['pid']}" if entry["pid"] is not None else "",
+            f" · Last exit {entry['last_exit']}" if entry["last_exit"] is not None else "",
+            # A last run that ended in a signal has no exit code; launchd records the
+            # signal instead. .get(): the served sd_db may predate the field (sd:1331).
+            f" · Last signal {_signal_name(entry['last_signal'])}" if entry.get("last_signal") is not None else ""),
+        previous,
+        tag("div", join(actions), class_="operation-actions") if actions else "",
+        join(tag("p", reason, class_="hint") for reason in reasons), class_="operation-card")
+
+
+def _services(connection, parameters, backend):
+    from sd_db import services
+
+    current = services.inventory(connection, backend=backend)
+    query, number, selected = Listing.read_query(parameters)
+    listing = Listing("services", (
+        Column("name", "Service", lambda row: row["name"]),
+        Column("label", "Label", lambda row: row["label"]),
+        Column("scope", "Scope", lambda row: row["scope"]),
+        Column("domain", "Domain", lambda row: row["domain"]),
+        Column("category", "Category", lambda row: row["category"]),
+        Column("state", "State", lambda row: row["state"]),
+    ), current["services"], path="/operations", query=query, page_number=number,
+        selected=selected, extra={"area": "services"})
+    shown, paged = listing.page()
+    return tag("section", tag("h2", "Launchd services"),
+        tag("p", "User LaunchAgents and third-party system daemons installed on this Mac. System daemons and protected services are read-only.", class_="hint"),
+        tag("p", "Stop unloads a user service for this login. Its plist stays installed and may load again at the next login. An accepted request is not proof of application health.", class_="hint"),
+        tag("p", tag("a", "Refresh observations", href=listing.link())),
+        listing.controls(paged),
+        tag("div", join(_service(entry) for entry in shown), class_="operations-grid") if shown else
+            tag("p", "No services match this filter." if query else "No installed services were found."),
+        listing.pager(paged), class_="listing", data_listing="services")
+
+
+def operations_page(connection, *, parameters, now, services_backend=None):
     """The area `?area=` names, the first by default; None for an area that is not one, so the server answers 404."""
     area = (parameters.get("area") or [AREAS[0][0]])[0]
     if area not in dict(AREAS):
         return None
     if area == "usage":
         content = _usage(connection, now, parameters)
+    elif area == "services":
+        content = _services(connection, parameters, services_backend)
     elif area == "resources":
         from .reports_screen import resources
 
         content = resources(parameters)
-    else:
+    elif area == "trackers":
         from .trackers_screen import trackers_panel
 
         content = trackers_panel(connection, parameters, now=now)
+    else:
+        from .sessions_screen import sessions_panel
+
+        content = sessions_panel(parameters)
     return page("Operations", "operations", _navigation(area), content,
                 subtitle=_subtitle())
 
