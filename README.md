@@ -70,7 +70,8 @@ goes in `$SYSTEM_TOOLS_CONFIG/cron-jobs/jobs/<host>/`, where `<host>` is the
 lower-cased `hostname -s`; other hosts' folders are ignored, so one config
 folder can serve several machines.
 
-Before pushing, install the leak guard once per clone:
+machine-setup's `repos` stage installs the leak guard's pre-push hook in every
+public managed clone; in any other clone run
 `sh local-leak-guard/leak-guard.sh install`. It refuses a push that adds a line
 matching a pattern in `$SYSTEM_TOOLS_CONFIG/privacy-patterns`.
 
