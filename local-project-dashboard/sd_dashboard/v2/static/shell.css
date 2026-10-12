@@ -343,6 +343,13 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .seg input:checked + span { background: var(--color-accent-bg); color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-accent); }
 .seg input:focus-visible + span { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .seg .off span { color: var(--color-muted); cursor: not-allowed; }
+/* Capture's priority and repo picks (sd:3521): one row under the text, off for a note. */
+.cap-pick { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: 0; padding: 0; border: 0; min-width: 0; }
+.cap-pick .seg { flex: 0 1 auto; }
+.cap-pick select { flex: 1 1 10rem; min-width: 0; min-height: var(--row-touch); padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: inherit; font-size: var(--text-sm); }
+.cap-pick select:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.cap-pick:disabled { opacity: 0.5; }
+.cap-pick:disabled .seg input, .cap-pick:disabled select { cursor: not-allowed; }
 .bulkbar {
   position: fixed; z-index: 25; left: 50%; bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); transform: translateX(-50%);
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); width: max-content; max-width: calc(100vw - 1rem); padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);

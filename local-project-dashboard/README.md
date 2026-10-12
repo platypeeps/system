@@ -103,12 +103,16 @@ palette still opens the kept classic screens.
 
 Task controls need no repository, planning document, branch, or GitHub issue.
 The shell's Capture, on every new page, files a Task or a Followup item, or a
-comment note on the selected row's item. The Item page's note form attaches a
+comment note on the selected row's item (sd:3520). A task or followup takes a
+priority, P3 unless changed or typed as `p1` to `p4`, and a repository: the
+page's (the Management row, the one repo Tasks filters on or the selected task's,
+the Today row's) when the page names one, picked with Alt R from
+`GET /api/capture-repos` (sd:3521). The Item page's note form attaches a
 Comment, Followup, Question, Decision or Proposal note. The word
 `followup` names two things in the store — an item kind and a note kind —
 and the forms label them apart: a **Followup item** is an item of kind
 `followup`, what `sd task add --kind followup` creates; captured on a row with
-an item, the child carries `fields.followup_of` (`--followup-of`). A
+an item, the child carries `fields.followup_of`, which the CLI cannot set. A
 **Followup note** is a note on the item whose page it is added on. Adding a
 note does not reopen or unpark its parent. sd:3402 retired the classic Today's
 capture panel, with its related-item picker.

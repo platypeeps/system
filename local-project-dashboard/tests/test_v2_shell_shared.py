@@ -173,6 +173,44 @@ class TheDefaultCapture(unittest.TestCase):
         self.assertEqual(out["empty"], "Not known if it filed: the server named no item. Look in Tasks before you capture it again.")
         self.assertEqual(out["noRow"], "Not filed: select a row that has an item first")
 
+    def test_the_repo_and_priority_go_with_the_capture_and_a_typed_p_wins(self):
+        # sd:3521: the box's picks (the page's repo, P3 unless changed) are fields of the new item; p1 to p4 typed in the
+        # title still sets the priority.
+        out = run_capture(self, """ANSWER = (path, body) => [201, { item: { id: 78, title: body.title } }];
+  await fileCapture({ kind: 'task', title: 'Fix it', priority: 3, repo: '~/repos/one' });
+  await fileCapture({ kind: 'followup', title: 'Fix it p1', item: 5, priority: 3, repo: '' });
+  await fileCapture({ kind: 'note', title: 'Seen', item: 5, priority: 3, repo: '~/repos/one' }).catch(() => null);
+  R.posts = OUT.posts.map(p => p[1]);""")
+        self.assertEqual(out["posts"][:2], [{"title": "Fix it", "priority": 3, "repo": "~/repos/one"},
+                                            {"title": "Fix it", "priority": 1, "kind": "followup", "followup_of": 5}])
+
+    def test_the_page_repo_resolves_by_path_or_name_and_an_unknown_one_is_no_default(self):
+        out = run_capture(self, """const LIST = [{ path: '~/repos/one', name: 'one' }, { path: '~/repos/two', name: 'two' }];
+  R.byPath = captureRepo(LIST, '~/repos/two'); R.byName = captureRepo(LIST, 'one'); R.byOwner = captureRepo(LIST, 'someone/two');
+  R.unknown = captureRepo(LIST, 'three'); R.none = captureRepo(LIST, null); R.empty = captureRepo([], '~/repos/one');""")
+        self.assertEqual([out[k] for k in ("byPath", "byName", "byOwner", "unknown", "none", "empty")],
+                         ["~/repos/two", "~/repos/one", "~/repos/two", "", "", ""])
+
+    def test_the_command_line_names_the_repo_and_priority_it_files(self):
+        out = run_capture(self, """R.lines = [captureCli({ kind: 'task', title: "it's", priority: 3, repo: '~/repos/one' }),
+  captureCli({ kind: 'followup', title: 'x', item: 5, priority: 2, repo: '' }),
+  captureCli({ kind: 'note', title: 'x', item: 5, priority: 3, repo: '~/repos/one' }),
+  captureCli({ kind: 'task', title: 'x', priority: 4, repo: '/tmp/a b' })];""")
+        self.assertEqual(out["lines"], ["cd ~/repos/one && sd task add --priority 3 'it'\\''s'",
+                                        "sd task add --no-repo --kind followup --priority 2 'x'",
+                                        "sd task note 5 --kind comment --body 'x'",
+                                        "cd '/tmp/a b' && sd task add --priority 4 'x'"])
+
+    def test_the_box_offers_the_pickers_with_p3_and_the_pages_repo_as_defaults(self):
+        self.assertIn("window.PAGE_REPO", SHELL_JS)
+        box = re.search(r"function openCapture\(.*?\n  \}\n", SHELL_JS, re.S).group(0)
+        self.assertRegex(box, r'name="priority" value="\$\{n\}"\$\{n === 3 \? html` checked` : ..\}')
+        self.assertIn('id="cap-repo"', box)
+        self.assertIn('aria-keyshortcuts="Alt+R"', box)
+        for page in ("management.js", "tasks.js", "today.js"):
+            with self.subTest(page):
+                self.assertIn("window.PAGE_REPO =", PAGE_JS[page])
+
     def test_the_dialog_files_through_the_page_hook_or_the_default_and_never_toasts_captured_itself(self):
         close = re.search(r"cap\.onclose = .*?\n    modal\(cap, inp\);", SHELL_JS, re.S)
         self.assertIsNotNone(close)

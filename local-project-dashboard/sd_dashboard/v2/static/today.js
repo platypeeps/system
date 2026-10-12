@@ -183,6 +183,9 @@
       : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
   }
 
+  // build (sd:3521): capture's repo default is the row's: a repo row names it in its id, a pull request as owner/name.
+  window.PAGE_REPO = o => o && o.type === 'repo' ? o.id.split(':')[1] : (o && o.repo) || null;
+
   window.PAGE_COMMANDS = [
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },

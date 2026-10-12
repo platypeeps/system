@@ -902,14 +902,18 @@ addEventListener('DOMContentLoaded', () => {
   }
   // build: #repo names a repository by the label this page shows; the write needs its path.
   const repoFor = name => tasks.find(t => t.repo.toLowerCase() === name)?.repo_path || null;
+  // build (sd:3521): a capture with no #repo lands in the one repo the filter shows, else the selected task's; P3 unless typed.
+  const filterRepo = () => F.repo.size === 1 ? repoFor([...F.repo][0].toLowerCase()) : null;
+  window.PAGE_REPO = o => filterRepo() || (o && o.item ? byKey(String(o.item))?.repo_path : null) || null;
   function showPreview() {
     const txt = inp.value, P = parse(txt);
     ghost.hidden = !!txt;
     if (!txt.trim()) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); return; }
     const found = P.find ? tasks.filter(t => String(t.id) === P.find) : P.title.length > 2 ? tasks.filter(t => t.title.toLowerCase().includes(P.title.toLowerCase())).slice(0, 3) : [];
-    const chips = [P.p && `P${P.p}`, P.due && `due ${fmt(P.due)}`, P.repo && `#${P.repo}${repoFor(P.repo) ? '' : ' (not shown here)'}`].filter(Boolean);
+    const fr = !P.repo && filterRepo() && [...F.repo][0];
+    const chips = [P.p ? `P${P.p}` : 'P3 (default)', P.due && `due ${fmt(P.due)}`, P.repo && `#${P.repo}${repoFor(P.repo) ? '' : ' (not shown here)'}`, fr && `#${fr} (filter)`].filter(Boolean);
     put(prev, html`${(P.find ? '' : html`<div class="as"><span class="label">Enter adds</span>${ICON('plus')}<span>${P.title || '(title needed)'}</span></div>
-      <div class="chips">${(chips.length ? chips.map(c => html`<span class="chip" aria-pressed="true">${c}</span>`) : html`<span class="hint">No fields parsed; it lands in Planning with no priority.</span>`)}<span class="chip">planning</span></div>`) }${
+      <div class="chips">${chips.map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}<span class="chip">planning</span></div>`) }${
       (found.length ? html`<p class="hint">${P.find ? 'Enter opens' : 'Matching'}</p><div class="suggest">${found.map(t => html`<button type="button" data-open-find="${t.key}">${ICON('search')}<span>${label(t)} · ${t.title}</span></button>`)}</div>` : P.find ? html`<p class="hint">No task #${P.find} here.</p>` : '') }${
       html`<p class="hint">Enter commits · Esc clears</p>`}`);
     prev.hidden = false; inp.setAttribute('aria-expanded', 'true');
@@ -925,7 +929,8 @@ addEventListener('DOMContentLoaded', () => {
     if (!P.title) return;
     if (P.repo && !repoFor(P.repo)) { toast(`Not added: no repo #${P.repo} is shown on this page.`); return; }
     // build: files it with POST /api/items (workflow.capture_task, sd task add). No verb deletes a task, so no Undo.
-    const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
+    const where = P.repo ? repoFor(P.repo) : filterRepo();
+    const body = { title: P.title, priority: P.p || 3, ...(P.due ? { due: P.due } : {}), ...(where ? { repo: where } : {}) };
     inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
     window.shell.post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
@@ -938,13 +943,13 @@ addEventListener('DOMContentLoaded', () => {
 
   // build: capture (n) files through the routes v1 uses: POST /api/items for a task or followup, POST /api/items/<id>/notes for
   // a note on the selected task, with that task's revision.
-  window.SHELL_CAPTURE = async ({ kind, title, item }) => {
+  window.SHELL_CAPTURE = async ({ kind, title, item, priority, repo }) => {
     if (kind === 'note') {
       const t = byKey(String(item)); if (!t) throw new Error('Not filed: pick a task for the note.');
       await write(t.key, x => `/api/items/${x.id}/notes`, { body: title, kind: 'comment' }); redrawDet(t.id);
       return `Note added to ${label(t)}`;
     }
-    const said = await window.shell.fileCapture({ kind, title, item });
+    const said = await window.shell.fileCapture({ kind, title, item, priority, repo });
     await reread();
     return said;
   };

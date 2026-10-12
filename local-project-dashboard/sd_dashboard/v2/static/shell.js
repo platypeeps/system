@@ -628,12 +628,24 @@
   cap.className = 'palette capture'; cap.setAttribute('aria-labelledby', 'cap-h');
   put(cap, html`<h2 id="cap-h"></h2>`);
   body.append(cap); trap(cap);
-  const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
   // capture:start
+  const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
   // build (sd:3520): the shell files every capture, so no page drops one. A task or followup is POST /api/items; a note is
   // POST /api/items/<id>/notes with the revision /api/items/<id>/capture-context reads. It answers "Captured sd:N" with the
   // new id, or throws "Not filed" with the reason; an error with no status got no answer, so whether it filed is not known.
-  async function fileCapture({ kind, title, item }) {
+  // build (sd:3521): the box also picks a priority (P3 unless changed) and a repo, defaulting to the page's: a page sets
+  // window.PAGE_REPO(o) → a repo path or name for the row o (or its filter), and captureRepo finds it in /api/capture-repos.
+  // A p1 to p4 typed in the text is the priority, as Today's field shows it, and leaves the title.
+  const captureRepo = (list, hint) => { if (!hint) return ''; const h = String(hint), n = h.split('/').pop();
+    return (list.find(r => r.path === h) || list.find(r => r.name === h) || list.find(r => r.name === n))?.path || ''; };
+  const typedP = title => { const p = title.match(/\bp([1-4])\b/i); return p ? [+p[1], title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim()] : [null, title]; };
+  // The CLI files into the checkout it runs in, so a repo is a cd; with none, --no-repo.
+  const captureCli = ({ kind, title, item, priority, repo }) => {
+    if (kind === 'note') return `sd task note ${item} --kind comment --body ${shq(title)}`;
+    const [p, named] = typedP(title), where = repo ? `cd ${/^~?[\w./-]+$/.test(repo) ? repo : shq(repo)} && ` : '';
+    return `${where}sd task add${repo ? '' : ' --no-repo'}${kind === 'followup' ? ' --kind followup' : ''}${p || priority ? ` --priority ${p || priority}` : ''} ${shq(named)}`;
+  };
+  async function fileCapture({ kind, title, item, priority = null, repo = '' }) {
     const unknown = why => new Error(`Not known if it filed: ${why}. Look in Tasks before you capture it again.`);
     try {
       if (kind === 'note') {
@@ -642,9 +654,9 @@
         await post(`/api/items/${item}/notes`, { body: title, kind: 'comment', revision });
         return `Note added to sd:${item}`;
       }
-      // A p1 to p4 in the text is the priority, as Today's field shows it, and leaves the title.
-      const p = title.match(/\bp([1-4])\b/i), named = p ? title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim() : title;
-      const out = await post('/api/items', { title: named, ...(p ? { priority: +p[1] } : {}), ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+      const [p, named] = typedP(title), pri = p || priority;
+      const out = await post('/api/items', { title: named, ...(pri ? { priority: pri } : {}), ...(repo ? { repo } : {}),
+        ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
       if (!out.item?.id) throw unknown('the server named no item');
       return `Captured sd:${out.item.id}: ${out.item.title || named}`;
     } catch (e) {
@@ -652,6 +664,8 @@
       throw e.status === undefined ? unknown(e.message) : new Error(`Not filed: ${e.message}`);
     }
   }
+  let repoList = null; // /api/capture-repos, read once per page; a failed read is retried on the next open
+  const readRepos = () => repoList || (repoList = getJSON('/api/capture-repos').then(d => d.repos || [], e => { repoList = null; throw e; }));
   // capture:end
   // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
   function openCapture(target, text = '') {
@@ -666,23 +680,38 @@
       </div>
       <label class="sr" for="cap-in">Title or note</label>
       <input id="cap-in" class="cap-in" autocomplete="off" placeholder="What needs doing" required>
+      <fieldset class="cap-pick"><legend class="sr">Priority and repo</legend>
+        <div class="seg" role="radiogroup" aria-label="Priority">${[1, 2, 3, 4].map(n => html`<label><input type="radio" name="priority" value="${n}"${n === 3 ? html` checked` : ''}><span>P${n}</span></label>`)}</div>
+        <label class="label" for="cap-repo">Repo <kbd>Alt R</kbd></label>
+        <select id="cap-repo" name="repo" aria-keyshortcuts="Alt+R"><option value="">No repo</option></select>
+      </fieldset>
       <p class="why" id="cap-why"></p>
       <div class="cli"><code id="cap-cli">sd task add ''</code></div>
       <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
     const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli'), why = f.querySelector('#cap-why');
+    const sel = f.querySelector('#cap-repo'), pick = f.querySelector('.cap-pick');
+    const fields = () => ({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, priority: +f.priority.value, repo: sel.value });
     const upd = () => {
-      const k = f.kind.value, t = shq(inp.value);
+      const k = f.kind.value;
+      pick.disabled = k === 'note';
       // build: say what POST /api/items stores. Only a followup on a row with an item links to it (followup_of).
       why.textContent = k === 'note' ? `A comment on #${about.item}`
         : k === 'followup' && about ? `A followup of #${about.item}`
         : o ? `Files to the inbox; not linked to ${o.label}` : 'No row selected · files to the inbox';
-      cli.textContent = k === 'note' ? `sd task note ${about.item} --kind comment --body ${t}` : `sd task add${k === 'followup' ? ' --kind followup' : ''} ${t}${o && o.item ? ` --followup-of ${o.item}` : ''}`;
+      cli.textContent = captureCli(fields());
     };
-    inp.value = text; f.addEventListener('input', upd); upd();
+    inp.value = text; f.addEventListener('input', upd); f.addEventListener('change', upd); upd();
+    f.addEventListener('keydown', e => { if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sel.focus(); } });
+    // The page's repo is the default once the list is read; a failed read leaves No repo and says so.
+    let hint = null; try { hint = window.PAGE_REPO ? window.PAGE_REPO(o) : null; } catch { hint = null; }
+    readRepos().then(list => { if (!cap.open) return;
+      put(sel, html`<option value="">No repo</option>${list.map(r => html`<option value="${r.path}">${r.name}</option>`)}`);
+      sel.value = captureRepo(list, hint); upd(); },
+    e => { if (!cap.open) return; put(sel, html`<option value="">No repo (list not read: ${e.message})</option>`); });
     // build: a page that must do more (Tasks rereads its board) sets window.SHELL_CAPTURE({ kind, title, item, about }) →
     // Promise<toast text>; every other page files through fileCapture. A refusal opens the dialog again with the text.
     cap.onclose = () => { if (cap.returnValue !== 'yes' || !inp.value.trim()) return; const v = inp.value.trim();
-      (window.SHELL_CAPTURE || fileCapture)({ kind: f.kind.value, title: v, item: about ? about.item : null, about: o })
+      (window.SHELL_CAPTURE || fileCapture)({ ...fields(), about: o })
         .then(toast, e => { const m = String(e.message || e); toast(m); if (m.startsWith('Not filed')) openCapture(o, v); }); };
     modal(cap, inp);
   }

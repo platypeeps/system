@@ -820,7 +820,20 @@ shellRun(cmd('item.recur'), C.get('{plan}')); await flush(); lastToast().undo();
         out = self.run_page("""var box = document.getElementById('shift-in'); box.value = 'Call the bank due mon';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""",
                             "() => [201, { item: { id: 99, title: 'Call the bank' } }]", prelude=prelude, env={"TZ": "America/Denver"})
-        self.assertEqual(out["posts"][0][:2], ["/api/items", {"title": "Call the bank", "due": "2026-11-02"}])
+        self.assertEqual(out["posts"][0][:2], ["/api/items", {"title": "Call the bank", "priority": 3, "due": "2026-11-02"}])
+
+    def test_a_capture_lands_in_the_filtered_repo_at_p3_unless_typed(self):
+        # sd:3521: the quick add and the shell's capture take the one repo the filter shows, else the selected task's.
+        row = self.row("plan")
+        enter = """var box = document.getElementById('shift-in'); box.value = %s;
+box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();"""
+        out = self.run_page(enter % "'Ship it'" + "\n" + enter % "'Ship that p1'" + f"""
+R.filtered = window.PAGE_REPO(null);""", "(path, body) => [201, { item: { id: 99, title: body.title } }]", search=f"?repo={row['repo']}")
+        self.assertEqual([p[1] for p in out["posts"][:2]], [{"title": "Ship it", "priority": 3, "repo": row["repo_path"]},
+                                                           {"title": "Ship that", "priority": 1, "repo": row["repo_path"]}])
+        self.assertEqual(out["R"]["filtered"], row["repo_path"])
+        out = self.run_page(f"R.none = window.PAGE_REPO(null); R.task = window.PAGE_REPO(C.get('{row['id']}'));")
+        self.assertEqual((out["R"]["none"], out["R"]["task"]), (None, row["repo_path"]))
 
     def test_details_read_before_a_write_never_replace_the_read_after_it(self):
         plan = self.ids["plan"]
