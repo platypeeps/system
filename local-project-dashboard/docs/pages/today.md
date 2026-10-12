@@ -6,7 +6,8 @@ capture files a task through `POST /api/items`.
 It reads `/api/now` through the shell's reader (`read.js`): of two refreshes
 only the newer one draws, and a failed read clears every row and its commands.
 Status mail, backups, HOA water and Wants you wait for collectors.
-Snooze hides a row for 1 hour, until the next 08:00 or for 1 week; it posts
+Snooze hides a row until the next 08:00, for 1 hour or for 1 week, chosen in its
+dialog (sd:3450); it posts
 `/api/snooze`, and the row waits under Snoozed with an Unsnooze (sd:1896).
 A row whose problem reads otherwise shows again before its time.
 Your work lists the items `sd today` lists, from the same `/api/now` document; each row has the same Snooze,

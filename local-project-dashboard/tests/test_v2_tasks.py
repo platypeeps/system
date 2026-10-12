@@ -515,6 +515,18 @@ type('done elsewhere'); key('Enter'); OUT.second = await q;""")
         self.assertFalse(out["result"]["yes"], "OK ran with the required field empty")
         self.assertEqual((out["second"]["yes"], out["second"]["values"]), (True, {"reason": "done elsewhere"}))
 
+    def test_a_field_with_options_is_a_select_and_answers_the_choice(self):
+        """sd:3450: Snooze asks which time in one dialog: a field with options is a select, its first option the default."""
+        out = self.confirm("""inputs.until = { value: 'snooze-hour', tagName: 'SELECT' };
+const p = confirmAction({ title: 'Snooze job: nightly?', ok: 'Snooze job', fields: [{ name: 'until', label: 'Snooze until',
+  options: [{ value: 'snooze', label: 'The next 08:00' }, { value: 'snooze-hour', label: 'One hour from now' }] }] });
+OUT.form = confirmDlg.html; OUT.off = yes.disabled; close('yes'); OUT.result = await p;""")
+        self.assertIn('<select class="cap-in" id="cf-until" name="until"><option value="snooze">The next 08:00</option>'
+                      '<option value="snooze-hour">One hour from now</option></select>', out["form"])
+        self.assertNotIn('<input class="cap-in" id="cf-until"', out["form"])
+        self.assertFalse(out["off"])
+        self.assertEqual((out["result"]["yes"], out["result"]["values"]), (True, {"until": "snooze-hour"}))
+
     def test_a_confirm_without_fields_is_unchanged(self):
         out = self.confirm("""const p = confirmAction({ title: 'Delete: x?', cli: 'sd x' }); OUT.off = yes.disabled; close('yes'); OUT.result = await p;""")
         self.assertEqual(out["focused"], "keep")

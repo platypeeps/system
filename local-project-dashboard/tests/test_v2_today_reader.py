@@ -180,7 +180,7 @@ class TheSnooze(TheReader):
     def test_snooze_posts_the_row_and_reads_now_again(self):
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
 R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
-shellRun(cmd('repo.snooze-week'), C.get('ahead:pushy:1')); await flush();
+FIELD_VALUES.until = 'snooze-week'; shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
         self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector", "work item"])
         # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
@@ -211,7 +211,7 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
                                                                  "detail": "in_progress"}], ""
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
 R.work = ELS.work.html; R.tally = ELS['work-tally'].html; R.obj = C.get('item:7');
-shellRun(cmd('work item.snooze-hour'), C.get('item:7')); await flush();""")
+FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('item:7')); await flush();""")
         self.assertIn("Write the brief", out["R"]["work"])
         self.assertIn('href="/tasks?row=7"', out["R"]["work"])
         self.assertIn("in_progress · due 2026-09-05", out["R"]["work"])
@@ -257,13 +257,31 @@ const show = d => [d.getDate(), d.getHours(), d.getMinutes()];
 R.early = show(S.CHOICES[0].until(at(7, 59))); R.late = show(S.CHOICES[0].until(at(8, 0)));
 R.hour = show(S.CHOICES[1].until(at(23, 30)));
 R.today = S.when(at(8, 0), at(7, 0)); R.other = S.when(new Date(2026, 9, 11, 8, 0), at(7, 0));
-R.keys = S.CHOICES.map(c => [c.id, c.label, c.key]);""")
+R.keys = S.CHOICES.map(c => [c.id, c.label]);""")
         self.assertEqual(out["R"]["early"], [10, 8, 0])
         self.assertEqual(out["R"]["late"], [11, 8, 0])
         self.assertEqual(out["R"]["hour"], [11, 0, 30])
         self.assertEqual((out["R"]["today"], out["R"]["other"]), ("08:00", "Sun Oct 11 08:00"))
-        self.assertEqual(out["R"]["keys"], [["snooze", "Snooze until 08:00", "z"], ["snooze-hour", "Snooze 1 hour", "h"],
-                                            ["snooze-week", "Snooze 1 week", "w"]])
+        self.assertEqual(out["R"]["keys"], [["snooze", "The next 08:00"], ["snooze-hour", "One hour from now"],
+                                            ["snooze-week", "One week from now"]])
+
+    def test_snooze_is_one_command_per_row_that_asks_which_time(self):
+        """sd:3450: one Snooze in the row's menu, key z, whose dialog offers the three times; the next 08:00 is the default."""
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
+R.repo = REG.filter(c => c.on === 'repo').map(c => [c.id, c.label, c.key]);
+R.fields = cmd('repo.snooze').fields(C.get('ahead:pushy:1'));
+shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
+R.until = new Date(OUT.posts[0][1].until); R.at8 = [R.until.getHours(), R.until.getMinutes()];
+OUT.posts = []; FIELD_VALUES.until = 'snooze-hour'; const t0 = Date.now();
+shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
+R.hour = Date.parse(OUT.posts[0][1].until) - t0;""")
+        self.assertEqual(out["R"]["repo"], [["repo.snooze", "Snooze", "z"]])
+        self.assertEqual(out["R"]["fields"], [{"name": "until", "label": "Snooze until", "options": [
+            {"value": "snooze", "label": "The next 08:00"}, {"value": "snooze-hour", "label": "One hour from now"},
+            {"value": "snooze-week", "label": "One week from now"}]}])
+        self.assertEqual(out["confirms"], ["repo.snooze", "repo.snooze"])
+        self.assertEqual(out["R"]["at8"], [8, 0])
+        self.assertTrue(3590e3 <= out["R"]["hour"] <= 3610e3, out["R"]["hour"])
 
 
 DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")

@@ -1005,8 +1005,7 @@ class TheScript(Collectors, ScreenCase):
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
-        ] + [[f"{t}.{c}", t, "undo", key, None, True] for t in SNOOZED_TYPES
-              for c, key in (("snooze", "z"), ("snooze-hour", "h"), ("snooze-week", "w"))]
+        ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
           + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
@@ -1248,7 +1247,7 @@ R.dirty = cmd('build output.rm').when({ ...C.get('build:merged'), remove: [] });
         """sd:1896: the server judges the time, so the page sends one it computed, and Undo writes the same key with none."""
         out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
 var o = C.get('gone:group/alpha'), t0 = Date.now(); OUT.gets = [];
-shellRun(cmd('worktree registrations.snooze-hour'), o); await flush();
+FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('worktree registrations.snooze'), o); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - t0;
 OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
 R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;""")
@@ -1261,7 +1260,7 @@ R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;
         self.assertEqual(out["gets"], ["/api/health", "/api/health"])
         self.assertRegex(out["toasts"][-2][0], r"^Snoozed until (\w{3} \w{3} \d\d )?\d\d:\d\d · group/alpha: ")
         self.assertTrue(out["toasts"][-2][1])
-        self.assertEqual(out["toasts"][-1][0], "Snooze 1 hour undone · group/alpha: 2 worktrees registered, directory gone")
+        self.assertEqual(out["toasts"][-1][0], "Snooze undone · group/alpha: 2 worktrees registered, directory gone")
         self.assertEqual(out["R"]["off"], "an ok row has nothing to snooze")
 
     def test_a_snoozed_row_is_drawn_apart_and_unsnooze_brings_it_back(self):
