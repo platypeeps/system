@@ -1,9 +1,9 @@
 <!doctype html>
 <!--
   Home (sd:2117), at /home. Built from the design source's products/system/designs/v2/home.html, home.js, home-kiosk.js and home.css at d82daa1, with design.md and commands.md.
-  Data: /api/home (home_screen.document: the tiles <config>/project-dashboard/home-tiles.conf names), read when the page opens.
-  The design's tile states are sample data; the dashboard has no Home Assistant reader yet, so every tile is unknown with that
-  reason and every command is off with it. Nothing here is sample data, and nothing here writes.
+  Data: /api/home (home_screen.document: the tiles <config>/project-dashboard/home-tiles.conf names, each with its live Home
+  Assistant state and last change or a named error, sd:3427), read when the page opens. The design's tile states are sample
+  data; nothing here is. Every command is off with the document's write reason: nothing here writes.
 -->
 <html lang="en">
 <head>
@@ -37,7 +37,7 @@
   <button class="headline" type="button" id="headline" hidden></button>
   <div id="groups"></div>
 </main>
-<div class="details" id="details"><p class="why">Select a tile to see its entity and why it has no state.</p></div></div>
+<div class="details" id="details"><p class="why">Select a tile to see its entity and its state.</p></div></div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/home.js"></script>
