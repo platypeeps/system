@@ -22,6 +22,11 @@ need_env() {
     st_missing "$GRAPHITI_ENV_FILE" graphiti-mcp .env
     exit 1
   fi
+  # The example's placeholder is a known password on a service that holds data.
+  if grep -Eq '^(export[[:space:]]+)?FALKORDB_PASSWORD=["'"'"']?change-me' "$GRAPHITI_ENV_FILE"; then
+    echo "$(basename "$0"): FALKORDB_PASSWORD in $GRAPHITI_ENV_FILE is still the change-me placeholder; set a password." >&2
+    exit 1
+  fi
 }
 
 case "$1" in

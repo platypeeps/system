@@ -139,6 +139,11 @@ python3 tests/test_milvus_bind.py
 # only, so it runs here before the venv, and the guard below demands this line.
 python3 tests/test_help_forms.py
 
+# Small convention gaps: the graphiti password placeholder, LLAMA_DIR, the
+# webhook signer's mode, the langchain smoke test's help (sd:3555). Stdlib and
+# git only, so it runs here before the venv, and the guard below demands it.
+python3 tests/test_conventions_small.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below
