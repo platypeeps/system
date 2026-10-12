@@ -21,5 +21,7 @@ failed reread keeps the rows and says the write landed; a failed load clears
 the page. A redraw keeps keyboard focus on the replaced lamp or command, or on
 the row's next action when that command went off (sd:2426). Settled rows count per stored repository, so two
 checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
-Re-run collector are copy only. The old screen moved to `/classic/contributions`; it still shows
-evidence, dependencies and notification delivery.
+Re-run collector are copy only. Details shows each row's dependencies, test
+evidence and notification delivery (sd:3394); the document cuts each local path
+in a recorded check to its last part, and a section it cannot read says
+"Not read" with the reason. The old screen moved to `/classic/contributions`.
