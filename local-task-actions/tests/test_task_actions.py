@@ -286,6 +286,13 @@ class ConfirmPageTest(unittest.TestCase):
             if "ibm-plex-sans-var" in face:
                 self.assertEqual(self.get(f"{self.base}/static/{face}")[0], 200, face)
 
+    def test_status_finds_its_404_marker_on_the_404_page(self):
+        # REGRESSION sd:3706: `status` grepped the old `<h2>not found</h2>` after the page moved to `<h1>`.
+        marker = re.search(r'"\$pub/x" \| grep -q \'([^\']+)\'', SCRIPT.read_text()).group(1)
+        status, _, body = self.page(self.base + "/x")
+        self.assertEqual(status, 404)
+        self.assertIn(marker, body)
+
     def test_nothing_outside_the_list_is_served(self):
         for name in ("/static/../task-actions.sh", "/static/%2e%2e/task-actions.sh",
                      "/static/secret", "/static/", "/static/fonts/OFL.txt", "/static/tokens.css/x"):
