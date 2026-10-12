@@ -780,11 +780,26 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
     def test_a_failed_job_retries_through_its_route_and_an_idle_one_is_off(self):
         revision = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")["revision"]
         out = self.run_page("""C.run(cmd('jobs.retry'), C.get('cron:nightly-sync')); await flush();
-C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""", answer="(p, b) => [200, {}]")
+C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""",
+                            answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]")
         self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/nightly-sync/retry", {"revision": revision})])
         self.assertEqual(out["toasts"][0], ["Retry started · nightly-sync", False])
         self.assertTrue(out["toasts"][1][0].startswith("off: "), out["toasts"])
 
+
+    def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
+        """sd:3388: a 200 carries launchctl's answer; only `accepted` started a retry."""
+        cases = {
+            "(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]": "Retry started · nightly-sync",
+            "(p, b) => [200, {request: {status: 'failed', message: 'launchctl refused the request (exit 3)'}}]":
+                "nightly-sync not retried: launchctl refused the request (exit 3)",
+            "(p, b) => [200, {request: {status: 'unknown', message: 'launchctl timed out; the request outcome is unknown'}}]":
+                "Not known whether nightly-sync was retried: launchctl timed out; the request outcome is unknown",
+        }
+        for answer, said in cases.items():
+            with self.subTest(said=said):
+                out = self.run_page("C.run(cmd('jobs.retry'), C.get('cron:nightly-sync')); await flush();", answer=answer)
+                self.assertEqual(out["toasts"], [[said, False]])
 
 class TheFindings(PageScript):
     """The Copilot and CodeQL findings on PR #50, one test each."""

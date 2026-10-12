@@ -450,15 +450,15 @@ document.getElementById('view-repos').addEventListener('click', e => {
 
 // ---------- Writes (build) ----------
 // landing(): the run returns the write's promise, the shell's run contract (shell.js, bulk:start; sd:2124). The shell toasts
-// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` gets what the
-// write answered and reverses this write, once. A landed write rereads (shell.read's barrier); a 409 loads again, since the
-// row it named has moved and nothing landed.
+// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `msg` and `inverse` get
+// what the write answered; `inverse` reverses this write, once. A landed write rereads (shell.read's barrier); a 409 loads
+// again, since the row it named has moved and nothing landed.
 function landing(promise, msg, inverse) {
   const stale = err => { if (err.stale) load(); throw err; };
   return promise.then(v => {
     let spent = false;
     const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true; return inverse(v).catch(stale); });
-    return { text: msg(), undo };
+    return { text: msg(v), undo };
   }, stale);
 }
 // The command's undo: the shell passes what the run answered.
@@ -542,7 +542,7 @@ function registerCommands() {
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
       when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(job(o, 'retry'), () => `Retry started · ${o.job}`) },
+      run: o => landing(job(o, 'retry'), out => answered(out, o.job, 'retried', `Retry started · ${o.job}`)) },
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
     { id: 'jobs.cancel', on: 'job', label: 'Cancel', key: 'x', risk: 'confirm', primary: o => o.running,
@@ -568,11 +568,15 @@ async function cancelJob(o) {
     return { text: `Not known whether ${o.job} was cancelled: ${err.message}. The jobs were read again; check ${o.job} before you cancel it again.` };
   }
   await reread();
-  const r = out && out.request || {};
-  return { text: r.status === 'accepted' ? `Cancel sent · ${o.job}` : r.status === 'failed' ? `${o.job} not cancelled: ${r.message}`
-    : `Not known whether ${o.job} was cancelled: ${r.message || 'the answer named no outcome'}` };
+  return { text: answered(out, o.job, 'cancelled', `Cancel sent · ${o.job}`) };
 }
-async function job(o, action) { await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); }
+// A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
+function answered(out, name, verb, done) {
+  const r = out && out.request || {};
+  return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+    : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
+}
+async function job(o, action) { const out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); return out; }
 document.addEventListener('shell:open', e => {
   const id = e.detail;
   if (id.startsWith('repo:') && repoParam) shell.openPane('tab-details');
