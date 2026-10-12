@@ -313,7 +313,7 @@ cmd_status() {
     echo "cluster '$CLUSTER_NAME': running"
   else
     echo "cluster '$CLUSTER_NAME': not found"
-    exit 0
+    exit 3
   fi
 
   echo
@@ -577,7 +577,8 @@ Cluster and demo chart
                      chart, and start every port-forward (see below)
   stop               stop all port-forwards, uninstall the demo release, delete the cluster
   upgrade            helm upgrade the demo release to chart $CHART_VERSION
-  status             cluster, releases, pods, services, and port-forward state
+  status             cluster, releases, pods, services, and port-forward state;
+                     exits 3 when the cluster does not exist
   open [--list] [name...]
                      open the end-user demo UIs in a browser (all of them by
                      default). --list prints them without opening. Requires the

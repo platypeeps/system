@@ -357,7 +357,7 @@ require_config() {
   echo "  Create it, or start from the examples:" >&2
   echo "    mkdir -p $CONFIG_DIR && cp -R $DIR/examples/. $CONFIG_DIR/" >&2
   echo "  MACHINE_SETUP_PROFILE_DIR (or SYSTEM_TOOLS_CONFIG) points elsewhere." >&2
-  exit 1
+  exit "${1:-1}"
 }
 
 # The profile names: every <name>.<kind> in the profile directory but common,
@@ -4734,6 +4734,8 @@ status_line() { # label list
 
 cmd_status() {
   drift=0
+  # No profile directory: nothing to compare, convention 6's 3 and not drift's 1.
+  require_config 3
   load_profile
   keep_sudo_ticket
   echo "profile : $PROFILE"

@@ -443,7 +443,7 @@ cmd_status() {
   if [ -f "$DST_PLIST" ]; then echo "plist:  installed"; else echo "plist:  NOT installed"; fi
   if ! is_loaded; then
     echo "state:  not loaded"
-    exit 2
+    exit 3
   fi
   info="$(launchctl print "$SERVICE" 2>/dev/null || true)"
   echo "state:  $(echo "$info" | awk -F'= ' '/^\tstate = /{print $2; exit}')"
@@ -494,7 +494,8 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
           prefix default local.system-tools), rendered from
           task-actions.plist.template
   stop    unload the LaunchAgent
-  status  agent + HTTP state; exits 0 ok / 1 degraded / 2 not loaded
+  status  agent + HTTP state; exits 0 ok / 1 degraded / 3 not loaded (nothing
+          to check) — local-health-check reads these codes
   url     print a signed action URL (used by local-obsidian-tasks and
           local-obsidian-review to build digest email buttons); links
           expire after 7 days. `url [-b db] <stem> <action> [days]`.

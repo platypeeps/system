@@ -68,6 +68,15 @@ class SnapshotLocation(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("1 server(s) match the snapshot", output)
 
+    def test_status_with_no_profile_is_nothing_to_check(self):
+        # sd:3552. A machine that was never set up has nothing to compare:
+        # convention 6's 3, not the 1 that means drift.
+        self.env.pop("MACHINE_SETUP_PROFILE")
+        self.env["MACHINE_SETUP_STATE"] = str(self.config / "no-state")
+        code, output = self.run_claude("status")
+        self.assertEqual(code, 3, output)
+        self.assertIn("no profile recorded", output)
+
     def test_restore_expands_from_the_config_folder(self):
         self.write_live()
         self.assertEqual(self.run_claude("capture", "--apply")[0], 0)

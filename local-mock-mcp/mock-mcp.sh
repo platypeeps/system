@@ -126,6 +126,7 @@ case "$1" in
     else
       echo "container:  not running"
       echo "scenario:   -"
+      stopped=1
     fi
     echo "endpoint:   $URL"
     if curl -fsS -m 2 "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
@@ -139,6 +140,8 @@ case "$1" in
       echo "claude:     not registered — run: $(basename "$0") register"
     fi
     echo "source:     $SRC"
+    # Not running is convention 6's "nothing to check".
+    [ -z "${stopped:-}" ] || exit 3
     ;;
   logs)
     shift
@@ -178,7 +181,8 @@ usage: mock-mcp.sh build|start|stop|restart|status|scenarios|scenario <name>|log
   restart [scen]    restart, keeping the scenario it is already serving
   scenario <name>   serve a different scenario (restarts the container)
   scenarios         list scenarios in the checkout; * marks the active one
-  status            container, scenario, endpoint, health, Claude Code entry
+  status            container, scenario, endpoint, health, Claude Code entry;
+                    exits 3 when the container is not running
   logs [args]       follow container logs (extra args go to docker logs)
   register [scope]  add the server to Claude Code (scope: user|local|project,
                     default user), then reconnect with /mcp
