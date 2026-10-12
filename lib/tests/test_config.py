@@ -116,6 +116,21 @@ class EnvFile(unittest.TestCase):
         done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
         self.assertEqual(done.stdout, "from-shell|two words|")
 
+    def test_a_script_default_that_is_not_exported_loses_to_the_file(self):
+        # sd:3553 review. Only the environment is the operator's override. A
+        # default the script assigned itself (mezmo-pipeline/lib.sh sets
+        # MEZMO_API_BASE before it loads the file) must not beat the file.
+        done = shell('A=default; B=also; st_source_env notify; sh -c \'printf "%s|%s" "$A" "$B"\'', self.envv)
+        self.assertEqual(done.stdout, "1|two words")
+
+    def test_a_script_default_that_keeps_the_exported_value_still_loses_to_it(self):
+        done = shell('A="${A:-default}"; st_source_env notify; printf "%s" "$A"', dict(self.envv, A="from-shell"))
+        self.assertEqual(done.stdout, "from-shell")
+
+    def test_an_exported_value_is_restored_exported(self):
+        done = shell('st_source_env notify; sh -c \'printf "%s" "$A"\'', dict(self.envv, A="from-shell"))
+        self.assertEqual(done.stdout, "from-shell")
+
     def test_an_exported_value_with_odd_characters_survives(self):
         odd = "a b'c\"d$E`f\\g\nh"
         done = shell('st_source_env notify; printf %s "$B"', dict(self.envv, B=odd))

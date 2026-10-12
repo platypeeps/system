@@ -144,6 +144,11 @@ python3 tests/test_help_forms.py
 # git only, so it runs here before the venv, and the guard below demands it.
 python3 tests/test_conventions_small.py
 
+# An exported value beats the config .env in the docker wrappers that lost their
+# own snapshots to st_source_env (sd:3553). Stdlib only, so it runs here before
+# the venv, and the guard below demands this line.
+python3 tests/test_env_precedence.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below

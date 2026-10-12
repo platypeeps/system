@@ -39,17 +39,18 @@ st_config_file() {
 
 # st_source_env <tool>: source <config>/<tool>/.env when it exists, with
 # `set -a` so its assignments are exported. Returns 0 either way; a missing
-# file is fine when the values are exported. A value that is already set wins
+# file is fine when the values are exported. A value in the environment wins
 # over the file, an empty one too, so `VAR=x tool start` overrides it for one
-# run (sd:3553): each name the file assigns is saved before sourcing and put
-# back.
+# run (sd:3553): each exported name the file assigns is saved before sourcing
+# and put back. Only the environment counts: a default the script assigned to
+# an unexported variable before this call loses to the file.
 st_source_env() {
     _st_env="$SYSTEM_TOOLS_CONFIG/$1/.env"
     if [ -f "$_st_env" ]; then
         _st_n=0
         for _st_name in $(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' "$_st_env"); do
-            eval "_st_was=\${$_st_name+set}; _st_val=\${$_st_name:-}"
-            if [ "$_st_was" = set ]; then
+            if printenv "$_st_name" >/dev/null 2>&1; then
+                _st_val=$(printenv "$_st_name")
                 _st_n=$((_st_n + 1))
                 eval "_st_name_$_st_n=\$_st_name; _st_val_$_st_n=\$_st_val"
             fi
@@ -64,7 +65,7 @@ st_source_env() {
             unset "_st_name_$_st_n" "_st_val_$_st_n"
             _st_n=$((_st_n - 1))
         done
-        unset _st_n _st_name _st_val _st_was
+        unset _st_n _st_name _st_val
     fi
     unset _st_env
 }

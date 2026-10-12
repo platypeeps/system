@@ -11,15 +11,11 @@ PORT="${FALKORDB_PORT:-6380}"
 UI_PORT="${FALKORDB_UI_PORT:-3003}"
 
 # <config>/falkordb/.env (see lib/config.sh) provides defaults only —
-# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
+# already-exported values win (st_source_env's one rule). The file is optional; without it the
 # baked-in local dev values apply.
-ENV_FALKORDB_USER="${FALKORDB_USER:-}"
-ENV_FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-}"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env falkordb
-if [ -n "$ENV_FALKORDB_USER" ]; then FALKORDB_USER="$ENV_FALKORDB_USER"; fi
-if [ -n "$ENV_FALKORDB_PASSWORD" ]; then FALKORDB_PASSWORD="$ENV_FALKORDB_PASSWORD"; fi
 FALKORDB_USER="${FALKORDB_USER:-default}"
 FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-verysecure}"
 
