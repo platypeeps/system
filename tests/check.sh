@@ -21,11 +21,15 @@ TOOLS_SHARDS=3
 usage() {
   cat <<'USAGE'
 Usage: check.sh run
+       check.sh suite <name>
        check.sh legs
 
-  run   the preflight, then the three legs and (on macOS) each suite of
-        tests/macos-only-suites.txt in parallel; exits 1 when any fails
-  legs  print the leg names
+  run    the preflight, then the three legs and (on macOS) each suite of
+         tests/macos-only-suites.txt in parallel; exits 1 when any fails
+  suite  the preflight, then the one suite named by a run_suite line in
+         tests/ci-native.sh or a line of tests/macos-only-suites.txt, in the
+         same environment; `make test SUITE=<name>` runs this
+  legs   print the leg names
 
 Environment:
   SD_PACK_ROOT       the machine's clone of the command pack; the pinned
@@ -36,7 +40,7 @@ Environment:
   SD_GATE_POOL_SIZE  the gate cap a slot holder exports; above 1, at most
                      CPUs / cap jobs run at once
 
-`make check` runs `check.sh run`. It needs python3.14, git, sqlite3, lsof,
+`make check` runs `check.sh run`. Each needs python3.14, git, sqlite3, lsof,
 ps and rsync on PATH, and network access when no local clone holds the pin.
 USAGE
 }
@@ -45,6 +49,7 @@ case "${1:-}" in
   -h|--help|help) usage; exit 0 ;;
   legs) echo "$LEGS"; exit 0 ;;
   run) [ "$#" -eq 1 ] || { usage >&2; exit 1; } ;;
+  suite) [ "$#" -eq 2 ] && [ -n "$2" ] || { usage >&2; exit 1; } ;;
   *) usage >&2; exit 1 ;;
 esac
 
@@ -132,6 +137,27 @@ isolated() {
 echo "== preflight"
 job=preflight
 isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" preflight
+
+# `suite` (sd:3534): one suite the way the gate runs it, against the pinned
+# pack, where a hand run against SD_PACK_ROOT tested the live pack instead.
+# A leg with SUITE_ONLY runs only the run_suite line of that name, so each
+# leg is asked and the suite's log is the proof that one ran it.
+if [ "$1" = suite ]; then
+  job=suite
+  if sh "$DIR/run-macos-only.sh" list | awk '{ print $1 }' | grep -qxF "$2"; then
+    isolated sh "$DIR/run-macos-only.sh" "$2"
+  else
+    for leg in $LEGS; do
+      isolated SUITE_ONLY="$2" /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "$leg"
+    done
+    if [ ! -f "$work/$2.log" ]; then
+      echo "check.sh: no suite named $2; the run_suite lines in tests/ci-native.sh and the lines of tests/macos-only-suites.txt name them" >&2
+      exit 1
+    fi
+  fi
+  echo "check.sh: suite $2 passed"
+  exit 0
+fi
 
 # Every leg and, on a Mac, every macOS-only suite run at once, unless a gate
 # cap below lowers that. Run one after another they took 24 minutes here,
