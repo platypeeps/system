@@ -22,7 +22,8 @@ SCRIPTS = {p.name: p.read_text(encoding="utf-8") for p in sorted(STATIC.glob("*.
 # A declaration names its id and then the type it is on: `{ id: 'jobs.retry', on: 'job', …`.
 DECLARED = re.compile(r"\bid: '([^'$`]+)',\s*on:")
 # What only the shared declaration may write: each command's route or CLI line, and the answer wording.
-SHARED_TEXT = ("/fix`", "`sd jobs retry ", "`sd assignments get ", "gh pr view", "sd shadow sync --max-seconds", "function answered(")
+SHARED_TEXT = ("/fix`", "`sd jobs retry ", "`sd assignments get ", "gh pr view",
+               "sd shadow sync --max-seconds", "/api/shadow/state", "function answered(")
 
 
 class OneDeclaration(unittest.TestCase):

@@ -114,17 +114,9 @@ addEventListener('DOMContentLoaded', () => {
         run: o => window.shell.post('/api/contributions/dismiss', { key: o.key, revision: o.revision })
           .then(() => { landed(o, { dismissed: true }); reread(); return `Dismissed · ${o.label}`; }, e => { load(); throw e; }) },
       // Re-run collector (commands.js); Contributions reads again once the run ends.
-      window.commands.syncCollector({ started: () => awaitSync(), page: 'Contributions' }),
+      window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' }),
     );
   }
-  // Success is quiet: the reread shows it. A failed tracker or a run that broke stays as a toast with its first reason.
-  const SYNC_POLL = 5000;
-  const awaitSync = () => setTimeout(() => window.shell.getJSON('/api/shadow/state').then(s => {
-    if (s.running) return awaitSync();
-    reread();
-    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
-    if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
-  }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
 
   // ---------- Focus (sd:2426) ----------
   // Replacing a box's markup drops the focused control, and focus falls to the body. Focus its replacement instead: the

@@ -239,14 +239,6 @@
     return `Not known what changed · ${o.label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
   const revised = o => !!o.revision || 'the row carries no revision: read Health again';
-  // As contributions.js's: success is quiet, since the reread shows it; a failed tracker or a broken run stays as a toast.
-  const SYNC_POLL = 5000;
-  const awaitSync = () => setTimeout(() => shell.getJSON('/api/shadow/state').then(s => {
-    if (s.running) return awaitSync();
-    load();
-    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
-    if (bad) shell.toast(`Shadow sync ended with a problem: ${bad}`);
-  }, e => shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
@@ -288,7 +280,7 @@
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
       // Re-run collector (commands.js); Health reads again once the run ends.
-      window.commands.syncCollector({ started: () => awaitSync(), page: 'Health' }),
+      window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
       { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },

@@ -688,8 +688,8 @@ class TheSharedReader(Script):
         self.assertIn("window.shell.read(", PAGE_JS)
         self.assertNotIn("++generation", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"function retire\(")
-        # The one other GET is the sync's state (sd:2207), which is not the page's document.
-        self.assertEqual(re.findall(r"getJSON\(([^)]*)\)", PAGE_JS), ["'/api/shadow/state'"])
+        # The sync's state (sd:2207) is read by the shared Re-run collector in commands.js, not by the page.
+        self.assertEqual(re.findall(r"getJSON\(([^)]*)\)", PAGE_JS), [])
 
     def test_a_refused_write_whose_read_fails_clears_the_rows_and_their_commands(self):
         answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])

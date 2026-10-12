@@ -60,11 +60,20 @@
   }
 
   // Re-run collector (sd:2207, sd:2894): the server runs sd shadow sync in a thread, bounded to 120 s, one run at a time; a
-  // second start is refused while one is live. `started()` is the page's wait for the end; `page` names who reads again.
-  function syncCollector({ started, page }) {
+  // second start is refused while one is live. The page asks how it went every 5 s and calls reread() once it ends. Success
+  // is quiet: the reread shows it. A failed tracker or a run that broke stays as a toast with its first reason. `page`
+  // names who reads again.
+  const SYNC_POLL = 5000;
+  function syncCollector({ reread, page }) {
+    const wait = () => setTimeout(() => window.shell.getJSON('/api/shadow/state').then(s => {
+      if (s.running) return wait();
+      reread();
+      const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
+      if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
+    }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
     return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
       cli: () => 'sd shadow sync --max-seconds 120',
-      run: () => window.shell.post('/api/shadow/sync', {}).then(() => { started(); return `Shadow sync started · ${page} reads again when it ends`; }) };
+      run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }
 
   window.commands = { answered, fix, retry, showAssignment, openPullRequest, syncCollector };
