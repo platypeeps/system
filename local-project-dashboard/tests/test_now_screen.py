@@ -12,12 +12,13 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import contributions, operations, progress, reads, upsert_shadow, writes
+from sd_db import contributions, operations, progress, reads, upsert_shadow, workflow, writes
 from sd_db.writes import snooze
 from sd_dashboard import fleet, now_screen
 
@@ -538,6 +539,31 @@ class FailedJobs(ScreenCase):
             document = now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)
         self.assertEqual(document["sources"]["jobs"], "")
         self.assertTrue(document["rows"][0]["detail"].startswith("log unreadable · retry: "), document["rows"][0]["detail"])
+
+    def test_a_retryable_row_carries_the_revision_retry_job_checks_and_its_capability(self):
+        """sd:3386: Today's Retry posts the row's revision; it is the job's, so a job that changed since the read refuses."""
+        class Kicks(JobsBackend):
+            def perform(self, action, service):
+                self.sent = (action, service)
+                return subprocess.CompletedProcess([], 0)
+
+        jobs = Kicks(self.tmp.name, jobs=[("nightly-sync", "failed", 127, None), ("stopped", "interrupted", None, 9),
+                                          ("parked", "unloaded", None, None)])
+        by_id = {row["id"]: row for row in now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"]}
+        listed = {job["name"]: job for job in operations.inventory(self.connection, backend=jobs)["jobs"]}
+        failed, stopped = by_id["job:nightly-sync:127"], by_id["job:stopped:interrupted9"]
+        self.assertEqual((failed["revision"], failed["exit"], failed["capability"]),
+                         (listed["nightly-sync"]["revision"], 127, {"allowed": True, "reason": ""}))
+        self.assertEqual((stopped["job"], stopped["revision"], stopped["exit"]), ("stopped", listed["stopped"]["revision"], None))
+        # No retry, so nothing to bind: an unloaded row carries no revision.
+        self.assertNotIn("revision", by_id["job:parked:unloaded"])
+        # A job whose launchd record moved since the read is another subject: its old revision is refused.
+        jobs.jobs["stopped"] = ("failed", 1, None)
+        with self.assertRaises(workflow.StaleItem):
+            operations.retry_job(self.connection, "stopped", expected_revision=stopped["revision"], who="dashboard", backend=jobs)
+        self.assertFalse(hasattr(jobs, "sent"))
+        answer = operations.retry_job(self.connection, "nightly-sync", expected_revision=failed["revision"], who="dashboard", backend=jobs)
+        self.assertEqual((answer["request"]["status"], jobs.sent), ("accepted", ("retry", "fixture/nightly-sync")))
 
     def test_a_jobs_read_that_fails_is_one_dark_row_and_the_others_still_render(self):
         jobs = JobsBackend(self.tmp.name, refuse="LaunchAgents is unreadable")
