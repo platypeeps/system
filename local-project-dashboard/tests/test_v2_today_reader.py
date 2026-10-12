@@ -294,7 +294,8 @@ class TheRetry(TheReader):
 
     def test_retry_posts_the_job_route_with_the_rows_revision_and_reads_now_again(self):
         row = self.doc["rows"][0]
-        out = self.run_page("""R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' } }];
+R.primary = cmd('jobs.retry').primary(C.get('job:nightly-sync:7'));
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();
 R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync:7')); R.sends = cmd('jobs.retry').sends(C.get('job:nightly-sync:7'));""")
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": row["revision"]}, 64]])
@@ -330,3 +331,19 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
         self.assertEqual(out["toasts"][-1]["msg"], "nightly-sync failed with exit 7 not changed: no answer (Load failed), so whether"
                          " launchd started it is not known; Now is read again")
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
+        """sd:3386, as sd:3388 words Management's: a 200 carries launchctl's answer; only `accepted` started a retry."""
+        cases = {
+            "{ request: { status: 'failed', message: 'launchctl refused the request (exit 3)' } }":
+                "nightly-sync not retried: launchctl refused the request (exit 3)",
+            "{ request: { status: 'unknown', message: 'launchctl timed out; the request outcome is unknown' } }":
+                "Not known whether nightly-sync was retried: launchctl timed out; the request outcome is unknown",
+            "{}": "Not known whether nightly-sync was retried: the answer named no outcome",
+        }
+        for answer, said in cases.items():
+            with self.subTest(said=said):
+                out = self.run_page(f"""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, {answer}];
+shellRun(cmd('jobs.retry'), C.get('job:nightly-sync:7')); await flush();""")
+                self.assertEqual(out["toasts"][-1]["msg"], said)
+                self.assertEqual(out["gets"], ["/api/now", "/api/now"])

@@ -697,9 +697,29 @@ CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.
         self.assertIn("Since the previous report", out["R"]["clean"])
         self.assertIn('class="del">old', out["R"]["clean"])
 
+    LAUNCHCTL = ("(path, body) => path.endsWith('/retry') ? [200, ANSWER] : path.startsWith('/api/reports/clean') ? [200, CLEAN]"
+                 " : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]")
+
+    def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
+        """sd:3386, as sd:3388 words Management's: a 200 carries launchctl's answer; only `accepted` started a retry."""
+        cases = {
+            "{ request: { status: 'failed', message: 'launchctl refused the request (exit 3)' } }":
+                "nightly-sync not retried: launchctl refused the request (exit 3)",
+            "{ request: { status: 'unknown', message: 'launchctl timed out; the request outcome is unknown' } }":
+                "Not known whether nightly-sync was retried: launchctl timed out; the request outcome is unknown",
+            "{}": "Not known whether nightly-sync was retried: the answer named no outcome",
+        }
+        for answer, said in cases.items():
+            with self.subTest(said=said):
+                out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();",
+                                    answer=self.LAUNCHCTL.replace("ANSWER", answer).replace("DOC_JSON", json.dumps(self.doc)))
+                self.assertEqual(out["toasts"][-1], [said, False])
+                self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
+
     def test_retry_posts_the_job_route_with_its_revision(self):
         job = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")
-        out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush(); R.off = cmd('jobs.retry').when(C.get('job:weekly-scan'));")
+        out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush(); R.off = cmd('jobs.retry').when(C.get('job:weekly-scan'));",
+                            answer=self.LAUNCHCTL.replace("ANSWER", "{ request: { status: 'accepted', message: 'launchctl accepted the request' } }").replace("DOC_JSON", json.dumps(self.doc)))
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": job["revision"]}, 64]])
         self.assertEqual(out["toasts"][-1], ["Retry started · nightly-sync", False])
         idle = next(j for j in self.doc["jobs"] if j["name"] == "weekly-scan")

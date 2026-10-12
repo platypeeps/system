@@ -460,12 +460,19 @@ async function acknowledge(o) {
   const out = await write(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision });
   return { text: `Acknowledged · #${o.n}`, revision: out.revision };
 }
-const reopen = (o, answered) => write(`/api/reports/${o.n}/reopen`, { revision: answered.revision }).then(() => true);
+// A job write's 200 carries launchctl's answer (operations._act), worded as Management words it (sd:3388): only `accepted`
+// sent the request; `failed` sent nothing; anything else, or an answer with no request, is not known.
+function answered(out, name, verb, done) {
+  const r = out && out.request || {};
+  return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+    : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
+}
+const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
   const task = on => ({ id: `${on}.task`, on, label: 'Make task', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
-  // build: copy only. The dashboard shows no job log yet (Management has none either).
-  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db, not a job log', cli: o => `${CRON} logs ${o.job}`, run: () => 'Copy it into a terminal: the dashboard shows no job log yet' });
+  // build: copy only here. Management shows the job's log in its Details, and its Show log command (key o) opens it (sd:3388).
+  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db, not a job log', cli: o => `${CRON} logs ${o.job}`, run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
@@ -488,7 +495,7 @@ function registerCommands() {
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
       when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: async o => { await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }); return `Retry started · ${o.job}`; } },
+      run: async o => answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Retry started · ${o.job}`) },
     // build (sd:3386): the attributed batch. It confirms: one batch may move up to the library's max_batch reports, and no
     // dashboard Undo reopens a batch. The name typed is the batch report's `who`; the server records its own principal.
     { id: 'clean batch.ack', on: 'clean batch', label: 'Acknowledge', key: 'a', risk: 'confirm', primary: () => true, executes: true,
