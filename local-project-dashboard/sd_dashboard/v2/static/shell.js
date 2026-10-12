@@ -59,6 +59,7 @@
   put(rail, html`
     <div class="rail-head">
       <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
+      <button class="icon-btn" type="button" id="reload" title="Reload this page (r)" aria-label="Reload this page (r)">${ICON('rotate-ccw')}</button>
       <button class="icon-btn" type="button" id="fold-rail" aria-expanded="true" aria-controls="sections" aria-label="Collapse sections ([)" title="Collapse sections ([)">${ICON('panel-left-close')}</button>
     </div>
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
@@ -81,7 +82,6 @@
       <button class="cmd menu" type="button" id="open-menu" aria-expanded="false" aria-controls="sections">Sections</button>
       <button class="cmd" type="button" id="open-chat" aria-controls="pane" aria-label="Chat (c)">${ICON('message-square')}<span class="txt">Chat</span><kbd>c</kbd></button>
       <button class="cmd" type="button" id="open-palette" aria-label="Commands (⌘K)">${ICON('command')}<span class="txt">Commands</span><kbd>⌘K</kbd></button>
-      <button class="cmd" type="button" id="reload" title="Reload this page (r)" aria-label="Reload this page (r)">${ICON('rotate-ccw')}<span class="txt">Reload</span><kbd>r</kbd></button>
     </div>`);
   // The in-nav theme copy shows only inside the narrow-screen Sections menu.
   rail.querySelector('nav > .theme').classList.add('menu-theme');

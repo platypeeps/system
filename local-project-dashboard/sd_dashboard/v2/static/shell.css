@@ -75,7 +75,7 @@ main { min-width: 0; padding: var(--space-lg) var(--space-xl) var(--space-3xl); 
   padding: var(--space-lg) var(--space-md) var(--space-md);
   border-right: var(--rule-hair) solid var(--color-rule);
 }
-/* sd:3442: the mark and the rail's fold share the head row; folded, they stack so the fold stays in the narrow rail. */
+/* sd:3442, sd:3443: the mark, Reload and the rail's fold share the head row; folded, they stack so the fold stays in the narrow rail. */
 .rail-head { display: flex; align-items: center; gap: var(--space-2xs); }
 .rail-head .mark { margin-right: auto; }
 body[data-rail="min"] .rail-head { flex-direction: column; gap: var(--space-xs); }
@@ -83,7 +83,7 @@ body[data-rail="min"] .rail-head .mark { margin-right: 0; }
 .mark { display: flex; align-items: baseline; gap: var(--space-xs); text-decoration: none; }
 .mark b { font: 500 var(--text-lg)/1 var(--font-data); letter-spacing: -0.02em; }
 .mark span { font: 600 var(--text-xs)/1 var(--font-label); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-muted); }
-/* The sections scroll inside the rail, so the foot (Chat, ⌘K, Reload, theme) stays on screen at any height (review 2026-09-29, 22). */
+/* The sections scroll inside the rail, so the head (Reload, fold) and the foot (Chat, ⌘K, theme) stay on screen at any height (review 2026-09-29, 22). */
 .rail nav { display: grid; align-content: start; gap: var(--space-sm); flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .rail nav a:focus-visible, .rail nav .theme button:focus-visible { outline-offset: -2px; } /* inside the scroller, so the ring is not clipped */
 .rail nav .label { padding: 0 var(--space-xs); }
