@@ -1,6 +1,9 @@
 /* Contributions (sd:2113): the design source's products/system/designs/v2/contributions.css at b2b8c2b, ported.
  * build: the Trackers view, the GitHub-now chip, the settled-per-day chart and the nudge proposal are not ported (no reader;
  * the dashboard posts nothing), so their rules are gone. The Open | Trackers switch is two links, styled below. */
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
+ * route: custom (locked by foundation/ + v2 shell.css) · structure: repository scope + lane lamps + collector source line + open ledger
+ * build (sd:1333): the design source's stamp, which the port had dropped. */
 .annunciator { --cells: 4; }
 
 

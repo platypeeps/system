@@ -1,5 +1,8 @@
 /* Health (sd:2115): the page's own rules, from the design source's designs/v2/health.html at e301f82.
    Left out: the week chart and the chat proposal card, which draw data no reader provides yet. */
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
+ * route: custom (locked by foundation/ + v2 shell.css) · structure: annunciator + sectioned ledgers + evidence pane
+ * build (sd:1333): the design source's stamp, which the port had dropped. */
 .annunciator { --cells: 4; }
 
 /* Areas */

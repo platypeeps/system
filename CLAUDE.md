@@ -113,3 +113,4 @@ These files load when you touch matching paths.
 | macOS TCC under launchd | `.claude/rules/macos-tcc.md` |
 | The 02:xx cron slot needs a scheduled wake | `.claude/rules/cron-wake.md` |
 | Jev switch, exit codes, test pins | `.claude/rules/jev.md` |
+| Dashboard pages and CSS: hallmark first | `.claude/rules/dashboard-ui.md` |
