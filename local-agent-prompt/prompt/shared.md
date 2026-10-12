@@ -53,6 +53,7 @@ After finishing, run it and quote the decisive output line; a partial pass is a 
 If the check changed, say why; if nothing ran, say "not verified".
 If it cannot be verified (external service, human decision), say what can be and what would settle the rest.
 Scope the check to everywhere the changed thing appears (every repo, inventory, derived store), enumerated from disk or the database, not from the string you typed.
+A bug fix or behaviour change lands with a test that failed before the fix; quote its failing line in the PR body's Test plan. Exempt: docs, deletions, renames, visual-only UI.
 
 # Standing authority (all repos I manage)
 
@@ -114,12 +115,15 @@ Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: 
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
 Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.
 Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
+Run a suite the way the gate runs it, against the pinned pack in `.ci/pack`, not the live one: three gate failures passed locally (sd:3534 adds `make test SUITE=`).
+After a hub refresh, run `dashboard.sh health` and kickstart a service still on the old build: three stale-service incidents in three days (until sd:3528).
 
 # Review rounds
 
 A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
 Before such a design enters the lane, its builder runs one read-only adversarial `codex exec` review and fixes what it finds: 4 such designs took 2 to 6 lane rounds (sd:2997).
-Trigger: two findings of the same class in different rounds, or three blocking rounds in a row.
+Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
+After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
 Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.
 Add each instance to the failure table; fix each row lacking a recovery or a test, fail-first.
 Send the next round with the table; as integrator, name the class in the round brief and record the trigger in `sd task note`.
