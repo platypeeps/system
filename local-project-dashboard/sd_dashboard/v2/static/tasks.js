@@ -1017,12 +1017,13 @@ addEventListener('DOMContentLoaded', () => {
     // build: files it with POST /api/items (workflow.capture_task, sd task add). No verb deletes a task, so no Undo.
     const where = P.repo ? repoFor(P.repo) : filterRepo();
     const body = { title: P.title, priority: P.p || 3, ...(P.due ? { due: P.due } : {}), ...(where ? { repo: where } : {}) };
-    inp.value = ''; showPreview();
+    const typed = inp.value; inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
     window.shell.post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
       if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
       select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
-      err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
+      // A refusal gives the text back as typed, unless the operator has typed the next one meanwhile.
+      err => { if (!inp.value) inp.value = typed; toast(`Not added: ${err.message}`); });
   });
   prev.addEventListener('click', e => { const b = e.target.closest('[data-open-find]'); if (b) { inp.value = ''; showPreview(); select(b.dataset.openFind, true); } });
   document.addEventListener('click', e => { if (!e.target.closest('#shift')) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); } });

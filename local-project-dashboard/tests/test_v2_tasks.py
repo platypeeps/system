@@ -995,6 +995,16 @@ R.filtered = window.PAGE_REPO(null);""", "(path, body) => [201, { item: { id: 99
         out = self.run_page(f"R.none = window.PAGE_REPO(null); R.task = window.PAGE_REPO(C.get('{row['id']}'));")
         self.assertEqual((out["R"]["none"], out["R"]["task"]), (None, row["repo_path"]))
 
+    def test_a_refused_quick_add_gives_back_the_text_unless_the_operator_typed_again(self):
+        # Review 2026-10-12 class pass: a refusal rebuilt the box from the parse and overwrote what was typed since.
+        press = "box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} }));"
+        refuse = "() => [400, { error: 'A title is required.' }]"
+        out = self.run_page(f"var box = document.getElementById('shift-in'); box.value = 'Call  the bank P2';\n{press} await flush(); R.back = box.value;", refuse)
+        self.assertEqual(out["R"]["back"], "Call  the bank P2", "the refused text did not come back as typed")
+        out = self.run_page(f"var box = document.getElementById('shift-in'); box.value = 'Call the bank';\n{press} box.value = 'Next one'; await flush(); R.back = box.value;", refuse)
+        self.assertEqual(out["R"]["back"], "Next one", "the refusal overwrote text typed after Enter")
+        self.assertIn("Not added: A title is required.", [t[0] for t in out["toasts"]])
+
     def test_details_read_before_a_write_never_replace_the_read_after_it(self):
         plan = self.ids["plan"]
         after = json.loads(json.dumps(self.details[str(plan)]))
