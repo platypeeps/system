@@ -12,7 +12,7 @@ Edit external prose (posts, blogs, briefs, PR bodies, mail) with `no-ai-slop`, t
 # Instruction files
 
 CLAUDE.md, AGENTS.md and `.claude/rules/` hold rules, not history.
-The workflow database is the one state store: lane state, to-dos, decisions and incidents go in `sd task note`.
+The workflow database is the one state store: lane state, to-dos, decisions, incidents and tool state go there (`sd task note` for item state), not GitHub or local files: it syncs across machines and avoids file bloat.
 Write no handoff files (`resume-*.md`) and no claude-mem work-state lists.
 Keep a rule to one line with a short reason.
 Keep this block under 200 lines and each repo CLAUDE.md under 150; move area rules to `.claude/rules/` with `paths:`.
