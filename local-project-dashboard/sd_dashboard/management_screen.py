@@ -21,7 +21,10 @@ source guarded on its own so one that fails is a reason and not an empty list
   v1 Operations > Services and > Jobs, with the revision each write sends.
   Each job carries `last_run`, read from `<cron_root>/logs/.<job>.stamp`, the
   start, end and exit the cron-jobs wrapper writes for every run (sd:2210):
-  launchd keeps no run time, and a log's write time is not one.
+  launchd keeps no run time, and a log's write time is not one. Each job
+  also carries `log`, the end of `<cron_root>/logs/<job>.log` (`job_log`),
+  and `last_request`, the last retry or cancel the page or the CLI sent and
+  what launchctl answered, as v1 Operations > Jobs shows it.
 - `grant`: the machine merge grant, `sd config get sd.assistant_merge`
   (sd:1629). It is machine-wide, so the document carries it once, not per
   repo; unset is a reading (`None`), not a failure.
@@ -31,8 +34,8 @@ and `strict` from the protection reading, and `runtimes`, the Python and Node
 versions its checkout pins (`_runtimes`).
 
 Every write the page makes goes through a route `server.action_route`
-answers: job retry, service start, stop and
-restart, and the sd-db repo verbs (`repos.set_runner_merge`,
+answers: job retry and cancel, service start, stop
+and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
 `repos.set_managed`, `repos.set_lane_host`), which refuse a stale `before`
 and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
 """
@@ -54,7 +57,7 @@ from sd_db.errors import SdDbError
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["assistant_merge", "document", "last_run", "set_repo"]
+__all__ = ["assistant_merge", "document", "job_log", "last_run", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -68,6 +71,8 @@ STAMP_BYTES = 512
 SD_SECONDS = 5.0
 #: The largest pin file read; a version file is one line, a manifest a few KiB.
 PIN_BYTES = 65536
+#: How much of a job's log the page shows, from its end: where a failing run says why.
+LOG_BYTES = 4096
 
 
 def _review(path: str) -> dict | None:
@@ -344,11 +349,55 @@ def last_run(cron_root, name: str) -> dict:
     return out | {"state": "finished", "started": started, "ended": ended, "exit": int(code)}
 
 
+def job_log(cron_root, name: str) -> dict:
+    """The end of the job's log, `<cron_root>/logs/<job>.log`, the file `cron-jobs.sh` appends every run to.
+
+    `state` is `read`, `none` (no log yet) or `unread`, with `reason` for the
+    last two. `text` is the last `LOG_BYTES` at most, from the first whole
+    line in them; `cut` says the log is longer. The file is opened without
+    blocking and checked to be a regular file before any read, as a pin file
+    is (sd:2911): a FIFO in its place would hang `/api/management`.
+    """
+    out = {"state": "unread", "text": "", "cut": False, "reason": ""}
+    if not isinstance(cron_root, (str, Path)):
+        return out | {"reason": "the jobs backend names no logs folder"}
+    if not isinstance(name, str) or not operations.JOB_NAME.fullmatch(name):
+        return out | {"reason": "the job name is not one a log file can have"}
+    try:
+        fd = os.open(Path(cron_root) / "logs" / f"{name}.log", os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return out | {"state": "none", "reason": "no log: the job has not run through the cron-jobs wrapper"}
+    except OSError as error:
+        return out | {"reason": f"the log is unreadable: {error.strerror or error}"}
+    try:
+        found = os.fstat(fd)
+        if not stat.S_ISREG(found.st_mode):
+            return out | {"reason": "the log is not a regular file"}
+        start = max(0, found.st_size - LOG_BYTES)
+        os.lseek(fd, start, os.SEEK_SET)
+        raw = b""
+        while len(raw) < LOG_BYTES:
+            part = os.read(fd, LOG_BYTES - len(raw))
+            if not part:
+                break
+            raw += part
+    except OSError as error:
+        return out | {"reason": f"the log is unreadable: {error.strerror or error}"}
+    finally:
+        os.close(fd)
+    if start:
+        # The read began part way through a line: show whole lines only.
+        raw = raw.partition(b"\n")[2]
+    return out | {"state": "read", "text": raw.decode("utf-8", "replace"), "cut": bool(start)}
+
+
 def _jobs(connection, backend) -> list[dict]:
-    keep = ("name", "label", "service", "schedule", "state", "pid", "last_exit", "last_signal", "revision", "capabilities")
+    keep = ("name", "label", "service", "schedule", "state", "pid", "last_exit", "last_signal", "revision", "capabilities",
+            "last_request")
     # `cron_root` places the logs folder, as Activity and Now read it; a backend without one still lists its jobs.
     root = getattr(backend, "cron_root", None)
-    return [{key: job.get(key) for key in keep} | {"last_run": last_run(root, job.get("name") or "")}
+    return [{key: job.get(key) for key in keep} | {"last_run": last_run(root, job.get("name") or ""),
+                                                   "log": job_log(root, job.get("name") or "")}
             for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 

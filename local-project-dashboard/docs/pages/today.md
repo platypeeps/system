@@ -12,3 +12,5 @@ A row whose problem reads otherwise shows again before its time.
 Your work lists the items `sd today` lists, from the same `/api/now` document; each row has the same Snooze,
 keyed `today:item:<id>`, and the item shows again early when its status or due date changes (sd:3271).
 The classic Today and `sd today` still list a snoozed item.
+Retry on a failed or interrupted job posts `/api/jobs/<job>/retry` with the job's revision from the same read, as
+Management does (sd:3386); a job that changed since is refused and Now is read again. Exit 127 keeps Retry off.

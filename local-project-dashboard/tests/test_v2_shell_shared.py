@@ -153,6 +153,17 @@ class TheSharedRules(unittest.TestCase):
                 self.assertFalse("table-layout" in text or "<colgroup" in text)
 
 
+class TheHallmarkStamp(unittest.TestCase):
+    """sd:1333: every v2 stylesheet names the Hallmark run it came from; fonts.css is a font list, not a design."""
+
+    def test_every_stylesheet_but_fonts_carries_a_hallmark_stamp(self):
+        for path in sorted(STATIC.glob("*.css")):
+            if path.name == "fonts.css":
+                continue
+            with self.subTest(path.name):
+                self.assertRegex(path.read_text(encoding="utf-8"), r"(?m)^(/\*| \*) Hallmark · ")
+
+
 class TheCells(unittest.TestCase):
     """sd:2680: markup.cells(spec) draws every annunciator's lamps; no page writes a lamp's markup by hand."""
 
