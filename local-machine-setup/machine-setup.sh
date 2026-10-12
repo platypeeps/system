@@ -170,6 +170,8 @@ dotfile_view() { # dotfile, path, scratch
 # longer names is dropped with the profile.
 keep_sessions_cp() { # dotfile, src, dst
   ks_re=$(dotfile_session_re "$1")
+  # Called through run, where set -e is off: a failed awk must not move a
+  # half-written merge over the dotfile.
   awk -v re="$ks_re" '
     function header(line) { sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); return line }
     # FILENAME and not NR == FNR: an empty destination has no records, so
@@ -181,7 +183,7 @@ keep_sessions_cp() { # dotfile, src, dst
     }
     { print }
     /^[[:space:]]*\[/ { h = header($0); if (h in keep) printf "%s", keep[h] }
-  ' "$3" "$2" > "$3.merge.$$"
+  ' "$3" "$2" > "$3.merge.$$" || { rm -f "$3.merge.$$"; return 1; }
   mv "$3.merge.$$" "$3"
 }
 
@@ -214,12 +216,49 @@ say() {
 # that on the work machine: ripgrep, rtk, shellcheck, smartmontools, uv and
 # wget were swallowed, never installed, and never reported, because the loop
 # had no lines left to read.
+#
+# A failed command is reported and the run goes on (sd:3543). do_stages calls
+# each stage bare under `set -e`, so a bare `run` that returned its failure
+# ended the stage loop, the stage and the run: one dead formula skipped every
+# later formula, cask and stage. The failure goes to FAILED_LOG, and the run
+# ends with the list and exit 1. try_run is the bare form, for a caller that
+# handles the failure itself.
 run() {
+  try_run "$@" || note_failure "$*" "$?"
+}
+
+try_run() {
   if [ "$APPLY" -eq 1 ]; then
     "$@" </dev/null
   else
     printf '  [dry-run] %s\n' "$*"
   fi
+}
+
+# A file, not a variable: most stage loops run in a pipeline subshell, where an
+# assignment dies with the loop. Empty outside do_stages and decommission.
+FAILED_LOG=""
+
+note_failure() { # what, exit code
+  echo "  FAILED  $1 (exit $2)"
+  [ -z "$FAILED_LOG" ] || printf '%s\n' "$1" >> "$FAILED_LOG"
+}
+
+# Printed last, like the deferred list. Returns 1 when anything failed, so
+# the run exits 1 under set -e and a nightly caller's failure push fires.
+report_failures() {
+  [ -n "$FAILED_LOG" ] || return 0
+  rf_log="$FAILED_LOG"
+  FAILED_LOG=""
+  if [ ! -s "$rf_log" ]; then
+    rm -f "$rf_log"
+    return 0
+  fi
+  echo "failed — $(grep -c '^' "$rf_log") remediation(s) did not finish; fix them, then re-run:"
+  sed 's/^/    /' "$rf_log"
+  echo
+  rm -f "$rf_log"
+  return 1
 }
 
 # Which side moved? `cmp` answers "these differ", never "who changed", and every
@@ -271,7 +310,13 @@ matches_record() { # key, file
 backup_file() { # path
   [ -e "$1" ] || return 0
   cp -p "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"
-  return 0
+}
+
+# backup_file through run. A failed backup is reported and returns 1, so the
+# caller skips the overwrite it guards: under set -e it ended the run before
+# the overwrite, and run now goes on.
+run_backup() { # path
+  try_run backup_file "$1" || { note_failure "backup_file $1" "$?"; return 1; }
 }
 
 # Commands that could not run because sudo was refused, one per line, reported
@@ -599,7 +644,7 @@ stage_appstore() {
       # `mas install` can need sudo, which a nightly run under launchd does
       # not have. A failure here used to end the loop and, under set -e, the
       # whole run: every later stage was skipped. Report it and go on.
-      if ! run mas install "$id"; then
+      if ! try_run mas install "$id"; then
         echo "  FAILED  mas install $id $name — install it by hand"
       fi
     fi
@@ -610,7 +655,8 @@ stage_bin() {
   echo "== bin"
   if [ -x "$ROOT/local-bin-links/bin-links.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-bin-links/bin-links.sh" install | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-bin-links/bin-links.sh" install || note_failure "bin-links.sh install" "$?"; } | sed 's/^/  /'
     else
       # Not tagged [dry-run]: `status` is already read-only and reports what
       # IS, so tagging it as a would-be action misread as "would link these"
@@ -649,23 +695,26 @@ stage_dotfiles() {
       # touched it, so the repo is what moved.
       if matches_record "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"; then
           echo "  STALE   $f — untouched here, repo moved ahead"
-          run backup_file "$dst"
-          copy_dotfile "$f" "$src" "$dst"
-          record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          if run_backup "$dst"; then
+            copy_dotfile "$f" "$src" "$dst"
+            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          fi
       elif has_record "dotfiles/$f"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $f — edited here; --force overwrites (backup kept)"
-            run backup_file "$dst"
-            copy_dotfile "$f" "$src" "$dst"
-            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+            if run_backup "$dst"; then
+              copy_dotfile "$f" "$src" "$dst"
+              record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+            fi
           else
             echo "  DIFFERS $f — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $f — nothing recorded; --force overwrites (backup kept)"
-          run backup_file "$dst"
-          copy_dotfile "$f" "$src" "$dst"
-          record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          if run_backup "$dst"; then
+            copy_dotfile "$f" "$src" "$dst"
+            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          fi
       else
           echo "  DIFFERS $f — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
       fi
@@ -718,6 +767,18 @@ live_env() {
   echo "$le"
 }
 
+# Appends each key's template line to the live file, after one backup. Run
+# under `if`, where set -e is off, so each step returns its own failure.
+env_append() { # src, dst, key...
+  ea_src=$1
+  ea_dst=$2
+  shift 2
+  backup_file "$ea_dst" || return
+  for k in "$@"; do
+    sed -n "s/^[[:space:]]*\($k=.*\)/\1/p" "$ea_src" | head -1 >> "$ea_dst" || return
+  done
+}
+
 # Tool .env files, seeded from the templates in envs/. Always 0600: they sit
 # exactly where a secret would go, and the .env is what every tool here reads
 # first.
@@ -760,12 +821,15 @@ stage_envs() {
         if [ -n "$missing" ]; then
           echo "  STALE   $f/.env — template added:$missing"
           if [ "$APPLY" -eq 1 ]; then
-            backup_file "$dst"
-            for k in $missing; do
-              sed -n "s/^[[:space:]]*\($k=.*\)/\1/p" "$src" | head -1 >> "$dst"
-            done
-            echo "          appended from the template; fill in any placeholder"
-            record_hash "envs/$f" "$src"
+            # Recorded only when every key went in: the record is what tells
+            # the next run the repo moved, so a failed append retries.
+            # shellcheck disable=SC2086 # a space-separated key list
+            if env_append "$src" "$dst" $missing; then
+              echo "          appended from the template; fill in any placeholder"
+              record_hash "envs/$f" "$src"
+            else
+              note_failure "append$missing to $dst" "$?"
+            fi
           else
             printf '  [dry-run] append%s to %s\n' "$missing" "$dst"
           fi
@@ -786,7 +850,8 @@ stage_prompts() {
   echo "== prompts"
   if [ -x "$ROOT/local-agent-prompt/agent-prompt.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply || note_failure "agent-prompt.sh refresh --apply" "$?"; } | sed 's/^/  /'
     else
       "$ROOT/local-agent-prompt/agent-prompt.sh" status | sed 's/^/  /'
     fi
@@ -799,7 +864,8 @@ stage_repos() {
   echo "== repos"
   if [ -x "$ROOT/local-repo-sync/repo-sync.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-repo-sync/repo-sync.sh" sync | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-repo-sync/repo-sync.sh" sync || note_failure "repo-sync.sh sync" "$?"; } | sed 's/^/  /'
     else
       # `check`, not `list`: list prints the configured fleet without looking
       # at disk, so it could not tell a missing checkout from a present one
@@ -907,7 +973,7 @@ leak_guards() {
     fi
     if [ -f "$hook" ] && grep -qF "# installed by local-leak-guard" "$hook"; then
       echo "  STALE   $repo leak guard pre-push hook: not the executable hook leak-guard.sh install writes"
-      run sh "$guard" install "$dir" ||
+      try_run sh "$guard" install "$dir" ||
         echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
       continue
     fi
@@ -937,7 +1003,7 @@ leak_guards() {
       continue
     fi
     echo "  MISSING $repo leak guard pre-push hook"
-    run sh "$guard" install "$dir" ||
+    try_run sh "$guard" install "$dir" ||
       echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
   done
 }
@@ -1060,7 +1126,7 @@ PY
 # under set -e would skip every later stage. A refused job keeps its plist as
 # it was, so the next update finds the same drift and retries.
 cron_jobs() { # install|uninstall, job
-  run "$ROOT/local-cron-jobs/cron-jobs.sh" "$1" "$2" ||
+  try_run "$ROOT/local-cron-jobs/cron-jobs.sh" "$1" "$2" ||
     echo "  FAILED  $2 — cron-jobs.sh $1 $2 did not finish; the next update retries it"
 }
 
@@ -1217,31 +1283,34 @@ stage_agents() {
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
-          run backup_file "$dst"
-          run cp "$src" "$dst"
-          record_hash "agents/$label" "$dst"
-          # launchd holds the plist it was handed; a replaced file on disk
-          # changes nothing until the job is booted out and back in.
-          run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-          run launchctl bootstrap "gui/$(id -u)" "$dst"
+          if run_backup "$dst"; then
+            run cp "$src" "$dst"
+            record_hash "agents/$label" "$dst"
+            # launchd holds the plist it was handed; a replaced file on disk
+            # changes nothing until the job is booted out and back in.
+            try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
+            run launchctl bootstrap "gui/$(id -u)" "$dst"
+          fi
       elif has_record "agents/$label"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $label — edited here; --force overwrites (backup kept)"
-            run backup_file "$dst"
-            run cp "$src" "$dst"
-            record_hash "agents/$label" "$dst"
-            run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
+            if run_backup "$dst"; then
+              run cp "$src" "$dst"
+              record_hash "agents/$label" "$dst"
+              try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
+              run launchctl bootstrap "gui/$(id -u)" "$dst"
+            fi
           else
             echo "  DIFFERS $label — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $label — nothing recorded; --force overwrites (backup kept)"
-          run backup_file "$dst"
-          run cp "$src" "$dst"
-          record_hash "agents/$label" "$dst"
-          run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-          run launchctl bootstrap "gui/$(id -u)" "$dst"
+          if run_backup "$dst"; then
+            run cp "$src" "$dst"
+            record_hash "agents/$label" "$dst"
+            try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
+            run launchctl bootstrap "gui/$(id -u)" "$dst"
+          fi
       else
           echo "  DIFFERS $label — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
       fi
@@ -1391,8 +1460,9 @@ stage_tooling() {
           echo "  ok      settings.json baseline"
         else
           printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
-          run backup_file "$HOME/.claude/settings.json"
-          run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+          if run_backup "$HOME/.claude/settings.json"; then
+            run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+          fi
         fi
       else
         echo "  DIFFERS settings.json is not valid JSON; baseline not checked"
@@ -1413,8 +1483,9 @@ stage_tooling() {
         has*) echo "  DIFFERS opencode.json $gaps" ;;
         *)
           printf '%s\n' "$gaps" | sed 's/^/  MISSING opencode.json /'
-          run backup_file "$opencode_json"
-          run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          if run_backup "$opencode_json"; then
+            run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          fi
           ;;
       esac
     else
@@ -2041,12 +2112,14 @@ do_stages() {
       *) die "unknown stage '$want' (stages: $STAGES)" ;;
     esac
   fi
+  FAILED_LOG=$(mktemp)
   for s in $STAGES; do
     if [ -n "$want" ] && [ "$want" != "$s" ]; then continue; fi
     "stage_$s"
     echo
   done
   report_deferred
+  report_failures
 }
 
 # Anything sudo_run could not run. Printed once, at the end, where it is still
@@ -2146,7 +2219,7 @@ self_update_default() { # domain key true|false
 # Under set -e that one refusal ended the run, so the key is reported and the
 # stage goes on.
 defaults_write() { # domain key type value
-  run defaults write "$1" "$2" "-$3" "$4" \
+  try_run defaults write "$1" "$2" "-$3" "$4" \
     || echo "  DIFFERS $1 $2 not written; set it by hand to $4, or grant the terminal Full Disk Access and re-run"
 }
 
@@ -2158,7 +2231,7 @@ stage_screensaver_off() {
   if [ "$cur" = "0" ]; then
     echo "  ok      com.apple.screensaver idleTime = 0 (currentHost)"
   else
-    run defaults -currentHost write com.apple.screensaver idleTime -int 0 \
+    try_run defaults -currentHost write com.apple.screensaver idleTime -int 0 \
       || echo "  DIFFERS com.apple.screensaver idleTime not written; set it by hand to 0 (defaults -currentHost write com.apple.screensaver idleTime -int 0)"
   fi
 }
@@ -2178,9 +2251,9 @@ self_update_json() { # file key json-value
     unset) echo "  MISSING $1 $2 = $3" ;;
     *) echo "  DIFFERS $1 $2 $gap, want $3" ;;
   esac
-  run backup_file "$1"
+  run_backup "$1" || return 0
   run mkdir -p "$(dirname "$1")"
-  run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
+  try_run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
     || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
 }
 
@@ -4674,6 +4747,7 @@ cmd_decommission() {
   echo
 
   echo "== cron jobs (local-cron-jobs)"
+  FAILED_LOG=$(mktemp)
   run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall --all
   echo
 
@@ -4705,6 +4779,7 @@ DECOMEOF
     echo
     cat "$CONFIG_DIR/decommission.txt"
   fi
+  report_failures
 }
 
 # Runs one stage for its report half only. APPLY is forced off for the call:

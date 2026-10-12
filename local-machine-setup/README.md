@@ -165,6 +165,10 @@ Run in order. Pass one as the second argument to run it alone.
 Most stages delegate to tools that already existed. This folder is mostly an
 ordering and profile layer over them, not a reimplementation.
 
+A remediation that fails prints `FAILED` and the run goes on to the next item
+and stage. The run ends with the list of failures and exits 1. A failed
+backup skips the overwrite it guards.
+
 ### Obsidian plugins
 
 The vault gitignores `.obsidian/` (it holds the Local REST API TLS private
