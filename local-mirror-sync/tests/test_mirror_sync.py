@@ -341,8 +341,12 @@ class FileDestinationLabels(Fixture):
 # file needs iCloud, and a vanished file needs a race. State lives in files
 # under $MS_FAKE: `changed` names what a pass would copy, `dataless` lists the
 # destination paths iCloud has evicted, `stderr` and `rc` script a failure.
+# The dry run lists a non-ASCII byte as openrsync does, as `\#` and three
+# octal digits: an em dash comes out as `\#342\#200\#224` (sd:3404).
 FAKE_RSYNC = """#!{python}
 import os, sys
+def listed(name):
+    return "".join(c if ord(c) < 128 else "".join("\\\\#%03o" % b for b in c.encode()) for c in name)
 state = os.environ["MS_FAKE"]
 def lines(name):
     try:
@@ -357,7 +361,7 @@ changed = lines("changed")
 if "--dry-run" in args:
     print("Transfer starting: %d files" % len(changed))
     for name in changed:
-        print(name)
+        print(listed(name))
     sys.exit(0)
 dst = args[-1].rstrip("/")
 evicted = set(lines("dataless"))
@@ -494,6 +498,42 @@ class EvictedDestination(FakeTools):
         self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
         self.assertIn(f"{self.source} (rsync error)", result.stdout)
         self.assertEqual(len(self.rsync_runs()), 1)
+
+
+class EscapedEvictedName(FakeTools):
+    """openrsync lists a non-ASCII name with octal escapes. The pass decodes
+    them before it asks whether the file is evicted, so the real path is
+    downloaded (sd:3404)."""
+
+    def test_an_evicted_file_with_an_em_dash_is_downloaded(self) -> None:
+        name = "notes/draft \u2014 example.md"
+        self.write(self.source / name, "new\n")
+        self.write(self.mirror / name, "old\n")
+        evicted = f"{self.mirror}/{name}"
+        self.state_file("changed", [name])
+        self.state_file("dataless", [evicted])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
+        self.assertEqual(len(self.rsync_runs()), 2)
+        self.assertIn(f"--- downloaded: {evicted}", result.stdout)
+
+    def test_a_name_that_only_looks_escaped_is_downloaded_as_listed(self) -> None:
+        # openrsync does not escape a backslash, so a real name can hold
+        # "\\#101". Its decoded twin is not there; the listed path is.
+        name = "notes/a\\#101 b\\c.md"
+        self.write(self.source / name, "new\n")
+        self.write(self.mirror / name, "old\n")
+        evicted = f"{self.mirror}/{name}"
+        self.state_file("changed", [name])
+        self.state_file("dataless", [evicted])
+
+        result = self.sync()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state / "brctl.log").read_text(), f"download {evicted}\n")
 
 
 class VanishedSource(FakeTools):
