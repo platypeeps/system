@@ -51,7 +51,8 @@ addEventListener('DOMContentLoaded', () => {
   function adopt(doc) {
     DOC = doc;
     ROWS = (doc.rows || []).filter(r => ORDER.includes(r.lane)).map(r => ({ ...r, id: r.key, type: 'contribution', label: r.title, s: STATE[r.lane],
-      event_ids: r.event_ids || [], reasons: r.reasons || [], freshness: r.freshness || { status: 'unknown', reason: '' } }));
+      event_ids: r.event_ids || [], reasons: r.reasons || [], freshness: r.freshness || { status: 'unknown', reason: '' },
+      ...Object.fromEntries(['evidence', 'dependencies', 'delivery'].map(k => [k, r[k] || { state: 'unknown', reason: 'the server sent no ' + k }])) }));
     BY = new Map(ROWS.map(r => [r.key, r]));
     document.body.dataset.observed = doc.read || '';
     // Rail badge (shell.js): rows that want the operator, in every scope.
@@ -215,6 +216,38 @@ addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------- Details ----------
+  // build (sd:3394): dependencies, evidence and notification delivery, which only /classic/contributions showed. The server
+  // cuts every local path to its last part. A section it could not read says so with the reason; it never draws as empty.
+  const glyph = s => html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span>`;
+  const notRead = s => html`<p class="note">${glyph('unknown')} Not read: ${s.reason}</p>`;
+  const ext = u => github(u) ? html`<a class="ext" href="${u}" target="_blank" rel="noopener noreferrer">${String(u).replace('https://github.com/', '')}</a>` : u;
+  function dependency(d) {
+    if (d.kind === 'item') return html`<a href="/tasks?row=${d.item}">Complete local item #${d.item}</a>`;
+    if (d.kind === 'merge') return html`Merge ${ext(d.url)}`;
+    if (d.kind === 'issue') return html`Resolve issue ${ext(d.url)}`;
+    if (d.kind === 'release') return html`Publish ${d.repo} release <code>${d.tag || 'tag not selected'}</code> containing ${ext(d.contains_pull)}${d.package ? `; package ${d.package.name}, version ${d.package.version || 'not selected'}` : ''}`;
+    return html`${glyph('unknown')} Not read: ${d.reason}`;
+  }
+  const dependencies = s => s.state !== 'read' ? notRead(s) : s.entries.length ? html`<ul class="facts">${s.entries.map(d => html`<li>${dependency(d)}</li>`)}</ul>`
+    : html`<p class="note">No dependencies recorded.</p>`;
+  const exit = c => c.exit_code == null ? ['unknown', 'exit code not recorded'] : c.exit_code === 0 ? ['ok', 'exit 0'] : ['warning', `exit ${c.exit_code}`];
+  function evidence(s) {
+    if (s.state !== 'read') return notRead(s);
+    if (!s.checks.length) return html`<p class="note">No test evidence recorded.</p>`;
+    return html`<p class="note">${s.verified ? 'Evidence identity verified: each check ran in the clone at the tested commit and passed.'
+      : 'Evidence identity is unverified: sd could not tie every check to the tested commit in the clone.'}</p>
+      ${s.checks.map(c => { const [st, said] = exit(c); return html`<dl class="check"><dt>Result</dt><dd>${glyph(st)} ${said}</dd>
+        <dt>Command</dt><dd><code>${c.command || 'not recorded'}</code></dd><dt>Directory</dt><dd>${c.directory || 'not recorded'}</dd>
+        <dt>Commit</dt><dd>${c.commit || 'not recorded'}</dd><dt>Artifact</dt><dd>${c.artifact || 'not recorded'}</dd>
+        <dt>SHA-256</dt><dd>${c.sha256 || 'not recorded'}</dd></dl>`; })}
+      <p class="note">Recorded commands are evidence. This page does not run them.</p>`;
+  }
+  const DELIVERY = { sent: ['ok', 'sent'], pending: ['queued', 'waiting to send'], sending: ['queued', 'sending'],
+    uncertain: ['unknown', 'delivery uncertain: the sender did not confirm it'], unknown: ['unknown', 'delivery status not recorded'] };
+  const delivery = s => s.state !== 'read' ? notRead(s) : s.entries.length ? html`<ul class="facts">${s.entries.map(e => {
+    const [st, said] = DELIVERY[e.status] || ['unknown', `delivery status ${e.status} is not one sd records`];
+    return html`<li>${glyph(st)} ${e.reason} · ${said}${e.acknowledged_at ? html` · acknowledged <time class="rel" datetime="${e.acknowledged_at}"></time>` : ''}</li>`;
+  })}</ul>` : html`<p class="note">No notifications recorded.</p>`;
   const details = document.getElementById('details');
   const swap = () => { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); };
   function showCollector() {
@@ -237,14 +270,17 @@ addEventListener('DOMContentLoaded', () => {
     const where = r.internal ? `internal (${r.why_internal === 'managed' ? 'sd manages it' : 'registered with sd'})` : 'external';
     const facts = [['Repo', `${r.repo || 'local'} · ${where}`], ['Filed as', filed(r) + (r.url ? ' ' + num(r) : '')], ['Lane', LABEL[r.lane]],
       ['Collector says', r.external_state || 'not filed'], ['Local status', r.local_status || 'none'], ['Local item', r.item_id ? '#' + r.item_id : 'none'],
-      ['Branch', r.local_branch || 'none'], ['Freshness', r.freshness.status + (r.freshness.reason ? ': ' + r.freshness.reason : '')]];
+      ['Branch', r.local_branch || 'none'], ['Tested commit', r.tested_commit || 'none'], ['Freshness', r.freshness.status + (r.freshness.reason ? ': ' + r.freshness.reason : '')]];
     putKeep(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${GLYPH[r.s]}</span> Contribution · ${LABEL[r.lane]}</p>
       <h2>${r.title}</h2>
       ${github(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${String(r.url).replace('https://github.com/', '')}${I('arrow-up-right')}</a></p>` : ''}
       <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
       ${r.reasons.length ? html`<h3>Why it is here</h3><ul class="reasons">${r.reasons.map(x => html`<li>${x}</li>`)}</ul>` : ''}
       <h3>Act</h3>${C.bar(r.key)}
-      <p class="why">Acknowledge clears attention only. It does not complete a task or send a notification.</p>`);
+      <p class="why">Acknowledge clears attention only. It does not complete a task or send a notification.</p>
+      <h3>Dependencies</h3>${dependencies(r.dependencies)}
+      <h3>Evidence</h3>${evidence(r.evidence)}
+      <h3>Notification delivery</h3>${delivery(r.delivery)}`);
     C.select(r.key); swap();
     window.shell.suggest?.(r.lane === 'awaiting_them' && r.url ? ['Draft a short, polite nudge for this', 'What changed upstream since I filed it?']
       : ['Why is this still open locally?', 'What would unblock this?']);

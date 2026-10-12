@@ -117,7 +117,7 @@ const repoParam = params.get('repo');
 // build: the view comes from the URL, so it is checked against the five names before anything indexes by it.
 const VIEWS = ['repos', 'lane', 'sessions', 'deploys', 'schedules'];
 let view = VIEWS.includes(params.get('view')) ? params.get('view') : 'repos';
-const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
+const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
   p.set('view', view);
@@ -152,7 +152,7 @@ function showView(v, focus) {
   view = v;
   tabs.forEach(t => { const on = t.dataset.view === v; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; });
   if (focus) tabs.find(t => t.dataset.view === v).focus();
-  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'Filter merges by repo', sessions: 'Filter assignments by repo or agent', deploys: 'Filter services', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
+  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'Filter merges by repo', sessions: 'Filter assignments by repo or agent', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
   const row = shell.row(); if (row && !document.querySelector(`#view-${v} tr[data-id="${CSS.escape(row)}"]`)) shell.row(null);
   applyText();
   defaultDetails();
@@ -185,6 +185,8 @@ const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name',
 const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
 const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
+// build (sd:3388): the services list sorts, filters and pages as v1 Operations > Services did.
+const SVC_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Service'], ['what', 'What'], ['state', 'State'], [null, 'PID', 'num'], [null, 'Previous exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // The text filter is one chip on every list; Repos adds its managed and merge filters.
 const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
@@ -448,15 +450,15 @@ document.getElementById('view-repos').addEventListener('click', e => {
 
 // ---------- Writes (build) ----------
 // landing(): the run returns the write's promise, the shell's run contract (shell.js, bulk:start; sd:2124). The shell toasts
-// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `inverse` gets what the
-// write answered and reverses this write, once. A landed write rereads (shell.read's barrier); a 409 loads again, since the
-// row it named has moved and nothing landed.
+// the text once the write landed, offers Undo only then, and folds a bulk group into one toast. `msg` and `inverse` get
+// what the write answered; `inverse` reverses this write, once. A landed write rereads (shell.read's barrier); a 409 loads
+// again, since the row it named has moved and nothing landed.
 function landing(promise, msg, inverse) {
   const stale = err => { if (err.stale) load(); throw err; };
   return promise.then(v => {
     let spent = false;
     const undo = inverse && (() => { if (spent) return Promise.resolve(false); spent = true; return inverse(v).catch(stale); });
-    return { text: msg(), undo };
+    return { text: msg(v), undo };
   }, stale);
 }
 // The command's undo: the shell passes what the run answered.
@@ -490,7 +492,7 @@ function objects() {
     { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
     ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
   SERVICES.forEach(s => out.push({ id: `svc:${s.label}`, type: 'service', label: s.name, name: s.label, running: s.state === 'running', revision: s.revision, caps: s.capabilities || {} }));
-  CRON.forEach(c => out.push({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
+  CRON.forEach(c => out.push({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', running: c.state === 'running', pid: c.pid, exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
   return [...out, ...pending];
 }
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
@@ -540,13 +542,41 @@ function registerCommands() {
     { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed,
       when: o => o.exit === 127 ? 'exit 127: command not found; fix the path first' : capWhy(o, 'retry', o.failed || 'no failed run to retry'),
       cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(job(o, 'retry'), () => `Retry started · ${o.job}`) },
+      run: o => landing(job(o, 'retry'), out => answered(out, o.job, 'retried', `Retry started · ${o.job}`)) },
+    // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
+    // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
+    { id: 'jobs.cancel', on: 'job', label: 'Cancel', key: 'x', risk: 'confirm', primary: o => o.running,
+      when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
+      consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
+      run: cancelJob },
+    { id: 'job.log', on: 'job', label: 'Show log', key: 'o', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`,
+      run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } },
     { id: 'job.print', on: 'job', label: 'Print', key: 'l', risk: 'safe', primary: o => o.exit === 127, executes: false, cli: o => `launchctl print ${o.service}`,
       run: () => 'Copy it into a terminal: the dashboard shows the launchd record in Operations › Jobs' },
   );
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
-async function job(o, action) { await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); }
+// A cancel's outcome (sd:3388), as Queue words a lane write (queue_screen.py): a 4xx wrote nothing and says why; any other
+// failure, or no answer, may follow a signal that was sent, so the jobs are read again and the toast says the outcome is not
+// known. A 200 carries launchctl's own answer: accepted, failed (nothing sent) or unknown.
+async function cancelJob(o) {
+  let out;
+  try { out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/cancel`, { revision: o.revision }); }
+  catch (err) {
+    if (err.status >= 400 && err.status < 500) { if (err.stale) load(); throw err; }
+    load();
+    return { text: `Not known whether ${o.job} was cancelled: ${err.message}. The jobs were read again; check ${o.job} before you cancel it again.` };
+  }
+  await reread();
+  return { text: answered(out, o.job, 'cancelled', `Cancel sent · ${o.job}`) };
+}
+// A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
+function answered(out, name, verb, done) {
+  const r = out && out.request || {};
+  return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
+    : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
+}
+async function job(o, action) { const out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); return out; }
 document.addEventListener('shell:open', e => {
   const id = e.detail;
   if (id.startsWith('repo:') && repoParam) shell.openPane('tab-details');
@@ -634,19 +664,43 @@ document.getElementById('view-sessions').addEventListener('click', e => {
 
 // ---------- Deploys ----------
 const SVCSTATE = s => s.state === 'running' ? 'ok' : s.state === 'failed' ? 'warning' : ['unknown'].includes(s.state) ? 'unknown' : 'queued';
+const DS = { sort: 'name', dir: 1, page: 1, size: 25 };
+const svcWhat = s => `${s.category} · ${s.scope}`;
+const SVCSORT = { name: s => s.name, what: svcWhat, state: s => s.state };
+// build (sd:3388): free text matches every column v1's filter read (name, label, scope, domain, category, state); state:<word>
+// is a chip, and the state buttons write it.
+function serviceRows() {
+  const { chips, free } = tokens();
+  const key = SVCSORT[DS.sort] || SVCSORT.name;
+  return SERVICES.filter(s => (!chips.state || String(s.state).toLowerCase() === chips.state)
+    && free.every(f => [s.name, s.label, s.scope, s.domain, s.category, s.state].join(' ').toLowerCase().includes(f)))
+    .sort((a, b) => String(key(a)).localeCompare(String(key(b))) * DS.dir || a.label.localeCompare(b.label));
+}
 function renderDeploys() {
   const el = document.getElementById('view-deploys');
-  const shown = SERVICES.filter(s => tokens().free.every(f => (s.name + ' ' + s.label + ' ' + s.category).toLowerCase().includes(f)));
+  const { chips } = tokens();
+  const rows = DOC.services ? serviceRows() : [], shown = pageOf(rows, DS);
+  const states = [...new Set(SERVICES.map(s => String(s.state).toLowerCase()))].sort();
   put(el, html`
     <div class="sec-head"><h2 id="dep-h">Deploys <button class="help" type="button" aria-label="Help: Deploys" data-help="<b>Unknown, not empty.</b> Nothing in the fleet records a deploy yet, and the dashboard has no deploy collector. The services below are what is installed on this Mac now.">${I('circle-help')}</button></h2></div>
     ${unknown('No deploy source', 'The dashboard has no deploy collector, so this list cannot fill. The services below are what runs on this Mac now.')}
     <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">launchd · ${hhmm(READ)} UTC</p></div>
     ${!DOC.services ? unknown('Services were not read', why('services'), 'sd services list')
-      : shown.length ? html`<table class="ledger" aria-labelledby="svc-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Service</th><th scope="col">What</th><th scope="col">PID</th><th scope="col">Previous exit</th>${ACTH}</tr></thead>
-      <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${s.category} · ${s.scope}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>`
-      : html`<p class="empty">${SERVICES.length ? `No service matches “${text.q}”.` : 'No installed service was found.'}</p>`}`);
+      : html`<div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
+      <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
+    ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
+    ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
+      <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${svcWhat(s)}</td><td class="d mono">${s.state}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>${shell.list.pager(rows.length, DS, 'services')}`
+      : html`<p class="empty">${SERVICES.length ? html`No service matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No installed service was found.'}</p>`}`}`);
 }
-document.getElementById('view-deploys').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true); });
+document.getElementById('view-deploys').addEventListener('click', e => {
+  if (shell.list.sortBy(e, DS) || shell.list.paging(e, DS)) { shell.list.keepFocus(e, renderDeploys); return setURL(); }
+  const f = e.target.closest('[data-svc-state]');
+  if (f) { const inp = document.getElementById('shift'), word = `state:${f.dataset.svcState}`, was = inp.value.split(/\s+/).filter(Boolean);
+    inp.value = (was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '); text.q = inp.value; DS.page = 1; renderDeploys(); return setURL(); }
+  if (e.target.closest('.rowact')) return;
+  const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
+});
 
 // ---------- Schedules ----------
 const SS = { sort: 'rank', dir: 1, page: 1, size: 25 };
@@ -719,6 +773,17 @@ function asgDetails(a, act) {
   return html`<p class="kind"><span class="g-${st}">${GLYPH[st]}</span> Assignment · ${a.status}</p><h2>${a.title || a.role}</h2><dl><dt>Assignment</dt><dd>#${a.id}${a.item ? ` · item #${a.item}` : ''}</dd><dt>Repo</dt><dd>${a.repo || '—'}</dd><dt>Role</dt><dd>${a.role} · ${a.lane} lane</dd><dt>Agent</dt><dd>${a.provider || '—'}</dd>
     <dt>Queued</dt><dd><time class="rel" datetime="${a.queued_at || ''}" data-long data-empty="never"></time></dd><dt>Started</dt><dd><time class="rel" datetime="${a.started || ''}" data-long data-empty="never"></time></dd><dt>Ended</dt><dd><time class="rel" datetime="${a.ended || ''}" data-long data-empty="never"></time></dd></dl>${act}`;
 }
+// build (sd:3388): the job's log and its last request, as v1 Operations > Jobs showed them. A log that was not read is unknown
+// with its reason, never an empty log.
+const requestDetail = r => r ? `${r.action} · ${r.status}${r.who ? ` · ${r.who}` : ''}${r.at ? ` · ${r.at}` : ''}${r.message ? ` · ${r.message}` : ''}` : 'none recorded';
+function logDetail(c) {
+  const g = c.log, file = `local-cron-jobs/logs/${c.name}.log`;
+  const head = html`<h3>Log</h3>`;
+  if (!g || g.state === 'unread') return html`${head}${unknown('The log was not read', g ? g.reason : 'this reading carries no log', file)}`;
+  if (g.state === 'none') return html`${head}<p class="why">${g.reason}.</p>`;
+  return html`${head}<p class="why">${g.cut ? `The last ${plural(g.text.split('\n').filter(Boolean).length, 'line')} of ` : ''}<span class="mono">${file}</span>, read ${hhmm(READ)} UTC.</p>
+    ${g.text ? html`<pre class="code" tabindex="0" aria-label="${c.name} log">${g.text}</pre>` : html`<p class="empty">The log is empty.</p>`}`;
+}
 function selectRow(id, open) {
   markRow(id);
   const [kind, key] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
@@ -728,8 +793,9 @@ function selectRow(id, open) {
     const c = CRON.find(x => x.name === key); if (!c) return;
     h = html`<p class="kind"><span class="g-${c.rank}" aria-hidden="true">${GLYPH[c.rank]}</span> Schedule · ${c.state}</p><h2>${c.name}</h2>
       <dl><dt>Service</dt><dd>${c.service || '—'}</dd><dt>Schedule</dt><dd>${human(c.schedule)}</dd><dt>Next run</dt><dd><time class="rel" datetime="${c.next}" data-future data-long data-empty="never"></time></dd><dt>Last exit</dt><dd>${c.last_signal != null ? `signal ${c.last_signal}` : c.last_exit ?? 'not run since load'}${c.last_exit === 127 ? ' · command not found' : ''}</dd>
-      <dt>Last run</dt><dd>${lastDetail(c)}</dd><dt>Run stamp</dt><dd class="mono">local-cron-jobs/logs/.${c.name}.stamp</dd></dl>
-      ${c.last_exit === 127 ? html`<p class="why">Exit 127: the shell could not find the command. A retry fails the same way until the path is fixed.</p>` : ''}${act}`;
+      <dt>Last run</dt><dd>${lastDetail(c)}</dd><dt>Run stamp</dt><dd class="mono">local-cron-jobs/logs/.${c.name}.stamp</dd>
+      <dt>Last request</dt><dd>${requestDetail(c.last_request)}</dd></dl>
+      ${c.last_exit === 127 ? html`<p class="why">Exit 127: the shell could not find the command. A retry fails the same way until the path is fixed.</p>` : ''}${act}${logDetail(c)}`;
     shell.suggest([`Why did ${c.name} exit ${c.last_exit ?? 0}?`, `What does ${c.name} do and who reads its output?`, 'Which schedules overlap tonight?']);
   } else if (kind === 'merge' || kind === 'asg') {
     const a = asgOf(+key); if (!a) return;
@@ -783,7 +849,7 @@ function applyText() {
   text.q = input.value.trim();
   const n = Object.keys(tokens().chips).length;
   ghost.textContent = n ? `${plural(n, 'chip')}` : '';
-  RS.page = SS.page = 1;
+  RS.page = SS.page = DS.page = 1;
   if (DOC) render();
   setURL();
 }

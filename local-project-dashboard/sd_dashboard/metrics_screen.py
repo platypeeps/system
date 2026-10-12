@@ -15,20 +15,27 @@ Progress areas already make:
 - `skills`: skill uses per day and skill for four weeks (`reads.skill_use_days`).
 - `age`: open items by days in their current status (`reads.age_histogram`).
 - `observed`: observed workflow activity (`reporting.metrics`).
+- `controls`: the provider registry as `provider_controls.snapshot` reads it, with its `revision`, and per bill the
+  one cap write the route takes (`_writes`), the read the classic Usage area's forms make (sd:3387).
 
 Each part is guarded on its own: one that raises is that part's `error`, and
 the others still answer. `unread` names the design's panels no reader covers,
 with the reason, so the page shows them as unknown and never as empty.
-Nothing here writes or reaches the network.
+Nothing here writes or reaches the network. The page's Cap and Configure post `controls.revision` to
+`/api/bills/<bill>/cap` and `/api/providers/configure` (`server.action_route`), whose library refuses it once the
+registry, a bill's cap or the order policy changed since this read.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from sd_db import reads, reporting, usage
+from sd_db import provider_controls, reads, registry, reporting, usage
 from sd_db.errors import SdDbError
+
+from .operations_screen import BILL_NAME
 
 __all__ = ["SKILL_WEEKS", "TREND_DAYS", "UNREAD", "WINDOW", "document"]
 
@@ -107,6 +114,34 @@ def _age(connection, now):
                                       "other": b.counts["other"]} for b in reads.age_histogram(rows, now=now)]}
 
 
+def _writes(name, spawned, held):
+    """The cap write a bill takes, and why not when it takes none: `set`, `clear` or `""`.
+
+    A bill a `start` entry is billed to takes no cap (`set_cap` refuses it with the registry's sentence), except the
+    clear of a legacy row cap the merged view hides, the repair `set_cap(..., None)` makes. A name outside `BILL_NAME`
+    has no route. The rule is `operations_screen._bill_caps`', so both screens offer the same writes until slice 10.
+    """
+    if not re.fullmatch(BILL_NAME, name):
+        return "", "its name is outside what the cap route accepts"
+    if name in spawned and held.get(name) is not None:
+        return "clear", f"the row holds a cap of ${held[name]:,.2f} that nothing enforces; clearing it is the one write this bill takes"
+    if name in spawned:
+        return "", "a 'start' entry is billed to it, so no cap can be set"
+    return "set", ""
+
+
+def _controls(connection):
+    current = provider_controls.snapshot(connection)
+    spawned = {entry.bill for entry in registry.read(connection=connection).providers.values() if entry.kind == "start"}
+    held = {row["name"]: row["cap_usd_month"] for row in reads.cost_by_bill(connection)}
+    bills = []
+    for bill in current["bills"]:
+        write, why = _writes(bill["name"], spawned, held)
+        bills.append({**bill, "write": write, "why": why})
+    return {"error": "", "revision": current["revision"], "orders": current["orders"], "warnings": current["warnings"], "bills": bills,
+            "providers": [{key: entry[key] for key in ("name", "vendor", "enabled", "reason", "roles")} for entry in current["providers"]]}
+
+
 def document(connection, *, now: str) -> dict:
     """The Metrics page's document: every reading, each guarded on its own, and the panels no reader covers."""
     today = _stamp(now).date()
@@ -119,5 +154,6 @@ def document(connection, *, now: str) -> dict:
         "skills": _guard(lambda: _skills(connection, today)),
         "age": _guard(lambda: _age(connection, now)),
         "observed": _guard(lambda: {"error": "", **reporting.metrics(connection, now=now)}),
+        "controls": _guard(lambda: _controls(connection)),
         "unread": list(UNREAD),
     }

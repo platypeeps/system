@@ -88,10 +88,12 @@ class TheDocument(ScreenCase):
                                           {"repo": "other/lib", "internal": False, "merged": 0, "closed": 1}])
 
     def test_a_row_carries_only_what_the_page_shows(self):
-        row = self.doc(given=[contribution(1, evidence=[{"argv": ["secret"], "cwd": "/home/example/x"}],
+        row = self.doc(given=[contribution(1, evidence=[{"argv": ["/home/example/x/secret.sh"], "cwd": "/home/example/x"}],
                                            local_clone="/home/example/x", blocked_on="waiting on a private note")])["rows"][0]
-        self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {"repo", "has_draft", "freshness", "internal", "why_internal"})
-        self.assertNotIn("secret", json.dumps(row))
+        self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {
+            "repo", "has_draft", "freshness", "internal", "why_internal", "evidence", "dependencies", "delivery"})
+        # sd:3394: evidence is shown now, but no local path: the script reads `…/secret.sh`, the directory `local: x`.
+        self.assertNotIn("/home/example", json.dumps(row))
         # Review 4 of PR #72 (34daa6618266): blocked_on is free-form metadata the page never reads.
         self.assertNotIn("private note", json.dumps(row))
         self.assertNotIn("blocked_on", PAGE_JS)
@@ -157,6 +159,48 @@ class TheDocument(ScreenCase):
                               contribution(3, "closed", repo="/home/example/b/project")])
         self.assertEqual(doc["settled"], [{"repo": "local: project", "internal": False, "merged": 2, "closed": 0},
                                           {"repo": "local: project", "internal": False, "merged": 0, "closed": 1}])
+
+    def test_a_row_carries_its_evidence_dependencies_and_delivery_without_a_local_path(self):
+        # sd:3394: Details shows what only /classic/contributions showed, shaped so no local path leaves the server.
+        check = {"argv": ["/home/example/x/run.sh", "--out=/home/example/x/report.xml", "tests/test_a.py",
+                          "https://github.com/example/project/pull/1"],
+                 "cwd": "/home/example/x", "exit_code": 0, "commit": "c" * 40, "artifact": "/home/example/x/report.xml",
+                 "sha256": "d" * 64}
+        depends = [{"kind": "item", "item": 9}, {"kind": "merge", "url": EXTERNAL}, {"kind": "issue", "url": ISSUE},
+                   {"kind": "release", "repo": "other/lib", "tag": "v2.0.0", "contains_pull": EXTERNAL,
+                    "package": {"name": "lib", "version": "2.0.0"}}]
+        notices = {"github:" + EXTERNAL: {
+            "event-1": {"status": "sent", "event": {"id": "event-1", "reason": "Maintainer approved"},
+                        "acknowledged_at": "2026-09-09T13:00:00Z"},
+            "event-2": {"status": "uncertain", "event": {"id": "event-2", "reason": "CI failed"}},
+            "event-3": {"status": "pending", "event": {"id": "event-3", "reason": "Review requested"}}}}
+        row = self.doc(given=[contribution(1, evidence=[check], evidence_verified=True, tested_commit="c" * 40,
+                                           depends_on=depends, notification_state=notices)])["rows"][0]
+        self.assertEqual(row["tested_commit"], "c" * 40)
+        self.assertEqual(row["evidence"], {"state": "read", "verified": True, "checks": [{
+            "command": "…/run.sh --out=…/report.xml tests/test_a.py https://github.com/example/project/pull/1",
+            "directory": "local: x", "exit_code": 0, "commit": "c" * 40, "artifact": "local: report.xml", "sha256": "d" * 64}]})
+        self.assertEqual(row["dependencies"], {"state": "read", "entries": depends})
+        self.assertEqual(row["delivery"], {"state": "read", "entries": [
+            {"source": "github:" + EXTERNAL, "reason": "Maintainer approved", "status": "sent", "acknowledged_at": "2026-09-09T13:00:00Z"},
+            {"source": "github:" + EXTERNAL, "reason": "CI failed", "status": "uncertain", "acknowledged_at": None},
+            {"source": "github:" + EXTERNAL, "reason": "Review requested", "status": "pending", "acknowledged_at": None}]})
+        empty = self.doc(given=[contribution(1)])["rows"][0]
+        self.assertEqual((empty["evidence"], empty["dependencies"], empty["delivery"]), (
+            {"state": "read", "verified": False, "checks": []}, {"state": "read", "entries": []}, {"state": "read", "entries": []}))
+
+    def test_a_shape_that_cannot_be_read_is_unknown_with_its_reason_never_empty(self):
+        row = self.doc(given=[contribution(1, evidence={"argv": ["x"]}, depends_on="merge it",
+                                           notification_state={"github:" + EXTERNAL: ["sent"]})])["rows"][0]
+        self.assertEqual(row["evidence"], {"state": "unknown", "reason": "the recorded evidence is not a list"})
+        self.assertEqual(row["dependencies"], {"state": "unknown", "reason": "the recorded dependencies are not a list"})
+        self.assertEqual(row["delivery"], {"state": "unknown", "reason": f"the notifications for github:{EXTERNAL} are not a record"})
+        mixed = self.doc(given=[contribution(1, evidence=["run it"], depends_on=[{"kind": "vote", "url": EXTERNAL}],
+                                             notification_state={"github:" + EXTERNAL: {"event-1": {"event": {"reason": "Merged"}}}})])["rows"][0]
+        self.assertEqual(mixed["evidence"], {"state": "unknown", "reason": "a recorded check is not a record"})
+        self.assertEqual(mixed["dependencies"]["entries"], [{"kind": "unknown", "reason": "dependency kind vote is not one sd records"}])
+        self.assertEqual(mixed["delivery"]["entries"], [
+            {"source": "github:" + EXTERNAL, "reason": "Merged", "status": "unknown", "acknowledged_at": None}])
 
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
@@ -469,6 +513,56 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         self.assertIn('href="https://github.com/example/project/pull/1"', out["R"]["a"])
         self.assertIn("local · external", out["R"]["b"])
         self.assertNotIn("href=", out["R"]["b"])
+
+    def test_details_show_dependencies_evidence_and_delivery(self):
+        # sd:3394: what only /classic/contributions showed. A link only for a GitHub URL; an uncertain delivery is unknown.
+        row = next(r for r in self.doc["rows"] if r["key"] == "github:" + EXTERNAL)
+        row.update(tested_commit="c" * 40, evidence={"state": "read", "verified": False, "checks": [
+            {"command": "…/run.sh tests", "directory": "local: x", "exit_code": 1, "commit": "c" * 40, "artifact": "local: r.xml",
+             "sha256": "d" * 64}]},
+            dependencies={"state": "read", "entries": [{"kind": "item", "item": 9}, {"kind": "merge", "url": ISSUE},
+                {"kind": "release", "repo": "other/lib", "tag": None, "contains_pull": EXTERNAL, "package": {"name": "lib"}},
+                {"kind": "unknown", "reason": "dependency kind vote is not one sd records"}]},
+            delivery={"state": "read", "entries": [
+                {"source": "github:" + EXTERNAL, "reason": "Maintainer approved", "status": "sent", "acknowledged_at": "2026-09-09T13:00:00Z"},
+                {"source": "github:" + EXTERNAL, "reason": "CI failed", "status": "uncertain", "acknowledged_at": None}]})
+        out = self.run_page(f"open('github:{EXTERNAL}'); R.d = ELS.details.html; open('item:4'); R.none = ELS.details.html;")
+        d = out["R"]["d"]
+        self.assertIn('<h3>Dependencies</h3>', d)
+        self.assertIn('<a href="/tasks?row=9">Complete local item #9</a>', d)
+        self.assertIn(f'Merge <a class="ext" href="{ISSUE}"', d)
+        self.assertIn("Publish other/lib release <code>tag not selected</code> containing", d)
+        self.assertIn("package lib, version not selected", d)
+        self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span> Not read: dependency kind vote is not one sd records', d)
+        self.assertIn('<h3>Evidence</h3>', d)
+        self.assertIn("Evidence identity is unverified", d)
+        self.assertIn("<code>…/run.sh tests</code>", d)
+        self.assertIn('<span class="g-warning" aria-hidden="true">■</span> exit 1', d)
+        self.assertIn("local: r.xml", d)
+        self.assertIn('<h3>Notification delivery</h3>', d)
+        self.assertIn('<span class="g-ok" aria-hidden="true">●</span> Maintainer approved · sent · acknowledged', d)
+        self.assertIn('<span class="g-unknown" aria-hidden="true">▨</span> CI failed · delivery uncertain: the sender did not confirm it', d)
+        self.assertIn("Tested commit", d)
+        none = out["R"]["none"]
+        for text in ("No dependencies recorded.", "No test evidence recorded.", "No notifications recorded."):
+            self.assertIn(text, none)
+
+    def test_details_say_a_section_was_not_read_and_why(self):
+        row = next(r for r in self.doc["rows"] if r["key"] == "item:4")
+        why = "the recorded evidence is not a list"
+        row.update(evidence={"state": "unknown", "reason": why}, dependencies={"state": "unknown", "reason": "x is not a list"},
+                   delivery={"state": "unknown", "reason": "y is not a record"})
+        out = self.run_page("open('item:4'); R.d = ELS.details.html;")
+        for reason in (why, "x is not a list", "y is not a record"):
+            self.assertIn(f'<span class="g-unknown" aria-hidden="true">▨</span> Not read: {reason}', out["R"]["d"])
+        for text in ("No dependencies recorded.", "No test evidence recorded.", "No notifications recorded."):
+            self.assertNotIn(text, out["R"]["d"])
+        # Older state: a server from before sd:3394 sends no section, and the page says so instead of drawing it empty.
+        for key in ("evidence", "dependencies", "delivery"):
+            row.pop(key)
+        out = self.run_page("open('item:4'); R.d = ELS.details.html;")
+        self.assertIn("Not read: the server sent no evidence", out["R"]["d"])
+        self.assertNotIn("No test evidence recorded.", out["R"]["d"])
 
     def test_an_unfiled_draft_reads_as_a_draft_from_the_flag_alone(self):
         row = next(r for r in self.doc["rows"] if r["key"] == "item:4")
