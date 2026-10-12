@@ -40,7 +40,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from sd_db import reads, workflow
+from sd_db import reads, repos, workflow
+from sd_db.protection import github_slug
 
 __all__ = ["details", "document"]
 
@@ -144,7 +145,6 @@ def _external(connection, row, *, now: str) -> dict | None:
 
 #: A file path a body or note names: absolute, `~/`, or repo-relative with at least one folder.
 _NAMED_PATH = re.compile(r"(?<![\w./~-])((?:~?/)?[\w.-]+(?:/[\w.-]+)+\.(?:md|html))")
-_GITHUB = re.compile(r"(?:git@github\.com:|https://github\.com/)(.+?)(?:\.git)?/?$")
 
 
 def _documents(connection, state) -> list[dict]:
@@ -153,9 +153,9 @@ def _documents(connection, state) -> list[dict]:
     the gitignored `docs/dashboard` or outside the checkout shows its path only."""
     item = state["item"]
     root = Path(item["repo"]).expanduser() if item["repo"] else None
-    remote = connection.execute("SELECT remote FROM repo WHERE path = ?", (item["repo"],)).fetchone() if root else None
-    match = _GITHUB.match(remote[0] or "") if remote else None
-    web = f"https://github.com/{match.group(1)}" if match else ""
+    registered = repos.row_for(connection, item["repo"]) if root else None
+    slug = github_slug(registered["remote"]) if registered else None
+    web = f"https://github.com/{slug[0]}/{slug[1]}" if slug else ""
     found: dict[Path, tuple[Path, str]] = {}  # resolved path -> (path as named, why)
 
     def add(path: Path, why: str) -> None:
