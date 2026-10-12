@@ -39,7 +39,7 @@ case "$1" in
     ;;
   update)
     docker stop postgres 2>/dev/null || true
-    docker images -a | grep "^postgres " | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=postgres" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

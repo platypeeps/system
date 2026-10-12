@@ -157,8 +157,8 @@ case "$1" in
     ;;
   update)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    # By IMAGE ID ($3), not tag ($2) — locally built, so nothing to pull back.
-    imgs="$(docker images -a | grep "^$IMAGE " | awk '{print $3}' || true)"
+    # By image ID (-q), not tag — locally built, so nothing to pull back.
+    imgs="$(docker images -aq --filter "reference=$IMAGE" | sort -u)"
     [ -z "$imgs" ] || echo "$imgs" | xargs docker rmi -f >/dev/null
     need_src
     docker build -t "$IMAGE" "$SRC"

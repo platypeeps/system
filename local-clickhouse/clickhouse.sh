@@ -51,8 +51,8 @@ case "$1" in
     ;;
   update)
     "$0" stop
-    docker images -a | grep "clickhouse-server" | awk '{print $3}' | xargs docker rmi
-    docker images -a | grep "mcp/clickhouse" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=clickhouse/clickhouse-server" | sort -u | xargs docker rmi
+    docker images -aq --filter "reference=mcp/clickhouse" | sort -u | xargs docker rmi
     ;;
   client)
     docker run \

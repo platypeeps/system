@@ -39,7 +39,7 @@ case "$1" in
     ;;
   update)
     docker stop falkordb 2>/dev/null || true
-    docker images -a | grep "falkordb/falkordb" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=falkordb/falkordb" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

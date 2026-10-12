@@ -30,8 +30,8 @@ with the public command pack
   `.env.example` (or `<name>.conf.example`) with `change-me` values.
 - Data and log directories (`storage/`, `volumes/`, `logs/`, …) are gitignored
   but kept in the tree via `.gitkeep`.
-- Docker `update` subcommands delete images by IMAGE ID (`awk '{print $3}'`),
-  with the grep anchored to the real image name.
+- Docker `update` subcommands delete images by ID, listed with
+  `docker images -aq --filter "reference=<repo>"`.
 - launchd labels share one prefix, read from `SYSTEM_TOOLS_LABEL_PREFIX`
   (default `local.system-tools`).
 

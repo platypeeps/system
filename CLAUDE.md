@@ -71,7 +71,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.
    - A job for one machine goes in `<root>/cron-jobs/jobs/<host>/`, `<host>` being the lower-cased `hostname -s`.
 4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.
-5. Docker services use `--rm` and named containers; `update` removes images by IMAGE ID (`awk '{print $3}'` on `docker images`; `$2` is the tag).
+5. Docker services use `--rm` and named containers; `update` removes images by ID with `docker images -aq --filter "reference=<repo>"` (Docker 29 moved the ID column).
 6. **A `status` subcommand answers with an exit code**: `0` healthy, `3` nothing to check (not configured or not running), `1` up and broken.
    - `local-health-check` runs `status` only for tools that declare it, and reports only `1`, so unconfigured machines stay silent.
    - Declare it with one sentence in the tool's `help`, next to its `status` line: "local-health-check reads these codes".

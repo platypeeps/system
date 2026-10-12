@@ -126,6 +126,11 @@ python3 tests/test_one_double.py
 # (sd:3281). Git and stdlib only, so it runs here before the venv.
 python3 tests/test_retired_folder.py
 
+# Every docker `update` lists images by `-aq --filter reference=` and not by
+# a column of the image listing (sd:3549). Git and stdlib only, so it runs here
+# before the venv, and the guard below demands this line.
+python3 tests/test_docker_update.py
+
 # tests/check.sh itself against stub suites (sd:2719, sd:2720): how many
 # jobs it runs at once and where it fetches the pinned pack from. Stdlib
 # and git only, so it runs here before the venv, and the guard below

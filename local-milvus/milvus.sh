@@ -37,7 +37,7 @@ case "$1" in
     ;;
   update)
     docker stop zilliz 2>/dev/null || true
-    docker images -a | grep "zilliz" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=zilliz/attu" | sort -u | xargs docker rmi
     run_embed upgrade
     ;;
   install)

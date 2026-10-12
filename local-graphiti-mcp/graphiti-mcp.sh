@@ -36,7 +36,7 @@ case "$1" in
   update)
     need_env
     compose down
-    docker images -a | grep "knowledge-graph-mcp" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=zepai/knowledge-graph-mcp" | sort -u | xargs docker rmi
     compose pull
     ;;
   -h|--help|help)

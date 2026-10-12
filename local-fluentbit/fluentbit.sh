@@ -142,7 +142,7 @@ case "${1:-}" in
   update)
     docker stop "$CONTAINER" 2>/dev/null || true
     rm -f "$STARTED"
-    docker images -a | grep "fluent/fluent-bit" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=cr.fluentbit.io/fluent/fluent-bit" | sort -u | xargs docker rmi
     ;;
   test)
     shift
