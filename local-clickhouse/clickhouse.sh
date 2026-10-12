@@ -13,15 +13,11 @@ NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
 MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 
 # <config>/clickhouse/.env (see lib/config.sh) provides defaults only —
-# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
-# baked-in local dev values apply.
-ENV_CLICKHOUSE_USER="${CLICKHOUSE_USER:-}"
-ENV_CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-}"
+# already-exported values win (st_source_env's one rule). The file is optional;
+# without it the baked-in local dev values apply.
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env clickhouse
-if [ -n "$ENV_CLICKHOUSE_USER" ]; then CLICKHOUSE_USER="$ENV_CLICKHOUSE_USER"; fi
-if [ -n "$ENV_CLICKHOUSE_PASSWORD" ]; then CLICKHOUSE_PASSWORD="$ENV_CLICKHOUSE_PASSWORD"; fi
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-verysecure}"
 
@@ -51,8 +47,8 @@ case "$1" in
     ;;
   update)
     "$0" stop
-    docker images -a | grep "clickhouse-server" | awk '{print $3}' | xargs docker rmi
-    docker images -a | grep "mcp/clickhouse" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=clickhouse/clickhouse-server" | sort -u | xargs docker rmi
+    docker images -aq --filter "reference=mcp/clickhouse" | sort -u | xargs docker rmi
     ;;
   client)
     docker run \

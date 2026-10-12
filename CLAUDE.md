@@ -66,12 +66,13 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Resolve it with `lib/config.sh` (`st_config_dir`, `st_source_env`, `st_missing`) or `lib/system_tools_config.py`; do not repeat the rule.
    - Commit `<folder>/.env.example` or `<file>.example` with `change-me` values.
    - Source `.env` only if it exists, then check the needed variables; a missing `.env` is fine when the values are exported.
+   - An exported value wins over the file, an empty one too; `st_source_env` keeps that rule, so keep no snapshot of your own.
    - On a missing variable, fail with its name and both remedies: export it, or copy the `.example` to the config path.
    - Keep the root `.gitignore` lines for in-folder config files as a safety net.
    - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.
    - A job for one machine goes in `<root>/cron-jobs/jobs/<host>/`, `<host>` being the lower-cased `hostname -s`.
-4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.
-5. Docker services use `--rm` and named containers; `update` removes images by IMAGE ID (`awk '{print $3}'` on `docker images`; `$2` is the tag).
+4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`, `state/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.
+5. Docker services use `--rm` and named containers; `update` removes images by ID with `docker images -aq --filter "reference=<repo>"` (Docker 29 moved the ID column).
 6. **A `status` subcommand answers with an exit code**: `0` healthy, `3` nothing to check (not configured or not running), `1` up and broken.
    - `local-health-check` runs `status` only for tools that declare it, and reports only `1`, so unconfigured machines stay silent.
    - Declare it with one sentence in the tool's `help`, next to its `status` line: "local-health-check reads these codes".
@@ -79,7 +80,14 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - Do not list the declaring tools in prose; lists go stale.
 7. **launchd labels** use the prefix in `SYSTEM_TOOLS_LABEL_PREFIX` (default `local.system-tools`); never hardcode a personal prefix.
 
-Deliberate deviations: `local-scan-for-secrets` scans the cwd on no-arg; `local-cswap` and `tests/ci-native.sh` are bash; `local-gito` sources `~/.gito/.env`; `local-cron-jobs` uses `local`; `local-genai-traces` uses compose with `restart: unless-stopped`, not `--rm`, to stay always on.
+Deliberate deviations:
+
+- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-opentelemetry-traces` runs the generator; `local-agent-meter` appends a reading.
+- Bash, not POSIX sh: `local-cswap` and `tests/ci-native.sh`.
+- Compose, not `--rm` and `docker run`: `local-genai-traces` (`restart: unless-stopped`, to stay always on), `local-graphiti-mcp` and `mezmo-aura`.
+- Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.
+- `local-cswap` reads the tracked `cswap-auto.conf`, which holds defaults only.
+- `local-cron-jobs` uses `local`.
 
 ## Planned work lives in `docs/work/`
 

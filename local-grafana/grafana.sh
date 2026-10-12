@@ -19,7 +19,7 @@ case "$1" in
     ;;
   update)
     docker stop grafana 2>/dev/null || true
-    docker images -a | grep "grafana/grafana" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=grafana/grafana*" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

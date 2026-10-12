@@ -38,15 +38,7 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 # <config>/ha-mcp/.env provides defaults only -- values already in the
 # environment win.
-ENV_HA_TOKEN="${HA_TOKEN:-}"
-ENV_HA_MCP_URL="${HA_MCP_URL:-}"
-ENV_MCP_REMOTE_VERSION="${MCP_REMOTE_VERSION:-}"
-ENV_HA_MCP_NODE="${HA_MCP_NODE:-}"
 st_source_env ha-mcp
-[ -n "$ENV_HA_TOKEN" ] && HA_TOKEN="$ENV_HA_TOKEN"
-[ -n "$ENV_HA_MCP_URL" ] && HA_MCP_URL="$ENV_HA_MCP_URL"
-[ -n "$ENV_MCP_REMOTE_VERSION" ] && MCP_REMOTE_VERSION="$ENV_MCP_REMOTE_VERSION"
-[ -n "$ENV_HA_MCP_NODE" ] && HA_MCP_NODE="$ENV_HA_MCP_NODE"
 
 MCP_REMOTE_VERSION="${MCP_REMOTE_VERSION:-0.8.3}"
 

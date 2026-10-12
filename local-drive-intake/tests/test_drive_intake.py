@@ -241,7 +241,8 @@ class TestConfigLocation(unittest.TestCase):
     def test_default_is_the_config_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, output = self.status({"SYSTEM_TOOLS_CONFIG": tmp})
-        self.assertEqual(code, di.EXIT_ERROR)
+        # sd:3552. A conf never copied in is nothing to check, not broken.
+        self.assertEqual(code, di.EXIT_NONE)
         expected = Path(tmp) / "drive-intake" / "drive-intake.conf"
         self.assertIn(f"config : {expected}", output)
         self.assertIn("drive-intake.conf.example", output)
