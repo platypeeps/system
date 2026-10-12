@@ -49,6 +49,8 @@ addEventListener('DOMContentLoaded', () => {
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
       anchor: state.item.recurrence_anchor ?? null, revision: state.revision });
+    if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
+      repo: state.item.repo ? tasks.find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
@@ -134,8 +136,9 @@ addEventListener('DOMContentLoaded', () => {
   const cliMove = (t, to) => `sd task status ${t.id} ${to}`;
   function cliQuad(t, ch) {
     const a = [];
-    if ('p' in ch) a.push(`--priority ${ch.p}`);
+    if ('p' in ch) a.push(ch.p ? `--priority ${ch.p}` : '--clear-priority');
     if ('due' in ch) a.push(ch.due ? `--due ${ch.due}` : '--clear-due');
+    if ('repo' in ch) a.push(ch.repo ? `--belongs-to ${window.shell.shq(ch.repo)}` : '--no-repo');
     return `sd task edit ${t.id} ${a.join(' ')}`;
   }
 
@@ -325,7 +328,7 @@ addEventListener('DOMContentLoaded', () => {
   // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
   // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
   // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
-  const FIELD = { anchor: 'recurrence_anchor' };
+  const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
   function editRun(t, ch, msg, { check, keep = Object.keys(ch) } = {}) {
     let was = {};
     const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, r[k] ?? null])); };
@@ -541,23 +544,58 @@ addEventListener('DOMContentLoaded', () => {
       : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
       : 'Select a task to see its fields and moves.'}</p>`); return; }
     const [dt] = dueText(t), act = C.bar(t.key), gone = !live(t.key);
+    // build (sd:3439): status, priority, due, repo and quadrant are fields; a change writes at once (fieldChange below).
+    const off = gone ? 'this task was not read again after the change' : EDITABLE(t) ? '' : noEdit(t);
+    const dis = off ? html` disabled aria-describedby="det-off"` : '';
+    const focused = document.activeElement?.id;
     put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
-      <dl>
+      <dl class="fields">
         <dt>Id</dt><dd>#${t.id}</dd>
-        <dt>Status</dt><dd>${slabel(t.status)}</dd>
-        <dt>Priority</dt><dd>${t.p ? 'P' + t.p : 'not recorded'}</dd>
-        <dt>Due</dt><dd>${t.due ? `${t.due} · ${dt}` : t.overdue ? 'overdue · date not recorded' : 'none'}</dd>
-        <dt>Repo</dt><dd>${t.repo_path || t.repo}</dd>
+        <dt><label for="det-status">Status</label></dt><dd><select id="det-status" class="fld"${gone ? html` disabled aria-describedby="det-off"` : ''}>${STATUSES.map(([s, name]) => { const L = legal(t, s);
+          return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
+        <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
+        <dt><label for="det-due">Due</label></dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
+        <dt><label for="det-repo">Repo</label></dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
         <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
-        <dt>Quadrant</dt><dd>${t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
+        <dt><label for="det-q">Quadrant</label></dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
         ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
       </dl>
+      ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
       ${more(t)}
       <p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
+    if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.(); // a redraw keeps the field the operator is on
+    if (!off) window.shell.repos?.().then(list => { const r = document.getElementById('det-repo'); if (r && selected === t.key && !r.disabled) put(r, repoOptions(t, list)); }, () => {});
   }
+  // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.
+  function repoOptions(t, list) {
+    const all = list || [...new Map(tasks.filter(x => x.repo_path).map(x => [x.repo_path, { path: x.repo_path, name: x.repo }])).values()];
+    if (t.repo_path && !all.some(r => r.path === t.repo_path)) all.push({ path: t.repo_path, name: t.repo });
+    return html`<option value=""${t.repo_path ? '' : html` selected`}>No repo</option>${all.map(r => html`<option value="${r.path}"${r.path === t.repo_path ? html` selected` : ''}>${r.name}</option>`)}`;
+  }
+  // build (sd:3439): a Details field's change is one write through the command or edit it stands for, with its toast and
+  // Undo. Status runs the status command, Quadrant the quadrant move (it asks for a date when it crosses the urgency line),
+  // and the rest edit the item. `check` refuses a change a write queued before it already made. A refused change redraws,
+  // so the field shows the row as it is.
+  function fieldChange(t, id, v) {
+    if (id === 'det-status') return v !== t.status && move(t.key, v);
+    if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
+    if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
+      commitEdit(t, { p: n }, `priority ${t.p ? 'P' + t.p : 'unset'} → ${n ? 'P' + n : 'unset'}`, { check: r => r.p !== n || `it is already ${n ? 'P' + n : 'unset'}` }); return true; }
+    if (id === 'det-due') { const d = v || null; if (d === t.due) return false;
+      if (!d && repeats(t)) { toast(NO_CLEAR); return false; }
+      commitEdit(t, { due: d }, d ? `due ${fmt(d)}` : 'due removed', { check: r => r.due !== d || 'the date is already set' }); return true; }
+    if (id === 'det-repo') { const r = v || null; if (r === (t.repo_path || null)) return false;
+      commitEdit(t, { repo: r }, `repo → ${r ? r.split('/').pop() : 'none'}`, { keep: ['repo_path'], check: x => (x.repo_path || null) !== r || 'it is already there' }); return true; }
+    return false;
+  }
+  document.getElementById('details').addEventListener('change', e => {
+    const t = byKey(selected), id = e.target.id || '';
+    if (!t || !id.startsWith('det-')) return;
+    if (!fieldChange(t, id, e.target.value)) renderDetails();
+  });
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
   function more(t) {
     if (!t.id) return '';
@@ -651,9 +689,9 @@ addEventListener('DOMContentLoaded', () => {
     if (off.length) toast(`Skipped ${off.map(o => `${label(T(o))}: ${c.when(o)}`).join('; ')}`);
   }
   // build: a quadrant drop is an edit; it lands through the same write, toasts after, and Undo edits the fields back.
-  function commitEdit(t, ch, words) {
+  function commitEdit(t, ch, words, opts) {
     // A page dialog, not a shell command: it toasts on its own, with the same Undo a command gets.
-    editRun(t, ch, () => `${label(t)} ${words}${' · ' + cliQuad(t, ch)}`).then(r => toast(r.text, () => r.undo().then(
+    editRun(t, ch, () => `${label(t)} ${words}${' · ' + cliQuad(t, ch)}`, opts).then(r => toast(r.text, () => r.undo().then(
       ok => { if (ok) toast(`Edit undone · ${label(t)}`); }, err => failed(label(t), err))), err => failed(label(t), err));
   }
   function toQuad(key, q) {

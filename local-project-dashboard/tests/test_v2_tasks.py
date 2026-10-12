@@ -627,6 +627,49 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertIn("<b>running</b>", port_html)
         self.assertIn("docs/work/port/prd.md", port_html)
 
+    # sd:3439: the Details fields edit in place. A field's change is the write its command makes, with the same toast and Undo.
+    ECHO = """(path, body) => { const row = DOC.rows.find(r => path.startsWith('/api/items/' + r.id)); window.WROTE = (window.WROTE || 0) + 1;
+  const item = { id: row.id, status: body.status || row.status, priority: 'priority' in body ? body.priority : row.priority,
+    due: 'due' in body ? body.due : row.due, recurrence: row.recurrence, title: body.title || row.title, repo: 'repo' in body ? body.repo : row.repo_path };
+  return [200, { item, notes: [], revision: String(window.WROTE % 10).repeat(64) }]; }"""
+    CHANGE = "const change = (id, value) => ELS.details.listeners.change.forEach(f => f({ target: { id, value } }));\n"
+
+    def test_the_details_draw_status_priority_due_repo_and_quadrant_as_fields(self):
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.row("port")["edit"] = {"allowed": False, "reason": "message items use their own editing workflow"}
+        out = self.run_page(f"open({plan}); await flush(); R.plan = ELS.details.html; open({port}); await flush(); R.port = ELS.details.html;")
+        html = out["R"]["plan"]
+        self.assertRegex(html, r'<select id="det-status"[^>]*>.*<option value="ready" selected>Ready</option>')
+        self.assertRegex(html, r'<select id="det-p"[^>]*>.*<option value="2" selected>P2</option>')
+        self.assertIn('<input id="det-due" class="fld" type="date" value="2026-09-09">', html)
+        self.assertRegex(html, r'<select id="det-repo"[^>]*><option value="">No repo</option>.*selected')
+        self.assertRegex(html, r'<select id="det-q"[^>]*>')
+        # A row edit_item refuses has its fields off, with the reason; a work item's repo is its checkout's.
+        self.assertRegex(out["R"]["port"], r'<select id="det-p" class="fld" disabled aria-describedby="det-off">')
+        self.assertIn('<p class="why" id="det-off">The fields are off: message items use their own editing workflow.</p>', out["R"]["port"])
+        self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
+        self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
+
+    def test_a_field_change_writes_once_with_its_cli_line_and_undo(self):
+        plan = self.ids["plan"]
+        row = self.row("plan")
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('det-p', '1'); await flush(); lastUndo().undo(); await flush();
+change('det-repo', ''); await flush();
+change('det-due', ''); await flush();
+change('det-status', 'blocked'); await flush();
+change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
+        bodies = [(p[0], {k: v for k, v in p[1].items() if k != "revision"}) for p in out["posts"]]
+        self.assertEqual(bodies, [
+            (f"/api/items/{plan}", {"priority": 1}), (f"/api/items/{plan}", {"priority": 2}),
+            (f"/api/items/{plan}", {"repo": None}), (f"/api/items/{plan}", {"due": None}),
+            (f"/api/items/{plan}/status", {"status": "blocked"}), (f"/api/items/{plan}", {"priority": 1})])
+        self.assertEqual(out["posts"][0][1]["revision"], row["revision"])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertIn(f"#{plan} priority P2 → P1 · sd task edit {plan} --priority 1", msgs)
+        self.assertIn(f"#{plan} repo → none · sd task edit {plan} --no-repo", msgs)
+        self.assertIn(f"#{plan} due removed · sd task edit {plan} --clear-due", msgs)
+
     def test_a_status_move_toasts_after_the_write_and_undo_posts_the_old_status_with_the_new_revision(self):
         ask = self.ids["ask"]
         row = next(r for r in self.doc["rows"] if r["id"] == ask)
