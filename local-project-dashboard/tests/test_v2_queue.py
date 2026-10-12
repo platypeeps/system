@@ -65,6 +65,11 @@ def git(path, *args):
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def numbered(entries):
+    """`entries` as a pack with `enqueue_seq` lists them before any move: each one's number is its place (sd:3419)."""
+    return [{**row, "enqueue_seq": seq} for seq, row in enumerate(entries, 1)]
+
+
 class Lane:
     """A registered git checkout, its lane folder and a stubbed `sd-ship` on PATH that lists `entries`."""
 
@@ -266,6 +271,33 @@ class TheRows(Lane, ScreenCase):
         self.list(self.entries() + [{"item": 1, "title": "Cancelled", "status": "cancelled", "expected_head": "f" * 40,
                                      "finished_at": "2026-09-06T08:00:00Z"}])
         self.assertNotEqual(self.doc()["lanes"][0]["revision"], before)
+
+    # sd:3419: `lane move` can list an item's newer entry above its older ones, so its place is not its age.
+    def test_after_a_move_an_items_newest_entry_is_its_highest_enqueue_seq_not_its_last_listed(self):
+        newer = [{"item": 5, "title": "Prepared only", "status": "prepared", "reason": "again", "expected_head": "f" * 40,
+                  "finished_at": "2026-09-06T11:00:00Z", "enqueue_seq": 98},
+                 {"item": 1, "title": "Cancelled", "status": "pending", "expected_head": "1" * 40, "enqueue_seq": 99}]
+        self.list(newer + numbered(self.entries()))
+        rows = self.doc()["lanes"][0]["rows"]
+        self.assertEqual([(row["item"], row["expected_head"]) for row in rows if row["state"] == "blocked"],
+                         [(5, "f" * 40), (4, "4" * 40)])
+        self.assertEqual([row["item"] for row in rows if row["state"] == "cancelled"], [])
+
+    def test_after_a_move_the_page_revision_reads_the_head_of_the_highest_enqueue_seq(self):
+        newer = {"item": 5, "title": "Prepared only", "status": "prepared", "reason": "again", "expected_head": "f" * 40,
+                 "finished_at": "2026-09-06T11:00:00Z", "enqueue_seq": 99}
+        self.list([newer] + numbered(self.entries()))
+        before = self.doc()["lanes"][0]["revision"]
+        self.list([{**newer, "expected_head": "e" * 40}] + numbered(self.entries()))
+        self.assertNotEqual(self.doc()["lanes"][0]["revision"], before)
+
+    def test_without_enqueue_seq_on_every_entry_the_last_listed_entry_is_the_newest(self):
+        # The fallback for a pack that writes no `enqueue_seq`: it lists an item's entries oldest first.
+        older, newer = {"item": 1, "status": "failed"}, {"item": 1, "status": "cancelled"}
+        self.assertIs(queue_screen.newest([older, newer])[1], newer)
+        self.assertIs(queue_screen.newest([{**older, "enqueue_seq": 7}, newer])[1], newer)
+        moved = [{**newer, "enqueue_seq": 7}, {**older, "enqueue_seq": 2}]
+        self.assertIs(queue_screen.newest(moved)[1], moved[0])
 
     def test_a_pack_whose_retry_takes_a_cancelled_entry_offers_requeue(self):
         doc = self.doc()
@@ -476,6 +508,22 @@ class TheMove(Lane, BrowserSession):
                                                           "revision": revision, "head": "1" * 40})
         self.assertEqual((status, answer.get("reload")), (409, True), answer)
         self.assertEqual(self.calls(), [["-C", str(self.checkout), "lane", "list"]])
+
+    def test_requeue_after_a_move_reads_the_highest_enqueue_seq_as_the_newest_entry(self):
+        # sd:3419: a newer cancel listed above an older failure is the newest entry, so Re-queue takes it.
+        cancelled = {"item": 9, "title": "Old failure, since retried", "status": "cancelled", "expected_head": "f" * 40,
+                     "finished_at": "2026-09-06T11:00:00Z", "enqueue_seq": 99}
+        self.list([cancelled] + numbered([row for row in self.entries() if row["status"] != "pending" or row["item"] != 9]))
+        status, _, answer = self.move("requeue", item=9, head="f" * 40)
+        self.assertEqual((status, answer.get("ok")), (200, True), answer)
+        self.assertEqual(self.calls()[-1], ["-C", str(self.checkout), "lane", "retry", "9", "--expected-head", "f" * 40])
+
+    def test_requeue_after_a_move_put_a_newer_entry_above_the_cancel_runs_no_verb(self):
+        self.list([{"item": 1, "title": "Cancelled", "status": "pending", "expected_head": "1" * 40, "enqueue_seq": 99}]
+                  + numbered(self.entries()))
+        status, _, answer = self.move("requeue", item=1, head="1" * 40)
+        self.assertEqual((status, self.calls()), (400, [["-C", str(self.checkout), "lane", "list"]]), answer)
+        self.assertIn("newest entry in this lane is pending", answer["error"])
 
     def test_a_requeue_the_lane_refuses_answers_with_the_packs_reason(self):
         # Each refusal of pack sd:3389 writes nothing: a stale head or a newer entry asks the page to read again.
