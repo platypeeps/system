@@ -10,11 +10,15 @@
   // LIST is the last read; null when it failed. RULED and REFUSED hold what a click did to a row until the next read.
   let LIST = [], reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set();
+  const REC = /\s*\(recommended\)\s*$/i;
 
   function choices(d) {
     const ruled = RULED.get(d.note);
     if (ruled) return html`<p class="ruled"><span class="g-ok" aria-hidden="true">●</span> Ruled: ${ruled.option} · note #${ruled.id}</p>`;
-    return html`<div class="choices" role="group" aria-label="${`Choose for note ${d.note}`}">${d.options.map((o, i) => html`<button type="button" class="btn quiet sm" data-note="${d.note}" data-option="${i}" title="${o}"${BUSY.has(d.note) ? html` disabled` : ''}><span>${o}</span></button>`)}</div>
+    // sd:3451: an option that ends "(Recommended)" comes first as the filled button with a tag; its index and posted text stay.
+    const opts = d.options.map((o, i) => ({ o, i, rec: REC.test(o) }));
+    opts.sort((a, b) => b.rec - a.rec);
+    return html`<div class="choices" role="group" aria-label="${`Choose for note ${d.note}`}">${opts.map(({ o, i, rec }) => html`<button type="button" class="${rec ? 'btn sm rec' : 'btn quiet sm'}" data-note="${d.note}" data-option="${i}" title="${o}"${BUSY.has(d.note) ? html` disabled` : ''}><span>${rec ? o.replace(REC, '') : o}</span>${rec ? html`<span class="tag">Recommended</span>` : ''}</button>`)}</div>
       ${REFUSED.has(d.note) ? html`<p class="refused" role="alert">Not recorded: ${REFUSED.get(d.note)}</p>` : ''}`;
   }
 

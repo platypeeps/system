@@ -37,7 +37,7 @@
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
-    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Queue', 'git-merge', 'u']]],
+    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Queue', 'git-merge', 'u'], ['Settings', 'sun-moon', 'v']]],
   ];
   // build: a page that is built sets window.SHELL_PAGES; a section missing from it shows as not built yet.
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html' };
@@ -57,32 +57,22 @@
   const rail = document.createElement('aside');
   rail.className = 'rail'; rail.setAttribute('aria-label', 'Sidebar');
   put(rail, html`
-    <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
+    <div class="rail-head">
+      <a class="mark" href="${PAGES.Today || '#'}"><b>sd</b><span>system</span></a>
+      <button class="icon-btn" type="button" id="reload" title="Reload this page (r)" aria-label="Reload this page (r)">${ICON('rotate-ccw')}</button>
+      <button class="icon-btn" type="button" id="fold-rail" aria-expanded="true" aria-controls="sections" aria-label="Collapse sections ([)" title="Collapse sections ([)">${ICON('panel-left-close')}</button>
+    </div>
     <nav aria-label="Sections" id="sections">${GROUPS.map(([g, items]) => html`
       <div><span class="label">${g}</span><ul>${items.map(([name, icon, key]) => {
         const href = hrefOf(name) || '#';
         return html`<li><a href="${href}" data-section="${name}"${name === page ? html` aria-current="page"` : ''}${hrefOf(name) ? '' : html` data-unbuilt`}${classic(name) ? html` data-classic` : ''}>${ICON(icon)}<span class="nm">${name}</span>${classic(name) ? html`<span class="classic">classic<span class="sr"> screen</span></span>` : ''}${badge(counts[name])}<kbd>g ${key}</kbd></a></li>`;
       })}</ul></div>`)}
-      <div class="theme" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
-        <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
-        <button type="button" data-theme-choice="system">${ICON('monitor')}System</button>
-      </div>
     </nav>
     <div class="foot">
-      <button class="cmd fold" type="button" id="fold-rail" aria-expanded="true" aria-controls="sections">${ICON('panel-left-close')}<span class="txt">Collapse</span><kbd>[</kbd></button>
-      <div class="theme rail-theme" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="dark">${ICON('moon')}Dark</button>
-        <button type="button" data-theme-choice="light">${ICON('sun')}Light</button>
-        <button type="button" data-theme-choice="system">${ICON('monitor')}System</button>
-      </div>
       <button class="cmd menu" type="button" id="open-menu" aria-expanded="false" aria-controls="sections">Sections</button>
       <button class="cmd" type="button" id="open-chat" aria-controls="pane" aria-label="Chat (c)">${ICON('message-square')}<span class="txt">Chat</span><kbd>c</kbd></button>
       <button class="cmd" type="button" id="open-palette" aria-label="Commands (⌘K)">${ICON('command')}<span class="txt">Commands</span><kbd>⌘K</kbd></button>
-      <button class="cmd" type="button" id="reload" title="Reload this page (r)" aria-label="Reload this page (r)">${ICON('rotate-ccw')}<span class="txt">Reload</span><kbd>r</kbd></button>
     </div>`);
-  // The in-nav theme copy shows only inside the narrow-screen Sections menu.
-  rail.querySelector('nav > .theme').classList.add('menu-theme');
   const shell = document.querySelector('.shell');
   shell.prepend(rail);
   // Skip link: the first tab stop, ahead of the rail's 26 (review 2026-09-29, 24). main is its target.
@@ -192,8 +182,10 @@
   const foldRail = rail.querySelector('#fold-rail'), foldPane = pane.querySelector('#fold-pane');
   function setRail(min) {
     min ? body.dataset.rail = 'min' : delete body.dataset.rail; store('sd.rail', min ? 'min' : '');
-    foldRail.setAttribute('aria-expanded', !min); foldRail.querySelector('.txt').textContent = min ? 'Expand' : 'Collapse';
-    foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`); foldRail.title = min ? 'Expand sections ([)' : '';
+    // sd:3442: the fold is an icon button beside the mark, so its name lives in aria-label and title.
+    const label = `${min ? 'Expand' : 'Collapse'} sections ([)`;
+    foldRail.setAttribute('aria-expanded', !min); foldRail.setAttribute('aria-label', label); foldRail.title = label;
+    foldRail.querySelector('use').setAttribute('href', `#i-panel-left-${min ? 'open' : 'close'}`);
     rail.querySelectorAll('nav a[data-section]').forEach(a => { a.title = min ? a.querySelector('.nm').textContent : ''; });
   }
   function setPane(min) {
@@ -207,6 +199,44 @@
   pane.querySelector('.tabs').addEventListener('click', e => { if (body.dataset.pane && e.target.closest('[role="tab"]')) setPane(false); });
   if (store('sd.rail') === 'min') setRail(true);
   if (store('sd.pane') === 'min') setPane(true);
+  // Width: the rail's right edge is a separator (WAI-ARIA window splitter). Drag it, or step it with ← → (Home, End) when it
+  // has focus; a double-click goes back to the default. Hidden while the rail is folded, below 900px and on touch, where
+  // a page sets it through shell.railWidth instead.
+  const grip = document.createElement('div');
+  grip.className = 'rail-grip'; grip.tabIndex = 0; grip.title = 'Drag to resize the sections; double-click resets';
+  rail.append(grip);
+  // width:start
+  // sd:3445: each browser keeps the width as sd.rail.width, as it keeps the fold. A value is clamped to RAIL_BOUNDS (px); one
+  // that is not a positive number, or none, leaves --rail at its tokens.css default. keep=false moves without storing (a drag).
+  const RAIL_BOUNDS = [176, 384];
+  const railWidth = v => { const n = Math.round(parseFloat(v)); return n > 0 ? Math.min(RAIL_BOUNDS[1], Math.max(RAIL_BOUNDS[0], n)) : null; };
+  function setWidth(v, keep = true) {
+    const w = railWidth(v), root = document.documentElement;
+    w ? root.style.setProperty('--rail', `${w}px`) : root.style.removeProperty('--rail');
+    // A kept width tells the page (Settings shows it); a drag in progress does not.
+    if (keep) { store('sd.rail.width', w ? String(w) : ''); document.dispatchEvent(new CustomEvent('shell:rail-width', { detail: w })); }
+    for (const [k, x] of [['role', 'separator'], ['aria-orientation', 'vertical'], ['aria-controls', 'sections'], ['aria-label', 'Sections width'],
+      ['aria-valuemin', RAIL_BOUNDS[0]], ['aria-valuemax', RAIL_BOUNDS[1]], ['aria-valuenow', w || Math.round(rail.getBoundingClientRect().width)]]) grip.setAttribute(k, String(x));
+    return w;
+  }
+  // width:end
+  setWidth(store('sd.rail.width'), false);
+  grip.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault(); grip.setPointerCapture(e.pointerId); body.dataset.resizing = '';
+    const left = rail.getBoundingClientRect().left;
+    let last = null;
+    const move = m => { last = setWidth(m.clientX - left, false); };
+    const up = () => { ['pointermove', 'pointerup', 'pointercancel'].forEach((t, i) => grip.removeEventListener(t, i ? up : move)); delete body.dataset.resizing; if (last) setWidth(last); };
+    grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
+  });
+  grip.addEventListener('keydown', e => {
+    const now = +grip.getAttribute('aria-valuenow');
+    const to = { ArrowLeft: now - 16, ArrowRight: now + 16, Home: RAIL_BOUNDS[0], End: RAIL_BOUNDS[1] }[e.key];
+    if (to === undefined) return;
+    e.preventDefault(); e.stopPropagation(); setWidth(to);
+  });
+  grip.addEventListener('dblclick', () => setWidth(null));
   const wide = () => matchMedia('(min-width: 1240px)').matches;
   let paneReturn = null;
   // Below 1240 the pane is a bottom sheet, last in the DOM: focus moves into it, or 89 stops sit between the row and the sheet.
@@ -1067,7 +1097,9 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS };
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+    // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
+    railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook
   if (location.hash === '#sheet') openPane('tab-details');
   if (location.hash === '#menu') setMenu(true);
