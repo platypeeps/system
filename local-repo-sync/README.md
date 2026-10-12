@@ -161,8 +161,13 @@ the pack.
 ### Satellites follow the hub
 
 A satellite never moves its system and pack checkouts on its own (sd:3100).
-After a refresh with no failure, the hub pushes one annotated tag, `hub-pin`,
-to the system origin, as `+refs/tags/hub-pin`. The tag names the pinned
+After a refresh whose system and pack steps passed, the hub pushes one
+annotated tag, `hub-pin`, to the system origin, as `+refs/tags/hub-pin`.
+The tag names what the hub serves (sd:3710): a failure in another checkout,
+or a service that did not start again, still fails the refresh but does not
+withhold it, since system and the pack stay where they are. A refused or
+failed check, fetch, move or `make setup` of system or the pack, a stop that
+failed, or a migrate that is not settled withholds it. The tag names the pinned
 system sha, and its message carries `pack=<sha>`, so one push publishes the
 pair. That one tag may move backwards; nothing else is forced. A failed
 push, or a pinned system without a pinned pack, exits 1: satellites keep the

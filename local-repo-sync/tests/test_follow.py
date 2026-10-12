@@ -22,6 +22,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from test_pinned import DASHBOARD, SERVE  # noqa: E402
 from test_refresh_drain import GATE_NEW_HOLDER_EACH_CALL, HOSTED_RUNNER, DrainFixture  # noqa: E402
 
 
@@ -267,6 +268,74 @@ class HubPushTest(unittest.TestCase):
         (system / "README").write_text("local edit\n")
 
         f.run("refresh", expect=1)
+
+        self.assertIsNone(f.hub_pin(system))
+
+    # sd:3710: the hub served a pack hub-pin did not name, so every satellite
+    # call failed its build check until a later refresh published the pin.
+    # hub-pin names what the hub serves, so only a failure that leaves system
+    # or the pack unknown withholds it.
+
+    def test_another_checkouts_failure_still_publishes_the_hub_pin(self):
+        """NEW (sd:3710, sd:3535 row 1). A dirty unrelated pinned checkout
+        fails the refresh, and the hub, already on the new pair, publishes it."""
+        f = self.fixture()
+        system, pack = self.pinned_pair(f)
+        other = f.repo("a/other")
+        f.pin(other)
+        f.advance_origin(other)
+        (other / "README").write_text("local edit\n")
+
+        result = f.run("refresh", expect=1)
+
+        self.assertIn(f"!!! refused: {other} has uncommitted changes", result.stdout)
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+        self.assertIn("refresh : 1 step(s) failed", result.stdout)
+
+    def test_another_checkouts_failed_move_still_publishes_the_hub_pin(self):
+        """NEW (sd:3710). A switch git refuses in another checkout, an
+        untracked file where origin now adds one, leaves the hub's pair
+        published."""
+        f = self.fixture()
+        system, pack = self.pinned_pair(f)
+        other = f.repo("a/other")
+        f.pin(other)
+        f.advance_origin(other, path="later", content="from origin\n")
+        (other / "later").write_text("untracked here\n")
+
+        result = f.run("refresh", expect=1)
+
+        self.assertIn(f"switch to origin/main in {other}", result.stdout)
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+
+    def test_a_service_that_does_not_start_again_still_publishes_the_hub_pin(self):
+        """NEW (sd:3710). sd-serve is back on the new pack and the dashboard's
+        bootstrap failed: satellites talk to sd-serve, so the pin goes out."""
+        f = self.fixture()
+        system, pack = f.system_repo(), f.pack_repo()
+        (pack / "lib/sd_db").mkdir(parents=True)
+        f.commit(pack, "lib/sd_db/schema.py", "SCHEMA_VERSION = 5\n", "schema 5")
+        f.git(pack, "push", "-q", "origin", "main")
+        for repo in (system, pack):
+            f.pin(repo)
+            f.advance_origin(repo)
+        subprocess.run(["sqlite3", str(f.database), "PRAGMA user_version = 5"], check=True)
+        for label in (SERVE, DASHBOARD):
+            (f.launchd / label).touch()
+
+        result = f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootstrap {DASHBOARD}"})
+
+        self.assertIn(f"launchctl bootstrap {DASHBOARD}", result.stdout)
+        self.assertTrue((f.launchd / SERVE).exists())
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+
+    def test_a_failed_pack_setup_still_withholds_the_hub_pin(self):
+        """PIN (sd:3710). A failed make setup leaves what the pack serves
+        unknown, so the hub's own failure still publishes nothing."""
+        f = self.fixture()
+        system, _ = self.pinned_pair(f)
+
+        f.run("refresh", expect=1, extra_env={"MAKE_RC": "2"})
 
         self.assertIsNone(f.hub_pin(system))
 
