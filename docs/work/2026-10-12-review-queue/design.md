@@ -30,7 +30,7 @@ sd:3638 adds a second stream: up to five suggestions a night that need Approve o
 | Lane finding dispositions, pack `bin/sd_ship_dispositions.py` | Fix, rebut or park for each blocking finding | The `state` table, bound by digests to the report and head | Evidence tied to the exact head and report; a reason a reader can check | The binding rule: each label names its subject and the hash of the question shown |
 | Weekly KISS audit, `<config>/cron-jobs/jobs/<host>/kiss-audit-weekly.job` | Nothing; it files one item of prose | One sd item | Read-only `claude -p` with `sd task add` | The shape of the nightly job |
 | Hand-label tasks sd:2213 and sd:2832 (other repositories) | Field names; 3,766 traces | A JSON fixture with an empty human column | The operator fills JSON by hand; sd:2832 is blocked on it | First plug-ins; their volume sets the batch limit |
-| Benchmark repository on the work satellite (named in sd:3635) | Scored runs and report review | Not read | Not read | Open gap: read it from the work satellite before slice 3 |
+| Benchmark repository on the work satellite (named in sd:3635) | Scored runs and report review | Not read | Not read | Open gap: read it from the work satellite before slice 1 lands |
 
 The inventory found one store that already does most of the job: a question note, its options and its ruling.
 It found no flow that notes cannot carry, so this design adds no table.
@@ -75,7 +75,7 @@ The plug-in reads its labels back with `sd-db review export` and acts on them it
 
 - Options: 2 to 9, unique, each at most 80 characters; the label is the option text, exactly as filed.
 - Question text: at most 4 KiB; at most 5 evidence lines; `Subject` at most 200 characters and unique in its batch.
-- `sure` scores are out of scope for now (open question 5).
+- A label carries no confidence score until an experiment needs one (operator, 2026-10-12).
 
 ### Modes
 
@@ -99,14 +99,16 @@ The dashboard offers the same document as a download (labels only, never the key
 
 ### Queue UX
 
-The queue is a view of Today's Decisions panel, in the dashboard's existing shell (`products/system/design.md`): ranked ledger plus Details.
+The queue is its own rail page, **Review** (operator, 2026-10-12), in the dashboard's existing shell (`products/system/design.md`): annunciator, ranked ledger and Details.
 
-- Decisions lists each batch as one row: "▲ Label: C1 review tiers · 287 of 300 open", or "▲ Nightly review 2026-10-12 · 5 open".
-  Plain decisions keep their rows; a batch never floods the panel.
-- Enter on a batch row opens the review view (`?view=review&batch=<item>`, written through `shell.url`).
-  The ledger lists the batch's open questions; Details shows one question large, its options as numbered buttons at least 44px tall.
-- Keys: `1` to `9` label the selected question and move to the next open one; `j`/`k` move without a label, which is skip; `u` undoes the last label for 10 seconds (the shell's undo command); `n` captures a comment "On note #N: " on the batch; `Esc` leaves the view; `?` lists the keys.
-  The page binds no shell key; it declares `PAGE_LIST` and a digit allowance (open question 2).
+- Review's annunciator has one lamp per open batch: "▲ Label: C1 review tiers · 287 of 300 open", "▲ Nightly review 2026-10-12 · 5 open".
+  A lamp filters the ledger to its batch (`?batch=<item>`, written through `shell.url`).
+- Today's Decisions panel skips batch questions and shows one line, "▲ 292 questions wait on Review", that links there; plain decisions keep their rows.
+- The ledger lists the open questions, nightly suggestions first, then labelling batches by age.
+  Details shows one question large, its options as numbered buttons at least 44px tall.
+- Keys: `1` to `9` label the selected question and move to the next open one; `j`/`k` move without a label, which is skip; `u` undoes the last label for 10 seconds (the shell's undo command); `n` captures a comment "On note #N: " on the batch; `Esc` clears the batch filter; `?` lists the keys.
+  The page binds no shell key; it declares `PAGE_LIST`, and binds digits under the allowance filed on ui-design as sd:3636 (operator, 2026-10-12).
+  The rail entry and its `g`-chord come with that allowance.
 - The head subhead line carries progress in tabular mono: "13 labelled · 287 open · 4 skipped · read 09:14 MDT".
 - A label lands quietly: the row leaves the ledger, the next question opens, and a toast names it with Undo.
   A 409 shows `▲` "The batch changed; reread", rereads and keeps the place.
@@ -130,7 +132,8 @@ It runs at 06:15 local: after the night build, outside the 02:xx slot.
 3. **File**, deterministic: `sd-db review file` on that file, with `limit` 5.
    It drops a suggestion whose subject was rejected in the last 90 days, files the first five in the model's rank, and prints what it dropped.
 
-Each suggestion's text names its evidence (log path, PR, note id) and its expected gain; the options are Approve and Reject (open question 3).
+Each suggestion's text names its evidence (log path, PR, note id) and its expected gain; the options are Approve and Reject, with no Defer; an unruled suggestion expires after 7 days (operator, 2026-10-12).
+The job runs on Sonnet, as the KISS audit does (operator, 2026-10-12).
 A rejected ruling stays on its batch as the record that suppresses a repeat.
 
 ### Volume limits
@@ -143,7 +146,7 @@ A rejected ruling stays on its batch as the record that suppresses a repeat.
 
 - Labels written back into Phoenix as annotations.
 - Moving lane finding dispositions into the queue; they keep their digests in the `state` table.
-- Folding the weekly KISS audit into the nightly job now (open question 6).
+- Folding the weekly KISS audit into the nightly job now; that waits for two weeks of nightly runs and gets its own item (operator, 2026-10-12).
 - More than one labeller, agreement scores or labeller identity beyond the note's `session`.
 - A new CLI verb for the operator; `sd-db review` is plumbing that plug-ins and jobs call.
 
@@ -166,27 +169,17 @@ A rejected ruling stays on its batch as the record that suppresses a repeat.
 | Nightly apply | One task per approval, one transaction each, then the batch closed | Process stops after the first task | The rerun skips refs that exist and files the rest, then closes | The process stops after task one; the rerun files task two once and never edits task one |
 | Nightly apply | Open questions resolved as expired, then the batch closed | Process stops between | The rerun resolves the rest and closes | A stop after one expiry; the rerun closes the batch |
 | Nightly suppression | Nothing | A suggestion repeats a subject rejected in 90 days | Dropped and printed | A rejected subject in the database drops the matching suggestion |
-| Queue read | Nothing | `/api/decisions` fails | `▨` with the reason; never an empty queue | The dashboard test for a failed read |
+| Queue read | Nothing | The Review page's read fails | `▨` with the reason; never an empty queue | The dashboard test for a failed read |
 | Older state | Nothing | Question notes on items that are not batches | Shown as today, one row each | The existing Decisions tests pass unchanged |
 | Rollback | Nothing | The dashboard rolls back to the previous commit | Each batch question shows as its own decision; labels still land | Covered by the existing tests of the old code |
 | Rollback | Nothing | The pack rolls back, so `sd-db review` is missing | The job exits 1 and reports it; no partial batch | The job example's test checks the exit code |
 
-## Slices
-
-1. **Pack** (sd:3635): `sd_db.review` (file, withdraw, export, apply) and `sd-db review file|export|apply`, with the failure-table tests.
-   Nothing reads it yet, so every machine works as before.
-2. **ui-design**: amend `products/system/design.md` to allow digits on the review view, with its `verify.mjs` rule.
-3. **System** (sd:3635): Decisions groups batches; the review view; export download; undo through withdraw.
-   Hallmark runs first, per `.claude/rules/dashboard-ui.md`. Plain decisions work as before.
-4. **System** (sd:3638): the nightly job example, its prompt and its test; the operator's config gets the job file.
-5. **First plug-in**: a Jev entry 2 sheet, or sd:2213's names, filed as a batch, to prove the contract end to end.
-
 ## Acceptance criteria
 
 - [ ] `python3 -m unittest tests.test_review` in the pack passes with 0 failures and covers every failure-table row that names a pack step.
-- [ ] `sh local-project-dashboard/dashboard.sh test` passes with 0 failures, with a test for a grouped batch row, the review view's document and a failed read.
-- [ ] A batch of 300 synthetic questions files in one transaction, and the Today Decisions panel shows it as one row.
-- [ ] In the review view, labelling 10 questions takes 10 key presses and writes 10 ruling notes; `u` after the tenth reopens it.
+- [ ] `sh local-project-dashboard/dashboard.sh test` passes with 0 failures, with a test for Today's batch line, the Review page's document and a failed read.
+- [ ] A batch of 300 synthetic questions files in one transaction, Review shows it as one lamp, and Today's Decisions panel shows one line for it.
+- [ ] On Review, labelling 10 questions takes 10 key presses and writes 10 ruling notes; `u` after the tenth reopens it.
 - [ ] A sealed export with another batch's key exits non-zero and changes nothing.
 - [ ] One nightly run files one batch of at most 5 questions; a second run the same day files nothing new.
 - [ ] `sd-docs-lint` passes from the repository root.
@@ -200,26 +193,30 @@ A rejected ruling stays on its batch as the record that suppresses a repeat.
 - The benchmark repository on the work satellite was not read; its review flow may need something notes cannot carry.
 - A daily `claude -p` run adds model use every night; the 30-minute cap from the KISS job bounds it.
 
-## Open questions
+## Decisions
 
-1. Where does the queue live?
-   Option: A view of Today's Decisions panel (Recommended): no new page, one place for every question.
-   Option: Its own rail page "Review".
-2. Which keys label?
-   Option: Allow digits `1` to `9` on the review view, beside Tasks' digits (Recommended): one key per label.
-   Option: Labels as action-menu commands (`.` then a letter): no design-source change, two keys per label.
-3. Which options does a nightly suggestion offer?
-   Option: Approve and Reject; an unruled one expires after 7 days (Recommended): skip already means "later".
-   Option: Approve, Reject and Defer, with Defer asked again next week.
-4. How do plug-ins file and read batches?
-   Option: `sd-db review file|export|apply` beside `sd-db judgments` (Recommended): replaces per-experiment CSV sheets and hand-edited JSON label files; shell plug-ins and the cron job need it.
-   Option: The `sd_db.review` library only; Python plug-ins only, and the nightly job calls Python inline.
-5. Does a label carry a confidence score?
-   Option: No, until an experiment needs one (Recommended): Jev entry 2 keeps its own sheet.
-   Option: An optional `sure` of 1 to 3 after each label, one more key press.
-6. When does the weekly KISS audit fold into the nightly job?
-   Option: After two weeks of nightly runs, as its own item (Recommended).
-   Option: Now, in slice 4.
-7. Which model runs the nightly review?
-   Option: Sonnet, as the KISS audit does (Recommended).
-   Option: Opus, for better suggestions at more use.
+The operator ruled on 2026-10-12, on commit a88c9e2.
+
+- Queue location: its own rail page, Review; Today's Decisions panel links there.
+- Label keys: digits `1` to `9` on Review; the design-source allowance is ui-design sd:3636.
+- Nightly options: Approve and Reject; an unruled suggestion expires after 7 days; no Defer.
+- Plumbing: `sd-db review file|export|apply`, beside `sd-db judgments`, is approved.
+- Confidence score: none until an experiment needs one.
+- KISS audit: folds into the nightly job after two weeks of nightly runs, as its own item.
+- Nightly model: Sonnet.
+
+## Slices
+
+Each slice is one PR. Estimates are working days for one builder, review rounds included.
+
+1. **Pack, sd:3635**, 1.5 days: `sd_db.review` (file, withdraw, export, apply) and `sd-db review file|export|apply`, with the failure-table tests for every pack step.
+   Nothing reads it yet, so every machine works as before.
+   Before it lands, read the benchmark repository's review flow on the work satellite and confirm the batch file carries it.
+2. **ui-design, sd:3636**, 0.5 day: the Review rail entry, its `g`-chord and the digit allowance in `products/system/design.md`, with the `verify.mjs` rule.
+   Independent of slice 1.
+3. **System, sd:3635**, 2 days: the Review page (annunciator, ledger, Details, keys, export download, undo through withdraw) and Today's one-line link.
+   Needs slices 1 and 2. Hallmark runs first, per `.claude/rules/dashboard-ui.md`. Plain decisions work as before.
+4. **System, sd:3638**, 1 day: the nightly job example in `local-cron-jobs/examples/`, its prompt and its test; the operator's config gets the job file.
+   Needs slice 1; it works before slice 3, since Today's Decisions panel shows the questions one row each until then.
+5. **First plug-in, sd:3635**, 0.5 day: a Jev entry 2 sheet in `local-jev`, or sd:2213's names in their own repository, filed as a batch and exported, to prove the contract end to end.
+   Needs slices 1 and 3.
