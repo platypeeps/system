@@ -39,7 +39,7 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env llama-cpp
-LLAMA_DIR=~/repos/ai/llama.cpp
+LLAMA_DIR="${LLAMA_DIR:-$HOME/repos/ai/llama.cpp}"
 BIN="$LLAMA_DIR/build/bin"
 PORT="${PORT:-8084}"
 RPC_PORT="${LLAMA_RPC_PORT:-50052}"

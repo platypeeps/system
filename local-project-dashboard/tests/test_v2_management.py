@@ -38,6 +38,7 @@ from test_v2_read import READ_SHELL
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "management.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 
 
 def git_row(name, *, behind=0, dirty=0, ahead=0, branch="main"):
@@ -495,7 +496,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Management · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "management.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "management.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -584,7 +585,7 @@ class PageScript(ScreenCase):
                   + """ANSWER = (path, body) => {
   if (path === '/api/management') return [200, DOC0];
   return WRITE ? WRITE(path, body) : [200, {}];
-};\n""" + PAGE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + PAGE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -616,8 +617,8 @@ class TheScript(PageScript):
             ["svc.start", "service", "safe", "a", None, False],
             ["jobs.retry", "job", "safe", "t", None, False],
             ["jobs.cancel", "job", "confirm", "x", None, False],
-            ["job.log", "job", "safe", "o", False, False],
-            ["job.print", "job", "safe", "l", False, False],
+            ["jobs.log", "job", "safe", "l", False, False],
+            ["jobs.print", "job", "safe", "p", False, False],
         ])
 
     def test_the_page_reads_the_document_and_draws_repos_with_git_state(self):
@@ -792,7 +793,7 @@ C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""",
         doc = json.loads(json.dumps(self.doc))
         next(j for j in doc["jobs"] if j["name"] == "nightly-sync")["last_exit"] = 127
         out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
-R.on = c.when(o); R.primary = !!c.primary(o); R.print = !!cmd('job.print').primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
+R.on = c.when(o); R.primary = !!c.primary(o); R.print = !!cmd('jobs.print').primary(o); R.ask = !!c.askFirst(o); R.says = c.consequence(o);
 C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]", doc=doc)
         self.assertEqual((out["R"]["on"], out["R"]["primary"], out["R"]["print"], out["R"]["ask"]), (True, False, True, True))
         self.assertIn("exit 127", out["R"]["says"])
@@ -802,7 +803,7 @@ C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'acce
 
     def test_after_another_exit_retry_is_the_rows_act_and_does_not_ask(self):
         out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
-R.got = [!!c.primary(o), !!cmd('job.print').primary(o), !!c.askFirst(o)];""")
+R.got = [!!c.primary(o), !!cmd('jobs.print').primary(o), !!c.askFirst(o)];""")
         self.assertEqual(out["R"]["got"], [True, False, False])
 
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
@@ -1116,7 +1117,7 @@ class TheJobLogAndCancel(PageScript):
         quiet = next(j for j in doc["jobs"] if j["name"] == "quiet")
         quiet["log"] = {"state": "unread", "text": "", "cut": False, "reason": "the log is not a regular file"}
         out = self.run_page("selectRow('cron:busy', false); R.busy = ELS.details.html; selectRow('cron:quiet', false); R.quiet = ELS.details.html;"
-                            " R.shown = cmd('job.log').run(C.get('cron:busy')); R.after = ELS.details.html;", doc=doc, search="?view=schedules")
+                            " R.shown = cmd('jobs.log').run(C.get('cron:busy')); R.after = ELS.details.html;", doc=doc, search="?view=schedules")
         self.assertIn('<pre class="code" tabindex="0" aria-label="busy log">[busy] started\nstep 2 &lt;of&gt; 3\n</pre>', out["R"]["busy"])
         self.assertIn("local-cron-jobs/logs/busy.log", out["R"]["busy"])
         self.assertIn("<dt>Last request</dt><dd>cancel · accepted · dashboard · 2026-09-06T02:20:00Z · launchctl accepted the request</dd>",

@@ -45,6 +45,12 @@ class MockMcpTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("MOCK_MCP_SRC", result.stdout)
 
+    def test_status_of_a_stopped_container_is_nothing_to_check(self):
+        # sd:3552. Not running is convention 6's 3; the stub docker lists nothing.
+        result = self.run_script("status")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("container:  not running", result.stdout)
+
     def test_no_args_prints_usage_and_fails(self):
         result = self.run_script()
         self.assertEqual(result.returncode, 1)

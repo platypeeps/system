@@ -124,7 +124,7 @@ case "$1" in
   update)
     docker stop local-opentelemetry-collector 2>/dev/null || true
     rm -f "$STARTED"
-    docker images -a | grep "otel/opentelemetry-collector" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=otel/opentelemetry-collector*" | sort -u | xargs docker rmi
     ;;
   test)
     shift

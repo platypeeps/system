@@ -1040,7 +1040,7 @@ def cmd_stamp(state_dir: Path, through: str | None, out) -> int:
 def cmd_status(config_path: Path, state_dir: Path, stale_hours: float, out) -> int:
     """Is the state fresh, is the config sound, and what is undelivered.
 
-    0 fresh, 3 stale, 1 unusable. Reports everything wrong in one pass rather
+    0 fresh, 3 stale or not configured, 1 unusable. Reports everything wrong in one pass rather
     than returning on the first problem.
     """
     state_path = state_dir / "intake-state.csv"
@@ -1052,7 +1052,7 @@ def cmd_status(config_path: Path, state_dir: Path, stale_hours: float, out) -> i
         text = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         missing_config(config_path, out, "config : ERROR ")
-        return EXIT_ERROR
+        return EXIT_NONE
     except OSError as error:
         print(f"config : ERROR cannot read: {error}", file=out)
         return EXIT_ERROR

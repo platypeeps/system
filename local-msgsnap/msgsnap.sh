@@ -25,7 +25,7 @@ Usage: msgsnap.sh <subcommand>
            where this binary is its own responsible process
   snap     take a snapshot into \$HOME/.local/state/msgsnap. Runs direct
            if that works, otherwise reruns itself via launchd.
-  status   show what is built, granted and snapshotted
+  status   show what is built, granted and snapshotted (exits 3 when not built)
   clean    remove the built binary (does NOT touch snapshots)
   test     run tests/ as a unittest suite: tests/eintr-retry.sh, the end-to-end
            open(2) retry and exit-code check, on a copy of the binary built
@@ -175,6 +175,8 @@ cmd_status() {
     else
         echo "snapshots: none yet"
     fi
+    # Not built is convention 6's "nothing to check".
+    [ -x "$BIN" ] || exit 3
 }
 
 cmd_clean() {

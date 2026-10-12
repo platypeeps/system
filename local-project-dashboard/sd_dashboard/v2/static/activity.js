@@ -339,31 +339,19 @@ addEventListener('DOMContentLoaded', () => {
   const undoOf = (o, r) => r && r.undo ? r.undo() : false;
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
   const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
-  const open = u => { window.open(u, '_blank', 'noopener'); return 'Opens in a new tab'; };
-  const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
-    location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
   C.register(
-    { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
+    window.commands.openPullRequest({ pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // build: the design's review.open; its review.lane re-runs a review, which a recorded one cannot ask for, so it is left out.
-    { id: 'review.open', on: 'review', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: () => true, cli: o => `gh pr view ${o.pr} --repo ${o.owner}/${o.repo} --web`, run: o => open(o.url) },
+    window.commands.openPullRequest({ on: 'review', pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
     { id: 'review.item', on: 'review', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
-    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd assignments get ${o.n}`,
-      run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } },
+    window.commands.showAssignment({ run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } }),
     { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
-    // jobs.retry is the one declaration in commands.md; Management, Reports, Today and Briefs declare it the same way.
-    // Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration, as Management declares it).
-    // build: retry posts to /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts the run.
-    // Exit 127 is "command not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside
-    // the dashboard can be tested, as in Management (sd:3392).
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => !!ev(o).failed && ev(o).exit !== 127,
-      when: o => !ev(o).failed ? 'no failed run to retry' : ev(o).retry?.allowed || ev(o).retry?.reason || 'launchd refuses a retry now',
-      askFirst: o => ev(o).exit === 127, consequence: o => ev(o).exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
-      cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: retry },
-    // build (sd:2392): Show log opens the job's row on Management > Schedules, as ruled; Management has no log reader, so its
-    // Details show the exit and the schedule, and the line to copy still reads the log. The filter puts the row on page one.
-    { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`, run: o => openSchedule(o.job) },
+    // Retry (commands.js): it posts /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts
+    // the run.
+    window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: ev(o).failed, exit: ev(o).exit, capability: ev(o).retry }), run: retry }),
+    // Show log (commands.js) opens the job's row on Management > Schedules, as ruled (sd:2392).
+    window.commands.showLog({ job: o => ({ name: o.job }) }),
     // build (sd:3391): Reconcile outcome, from v1 Operations > Commands, which this page replaces. It posts
     // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
     // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.
@@ -423,15 +411,9 @@ addEventListener('DOMContentLoaded', () => {
       return { text: `Not known whether ${o.job} was retried: ${err.message}` };
     }
     await reread();
-    return { text: answered(out, o.job, 'retried', `Retry started · ${o.job}`) };
+    return { text: window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`) };
   }
-  // A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
-  // Copied from management.js (sd:3388); no shared module holds it.
-  function answered(out, name, verb, done) {
-    const r = out && out.request || {};
-    return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
-      : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
-  }
+
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
   document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 

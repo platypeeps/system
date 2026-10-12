@@ -240,6 +240,25 @@ class TestConfigLocation(unittest.TestCase):
         self.assertIn(f"config : {expected}", output)
         self.assertIn("mail-intake.conf.example", output)
 
+    def test_an_absent_conf_is_nothing_to_check(self):
+        # sd:3552. Convention 6: 3, not 1, for a tool never configured.
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as state:
+            code = mi.main(["status"], out=out, environ={
+                "SYSTEM_TOOLS_CONFIG": tmp, "MAIL_INTAKE_STATE": state,
+                "WORKSPACE_MCP_URL": "http://127.0.0.1:9/mcp"})
+        self.assertEqual(code, mi.EXIT_NONE)
+
+    def test_an_unreadable_conf_is_broken(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as state:
+            conf = Path(tmp) / "mail-intake.conf"
+            conf.mkdir()  # reading a directory fails, but not with "absent"
+            code = mi.main(["status"], out=out, environ={
+                "MAIL_INTAKE_CONFIG": str(conf), "MAIL_INTAKE_STATE": state,
+                "WORKSPACE_MCP_URL": "http://127.0.0.1:9/mcp"})
+        self.assertEqual(code, mi.EXIT_ERROR)
+
     def test_the_variable_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
             conf = Path(tmp) / "elsewhere.conf"

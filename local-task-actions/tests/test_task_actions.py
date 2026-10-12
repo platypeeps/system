@@ -92,10 +92,16 @@ class LabelPrefixTest(unittest.TestCase):
         result = self.run_script("status")
         self.assertIn("label:  example.test.task-actions", result.stdout)
         self.assertIn("plist:  installed", result.stdout)
-        # Not loaded, per the stub: the documented exit 2.
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        # Not loaded, per the stub: convention 6's "nothing to check" (sd:3552).
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertIn("launchctl print gui/", self.calls.read_text())
         self.assertIn("/example.test.task-actions", self.calls.read_text())
+
+    def test_help_declares_the_codes_to_the_health_check(self):
+        # sd:3552. The sweep runs `status` only for a help text naming it.
+        result = self.run_script("help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("local-health-check reads", result.stdout)
 
     def test_default_prefix_without_env_file(self):
         # PIN. No .env and nothing exported: the default prefix.

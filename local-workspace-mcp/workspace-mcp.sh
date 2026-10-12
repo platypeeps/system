@@ -8,10 +8,12 @@
 # Usage: workspace-mcp.sh status|watch|test|help
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib/config.sh
+. "$DIR/../lib/config.sh"
 
 URL="${WORKSPACE_MCP_URL:-http://127.0.0.1:8083/mcp}"
 # launchd label prefix shared by every agent from this repository; override per machine.
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 LABEL="${WORKSPACE_MCP_LABEL:-$LABEL_PREFIX.google-workspace-mcp}"
 TIMEOUT="${WORKSPACE_MCP_TIMEOUT:-10}"
 CLOSE_TIMEOUT="${WORKSPACE_MCP_CLOSE_TIMEOUT:-3}"

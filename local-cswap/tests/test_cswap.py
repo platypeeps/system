@@ -72,6 +72,25 @@ class StartTest(unittest.TestCase):
         self.assertEqual(plist["EnvironmentVariables"]["SYSTEM_TOOLS_CONFIG"],
                          str(self.home / ".config" / "system"))
 
+    def status(self):
+        env = {"PATH": self.path, "HOME": str(self.home),
+               "CSWAP_TEST_CALLS": str(self.calls)}
+        return subprocess.run(["bash", str(self.script), "status"], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_status_exits_3_when_launchd_holds_no_job(self):
+        # sd:3552. Convention 6: 3 is "nothing to check". Exit 2 is outside
+        # the contract and trips the local-health-check sweep.
+        result = self.status()
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("state:     not loaded", result.stdout)
+
+    def test_help_declares_the_codes_to_the_health_check(self):
+        env = {"PATH": self.path, "HOME": str(self.home)}
+        result = subprocess.run(["bash", str(self.script), "help"], env=env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertIn("local-health-check reads", result.stdout)
+
     def test_the_agent_runs_at_standard_priority(self):
         # sd:3175. launchd's Background process type throttles the agent under
         # load. The plist names no ProcessType, so launchd uses Standard.
