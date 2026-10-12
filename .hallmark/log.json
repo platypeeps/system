@@ -22,5 +22,16 @@
     "slop_test": "universal subset: no colour or font literal outside tokens (48); spacing on the named scale (24); no transition on layout properties, focus ring not animated (14, 15); state colour unchanged, accent only for selection and focus; labels one line at 320-1440 (49); no horizontal scroll at 320, 375, 414, 768, 1024, 1440 (34); 44px targets under a coarse pointer",
     "constraints": "no build step; CSP default-src 'self', so no inline style or script; foundation gap: no pane-resize pattern for the rail grip",
     "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
+    "date": "2026-10-12",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.js (confirm dialog field), snooze.js, commands.js; Today, Health, Management, Activity row menus",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "changes": "sd:3450 Snooze is one menu item; its confirm dialog asks which time in a native select styled by the existing .cap-in (no new CSS); sd:3449 Today job rows list Show log and Print beside Retry, as Management and Activity do; sd:3524 those commands come from one declaration, so labels and keys match on every page (Show log l, Print p)",
+    "slop_test": "universal subset: no colour or font literal added (48); select reuses the input's tokens, 44px tall (row-touch); menu and dialog stay inside the viewport and add no horizontal scroll at 320, 375, 414, 768, 1024, 1440 in Dark, Light and System (34); text contrast measured 6.02 to 17 against WCAG AA 4.5 (40-41); label one line at 320 (49)",
+    "constraints": "no build step; CSP default-src 'self'; the select keeps the platform popup, which follows color-scheme",
+    "critique": "P4 H4 E4 S4 R5 V3"
   }
 ]
