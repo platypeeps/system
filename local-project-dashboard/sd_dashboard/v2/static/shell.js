@@ -291,7 +291,7 @@
     return html`${out}`; };
   // help:end
   function showHelp(btn) {
-    put(pop, helpText(btn.dataset.help || '')); pop.hidden = false; place(btn);
+    put(pop, btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');
   }
   function hideHelp() {
@@ -305,6 +305,7 @@
     (w || Promise.reject(new Error('no clipboard'))).then(() => toast('Copied.'), () => toast('Copy failed: select the line and copy it.'));
   }
   document.addEventListener('click', e => {
+    if (e.target.closest?.('[data-tip]')) { clearTimeout(hoverTimer); if (!pinned) pop.hidden = true; }
     const b = e.target.closest('.help');
     if (b) {
       e.preventDefault(); e.stopPropagation();
@@ -314,12 +315,17 @@
     }
     if (pinned && !pop.contains(e.target)) hideHelp();
   }, true);
+  // A command button's tip (data-tip) shows on a mouse hover only: the same words sit under "Same thing from the CLI", and a
+  // press runs the command, so it neither pins nor shows on focus. A move onto the button's own icon keeps it.
   document.addEventListener('pointerover', e => {
-    const b = e.target.closest?.('.help');
-    if (!b || pinned || e.pointerType !== 'mouse') return;
+    const b = e.target.closest?.('.help, [data-tip]');
+    if (!b || pinned || e.pointerType !== 'mouse' || b.contains(e.relatedTarget)) return;
     clearTimeout(hoverTimer); hoverTimer = setTimeout(() => showHelp(b), DELAY);
   });
-  document.addEventListener('pointerout', e => { if (e.target.closest?.('.help') && !pinned) { clearTimeout(hoverTimer); pop.hidden = true; } });
+  document.addEventListener('pointerout', e => {
+    const b = e.target.closest?.('.help, [data-tip]');
+    if (b && !pinned && !b.contains(e.relatedTarget)) { clearTimeout(hoverTimer); pop.hidden = true; }
+  });
   document.addEventListener('focusin', e => { const b = e.target.closest?.('.help'); if (b && !pinned) showHelp(b); });
   document.addEventListener('focusout', e => { if (e.target.closest?.('.help') && !pinned) pop.hidden = true; });
   document.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
@@ -410,8 +416,8 @@
   // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
   // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
   const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
-  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. A title, so the
-  // browser waits before it shows and a pass over the buttons shows nothing.
+  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. The button carries
+  // it as data-tip; the help popover shows it after --delay-help, so a pass over the buttons shows nothing.
   const tipOf = (c, o) => {
     const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
     return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
@@ -529,7 +535,7 @@
     const o = OBJ.get(id); if (!o) return html``;
     const L = live(o), p = L.find(c => c.primary?.(o));
     if (!L.length) return html`<span class="rowact"></span>`;
-    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" title="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
+    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
   // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
   // closed until opened (sd:3464).
@@ -537,7 +543,7 @@
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" title="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
@@ -551,7 +557,7 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}" title="${tipOf(c, o)}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
       <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
       <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;

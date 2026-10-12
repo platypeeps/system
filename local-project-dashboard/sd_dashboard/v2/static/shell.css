@@ -2,6 +2,7 @@
  * theme: foundation tokens (dark default, blue-grey 250, cyan accent) · display/body: IBM Plex Sans · data: IBM Plex Mono · icons: Lucide
  * axes: dark / grotesk-sans / cool · nav: grouped rail with g-chords · footer: none (app) · studied: no
  * Shared by every v2 screen. Page files add only their own components. Tokens come from foundation/tokens.css.
+ * 2026-10-12 (sd:3464, sd:3521): capture pickers and the CLI fold · slop test: pass (tokens 48, inputs 39, mobile 34 and 49)
  */
 
 html, body { overflow-x: clip; }
@@ -235,7 +236,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .cli .icon-btn { flex-shrink: 0; }
 /* The CLI lines fold under one summary, closed by default (sd:3464). */
 .cli-all { margin: var(--space-sm) 0 0; }
-.cli-all > summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-muted); }
+.cli-all > summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
 .cli-all > summary:hover { color: var(--color-ink-2); }
 .cli-all > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
 .cli-all[open] > summary { margin-bottom: var(--space-xs); }

@@ -459,10 +459,14 @@ OUT.toasts[0].undo(); await flush();""")
             "Ask in chat: dashboard only, no CLI line.",
             "Pin: dashboard only, no CLI line.",
         ])
-        for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" title=\"${tipOf(c, o)}\"",
-                      "data-cmd=\"${p.id}\" data-obj=\"${id}\" title=\"${tipOf(p, o)}\""):
+        # The foundation's help popover shows it after --delay-help, in the theme's tokens; a native title would not.
+        for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\"",
+                      "data-cmd=\"${p.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(p, o)}\""):
             self.assertIn(where, SHELL_JS)
-        self.assertEqual(SHELL_JS.count("title=\"${tipOf(c, o)}\""), 2, "the bar and the menu each carry the hover help")
+        self.assertNotIn("title=\"${tipOf(", SHELL_JS)
+        self.assertIn("const b = e.target.closest?.('.help, [data-tip]');", SHELL_JS, "the hover delay skips the command buttons")
+        self.assertIn("btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`", SHELL_JS,
+                      "a tip is plain text: a CLI line's <path> is not a tag")
 
     def test_run_and_bulk_ask_through_the_one_test(self):
         """A guard: run() and runBulk() both read asksFirst, so neither treats a test as always yes or skips it."""
@@ -745,7 +749,7 @@ tile('due', {plan}, ''); await flush();""", self.ECHO)
         out = self.run_page(f"open({plan}); await flush(); R.html = ELS.details.html;")
         html = out["R"]["html"]
         self.assertNotIn('<p class="src">', html)
-        self.assertIn(f'<h3>Status history <button class="help src" type="button" aria-label="Read: sd task show {plan} --json" '
+        self.assertIn(f'<h3>Status history <button class="help src" type="button" aria-label="Help: Status history" '
                       f'data-help="&lt;code&gt;sd task show {plan} --json&lt;/code&gt; · notes of kind status_change. Press to copy." '
                       f'data-copy="sd task show {plan} --json">', html)
         self.assertIn('data-copy="sd shadow"', html)

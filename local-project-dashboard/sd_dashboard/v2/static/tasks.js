@@ -632,30 +632,30 @@ addEventListener('DOMContentLoaded', () => {
     const docs = d.documents || [];
     // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
     return html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${it.body || ''}</textarea>
-      <h3>Documents ${src(`/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
+      <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
-      <h3>Status history ${src(`sd task show ${t.id} --json · notes of kind status_change`)}</h3>
+      <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
-      <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src(`sd task show ${t.id} --json · every other note kind`)}</h3>
+      <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src('Notes', `sd task show ${t.id} --json · every other note kind`)}</h3>
       ${d.notes.length ? html`<ol class="rec">${d.notes.map(n => html`<li data-note="${String(n.id)}"><time class="rel" datetime="${n.at}"></time><span><b>${n.kind}</b>${n.kind === 'followup' ? (n.resolved ? ' · resolved' : ' · open') : ''} ${n.body}</span>${C.rowActions('note:' + n.id)}</li>`)}</ol>` : html`<p class="why">No notes on this item.</p>`}
-      <h3>Assignments ${src(`sd assignments list --json · item ${t.id}; not in sd task show`)}</h3>
+      <h3>Assignments ${src('Assignments', `sd assignments list --json · item ${t.id}; not in sd task show`)}</h3>
       ${d.assignments.length ? html`<ol class="rec">${d.assignments.map(a => html`<li><span class="mono">#${String(a.id)}</span><span>${a.role} · ${a.provider || 'no provider'} · <b>${a.status}</b>${a.ended ? html` · ended <time class="rel" datetime="${a.ended.replace('+00:00', 'Z')}"></time>` : ''}${a.cancel.allowed ? '' : html`<br><small>sd assignments cancel: ${a.cancel.reason}</small>`}</span>${C.rowActions('asg:' + a.id)}</li>`)}</ol>` : html`<p class="why">No assignment has run on this item.</p>`}
-      <h3>Artifact ${src(`sd task show ${t.id} --json · item.path`)}</h3>
+      <h3>Artifact ${src('Artifact', `sd task show ${t.id} --json · item.path`)}</h3>
       <dl><dt>Path</dt><dd>${it.path || 'none'}</dd><dt>Repo</dt><dd>${it.repo || 'none'}</dd>${it.branch ? html`<dt>Branch</dt><dd>${it.branch}</dd>` : ''}</dl>
-      <h3>Recurrence ${src(`sd task show ${t.id} --json · item.recurrence`)}</h3>
+      <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
       <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
   }
   // Each Details section names its read in a help icon beside its heading; pressing the icon copies the command (sd:3444).
-  function src(s) {
+  function src(name, s) {
     const at = s.indexOf(' · '), cmd = at < 0 ? s : s.slice(0, at), why = at < 0 ? '' : s.slice(at + 3);
-    return html`<button class="help src" type="button" aria-label="Read: ${cmd}" data-help="${`<code>${cmd}</code>${why ? ` · ${why}` : ''}. Press to copy.`}" data-copy="${cmd}">${ICON('circle-help')}</button>`;
+    return html`<button class="help src" type="button" aria-label="Help: ${name}" data-help="${`<code>${cmd}</code>${why ? ` · ${why}` : ''}. Press to copy.`}" data-copy="${cmd}">${ICON('circle-help')}</button>`;
   }
   // build: v1's External context (screens.external_context), the shadow row and its collector's freshness, when the item
   // has a tracker reference. Local status is the item's own; the tracker's state is dated context beside it.
   function external(d) {
     const x = d.external; if (!x) return '';
-    return html`<h3>External context ${src(`sd shadow · ${x.tracker} · progress.tracker_freshness`)}</h3>
+    return html`<h3>External context ${src('External context', `sd shadow · ${x.tracker} · progress.tracker_freshness`)}</h3>
       <dl><dt>Tracker</dt><dd>${x.tracker}</dd><dt>External state</dt><dd>${x.state || (x.last_seen ? 'unknown' : 'not in the local snapshot')}</dd>
         <dt>Reference</dt><dd>${x.url}</dd><dt>Last seen</dt><dd>${x.last_seen ? html`<time class="rel" datetime="${x.last_seen}"></time>` : 'never'}</dd>
         <dt>Sync health</dt><dd>${x.freshness.state}</dd><dt>Last sync</dt><dd>${x.freshness.last_success_at ? html`<time class="rel" datetime="${x.freshness.last_success_at}"></time>` : 'never'}</dd></dl>

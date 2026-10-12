@@ -236,7 +236,7 @@ class TheActBar(unittest.TestCase):
         self.assertRegex(bar, r'</div>\s*<details class="cli-all">')
 
     def test_a_help_icon_with_a_command_copies_it_when_pressed(self):
-        click = re.search(r"document\.addEventListener\('click', e => \{\n    const b = e\.target\.closest\('\.help'\);.*?\}, true\);", SHELL_JS, re.S)
+        click = re.search(r"document\.addEventListener\('click', e => \{\n(?:    .*\n)?    const b = e\.target\.closest\('\.help'\);.*?\}, true\);", SHELL_JS, re.S)
         self.assertIsNotNone(click)
         self.assertIn("if (b.dataset.copy) copy(b.dataset.copy);", click.group(0))
 
