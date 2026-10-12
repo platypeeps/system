@@ -343,8 +343,10 @@ reported 0. `repos` was the last one left out, for want of a read-only verb —
 A stage reports divergence four ways: `DIFFERS`, `MISSING`, `STALE`, `ABSENT`,
 a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
-than a finding, which is why the appstore and cron stages now name what is
-missing before offering to fix it.
+than a finding, which is why every stage now names what is missing before
+offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
+no drift word on it or above it. `status` checks taps, formulae, casks and
+pins in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. The
 `machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last

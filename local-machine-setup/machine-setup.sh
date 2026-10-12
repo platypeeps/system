@@ -472,6 +472,7 @@ stage_brew() {
     if brew tap 2>/dev/null | grep -qx "$t"; then
       echo "  ok      tap $t"
     else
+      echo "  MISSING tap $t"
       run brew tap "$t"
     fi
   done
@@ -482,6 +483,7 @@ stage_brew() {
     if echo "$installed" | grep -qx "$(echo "$f" | sed 's|.*/||')"; then
       echo "  ok      $f"
     else
+      echo "  MISSING $f"
       run brew install "$f"
     fi
   done
@@ -498,6 +500,7 @@ stage_brew() {
       # overwriting it; on a machine that does not have the app it changes
       # nothing. maccy and zoom were both hand-installed here and blocked the
       # brew stage until this.
+      echo "  MISSING cask $c"
       run brew install --cask --adopt "$c"
     fi
   done
@@ -505,6 +508,7 @@ stage_brew() {
   unpinned=$(unpinned_formulae)
   for f in $BREW_PINNED; do
     if printf '%s\n' "$unpinned" | grep -qx "$f"; then
+      echo "  DIFFERS $f not pinned"
       run brew pin "$f"
     elif brew list --formula 2>/dev/null | sed 's|.*/||' | grep -qx "$f"; then
       echo "  ok      pinned $f"
@@ -1368,6 +1372,7 @@ stage_services() {
     elif service_running "$svc" "$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
       echo "  ok      $svc running"
     else
+      echo "  MISSING $svc — not running"
       run "$entry" start
     fi
   done
@@ -1385,7 +1390,10 @@ stage_tooling() {
     for v in 18 20 24; do
       case "$have" in
         *"v$v."*) echo "  ok      node $v (fnm)" ;;
-        *) run fnm install "$v" ;;
+        *)
+          echo "  MISSING node $v (fnm)"
+          run fnm install "$v"
+          ;;
       esac
     done
   else
@@ -1395,11 +1403,13 @@ stage_tooling() {
     if [ -f "$HOME/.claude/settings.json" ] && grep -q 'rtk' "$HOME/.claude/settings.json" 2>/dev/null; then
       echo "  ok      rtk hook present in ~/.claude/settings.json"
     else
+      echo "  MISSING rtk hook in ~/.claude/settings.json"
       run rtk init -g
     fi
     if [ -f "$HOME/.gemini/hooks/rtk-hook-gemini.sh" ]; then
       echo "  ok      rtk hook present for Gemini CLI"
     else
+      echo "  MISSING rtk hook for Gemini CLI"
       run rtk init -g --gemini
     fi
     # No codex branch, deliberately. rtk has no hook for Codex — `rtk init -g
@@ -1524,6 +1534,7 @@ stage_tooling() {
        | grep -B2 'LSHandlerURLScheme = .*mailto' | grep -qi chrome; then
       echo "  ok      mailto handler is Chrome"
     else
+      echo "  DIFFERS mailto handler is not Chrome"
       run duti -s com.google.Chrome mailto:
     fi
   else
@@ -1767,11 +1778,13 @@ stage_system() {
   if [ -e /var/db/useLS ]; then
     echo "  ok      /var/db/useLS"
   else
+    echo "  MISSING /var/db/useLS"
     sudo_run "sudo touch /var/db/useLS" sudo touch /var/db/useLS
   fi
   if [ -e /etc/sudoers.d/timestamp-timeout ]; then
     echo "  ok      sudo timestamp_timeout drop-in"
   else
+    echo "  MISSING sudo timestamp_timeout drop-in"
     # Held in a variable so the command shown in the deferred summary cannot
     # drift from the command actually run.
     sudoers_cmd='echo "Defaults timestamp_timeout=60" > /etc/sudoers.d/timestamp-timeout && chmod 440 /etc/sudoers.d/timestamp-timeout && visudo -c'
@@ -1786,22 +1799,29 @@ stage_system() {
     if [ -e "$SPOTLIGHT_SUDOERS" ]; then
       echo "  ok      Spotlight read sudoers drop-in"
     else
+      # The one sign of this gap: without the drop-in the Spotlight read
+      # below prints DEFER, which is not a drift word.
+      echo "  MISSING Spotlight read sudoers drop-in"
       sr_rule="$(id -un) ALL=(root) NOPASSWD: /usr/bin/plutil -convert xml1 -o - $SPOTLIGHT_PLIST"
       sr_tmp="$(dirname "$SPOTLIGHT_SUDOERS")/.$(basename "$SPOTLIGHT_SUDOERS").tmp"
       sr_cmd="printf '%s\\n' '$sr_rule' > $sr_tmp && chmod 440 $sr_tmp && visudo -cf $sr_tmp && mv $sr_tmp $SPOTLIGHT_SUDOERS || { rm -f $sr_tmp; exit 1; }"
       sudo_run "sudo sh -c \"$sr_cmd\"" sudo sh -c "$sr_cmd"
     fi
   fi
+  # One on PATH wins, so a test can stand in for it.
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then fw=$(command -v socketfilterfw); fi
   if [ -x "$fw" ]; then
     if "$fw" --getglobalstate 2>/dev/null | grep -q enabled; then
       echo "  ok      application firewall on"
     else
+      echo "  DIFFERS application firewall off"
       sudo_run "sudo $fw --setglobalstate on" sudo "$fw" --setglobalstate on
     fi
     if "$fw" --getstealthmode 2>/dev/null | grep -q on; then
       echo "  ok      firewall stealth mode on"
     else
+      echo "  DIFFERS firewall stealth mode off"
       sudo_run "sudo $fw --setstealthmode on" sudo "$fw" --setstealthmode on
     fi
   fi
@@ -1812,6 +1832,7 @@ stage_system() {
     if [ "$(stat -f '%Lp' "$hp")" = "700" ]; then
       echo "  ok      ~/$d is 700"
     else
+      echo "  DIFFERS ~/$d is not 700"
       run chmod 700 "$hp"
     fi
   done
@@ -1825,6 +1846,7 @@ stage_system() {
     echo "  ok      repo config symlinks resolve"
   else
     for alias_path in $aliases; do
+      echo "  MISSING home alias $alias_path"
       sudo_run "sudo ln -s $(basename "$HOME") $alias_path" \
         sudo ln -s "$(basename "$HOME")" "$alias_path"
     done
@@ -4826,6 +4848,14 @@ cmd_status() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
+    # Missing only: the brew stage adds a tap and never removes one.
+    brew tap 2>/dev/null | sort -u > "$tmp/have.tap"
+    manifest tap > "$tmp/want.tap"
+    echo "taps"
+    mt=$(comm -13 "$tmp/have.tap" "$tmp/want.tap")
+    status_line missing "$mt"
+    [ -n "$mt" ] || echo "  ok      in sync"
+
     # `brew list --formula`, not `brew leaves`: a manifest entry can be
     # installed as another formula's dependency (ripgrep is), and leaves omits
     # those, which reported them as missing when they were present.
@@ -4857,7 +4887,7 @@ cmd_status() {
     echo "pins"
     status_line unpinned "$up"
     [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
-    for v in "$mb" "$xb" "$mc" "$xc" "$up"; do
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$up"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
