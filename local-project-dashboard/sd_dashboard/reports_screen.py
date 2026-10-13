@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
-from sd_db import operations, reporting, workflow
+from sd_db import operations, reads, reporting
 from sd_db.errors import SdDbError
 
 from .controls import form
@@ -358,8 +358,7 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
     return out
 
 
-def _report(connection, row) -> dict:
-    state = workflow.item_state(connection, row["id"])
+def _report(connection, row, revision, followups) -> dict:
     try:
         fields = reporting.fields_document(connection, row["fields"])
         readable = isinstance(fields, dict)
@@ -375,7 +374,7 @@ def _report(connection, row) -> dict:
     text = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), str) else ""
     return {
         "id": row["id"], "title": row["title"], "status": row["status"], "at": row["created_at"],
-        "source": row["source"], "revision": state["revision"], "fields_read": readable,
+        "source": row["source"], "revision": revision, "fields_read": readable,
         "attention": fields.get("attention") is True, "record": "record" in fields,
         "job": provenance.get("job") or None, "run": provenance.get("run_id"),
         "started": provenance.get("started"), "ended": provenance.get("ended"), "exit": provenance.get("exit_code"),
@@ -383,15 +382,24 @@ def _report(connection, row) -> dict:
         "truncated": provenance.get("truncated") is True,
         "repeats": {"count": repeats.get("count"), "last": repeats.get("last_ended")} if repeats else None,
         "body": text[-BODY_CHARS:], "cut": len(text) > BODY_CHARS,
-        "followups": [note["id"] for note in state["notes"] if note["kind"] == "followup" and not note["resolved_at"]],
+        "followups": followups,
     }
 
 
 def _reports(connection) -> list[dict]:
     from .operations_screen import _one_snapshot
 
+    # One revision read and one note read for the page, not an `item_state` per report (sd:3531).
     with _one_snapshot(connection):
-        return [_report(connection, row) for row in reporting.reports(connection)]
+        rows = reporting.reports(connection)
+        ids = [row["id"] for row in rows]
+        revisions = reads.revisions(connection, ids)
+        followups = {item: [] for item in ids}
+        # `brief_notes` is newest first; reversed it is the history order `item_state` lists.
+        for note in reversed(reads.brief_notes(connection, ids)):
+            if note["kind"] == "followup":
+                followups[note["item"]].append(note["id"])
+        return [_report(connection, row, revisions[row["id"]], followups[row["id"]]) for row in rows]
 
 
 def _jobs(connection, backend) -> list[dict]:

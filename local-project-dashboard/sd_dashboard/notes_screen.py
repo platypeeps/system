@@ -268,6 +268,36 @@ def _mail_intake():
     return module
 
 
+def close_session(url: str, client) -> None:
+    """Close a workspace-mcp session the client opened, so each read or draft (sd:3463) leaves none behind."""
+    if client.session:
+        try:
+            urllib.request.urlopen(urllib.request.Request(url, method="DELETE", headers={"mcp-session-id": client.session}),
+                                   timeout=3).close()
+        except OSError:
+            pass  # a session the server cannot close expires on its own; the caller already has its answer
+
+
+def workspace(environ=None) -> tuple[str, str, str]:
+    """`(url, account, why)`: workspace-mcp's URL and Gmail account, each exported or from `<config>/notify/.env`.
+
+    `why` names the remedies when the account is not set, and is empty when it is. Mail reads with it, and Draft email
+    (sd:3463, `email_draft`) saves with it.
+    """
+    environ = os.environ if environ is None else environ
+    lib = str(Path(__file__).resolve().parents[2] / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import system_tools_config
+
+    saved = system_tools_config.read_env("notify", environ)
+    url = environ.get("WORKSPACE_MCP_URL") or saved.get("WORKSPACE_MCP_URL") or MAIL_URL
+    account = environ.get("EMAIL_FROM") or saved.get("EMAIL_FROM") or ""
+    why = "" if account else (system_tools_config.missing("EMAIL_FROM", "notify", ".env", environ=environ)
+                              + " It is the Google account workspace-mcp reads mail for.")
+    return url, account, why
+
+
 def _inbox(mi, url: str, account: str, budget: float) -> dict:
     """One bounded read: a session, the inbox search, the found messages' headers, then the session closed."""
     client = mi.Mcp(url, timeout=budget)
@@ -281,12 +311,7 @@ def _inbox(mi, url: str, account: str, budget: float) -> dict:
             blocks += mi.parse_metadata(client.call("get_gmail_messages_content_batch", {
                 "message_ids": ids[start:start + mi.BATCH], "user_google_email": account, "format": "metadata"}))
     finally:
-        if client.session:
-            try:
-                urllib.request.urlopen(urllib.request.Request(url, method="DELETE", headers={"mcp-session-id": client.session}),
-                                       timeout=3).close()
-            except OSError:
-                pass  # a session the server cannot close expires on its own; the read already has its answer
+        close_session(url, client)
     rows = []
     for fields in blocks:
         sent = mi.when(fields.get("Date", ""))
@@ -298,18 +323,9 @@ def _inbox(mi, url: str, account: str, budget: float) -> dict:
 
 def mail(*, now: str, environ=None) -> dict:
     """The newest inbox mail: `ok` with rows, or `unconfigured`, `down` or `error` with the reason; never raises."""
-    environ = os.environ if environ is None else environ
-    lib = str(Path(__file__).resolve().parents[2] / "lib")
-    if lib not in sys.path:
-        sys.path.insert(0, lib)
-    import system_tools_config
-
-    saved = system_tools_config.read_env("notify", environ)
-    url = environ.get("WORKSPACE_MCP_URL") or saved.get("WORKSPACE_MCP_URL") or MAIL_URL
-    account = environ.get("EMAIL_FROM") or saved.get("EMAIL_FROM") or ""
+    url, account, why = workspace(environ)
     if not account:
-        return {"state": "unconfigured", "why": system_tools_config.missing("EMAIL_FROM", "notify", ".env", environ=environ)
-                + " It is the Google account workspace-mcp reads mail for."}
+        return {"state": "unconfigured", "why": why}
     seconds = MAIL_SECONDS
     box = {}
 

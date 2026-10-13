@@ -349,7 +349,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if parent is not None and (type(parent) is not int or not 1 <= parent <= 9223372036854775807):
             raise ValueError("Choose a valid item for the followup to follow up.")
         return lambda connection: capture_followup(connection, followup_of=parent, who="dashboard", **values)
-    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/cancel-task|/stage|/park|/revive|/fix)?", path)
+    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/cancel-task|/stage|/park|/revive|/fix|/draft-email)?", path)
     if not match:
         raise NotFound(path)
     entity, number, suffix = match.groups()
@@ -403,6 +403,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # Fix (sd:3456): Tasks, Reports and Today post it, so it is no one page's `Api` write.
         return fix_session.request(number, values, revision)
+    if entity == "items" and suffix == "/draft-email":
+        from . import email_draft
+
+        # Draft email (sd:3463): claude writes it, workspace-mcp saves it as a Gmail draft; nothing sends it.
+        return email_draft.request(number, values, revision)
     if entity == "items" and suffix == "/cancel-task":
         from sd_db import progress
 

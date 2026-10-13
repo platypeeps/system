@@ -84,7 +84,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
-from sd_db import operations, progress, reads, workflow
+from sd_db import operations, progress, reads
 from sd_db.errors import SdDbError
 
 from . import active_sessions, job_failures, snooze
@@ -391,11 +391,14 @@ def work_rows(connection: sqlite3.Connection, now: str) -> list[dict]:
     item is not the one the operator snoozed, and a new title is not a new problem. `item_kind` and `revision` are what
     Today's Fix reads and posts (sd:3456): the item's kind names the session, and the revision binds the click to this read.
     """
+    rows = reads.today_items(connection, now=now)
+    # One batched revision read for the list, not an `item_state` per row (sd:3531).
+    revisions = reads.revisions(connection, [row["id"] for row in rows])
     return [{"id": f"item:{row['id']}", "kind": "item", "item": row["id"], "what": f"#{row['id']} {row['title']}",
              "detail": f"{row['status']} · due {row['due']}" if row["due"] else row["status"],
              "state": row["status"], "due": row["due"], "problem": [row["status"], row["due"]],
-             "item_kind": row["kind"], "revision": workflow.item_state(connection, row["id"])["revision"]}
-            for row in reads.today_items(connection, now=now)]
+             "item_kind": row["kind"], "revision": revisions[row["id"]]}
+            for row in rows]
 
 
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None, herdr=None) -> dict:

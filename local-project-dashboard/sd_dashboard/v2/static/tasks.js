@@ -400,6 +400,20 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.status === 'done' ? 'it is done' : true; },
       post: (o, path) => { const t = must(o);
         return write(t.key, () => path, {}).then(v => { redrawDet(t.id); return v; }, err => { if (err.stale) refused(); throw err; }); } }),
+    // Draft email (sd:3463, email_draft): claude writes an email from the item's title and notes, and workspace-mcp saves it
+    // as a Gmail draft with no recipient. Nothing sends it. It asks first, since it runs a model and writes to Gmail. An
+    // answered refusal reads the rows again: a failure writes a note, so the row's revision moved. A post with no answer
+    // may have saved a draft, so it says that. No Undo: the draft stays in Gmail for the operator to send or delete.
+    { id: 'item.email', on: 'item', label: 'Draft email', risk: 'safe', askFirst: true, executes: true, icon: 'mail',
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : CLOSES.includes(t.kind) || `Draft email writes about a task or followup; this is a ${t.kind} item`; },
+      cli: () => 'no sd verb: the dashboard runs claude -p and saves the draft through workspace-mcp',
+      sends: o => `POST /api/items/${T(o).id}/draft-email {revision}`,
+      consequence: o => `Claude writes an email from #${T(o).id}'s title and notes and saves it as a Gmail draft with no recipient. Nothing is sent. A note on the item names the draft.`,
+      run: o => { const t = must(o);
+        return write(t.key, x => `/api/items/${x.id}/draft-email`, {}).then(
+          v => { redrawDet(t.id); return `Draft saved · #${t.id} · "${v.draft.subject}" · in Gmail Drafts, not sent`; },
+          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you press Draft email again`);
+            refused(); throw err; }); } },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => rowOr(o, t => `sd task delete ${t.id}`),
