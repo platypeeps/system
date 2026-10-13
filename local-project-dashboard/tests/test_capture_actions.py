@@ -25,6 +25,24 @@ class CaptureActions(BrowserSession):
         self.assertNotIn("Private", body)
         self.assertEqual(self.snapshot(), before)
 
+    def test_the_capture_repo_list_names_every_registered_repo_and_writes_nothing(self):
+        # sd:3521: the capture box's repo picker reads this list; a page's repo default resolves against it.
+        upsert_repo(self.connection, "/repos/two")
+        upsert_repo(self.connection, "/repos/one")
+        before = self.snapshot()
+        status, headers, body = self.request("/api/capture-repos")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(json.loads(body), {"repos": [{"path": "/repos/one", "name": "one"}, {"path": "/repos/two", "name": "two"}]})
+        self.assertEqual(self.request("/api/capture-repos?all=1")[0], 404)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_capture_files_its_repo_and_priority(self):
+        upsert_repo(self.connection, "/repos/one")
+        status, _, result = self.post("/api/items", {"title": "Here", "priority": 3, "repo": "/repos/one"})
+        self.assertEqual(status, 201)
+        self.assertEqual((result["item"]["priority"], result["item"]["repo"]), (3, "/repos/one"))
+
     def test_all_note_kinds_attach_to_selected_parent_without_creating_tasks(self):
         upsert_repo(self.connection, "/repos/one")
         upsert_repo(self.connection, "/repos/two")

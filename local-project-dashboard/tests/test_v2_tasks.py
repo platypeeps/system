@@ -366,6 +366,9 @@ function stored(a) {
   return a;
 }
 const storing = a => a && typeof a.then === 'function' ? a.then(stored) : stored(a);
+// The Details and the rows are one item_state: a Details read carries the stored row's revision, as the server's does.
+const detailNow = id => { const row = DOC.rows.find(r => String(r.id) === String(id)), d = DETAILS[id];
+  return row && d ? Object.assign({}, d, { revision: row.revision }) : d; };
 """
 
 
@@ -444,6 +447,30 @@ OUT.toasts[0].undo(); await flush();""")
         out = self.settle("""OUT.got = [asksFirst({ askFirst: true }, obj(1)), asksFirst({}, obj(1)),
   asksFirst({ askFirst: o => o.exit === 127 }, { exit: 127 }), asksFirst({ askFirst: o => o.exit === 127 }, { exit: 7 })];""")
         self.assertEqual(out["got"], [True, False, True, False])
+
+    def test_a_command_button_hover_help_names_the_line_it_runs_and_whether_it_asks_or_undoes(self):
+        """sd:3457: each command button carries a title, which the browser shows after a hover delay."""
+        out = self.settle("""OUT.got = [
+  tipOf({ label: 'Ready', cli: o => `sd task status ${o.id} ready`, risk: 'undo', undo() {} }, obj(7)),
+  tipOf({ label: 'Remove', cli: () => 'git worktree remove /tmp/x', risk: 'confirm' }, obj(7)),
+  tipOf({ label: 'Retry', cli: () => 'sd jobs run x', askFirst: true }, obj(7)),
+  tipOf({ label: 'Ask in chat' }, obj(7)),
+  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7))];""")
+        self.assertEqual(out["got"], [
+            "Ready: runs sd task status 7 ready. Undo offered.",
+            "Remove: copy only, the dashboard does not run git worktree remove /tmp/x. Asks first.",
+            "Retry: runs sd jobs run x. Asks first.",
+            "Ask in chat: dashboard only, no CLI line.",
+            "Pin: dashboard only, no CLI line.",
+        ])
+        # The foundation's help popover shows it after --delay-help, in the theme's tokens; a native title would not.
+        for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\"",
+                      "data-cmd=\"${p.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(p, o)}\""):
+            self.assertIn(where, SHELL_JS)
+        self.assertNotIn("title=\"${tipOf(", SHELL_JS)
+        self.assertIn("const b = e.target.closest?.('.help, [data-tip]');", SHELL_JS, "the hover delay skips the command buttons")
+        self.assertIn("btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`", SHELL_JS,
+                      "a tip is plain text: a CLI line's <path> is not a tag")
 
     def test_run_and_bulk_ask_through_the_one_test(self):
         """A guard: run() and runBulk() both read asksFirst, so neither treats a test as always yes or skips it."""
@@ -564,7 +591,7 @@ class TheScript(ScreenCase):
                   + f"location.search = {json.dumps(search)}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q.toString());\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
-  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
+  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, detailNow(m[1])];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
 };\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -610,16 +637,29 @@ class TheScript(ScreenCase):
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         filters = out["R"]["filters"]
-        for kind in ("followup", "task", "work"):
-            self.assertIn(f'data-f="kind" data-v="{kind}"', filters)
-        self.assertIn('data-f="repo" data-v="system"', filters)
+        # sd:3441: Kind and Repo are comboboxes; the other groups keep their chips.
+        self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-fsel="kind"><option value="" selected>All</option>'
+                      '<option value="followup">followup</option><option value="task">task</option><option value="work">work</option></select>', filters)
+        self.assertIn('<select id="f-repo" class="fsel" data-fsel="repo"><option value="" selected>All</option><option value="no repo">no repo</option><option value="system">system</option></select>', filters)
+        self.assertNotIn('data-f="kind"', filters)
+        self.assertIn('data-f="p" data-v="1"', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
         # The seeded due date is in the past on any day this runs after 2026-09-09: one overdue task lights the page.
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "overdue tasks"})
 
+    def test_a_combobox_picks_one_value_and_all_clears_it(self):
+        out = self.run_page("""const pick = (fsel, value) => ELS.filters.listeners.change[0]({ target: { dataset: { fsel }, value } });
+pick('repo', 'system'); R.one = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];
+pick('repo', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,work")
+        self.assertIn('<option value="system" selected>system</option>', out["R"]["one"])
+        # Two kinds from the address show as a count until one is picked.
+        self.assertIn('<option value="" disabled selected>2 picked</option>', out["R"]["one"])
+        self.assertIn("repo=system", out["R"]["url"])
+        self.assertNotIn("repo=", out["R"]["url2"])
+
     def test_the_kind_filter_narrows_the_rows(self):
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'work' } } : null } });
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } });
 R.board = ELS['view-board'].html;""")
         self.assertIn("Port the page", out["R"]["board"])
         self.assertNotIn("Plan the review", out["R"]["board"])
@@ -639,6 +679,239 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertNotIn("External context", port_html)
         self.assertIn("<b>running</b>", port_html)
         self.assertIn("docs/work/port/prd.md", port_html)
+
+    # sd:3439: the Details fields edit in place. A field's change is the write its command makes, with the same toast and Undo.
+    ECHO = """(path, body) => { const row = DOC.rows.find(r => path.startsWith('/api/items/' + r.id)); window.WROTE = (window.WROTE || 0) + 1;
+  const item = { id: row.id, status: body.status || row.status, priority: 'priority' in body ? body.priority : row.priority,
+    due: 'due' in body ? body.due : row.due, recurrence: row.recurrence, title: body.title || row.title, repo: 'repo' in body ? body.repo : row.repo_path };
+  return [200, { item, notes: [], revision: String(window.WROTE % 10).repeat(64) }]; }"""
+    CHANGE = "const change = (id, value) => ELS.details.listeners.change.forEach(f => f({ target: { id, value } }));\n"
+
+    def test_the_details_draw_status_priority_due_repo_and_quadrant_as_fields(self):
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.row("port")["edit"] = {"allowed": False, "reason": "message items use their own editing workflow"}
+        out = self.run_page(f"open({plan}); await flush(); R.plan = ELS.details.html; open({port}); await flush(); R.port = ELS.details.html;")
+        html = out["R"]["plan"]
+        self.assertRegex(html, r'<select id="det-status"[^>]*>.*<option value="ready" selected>Ready</option>')
+        self.assertRegex(html, r'<select id="det-p"[^>]*>.*<option value="2" selected>P2</option>')
+        self.assertIn('<input id="det-due" class="fld" type="date" value="2026-09-09">', html)
+        self.assertRegex(html, r'<select id="det-repo"[^>]*><option value="">No repo</option>.*selected')
+        self.assertRegex(html, r'<select id="det-q"[^>]*>')
+        # A row edit_item refuses has its fields off, with the reason; a work item's repo is its checkout's.
+        self.assertRegex(out["R"]["port"], r'<select id="det-p" class="fld" disabled aria-describedby="det-off">')
+        self.assertIn('<p class="why" id="det-off">The fields are off: message items use their own editing workflow.</p>', out["R"]["port"])
+        self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
+        self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
+
+    def test_a_field_change_writes_once_with_its_cli_line_and_undo(self):
+        plan = self.ids["plan"]
+        row = self.row("plan")
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('det-p', '1'); await flush(); lastUndo().undo(); await flush();
+change('det-repo', ''); await flush();
+change('det-due', ''); await flush();
+change('det-status', 'blocked'); await flush();
+change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
+        bodies = [(p[0], {k: v for k, v in p[1].items() if k != "revision"}) for p in out["posts"]]
+        self.assertEqual(bodies, [
+            (f"/api/items/{plan}", {"priority": 1}), (f"/api/items/{plan}", {"priority": 2}),
+            (f"/api/items/{plan}", {"repo": None}), (f"/api/items/{plan}", {"due": None}),
+            (f"/api/items/{plan}/status", {"status": "blocked"}), (f"/api/items/{plan}", {"priority": 1})])
+        self.assertEqual(out["posts"][0][1]["revision"], row["revision"])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertIn(f"#{plan} priority P2 → P1 · sd task edit {plan} --priority 1", msgs)
+        self.assertIn(f"#{plan} repo → none · sd task edit {plan} --no-repo", msgs)
+        self.assertIn(f"#{plan} due removed · sd task edit {plan} --clear-due", msgs)
+
+    def test_the_title_and_description_edit_in_place_with_undo(self):
+        # sd:3467: the v2 Details lost the classic item page's Details textarea; the title and body are fields again.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html;
+change('det-title', '   '); await flush();
+change('det-title', ' Plan the big review '); await flush(); lastUndo().undo(); await flush();
+change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush();""", self.ECHO)
+        self.assertIn('<input id="det-title" class="fld" value="Plan the review" required>', out["R"]["html"])
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', out["R"]["html"])
+        bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
+        self.assertEqual(bodies, [{"title": "Plan the big review"}, {"title": "Plan the review"}, {"body": "New words"}, {"body": "Old words"}])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertEqual(msgs[0], f"#{plan} not changed: a title is required")
+        self.assertIn(f"#{plan} title → Plan the big review · sd task edit {plan} --title 'Plan the big review'", msgs)
+        self.assertIn(f"#{plan} description changed · sd task edit {plan} --body 'New words'", msgs)
+
+    def test_the_description_edits_the_stored_bodys_text(self):
+        # Review 2026-10-12, lane entry 225 class pass: the item body is stored as JSON, {"text": ...} (workflow._fields), and
+        # the field showed that JSON. It edits the text, as the classic item page does (controls.py); a body that does not
+        # parse is withheld, so no save here overwrites it; a kind edit_item takes no body for has no field.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        out = self.run_page(f"open({plan}); await flush(); R.text = ELS.details.html;")
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', out["R"]["text"], "the field shows the stored JSON")
+        self.details[str(plan)]["item"]["body"] = "{not json"
+        out = self.run_page(f"open({plan}); await flush(); R.bad = ELS.details.html;")
+        self.assertNotIn('id="det-body"', out["R"]["bad"])
+        self.assertIn(f"The stored description is not valid JSON, so the field is withheld and no save here can overwrite it. "
+                      f"Repair it with <code>sd task edit {plan} --body</code>.", out["R"]["bad"])
+        self.details[str(port)]["item"]["body"] = json.dumps({"text": "Report words"})
+        out = self.run_page(f"open({port}); await flush(); R.port = ELS.details.html;")
+        self.assertNotIn('id="det-body"', out["R"]["port"])
+
+    # A field the operator is in when Details redraws: its live node, the text and the caret, as the redraw found them.
+    EDITING = """const editing = (id, value, extra) => { const n = Object.assign(El(id), { value, selectionStart: 4, selectionEnd: 6 }, extra || {});
+  n.closest = sel => sel === '#details' ? ELS.details : null; n.focus = () => { R.focused = id; };
+  n.setSelectionRange = (a, b) => { R.range = [a, b]; }; document.activeElement = n; n.isConnected = true;
+  // A redraw detaches the old field, as the browser does, unless the page moves it back in.
+  const rc = ELS.details.replaceChildren; ELS.details.replaceChildren = f => { n.isConnected = false; rc(f); };
+  // The redraw's fresh field: its value is the saved one; replaceWith records what took its place.
+  ELS[id] = Object.assign(El(id), { value: SAVED[id] || '', replaceWith: m => { R.kept = m === n ? id : 'other'; m.isConnected = true; },
+    focus: () => { R.focused = 'fresh ' + id; } });
+  return n; };
+"""
+
+    def test_a_redraw_keeps_the_field_the_operator_is_editing(self):
+        # Review 2026-10-12 (high): a Details read or a refresh that lands mid-edit redrew the title from saved data and
+        # dropped the typed text. The redraw now moves the live field into the new Details, with its caret.
+        plan, port = self.ids["plan"], self.ids["port"]
+        cases = {
+            "title": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the half'); open({plan}); await flush();",
+            "body": f"var SAVED = {{ 'det-body': '' }}; open({plan}); await flush(); editing('det-body', 'Typed words'); open({plan}); await flush();",
+            "date": f"var SAVED = {{ 'det-due': '' }}; open({plan}); await flush(); editing('det-due', '', {{ type: 'date', validity: {{ badInput: true }} }}); open({plan}); await flush();",
+            "saved": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the review'); open({plan}); await flush();",
+            "other": f"var SAVED = {{ 'det-title': 'Plan the review' }}; open({plan}); await flush(); editing('det-title', 'Plan the half'); open({port}); await flush();",
+        }
+        got = {k: self.run_page(self.EDITING + body)["R"] for k, body in cases.items()}
+        self.assertEqual(got["title"].get("kept"), "det-title", "a redraw dropped the typed title")
+        self.assertEqual((got["title"].get("focused"), got["title"].get("range")), ("det-title", [4, 6]))
+        self.assertEqual(got["body"].get("kept"), "det-body", "a redraw dropped the typed description")
+        self.assertEqual(got["date"].get("kept"), "det-due", "a redraw dropped a half-typed date")
+        self.assertIsNone(got["saved"].get("kept"), "a field that holds the saved value takes the fresh one")
+        self.assertEqual(got["saved"].get("focused"), "fresh det-title")
+        self.assertIsNone(got["other"].get("kept"), "another task's Details took the old task's text")
+
+    # ECHO, with the item's body as the server keeps it: a write's readback carries every item field.
+    BODY_ECHO = ECHO.replace("repo: 'repo' in body ? body.repo : row.repo_path };",
+                             "repo: 'repo' in body ? body.repo : row.repo_path, body: JSON.stringify({ text: 'body' in body ? (window.BODY = body.body) : (window.BODY ?? 'Old words') }) };")
+
+    def test_a_description_draft_survives_a_write_that_drops_the_details_reading(self):
+        # Review 2026-10-12, lane entry 225: a priority write's absorb() dropped DET.items, so the redraw drew no description
+        # field and the operator's unsaved description went with it. The title survived: it is drawn from the row.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        # The browser's getElementById answers null for a field the redraw did not draw.
+        absent = """const gid = document.getElementById.bind(document);
+document.getElementById = x => x === 'det-body' && !String(ELS.details.html).includes('id="det-body"') ? null : gid(x);
+"""
+        cases = {
+            "pending": "DETAIL = () => [500, { error: 'not read yet' }];",
+            "read": "",
+        }
+        got = {}
+        for name, detail in cases.items():
+            got[name] = self.run_page(self.EDITING + self.CHANGE + absent + f"""var SAVED = {{ 'det-body': 'Old words' }};
+open({plan}); await flush(); editing('det-body', 'Typed words'); {detail}
+change('det-p', '1'); await flush(); R.html = ELS.details.html;""", self.BODY_ECHO)["R"]
+        self.assertEqual(got["pending"].get("kept"), "det-body", "a write that dropped the reading dropped the typed description")
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', got["pending"]["html"])
+        self.assertEqual(got["read"].get("kept"), "det-body")
+
+    def test_each_details_fields_undo_restores_the_value_its_write_replaced(self):
+        # Review 2026-10-12, lane entry 225: the description's Undo read its value when the change was queued. With A saved,
+        # B and then C queued, C's Undo wrote A back. Every Details field's Undo reads the value as its write is sent.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        cases = {
+            "title": ("det-title", "Plan B", "Plan C", "title", "Plan B"),
+            "description": ("det-body", "Words B", "Words C", "body", "Words B"),
+            "priority": ("det-p", "1", "4", "priority", 1),
+            "due": ("det-due", "2026-09-20", "2026-09-30", "due", "2026-09-20"),
+            "repo": ("det-repo", "", "~/repos/example", "repo", None),
+            "status": ("det-status", "in_progress", "blocked", "status", "in_progress"),
+        }
+        for name, (field, b, c, key, want) in cases.items():
+            with self.subTest(field=name):
+                out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('{field}', {json.dumps(b)}); change('{field}', {json.dumps(c)}); await flush();
+R.undo = !!lastUndo(); if (R.undo) {{ await lastUndo().undo(); await flush(); }}""", self.BODY_ECHO)
+                self.assertIsNone(out.get("error"))
+                bodies = [p[1] for p in out["posts"]]
+                self.assertEqual([x.get(key) for x in bodies[:2]], [b if key != "priority" else int(b), c if key != "priority" else int(c)] if key != "repo" else [None, c])
+                self.assertTrue(out["R"]["undo"], f"{name}: no Undo offered")
+                self.assertEqual(bodies[-1].get(key, "missing"), want, f"{name}: Undo did not restore the value C replaced")
+
+    # Another tool edits the plan item: its row and its Details read bring the new revision. A write on another task lands,
+    # and the page rereads the rows, as after any landed write.
+    ELSEWHERE = """const NEW = 'c'.repeat(64), prow = DOC.rows.find(r => r.id === PLAN);
+const elsewhere = () => { prow.revision = NEW; DETAILS[PLAN] = Object.assign(JSON.parse(JSON.stringify(DETAILS[PLAN])), { revision: NEW });
+  DETAILS[PLAN].item.body = JSON.stringify({ text: 'CLI words' }); DETAILS[PLAN].notes.push({ id: 999, kind: 'comment', at: '2026-09-02T00:00:00Z', body: 'Noted elsewhere', resolved: null }); };
+const reread = () => ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit: 'p', key: String(ASK) }, value: '1' } }));
+"""
+
+    def test_a_description_edit_refuses_a_text_another_tool_replaced(self):
+        # Review 2026-10-12, sd:3520 lane: after a CLI edit, adopt() took the row's new revision and kept the cached
+        # description, so an edit wrote over the CLI's text with no conflict, and its Undo wrote the old text back. The cached
+        # description carries the revision it was read at; a field drawn from another text, or a write that leaves while the
+        # description known is older than the row, is refused, and the Details are read again.
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        cases = {
+            # The field drawn from the old text is left after the reread brought the new one.
+            "field": "change('det-body', 'My words', 'Old words');",
+            # The Details read again fails, so the description known is the old one when the write leaves.
+            "send": "DETAIL = () => [500, { error: 'not read' }]; change('det-body', 'My words');",
+        }
+        for name, edit in cases.items():
+            with self.subTest(case=name):
+                before = "DETAIL = () => [500, { error: 'not read' }];" if name == "send" else ""
+                out = self.run_page(self.ELSEWHERE.replace("PLAN", str(plan)).replace("ASK", str(ask))
+                                    + "const change = (id, value, defaultValue) => ELS.details.listeners.change.forEach(f => f({ target: { id, value, defaultValue } }));\n"
+                                    + f"""open({plan}); await flush(); elsewhere(); {before} reread(); await flush(); await flush();
+{edit} await flush(); await flush();""", self.BODY_ECHO)
+                self.assertIsNone(out.get("error"))
+                bodies = [p[1] for p in out["posts"] if "body" in p[1]]
+                self.assertEqual(bodies, [], f"{name}: the edit wrote over the text another tool saved")
+                self.assertIn(f"#{plan} not changed: the description changed since it was read", "\n".join(t[0] for t in out["toasts"]))
+
+    def test_a_reread_that_brings_a_new_revision_reads_the_details_again(self):
+        # The same review, class pass: the Details' notes, history and documents are cached beside the revision they were
+        # read at too. A reread whose row carries another revision drops them and reads them again.
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        out = self.run_page(self.ELSEWHERE.replace("PLAN", str(plan)).replace("ASK", str(ask))
+                            + f"""open({plan}); await flush(); elsewhere(); reread(); await flush(); await flush(); R.html = ELS.details.html;""", self.ECHO)
+        self.assertIsNone(out.get("error"))
+        self.assertIn("Noted elsewhere", out["R"]["html"], "the Details kept the notes read at the old revision")
+        self.assertIn("cccccccccccc…", out["R"]["html"])
+
+    def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
+        # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.row("port")["edit"] = {"allowed": False, "reason": "message items use their own editing workflow"}
+        tile = "const tile = (edit, key, value) => ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit, key: String(key) }, value } }));\n"
+        out = self.run_page(tile + f"""R.board = ELS['view-board'].html;
+tile('p', {plan}, '1'); await flush();
+tile('due', {plan}, ''); await flush();""", self.ECHO)
+        # Pick a date opens the Edit dialog, which the stand-in page cannot draw.
+        self.assertIn("if (f === 'due' && e.target.value === 'pick') { render(); askEdit(t); return; }", TASKS_JS)
+        board = out["R"]["board"]
+        self.assertIn(f'<select class="tile-f pri" data-edit="p" data-key="{plan}" data-p="2" aria-label="Priority of #{plan}">', board)
+        self.assertRegex(board, rf'<select class="tile-f due[^"]*" data-edit="due" data-key="{plan}" aria-label="Due date of #{plan}"><option value="2026-09-09" selected>')
+        self.assertIn('<option value="pick">Pick a date…</option>', board)
+        # A row edit_item refuses keeps the plain labels.
+        self.assertNotIn(f'data-key="{port}" aria-label="Priority', board)
+        bodies = [{k: v for k, v in p[1].items() if k != "revision"} for p in out["posts"]]
+        self.assertEqual(bodies, [{"priority": 1}, {"due": None}])
+
+    def test_each_sections_read_is_a_help_icon_that_copies_it_and_act_has_no_explanations(self):
+        # sd:3444: the read under each Details heading moved into a popover beside the heading; pressing the icon copies it.
+        plan = self.ids["plan"]
+        out = self.run_page(f"open({plan}); await flush(); R.html = ELS.details.html;")
+        html = out["R"]["html"]
+        self.assertNotIn('<p class="src">', html)
+        self.assertIn(f'<h3>Status history <button class="help src" type="button" aria-label="Help: Status history" '
+                      f'data-help="&lt;code&gt;sd task show {plan} --json&lt;/code&gt; · notes of kind status_change. Press to copy." '
+                      f'data-copy="sd task show {plan} --json">', html)
+        self.assertIn('data-copy="sd shadow"', html)
+        self.assertNotIn("Delete asks first", html)
 
     def test_a_status_move_toasts_after_the_write_and_undo_posts_the_old_status_with_the_new_revision(self):
         ask = self.ids["ask"]
@@ -833,12 +1106,36 @@ shellRun(cmd('item.recur'), C.get('{plan}')); await flush(); lastToast().undo();
         out = self.run_page("""var box = document.getElementById('shift-in'); box.value = 'Call the bank due mon';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""",
                             "() => [201, { item: { id: 99, title: 'Call the bank' } }]", prelude=prelude, env={"TZ": "America/Denver"})
-        self.assertEqual(out["posts"][0][:2], ["/api/items", {"title": "Call the bank", "due": "2026-11-02"}])
+        self.assertEqual(out["posts"][0][:2], ["/api/items", {"title": "Call the bank", "priority": 3, "due": "2026-11-02"}])
+
+    def test_a_capture_lands_in_the_filtered_repo_at_p3_unless_typed(self):
+        # sd:3521: the quick add and the shell's capture take the one repo the filter shows, else the selected task's.
+        row = self.row("plan")
+        enter = """var box = document.getElementById('shift-in'); box.value = %s;
+box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();"""
+        out = self.run_page(enter % "'Ship it'" + "\n" + enter % "'Ship that p1'" + f"""
+R.filtered = window.PAGE_REPO(null);""", "(path, body) => [201, { item: { id: 99, title: body.title } }]", search=f"?repo={row['repo']}")
+        self.assertEqual([p[1] for p in out["posts"][:2]], [{"title": "Ship it", "priority": 3, "repo": row["repo_path"]},
+                                                           {"title": "Ship that", "priority": 1, "repo": row["repo_path"]}])
+        self.assertEqual(out["R"]["filtered"], row["repo_path"])
+        out = self.run_page(f"R.none = window.PAGE_REPO(null); R.task = window.PAGE_REPO(C.get('{row['id']}'));")
+        self.assertEqual((out["R"]["none"], out["R"]["task"]), (None, row["repo_path"]))
+
+    def test_a_refused_quick_add_gives_back_the_text_unless_the_operator_typed_again(self):
+        # Review 2026-10-12 class pass: a refusal rebuilt the box from the parse and overwrote what was typed since.
+        press = "box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} }));"
+        refuse = "() => [400, { error: 'A title is required.' }]"
+        out = self.run_page(f"var box = document.getElementById('shift-in'); box.value = 'Call  the bank P2';\n{press} await flush(); R.back = box.value;", refuse)
+        self.assertEqual(out["R"]["back"], "Call  the bank P2", "the refused text did not come back as typed")
+        out = self.run_page(f"var box = document.getElementById('shift-in'); box.value = 'Call the bank';\n{press} box.value = 'Next one'; await flush(); R.back = box.value;", refuse)
+        self.assertEqual(out["R"]["back"], "Next one", "the refusal overwrote text typed after Enter")
+        self.assertIn("Not added: A title is required.", [t[0] for t in out["toasts"]])
 
     def test_details_read_before_a_write_never_replace_the_read_after_it(self):
         plan = self.ids["plan"]
         after = json.loads(json.dumps(self.details[str(plan)]))
         after["notes"][0]["body"] = "Written after the move"
+        after["revision"] = "b" * 64  # the read after the write carries the revision the write answered
         answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
         out = self.run_page(f"""var release, reads = 0;
 DETAIL = id => ++reads === 1 ? new Promise(r => {{ release = () => r([200, DETAILS[id]]); }}) : [200, AFTER];
@@ -1318,7 +1615,7 @@ R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
         # Selection stays on a visible task: a new task the filters hide is added and named, not selected (review, PR #46).
         new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "repo": None, "repo_path": None}
         answer = f"(path) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}]) : [404, {{}}]"
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'work' } } : null } }); await flush();
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } }); await flush();
 var box = document.getElementById('shift-in'); box.value = 'Call the bank';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""", answer)
         self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])
@@ -1652,7 +1949,7 @@ class TheDocumentLinks(ScreenCase):
         self.assertEqual([doc["path"] for doc in got], [str(self.outside)])
 
     def test_the_panel_renders_the_documents_section(self):
-        self.assertIn("<h3>Documents</h3>", TASKS_JS)
+        self.assertIn("<h3>Documents ${src(", TASKS_JS)
         self.assertIn("d.documents", TASKS_JS)
 
 
