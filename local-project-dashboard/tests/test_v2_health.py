@@ -37,7 +37,7 @@ from unittest.mock import patch
 from sd_db import credentials, upsert_repo, writes
 from sd_db.writes import record_state, snooze
 
-from sd_dashboard import health_collectors, health_screen, server, v2
+from sd_dashboard import health_collectors, health_screen, runtime, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_today import OSASCRIPT, Refused
@@ -48,6 +48,8 @@ from test_v2_registry import Registers
 from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
+#: The real reader, before `Collectors` replaces it for every test.
+REAL_READ_SERVICES = getattr(health_screen, "read_services", None)
 HEALTH_JS = (V2 / "static" / "health.js").read_text(encoding="utf-8")
 SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
@@ -170,6 +172,34 @@ DOCTOR_OUT = """== doctor
   1 hard failure(s)
 """
 DOCTOR = health_collectors.parse_doctor(DOCTOR_OUT, 1)
+#: The checkout's HEAD in every test: no test reads this checkout's git (sd:3707).
+CHECKOUT = "c" * 40
+
+
+def service_of(label, state, *, pid=None, last_exit=None, scope="user", category="service", start="", restart="",
+               reason=None, rev="1"):
+    """One `sd_db.services.inventory` entry; `start` and `restart` are the reason each is off, "" when it is on."""
+    return {"id": label, "label": label, "name": label.rsplit(".", 1)[-1], "domain": "gui/501" if scope == "user" else "system",
+            "scope": scope, "category": category, "state": state, "pid": pid, "last_exit": last_exit, "last_signal": None,
+            "reason": reason, "capabilities": {action: {"allowed": not why, "reason": why} for action, why in (
+                ("start", start), ("stop", ""), ("restart", restart))},
+            "last_request": None, "control_note": "", "revision": rev * 64}
+
+
+#: What every test reads unless it hands `services` an inventory: one running service, so no count elsewhere moves.
+QUIET_SERVICES = {"services": [service_of("com.example.alpha", "running", pid=101, start="service is already running")],
+                  "revision": "0" * 64}
+PROTECTED = "protected to preserve dashboard and tailnet access"
+SERVICES = {"services": [
+    service_of("com.example.alpha", "running", pid=101, start="service is already running"),
+    service_of("com.example.beta", "unloaded", restart="service is already unloaded; use Start to load it",
+               reason="service is installed but not loaded", rev="2"),
+    service_of("com.example.gamma", "failed", last_exit=78, rev="3"),
+    service_of(runtime.LABEL, "running", pid=202, start=PROTECTED, restart=PROTECTED, rev="4"),
+    service_of("com.example.daily", "idle", category="scheduled"),
+    service_of("com.example.daemon", "running", pid=1, scope="system"),
+], "revision": "0" * 64}
+
 CLEAN_DOCTOR = health_collectors.parse_doctor("== doctor\n  ok      profile recorded: hub\n\n  no hard failures\n", 0)
 CLEAN_DISK = {**DISK, "volumes": [DISK["volumes"][1]], "build": {"checked": 4, "merged": [], "unread": []}}
 CLEAN_BRANCHES = {"repos": 2, "merged": [], "no_default": [], "unread": []}
@@ -212,6 +242,14 @@ class Collectors:
         patcher = patch.object(health_collectors, "doctor_scan", lambda **_: CLEAN_DOCTOR)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # No test runs launchctl or reads this checkout's HEAD (sd:3707): a test hands `services` its inventory.
+        for name, value in (("read_services", lambda connection, backend=None: backend or QUIET_SERVICES),):
+            patcher = patch.object(health_screen, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(runtime, "checkout_commit", lambda: CHECKOUT)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 def git(*args, cwd=None):
@@ -238,15 +276,17 @@ class TheDocument(Collectors, ScreenCase):
                                       ports=kwargs.get("ports") or ports_snapshot,
                                       protection=kwargs.get("protection") or protection_of(PROTECTION),
                                       disk=kwargs.get("disk"), branches=kwargs.get("branches"),
-                                      doctor=kwargs.get("doctor"))
+                                      doctor=kwargs.get("doctor"), **{key: kwargs[key] for key in ("services", "served_commit")
+                                                                      if key in kwargs})
 
     def test_every_design_area_is_there_in_order_and_says_whether_a_reader_covers_it(self):
         areas = self.doc()["areas"]
         self.assertEqual([(a["id"], a["read"]) for a in areas],
                          [("disk", True), ("cred", True), ("wt", True),
-                          ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("doc", True)])
+                          ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("svc", True),
+                          ("doc", True)])
         for area in areas:
-            if area["id"] not in ("br", "ports", "prot", "cred", "dep", "sec", "doc"):
+            if area["id"] not in ("br", "ports", "prot", "svc", "cred", "dep", "sec", "doc"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -254,6 +294,61 @@ class TheDocument(Collectors, ScreenCase):
     def seen(self, row_id, doc=None):
         """The row's fingerprint as the page reads it, which the page posts with its snooze."""
         return next(row["seen"] for area in (doc or self.doc())["areas"] for row in area["rows"] if row["id"] == row_id)
+
+    def services(self, served_commit=CHECKOUT, inventory=SERVICES):
+        area = next(area for area in self.doc(services=inventory, served_commit=served_commit)["areas"] if area["id"] == "svc")
+        return area, {row["id"]: row for row in area["rows"]}
+
+    def test_services_are_the_long_running_user_agents_with_launchds_state_and_the_controls_sd_services_allows(self):
+        """sd:3707: a row per KeepAlive user LaunchAgent; down is caution, a failed exit warning; scheduled and system are not here."""
+        area, rows = self.services()
+        self.assertEqual(area["error"], "")
+        self.assertEqual(list(rows), ["svc:com.example.alpha", "svc:com.example.beta", "svc:com.example.gamma",
+                                      f"svc:{runtime.LABEL}"])
+        self.assertEqual([(row["state"], row["type"]) for row in rows.values()],
+                         [("ok", "service"), ("caution", "service"), ("warning", "service"), ("ok", "dashboard service")])
+        beta = rows["svc:com.example.beta"]
+        self.assertEqual((beta["what"], beta["detail"], beta["facts"]["Label"], beta["revision"]),
+                         ("beta · unloaded", "service is installed but not loaded", "com.example.beta", "2" * 64))
+        self.assertEqual(beta["can"], {"start": {"allowed": True, "reason": ""},
+                                       "restart": {"allowed": False, "reason": "service is already unloaded; use Start to load it"}})
+        self.assertEqual(rows["svc:com.example.gamma"]["detail"], "last exit 78")
+        self.assertEqual(rows["svc:com.example.alpha"]["facts"]["PID"], "101")
+
+    def test_the_dashboard_row_is_stale_when_it_serves_another_commit_and_gives_the_kickstart_line(self):
+        """sd:3707 with sd:3528: the row asks what `dashboard.sh health` asks, and its own service is copy only."""
+        _, rows = self.services(served_commit="a" * 40)
+        row = rows[f"svc:{runtime.LABEL}"]
+        self.assertEqual((row["state"], row["what"]), ("caution", f"{runtime.LABEL.rsplit('.', 1)[-1]} · stale"))
+        self.assertEqual(row["detail"], f"served {'a' * 40}, checkout {CHECKOUT}: "
+                                        f"launchctl kickstart -k gui/{os.getuid()}/{runtime.LABEL}")
+        self.assertEqual(row["kickstart"], f"launchctl kickstart -k gui/{os.getuid()}/{runtime.LABEL}")
+        self.assertEqual(row["facts"]["Served commit"], "a" * 40)
+        self.assertIn("protected", row["note"])
+        # A process that names no commit is not current either.
+        self.assertEqual(self.services(served_commit=None)[1][f"svc:{runtime.LABEL}"]["state"], "caution")
+
+    def test_a_checkout_commit_that_cannot_be_read_is_unknown_not_current(self):
+        with patch.object(runtime, "checkout_commit", side_effect=runtime.RuntimeRefused("git failed: index.lock")):
+            row = self.services()[1][f"svc:{runtime.LABEL}"]
+        self.assertEqual(row["state"], "unknown")
+        self.assertEqual(row["detail"], "the checkout's commit was not read: git failed: index.lock")
+
+    def test_a_service_read_that_fails_is_the_area_error_and_no_service_at_all_is_unknown(self):
+        def stuck(connection, backend=None):
+            raise RuntimeError("launchctl gave no answer: timed out")
+        with patch.object(health_screen, "read_services", stuck):
+            area = next(area for area in self.doc()["areas"] if area["id"] == "svc")
+        self.assertEqual((area["error"], area["rows"]), ("launchctl gave no answer: timed out", []))
+        _, rows = self.services(inventory={"services": [], "revision": "0" * 64})
+        self.assertEqual([(row["id"], row["state"]) for row in rows.values()], [("svc:none", "unknown")])
+
+    def test_a_launchctl_that_does_not_answer_is_a_reader_error_the_area_settles(self):
+        class Stuck:
+            def names(self):
+                raise subprocess.TimeoutExpired("launchctl", 10)
+        with self.assertRaisesRegex(RuntimeError, "launchctl gave no answer"):
+            REAL_READ_SERVICES(self.connection, Stuck())
 
     def test_a_snoozed_row_leaves_its_area_until_its_time_and_then_comes_back(self):
         """sd:1896. The key is the page and the row id; Today's key for the same id hides nothing here."""
@@ -743,7 +838,7 @@ class TheDocument(Collectors, ScreenCase):
         doc = self.doc(fleet=slow(fleet_of(TREES)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "doc")])
+                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "svc", "doc")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -965,7 +1060,8 @@ window.shell.state = s => OUT.states.push(s);
 
 
 SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
-                 "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential")
+                 "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
+                 "dashboard service")
 
 
 class TheScript(Collectors, ScreenCase):
@@ -999,6 +1095,9 @@ class TheScript(Collectors, ScreenCase):
             ["volume.df", "volume", "safe", "b", False, False],
             ["worktree registrations.prune", "worktree registrations", "confirm", "p", True, False],
             ["merged branches.delete", "merged branches", "confirm", "d", True, False],
+            ["service.restart", "service", "confirm", "r", True, False],
+            ["service.start", "service", "confirm", "s", True, False],
+            ["dashboard service.kickstart", "dashboard service", "safe", "l", False, False],
             ["port.inspect", "port", "safe", "i", False, False],
             ["protection.settings", "branch protection", "safe", "o", False, False],
             ["collector.sync", "collector", "safe", "r", None, False],
@@ -1028,7 +1127,7 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
         self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("9 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
+        self.assertIn("10 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
 
@@ -1128,7 +1227,7 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 21 rows.", out["R"]["note"])
+        self.assertIn("Filtered to Credentials only: 1 of 22 rows.", out["R"]["note"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
                          ["cred", "wt", "br", "dep", "sec", "ports", "prot"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
@@ -1221,6 +1320,68 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""",
                          [["/api/health/cleanup", {"row": "gone:group/alpha", "revision": out["R"]["rev"]}]])
         self.assertEqual(out["gets"], ["/api/health"])
         self.assertEqual(out["toasts"][-1][0], "group/alpha: 2 worktrees registered, directory gone: 1 done · kept 1: b (locked)")
+
+    SERVICE_ANSWER = ("ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path.startsWith('/api/services/') "
+                      "? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n")
+    ACCEPTED = {"request": {"id": "x", "action": "restart", "status": "accepted",
+                            "message": "launchctl accepted the request; current state is observed separately"}, "service": {}}
+
+    def service_page(self, row, body, status=200, answer=None):
+        """sd:3707: the page over the Services fixture, its dashboard serving another commit, with `o` the row."""
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                     protection=protection_of(PROTECTION), services=SERVICES, served_commit="a" * 40)
+        return self.run_page(f"var STATUS_W = {status}, WROTE = {json.dumps(answer or self.ACCEPTED)};\n" + self.SERVICE_ANSWER
+                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body, doc=doc)
+
+    def test_restart_confirms_then_posts_the_sd_services_route_with_the_rows_revision(self):
+        """sd:3707, ruling Q3: the control runs the code `sd services restart` runs, through the route Operations posts."""
+        out = self.service_page("svc:com.example.alpha", """var c = cmd('service.restart');
+R.cli = c.cli(o); R.why = c.consequence(o); R.on = c.when(o); R.primary = c.primary(o);
+R.start = cmd('service.start').when(o);
+shellRun(c, o); await flush();""")
+        self.assertEqual(out["R"]["cli"], "sd services restart com.example.alpha")
+        self.assertEqual(out["R"]["why"], "Stops com.example.alpha and starts it again through launchctl (bootout, bootstrap, "
+                                          "kickstart). Its open connections drop.")
+        self.assertEqual((out["R"]["on"], out["R"]["primary"]), (True, True))
+        self.assertEqual(out["R"]["start"], "service is already running")
+        self.assertEqual(out["confirms"], ["service.restart"])
+        self.assertEqual([post[:2] for post in out["posts"]],
+                         [["/api/services/com.example.alpha/restart", {"revision": "1" * 64}]])
+        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["toasts"][-1][0], "com.example.alpha: accepted · launchctl accepted the request; "
+                                               "current state is observed separately")
+
+    def test_a_down_service_offers_start_and_says_why_restart_is_off(self):
+        out = self.service_page("svc:com.example.beta", """R.start = cmd('service.start').when(o); R.primary = cmd('service.start').primary(o);
+R.cli = cmd('service.start').cli(o); R.restart = cmd('service.restart').when(o);
+R.old = cmd('service.start').when({ ...o, revision: undefined });
+shellRun(cmd('service.start'), o); await flush();""")
+        self.assertEqual((out["R"]["start"], out["R"]["primary"]), (True, True))
+        self.assertEqual(out["R"]["cli"], "sd services start com.example.beta")
+        self.assertEqual(out["R"]["restart"], "service is already unloaded; use Start to load it")
+        self.assertEqual(out["R"]["old"], "the row carries no revision: read Health again")
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/services/com.example.beta/start", {"revision": "2" * 64}]])
+
+    def test_the_stale_dashboard_row_is_copy_only_with_the_kickstart_line(self):
+        """Restarting the dashboard from its own page would end the request that asks; sd_db.services protects it too."""
+        out = self.service_page(f"svc:{runtime.LABEL}", """var k = cmd('dashboard service.kickstart');
+R.cli = k.cli(o); R.state = o.state; R.what = o.what;
+shellRun(k, o); await flush();""")
+        self.assertEqual(out["R"]["cli"], f"launchctl kickstart -k gui/{os.getuid()}/{runtime.LABEL}")
+        self.assertEqual(out["R"]["state"], "caution")
+        self.assertTrue(out["R"]["what"].endswith(" · stale"))
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["confirms"], [])
+
+    def test_a_refused_service_write_says_not_changed_and_an_unknown_one_says_so(self):
+        refused = self.service_page("svc:com.example.alpha", "shellRun(cmd('service.restart'), o); await flush();",
+                                    status=409, answer={"error": "The service changed since the page read it.", "reload": True})
+        self.assertIn("The service changed since the page read it.", refused["toasts"][-1][0])
+        self.assertEqual(refused["gets"], ["/api/health"])
+        unknown = self.service_page("svc:com.example.alpha", "shellRun(cmd('service.restart'), o); await flush();",
+                                    status=502, answer={"error": "bad gateway"})
+        self.assertRegex(unknown["toasts"][-1][0], r"^Not known what changed · com\.example\.alpha: ")
+        self.assertEqual(unknown["gets"], ["/api/health"])
 
     def test_a_refused_cleanup_says_not_changed_and_an_unknown_one_says_so(self):
         stale = self.cleanup("gone:group/alpha", "shellRun(cmd('worktree registrations.prune'), o); await flush();",

@@ -665,6 +665,45 @@ class BuildIdentity(unittest.TestCase):
             self.assertEqual(body["library_digest"], original["library_digest"])
             self.assertEqual(body["dashboard_digest"], original["dashboard_digest"])
 
+    def test_health_reports_the_commit_the_process_started_on(self):
+        """sd:3528: /health names the commit captured at start, not the checkout's HEAD now."""
+        from sd_db.migrate import initialise
+        from sd_dashboard import server
+
+        database = self.root / "sd.db"
+        initialise(database)
+        original = self.digests()
+        with patch.object(runtime, "build_digests", return_value=original), \
+                patch.object(runtime, "checkout_commit", return_value="a" * 40):
+            listening = server.build(database, port=0)
+        thread = threading.Thread(target=listening.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(listening.server_close)
+        self.addCleanup(listening.shutdown)
+        client = http.client.HTTPConnection(*listening.server_address[:2], timeout=5)
+        try:
+            with patch.object(runtime, "build_digests", return_value=original), \
+                    patch.object(runtime, "checkout_commit", return_value="b" * 40):
+                client.request("GET", "/health")
+                response = client.getresponse()
+                body = json.loads(response.read())
+        finally:
+            client.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["commit"], "a" * 40)
+
+    def test_a_commit_that_cannot_be_read_still_starts_the_server(self):
+        from sd_db.migrate import initialise
+        from sd_dashboard import server
+
+        database = self.root / "sd.db"
+        initialise(database)
+        with patch.object(runtime, "build_digests", return_value=self.digests()), \
+                patch.object(runtime, "checkout_commit", side_effect=runtime.RuntimeRefused("git failed: locked")):
+            listening = server.build(database, port=0, bind=False)
+        self.addCleanup(listening.server_close)
+        self.assertIsNone(listening.RequestHandlerClass.served_commit)
+
     def serve_changed_build(self, probe, **disk):
         """Start a server on this build with `probe` as its start check, then change the build on disk (sd:3018).
 
@@ -996,6 +1035,89 @@ class HealthWait(unittest.TestCase):
         result, tries = self.poll(1, wait=0)
         self.assertIsInstance(result, runtime.RuntimeRefused)
         self.assertEqual(tries, [0.0])
+
+
+class ServedCommit(unittest.TestCase):
+    """sd:3528: `dashboard.sh health` names the served commit and fails when it is not the checkout's."""
+
+    SERVED = {"ok": True, "service": "sd-dashboard", "pid": 4242}
+
+    def health(self, served, checkout):
+        """`runtime health` against a healthy server that answers `served`; (exit code, stdout, stderr)."""
+        temporary = tempfile.TemporaryDirectory(prefix="dashboard-commit-")
+        self.addCleanup(temporary.cleanup)
+        config = Path(temporary.name) / "dashboard.json"
+        config.write_text(json.dumps({"port": 8767}))
+        answer = dict(self.SERVED, **({} if served is ... else {"commit": served}))
+        checkout = {"side_effect": checkout} if isinstance(checkout, Exception) else {"return_value": checkout}
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["runtime", "health", "--config", str(config)]), \
+                patch.object(runtime, "health_check", return_value=answer), \
+                patch.object(runtime, "checkout_commit", create=True, **checkout), \
+                patch("sys.stdout", out), patch("sys.stderr", err):
+            code = runtime.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_checkout_commit_passes_and_is_shown(self):
+        code, out, err = self.health("a" * 40, "a" * 40)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["commit"], "a" * 40)
+
+    def test_a_server_behind_the_checkout_fails_naming_both_and_the_kickstart(self):
+        code, out, err = self.health("a" * 40, "b" * 40)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"served {'a' * 40}, checkout {'b' * 40}", err)
+        self.assertIn(f"launchctl kickstart -k gui/{os.getuid()}/{runtime.LABEL}", err)
+
+    def test_a_server_that_names_no_commit_is_not_current(self):
+        """A process from before sd:3528 answers no commit: unknown is not a pass."""
+        code, _, err = self.health(..., "b" * 40)
+        self.assertEqual(code, 1)
+        self.assertIn(f"served unknown, checkout {'b' * 40}", err)
+
+    def test_a_checkout_commit_that_cannot_be_read_fails(self):
+        code, _, err = self.health("a" * 40, runtime.RuntimeRefused("git failed: index.lock"))
+        self.assertEqual(code, 1)
+        self.assertIn("git failed: index.lock", err)
+
+    def test_an_installed_copy_outside_any_checkout_passes_on_its_digests(self):
+        """No git checkout on either side: nothing to compare, and /health's digests still judge the build."""
+        code, out, err = self.health(None, None)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIsNone(json.loads(out)["commit"])
+
+    def test_checkout_commit_reads_this_checkout(self):
+        expected = subprocess.run(["git", "-C", str(REAL_HERE), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(runtime.checkout_commit(), expected)
+
+    def test_an_unhealthy_answer_names_the_commit_it_serves(self):
+        """A stale process answers 503 with code_changed; the refusal says what it serves."""
+        body = json.dumps({"ok": False, "service": "sd-dashboard", "code_changed": True, "commit": "a" * 40}).encode()
+
+        class Response:
+            status = 503
+
+            def read(self):
+                return body
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def request(self, *args):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with patch.object(runtime.http.client, "HTTPConnection", Connection):
+            with self.assertRaises(runtime.RuntimeRefused) as refusal:
+                runtime.health_check(8767, wait=0)
+        self.assertIn(f"it serves {'a' * 40} and its build changed on disk", str(refusal.exception))
 
 
 if __name__ == "__main__":
