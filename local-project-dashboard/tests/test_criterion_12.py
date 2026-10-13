@@ -46,11 +46,12 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        # Classic Today was retired in sd:3402; Operations is a classic screen that stays.
-        for path in ("/operations", "/item/1"):
+        # Classic Today was retired in sd:3402; Operations is a classic screen that stays. The item page draws in the
+        # v2 shell (sd:3586).
+        for path, stylesheet in (("/operations", "/static/dashboard.css"), ("/item/1", "/ui/shell.css")):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
-            self.assertIn("/static/dashboard.css", page)
+            self.assertIn(stylesheet, page)
 
     def test_each_reads_through_the_library(self):
         """A grep, because "reads through the library" is a construction.
