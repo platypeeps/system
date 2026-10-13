@@ -5,7 +5,7 @@ import re
 import unittest
 from unittest.mock import patch
 
-from sd_dashboard import contribution_screen
+from sd_dashboard import contribution_screen, pages
 from sd_db import contributions
 from support import ScreenCase
 
@@ -47,6 +47,34 @@ def seed_registered(connection):
 
 
 class ContributionScreen(ScreenCase):
+    def test_the_page_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 6: classic Contributions is a v2 shell page under Contributions, whose page links it."""
+        seed_registered(self.connection)
+        body = self.render("/classic/contributions")
+        self.assertIn('<body data-page="Contributions" data-scope="contributions">', body)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', body)
+        for asset in ("tokens.css", "shell.css", "classic.css", "shell.js"):
+            self.assertRegex(body, rf'"/ui/{re.escape(asset)}\?v=[0-9a-f]{{16}}"', asset)
+        self.assertNotIn("/static/dashboard.css", body)
+        self.assertNotIn('class="nav"', body)
+        self.assertEqual(body.count("<h1>"), 1)
+        self.assertIn("<title>Contributions · system</title>", body)
+        self.assertIn("Ready patch &lt;safe&gt;", body)
+        # Each row's acknowledge form names its command; the page folds no CLI equivalents list, as the classic page
+        # did not.
+        self.assertIn("data-cli=", body)
+        self.assertNotIn("cli-equivalents", body)
+
+    def test_an_error_page_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 6: a 404 or 503 page is a shell page under Today, with its message and the way back."""
+        body = pages.error_page(404, "Nothing at /nowhere<x>.")
+        self.assertIn('<body data-page="Today" data-scope="today">', body)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', body)
+        self.assertIn("<title>404 · system</title>", body)
+        self.assertIn("Nothing at /nowhere&lt;x&gt;.", body)
+        self.assertIn('<a href="/">Back to Today</a>', body)
+        self.assertNotIn("/static/dashboard.css", body)
+
     def test_every_lane_has_a_label_and_no_label_names_a_lane_that_is_gone(self):
         # LABELS is a hand-kept inventory of the library's lanes; `closed` was
         # added to LANES without a label until this held them equal.

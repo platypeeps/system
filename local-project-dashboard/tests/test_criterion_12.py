@@ -33,8 +33,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from sd_dashboard import server, v2
-from sd_dashboard.pages import SECTIONS
+from sd_dashboard import server
 
 from support import ScreenCase
 
@@ -46,9 +45,8 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        # Classic Today was retired in sd:3402; Contributions is the classic screen that stays. The item page and
-        # Operations draw in the v2 shell (sd:3586).
-        for path, stylesheet in (("/classic/contributions", "/static/dashboard.css"), ("/item/1", "/ui/shell.css"),
+        # Classic Today was retired in sd:3402; every server-drawn screen draws in the v2 shell (sd:3586).
+        for path, stylesheet in (("/classic/contributions", "/ui/shell.css"), ("/item/1", "/ui/shell.css"),
                                  ("/operations", "/ui/shell.css")):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
@@ -70,27 +68,6 @@ class TheSections(ScreenCase):
                     f"{path.name} issues SQL; the library holds the queries",
                 )
 
-    def test_unbuilt_sections_are_not_advertised_as_working_controls(self):
-        later = [section.key for section in SECTIONS if not section.built]
-        self.assertEqual(later, [])
-        self.assertEqual([section.key for section in SECTIONS], ["today", "backlog", "contributions", "writing", "operations", "protection", "item", "skills", "documents", "designs"])
-        page = self.render("/classic/contributions")
-        self.assertNotIn("nav-later", page)
-        for section in SECTIONS:
-            if not section.built:
-                self.assertNotIn(f'href="{section.path}"', page)
-
-    def test_a_ported_section_links_its_new_page_from_the_registry(self):
-        """sd:2473: the classic nav opens the page the v2 registry ports; the palette keeps the classic screen."""
-        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/classic/contributions"), re.S)[0]
-        links = {label: re.search(r'href="([^"]*)"', attributes)[1]
-                 for attributes, label in re.findall(r"<a\b([^>]*)>([^<]*)</a>", nav)}
-        ported = [section.label for section in SECTIONS if section.in_nav and section.label in v2.SECTIONS]
-        self.assertIn("Contributions", ported, "the fixture ports nothing")
-        for label in ported:
-            self.assertEqual(links[label], v2.SECTIONS[label], label)
-        self.assertEqual(len(links), sum(section.in_nav for section in SECTIONS))
-        self.assertTrue(all(links.values()), links)
 
 
 class DeliberateWriteControls(ScreenCase):
@@ -143,62 +120,10 @@ class DeliberateWriteControls(ScreenCase):
             self.assertNotIn("javascript:", page)
 
 
-class TheStylesheet(unittest.TestCase):
-    def setUp(self):
-        source = (STATIC / "dashboard.css").read_text(encoding="utf-8")
-        #: Comments out, because a rule this file explains in prose is not a
-        #: rule this file *has*. The first version of these assertions failed
-        #: on the paragraph that says there is no `overflow-x` in the file.
-        self.css = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
-
-    def _palette(self, block: str) -> set[str]:
-        return set(re.findall(r"(--[a-z-]+)\s*:", block))
-
-    def test_both_palettes_name_the_same_set_of_properties(self):
-        light = self.css.split("@media", 1)[0]
-        dark = re.search(
-            r"@media \(prefers-color-scheme: dark\) \{(.*?)\n  \}\n\}", self.css, re.S
-        )
-        self.assertIsNotNone(dark, "no dark palette")
-        self.assertEqual(self._palette(light), self._palette(dark.group(1)))
-        self.assertGreater(len(self._palette(light)), 8)
-
-    def test_the_dark_palette_is_one_media_query_and_nothing_selects_it(self):
-        self.assertEqual(self.css.count("prefers-color-scheme"), 1)
-        for toggle in ("data-theme", "localStorage", ".theme-", "[data-color"):
-            self.assertNotIn(toggle, self.css)
-
-    def test_no_hover_only_affordance(self):
-        """A `:hover` rule may recolour. It may not reveal.
-
-        `prd.md:722`: "no hover-only affordances". The failure this catches is
-        a control that exists only once the pointer is over it, which on the
-        reference device -- an iPad -- is a control that does not exist.
-        """
-        for selector, block in re.findall(r"([^{}]*:hover[^{}]*)\{([^}]*)\}", self.css):
-            for property_name in ("display", "visibility", "opacity", "content",
-                                  "height", "width", "max-height", "transform"):
-                self.assertNotIn(
-                    f"{property_name}:", block.replace(" ", ""),
-                    f"{selector.strip()} reveals with {property_name}",
-                )
-
-    def test_no_horizontal_scroll(self):
-        self.assertNotIn("overflow-x", self.css)
-        self.assertNotIn("white-space: nowrap", self.css.replace("white-space: nowrap;\n}", ""))
-
-    def test_touch_targets_are_at_least_forty_four_points(self):
-        heights = re.findall(r"min-height:\s*(\d+)px", self.css)
-        self.assertTrue(heights)
-        for value in heights:
-            self.assertGreaterEqual(int(value), 24)
-        self.assertIn("min-height: 44px", self.css)
-
-
 class NoBuildStep(unittest.TestCase):
-    def test_one_css_file_and_one_javascript_file(self):
+    def test_one_javascript_file(self):
         served = sorted(path.name for path in STATIC.iterdir() if path.is_file())
-        self.assertEqual(served, ["dashboard.css", "dashboard.js"])
+        self.assertEqual(served, ["dashboard.js"])
         self.assertEqual(sorted(server.STATIC_FILES), served)
 
     def test_no_package_json_no_node_modules_no_bundler_config_under_this_folder(self):
@@ -310,7 +235,7 @@ class OnTheWire(ScreenCase):
     def test_every_response_carries_the_policy_and_the_frame_refusal(self):
         for path, expected in (
             ("/", 200), ("/operations", 200), ("/classic/today", 404), ("/classic/backlog", 404), (f"/item/{self.id}", 200),
-            ("/static/dashboard.js", 200), ("/static/dashboard.css", 200),
+            ("/static/dashboard.js", 200), ("/static/dashboard.css", 404),
             ("/item/999999", 404), ("/nowhere", 404),
         ):
             status, headers, _ = self.fetch(path)
