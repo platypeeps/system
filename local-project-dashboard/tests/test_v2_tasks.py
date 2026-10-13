@@ -17,6 +17,7 @@ look at 375 px -- is a manual check recorded on the pull request.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -1621,19 +1622,36 @@ box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPr
         self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])
         self.assertNotIn("/api/tasks/99", out["gets"], "the hidden task was selected and its Details read")
 
-    def test_the_confirm_names_the_rule_of_a_byday_series(self):
-        set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;BYDAY=MO,TH")
+    def test_the_confirm_names_the_rule_of_a_series_sd_cannot_walk(self):
+        set_item_fields(self.connection, self.ids["plan"], recurrence="FREQ=WEEKLY;COUNT=3")
         self.connection.commit()
         self.doc = tasks_screen.document(self.connection, now=NOW)
         plan = self.ids["plan"]
         out = self.run_page(f"""const o = C.get('{plan}'); R.text = cmd('item.complete').consequence(o); R.danger = cmd('item.complete').danger(o);
 R.done = cmd('item.status.done').when(o);""")
-        # The library walks no BYDAY rule, so the completion ends that series; the confirm names the rule and says so, on the
+        # The library walks no COUNT rule, so the completion ends that series; the confirm names the rule and says so, on the
         # danger button, since the series ends for good (sd:2250, case 3).
         self.assertIsNone(self.row("plan")["next_due"])
-        self.assertEqual(out["R"]["text"], f"Completes #{plan} and ends the series: sd cannot walk FREQ=WEEKLY;BYDAY=MO,TH, so no next occurrence opens. There is no Undo.")
+        self.assertEqual(out["R"]["text"], f"Completes #{plan} and ends the series: sd cannot walk FREQ=WEEKLY;COUNT=3, so no next occurrence opens. There is no Undo.")
         self.assertTrue(out["R"]["danger"])
         self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and ends the series, since sd cannot walk its rule")
+
+    def test_a_byday_series_opens_its_next_occurrence(self):
+        # sd:3713: the library walks BYDAY on FREQ=WEEKLY (pack sd:3453), so the page does too and names the next date.
+        rule = "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"
+        set_item_fields(self.connection, self.ids["plan"], recurrence=rule)
+        self.connection.commit()
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        plan = self.ids["plan"]
+        out = self.run_page(f"""const o = C.get('{plan}'); R.text = cmd('item.complete').consequence(o); R.danger = cmd('item.complete').danger(o);
+R.done = cmd('item.status.done').when(o);""")
+        nxt = self.row("plan")["next_due"]
+        self.assertIsNotNone(nxt)
+        self.assertEqual(datetime.date.fromisoformat(nxt).weekday(), 4)
+        self.assertIn(f"Completes #{plan} and opens the next occurrence, due ", out["R"]["text"])
+        self.assertIn(f"({rule})", out["R"]["text"])
+        self.assertFalse(out["R"]["danger"])
+        self.assertEqual(out["R"]["done"], "it repeats: 5 completes it and opens the next occurrence")
 
     def test_a_rule_whose_date_the_page_has_not_read_says_sd_sets_it(self):
         # sd:2250, cases 1 and 2. The row's next_due is the date the confirm names, on a plain confirm button. A readback

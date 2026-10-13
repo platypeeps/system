@@ -189,10 +189,9 @@ with (Path(os.environ["SD_FIXTURE_STUBS"]) / "shadow-notifications.jsonl").open(
             self.assertEqual(read_watermark(connection), before)
         failures = (self.cron / "logs/failures.log").read_text()
         self.assertIn("shadow-sync-nightly FAILED rc=1", failures)
+        # The failure reaches the run's report and failures.log; no banner (sd:3454).
         notifications = self.fixture.stubs.data / "shadow-notifications.jsonl"
-        alerts = [json.loads(line) for line in notifications.read_text().splitlines()]
-        self.assertEqual(len(alerts), 1)
-        self.assertIn("shadow-sync-nightly", alerts[0][1])
+        self.assertFalse(notifications.exists())
         self.assertFalse((self.cron / "logs/.shadow-sync-nightly.lock").exists())
 
         (self.fixture.stubs.data / "shadow-healthy").touch()
@@ -204,5 +203,5 @@ with (Path(os.environ["SD_FIXTURE_STUBS"]) / "shadow-notifications.jsonl").open(
         with closing(connect(home=self.fixture.path)) as connection:
             self.assertNotEqual(read_watermark(connection), before)
         self.assertEqual((self.cron / "logs/failures.log").read_text(), failures)
-        self.assertEqual(len(notifications.read_text().splitlines()), 1)
+        self.assertFalse(notifications.exists())
         self.assertFalse((self.cron / "logs/.shadow-sync-nightly.lock").exists())

@@ -159,7 +159,7 @@ class Criterion7(BrowserSession):
         queued = runner.enqueue(self.connection, [self.work], who="operator")[0]["id"]
         message = self.refused("ready")
         self.assertRegex(message, rf"assignment {queued}\b")
-        self.assertIn(f"cancel it with `sd assignments cancel {queued}`", message)
+        self.assertIn(f"cancel queued assignment {queued} first", message)
         self.assertNotIn("sd runner", message)
         self.assertIn(f'action="/api/assignments/{queued}/cancel"', self.page(), "and the item screen offers it")
         self.end(queued)

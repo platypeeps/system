@@ -14,6 +14,45 @@ and **Postpone 3 days** (signed links served by `local-task-actions`).
 Installed as the `obsidian-tasks-nightly` job (03:00), defined in
 `<config>/cron-jobs/jobs/` (examples in `local-cron-jobs/examples/`).
 
+## Moving the tasks into sd
+
+Tracking moves to the sd database; the vault stays a publication target
+(sd:3460). `migrate` turns each TaskNotes file into one sd `task` with no
+checkout:
+
+```sh
+./obsidian-tasks.sh migrate          # dry run: counts by shape, writes nothing
+./obsidian-tasks.sh migrate --apply  # create the items
+```
+
+- Status none/open is `planning`, in-progress `in_progress`, done `done`;
+  an archived task lands `done` with the cancelled receipt `sd task cancel`
+  writes. Priority high/normal/low is 1/2/3, none leaves it unset.
+- `scheduled`, else `due`, becomes the item's due date. A different `due`
+  is kept in the item's import note.
+- A rule loses its `DTSTART:YYYYMMDD;` prefix and goes through the pack's
+  `sd_db.recurrence`; anchor scheduled is `schedule`, completion is
+  `completion`. A rule the pack refuses refuses the task, counted.
+- `complete_instances` and `skipped_instances` go into the import note; sd's
+  chain of done rows starts at the import.
+- Each task is one transaction; the item carries the reference
+  `obsidian:<vault path>` (`task-ref`, as `sd task add --ref` writes it). A
+  task whose reference exists is skipped, so a second run creates nothing.
+- Each frontmatter line is `key: value` or `key:` at column 0, or a
+  `- item` at the indent of its list's first item; any other line refuses
+  the task, naming its number. Blank and comment lines may sit between
+  keys, not inside a list.
+- A value passes only when YAML reads it as the exact string the
+  importer uses; any other refuses its task, naming the key. Refused: a
+  first character that is a YAML indicator, escapes in quotes, null, bool
+  and number forms where a string belongs, comments, leading or trailing
+  whitespace, an empty value (an empty `title` takes the file name),
+  continuation lines, nested maps, a date that is not one, bytes that are
+  not UTF-8. Values are matched exactly: `Open` is not `open`. A refusal
+  writes no reference, so a rerun imports the task once the file is fixed.
+- Output is counts, plus the path and reason of each refused task; never a
+  title. The vault is only read. `--apply` exits 1 when any task was refused or failed.
+
 ## How it decides
 
 Reads the TaskNotes plugin's per-task files (`TaskNotes/Tasks/*.md`
@@ -25,8 +64,8 @@ advances `scheduled` to the next occurrence when an instance completes.
 
 Goes through `local-notify`'s `email` channel with `-f html` (Gmail via the
 local `google_workspace_mcp` server). No due tasks = no email. The job exits
-1 only when the email could not be delivered, which triggers the cron
-failure push, so a digest never vanishes silently.
+1 only when the email could not be delivered, so the run's report needs
+attention on Today and a digest never vanishes silently.
 
 All three buttons go through `local-task-actions`, fronted by its
 Tailscale Funnel URL, so they work from any device; links expire after 7

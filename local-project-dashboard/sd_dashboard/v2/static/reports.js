@@ -8,7 +8,6 @@ const { html, put, plural, cells } = window.markup;
 const G = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so byId(), backticks and \ stay literal
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
-const CRON = '~/repos/system/local-cron-jobs/cron-jobs.sh';
 const byId = id => document.getElementById(id);
 
 // ---------- Data (build): /api/reports, read through shell.read on load and after each write ----------
@@ -464,7 +463,7 @@ function registerCommands() {
   const C = window.shell.commands;
   const task = on => ({ id: `${on}.task`, on, label: 'Make task', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
   // build: copy only here. Management shows the job's log in its Details, and its Show log command (key o) opens it (sd:3388).
-  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db, not a job log', cli: o => `${CRON} logs ${o.job}`, run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
+  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => (o.kind === 'mail' || logOf(o)) || 'this report came from sd-db, not a job log', cli: o => window.commands.logLine(o.job), run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.

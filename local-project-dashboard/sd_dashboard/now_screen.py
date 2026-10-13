@@ -87,8 +87,8 @@ from pathlib import Path
 from sd_db import operations, progress, reads, workflow
 from sd_db.errors import SdDbError
 
+from . import active_sessions, job_failures, snooze
 from . import fleet as fleet_module
-from . import job_failures, snooze
 from .operations_screen import _signal_name
 
 __all__ = ["band", "document"]
@@ -398,7 +398,7 @@ def work_rows(connection: sqlite3.Connection, now: str) -> list[dict]:
             for row in reads.today_items(connection, now=now)]
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None) -> dict:
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, jev=None, herdr=None) -> dict:
     """The merged, ranked, banded rows, and what each source said if it said nothing.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, and the seam
@@ -413,8 +413,15 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     and not in `rows`; `snooze_error` says why none could be read.
     `work` is the work items `sd today` lists (sd:3271), snoozed on the same page: a snoozed item is in `snoozed`
     with its `until` and not in `work`; `work_error` says why the items could not be read, and is never an empty list.
+    `active` is Working now (sd:3466), `active_sessions.document` over the sessions document this read already holds;
+    `herdr` is its seam for the live agents.
     """
-    read = fleet or fleet_module.collect
+    collect_area, kept = fleet or fleet_module.collect, {}
+
+    def read(area):
+        kept[area] = collect_area(area)
+        return kept[area]
+
     rows: list[dict] = []
     sources: dict[str, str] = {}
     for source, collect in (("repos", lambda: _repos(read)),
@@ -438,7 +445,9 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     except (SdDbError, sqlite3.Error) as failure:
         items, work_error = [], str(failure) or "the work items could not be read"
     work, work_snoozed = snooze.split("today", items, snoozes)
-    return {"now": now, "sources": sources, "rows": shown, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
+    active = active_sessions.document(connection, now=now, sessions=kept.get("sessions") or {},
+                                      sessions_error=sources["sessions"], herdr=herdr)
+    return {"now": now, "sources": sources, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
             "work": work, "work_error": work_error}
 
 

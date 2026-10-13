@@ -67,6 +67,28 @@ section[aria-labelledby="work-h"] { margin-top: var(--space-xl); }
   .work .detail { white-space: normal; }
 }
 
+/* Working now (sd:3466): one row per open item, its live sessions listed in the Session cell. Rows are not selectable,
+ * so no row hover.
+ * Hallmark · component: session row · genre: modern-minimal · theme: design.md instrument panel
+ * states: default · hover (the title link) · focus · active -- no row control; unconfirmed is ▨ with a title, not colour alone. */
+section[aria-labelledby="active-h"] { margin-top: var(--space-xl); }
+.active tbody tr { cursor: default; }
+.active tbody tr:hover td { background: transparent; }
+.active td { vertical-align: top; height: auto; padding-block: var(--space-xs); }
+.active .what { width: 36%; min-width: 0; overflow-wrap: anywhere; }
+.active .what a { color: var(--color-ink); text-decoration: none; }
+.active .what a:hover { text-decoration: underline; }
+.active .what a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.active .detail { min-width: 0; overflow-wrap: anywhere; }
+.active .sessions { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2xs); }
+.active .via { display: block; color: var(--color-muted); }
+.active .when, .active .num { white-space: nowrap; font: 400 var(--text-xs)/1.35 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink-2); }
+.active .num { text-align: right; }
+@media (max-width: 899px) {
+  .active tbody tr { grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what num" ". detail detail" ". when when"; }
+  .active .what { grid-area: what; width: auto; } .active .detail { grid-area: detail; } .active .when { grid-area: when; } .active .num { grid-area: num; }
+}
+
 /* Decisions (sd:3012): a question note's Option: lines, one button each. The rows are not selectable, so no row hover.
  * Hallmark · component: decision row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover · focus · active · disabled (busy) · error (refused) · success (ruled) -- the .btn states are shell.css's. */

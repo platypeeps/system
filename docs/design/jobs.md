@@ -1,7 +1,7 @@
 ---
 title: The scheduled jobs
 eyebrow: What runs unattended, and what it leaves behind
-stand: A job is a schedule plus one verb. launchd fires it, a lock keeps it single, and every run leaves a log line, a database row, and — only on failure — a notification.
+stand: A job is a schedule plus one verb. launchd fires it, a lock keeps it single, and every run leaves a log line, a database row, and — on failure or a declared finding — a report that Today shows.
 ---
 
 ## The shape of a job
@@ -72,7 +72,7 @@ before the job's own work begins.
 
 For a prompt job, the agent binary is resolved in a fixed order: an explicit
 `CLAUDE_BIN`, then `PATH`, then `~/.local/bin/claude`. If none exists, that is
-*this job's* failure — it reaches the log, the failure log and the notification
+*this job's* failure — it reaches the log, the failure log and the report
 like any other non-zero exit, rather than killing the script before the lock
 and the log mirror are in place.
 
@@ -96,9 +96,9 @@ code and log offset. If the report cannot be written, the job says so on
 stderr and names where the source still is — the run is not lost because the
 database was unavailable.
 
-**On failure only:** a line in `failures.log`, a macOS notification, and — if
-`NTFY_TOPIC` is set in the gitignored `notify.conf` — a phone push naming the
-exit code, the host and the log path.
+**On failure only:** a line in `failures.log`. A failed run, or one that
+prints `SD_REPORT_ATTENTION: <reason>`, files a report that needs attention;
+Today lists it until it is acknowledged. Nothing is mailed or pushed (sd:3454).
 
 A failing prompt job keeps its `claude -p` debug trace; a passing one deletes
 its own. The five newest surviving traces are kept, so a job failing every
@@ -115,12 +115,14 @@ This exists because installation could only ever create a plist that was
 one of nine jobs read fine while carrying a `PATH` that a fix had already
 corrected.
 
-**`watchdog-daily`** measures each installed job's log mtime against a window
-derived from its own schedule: about 26 hours for a daily job, 8 days for a
-weekly one, 32 days for a monthly one. A job that has never produced a log is
-measured from its install time instead, reported as *"never ran, installed"* —
-so a job that has silently never fired is visible, not merely absent from the
-report.
+**`watchdog-daily`** measures the time of each installed job's last finished
+run, its last `done` or `FAILED rc=N` line, against a window derived from its
+own schedule: about 26 hours for a daily job, 8 days for a weekly one, 32 days
+for a monthly one. Not the log's mtime: a run skipped on the lock still writes
+a line, and kept a wedged job green. A job with no finished run is measured
+from its install time instead, reported as *"never finished a run,
+installed"*, so a job that has silently never fired is visible, not merely
+absent from the report.
 
 `STALE` and `MISSING` are spelled in a drift vocabulary that a machine
 status check can grep for. A stage that prints only a human-readable
@@ -149,13 +151,16 @@ Check `pmset -g sched` for a `Repeating power events:` block before trusting a
 green night. A machine that happened to be awake passes this slot on its own —
 exactly the kind of green that hides the bug.
 
+`machine-setup.sh status` does that check: with no repeating wake it prints
+`wake    : MISSING` and counts one drift item.
+
 ## Status
 
 **Verified in this build.** The two verbs and the refusal of both or neither;
 the install set read from the config jobs folder; the six steps of one
 run and the reasons recorded for the lock trap, the descriptor limit and the
 FIFO; the binary resolution order; the three records a run leaves and that only
-failure notifies; the debug-trace retention; what `verify` compares and what
+failure or a finding opens a report; the debug-trace retention; what `verify` compares and what
 `watchdog-daily` measures. The job table is generated from the example job files
 at build time.
 

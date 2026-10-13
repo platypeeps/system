@@ -30,9 +30,9 @@
 # checks reported" is not "checks passed".
 #
 # Exit 0 whether or not anything merged. Finding PRs it could not merge is the
-# job working, and failing on that would fire the banner every morning until
-# the signal meant nothing. notify_failure stays for the job being unable to
-# run at all -- no gh, no auth, no fleet.
+# job working, and failing on that would file a failure report every morning
+# until the signal meant nothing. A non-zero exit stays for the job being
+# unable to run at all -- no gh, no auth, no fleet.
 #
 # 06:20 daily: before the working day, and clear of maintenance-nightly
 # (03:45) and repo-sync-nightly (02:45), which fast-forwards the checkouts

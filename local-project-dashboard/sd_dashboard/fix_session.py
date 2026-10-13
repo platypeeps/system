@@ -34,7 +34,7 @@ from pathlib import Path
 from sd_db import paths, workflow
 from sd_db.errors import SdDbError
 
-__all__ = ["CHECKOUT", "HERDR", "TIMEOUT", "prompt", "request", "start"]
+__all__ = ["CHECKOUT", "HERDR", "NOTE", "TIMEOUT", "prompt", "request", "start"]
 
 #: This repository's checkout: a report that names no repo is fixed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -46,6 +46,8 @@ LAUNCHING = threading.Lock()
 BUILD = ("Build sd:{id}. Follow the command pack's builder workflow: read `sd task show {id}`, work in a worktree "
          "outside ~/repos, commit the change with a pull-request body, and enqueue it through the lane "
          "(`sd-ship lane enqueue`).")
+#: The note step 3 writes; Today's Working now (sd:3466, `active_sessions`) reads the pane back from it.
+NOTE = "Fix: started a {session} session (claude) in herdr workspace sd-{item}, pane {pane}, at {where}."
 DEBUG = ("Use the sd-debug skill on report sd:{id}: read `sd task show {id}` and the job's log, find the root cause "
          "and fix it. Acknowledge the report (`sd reports acknowledge {id}`) only after a clean run.")
 
@@ -92,7 +94,7 @@ def start(connection, item: int, *, expected_revision: str, who: str):
         found = re.match(r"launched (\S+): ", done.stdout.strip())
         pane = found[1] if found else "unknown"
         where = paths.key(str(directory))
-        body = f"Fix: started a {session} session (claude) in herdr workspace sd-{item}, pane {pane}, at {where}."
+        body = NOTE.format(session=session, item=item, pane=pane, where=where)
         try:
             state = workflow.add_item_note(connection, item, kind="comment", who=who, body=body)
         except (SdDbError, sqlite3.Error) as problem:

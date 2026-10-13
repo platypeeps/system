@@ -47,7 +47,7 @@ directory outside the checkout:
 <config>/cron-jobs/jobs/*.job         shared jobs: every machine runs them
 <config>/cron-jobs/jobs/<host>/*.job  this machine's own jobs
 <config>/cron-jobs/.env           the variables below (copy .env.example)
-<config>/cron-jobs/notify.conf    NTFY_TOPIC for phone pushes (copy notify.conf.example)
+<config>/cron-jobs/notify.conf    NTFY_TOPIC for a phone push when a report is lost (copy notify.conf.example)
 ```
 
 The script reads `.env` on every call, including the runs launchd starts with
@@ -154,7 +154,7 @@ plain shell command run via `bash -c` (exactly one of the two, never both).
 Example: `examples/secret-scan-weekly.job` runs
 `local-scan-for-secrets/scan-for-secrets.sh critical` every Monday 07:00;
 the scanner's exit 2 on findings counts as a failure on purpose, so leaks
-trigger the failure notifications below.
+open a failure report (see Failure reporting below).
 
 `install` translates the cron expression into launchd `StartCalendarInterval`
 entries and loads `<prefix>.cron.<name>` into `gui/$UID` (prefix from
@@ -193,13 +193,17 @@ script and fails when the two disagree.
 
 ## Failure reporting
 
-On non-zero exit the wrapper:
-1. posts a macOS Notification Center alert,
-2. appends to `logs/failures.log`,
-3. pushes to [ntfy.sh](https://ntfy.sh) if `NTFY_TOPIC` is set in
-   `<config>/cron-jobs/notify.conf` (copy `notify.conf.example`). That is the best
-   channel for reaching your phone with zero infrastructure; the macOS
-   notification only helps while you're at this machine.
+Every run's report goes to the workflow database (`sd reports ingest`). A run
+that exits non-zero, or prints a line `SD_REPORT_ATTENTION: <reason>`, opens a
+Reports row that needs attention, and Today lists it until it is acknowledged.
+A job with findings prints that line and exits 0; nothing is mailed or pushed
+(sd:3454). On a non-zero exit the wrapper also appends to `logs/failures.log`.
+
+A report that does not reach the database (no `sd`, the hub down, a database
+error) is not lost: the wrapper posts a macOS notification, pushes to
+[ntfy.sh](https://ntfy.sh) when `NTFY_TOPIC` is set in `notify.conf`, and the
+job's next report starts where the lost one did, so it carries the findings a
+producer will not print again (sd:3537).
 
 `status` lists only failures that are still outstanding. A logged failure is
 dropped once the job's own log records a later `[<job>] <ts> done` line, so a
@@ -367,7 +371,7 @@ not doubled). Before that, only the failure half of a hand-run was recorded —
 `logs/failures.log` was appended on any run, while the `done` line that clears
 it landed only under launchd. So running a job by hand could raise a failure
 that nothing but the next scheduled firing could clear, and left the job
-looking stale to `watchdog`, which reads log age.
+looking stale to `watchdog`, which reads the last `done` or `FAILED` line.
 
 That tee adds time to a hand-run, and most of it is the one sleep after tee has
 already exited. Closing the last writer is what hands tee its EOF and on macOS
@@ -450,7 +454,7 @@ with an MCP initialize and restarts the agent once when that goes unanswered.
 - Auth: uses the `claude` CLI's stored account. **cswap-auto rotates accounts**
   (see `local-cswap`) — a job that fires right after a switch runs on whatever
   account is active. Skills pinned to one account's connectors (Notion, Drive)
-  may fail on the wrong account; that surfaces as a job failure notification.
+  may fail on the wrong account; that surfaces as a failure report.
 - claude.ai-hosted connectors that need interactive re-auth will fail
   headlessly — re-auth in an interactive session, the cron run picks it up.
 - launchd runs missed `StartCalendarInterval` jobs once when the Mac wakes,

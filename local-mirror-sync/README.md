@@ -34,7 +34,7 @@ an earlier run put it there.
 
 Installed as the `mirror-sync-nightly` job in `local-cron-jobs` (03:30,
 listed in the machine's cron profile). A failed or refused pair exits 1,
-which triggers the cron failure notification (banner + ntfy push).
+which files a failure report that Today shows.
 
 ## The three lists
 

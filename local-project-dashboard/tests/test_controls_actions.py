@@ -276,12 +276,26 @@ class WorkflowControls(BrowserSession):
         self.assertNotIn("$0.00", page)
 
     def test_report_followups_gate_acknowledgement(self):
+        """A followup a person wrote still refuses the acknowledge; the
+        ingest's own followup does not (sd:3533)."""
         state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z", exit_code=1, text="Failed", source_path="/fixture/log", attention=True)
         item = state["item"]["id"]
+        add_note(self.connection, item, "followup", "look at this first", session="operator")
+        state = workflow.item_state(self.connection, item)
         before = self.snapshot()
         self.assertEqual(self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})[0], 400)
         self.assertEqual(before, self.snapshot())
         self.assertIn("Report source", self.request(f"/item/{item}")[2])
+
+    def test_acknowledge_finishes_a_failure_report_and_its_ingest_followup(self):
+        """sd:3533: every failure report is born with the ingest's followup, so
+        a route that leaves it open can finish none of them."""
+        state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z", exit_code=1, text="Failed", source_path="/fixture/log", attention=True)
+        item = state["item"]["id"]
+        self.assertEqual(self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})[0], 200)
+        after = workflow.item_state(self.connection, item)
+        self.assertEqual(after["item"]["status"], "done")
+        self.assertEqual([note["resolved_at"] is not None for note in after["notes"] if note["kind"] == "followup"], [True])
 
     def test_a_folded_report_shows_its_repeats_and_a_single_one_does_not(self):
         """sd:920 -- the count and the last run are what the operator needs
