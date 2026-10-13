@@ -1,16 +1,16 @@
-/* The one script. Hand-written, served from disk, no build step and no
- * framework. It is the only script the page loads, which is what makes
- * `script-src 'self'` with no inline script a policy the dashboard can keep.
+/* The server-drawn screens' script. Hand-written, served from disk, no build
+ * step and no framework; it loads beside the v2 shell's scripts, all from
+ * 'self', so `script-src 'self'` with no inline script is a policy the
+ * dashboard can keep.
  *
- * What it does, and no more: the four keyboard conveniences requirement 5
- * names -- `j`/`k` through rows, `enter` to open, `/` to filter, `?` to show
- * the map. It submits workflow forms and builds no markup from a
- * string: every node below is created with `createElement` and filled with
- * `textContent`, so no assignment of raw markup appears in this folder.
- *
- * It also reveals nothing. A row the keyboard lands on is marked, not
- * revealed; every control on the page is rendered visible, because a
- * hover-only or focus-only affordance is one a finger never finds.
+ * What it does, and no more: it submits workflow forms, runs the registered
+ * command picker, and keeps two keys, `/` to filter and `p` for the picker.
+ * The shell's key sheet lists them from PAGE_KEYS; j, k, Enter, ? and Escape
+ * are shell.js's (sd:3586). It builds no markup from a string: every node
+ * below is created with `createElement` and filled with `textContent`, so no
+ * assignment of raw markup appears in this folder. It also reveals nothing:
+ * every control on the page is rendered visible, because a hover-only or
+ * focus-only affordance is one a finger never finds.
  */
 
 (function () {
@@ -52,66 +52,10 @@
     });
   });
 
-  // A screen inside the v2 shell (sd:3586, pages.shell_page) leaves j, k, Enter, ? and Escape to shell.js; it keeps / and
-  // p, which the shell's key sheet lists from PAGE_KEYS. A key that ends a pending g-chord is the shell's.
-  var shelled = !!document.querySelector(".shell");
-  if (shelled) { window.PAGE_KEYS = [["/", "focus the notes filter"], ["p", "run a registered command"]]; }
+  // Every screen draws inside the v2 shell (sd:3586, pages.shell_page), which owns j, k, Enter, ? and Escape. This script
+  // keeps / and p, which the shell's key sheet lists from PAGE_KEYS. A key that ends a pending g-chord is the shell's.
+  window.PAGE_KEYS = [["/", "focus the notes filter"], ["p", "run a registered command"]];
   function chording() { return !!(window.shell && window.shell.chording && window.shell.chording()); }
-
-  var KEYS = [
-    ["j", "next row"],
-    ["k", "previous row"],
-    ["enter", "open the row"],
-    ["/", "focus the filter"],
-    ["?", "this map"],
-    ["escape", "close the map"]
-  ];
-
-  function rows() {
-    var table = document.querySelector(".listing-table tbody");
-    return table ? Array.prototype.slice.call(table.querySelectorAll("tr")) : [];
-  }
-
-  var index = -1;
-
-  function mark(next) {
-    var all = rows();
-    if (!all.length) { return; }
-    if (index >= 0 && all[index]) { all[index].removeAttribute("data-active"); }
-    index = Math.max(0, Math.min(all.length - 1, next));
-    var row = all[index];
-    row.setAttribute("data-active", "true");
-    if (row.scrollIntoView) { row.scrollIntoView({ block: "nearest" }); }
-  }
-
-  function open() {
-    var all = rows();
-    var row = all[index];
-    if (!row) { return; }
-    var link = row.querySelector("a[href]");
-    if (link) { window.location.assign(link.getAttribute("href")); }
-  }
-
-  function keymap() {
-    var existing = document.querySelector(".keymap");
-    if (existing) { existing.remove(); return; }
-    var box = document.createElement("aside");
-    box.className = "keymap";
-    var heading = document.createElement("h2");
-    heading.textContent = "Keys";
-    box.appendChild(heading);
-    var list = document.createElement("dl");
-    KEYS.forEach(function (pair) {
-      var key = document.createElement("dt");
-      key.textContent = pair[0];
-      var what = document.createElement("dd");
-      what.textContent = pair[1];
-      list.appendChild(key);
-      list.appendChild(what);
-    });
-    box.appendChild(list);
-    document.body.appendChild(box);
-  }
 
   function typing(target) {
     if (!target) { return false; }
@@ -214,24 +158,10 @@
   });
 
   document.addEventListener("keydown", function (event) {
-    if (event.metaKey || event.ctrlKey || event.altKey) { return; }
-    if (shelled && event.key !== "/") { return; }
-    if (shelled && (chording() || document.querySelector("dialog[open]"))) { return; }
-    if (event.key === "Escape") {
-      var box = document.querySelector(".keymap");
-      if (box) { box.remove(); }
-      return;
-    }
-    if (typing(event.target)) { return; }
-    if (event.key === "j") { mark(index + 1); event.preventDefault(); return; }
-    if (event.key === "k") { mark(index - 1); event.preventDefault(); return; }
-    if (event.key === "Enter") { open(); return; }
-    if (event.key === "/") {
-      var field = document.querySelector("[data-listing-filter]");
-      if (field) { field.focus(); event.preventDefault(); }
-      return;
-    }
-    if (event.key === "?") { keymap(); event.preventDefault(); }
+    if (event.metaKey || event.ctrlKey || event.altKey || event.key !== "/") { return; }
+    if (chording() || document.querySelector("dialog[open]") || typing(event.target)) { return; }
+    var field = document.querySelector("[data-listing-filter]");
+    if (field) { field.focus(); event.preventDefault(); }
   });
 })();
 
@@ -377,16 +307,12 @@
   document.querySelectorAll("[data-palette-open]").forEach(function (button) { button.addEventListener("click", function () { open(button); }); });
   dialog.querySelector("[data-palette-close]").addEventListener("click", function () { dialog.close(); });
   dialog.addEventListener("close", function () { if (opener && opener.isConnected) { opener.focus(); } });
-  var shelled = !!document.querySelector(".shell");
   document.addEventListener("keydown", function (event) {
     var typing = event.target.closest("input,select,textarea,[contenteditable=true]");
-    // Inside the v2 shell, Cmd-K is the shell's palette and p after g is the shell's chord (sd:3586).
-    if (shelled && ((event.ctrlKey || event.metaKey) || (window.shell && window.shell.chording()) ||
-        document.querySelector("dialog[open]"))) { return; }
-    if ((!typing && event.key === "p" && !event.ctrlKey && !event.metaKey && !event.altKey) ||
-        ((event.ctrlKey || event.metaKey) && event.key === "k")) {
-      event.preventDefault(); open();
-    }
+    // Cmd-K is the shell's palette and p after g is the shell's chord (sd:3586).
+    if (event.ctrlKey || event.metaKey || event.altKey || (window.shell && window.shell.chording()) ||
+        document.querySelector("dialog[open]")) { return; }
+    if (!typing && event.key === "p") { event.preventDefault(); open(); }
   });
   filter.addEventListener("input", applyFilter);
   command.addEventListener("change", selectCommand);

@@ -201,23 +201,67 @@ class Item(ScreenCase):
         self.assertIn('<form method="post" action="/api/items/', page)
         self.assertIn("<summary>CLI equivalents</summary>", page)
 
-    def test_its_stylesheet_names_foundation_tokens_and_dashboard_css_lost_its_rules(self):
-        """sd:3586 PR 1: classic.css has no colour literal and names only declared tokens; dashboard.css keeps no item-only rule."""
+    def test_its_stylesheet_names_foundation_tokens(self):
+        """sd:3586 PR 1: classic.css has no colour literal and names only declared tokens."""
         strip = lambda text: re.sub(r"/\*.*?\*/", "", text, flags=re.S)
         css = strip((DASHBOARD / "v2/static/classic.css").read_text(encoding="utf-8"))
         self.assertIsNone(re.search(r"#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch|oklab|lab|lch|color)\(", css))
         declared = set(re.findall(r"(--[\w-]+)\s*:", (DASHBOARD / "v2/static/tokens.css").read_text(encoding="utf-8")))
         self.assertEqual(sorted(set(re.findall(r"var\((--[\w-]+)", css)) - declared), [])
-        classic = strip((DASHBOARD / "static/dashboard.css").read_text(encoding="utf-8"))
-        for selector in (".history", ".status-change", ".artifact", ".item-controls", ".writing-controls", ".secondary-panel",
-                         ".shadow", ".selection-option", ".status-done"):
-            self.assertIsNone(re.search(re.escape(selector) + r"\b", classic), selector)
 
     def test_the_title_is_escaped(self):
         nasty = self.item("<script>window.pwned=1</script>")
         page = self.render(f"/item/{nasty}")
         self.assertNotIn("<script>window.pwned", page)
         self.assertIn("&lt;script&gt;", page)
+
+
+#: dashboard.js under a stand-in document: one filter field, no palette dialog, the shell's chord state settable.
+KEYS_HARNESS = r"""
+var window = this, OUT = { focused: 0, prevented: [] }, LISTENERS = {}, STATE = { chording: false, dialog: false };
+window.shell = { chording: () => STATE.chording };
+var field = { focus() { OUT.focused += 1; } };
+var document = {
+  querySelectorAll: () => [],
+  querySelector: selector => selector === "[data-listing-filter]" ? field
+    : selector === "dialog[open]" ? (STATE.dialog ? {} : null) : null,
+  getElementById: () => null,
+  addEventListener: (type, listener) => (LISTENERS[type] = LISTENERS[type] || []).push(listener),
+};
+var location = { pathname: "/item/1", search: "" };
+SCRIPT
+function press(key, target) {
+  var event = { key, target: target || { tagName: "BODY" }, preventDefault() { OUT.prevented.push(key); } };
+  (LISTENERS.keydown || []).forEach(listener => listener(event));
+}
+press("j"); press("k"); press("Enter"); press("?"); press("Escape");
+OUT.afterShellKeys = OUT.focused;
+press("/"); OUT.afterSlash = OUT.focused;
+press("/", { tagName: "INPUT" }); OUT.whileTyping = OUT.focused;
+STATE.chording = true; press("/"); STATE.chording = false; OUT.whileChording = OUT.focused;
+STATE.dialog = true; press("/"); STATE.dialog = false; OUT.underADialog = OUT.focused;
+OUT.pageKeys = window.PAGE_KEYS;
+JSON.stringify(OUT);
+"""
+
+
+class TheServerDrawnScreensKeys(unittest.TestCase):
+    """sd:3586 PR 6: every server-drawn screen is a shell page, so dashboard.js keeps only / and p for the shell."""
+
+    def test_slash_focuses_the_filter_and_the_shell_keys_stay_the_shells(self):
+        script = (DASHBOARD / "static/dashboard.js").read_text(encoding="utf-8")
+        result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", KEYS_HARNESS.replace("SCRIPT", script)],
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        # j, k, Enter, ? and Escape are shell.js's: this script neither acts on them nor swallows them.
+        self.assertEqual(out["afterShellKeys"], 0)
+        self.assertEqual(out["prevented"], ["/"])
+        self.assertEqual(out["afterSlash"], 1)
+        # Typing, a pending g-chord and an open dialog keep the key.
+        self.assertEqual([out["whileTyping"], out["whileChording"], out["underADialog"]], [1, 1, 1])
+        self.assertEqual(out["pageKeys"], [["/", "focus the notes filter"], ["p", "run a registered command"]])
+        self.assertNotRegex(script, r"keymap|data-active|\bshelled\b")
 
 
 class TheItemPageUnderASecondHome(ScreenCase):

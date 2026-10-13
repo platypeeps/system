@@ -233,7 +233,9 @@ class ThePage(BrowserSession):
         self.assertEqual(v2.SCREENS.get("Contributions (classic)"), "/classic/contributions")
         status, _, body = self.request("/classic/contributions")
         self.assertEqual(status, 200)
-        self.assertIn("<title>Contributions — sd</title>", body)
+        # The classic screen draws inside the v2 shell (sd:3586): its own server-drawn main, not the page's template.
+        self.assertIn("<title>Contributions · system</title>", body)
+        self.assertIn('<main id="main" class="classic">', body)
 
     def test_the_data_route_needs_a_session_and_takes_no_query(self):
         before = self.snapshot()
