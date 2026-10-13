@@ -294,6 +294,89 @@ class Migrate(unittest.TestCase):
         self.assertEqual(self.item("control")["item"]["title"], "Example: a quoted colon")
         self.assertIn("created: 1", lines)
 
+    # Review round 2 of sd:3460: the reader is an allowlist. A value passes only when YAML reads it as the exact
+    # string the importer writes; each rule below has its own test, and every case fails on the round-1 reader.
+    OPEN = "---\ntitle: Example\nstatus: open\n"
+    RECUR = "recurrence: DTSTART:20250101;FREQ=DAILY\nscheduled: 2026-10-01\n"
+
+    def assert_refused(self, cases, controls=None):
+        """Write `cases` (stem: (text, reason)) and `controls` (stem: text), apply, and check each outcome."""
+        for path in self.tasks.iterdir():
+            path.unlink()
+        for stem, (text, _) in cases.items():
+            (self.tasks / f"{stem}.md").write_text(text)
+        for stem, text in (controls or {}).items():
+            (self.tasks / f"{stem}.md").write_text(text)
+        lines = self.migrate("--apply").stdout.splitlines()
+        for stem, (_, why) in cases.items():
+            with self.subTest(stem):
+                self.assertTrue(any(line.startswith(f"  refused TaskNotes/Tasks/{stem}.md: {why}") for line in lines),
+                                lines)
+                self.assertIsNone(self.item(stem))
+        return lines
+
+    def test_a_plain_value_starting_with_a_yaml_indicator_is_refused(self):
+        # `title: # use the filename` is YAML null plus a comment, not the title "# use the filename".
+        why = "title: YAML syntax the importer does not decode (a value that starts with a YAML indicator)"
+        values = {"hash": "# use the filename", "amp": "&a Example", "star": "*a", "bang": "!x Example",
+                  "pipe": "|", "gt": ">-", "pct": "%x", "at": "@x", "tick": "`x`", "brace": "{a: b}",
+                  "bracket": "[x", "comma": ",x", "query": "?x", "colon": ":x", "dash-space": "- x", "dash": "-"}
+        self.assert_refused({f"indicator-{name}": (f"---\ntitle: {value}\n---\n", why)
+                             for name, value in values.items()})
+
+    def test_a_null_bool_or_number_where_a_string_belongs_is_refused(self):
+        why = "{key}: YAML reads the value as null, a bool or a number, not a string"
+        values = ["null", "Null", "NULL", "~", "true", "False", "yes", "No", "on", "OFF", "42", "-7", "3.5",
+                  "1e3", ".inf", "-.Inf", ".NaN", "nan", "0x1F", "0o17"]
+        cases = {f"typed-title-{n}": (f"---\ntitle: {value}\n---\n", why.format(key="title"))
+                 for n, value in enumerate(values)}
+        cases["typed-status"] = ("---\ntitle: Example\nstatus: ~\n---\n", why.format(key="status"))
+        cases["typed-priority"] = (self.OPEN + "priority: null\n---\n", why.format(key="priority"))
+        cases["typed-anchor"] = (self.OPEN + self.RECUR + "recurrence_anchor: true\n---\n",
+                                 why.format(key="recurrence_anchor"))
+        cases["typed-tag"] = (self.OPEN + "tags: [task, 2026]\n---\n", why.format(key="tags"))
+        # A date or a bool is read by its own key: `archived: TRUE` is YAML's true.
+        lines = self.assert_refused(cases, {"bool-archived": self.OPEN + "archived: TRUE\n---\n"})
+        self.assertIn("  cancelled one-off: 1", lines)
+
+    def test_leading_or_trailing_whitespace_is_refused(self):
+        self.assert_refused({
+            "space-quoted-leading": ('---\ntitle: "  Example"\n---\n', "title: leading or trailing whitespace"),
+            "space-quoted-trailing": ("---\ntitle: 'Example '\n---\n", "title: leading or trailing whitespace"),
+            "space-plain-trailing": ("---\ntitle: Example   \n---\n", "title: trailing whitespace"),
+            "space-status-tab": ("---\ntitle: Example\nstatus: open\t\n---\n", "status: trailing whitespace"),
+            "space-list-item": (self.OPEN + self.RECUR + "complete_instances:\n  - 2026-09-01  \n---\n",
+                                "complete_instances: trailing whitespace"),
+        })
+
+    def test_an_empty_value_is_refused_except_a_title(self):
+        # YAML reads an empty value as null. Only an empty title is kept: it takes the file name, as YAML intends.
+        null = "an empty value, which YAML reads as null"
+        lines = self.assert_refused({
+            "empty-status": ("---\ntitle: Example\nstatus:\n---\n", f"status: {null}"),
+            "empty-status-quoted": ('---\ntitle: Example\nstatus: ""\n---\n', f"status: {null}"),
+            "empty-priority": (self.OPEN + "priority:\n---\n", f"priority: {null}"),
+            "empty-scheduled": (self.OPEN + "scheduled:\n---\n", f"scheduled: {null}"),
+            "empty-anchor": (self.OPEN + self.RECUR + "recurrence_anchor:\n---\n", f"recurrence_anchor: {null}"),
+            "empty-history": (self.OPEN + self.RECUR + "complete_instances:\n---\n", f"complete_instances: {null}"),
+            "empty-item": (self.OPEN + self.RECUR + "complete_instances:\n  -\n---\n",
+                           "complete_instances: an empty list item, which YAML reads as null"),
+            "empty-flow-item": (self.OPEN + "tags: [task, , x]\n---\n", "tags: an empty list item, which YAML reads as null"),
+        }, {"title-empty": "---\ntitle:\nstatus: open\n---\n", "title-quoted-empty": '---\ntitle: ""\n---\n'})
+        self.assertEqual(self.item("title-empty")["item"]["title"], "title-empty")
+        self.assertEqual(self.item("title-quoted-empty")["item"]["title"], "title-quoted-empty")
+        self.assertIn("created: 2", lines)
+
+    def test_a_value_is_matched_exactly_not_case_folded(self):
+        # `Open` is a different string from `open`; the reader no longer folds case or strips.
+        self.assert_refused({
+            "case-status": ("---\ntitle: Example\nstatus: Open\n---\n", "status 'Open' has no sd status"),
+            "case-priority": (self.OPEN + "priority: High\n---\n", "priority 'High' has no sd priority"),
+            "case-anchor": (self.OPEN + self.RECUR + "recurrence_anchor: Scheduled\n---\n",
+                            "recurrence_anchor 'Scheduled' has no sd anchor"),
+            "case-archived": (self.OPEN + "archived: tRuE\n---\n", "archived: neither true nor false"),
+        })
+
     def test_a_series_moved_off_its_dtstart_is_refused(self):
         # Review of sd:3460: sd keeps no DTSTART, so the due date becomes the series start. A task postponed off its
         # series would restart there: DTSTART 2026-01-31 monthly, postponed to 02-03, would recur on March 3, not 31.

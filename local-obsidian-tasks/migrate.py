@@ -80,16 +80,28 @@ SCALAR_KEYS = ("title", "status", "priority", "scheduled", "due", "recurrence",
                "recurrence_anchor", "completedDate", "archived")
 LIST_KEYS = ("complete_instances", "skipped_instances", "tags")
 READ_KEYS = SCALAR_KEYS + LIST_KEYS
+#: The read keys whose values must be strings. YAML reads `null`, `~`, the
+#: bools and the numbers as other types, so those forms are refused here;
+#: the date keys and `archived` check their own forms.
+STRING_KEYS = ("title", "status", "priority", "recurrence", "recurrence_anchor", "tags")
+#: A plain scalar starting with one of these is YAML syntax, not text. `-` is
+#: one only before a space or alone, which `_scalar` checks apart.
+INDICATORS = "#&*!|>'\"%@`{}[],?:"
+#: YAML's null and bool forms (1.1 and 1.2), compared case-insensitively.
+NOT_STRINGS = frozenset({"null", "~", "true", "false", "yes", "no", "on", "off"})
+YAML_SPECIAL_FLOAT = re.compile(r"^[-+]?\.(?:inf|nan)$", re.I)
 
 
 def frontmatter(text: str) -> dict | None:
     """The read keys of the YAML block, or None when the file has none.
 
     TaskNotes writes flat frontmatter: `key: value` scalars, inline `[a, b]`
-    lists and indented `- item` lists. That is all this decodes. A read key
-    whose value uses any other YAML syntax raises `Refused` naming the key:
-    escapes in quotes, block or folded scalars, anchors, aliases, tags, flow
-    maps, comments, continuation lines and nested maps.
+    lists and indented `- item` lists. That is all this decodes, and it is
+    an allowlist: a read key passes only when YAML reads its value as the
+    exact string returned (`_scalar`). Anything else raises `Refused` naming
+    the key: other YAML syntax, continuation lines, nested maps, a duplicate,
+    and an empty value, which YAML reads as null. An empty `title` is the one
+    empty value kept: it takes the file-name fallback, as YAML intends.
     """
     m = re.match(r"(?s)^---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", text)
     if not m:
@@ -109,44 +121,81 @@ def frontmatter(text: str) -> dict | None:
             if key not in block:
                 block.add(key)
                 fields[key] = []
-            value = (item.group(1) or "").strip()
+            value = item.group(1) or ""
             if re.match(r"^[^'\"]*:(\s|$)", value):
                 raise Refused(f"{key}: a map inside a list")
-            fields[key].append(_scalar(key, value))
+            decoded = _scalar(key, value)
+            if not decoded:
+                raise Refused(f"{key}: an empty list item, which YAML reads as null")
+            fields[key].append(decoded)
             continue
         pair = re.match(r"^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$", line)
         if not pair:
             raise Refused(f"frontmatter line {number}: not a plain key the importer decodes")
-        key, value = pair.group(1), (pair.group(2) or "").strip()
+        key, value = pair.group(1), pair.group(2) or ""
         if key not in READ_KEYS:
             fields[key] = value
             continue
         if key in fields:
             raise Refused(f"{key}: given twice")
-        if value.startswith("[") and value.endswith("]"):
-            inner = value[1:-1].strip()
-            fields[key] = [_scalar(key, v) for v in inner.split(",")] if inner else []
+        if value.startswith("[") and value.rstrip().endswith("]"):
+            _spaces(key, value)
+            inner = value.rstrip()[1:-1].strip()
+            fields[key] = [_scalar(key, v, flow=True) for v in inner.split(",")] if inner else []
+            if "" in fields[key]:
+                raise Refused(f"{key}: an empty list item, which YAML reads as null")
         else:
             fields[key] = _scalar(key, value)
+    for key, value in fields.items():
+        if key in READ_KEYS and key not in block and value == "" and key != "title":
+            raise Refused(f"{key}: an empty value, which YAML reads as null")
     return fields
 
 
-def _scalar(key: str, value: str) -> str:
-    """One plain or simply quoted value, exactly, or `Refused` naming the key."""
-    value = value.strip()
+def _spaces(key: str, raw: str) -> None:
+    if raw != raw.rstrip():
+        raise Refused(f"{key}: trailing whitespace")
+
+
+def _scalar(key: str, raw: str, *, flow: bool = False) -> str:
+    """The string YAML reads `raw` as, exactly, or `Refused` naming the key.
+
+    `raw` is the text after `key:` or `- `, or one element of a `[a, b]`
+    list (`flow`), whose spaces around commas YAML drops. "" is an empty
+    value; the caller decides whether that is allowed.
+    """
+    if not flow:
+        _spaces(key, raw)
+    value = raw.strip()
     if not value:
         return ""
     if value[0] in "'\"":
         inner = value[1:-1]
         if len(value) < 2 or value[-1] != value[0] or value[0] in inner or (value[0] == '"' and "\\" in inner):
             raise Refused(f"{key}: a quoted value with an escape or no closing quote")
+        if inner != inner.strip():
+            raise Refused(f"{key}: leading or trailing whitespace inside quotes")
         return inner
-    if value[0] in "|>&*!{}[]%@`,?":
+    if value[0] in INDICATORS or value == "-" or value.startswith(("- ", "-\t")):
         raise Refused(f"{key}: YAML syntax the importer does not decode "
-                      "(a block or folded scalar, anchor, alias, tag or flow value)")
-    if " #" in value or ": " in value or value.endswith(":") or "\t#" in value:
+                      "(a value that starts with a YAML indicator)")
+    if " #" in value or ": " in value or value.endswith(":") or "\t#" in value or ":\t" in value:
         raise Refused(f"{key}: a comment or map syntax in a plain value")
+    if key in STRING_KEYS and _not_a_string(value):
+        raise Refused(f"{key}: YAML reads the value as null, a bool or a number, not a string")
     return value
+
+
+def _not_a_string(value: str) -> bool:
+    if value.lower() in NOT_STRINGS or YAML_SPECIAL_FLOAT.match(value):
+        return True
+    for number in (float, lambda text: int(text, 0)):
+        try:
+            number(value)
+            return True
+        except ValueError:
+            pass
+    return False
 
 
 #: A TaskNotes date or datetime, read whole: `YYYY-MM-DD`, then an optional time and zone.
@@ -230,18 +279,20 @@ def plan(vault: Path, path: Path) -> Plan:
         if isinstance(fm.get(key), list):
             raise Refused(f"{key}: a list where one value belongs")
     relative = path.relative_to(vault).as_posix()
-    raw_status = str(fm.get("status") or "open").strip().lower()
+    raw_status = fm.get("status", "open")
     if raw_status not in STATUS:
         raise Refused(f"status {raw_status!r} has no sd status")
     tags = fm.get("tags") or []
     tags = tags if isinstance(tags, list) else [tags]
-    archived = str(fm.get("archived") or "false").lower()
-    if archived not in ("true", "false"):
+    # YAML 1.2's bool spellings; any other value is a string, not a bool.
+    archived = fm.get("archived", "false")
+    if archived not in ("true", "True", "TRUE", "false", "False", "FALSE"):
         raise Refused("archived: neither true nor false")
+    archived = archived.lower()
     status = STATUS[raw_status]
     if archived == "true" or "archived" in tags:
         status = "cancelled"
-    raw_priority = str(fm.get("priority") or "").strip().lower()
+    raw_priority = fm.get("priority", "")
     if raw_priority not in PRIORITY:
         raise Refused(f"priority {raw_priority!r} has no sd priority")
     scheduled, deadline = _date("scheduled", fm.get("scheduled")), _date("due", fm.get("due"))
@@ -251,7 +302,7 @@ def plan(vault: Path, path: Path) -> Plan:
         lines.append(f"The vault's due date was {deadline}; sd's due follows scheduled, {scheduled}.")
 
     rule = anchor = None
-    raw_rule = str(fm.get("recurrence") or "").strip()
+    raw_rule = fm.get("recurrence", "")
     history = 0
     if raw_rule:
         body = raw_rule[len("RRULE:"):] if raw_rule.upper().startswith("RRULE:") else raw_rule
@@ -268,7 +319,7 @@ def plan(vault: Path, path: Path) -> Plan:
             parsed = recurrence.parse(kept)
         except recurrence.RecurrenceError as error:
             raise Refused(f"rule refused: {error}") from None
-        raw_anchor = str(fm.get("recurrence_anchor") or "").strip().lower()
+        raw_anchor = fm.get("recurrence_anchor", "")
         if raw_anchor not in ANCHOR:
             raise Refused(f"recurrence_anchor {raw_anchor!r} has no sd anchor")
         done = _dates("complete_instances", fm.get("complete_instances"))
@@ -311,7 +362,7 @@ def plan(vault: Path, path: Path) -> Plan:
         shape = f"{status} recurring {freq}{by} {anchor}"
     else:
         shape = f"{status} one-off" + (" (series ended)" if raw_rule else "")
-    title = str(fm.get("title") or path.stem).strip() or path.stem
+    title = fm.get("title") or path.stem
     return Plan(ref=REF_PREFIX + relative, title=title, body=text[len(_block(text)):].strip(),
                 status=status, priority=PRIORITY[raw_priority], due=due, rule=rule, anchor=anchor,
                 note="\n".join(lines), shape=shape, history=history)
