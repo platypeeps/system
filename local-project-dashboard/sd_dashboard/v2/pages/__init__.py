@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
-__all__ = ["Api", "Old", "PAGES", "Page", "Read", "collect"]
+__all__ = ["Api", "Old", "PAGES", "Page", "Read", "attention", "collect"]
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,23 @@ class Page:
     api: tuple[Api, ...] = ()
     classic: dict[str, str] = field(default_factory=dict)
     takes: tuple[Old, ...] = ()
+    #: The rail badge (sd:3446): the path of the read whose document carries the page's `attention`, `{state, n, what}`,
+    #: the one place its rule lives. `live` runs that read on each `/ui/sections.js` request, for a page that reads the
+    #: database alone; any other page shows what its own last read carried (`v2.Badges`). Empty: the page has no badge.
+    count: str = ""
+    live: bool = False
     name: str = ""
+
+
+def attention(states, what: dict[str, str]) -> dict:
+    """A page's rail badge from its rows' states (sd:3446): the louder of warning and caution, and how many rows carry it.
+
+    `what` names the count for `warning` and `caution`; an `ok` badge counts nothing and says what was looked for.
+    """
+    states = list(states)
+    warning, caution = states.count("warning"), states.count("caution")
+    state = "warning" if warning else "caution" if caution else "ok"
+    return {"state": state, "n": warning or caution, "what": what.get(state, what["caution"])}
 
 
 def collect(paths, package: str) -> tuple[Page, ...]:

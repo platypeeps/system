@@ -101,6 +101,15 @@ screen, and the rail says it is not built yet. The classic screens' own nav link
 each ported section to its new page, read from the same registry (sd:2473); the
 palette still opens the kept classic screens.
 
+The same script carries each page's rail badge, so every page shows every
+badge (sd:3446). The server writes it on each request, unversioned and never
+cached, and only for a signed-in page. A page's `count` names the read whose
+document carries its `attention`, the one place its rule lives. A page that reads
+the database alone (`live`) is read again for the rail; any other page shows what
+its own last read carried, with that read's time, so the rail never waits on the
+network. A failed read shows no badge, and a restarted server shows none for such
+a page until it is read again.
+
 Task controls need no repository, planning document, branch, or GitHub issue.
 The shell's Capture, on every new page, files a Task or a Followup item, or a
 comment note on the selected row's item (sd:3520). A task or followup takes a

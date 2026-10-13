@@ -436,6 +436,8 @@ class Dashboard(BaseHTTPRequestHandler):
     peer_lookup = None
     #: The checkout commit this process started on (sd:3528); None when git could not say.
     served_commit = None
+    #: Each page's rail badge (sd:3446); `build` gives each server its own.
+    badges = None
 
     # `_policy` lets one response replace the shared Content-Security-Policy,
     # and only that header. A served document carries its stylesheet in its own
@@ -527,6 +529,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._send(204, b"", "image/x-icon")
         if path.startswith("/static/"):
             return self._static(path[len("/static/") :], split.query)
+        if path == "/ui/sections.js":
+            return self._sections(context)
         if path.startswith("/ui/"):
             return self._v2_asset(path[len("/ui/") :], split.query)
         if path.startswith("/v2/"):
@@ -733,12 +737,44 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(403, {"error": f"Open a dashboard page before reading {page.section}."})
         if split.query and not entry.query:
             return self._json(400, {"error": f"{page.section} does not accept query parameters."})
-        answer = entry.read(v2.registry.Read(connection=connection, now=self.clock(), path=split.path, parameters=parameters,
-                                             fleet=self.fleet_backend, jobs=self.operations_backend,
-                                             services=self.services_backend, ports=self.ports_backend,
-                                             served_commit=self.served_commit))
+        read = self._read(connection, split.path, parameters)
+        try:
+            answer = entry.read(read)
+        except BaseException:
+            self.badges.remember(split.path, None, read.now)
+            raise
         status, document = answer if isinstance(answer, tuple) else (200, answer)
+        self.badges.remember(split.path, document if status == 200 else None, read.now)
         return self._json(status, document)
+
+    def _read(self, connection, path, parameters):
+        from . import v2
+
+        return v2.registry.Read(connection=connection, now=self.clock(), path=path, parameters=parameters,
+                                fleet=self.fleet_backend, jobs=self.operations_backend, services=self.services_backend,
+                                ports=self.ports_backend, served_commit=self.served_commit)
+
+    def _sections(self, context):
+        """`/ui/sections.js`: the rail's map on every request, and each page's badge for a signed-in page (sd:3446).
+
+        Unversioned and never cached, since the badges change. A request without a session gets the map alone: the
+        badges are workflow state, and a page on another site that loads this script sends no cookie (SameSite).
+        """
+        from . import v2
+
+        badges = {}
+        if self._session(context):
+            try:
+                connection = sd_db.connect(self.database, write=False)
+            except (FileNotFoundError, SdDbError, sqlite3.Error):
+                # Each live page's read fails on no connection, so its badge says unknown; the kept ones still show.
+                connection = None
+            try:
+                badges = self.badges.read(self._read(connection, "", {}))
+            finally:
+                if connection is not None:
+                    connection.close()
+        self._send(200, v2.sections(badges), "text/javascript; charset=utf-8")
 
     def _json(self, status, value):
         # sd:874. `value` is usually a `workflow.item_state` readback, which
@@ -1010,6 +1046,8 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
             peer_lookup = runtime.peer_login
         if not callable(peer_lookup):
             raise ValueError("Direct access requires a current Tailscale peer lookup.")
+    from . import v2
+
     handler = type("BoundDashboard", (Dashboard,), {
         "database": database, "session_secret": secrets.token_bytes(32),
         "operations_backend": operations_backend,
@@ -1022,6 +1060,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "peer_lookup": staticmethod(peer_lookup) if peer_lookup else None,
         "loaded_build": runtime.build_digests(),
         "served_commit": _served_commit(),
+        "badges": v2.Badges(),
     })
     primary = DashboardServer((host, port), handler, bind_and_activate=bind)
     try:
