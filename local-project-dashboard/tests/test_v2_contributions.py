@@ -37,6 +37,7 @@ from test_v2_shell_shared import cell_grammar
 V2 = Path(v2.__file__).resolve().parent
 PAGE_JS = (V2 / "static" / "contributions.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 
 #: The design's Contributions commands (design source products/system/designs/pages/contributions.js): id, object type, label,
 #: key, risk. Acknowledge and Make task are `confirm` here, not the design's `undo`: no verb reverses either.
@@ -222,7 +223,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Contributions · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "contributions.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "contributions.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -339,7 +340,7 @@ class Script(ScreenCase):
         answer = answer or ("(path, body) => path === '/api/contributions/page' ? [200, DOC] : path === '/api/contributions/task'"
                             " ? [200, { item: { id: 42, title: body.title } }] : [200, { ok: true }]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + extra + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + extra + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -474,7 +475,7 @@ shellRun(cmd('collector.sync'), C.get('collector')); await flush();""", answer=s
         self.assertEqual(out["R"]["cli"], "sd shadow sync --max-seconds 120")
         self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
         self.assertEqual(out["gets"], ["/api/contributions/page", "/api/shadow/state", "/api/shadow/state", "/api/contributions/page"])
-        self.assertEqual([t[0] for t in out["toasts"]], ["Shadow sync started · the page reads again when it ends"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Shadow sync started · Contributions reads again when it ends"])
 
     def test_a_sync_that_ends_with_a_failed_tracker_or_a_broken_run_says_why(self):
         failed = {"running": False, "error": None, "trackers": [
@@ -629,8 +630,10 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/contributions/dismiss", "/api/shadow/sync"])
-        for route in routes:
+        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/contributions/dismiss"])
+        # Re-run collector is the shared declaration (commands.js, sd:3524); the page help still names its route.
+        self.assertIn("window.commands.syncCollector(", PAGE_JS)
+        for route in routes + ["/api/shadow/sync"]:
             self.assertIn(f"POST {route}", page)
         self.assertNotIn("/api/items", page)
         self.assertNotIn("followup", page)
@@ -685,8 +688,8 @@ class TheSharedReader(Script):
         self.assertIn("window.shell.read(", PAGE_JS)
         self.assertNotIn("++generation", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"function retire\(")
-        # The one other GET is the sync's state (sd:2207), which is not the page's document.
-        self.assertEqual(re.findall(r"getJSON\(([^)]*)\)", PAGE_JS), ["'/api/shadow/state'"])
+        # The sync's state (sd:2207) is read by the shared Re-run collector in commands.js, not by the page.
+        self.assertEqual(re.findall(r"getJSON\(([^)]*)\)", PAGE_JS), [])
 
     def test_a_refused_write_whose_read_fails_clears_the_rows_and_their_commands(self):
         answer = """(() => { let n = 0; return path => path === '/api/contributions/page' ? (n++ ? [500, { error: 'gone' }] : [200, DOC])

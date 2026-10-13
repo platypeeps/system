@@ -6,12 +6,13 @@
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put } = window.markup;
-  // The fixed choices. The design's Snooze keeps its id and key: until the next 08:00, which is tomorrow's after 08:00.
+  // The fixed choices, one Snooze command that asks which (sd:3450): until the next 08:00 (tomorrow's after 08:00) first, as the
+  // default, then an hour and a week. The design's Snooze keeps its id and key z.
   const at8 = now => { const d = new Date(now); d.setHours(8, 0, 0, 0); if (d <= now) d.setDate(d.getDate() + 1); return d; };
   const CHOICES = [
-    { id: 'snooze', label: 'Snooze until 08:00', key: 'z', until: at8 },
-    { id: 'snooze-hour', label: 'Snooze 1 hour', key: 'h', until: now => new Date(+now + 3600e3) },
-    { id: 'snooze-week', label: 'Snooze 1 week', key: 'w', until: now => new Date(+now + 7 * 864e5) },
+    { id: 'snooze', label: 'The next 08:00', until: at8 },
+    { id: 'snooze-hour', label: 'One hour from now', until: now => new Date(+now + 3600e3) },
+    { id: 'snooze-week', label: 'One week from now', until: now => new Date(+now + 7 * 864e5) },
   ];
   const CLI = () => 'no sd verb: the dashboard writes the snooze (POST /api/snooze)';
   // A time today shows as 08:00; any other day carries its date.
@@ -22,10 +23,12 @@
   // again, so a snoozed row leaves the list and an unsnoozed one comes back. Undo writes the other way.
   function register(C, { page, types, off = () => false, reread }) {
     const post = (row, until, seen) => window.shell.post('/api/snooze', { page, row, until, seen }).then(v => { reread(); return v; });
-    types.forEach(t => CHOICES.forEach(ch => C.register({ id: `${t}.${ch.id}`, on: t, label: ch.label, key: ch.key, risk: 'undo', bulk: true,
-      when: o => off(o) || true, cli: CLI,
-      run: o => { const until = ch.until(new Date()); return post(o.id, until.toISOString(), o.seen).then(() => `Snoozed until ${when(until)} · ${o.label}`); },
-      undo: o => post(o.id, null, o.seen) })));
+    const fields = () => [{ name: 'until', label: 'Snooze until', options: CHOICES.map(ch => ({ value: ch.id, label: ch.label })) }];
+    types.forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
+      when: o => off(o) || true, cli: CLI, fields,
+      run: (o, v = {}) => { const ch = CHOICES.find(c => c.id === v.until) || CHOICES[0], until = ch.until(new Date());
+        return post(o.id, until.toISOString(), o.seen).then(() => `Snoozed until ${when(until)} · ${o.label}`); },
+      undo: o => post(o.id, null, o.seen) }));
     C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
       run: o => post(o.row, null, o.seen).then(() => `Shows again · ${o.label}`),
       undo: o => post(o.row, o.until, o.seen) });

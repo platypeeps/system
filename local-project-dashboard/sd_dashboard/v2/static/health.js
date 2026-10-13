@@ -252,14 +252,6 @@
     return `Not known what changed · ${o.facts.Label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
   const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
-  // As contributions.js's: success is quiet, since the reread shows it; a failed tracker or a broken run stays as a toast.
-  const SYNC_POLL = 5000;
-  const awaitSync = () => setTimeout(() => shell.getJSON('/api/shadow/state').then(s => {
-    if (s.running) return awaitSync();
-    load();
-    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
-    if (bad) shell.toast(`Shadow sync ended with a problem: ${bad}`);
-  }, e => shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
@@ -316,11 +308,8 @@
       { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', key: 'o', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
-      // Re-run collector (sd:2894) posts the route Contributions posts (sd:2207): the server runs sd shadow sync, which
-      // writes the protection rows, in a thread, bounded to 120 s, one run at a time. Health reads again once it ends.
-      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
-        cli: () => 'sd shadow sync --max-seconds 120',
-        run: () => shell.post('/api/shadow/sync', {}).then(() => { awaitSync(); return 'Shadow sync started · Health reads again when it ends'; }) },
+      // Re-run collector (commands.js); Health reads again once the run ends.
+      window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
       { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },

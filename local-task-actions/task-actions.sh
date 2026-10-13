@@ -510,7 +510,7 @@ cmd_status() {
       exit 1
     fi
     if [ -n "$pub" ]; then
-      if curl -s --max-time 8 "$pub/x" | grep -q '<h2>not found</h2>'; then
+      if curl -s --max-time 8 "$pub/x" | grep -q '<h1>Not found</h1>'; then
         echo "public: up ($pub)"
       else
         echo "public: NOT healthy ($pub configured but our 404 page not seen)"
