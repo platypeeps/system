@@ -264,6 +264,21 @@ class MeterRun(unittest.TestCase):
         self.assertNotIn("sd_db", record["errors"])
         self.assertEqual(self.meter_rows(), [])
 
+    def test_an_exported_empty_ledger_name_beats_the_config_file(self):
+        """sd:3964: st_source_env keeps an exported empty AGENT_METER_FILE, so
+        the reading lands in the default ledger, not the one the file names."""
+        config = Path(self.tmp.name) / "config"
+        (config / "agent-meter").mkdir(parents=True)
+        (config / "agent-meter" / ".env").write_text(f"AGENT_METER_FILE={self.out}\n", encoding="utf-8")
+        env = dict(os.environ, SYSTEM_TOOLS_CONFIG=str(config), AGENT_METER_FILE="",
+                   PATH=os.pathsep.join([str(self.bin), os.environ.get("PATH", "/usr/bin:/bin")]),
+                   CODEXBAR_FIXTURES=str(self.fixtures))
+        done = subprocess.run([sys.executable, str(SCRIPT), "--no-db", "--timeout", "10"],
+                              capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.lines(), [])
+        self.assertTrue((config / "agent-meter" / "meter.jsonl").is_file())
+
     def test_one_refused_window_costs_that_window_and_the_other_three_land(self):
         """A percentage codexbar reports outside 0..100 is refused by the
         library; the refusal is one `errors` entry and the run goes on."""

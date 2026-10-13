@@ -1,7 +1,8 @@
 /* Hallmark · genre: modern-minimal · macrostructure: rail + annunciator + ledger + pane · design-system: design.md · designed-as-app
  * Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · The classic screens inside the v2 shell (sd:3586), first the item page:
  * screens.item's server-drawn forms, status history, artifact, notes and assignments, on foundation tokens. Every number is the
- * item's own rows. A later port adds its screen's components here; dashboard.css loses them in the same pull request.
+ * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger. A later port adds its
+ * screen's components here; dashboard.css loses them in the same pull request.
  */
 
 .classic .head > div { min-width: 0; }
@@ -113,6 +114,23 @@
 .classic .shadow dt { color: var(--color-muted); }
 .classic .shadow dd { margin: 0; font-family: var(--font-data); overflow-wrap: anywhere; }
 
+/* View toggles (Operations areas, Trackers views) in the chip voice; aria-current marks the open one. Trackers' sync health. */
+.classic .view-toggle { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin: var(--space-sm) 0; }
+.classic .view-toggle a {
+  display: inline-flex; align-items: center; min-height: var(--row); padding: 0 var(--space-sm); white-space: nowrap;
+  border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-well);
+  color: var(--color-ink-2); font-size: var(--text-sm); text-decoration: none;
+}
+.classic .view-toggle a:hover { border-color: var(--color-ink-2); color: var(--color-ink); }
+.classic .view-toggle a[aria-current="page"] { border-color: var(--color-accent); background: var(--color-accent-bg); color: var(--color-ink); font-weight: 600; }
+.classic .tracker-health { padding: 0; list-style: none; font-family: var(--font-data); font-size: var(--text-xs); }
+.classic .tracker-health li { margin: var(--space-3xs) 0; overflow-wrap: anywhere; }
+/* Trackers' ledger splits words only in its two path columns, reference and repository, so a title, an author or a date
+ * never breaks mid-word and the long paths still fit the column. */
+.classic [data-listing="trackers"] td { overflow-wrap: break-word; }
+.classic [data-listing="trackers"] td:is(.tracker-reference, :nth-child(3)) { overflow-wrap: anywhere; }
+.classic .listing-table .tracker-reference { font-family: var(--font-data); }
+
 .classic .cli-equivalents { margin-top: var(--space-2xl); padding-top: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule); color: var(--color-muted); }
 .classic .cli-equivalents ul { margin: 0; padding-left: var(--space-lg); }
 .classic .cli-equivalents li { margin: var(--space-xs) 0; }
@@ -142,7 +160,7 @@
 @media (pointer: coarse) {
   .classic .field input, .classic .field select, .classic .listing-filter input,
   .classic #command-palette input, .classic #command-palette select, .classic .compact-form .primary { min-height: var(--row-touch); }
-  .classic details > summary { min-height: var(--row-touch); }
+  .classic details > summary, .classic .view-toggle a { min-height: var(--row-touch); }
 }
 @media (max-width: 46rem) {
   .classic .item-controls, .classic .field-row { grid-template-columns: minmax(0, 1fr); }

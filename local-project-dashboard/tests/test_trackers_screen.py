@@ -34,6 +34,20 @@ class TrackersArea(ScreenCase):
         """The text of every reference cell, in table order."""
         return re.findall(r'<td class="tracker-reference">(?:<a [^>]*>)?([^<]+)', page)
 
+    def test_the_area_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 2: Trackers is a v2 shell page under Today, whose Pull requests rows open it; the rest stay classic."""
+        page = self.trackers(view="prs")
+        self.assertIn('<body data-page="Today" data-scope="today">', page)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', page)
+        for asset in ("tokens.css", "shell.css", "classic.css", "shell.js"):
+            self.assertRegex(page, rf'"/ui/{re.escape(asset)}\?v=[0-9a-f]{{16}}"', asset)
+        self.assertNotIn("/static/dashboard.css", page)
+        self.assertNotIn('class="nav"', page)
+        self.assertEqual(page.count("<h1>"), 1)
+        self.assertIn('<nav class="view-toggle" aria-label="Operations areas">', page)
+        self.assertEqual(self.references(page), ["acme/widgets#4321"])
+        self.assertIn("/static/dashboard.css", self.render("/operations", {"area": ["usage"]}))
+
     def test_a_github_row_shows_its_number_and_a_jira_row_its_key(self):
         prs = self.trackers(view="prs")
         self.assertEqual(self.references(prs), ["acme/widgets#4321"])
