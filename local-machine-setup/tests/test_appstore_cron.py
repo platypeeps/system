@@ -206,6 +206,38 @@ class CronTest(StageTest):
         self.assertNotIn("uninstall host-job", log)
 
 
+class CronSatelliteTest(CronTest):
+    """sd:3547: the cron stage skips a hub-only job on a satellite, as the
+    agents stage does. It used to install one a satellite profile named, the
+    satellite stage reported it EXTRA, and the next run installed it again."""
+
+    def setUp(self):
+        super().setUp()
+        (self.profiles / "personal.cron").write_text("shared-job\nsd-db-backup\n")
+        (self.jobs / "sd-db-backup.job").write_text('JOB_SCHEDULE="0 3 * * *"\n')
+
+    def test_a_satellite_skips_a_hub_only_job(self):
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  SKIP    sd-db-backup — hub only, and this machine is a satellite", result.stdout)
+        self.assertNotIn("install sd-db-backup", self.cron_log.read_text())
+        self.assertIn("install shared-job", self.cron_log.read_text())
+
+    def test_a_hub_only_job_already_on_a_satellite_is_left_to_the_satellite_stage(self):
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        self.install_plist("sd-db-backup")
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("sd-db-backup", self.cron_log.read_text())
+
+    def test_the_hub_installs_it(self):
+        result = self.run_stage("cron", "--apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MISSING sd-db-backup", result.stdout)
+        self.assertIn("install sd-db-backup", self.cron_log.read_text())
+
+
 class CronDiscoveryTest(CronTest):
     """The sweep uninstalls; it must not run on an incomplete wanted list."""
 
