@@ -1,5 +1,19 @@
 [
   {
+    "date": "2026-10-13",
+    "artifact": "local-project-dashboard/sd_dashboard/v2: the annunciator on 11 pages (static/annunciator-strip.css and .js, shell.css)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3588 the lamps sit in the foundation's <annunciator-strip>; its stylesheet and script are pinned copies of ui-design 8e5eede; shell.css drops its lamp rules and pages their --cells; the strip's container queries set 2, 3 or 4 columns; Today's clock spans two columns; shell.css keeps the sd:2530 hover ring in the lamp ink token and cancels the strip's 4% dim (operator ruling 2026-10-13)",
+    "constraints": "no build step; CSP default-src 'self'; no colour literal; foundation files copied unchanged",
+    "verified": "320, 375, 768, 1440 px in dark and light; no horizontal scroll",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
     "date": "2026-10-12",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/health.js (Health: Services area)",
     "scope": "component",

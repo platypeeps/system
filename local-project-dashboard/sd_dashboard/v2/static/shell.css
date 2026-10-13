@@ -501,39 +501,13 @@ body[data-only-new] [data-changed]:not([data-new]) { display: none; }
 
 
 /* ---------- Annunciator and ledger: one of each on every page that draws one (sd:2588, sd:2680) ---------- */
-/* Hallmark · component: annunciator lamp + ledger · genre: modern-minimal · theme: design.md instrument panel · states: default,
- * hover, focus, pressed, ok, caution, warning, unknown, forced colours. A page sets only its lamp count (`.annunciator
- * { --cells: 4; }`); markup.cells draws the lamps. Three columns below 1100px and two below 700px, whatever the count. */
-.annunciator { display: grid; grid-template-columns: repeat(var(--cells, 3), minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }
-.annunciator li { display: contents; }
-.cell { font: inherit; border: 0; text-align: left; width: 100%; min-width: 0; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); text-decoration: none; }
-:is(a, button).cell { cursor: pointer; }
-:is(a, button).cell:hover { background: var(--color-well); }
-.cell:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
-.cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs); }
-.cell .ph { display: inline-block; max-width: 100%; }
-.cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); overflow-wrap: anywhere; }
-.cell .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }
-.cell .val small { display: block; font-size: var(--text-2xs); color: var(--color-muted); }
-.cell[data-state="ok"] .lbl :is(.i, .g) { color: var(--color-ok); }
-.cell[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.cell[data-state="caution"] .val, .cell[data-state="caution"] .val :is(b, small) { color: var(--color-caution-lamp-ink); }
-.cell[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.cell[data-state="warning"] .val, .cell[data-state="warning"] .val :is(b, small) { color: var(--color-warning-ink); }
-/* Muted ink on the hatch measured 3.83:1 in light (Reports, sd:2124), so an unknown lamp reads in ink-2 throughout. */
-.cell[data-state="unknown"] { color: var(--color-ink-2); background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-.cell[data-state="unknown"] .val small { color: var(--color-ink-2); }
-.cell[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--color-accent); }
-/* A lit lamp keeps its state colour under the pointer (sd:2530): hover draws a ring in the lamp's own ink token, where a
- * brightness filter on each page shifted the state colour. A pressed lamp keeps its accent ring; a lamp that is not a control
- * does not answer the pointer. */
+/* The lamps are the foundation's <annunciator-strip> (annunciator-strip.css, a copy pinned by tests/test_v2_foundation.py,
+ * sd:3588); markup.cells draws them. One override stays here: a lit lamp keeps its state colour under the pointer
+ * (sd:2530, operator ruling 2026-10-13). The strip dims it 4%; the shell cancels that and draws a ring in the lamp's own ink
+ * token. A pressed lamp keeps its accent ring; a lamp that is not a control does not answer the pointer. */
+annunciator-strip .annunciator :is(a, button).cell:is([data-state="caution"], [data-state="warning"], [data-state="unknown"]):hover { filter: none; }
 :is(a, button).cell[data-state="caution"]:not([aria-pressed="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-caution-lamp-ink); }
 :is(a, button).cell[data-state="warning"]:not([aria-pressed="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-warning-ink); }
-@media (max-width: 1099px) { .annunciator { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 699px) { .annunciator { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (prefers-reduced-motion: no-preference) { .cell:is([data-state="caution"], [data-state="warning"]) { animation: lamp var(--dur-lamp) var(--ease-out) both; } }
-@keyframes lamp { from { opacity: 0.35; } to { opacity: 1; } }
-@media (forced-colors: active) { .cell:is([data-state="caution"], [data-state="warning"]) { border: 2px solid CanvasText; } }
 
 /* The ledger: the browser's auto table layout, so a title wraps and no column clips (foundation principles: truncation
  * hides the fact). A page keeps its own cell styles and its narrow-screen card grid. */

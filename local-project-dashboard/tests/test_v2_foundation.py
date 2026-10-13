@@ -25,6 +25,10 @@ FOUNDATION = "8e5eedeae89fa61b6e844776164d614870eb7a42"
 COPIES = {
     "tokens.css": ("foundation/tokens.css", "6de06baf1da8dddbce8434b1db3591f935778764cb017aca7f1028139bff540a"),
     "theme.js": ("foundation/theme.js", "3d4cf4fc4b54c168212325d12c5d60b5487feee78329131c9e4ea17d029b3a24"),
+    "annunciator-strip.css": ("foundation/components/annunciator-strip.css",
+                              "f15e5334b6b647cc1d1381778d38d110a479346a5048e2c63172bde90cd0730a"),
+    "annunciator-strip.js": ("foundation/components/annunciator-strip.js",
+                             "9e76cb8d13ea602e32e960abf33e30fc50dd982994463da88b552092721f2637"),
 }
 
 DECLARED = re.compile(r"(?:^|[{;])\s*(--[a-z0-9-]+)\s*:", re.M)
