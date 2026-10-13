@@ -180,7 +180,8 @@ class SpotlightExclusionsTest(unittest.TestCase):
 
     @staticmethod
     def spotlight_lines(out):
-        return [line for line in out.splitlines() if "Spotlight" in line]
+        """The exclusion lines, without the sudoers drop-in's own line."""
+        return [line for line in out.splitlines() if "Spotlight" in line and "drop-in" not in line]
 
     def restarts(self):
         return [line for line in self.launchctl_log.read_text().splitlines() if line == KICKSTART]
@@ -292,7 +293,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
         self.assertIn(f"  DEFER   Spotlight exclusions not read: reading {self.plist} needs sudo, "
                       "and no sudo ticket is cached; run 'sudo -v', then re-run "
                       "(or re-run with --apply)\n", out)
-        self.assertNotIn("MISSING Spotlight", out)
+        self.assertNotIn("MISSING Spotlight exclusion", out)
 
     # ------------------------------------------------ sudoers drop-in ----
 
@@ -359,7 +360,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
     def test_a_missing_store_defers_and_does_not_read_as_empty(self):
         out = self.system("--apply")
         self.assertIn(f"  DEFER   Spotlight exclusions not read: {self.plist} does not exist; ", out)
-        self.assertNotIn("MISSING Spotlight", out)
+        self.assertNotIn("MISSING Spotlight exclusion", out)
         self.assertFalse(self.plist.exists())
 
     def test_a_missing_store_is_named_when_plutil_says_nothing(self):
