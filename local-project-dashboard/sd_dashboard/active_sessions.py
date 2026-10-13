@@ -18,8 +18,9 @@ through `-C <dir>` inside a worktree that named one. A herdr agent names its ite
 through a cwd inside a worktree that named one. Each row's `via` says which tie made it, so a reader can check it. A row
 is kept only when its item exists and is not done: a worktree left after its merge is cleanup, not work.
 
-A source that could not be read is a reason in `sources`, never an empty list. A launch note whose pane herdr could not
-be asked about is a row with `verified` false; one whose pane herdr answered without is a session that ended, and no row.
+A source that could not be read, or answered in the wrong shape, is a reason in `sources`, never an empty list. A
+launch note whose pane herdr could not be asked about is a row with `verified` false; one whose pane herdr answered
+without is a session that ended, and no row.
 herdr not installed, or its session not running, is a definite answer: no agent is live. herdr is asked only when a
 launch note or a joined worktree could tie an agent to an item.
 """
@@ -97,6 +98,17 @@ def _real(path) -> str:
     return os.path.realpath(os.path.expanduser(path)) if isinstance(path, str) and path else ""
 
 
+def _expect(holds: bool, problem: str) -> None:
+    """A source's answer of the wrong shape is that source unread, as a failed read is: never fewer rows."""
+    if not holds:
+        raise ValueError(problem)
+
+
+def _text(row: dict, *fields: str) -> bool:
+    """Each of `fields` is absent, null or text: the optional fields a source may leave out."""
+    return all(isinstance(row.get(field), (str, type(None))) for field in fields)
+
+
 def _inside(path: str, joined: dict[str, int]) -> str | None:
     """The joined worktree `path` is in, or None."""
     real = _real(path)
@@ -108,10 +120,19 @@ def _inside(path: str, joined: dict[str, int]) -> str | None:
 
 def _lane(connection) -> list[dict]:
     rows = connection.execute(
-        "SELECT body FROM state WHERE id IN (SELECT MAX(id) FROM state WHERE kind = 'checkpoint' "
+        "SELECT key, body FROM state WHERE id IN (SELECT MAX(id) FROM state WHERE kind = 'checkpoint' "
         "AND substr(key, 1, ?) = ? GROUP BY key)", (len(LANE_PREFIX), LANE_PREFIX)).fetchall()
-    entries = [json.loads(row[0]) for row in rows]
-    return [entry for entry in entries if isinstance(entry, dict) and type(entry.get("item")) is int]
+    entries = []
+    for key, body in rows:
+        try:
+            entry = json.loads(body)
+        except (TypeError, ValueError):
+            entry = None
+        _expect(isinstance(entry, dict) and type(entry.get("item")) is int
+                and _text(entry, "worktree", "status", "step", "started_at", "enqueued_at")
+                and isinstance(entry.get("holder"), (dict, type(None))), f"lane entry {key} is not a lane entry")
+        entries.append(entry)
+    return entries
 
 
 def _launches(connection) -> dict[str, dict]:
@@ -167,28 +188,44 @@ def herdr_agents() -> list[dict]:
     wrap = _wrap()
     session = wrap.session_name()
     environment = wrap.herdr_env(session)
-    listed = _herdr(["session", "list", "--json"], environment)
-    entry = next((row for row in listed.get("sessions") or [] if isinstance(row, dict) and row.get("name") == session), None)
-    if not entry or not entry.get("running"):
+    listed = _herdr(["session", "list", "--json"], environment).get("sessions")
+    _expect(isinstance(listed, list) and all(isinstance(row, dict) for row in listed),
+            "herdr session list --json answered no session list")
+    entry = next((row for row in listed if row.get("name") == session), None)
+    if entry is None:
+        return []
+    _expect(isinstance(entry.get("running"), bool) and _text(entry, "socket_path"),
+            f"herdr session list --json answered session {session} of the wrong shape")
+    if not entry["running"]:
         return []
     if entry.get("socket_path"):
         environment["HERDR_SOCKET_PATH"] = entry["socket_path"]
-    agents = (_herdr(["agent", "list"], environment).get("result") or {}).get("agents")
-    if not isinstance(agents, list):
-        raise ValueError("herdr agent list answered no agent list")  # noqa: TRY004 - external document validation
-    return [agent for agent in agents if isinstance(agent, dict)]
+    result = _herdr(["agent", "list"], environment).get("result")
+    agents = result.get("agents") if isinstance(result, dict) else None
+    _expect(isinstance(agents, list), "herdr agent list answered no agent list")
+    _expect(all(isinstance(agent, dict) and isinstance(agent.get("pane_id"), str)
+                and _text(agent, "cwd", "foreground_cwd", "agent", "agent_status") for agent in agents),
+            "herdr agent list answered an agent of the wrong shape")
+    return agents
 
 
 def _fleet(sessions: dict) -> tuple[list[dict], list[dict], str]:
+    """Live worktrees, `sd-*` processes and the process table's reason; a process row of the wrong shape is that reason."""
+    _expect(isinstance(sessions, dict), "fleet collector returned no sessions document")
     trees, procs = sessions.get("worktrees"), sessions.get("processes")
-    if not isinstance(trees, list) or not isinstance(procs, list):
-        raise ValueError("fleet collector returned an incomplete sessions document")  # noqa: TRY004 - external document validation
-    trees = [tree for tree in trees if isinstance(tree, dict) and tree.get("live") is True
-             and isinstance(tree.get("path"), str) and isinstance(tree.get("branch"), str)]
-    procs = [proc for proc in procs if isinstance(proc, dict)
-             and all(isinstance(proc.get(field), str) for field in ("pid", "elapsed", "command"))]
+    _expect(isinstance(trees, list) and isinstance(procs, list), "fleet collector returned an incomplete sessions document")
+    # `created` is absent from a fleet child older than sd:3466; that is no start, not a wrong shape.
+    _expect(all(isinstance(tree, dict) and isinstance(tree.get("live"), bool) and isinstance(tree.get("path"), str)
+                and isinstance(tree.get("branch"), str) and _text(tree, "created") for tree in trees),
+            "fleet collector returned a worktree of the wrong shape")
     error = sessions.get("processes_error")
-    return trees, procs, f"the process table: {error}" if isinstance(error, str) and error else ""
+    if not isinstance(error, (str, type(None))):
+        error = "it answered a reason that is not text"
+    elif not all(isinstance(proc, dict) and all(isinstance(proc.get(field), str) for field in ("pid", "elapsed", "command"))
+                 for proc in procs):
+        error = "it answered a process of the wrong shape"
+    return ([tree for tree in trees if tree["live"]], [] if error else procs,
+            f"the process table: {error}" if error else "")
 
 
 # -- the join ---------------------------------------------------------------------------------------------------------

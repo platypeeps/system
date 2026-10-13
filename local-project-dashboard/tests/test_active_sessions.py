@@ -139,6 +139,44 @@ class Join(ScreenCase):
         self.assertEqual([(item, "lane", "Lane queue (pending)", "2026-09-06T10:30:00Z")],
                          [(row["item"], row["kind"], row["session"], row["started"]) for row in found["rows"]])
 
+    def test_a_lane_entry_of_the_wrong_shape_marks_the_lane_unread(self):
+        item = self.item("beside a bad entry")
+        lane(self.connection, item, worktree=f"{self.wt}/l", status="pending")
+        for body in (None, "[1]", '{"id": "x", "item": "7"}', '{"id": "x", "item": 7, "worktree": 7}',
+                     '{"id": "x", "item": 7, "status": "running", "holder": 7}'):
+            with self.subTest(body=body):
+                self.connection.execute("INSERT INTO state(kind, key, timestamp, body) VALUES "
+                                        "('checkpoint', 'lane:v1:example/project:x', ?, ?)", (NOW, body))
+                self.connection.commit()
+                found = self.read()
+                self.assertIn("lane entry", found["sources"]["lane"])
+                self.assertEqual([], found["rows"])
+
+    def test_a_fleet_document_of_the_wrong_shape_marks_the_fleet_unread(self):
+        item = self.item("fleet shape")
+        lane(self.connection, item, worktree=f"{self.wt}/m", status="pending")
+        good = tree(f"{self.wt}/m", f"sd{item}-m")
+        for doc in (7, {"worktrees": 7, "processes": []}, sessions([7]), sessions([{**good, "path": 7}]),
+                    sessions([{**good, "branch": None}]), sessions([{**good, "live": "yes"}]),
+                    sessions([{**good, "created": 7}])):
+            with self.subTest(doc=doc):
+                found = self.read(fleet_doc=doc)
+                self.assertTrue(found["sources"]["fleet"], found["sources"])
+                # The lane still answers: one source's shape is not the others'.
+                self.assertEqual([(item, "lane")], [(row["item"], row["kind"]) for row in found["rows"]])
+
+    def test_a_process_row_of_the_wrong_shape_marks_the_process_table_unread_and_worktrees_still_join(self):
+        item = self.item("process shape")
+        good = {"pid": "5", "elapsed": "01:00", "command": f"sd-ship merge --item {item}"}
+        for procs in ([7], [{**good, "pid": 5}], [{**good, "command": ["sd-ship"]}], [{**good, "elapsed": None}]):
+            with self.subTest(procs=procs):
+                doc = sessions([tree(f"{self.wt}/n", f"sd{item}-n")], [good, *procs])
+                found = self.read(fleet_doc=doc)
+                self.assertIn("the process table", found["sources"]["fleet"])
+                self.assertEqual([(item, "worktree")], [(row["item"], row["kind"]) for row in found["rows"]])
+        found = self.read(fleet_doc={**sessions(), "processes_error": 7})
+        self.assertIn("the process table", found["sources"]["fleet"])
+
     def test_now_carries_the_sessions(self):
         item = self.item("on today")
         doc = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
@@ -192,6 +230,36 @@ class HerdrReader(ScreenCase):
         with self.assertRaisesRegex(ValueError, "herdr session list --json: exit 0, no JSON answer"):
             active_sessions.herdr_agents()
 
+
+    def test_an_answer_of_the_wrong_shape_is_unknown_not_empty(self):
+        running = {"name": "sd", "running": True, "socket_path": "/tmp/example.sock"}
+        good = {"sessions": [running]}
+        for listed, agents in (({"sessions": 7}, None), ({"sessions": [7]}, None),
+                               ({"sessions": [{**running, "running": "yes"}]}, None),
+                               ({"sessions": [{**running, "socket_path": 7}]}, None),
+                               (good, {"result": [1]}), (good, {"result": {"agents": 7}}),
+                               (good, {"result": {"agents": [7]}}), (good, {"result": {"agents": [agent(7, "/x")]}}),
+                               (good, {"result": {"agents": [agent(["w1:p1"], "/x")]}}),
+                               (good, {"result": {"agents": [agent("w1:p1", 7)]}})):
+            with self.subTest(listed=listed, agents=agents):
+                (self.fixture / "session-list.json").write_text(json.dumps(listed))
+                if agents is not None:
+                    (self.fixture / "agent-list.json").write_text(json.dumps(agents))
+                with self.assertRaisesRegex(ValueError, "^herdr "):
+                    active_sessions.herdr_agents()
+
+    def test_a_wrong_shape_marks_herdr_unread_and_leaves_launches_unverified(self):
+        item = self.item("fix")
+        note = self.note(item, fix_session.NOTE.format(session="builder", item=item, pane="w9:p1", where="~/x"), kind="comment")
+        self.connection.execute("UPDATE note SET timestamp = ? WHERE id = ?", ("2026-09-06T11:30:00+00:00", note))
+        self.connection.commit()
+        for listed in ({"sessions": 7}, {"sessions": [{"name": "sd", "running": True}]}):
+            with self.subTest(listed=listed):
+                (self.fixture / "session-list.json").write_text(json.dumps(listed))
+                (self.fixture / "agent-list.json").write_text(json.dumps({"result": [1]}))
+                found = active_sessions.document(self.connection, now=NOW, sessions=sessions())
+                self.assertTrue(found["sources"]["herdr"].startswith("herdr "), found["sources"])
+                self.assertEqual([(item, False)], [(row["item"], row["verified"]) for row in found["rows"]])
 
 class TodayDraws(ScreenCase):
     """today.js draws Working now from the document, under JavaScriptCore with the Today stand-in (`test_v2_today_reader`)."""
