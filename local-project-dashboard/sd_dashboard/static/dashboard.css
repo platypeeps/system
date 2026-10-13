@@ -234,7 +234,6 @@ code, .command {
 .listing-table .column-item { width: 50%; }
 .listing-table .column-repo { width: 18%; }
 .listing-table .column-status { width: 14%; }
-.listing-table .column-meta { font-size: .8rem; padding-inline: .25rem; }
 .listing-table .column-item a { line-height: 1.5; }
 .listing-table tr[data-active="true"] td { background: var(--accent-quiet); }
 .listing-select input { width: 24px; height: 24px; }
@@ -255,7 +254,7 @@ code, .command {
     padding: 0.25rem 0.5rem;
   }
   .listing-table td { border-bottom: 0; padding: 0.35rem 0; }
-  .listing-table .column-item, .listing-table .column-meta { width: 100%; }
+  .listing-table .column-item { width: 100%; }
 }
 
 /* -- tiles, cards, boards ------------------------------------------------ */
@@ -340,19 +339,6 @@ code, .command {
 .band-broken { color: var(--stop); font-weight: 600; }
 .band-look { color: var(--warn); }
 .band-queued { color: var(--ink-quiet); }
-
-/* -- protection: unknown is its own colour, never the green one ---------- */
-
-.protection-protected { color: var(--good); }
-.protection-unprotected { color: var(--stop); font-weight: 600; }
-.protection-unknown { color: var(--warn); border: 1px dashed var(--warn); background: transparent; }
-.protection-ok { color: var(--good); }
-.protection-gap { color: var(--stop); font-weight: 600; cursor: pointer; }
-.protection-na { color: var(--ink-quiet); }
-.protection-reason { color: var(--warn); }
-.protection-summary { font-weight: 600; }
-.protection-detail { display: inline; }
-.protection-sentence { margin: .25rem 0 0; font-size: .85rem; max-width: 28rem; overflow-wrap: anywhere; }
 
 /* -- charts -------------------------------------------------------------- */
 
