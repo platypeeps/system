@@ -1,19 +1,6 @@
 [
   {
     "date": "2026-10-13",
-    "artifact": "local-project-dashboard/sd_dashboard/v2/static/tasks.js (Draft email command in the Details bar and row menu)",
-    "scope": "component",
-    "genre": "modern-minimal",
-    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
-    "macrostructure": "component scope: skipped; the shell's existing command bar, ask-first dialog and toast",
-    "nav": "none",
-    "footer": "none",
-    "changes": "sd:3463 Draft email: one declared command (icon mail, ask first, no key) shown for tasks and followups; it posts /api/items/<id>/draft-email and toasts the saved draft's subject; no CSS, markup or token change",
-    "constraints": "no build step; CSP default-src 'self'; no colour literal",
-    "critique": "P4 H4 E4 S4 R5 V3"
-  },
-  {
-    "date": "2026-10-13",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.js (itemHref, openItem) and the item links on activity, contributions, decisions, hoa, management, notes, reports, review and today",
     "scope": "component",
     "genre": "modern-minimal",
