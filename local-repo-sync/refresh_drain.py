@@ -26,9 +26,19 @@ REPO_SYNC_LANE_NAMES (the conf's checkouts) gets one, made and held here; a
 lane is named after its checkout's folder. A pass that takes a new lock
 checks the gate again, so a gate a new lane's runner left is seen.
 
-The wait is bounded: 45 minutes in total for the locks and the gate
-together (operator ruling), or REPO_SYNC_DRAIN_WAIT seconds. Past it, refresh refuses with nothing moved and
-names what was busy.
+Before any lane lock it takes the machine's refresh lock, `refresh.lock`
+in the lane root, and waits while another refresh or follow holds it
+(sd:3999). Two drains at once each held part of the lane locks and waited
+for the rest: a manual refresh and a lane's post-merge refresh, run once
+that lane let go of its lock, waited on each other until the bound. The
+second waits rather than exits 0: the first may have fetched before the
+merge the second is for, or move other paths. The child inherits this lock
+with the lane locks.
+
+The wait is bounded: 45 minutes in total for the refresh lock, the lane
+locks and the gate together (operator ruling), or REPO_SYNC_DRAIN_WAIT
+seconds. Past it, refresh refuses with nothing moved and names what was
+busy.
 
 Usage: refresh_drain.py <repo-sync.sh> refresh|follow [path ...]
 """
@@ -96,6 +106,27 @@ def wait(busy, deadline, limit):
             print(f"waiting for {what}", flush=True)
             noted = now
         time.sleep(1)
+
+
+def take_refresh_lock(root, deadline, limit):
+    """Take the machine's refresh lock in root, waiting while another drain
+    holds it; returns its path and handle."""
+    lock = root / "refresh.lock"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        handle = open(lock, "a", encoding="utf-8")
+    except OSError as error:
+        raise Refused(f"cannot open {lock}: {error.strerror}") from None
+
+    def busy():
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return f"another refresh or follow (it holds {lock})"
+        return None
+
+    wait(busy, deadline, limit)
+    return lock, handle
 
 
 def take_locks(root, held, deadline, limit, names=()):
@@ -183,7 +214,8 @@ def registry_names(script, env):
 
 
 def drain(env, names=()):
-    """Hold every lane lock and outwait the gates from before; returns the held handles."""
+    """Hold the refresh lock, then every lane lock, and outwait the gates
+    from before; returns the held handles."""
     raw = env.get("REPO_SYNC_DRAIN_WAIT", str(DEFAULT_WAIT))
     if not raw.isdigit():
         raise Refused(f"REPO_SYNC_DRAIN_WAIT must be a number of seconds, got {raw!r}")
@@ -193,6 +225,7 @@ def drain(env, names=()):
     has_sd = shutil.which("sd", path=env.get("PATH")) is not None
     if not has_sd:
         print("sd is not on PATH: no gate to wait on", flush=True)
+    refresh, handle = take_refresh_lock(root, deadline, limit)
     held = {}
     # A lane folder made during the gate wait is taken on the next pass, and
     # its runner's gate is seen: each pass that takes a lock checks the gate.
@@ -207,7 +240,7 @@ def drain(env, names=()):
             wait_gate(env, deadline, limit)
     print(f"lanes held: {len(held)} runner lock(s) under {root}; "
           "every gate from before is done", flush=True)
-    return held
+    return {refresh: handle, **held}
 
 
 def main(argv):

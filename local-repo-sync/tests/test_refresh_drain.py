@@ -12,9 +12,12 @@ NEW: written before the drain existed and seen to fail against the script
 without it.
 """
 
+import os
 import pathlib
+import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
 
@@ -452,6 +455,110 @@ esac
         # Pass one: three calls; pass two takes late-repo: three more; pass three takes none.
         self.assertEqual("6", (f.tmp / "gate.count").read_text().strip())
         self.assertEqual(new, f.head(repo))
+
+
+class TwoDrainsTest(unittest.TestCase):
+    """sd:3999: a manual refresh and a lane's post-merge refresh ran at once.
+    Each held part of the lane locks and waited for the rest, for 45 minutes."""
+
+    def fixture(self):
+        f = DrainFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def start(self, f, name, wait):
+        """Run `refresh` in a thread. Its pack's `sd-db` stub writes its
+        parent's pid, the drain's, to the returned file once, then runs the
+        fixture's stub."""
+        pidfile = f.tmp / f"{name}.pid"
+        stub = f.tmp / name / "bin" / "sd-db"
+        stub.parent.mkdir(parents=True)
+        stub.write_text(f'#!/bin/sh\n[ -e "{pidfile}" ] || echo "$PPID" > "{pidfile}"\n'
+                        f'exec "{f.sd_pack / "bin" / "sd-db"}" "$@"\n')
+        stub.chmod(0o755)
+        results = []
+        env = {"SD_PACK_ROOT": str(stub.parent.parent), "REPO_SYNC_DRAIN_WAIT": wait}
+        thread = threading.Thread(target=lambda: results.append(f.run("refresh", expect=None, extra_env=env)))
+        thread.start()
+        self.addCleanup(thread.join, 60)
+        return pidfile, thread, results
+
+    @staticmethod
+    def until(check, what, seconds=20):
+        deadline = time.monotonic() + seconds
+        while not check():
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"timed out waiting for {what}")
+            time.sleep(0.05)
+
+    def test_a_manual_refresh_and_a_post_merge_refresh_both_finish(self):
+        """NEW. The incident: a runner holds the system lane's lock, and the
+        manual refresh A holds every other lane's lock and waits for it. The
+        runner lets go and its post-merge refresh B starts. Stopping A pins
+        the race the incident lost: B's first pass comes before A's next
+        poll. The old drain B took the system lock and waited for A's, and
+        both refused at the bound; now B waits for A's whole refresh."""
+        f = self.fixture()
+        repo, _, new = f.pinned_behind()
+        system = f.lane("system")
+        other = f.lane("other")
+        runner = f.hold(system, 60)
+        self.addCleanup(lambda: (runner.kill(), runner.wait(), runner.stdout.close()))
+
+        a_pid, a, a_result = self.start(f, "a", "15")
+        self.until(lambda: a_pid.exists() and f.state(other) == "held", "A to hold the other lane")
+        pid = int(a_pid.read_text())
+        os.kill(pid, signal.SIGSTOP)
+        self.addCleanup(lambda: os.kill(pid, signal.SIGCONT) if a.is_alive() else None)
+        runner.kill()
+        runner.wait()
+        b_pid, b, b_result = self.start(f, "b", "15")
+        self.until(b_pid.exists, "B to start its drain")
+        time.sleep(1)  # B's first pass follows its registry read at once
+        os.kill(pid, signal.SIGCONT)
+        a.join(60)
+        b.join(60)
+
+        results = a_result + b_result
+        self.assertEqual([0, 0], [result.returncode for result in results],
+                         "\n".join(result.stdout + result.stderr for result in results))
+        self.assertIn("waiting for another refresh or follow", b_result[0].stdout)
+        self.assertEqual(new, f.head(repo))
+
+    def test_a_held_refresh_lock_past_the_bound_refuses_before_any_lane(self):
+        """NEW. The refresh lock comes first: while another refresh holds it,
+        this one takes no lane lock, and past the bound it refuses with
+        nothing moved and names that refresh."""
+        f = self.fixture()
+        repo, before, _ = f.pinned_behind()
+        lane = f.lane("some-repo")
+        refresh = f.lanes / "refresh.lock"
+        proc = f.hold(refresh, 30)
+        self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout.close()))
+        seen = []
+        probe = threading.Thread(target=lambda: (time.sleep(1), seen.append(f.state(lane))))
+        probe.start()
+
+        result = f.run("refresh", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "2"})
+        probe.join()
+
+        self.assertIn(f"another refresh or follow (it holds {refresh})", result.stderr)
+        self.assertIn("nothing moved", result.stderr)
+        self.assertEqual(["free"], seen)
+        self.assertEqual(before, f.head(repo))
+
+    def test_the_refresh_steps_hold_the_refresh_lock(self):
+        """NEW. The child gets the refresh lock with the lane locks, so a
+        second refresh waits for the steps; it is free afterwards."""
+        f = self.fixture()
+        f.pinned_pack()
+        refresh = f.lanes / "refresh.lock"
+        hook = f'{sys.executable} {f.probe} {refresh} >> {f.tmp / "during"}'
+
+        f.run("refresh", expect=0, extra_env={"MAKE_HOOK": hook})
+
+        self.assertEqual("held\n", (f.tmp / "during").read_text())
+        self.assertEqual("free", f.state(refresh))
 
 
 # A gate queue that never empties (sd:3265): each call shows one new holder,
