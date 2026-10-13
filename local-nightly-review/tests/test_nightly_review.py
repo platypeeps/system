@@ -146,7 +146,8 @@ class NightlyReview(unittest.TestCase):
         self.assertEqual(args[args.index("--model") + 1], "sonnet")
         tools = args[args.index("--allowedTools") + 1]
         for writer in ("Write", "Edit", "sd-db", "sd task add", "sd task note", "sd task status", "sd note",
-                       "git -C", "Bash(sd:", "Bash(git:", "Bash(sh", "Bash(python"):
+                       "git -C", "Bash(sd:", "Bash(git", "Bash(sh", "Bash(python"):
+            # REGRESSION sd:3638 review: git log and git show write a file through --output=<path>.
             self.assertNotIn(writer, tools)
         self.assertIn("Write", args[args.index("--disallowedTools") + 1])
 

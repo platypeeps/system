@@ -17,7 +17,7 @@ ROOT="$(cd "$DIR/.." && pwd)"
 PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 QUEUE=nightly
 # Read-only tools only: the model holds no write tool and no `sd` writer.
-TOOLS='Read Grep Glob Bash(sd today:*) Bash(sd task show:*) Bash(sd gate status:*) Bash(git log:*) Bash(git show:*) Bash(df:*) Bash(du:*) Bash(ls:*)'
+TOOLS='Read Grep Glob Bash(sd today:*) Bash(sd task show:*) Bash(sd gate status:*) Bash(df:*) Bash(du:*) Bash(ls:*)'
 
 usage() {
   cat <<'USAGE'
