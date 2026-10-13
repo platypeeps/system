@@ -5,13 +5,6 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# The MCP port is 8002, not 8001: 8001 is the redis-stack convention that
-# RedisInsight in local-redis publishes, and the two used to be mutually
-# exclusive.
-HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
-NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
-MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
-
 # <config>/clickhouse/.env (see lib/config.sh) provides defaults only —
 # already-exported values win (st_source_env's one rule). The file is optional;
 # without it the baked-in local dev values apply.
@@ -20,6 +13,12 @@ MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 st_source_env clickhouse
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-verysecure}"
+HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
+NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
+# The MCP port is 8002, not 8001: 8001 is the redis-stack convention that
+# RedisInsight in local-redis publishes, and the two used to be mutually
+# exclusive.
+MCP_PORT="${CLICKHOUSE_MCP_PORT:-8002}"
 
 case "$1" in
   start)
@@ -67,8 +66,8 @@ usage: clickhouse.sh start|stop|update|client
                (next start pulls the latest)
   client       open clickhouse-client inside the running container
 
-CLICKHOUSE_USER (default: default) and CLICKHOUSE_PASSWORD (default: a local
-dev value) come from the environment or
+CLICKHOUSE_USER (default: default), CLICKHOUSE_PASSWORD (default: a local
+dev value) and the ports below come from the environment or
 <config>/clickhouse/.env (copy .env.example there; <config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; exported
 values win) and are applied to the server, the MCP server, and the client.
