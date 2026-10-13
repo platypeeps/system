@@ -48,10 +48,13 @@ addEventListener('DOMContentLoaded', () => {
     if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = undefined; // not known until the rows are read again
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
-      anchor: state.item.recurrence_anchor ?? null, revision: state.revision });
+      anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title });
+    if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
+      repo: state.item.repo ? tasks.find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
+    if ('body' in state.item) DET.body[t.id] = { text: bodyText(state.item.body), rev: state.revision };
     staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
   }
@@ -134,8 +137,11 @@ addEventListener('DOMContentLoaded', () => {
   const cliMove = (t, to) => `sd task status ${t.id} ${to}`;
   function cliQuad(t, ch) {
     const a = [];
-    if ('p' in ch) a.push(`--priority ${ch.p}`);
+    if ('p' in ch) a.push(ch.p ? `--priority ${ch.p}` : '--clear-priority');
     if ('due' in ch) a.push(ch.due ? `--due ${ch.due}` : '--clear-due');
+    if ('repo' in ch) a.push(ch.repo ? `--belongs-to ${window.shell.shq(ch.repo)}` : '--no-repo');
+    if ('title' in ch) a.push(`--title ${window.shell.shq(ch.title)}`);
+    if ('body' in ch) a.push(`--body ${window.shell.shq(ch.body)}`);
     return `sd task edit ${t.id} ${a.join(' ')}`;
   }
 
@@ -207,7 +213,12 @@ addEventListener('DOMContentLoaded', () => {
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
     const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
-    put(document.getElementById('filters'), html`${grp('kind', 'Kind', kinds.map(k => [k, k]))}${grp('repo', 'Repo', repos.map(r => [r, r]))}${
+    // build (sd:3441): Kind and Repo, which grow with the rows, are comboboxes: one value or All. Values the address names
+    // that no row has are options too, and more than one shows as a count until one is picked.
+    const combo = (key, name, opts) => { const all = [...new Set([...opts, ...F[key]])], n = F[key].size;
+      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>All</option>${
+        all.map(v => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${v}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select></div>`; };
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${combo('repo', 'Repo', repos)}${
       grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
       grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
       grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
@@ -230,6 +241,10 @@ addEventListener('DOMContentLoaded', () => {
     if (k === 'q') { Q = ''; find.value = ''; } else F[k].delete(v);
     L.page = 1; render();
   });
+  document.getElementById('filters').addEventListener('change', e => {
+    const k = e.target.dataset.fsel; if (!k) return;
+    F[k].clear(); if (e.target.value) F[k].add(e.target.value); L.page = 1; render();
+  });
   function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; L.page = 1; render(); }
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
@@ -248,7 +263,13 @@ addEventListener('DOMContentLoaded', () => {
   const must = o => { const t = T(o); if (!t) throw new Error('the task is no longer listed'); return t; };
   // Details beyond the row (sd:2180). build: /api/tasks/<id>, read when a task is selected, kept until a write changes it.
   // Each read carries the item's generation; a write bumps it, so an answer sent before the write is dropped, not cached.
-  const DET = { items: {}, reading: {}, failed: {}, gen: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
+  // DET.body keeps the last description read or written back: a write drops the reading, not the description field, so a
+  // redraw before the next read still draws it and keeps the operator's draft (review 2026-10-12, lane entry 225).
+  // The stored body is JSON, {"text": …} (workflow._fields), and the field edits its text, as the classic item page does
+  // (controls.py); null marks a body that does not parse, whose field is withheld so no save overwrites it. Each cached
+  // description and reading carries the revision it was read at: a row read at another revision makes it stale (adopt).
+  const bodyText = stored => { try { const b = JSON.parse(stored || '{}'); return b && typeof b === 'object' && !Array.isArray(b) ? String(b.text ?? '') : ''; } catch { return null; } };
+  const DET = { items: {}, reading: {}, failed: {}, gen: {}, body: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
     if (!id || (!force && (DET.items[id] || DET.reading[id] === (DET.gen[id] || 0)))) return;
     const gen = DET.gen[id] || 0;
@@ -257,7 +278,7 @@ addEventListener('DOMContentLoaded', () => {
     try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
-    if (err) DET.failed[id] = err.message; else DET.items[id] = got;
+    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = { text: bodyText(got.item.body), rev: got.revision }; }
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
@@ -323,12 +344,14 @@ addEventListener('DOMContentLoaded', () => {
       return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn, wait: true }),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
   // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
-  // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
+  // revision the edit answered. A field the row does not carry (the description) takes `before(row)`, read then too.
+  // `check` asks as the edit leaves whether it still changes anything: a second one queued
   // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
-  const FIELD = { anchor: 'recurrence_anchor' };
-  function editRun(t, ch, msg, { check, keep = Object.keys(ch) } = {}) {
+  const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
+  // `before` holds a field the row does not carry (the description, read with the Details).
+  function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = () => ({}) } = {}) {
     let was = {};
-    const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, r[k] ?? null])); };
+    const sent = r => { const b = before(r); was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : b[k] ?? null])); };
     return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
   C.register(
@@ -448,6 +471,14 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Rendering ----------
   let view = 'board', selected = null;
   let checked = new Set(); // mirror of the shell's picked rows
+  // build (sd:3440): a card's priority and due date are dropdowns, each the Details field's write (fieldChange). Due offers
+  // the near dates; Pick a date opens Edit. A row edit_item refuses, or one not read again, keeps the plain labels.
+  const tileF = t => EDITABLE(t) && live(t.key);
+  function dueSelect(t, dt, dc) {
+    const near = [[plus(0), 'Today'], [plus(1), 'Tomorrow'], [plus(7), 'In a week']].filter(([d]) => d !== t.due);
+    return html`<select class="tile-f due ${dc}" data-edit="due" data-key="${t.key}" aria-label="Due date of ${label(t)}"><option value="${String(t.due || '')}" selected>${t.due ? dt : 'No due date'}</option>${
+      near.map(([d, w]) => html`<option value="${d}">${w} · ${fmt(d)}</option>`)}${t.due && !repeats(t) ? html`<option value="">No due date</option>` : ''}<option value="pick">Pick a date…</option></select>`;
+  }
   function card(t, compact) {
     const st = state(t), [dt, dc] = dueText(t);
     return html`<article class="card" tabindex="0" data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
@@ -455,12 +486,13 @@ addEventListener('DOMContentLoaded', () => {
         <label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label>
         ${st ? html`<span class="g g-${st}" aria-hidden="true">${GLYPH[st]}</span>` : ''}
         <span class="id">${label(t)}</span>
-        <span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>
+        ${tileF(t) ? html`<select class="tile-f pri" data-edit="p" data-key="${t.key}" data-p="${String(t.p || '')}" aria-label="Priority of ${label(t)}">${t.p ? '' : html`<option value="" selected>P–</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select>`
+          : html`<span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>`}
         ${t.assignment === 'running' ? html`<span class="lock" title="Runner assignment running">${ICON('lock')}</span>` : ''}
         ${C.rowActions(t.key)}
       </div>
       <div class="t">${t.title}</div>
-      <div class="meta"><span class="repo">${t.repo}</span><span class="due ${dc}">${dt}</span>${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
+      <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
     </article>`;
   }
   function renderBoard() {
@@ -525,57 +557,126 @@ addEventListener('DOMContentLoaded', () => {
     const o = e.target.closest('[data-open]'); if (o) select(o.dataset.open, true);
   });
 
+  let detKey = null; // the task whose Details are on screen, so a redraw of another one carries nothing over
   function renderDetails() {
     const t = byKey(selected), el = document.getElementById('details');
-    if (!t) { put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
+    if (!t) { detKey = null; put(el, html`<p class="note">${!READ ? 'The tasks were not read, so nothing is selected.'
       : tasks.some(x => !live(x.key)) ? 'The tasks were not read again after the change, so nothing is selected. Reload reads them.'
       : !tasks.length ? 'No open task, so nothing is selected.' : !visible().length ? 'No task matches these filters. Clear them to see the list.'
       : 'Select a task to see its fields and moves.'}</p>`); return; }
     const [dt] = dueText(t), act = C.bar(t.key), gone = !live(t.key);
+    // build (sd:3439): status, priority, due, repo and quadrant are fields; a change writes at once (fieldChange below).
+    const off = gone ? 'this task was not read again after the change' : EDITABLE(t) ? '' : noEdit(t);
+    const dis = off ? html` disabled aria-describedby="det-off"` : '';
+    // A redraw (a Details read, a refresh, another field's write) keeps the field the operator is in, as it stands: when its
+    // text differs from the saved value, or a date is half typed, the live field moves into the new Details with its caret.
+    // Review 2026-10-12 (high): the title and description were redrawn from saved data mid-edit.
+    const a = document.activeElement, focused = a?.id, mine = detKey === t.key && focused?.startsWith('det-') && a.isConnected && a.closest?.('#details');
+    const caret = mine ? (() => { try { return [a.selectionStart, a.selectionEnd]; } catch { return [null, null]; } })() : null;
+    detKey = t.key;
     put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
-      <dl>
+      <dl class="fields">
         <dt>Id</dt><dd>#${t.id}</dd>
-        <dt>Status</dt><dd>${slabel(t.status)}</dd>
-        <dt>Priority</dt><dd>${t.p ? 'P' + t.p : 'not recorded'}</dd>
-        <dt>Due</dt><dd>${t.due ? `${t.due} · ${dt}` : t.overdue ? 'overdue · date not recorded' : 'none'}</dd>
-        <dt>Repo</dt><dd>${t.repo_path || t.repo}</dd>
+        <dt><label for="det-title">Title</label></dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
+        <dt><label for="det-status">Status</label></dt><dd><select id="det-status" class="fld"${gone ? html` disabled aria-describedby="det-off"` : ''}>${STATUSES.map(([s, name]) => { const L = legal(t, s);
+          return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
+        <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
+        <dt><label for="det-due">Due</label></dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
+        <dt><label for="det-repo">Repo</label></dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
         <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
-        <dt>Quadrant</dt><dd>${t.status === 'done' ? 'not placed' : QUADS.find(q => q[0] === quadOf(t))[1]}</dd>
+        <dt><label for="det-q">Quadrant</label></dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
         ${t.assignment ? html`<dt>Assignment</dt><dd>${t.assignment}</dd>` : ''}
       </dl>
+      ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
-      ${more(t)}
-      <p class="why">Delete asks first and cannot be undone; to keep a record, move the task to Done. <code>sd task</code> has no delete verb yet (sd:1899).</p>
+      ${more(t, dis)}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
+    if (mine) {
+      const fresh = document.getElementById(focused), keep = fresh && !fresh.disabled && (a.value !== fresh.value || a.validity?.badInput);
+      const f = keep ? a : fresh;
+      if (keep) fresh.replaceWith(a);
+      f?.focus?.();
+      if (f && caret[0] != null) try { f.setSelectionRange(caret[0], caret[1]); } catch { /* a date or select has no caret */ }
+    } else if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.();
+    if (!off) window.shell.repos?.().then(list => { const r = document.getElementById('det-repo'); if (r && selected === t.key && !r.disabled) put(r, repoOptions(t, list)); }, () => {});
   }
+  // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.
+  function repoOptions(t, list) {
+    const all = list || [...new Map(tasks.filter(x => x.repo_path).map(x => [x.repo_path, { path: x.repo_path, name: x.repo }])).values()];
+    if (t.repo_path && !all.some(r => r.path === t.repo_path)) all.push({ path: t.repo_path, name: t.repo });
+    return html`<option value=""${t.repo_path ? '' : html` selected`}>No repo</option>${all.map(r => html`<option value="${r.path}"${r.path === t.repo_path ? html` selected` : ''}>${r.name}</option>`)}`;
+  }
+  // build (sd:3439): a Details field's change is one write through the command or edit it stands for, with its toast and
+  // Undo. Status runs the status command, Quadrant the quadrant move (it asks for a date when it crosses the urgency line),
+  // and the rest edit the item. `check` refuses a change a write queued before it already made. A refused change redraws,
+  // so the field shows the row as it is.
+  const STALE_BODY = 'the description changed since it was read. Your text was not saved; the Details are read again.';
+  function fieldChange(t, id, v, base) {
+    if (id === 'det-title') { const n = v.trim(); if (n === t.title) return false;
+      if (!n) { toast(`${label(t)} not changed: a title is required`); return false; }
+      commitEdit(t, { title: n }, `title → ${n}`, { check: r => r.title !== n || 'the title is already that' }); return true; }
+    // The description is not in the row, so a write over it is refused unless the text it replaces is the row's (read at the
+    // row's revision) and is the text the field was drawn from (`base`): another tool's edit is never written over.
+    if (id === 'det-body') { const known = () => DET.body[t.id], text = () => known()?.text ?? '';
+      if (v === text() && (base === undefined || base === text())) return false;
+      if (known()?.rev !== t.revision || (base !== undefined && base !== text())) { toast(`${label(t)} not changed: ${STALE_BODY}`); redrawDet(t.id); return true; }
+      commitEdit(t, { body: v }, 'description changed', { before: () => ({ body: text() }),
+        check: r => known()?.rev !== r.revision ? STALE_BODY : v !== text() || 'the description is already that' }); return true; }
+    if (id === 'det-status') return v !== t.status && move(t.key, v);
+    if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
+    if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
+      commitEdit(t, { p: n }, `priority ${t.p ? 'P' + t.p : 'unset'} → ${n ? 'P' + n : 'unset'}`, { check: r => r.p !== n || `it is already ${n ? 'P' + n : 'unset'}` }); return true; }
+    if (id === 'det-due') { const d = v || null; if (d === t.due) return false;
+      if (!d && repeats(t)) { toast(NO_CLEAR); return false; }
+      commitEdit(t, { due: d }, d ? `due ${fmt(d)}` : 'due removed', { check: r => r.due !== d || 'the date is already set' }); return true; }
+    if (id === 'det-repo') { const r = v || null; if (r === (t.repo_path || null)) return false;
+      commitEdit(t, { repo: r }, `repo → ${r ? r.split('/').pop() : 'none'}`, { keep: ['repo_path'], check: x => (x.repo_path || null) !== r || 'it is already there' }); return true; }
+    return false;
+  }
+  document.getElementById('details').addEventListener('change', e => {
+    const t = byKey(selected), id = e.target.id || '';
+    if (!t || !id.startsWith('det-')) return;
+    if (!fieldChange(t, id, e.target.value, e.target.defaultValue)) renderDetails();
+  });
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
-  function more(t) {
+  function more(t, dis = '') {
     if (!t.id) return '';
-    const d = detOf(t);
-    if (!d) return html`<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
-    const it = d.item, src = s => html`<p class="src">${s}</p>`;
+    const d = detOf(t), body = DET.body[t.id] && DET.body[t.id].text;
+    // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
+    // edit_item takes a body for a task or a followup only.
+    const desc = body === undefined || !['task', 'followup'].includes(t.kind) ? ''
+      : body === null ? html`<h3>Description</h3><p class="why">The stored description is not valid JSON, so the field is withheld and no save here can overwrite it. Repair it with <code>sd task edit ${t.id} --body</code>.</p>`
+      : html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${body}</textarea>`;
+    if (!d) return html`${desc}<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
+    const it = d.item;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;
     const docs = d.documents || [];
-    return html`<h3>Documents</h3>${src(`/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}
+    return html`${desc}
+      <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
-      <h3>Status history</h3>${src(`sd task show ${t.id} --json · notes of kind status_change`)}
+      <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
-      <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span></h3>${src(`sd task show ${t.id} --json · every other note kind`)}
+      <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src('Notes', `sd task show ${t.id} --json · every other note kind`)}</h3>
       ${d.notes.length ? html`<ol class="rec">${d.notes.map(n => html`<li data-note="${String(n.id)}"><time class="rel" datetime="${n.at}"></time><span><b>${n.kind}</b>${n.kind === 'followup' ? (n.resolved ? ' · resolved' : ' · open') : ''} ${n.body}</span>${C.rowActions('note:' + n.id)}</li>`)}</ol>` : html`<p class="why">No notes on this item.</p>`}
-      <h3>Assignments</h3>${src(`sd assignments list --json · item ${t.id}; not in sd task show`)}
+      <h3>Assignments ${src('Assignments', `sd assignments list --json · item ${t.id}; not in sd task show`)}</h3>
       ${d.assignments.length ? html`<ol class="rec">${d.assignments.map(a => html`<li><span class="mono">#${String(a.id)}</span><span>${a.role} · ${a.provider || 'no provider'} · <b>${a.status}</b>${a.ended ? html` · ended <time class="rel" datetime="${a.ended.replace('+00:00', 'Z')}"></time>` : ''}${a.cancel.allowed ? '' : html`<br><small>sd assignments cancel: ${a.cancel.reason}</small>`}</span>${C.rowActions('asg:' + a.id)}</li>`)}</ol>` : html`<p class="why">No assignment has run on this item.</p>`}
-      <h3>Artifact</h3>${src(`sd task show ${t.id} --json · item.path`)}
+      <h3>Artifact ${src('Artifact', `sd task show ${t.id} --json · item.path`)}</h3>
       <dl><dt>Path</dt><dd>${it.path || 'none'}</dd><dt>Repo</dt><dd>${it.repo || 'none'}</dd>${it.branch ? html`<dt>Branch</dt><dd>${it.branch}</dd>` : ''}</dl>
-      <h3>Recurrence</h3>${src(`sd task show ${t.id} --json · item.recurrence`)}
+      <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
       <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
+  }
+  // Each Details section names its read in a help icon beside its heading; pressing the icon copies the command (sd:3444).
+  function src(name, s) {
+    const at = s.indexOf(' · '), cmd = at < 0 ? s : s.slice(0, at), why = at < 0 ? '' : s.slice(at + 3);
+    return html`<button class="help src" type="button" aria-label="Help: ${name}" data-help="${`<code>${cmd}</code>${why ? ` · ${why}` : ''}. Press to copy.`}" data-copy="${cmd}">${ICON('circle-help')}</button>`;
   }
   // build: v1's External context (screens.external_context), the shadow row and its collector's freshness, when the item
   // has a tracker reference. Local status is the item's own; the tracker's state is dated context beside it.
   function external(d) {
     const x = d.external; if (!x) return '';
-    return html`<h3>External context</h3>${html`<p class="src">sd shadow · ${x.tracker} · progress.tracker_freshness</p>`}
+    return html`<h3>External context ${src('External context', `sd shadow · ${x.tracker} · progress.tracker_freshness`)}</h3>
       <dl><dt>Tracker</dt><dd>${x.tracker}</dd><dt>External state</dt><dd>${x.state || (x.last_seen ? 'unknown' : 'not in the local snapshot')}</dd>
         <dt>Reference</dt><dd>${x.url}</dd><dt>Last seen</dt><dd>${x.last_seen ? html`<time class="rel" datetime="${x.last_seen}"></time>` : 'never'}</dd>
         <dt>Sync health</dt><dd>${x.freshness.state}</dd><dt>Last sync</dt><dd>${x.freshness.last_success_at ? html`<time class="rel" datetime="${x.freshness.last_success_at}"></time>` : 'never'}</dd></dl>
@@ -606,12 +707,15 @@ addEventListener('DOMContentLoaded', () => {
     if (open && innerWidth < 1240) openPane('tab-details');
   }
   document.getElementById('main').addEventListener('click', e => {
-    if (e.target.closest('.rowact, .pick')) return;
+    if (e.target.closest('.rowact, .pick, .tile-f')) return;
     const c = e.target.closest('.card'); if (c && !suppressClick) select(c.dataset.key, true);
   });
   // Selection follows focus on a card, so Enter, which the shell sends as shell:open, opens the focused one.
   document.getElementById('main').addEventListener('focusin', e => { const c = e.target.closest('.card'); if (c && e.target === c && c.dataset.key !== selected) select(c.dataset.key, false); });
   document.getElementById('main').addEventListener('change', e => {
+    const { edit: f, key } = e.target.dataset, t = f && byKey(key);
+    if (t) { if (f === 'due' && e.target.value === 'pick') { render(); askEdit(t); return; }
+      if (!fieldChange(t, `det-${f}`, e.target.value)) render(); return; }
     const k = e.target.dataset.check; if (!k) return;
     C.pick(k);
   });
@@ -642,9 +746,9 @@ addEventListener('DOMContentLoaded', () => {
     if (off.length) toast(`Skipped ${off.map(o => `${label(T(o))}: ${c.when(o)}`).join('; ')}`);
   }
   // build: a quadrant drop is an edit; it lands through the same write, toasts after, and Undo edits the fields back.
-  function commitEdit(t, ch, words) {
+  function commitEdit(t, ch, words, opts) {
     // A page dialog, not a shell command: it toasts on its own, with the same Undo a command gets.
-    editRun(t, ch, () => `${label(t)} ${words}${' · ' + cliQuad(t, ch)}`).then(r => toast(r.text, () => r.undo().then(
+    editRun(t, ch, () => `${label(t)} ${words}${' · ' + cliQuad(t, ch)}`, opts).then(r => toast(r.text, () => r.undo().then(
       ok => { if (ok) toast(`Edit undone · ${label(t)}`); }, err => failed(label(t), err))), err => failed(label(t), err));
   }
   function toQuad(key, q) {
@@ -748,7 +852,7 @@ addEventListener('DOMContentLoaded', () => {
   };
   document.addEventListener('pointerdown', e => {
     const c = e.target.closest('.card');
-    if (!c || e.button !== 0 || e.pointerType === 'touch' || e.target.closest('button, input')) return;
+    if (!c || e.button !== 0 || e.pointerType === 'touch' || e.target.closest('button, input, select')) return;
     drag = { key: c.dataset.key, el: c, x: e.clientX, y: e.clientY, on: false, over: null };
   });
   document.addEventListener('pointermove', e => {
@@ -893,14 +997,18 @@ addEventListener('DOMContentLoaded', () => {
   }
   // build: #repo names a repository by the label this page shows; the write needs its path.
   const repoFor = name => tasks.find(t => t.repo.toLowerCase() === name)?.repo_path || null;
+  // build (sd:3521): a capture with no #repo lands in the one repo the filter shows, else the selected task's; P3 unless typed.
+  const filterRepo = () => F.repo.size === 1 ? repoFor([...F.repo][0].toLowerCase()) : null;
+  window.PAGE_REPO = o => filterRepo() || (o && o.item ? byKey(String(o.item))?.repo_path : null) || null;
   function showPreview() {
     const txt = inp.value, P = parse(txt);
     ghost.hidden = !!txt;
     if (!txt.trim()) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); return; }
     const found = P.find ? tasks.filter(t => String(t.id) === P.find) : P.title.length > 2 ? tasks.filter(t => t.title.toLowerCase().includes(P.title.toLowerCase())).slice(0, 3) : [];
-    const chips = [P.p && `P${P.p}`, P.due && `due ${fmt(P.due)}`, P.repo && `#${P.repo}${repoFor(P.repo) ? '' : ' (not shown here)'}`].filter(Boolean);
+    const fr = !P.repo && filterRepo() && [...F.repo][0];
+    const chips = [P.p ? `P${P.p}` : 'P3 (default)', P.due && `due ${fmt(P.due)}`, P.repo && `#${P.repo}${repoFor(P.repo) ? '' : ' (not shown here)'}`, fr && `#${fr} (filter)`].filter(Boolean);
     put(prev, html`${(P.find ? '' : html`<div class="as"><span class="label">Enter adds</span>${ICON('plus')}<span>${P.title || '(title needed)'}</span></div>
-      <div class="chips">${(chips.length ? chips.map(c => html`<span class="chip" aria-pressed="true">${c}</span>`) : html`<span class="hint">No fields parsed; it lands in Planning with no priority.</span>`)}<span class="chip">planning</span></div>`) }${
+      <div class="chips">${chips.map(c => html`<span class="chip" aria-pressed="true">${c}</span>`)}<span class="chip">planning</span></div>`) }${
       (found.length ? html`<p class="hint">${P.find ? 'Enter opens' : 'Matching'}</p><div class="suggest">${found.map(t => html`<button type="button" data-open-find="${t.key}">${ICON('search')}<span>${label(t)} · ${t.title}</span></button>`)}</div>` : P.find ? html`<p class="hint">No task #${P.find} here.</p>` : '') }${
       html`<p class="hint">Enter commits · Esc clears</p>`}`);
     prev.hidden = false; inp.setAttribute('aria-expanded', 'true');
@@ -916,28 +1024,30 @@ addEventListener('DOMContentLoaded', () => {
     if (!P.title) return;
     if (P.repo && !repoFor(P.repo)) { toast(`Not added: no repo #${P.repo} is shown on this page.`); return; }
     // build: files it with POST /api/items (workflow.capture_task, sd task add). No verb deletes a task, so no Undo.
-    const body = { title: P.title, ...(P.p ? { priority: P.p } : {}), ...(P.due ? { due: P.due } : {}), ...(P.repo ? { repo: repoFor(P.repo) } : {}) };
-    inp.value = ''; showPreview();
+    const where = P.repo ? repoFor(P.repo) : filterRepo();
+    const body = { title: P.title, priority: P.p || 3, ...(P.due ? { due: P.due } : {}), ...(where ? { repo: where } : {}) };
+    const typed = inp.value; inp.value = ''; showPreview();
     // The new task is selected only where it shows: a filter that hides it keeps the selection on a visible one (review, PR #46).
     window.shell.post('/api/items', body).then(out => reread().then(() => { const key = String(out.item.id), t = byKey(key);
       if (!t || !passes(t)) { toast(`Added #${out.item.id} to Planning · the filters hide it; Clear all shows it`); return; }
       select(key, false); landed(key); toast(`Added #${out.item.id} to Planning`); }),
-      err => { inp.value = [P.title, P.p && `p${P.p}`, P.due && `due ${P.due}`, P.repo && `#${P.repo}`].filter(Boolean).join(' '); toast(`Not added: ${err.message}`); });
+      // A refusal gives the text back as typed, unless the operator has typed the next one meanwhile.
+      err => { if (!inp.value) inp.value = typed; toast(`Not added: ${err.message}`); });
   });
   prev.addEventListener('click', e => { const b = e.target.closest('[data-open-find]'); if (b) { inp.value = ''; showPreview(); select(b.dataset.openFind, true); } });
   document.addEventListener('click', e => { if (!e.target.closest('#shift')) { prev.hidden = true; inp.setAttribute('aria-expanded', 'false'); } });
 
   // build: capture (n) files through the routes v1 uses: POST /api/items for a task or followup, POST /api/items/<id>/notes for
   // a note on the selected task, with that task's revision.
-  window.SHELL_CAPTURE = async ({ kind, title, item }) => {
+  window.SHELL_CAPTURE = async ({ kind, title, item, priority, repo }) => {
     if (kind === 'note') {
       const t = byKey(String(item)); if (!t) throw new Error('Not filed: pick a task for the note.');
       await write(t.key, x => `/api/items/${x.id}/notes`, { body: title, kind: 'comment' }); redrawDet(t.id);
       return `Note added to ${label(t)}`;
     }
-    const out = await window.shell.post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+    const said = await window.shell.fileCapture({ kind, title, item, priority, repo });
     await reread();
-    return `Captured #${out.item?.id}: ${out.item?.title || title}`;
+    return said;
   };
 
   // ---------- Start (build, sd:2484: shell.read reads /api/tasks, then draws; it rereads after each landed write) ----------
@@ -959,6 +1069,8 @@ addEventListener('DOMContentLoaded', () => {
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
     adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || [];
+      // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
+      tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
       return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
     clear: () => { tasks = []; READ = null; },
     draw,

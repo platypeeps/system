@@ -191,7 +191,7 @@
   }
 
   // n: the shell's capture. A note on a question is a comment on its batch, "On note #N: ...", under the batch revision.
-  window.SHELL_CAPTURE = async ({ kind, title, item, about }) => {
+  window.SHELL_CAPTURE = async ({ kind, title, item, priority, repo, about }) => {
     if (kind === 'note') {
       const note = noteOf(about && about.id), b = B.get(item);
       if (!note || !b) throw new Error('Not filed: select a question first.');
@@ -200,9 +200,8 @@
       b.revision = out.revision;
       return `Comment on note #${note} added to sd:${item}`;
     }
-    const out = await window.shell.post('/api/items', { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) })
-      .catch(e => { throw new Error(`Not filed: ${e.message}`); });
-    return `Captured #${out.item?.id}: ${out.item?.title || title}`;
+    // A task or a followup files as on every page, with the box's priority and repo (shell.js fileCapture, sd:3521).
+    return window.shell.fileCapture({ kind, title, item, priority, repo });
   };
 
   // The batch's labels as the JSONL sd-db review export writes, saved by the browser; the key never leaves its file.

@@ -603,6 +603,12 @@ class Dashboard(BaseHTTPRequestHandler):
                     except SdDbError as error:
                         return self._json(400, {"error": str(error)})
                     return self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
+                if path == "/api/capture-repos" and not split.query:
+                    from sd_db import repos
+
+                    # The capture box's repo picker (sd:3521): every registered repository's key and folder name.
+                    return self._json(200, {"repos": [{"path": row["path"], "name": Path(row["path"]).name}
+                                                      for row in repos.registered(connection)]})
                 match = re.fullmatch(r"/api/items/([1-9][0-9]{0,18})/capture-context", path)
                 if not match or split.query or int(match[1]) > 9223372036854775807:
                     return self._json(404, {"error": "No capture context at this address."})

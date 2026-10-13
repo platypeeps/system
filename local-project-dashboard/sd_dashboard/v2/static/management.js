@@ -852,6 +852,9 @@ document.addEventListener('keydown', e => {
 window.PAGE_KEYS = [['/', 'Filter the open sub-view'], ['← / →', 'On the sub-view tabs: the previous or next one']];
 window.PAGE_LIST = { rows: () => document.querySelectorAll(`#view-${view} tbody tr[data-id]`), select: id => selectRow(id, false) };
 
+// build (sd:3521): capture's repo default is the selected repo row's.
+window.PAGE_REPO = o => o && o.type === 'repo' ? o.path : null;
+
 window.PAGE_COMMANDS = [
   { label: 'Show repos', icon: 'folder-code', run: () => location.href = '?view=repos' },
   { label: 'Show ship lane', icon: 'git-merge', run: () => location.href = '?view=lane' },
