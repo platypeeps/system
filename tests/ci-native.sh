@@ -303,6 +303,7 @@ case "$SUITE_LEG" in
     # A root suite that needs the venv's sd_db runs here, not in the
     # preflight; the guard above accepts a run_suite line naming it.
     run_suite writing-declaration "$PYTHON" tests/test_writing_declaration.py -v
+    run_suite findings-contract "$PYTHON" tests/test_findings_contract.py -v
     ;;
   dashboard)
     run_suite dashboard sh local-project-dashboard/dashboard.sh test

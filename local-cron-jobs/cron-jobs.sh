@@ -36,10 +36,9 @@
 #   cron-jobs.sh exec <job>               internal: what launchd invokes
 #   cron-jobs.sh test                     run the unittest suite in tests/
 #
-# Failure reporting: on a non-zero exit the wrapper posts a macOS notification,
-# appends to logs/failures.log, and — if NTFY_TOPIC is set in
-# <config>/cron-jobs/notify.conf — pushes to ntfy.sh (reaches your phone).
-# See notify.conf.example.
+# Failure reporting: on a non-zero exit the wrapper appends to
+# logs/failures.log; every run's report goes to the workflow database, where
+# a failure or an SD_REPORT_ATTENTION line opens a Reports row that Today shows.
 #
 # Local configuration (environment, or <config>/cron-jobs/.env; a value
 # already exported wins over .env). See .env.example.
@@ -427,21 +426,12 @@ EOF
   } > "$plist"
 }
 
+# Records the failure only. The run's report carries it to Reports and Today,
+# so nothing is posted or pushed (sd:3454).
 notify_failure() { # job, exit code
   local job="$1" rc="$2" ts
   ts="$(date '+%Y-%m-%dT%H:%M:%S%z')"
   echo "$ts $job FAILED rc=$rc (log: logs/$job.log)" >> "$FAIL_LOG"
-  osascript -e "display notification \"Job '$job' failed (rc=$rc). See local-cron-jobs/logs.\" with title \"cron-jobs failure\"" 2>/dev/null || true
-  # Optional phone push via ntfy.sh — set NTFY_TOPIC in
-  # <config>/cron-jobs/notify.conf
-  local NTFY_TOPIC=""
-  # shellcheck source=/dev/null
-  [ -f "$CONF_DIR/notify.conf" ] && . "$CONF_DIR/notify.conf"
-  if [ -n "$NTFY_TOPIC" ]; then
-    curl -s -m 10 -H "Title: cron-jobs: $job failed" -H "Priority: high" \
-      -d "Exit $rc at $ts on $(hostname -s). Log: local-cron-jobs/logs/$job.log" \
-      "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true
-  fi
 }
 
 # launchd points a job's stdout at its log (StandardOutPath in the plist); a
@@ -560,7 +550,7 @@ stop_tee() {
 
 # Bounded (sd:3292): the job is over and the lock still held, so a hung
 # database call held the next slots off for as long as it hung. A timeout or
-# failure is logged and leaves the job's exit code alone.
+# failure is logged, returns 1 and leaves the job's exit code alone.
 # CRON_JOBS_REPORT_TIMEOUT is the bound in seconds (default 60).
 record_run_report() { # job, run identity, start, end, exit, log offset
   local report_sd
@@ -570,7 +560,26 @@ record_run_report() { # job, run identity, start, end, exit, log offset
       --started "$3" --ended "$4" --exit-code "$5" --offset "$6" \
       --log "$LOG_DIR/$1.log" --json >/dev/null; then
     echo "[$1] report was not recorded in the workflow database; source remains in $LOG_DIR/$1.log (offset $6, run $2)" >&2
+    return 1
   fi
+  rm -f "$LOG_DIR/.$1.unreported"
+}
+
+# A report that did not reach the database carries findings nothing else
+# holds: a producer has already moved its baseline or acted (sd:3537). The
+# next run's report starts at this run's offset, so it carries them, and a
+# push says so meanwhile. The offset is written before the push, so a push
+# that hangs or fails cannot lose it.
+report_unrecorded() { # job, log offset
+  printf '%s\n' "$2" > "$LOG_DIR/.$1.unreported" || true
+  osascript -e "display notification \"Job '$1': report not recorded. See local-cron-jobs/logs/$1.log.\" with title \"cron-jobs report\"" 2>/dev/null || true
+  # Optional phone push via ntfy.sh: set NTFY_TOPIC in <config>/cron-jobs/notify.conf.
+  local NTFY_TOPIC=""
+  # shellcheck source=/dev/null
+  [ ! -f "$CONF_DIR/notify.conf" ] || . "$CONF_DIR/notify.conf"
+  [ -z "$NTFY_TOPIC" ] || curl -s -m 10 -H "Title: cron-jobs: $1 report not recorded" -H "Priority: high" \
+    -d "On $(hostname -s). Log: local-cron-jobs/logs/$1.log from byte $2." \
+    "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -706,7 +715,8 @@ exec_exit() {
   stop_tee
   # The report, once: the normal end clears EXEC_JOB before it files its own.
   [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET"
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET" \
+    || report_unrecorded "$owed" "$EXEC_OFFSET"
 }
 
 # launchd's own spawn counter for a job, or "" when launchd does not hold the
@@ -1119,6 +1129,10 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # stdout there.
   local report_offset=0 report_started report_run
   [ ! -f "$LOG_DIR/$job.log" ] || report_offset="$(wc -c < "$LOG_DIR/$job.log" | tr -d ' ')"
+  # A report the last run could not record starts this one (report_unrecorded).
+  local lost
+  lost="$(cat "$LOG_DIR/.$job.unreported" 2>/dev/null || true)"
+  case "$lost" in ''|*[!0-9]*) ;; *) [ "$lost" -gt "$report_offset" ] || report_offset="$lost" ;; esac
   report_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
@@ -1164,7 +1178,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   if [ -n "$JOB_COMMAND" ]; then
     run_bounded "$job" "$JOB_TIMEOUT_SECONDS" bash -c "$JOB_COMMAND" || rc=$?
   # Resolved here and not at the top of the script: a missing agent is this
-  # job's failure, and it reaches the log, failures.log and the notification
+  # job's failure, and it reaches the log, failures.log and the report
   # like any other non-zero exit instead of killing the script before the
   # lock and the tee are in place.
   elif claude_bin="$(claude_binary)"; then
@@ -1236,7 +1250,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
   record_outcome "$job" "$rc"
   EXEC_JOB=""
   stop_tee
-  record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset"
+  record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset" \
+    || report_unrecorded "$job" "$report_offset"
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 
@@ -1500,14 +1515,19 @@ cmd_logs() {
 }
 
 # Is the automation layer itself alive? For every job installed on this
-# machine, compare its log age against the cadence implied by its schedule
-# (weekday pinned = weekly, day-of-month pinned = monthly, else daily, each
-# with slack). A job whose LaunchAgent silently stopped firing — machine
-# asleep/off at its slot, plist unloaded, launchd wedged — never writes a
-# failure, so the ntfy failure push stays quiet; this is the check that
-# notices the silence. Emails findings; exits 1 only when the email failed.
+# machine, compare the age of its last finished run against the cadence
+# implied by its schedule (weekday pinned = weekly, day-of-month pinned =
+# monthly, else daily, each with slack). A job whose LaunchAgent silently
+# stopped firing — machine asleep/off at its slot, plist unloaded, launchd
+# wedged — never writes a failure; this is the check that notices the
+# silence. A stale job prints an SD_REPORT_ATTENTION line, so the run's
+# report reaches Reports and Today.
+#
+# The age is the last "done" or "FAILED rc=N" line, not the log's mtime: a
+# run skipped on the lock still writes a line, and kept a wedged job green
+# (sd:3538). With no such line, the age is the install time (plist mtime).
 cmd_watchdog() {
-  local job dom dow max log age ref now stale
+  local job dom dow max log age ref now stale last at
   now=$(date +%s)
   stale="$LOG_DIR/.watchdog-stale"
   : > "$stale"
@@ -1524,13 +1544,19 @@ cmd_watchdog() {
     elif [ "$dom" != "*" ]; then max=$((32 * 86400))
     else max=$((26 * 3600)); fi
     log="$LOG_DIR/$job.log"
-    if [ -f "$log" ]; then
-      age=$(( now - $(stat -f %m "$log") ))
-      ref="last log activity"
-    else
-      # Never produced a log: measure from install time (plist mtime).
+    last=$(grep -oE "^\[$job\] [0-9T:+-]+ (done|FAILED rc=[0-9]+)" "$log" 2>/dev/null \
+      | tail -1 | awk '{print $2}')
+    if [ -z "$last" ]; then
       age=$(( now - $(stat -f %m "$(plist_for "$job")") ))
-      ref="never ran, installed"
+      ref="never finished a run, installed"
+    elif at=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "$last" +%s 2>/dev/null); then
+      age=$(( now - at ))
+      ref="last finished run"
+    else
+      # An unreadable time is unknown, not fresh: name it.
+      echo "- $job: cannot read the time of its last run ($last)" >> "$stale"
+      echo "STALE   $job (cannot read the time of its last run: $last)"
+      continue
     fi
     if [ "$age" -gt "$max" ]; then
       echo "- $job: $ref $(( age / 3600 ))h ago (cadence allows $(( max / 3600 ))h)" >> "$stale"
@@ -1543,15 +1569,11 @@ cmd_watchdog() {
     echo "watchdog: all installed jobs alive"
     return 0
   fi
-  local n subject body
-  n=$(wc -l < "$stale" | tr -d ' ')
-  subject="watchdog: $n cron job(s) not running on $(hostname -s)"
-  body=$(printf 'cron watchdog — %s on %s\n\nThese installed jobs show no activity within their cadence:\n%s\n\nfix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not.\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$stale")")
-  if ! sh "$ROOT/../local-notify/notify.sh" -t "$subject" -k status -F -c ntfy,email -b "$body"; then
-    echo "watchdog email FAILED" >&2
-    return 1
-  fi
+  echo "fix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not."
+  # The ingest folds a reason it already holds open into that report and keeps
+  # its first body. The reason ends in the date, as weekly-digest's does, so
+  # each day's run files its own report and no fold hides another (sd:3537).
+  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s), $(date '+%Y-%m-%d')"
 }
 
 # Has machine-setup recorded a profile here? Its cron stage then owns the set
@@ -1588,6 +1610,9 @@ each_or_one() { # cmd, target
   fi
 }
 
+# One usage line for help and the no-arg error, so neither drifts (sd:3541).
+USAGE="usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
+
 case "${1:-}" in
   list)      cmd_list ;;
   watchdog)  cmd_watchdog ;;
@@ -1604,8 +1629,8 @@ case "${1:-}" in
   test)      shift
              exec "${PYTHON:-python3}" -m unittest discover -s "$ROOT/tests" -t "$ROOT" "$@" ;;
   -h|--help|help)
+    echo "$USAGE"
     cat <<'HELPEOF'
-usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog|test
 
   list         jobs, schedules, installed state, the folder each came from
   install      generate plist + load into launchd (<job>, or --all for
@@ -1666,8 +1691,9 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
                adds no failure of its own -- it leaves launchd's evidence to
                decide -- and a marker from an earlier boot is debris.
   logs         tail a job's log (default 40 lines)
-  watchdog     flag installed jobs with no log activity within their cadence
-               (daily/weekly/monthly from the schedule) and email the list
+  watchdog     flag installed jobs with no finished run within their cadence
+               (daily/weekly/monthly from the schedule); a stale job prints an
+               SD_REPORT_ATTENTION line, so its report reaches Reports and Today
   exec         internal: what the LaunchAgent invokes
   test         run the unittest suite in tests/ (extra args go to unittest)
 
@@ -1681,8 +1707,6 @@ configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.conf
                                  folder of each job.
   <config>/cron-jobs/.env        the variables below; an exported value wins
                                  (copy local-cron-jobs/.env.example)
-  <config>/cron-jobs/notify.conf NTFY_TOPIC for a phone push on failure
-                                 (copy local-cron-jobs/notify.conf.example)
   CRON_JOBS_EXTRA_DIRS       colon-separated extra job directories; a job
                              there overrides a same-named one in
                              <config>/cron-jobs/jobs
@@ -1692,7 +1716,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") list|install <job>|--all|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog" >&2
+    echo "$USAGE" >&2
     exit 1
     ;;
 esac

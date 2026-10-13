@@ -92,9 +92,10 @@ class Fixture:
         self.claude.write_text(FAKE_CLAUDE)
         self.claude.chmod(self.claude.stat().st_mode | stat.S_IXUSR)
         self.claude_log = self.tmp / "claude-call"
-        # `notify_failure` calls bare `osascript`, so every staged failure
-        # posted a real desktop notification: the suite fired 9 of them at
-        # the user per run, measured with a recording stub on PATH. The stub
+        # `notify_failure` called bare `osascript` until sd:3454, so every
+        # staged failure posted a real desktop notification: the suite fired 9
+        # of them at the user per run, measured with a recording stub on PATH.
+        # It stays, so a banner that comes back is caught, not shown. The stub
         # goes on the fixture rather than beside `launchctl` in `stub_bin`,
         # because the two PATHs the runs use are built in two places --
         # `exec_job` below and `stub_env` -- and only the second one consults
@@ -1861,6 +1862,61 @@ class RunReportTest(unittest.TestCase):
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
 
+    def lost_report_case(self, first_job):
+        """One run whose report is not recorded, then two that are: the
+        ingest offsets of the three, the log, and the pushes."""
+        curl_log = self.fx.tmp / "curl-calls.txt"
+        curl = self.fx.quiet / "curl"
+        curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{curl_log}'\n")
+        curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+        (self.fx.conf_dir / "notify.conf").write_text("NTFY_TOPIC=example-topic\n")
+        log = self.fx.folder / "logs" / "demo.log"
+        log.parent.mkdir(exist_ok=True)
+        log.write_text("[demo] an older run\n")
+        self.fx.write_job("demo", first_job)
+        self.exec_job(FAKE_SD_EXIT="3")
+        pushes = (self.fx.notifications(), curl_log.read_text() if curl_log.exists() else "")
+        # A producer that reports a finding once and moves its baseline.
+        flag = self.fx.tmp / "baseline-moved"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  f'JOB_COMMAND="[ -f {flag} ] || {{ touch {flag}; echo SD_REPORT_ATTENTION: new agent; }}"\n')
+        self.exec_job()
+        self.exec_job()
+        offsets = [int(re.search(r"--offset (\d+) ", line).group(1)) for line in self.reports()]
+        return offsets, log.read_text().encode(), pushes
+
+    def test_a_lost_report_pushes_and_the_next_report_starts_at_the_lost_run(self):
+        # REGRESSION (sd:3537). A failed ingest returned 0 and nothing kept
+        # the run's findings: the producer had moved its baseline, so the
+        # next run found nothing and the finding was lost.
+        offsets, log, (banners, posts) = self.lost_report_case(
+            'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="echo SD_REPORT_ATTENTION: new agent; touch ' +
+            str(self.fx.tmp / "baseline-moved") + '"\n')
+        self.assertEqual(len(banners), 1, banners)
+        self.assertIn("ntfy.sh/example-topic", posts)
+        self.assertEqual(offsets[1], offsets[0], offsets)
+        self.assertIn(b"SD_REPORT_ATTENTION: new agent", log[offsets[1]:])
+        self.assertGreater(offsets[2], offsets[1], "a recorded report clears the carry")
+
+    def test_a_lost_report_from_the_trap_pushes_and_carries_too(self):
+        # REGRESSION (sd:3537). The EXIT trap's report is the second caller.
+        offsets, _, (banners, posts) = self.lost_report_case(
+            'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
+            f'JOB_DIR="{self.fx.tmp / "no-such-directory"}"\n')
+        self.assertEqual(len(banners), 1, banners)
+        self.assertIn("ntfy.sh/example-topic", posts)
+        self.assertEqual(offsets[1], offsets[0], offsets)
+        self.assertGreater(offsets[2], offsets[1], offsets)
+
+    def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
+        # PIN. Only a lost report pushes.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="echo hi"\n')
+        self.exec_job()
+        self.exec_job()
+        offsets = [int(re.search(r"--offset (\d+) ", line).group(1)) for line in self.reports()]
+        self.assertGreater(offsets[1], offsets[0], offsets)
+        self.assertEqual(self.fx.notifications(), [])
+
 
 class LaunchdLifetimeTest(unittest.TestCase):
     """The recorded count answers only for the launchd lifetime it came from.
@@ -2454,34 +2510,35 @@ class NeverSpawnedTest(unittest.TestCase):
 
 
 class FailureNotificationTest(unittest.TestCase):
-    """A staged failure notifies the fixture's stub, not the user's desktop.
+    """A failed run is recorded and reported, and posts nothing (sd:3454).
 
-    The suite posted 9 real macOS notifications per run at the user, measured
-    with a recording `osascript` first on PATH. `notify_failure` calls bare
-    `osascript`, and the fixture's PATH reached `/usr/bin/osascript`.
-
-    Both PATHs a run can be started with are asserted here. The obvious fix --
-    an `osascript` beside `launchctl` in `stub_bin` -- covers only the five
-    that came through `stub_env`; the other four came through the plain PATH
-    `Fixture.exec_job` builds, which never consults `stub_bin`. The stub is on
-    the fixture and both builders go through `Fixture.path`.
-
-    PIN, and a rig fix: `cron-jobs.sh` is unchanged, so these pass against
-    earlier code too. A stub nothing asserts on goes stale silently.
+    The run's report carries the failure to Reports and Today, so the desktop
+    banner and the ntfy push are gone. The fixture's recording `osascript`
+    and `curl` would catch either one, on both PATHs a run can be started
+    with: the plain one `Fixture.exec_job` builds and `stub_env`'s.
     """
 
     def setUp(self):
         self.fx = Fixture()
         self.addCleanup(self.fx.destroy)
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        # A notify.conf of the kind the wrapper used to read; nothing may use it.
+        (self.fx.conf_dir / "notify.conf").write_text("NTFY_TOPIC=example-topic\n")
+        self.curl_log = self.fx.tmp / "curl-calls.txt"
+        curl = self.fx.quiet / "curl"
+        curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{self.curl_log}'\n")
+        curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
 
-    def test_a_failure_run_plainly_notifies_the_stub(self):
+    def assert_recorded_and_silent(self):
+        self.assertEqual(self.fx.notifications(), [])
+        self.assertFalse(self.curl_log.exists(), self.curl_log.read_text() if self.curl_log.exists() else "")
+        self.assertIn("demo FAILED rc=3", (self.fx.folder / "logs" / "failures.log").read_text())
+
+    def test_a_failure_run_posts_nothing(self):
         self.assertEqual(self.fx.exec_job("demo").returncode, 3)
-        posted = self.fx.notifications()
-        self.assertEqual(len(posted), 1, posted)
-        self.assertIn("Job 'demo' failed (rc=3)", posted[0])
+        self.assert_recorded_and_silent()
 
-    def test_a_failure_run_under_the_launchctl_stubs_notifies_the_stub(self):
+    def test_a_failure_run_under_the_launchctl_stubs_posts_nothing(self):
         agents = self.fx.home / "Library" / "LaunchAgents"
         agents.mkdir(parents=True, exist_ok=True)
         (agents / "local.system-tools.cron.demo.plist").write_text("<plist/>\n")
@@ -2490,10 +2547,107 @@ class FailureNotificationTest(unittest.TestCase):
             env=stub_env(self.fx, stub_bin(self.fx.tmp), 2),
             capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 3, run.stderr)
-        posted = self.fx.notifications()
-        self.assertEqual(len(posted), 1, posted)
-        self.assertIn("Job 'demo' failed (rc=3)", posted[0])
+        self.assert_recorded_and_silent()
 
+
+class WatchdogTest(unittest.TestCase):
+    """`watchdog` names a job that stopped running to its own report.
+
+    sd:3454: a stale job prints an `SD_REPORT_ATTENTION:` line, which the
+    run's ingest maps to a report that needs attention, so Reports and Today
+    carry it. It mails nothing: a notify.sh beside the fixture records any
+    call, and must record none.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        notify = self.fx.tmp / "local-notify" / "notify.sh"
+        notify.parent.mkdir()
+        self.notify_log = self.fx.tmp / "notify-calls.txt"
+        notify.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{self.notify_log}'\n")
+        self.agents = self.fx.home / "Library" / "LaunchAgents"
+        self.agents.mkdir(parents=True)
+
+    def install(self, job, installed_ago):
+        self.fx.write_job(job, 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        plist = self.agents / f"local.system-tools.cron.{job}.plist"
+        plist.write_text("<plist/>\n")
+        then = time.time() - installed_ago
+        os.utime(plist, (then, then))
+
+    def watchdog(self, day=""):
+        # FAKE_DAY stands for the run's date in the report's reason.
+        stub = self.fx.tmp / "day-bin" / "date"
+        stub.parent.mkdir(exist_ok=True)
+        stub.write_text('#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                        'exec /bin/date "$@"\n')
+        stub.chmod(0o755)
+        return subprocess.run(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "watchdog"],
+            env={"PATH": self.fx.path(stub.parent), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "FAKE_DAY": day},
+            capture_output=True, text=True, timeout=60)
+
+    def test_a_stale_job_needs_attention_and_mails_nothing(self):
+        self.install("demo", 3 * 86400)
+        run = self.watchdog()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("STALE   demo", run.stdout)
+        self.assertRegex(run.stdout, r"(?m)^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on ")
+        self.assertFalse(self.notify_log.exists(), self.notify_log.read_text() if self.notify_log.exists() else "")
+
+    def test_a_job_within_its_cadence_needs_nothing(self):
+        self.install("demo", 3600)
+        run = self.watchdog()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("ok      demo", run.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
+
+    @staticmethod
+    def stamp(ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - ago))
+
+    def test_a_lock_skipped_job_is_stale_though_its_log_is_fresh(self):
+        """sd:3538: a skip line touches the log; only an outcome line counts."""
+        self.install("demo", 5 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3 * 86400)} done\n"
+            f"[demo] {self.stamp(3600)} skipped: previous run still active\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (last finished run 72h ago)", run.stdout)
+
+    def test_a_failed_run_counts_as_a_run(self):
+        self.install("demo", 5 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3 * 86400)} done\n[demo] {self.stamp(3600)} FAILED rc=2\n")
+        run = self.watchdog()
+        self.assertIn("ok      demo", run.stdout)
+
+    def test_a_log_without_an_outcome_measures_from_install(self):
+        self.install("demo", 3 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3600)} skipped: previous run still active\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
+
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum of job names alone made "never finished" and "cannot read
+        its time" for one job one report."""
+        self.install("demo", 3 * 86400)
+        first = [l for l in self.watchdog("2026-10-12").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
+        second = [l for l in self.watchdog("2026-10-13").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(second), r", 2026-10-13$")
+
+    def test_an_unreadable_run_time_is_stale_not_fresh(self):
+        self.install("demo", 3600)
+        (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (cannot read the time of its last run: 12)", run.stdout)
+        self.assertIn("SD_REPORT_ATTENTION: watchdog: 1 cron job(s)", run.stdout)
 
 
 class UnfinishedRunTest(unittest.TestCase):
@@ -3024,6 +3178,22 @@ class JobPathTest(unittest.TestCase):
         path = self.job_path()
         self.assertNotIn(str(self.prefix / "opt" / "rustup" / "bin"), path)
         self.assertIn(str(self.prefix / "bin"), path)
+
+
+class UsageTest(unittest.TestCase):
+    """The no-arg usage and the help print one usage line (sd:3541)."""
+
+    def test_no_arg_usage_is_the_help_usage_and_names_every_verb(self):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        env = {"PATH": fx.path(), "HOME": str(fx.home), "SYSTEM_TOOLS_CONFIG": str(fx.config)}
+        script = str(fx.folder / "cron-jobs.sh")
+        bare = subprocess.run(["sh", script], env=env, capture_output=True, text=True, timeout=60)
+        helped = subprocess.run(["sh", script, "help"], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(bare.returncode, 1)
+        self.assertEqual(bare.stderr.strip(), helped.stdout.splitlines()[0])
+        for verb in ("verify", "exec <job>", "watchdog", "test"):
+            self.assertIn(verb, bare.stderr)
 
 
 if __name__ == "__main__":

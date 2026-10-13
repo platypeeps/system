@@ -1,12 +1,12 @@
 #!/bin/sh
 # Nightly brew health: run brew doctor, fix what is safe to fix without a
 # human (broken symlinks, stale downloads, unlinked kegs that still have a
-# formula), and email a summary of anything that needs a decision
-# (deprecated formulae/casks, untrusted taps, orphaned kegs, ...).
+# formula), and print a summary of anything that needs a decision
+# (deprecated formulae/casks, untrusted taps, orphaned kegs, ...) with an
+# SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today.
 # Usage: brew-doctor.sh run
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-NOTIFY="$DIR/../local-notify/notify.sh"
 
 case "${1:-}" in
   run)
@@ -19,16 +19,13 @@ usage: brew-doctor.sh run
           auto-fix (never touches trust or installs):
             - broken symlinks / stale files  -> brew cleanup --prune=all
             - unlinked kegs with a formula   -> brew link (never --overwrite)
-          report-only, emailed as a summary when present:
+          report-only, printed as a summary when present, with an
+          SD_REPORT_ATTENTION line so the run's report reaches Reports and
+          Today:
             - deprecated/disabled formulae and casks
             - untrusted taps (trusting is a security decision)
             - kegs with no formula, and anything else brew doctor raises
-        Exits 0 when clean or when the email went out; exits 1 when the
-        summary could not be delivered, so the cron failure push fires.
-
-The email goes through local-notify's email channel (NOTIFY_EMAIL_TO/EMAIL_FROM in
-<config>/notify/.env or the environment; <config> is
-${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}).
+        Exits 0; nothing is mailed.
 HELPEOF
     exit 0
     ;;
@@ -43,7 +40,14 @@ command -v brew >/dev/null 2>&1 || { echo "brew missing" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-brew doctor > "$tmp/doctor1" 2>&1 || true
+# brew doctor exits 1 on a warning; a failure with none is no clean bill.
+d_rc=0
+brew doctor > "$tmp/doctor1" 2>&1 || d_rc=$?
+if [ "$d_rc" -ne 0 ] && ! grep -q '^Warning:' "$tmp/doctor1"; then
+  cat "$tmp/doctor1"
+  echo "brew doctor FAILED (exit $d_rc) with no warning" >&2
+  exit 1
+fi
 if ! grep -q '^Warning:' "$tmp/doctor1"; then
   echo "brew doctor: clean"
   exit 0
@@ -90,27 +94,17 @@ if ! grep -q '^Warning:' "$tmp/doctor2"; then
 fi
 
 n=$(grep -c '^Warning:' "$tmp/doctor2")
-echo "remaining: $n warning(s) — emailing summary"
-
-subject="brew doctor: $n warning(s) on $(hostname -s)"
-{
-  echo "brew doctor nightly report — $(date '+%Y-%m-%d %H:%M') on $(hostname -s)"
+echo "brew doctor nightly report — $(date '+%Y-%m-%d %H:%M') on $(hostname -s)"
+echo
+if [ -n "$fixed" ]; then
+  echo "Auto-fixed:"
+  printf '%s' "$fixed"
   echo
-  if [ -n "$fixed" ]; then
-    echo "Auto-fixed:"
-    printf '%s' "$fixed"
-    echo
-  fi
-  echo "Needs a decision:"
-  echo
-  cat "$tmp/doctor2"
-} > "$tmp/body"
-
-if sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$(cat "$tmp/body")"; then
-  echo "email sent"
-  exit 0
-else
-  echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-  cat "$tmp/body" >&2
-  exit 1
 fi
+echo "Needs a decision:"
+echo
+cat "$tmp/doctor2"
+# The ingest folds a reason it already holds open into that report and keeps
+# its first body. The reason ends in the date, as weekly-digest's does, so each
+# day's run files its own report and no fold hides another failure (sd:3537).
+echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s), $(date '+%Y-%m-%d')"

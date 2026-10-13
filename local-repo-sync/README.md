@@ -11,7 +11,7 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ./repo-sync.sh reconcile  # update the conf files to match the checkouts on disk
 ./repo-sync.sh hygiene    # report stale worktrees, dead locks, landed branches
 ./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
-./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, emailing (cron)
+./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, reporting (cron)
 ./repo-sync.sh refresh    # move every pinned checkout to origin's default branch
 ./repo-sync.sh follow     # satellite: move system and pack to the hub's pins
 ./repo-sync.sh test       # regression suite (tests/), run by make check
@@ -292,21 +292,21 @@ Without `--apply` it exits 1 when it found anything. With `--apply` it exits
 1 only when an action failed. It is not a `status` subcommand.
 
 `nightly` is what the `repo-sync-nightly` cron job (local-cron-jobs, 02:45)
-runs: reconcile — emailing the diff via local-notify's email channel whenever
-the repo list changed — then sync, emailing the failure summary if any repo
-failed, then `hygiene --apply`, emailing its report when it changed, listed
-or failed anything. It exits 1 when an email could not be delivered, and since #200 also
-when half or more of the fleet failed to sync — one unreachable repo is a
-report, the cron failure push is for a lost report or an outage. The
-threshold is not "all": a dead network still lets the odd repo through, so
-an equality test would have gone on reporting success. After a reconcile the
-updated conf sits in `<config>/repo-sync/`; the email is the record of what
-changed.
+runs: reconcile, then sync, then `hygiene --apply`, each printing its output
+to the job log. A changed repo list, a checkout that needs a rename, a failed
+repo, or a hygiene report that changed, listed or failed anything prints one
+`SD_REPORT_ATTENTION:` line at the end, so the run's report reaches Reports and
+Today; nothing is mailed (sd:3454). Since #200 it exits 1 when half or more of
+the fleet failed to sync — one unreachable repo is a finding, half the fleet
+is an outage. The threshold is not "all": a dead network still lets the odd
+repo through, so an equality test would have gone on reporting success. After
+a reconcile the updated conf sits in `<config>/repo-sync/`; the run's report is
+the record of what changed.
 
-After the hygiene mail, `nightly` asks local-jev, in shadow, whether each
+After the hygiene report, `nightly` asks local-jev, in shadow, whether each
 listed line holds live, abandoned or superseded work (sd:2094). Jev's
 answers go to its ledger and corpus beside the report's own order; the
-report is mailed first and unchanged. The request holds fixed words, counts
+report is printed first and unchanged. The request holds fixed words, counts
 and the tip's age in days only: no repository, branch, sha or path. Stage
 `JEV_REPO_SYNC_HYGIENE`; set it to `0` to switch this off. Unset means on,
 and `jev off`, no key or a spent budget skip it too. The suite stubs
