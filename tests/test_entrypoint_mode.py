@@ -28,6 +28,7 @@ preflight's unwired-suite guard fails when `tests/ci-native.sh` stops naming it.
 """
 
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,9 +93,19 @@ def recorded(lead, text=None):
 
 
 class Sandbox:
-    """An empty machine for probes: scratch HOME and config, the stubs first on PATH."""
+    """An empty machine for probes: scratch HOME and config, the stubs first on PATH.
 
-    def __init__(self, tmp, root=ROOT):
+    Probes run a copy of the tracked tree, since some scripts write beside
+    themselves before reading a verb (milvus's sudo shim, log folders).
+    """
+
+    def __init__(self, tmp, root=None):
+        if root is None:
+            root = tmp / "tree"
+            for path in index():
+                if (ROOT / path).is_file():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / path, root / path)
         stubs = tmp / "stubs"
         stubs.mkdir()
         for name in STUBS:
@@ -205,6 +216,12 @@ class StatusOnAnEmptyMachine(unittest.TestCase):
         self.assertEqual({}, wrong, "status on a machine with nothing set up must exit 3 "
                          "(convention 6); a report that exits 0 goes on CLAUDE.md's "
                          "`status` reports deviation line")
+
+    def test_probes_run_a_copy_of_the_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(Path(tmp))
+            self.assertTrue(sandbox.root.is_relative_to(tmp), "probes would write into the checkout")
+            self.assertTrue((sandbox.root / "lib/config.sh").is_file())
 
     def test_each_report_on_the_deviation_line_has_a_status(self):
         reports = recorded("`status` reports")
