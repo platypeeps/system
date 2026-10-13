@@ -70,7 +70,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 5 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -181,7 +181,7 @@ class FailFast(CheckFixture):
     def setUp(self):
         super().setUp()
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
-            "leg-shared", "leg-dashboard", "tools-1", "tools-2", "tools-3"]
+            "leg-repo-sync", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
 
     def slow(self, *legs, ends_ok=()):
         for leg in legs:
@@ -191,7 +191,7 @@ class FailFast(CheckFixture):
 
     def all_slow_but_a_failing_dashboard(self, ends_ok=()):
         """Every other job holds on; leg-dashboard fails once they all run."""
-        self.slow("shared", "tools", "one", "two", ends_ok=ends_ok)
+        self.slow("repo-sync", "shared", "tools", "one", "two", ends_ok=ends_ok)
         (self.root / "fail-dashboard").touch()
         (self.root / "fail-waits-for").write_text(f"{2 * (len(self.jobs) - 1)}\n")
 
@@ -297,10 +297,10 @@ class OneSuite(CheckFixture):
     """sd:3534: `check.sh suite <name>`, which `make test SUITE=<name>` runs."""
 
     def test_a_suite_runs_the_preflight_then_only_that_suite_against_the_pin(self):
-        (self.root / "holds-tools-repo-sync").touch()
+        (self.root / "holds-repo-sync-repo-sync").touch()
         done = self.check("suite", "repo-sync")
         self.assertTrue((self.root / "preflight-ran").exists())
-        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("shared", "dashboard", "tools")], self.ran())
+        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("repo-sync", "dashboard", "tools", "shared")], self.ran())
         self.assertIn("check.sh: suite repo-sync passed", done.stdout)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
@@ -322,8 +322,8 @@ class OneSuite(CheckFixture):
     def test_a_suite_that_reached_launchctl_fails_as_in_the_gate(self):
         """NEW (codex round): the full run fails a leak a suite swallowed;
         one suite must too."""
-        (self.root / "holds-tools-repo-sync").touch()
-        (self.root / "leak-tools").touch()
+        (self.root / "holds-repo-sync-repo-sync").touch()
+        (self.root / "leak-repo-sync").touch()
         done = self.check("suite", "repo-sync", expect=1)
         self.assertIn("== launchctl calls that missed their stub", done.stdout)
         self.assertNotIn("passed", done.stdout)
@@ -380,14 +380,32 @@ class LegWithSuiteOnly(unittest.TestCase):
                               env={**self.environment, "SUITE_ONLY": only})
 
     def test_only_the_named_suite_of_the_leg_runs(self):
+        self.entrypoint("local-bin-links/bin-links.sh")
+        done = self.leg("tools", "bin-links")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual("local-bin-links/bin-links.sh\n", (self.work / "entrypoints").read_text())
+        self.assertTrue((self.work / "bin-links.log").exists())
+
+    def test_repo_sync_runs_in_a_leg_of_its_own(self):
+        """sd:3750: the tools leg dealt its suites round-robin to three jobs,
+        and the one holding repo-sync, the longest suite, took 13 minutes. Its
+        own leg is a job of its own."""
+        legs = subprocess.run(["sh", str(ROOT / "tests/check.sh"), "legs"], capture_output=True, text=True,
+                              check=True).stdout.split()
+        self.assertIn("repo-sync", legs)
         self.entrypoint("local-repo-sync/repo-sync.sh")
-        done = self.leg("tools", "repo-sync")
+        done = subprocess.run(["bash", str(self.root / "tests/ci-native.sh"), "leg", "repo-sync"], cwd=self.root,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+                              env=self.environment)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual("local-repo-sync/repo-sync.sh\n", (self.work / "entrypoints").read_text())
-        self.assertTrue((self.work / "repo-sync.log").exists())
+        (self.work / "entrypoints").unlink()
+        done = self.leg("tools", "repo-sync")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertFalse((self.work / "entrypoints").exists(), "the tools leg still runs repo-sync")
 
     def test_a_leg_without_the_named_suite_runs_nothing(self):
-        for leg in ("shared", "dashboard"):
+        for leg in ("shared", "dashboard", "tools"):
             with self.subTest(leg=leg):
                 done = self.leg(leg, "repo-sync")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)

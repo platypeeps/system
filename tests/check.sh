@@ -15,7 +15,10 @@ ROOT="$(cd "$DIR/.." && pwd)"
 PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
 PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
-LEGS="shared dashboard tools"
+# Longest first, so that when the jobs run fewer at a time (below) the long
+# ones start at once. repo-sync is one suite in a leg of its own (sd:3750):
+# dealt into a tools shard it held that shard to 13 minutes.
+LEGS="repo-sync dashboard tools shared"
 TOOLS_SHARDS=3
 
 usage() {
@@ -24,7 +27,7 @@ Usage: check.sh run
        check.sh suite <name>
        check.sh legs
 
-  run    the preflight, then the three legs and (on macOS) each suite of
+  run    the preflight, then the legs and (on macOS) each suite of
          tests/macos-only-suites.txt in parallel; the first failure stops
          the rest, and the run exits 1
   suite  the preflight, then the one suite named by a run_suite line in
@@ -201,8 +204,8 @@ fi
 # and sd-check stops a check at 15. Each job
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.
-# The tools leg is the longest: dozens of short suites, one after another.
-# It runs as TOOLS_SHARDS processes, each taking every n-th suite.
+# The tools leg holds dozens of suites, one after another. It runs as
+# TOOLS_SHARDS processes, each taking every n-th suite.
 # The macOS-only suites go first, so that when the jobs run fewer at a time
 # (below) they start at once.
 jobs=""
