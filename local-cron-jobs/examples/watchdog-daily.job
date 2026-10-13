@@ -1,5 +1,5 @@
 # Daytime watchdog for the automation layer itself: flags installed cron
-# jobs with no log activity within their cadence (a job whose LaunchAgent
+# jobs with no finished run within their cadence (a job whose LaunchAgent
 # silently stopped firing never reports a failure — this catches the
 # silence). Runs at 10:00 when the machine is certainly awake. A stale job
 # prints an SD_REPORT_ATTENTION line, so the run's report reaches Reports

@@ -115,12 +115,14 @@ This exists because installation could only ever create a plist that was
 one of nine jobs read fine while carrying a `PATH` that a fix had already
 corrected.
 
-**`watchdog-daily`** measures each installed job's log mtime against a window
-derived from its own schedule: about 26 hours for a daily job, 8 days for a
-weekly one, 32 days for a monthly one. A job that has never produced a log is
-measured from its install time instead, reported as *"never ran, installed"* —
-so a job that has silently never fired is visible, not merely absent from the
-report.
+**`watchdog-daily`** measures the time of each installed job's last finished
+run, its last `done` or `FAILED rc=N` line, against a window derived from its
+own schedule: about 26 hours for a daily job, 8 days for a weekly one, 32 days
+for a monthly one. Not the log's mtime: a run skipped on the lock still writes
+a line, and kept a wedged job green. A job with no finished run is measured
+from its install time instead, reported as *"never finished a run,
+installed"*, so a job that has silently never fired is visible, not merely
+absent from the report.
 
 `STALE` and `MISSING` are spelled in a drift vocabulary that a machine
 status check can grep for. A stage that prints only a human-readable

@@ -364,7 +364,7 @@ not doubled). Before that, only the failure half of a hand-run was recorded —
 `logs/failures.log` was appended on any run, while the `done` line that clears
 it landed only under launchd. So running a job by hand could raise a failure
 that nothing but the next scheduled firing could clear, and left the job
-looking stale to `watchdog`, which reads log age.
+looking stale to `watchdog`, which reads the last `done` or `FAILED` line.
 
 That tee adds time to a hand-run, and most of it is the one sleep after tee has
 already exited. Closing the last writer is what hands tee its EOF and on macOS

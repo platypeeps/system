@@ -2543,6 +2543,40 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("ok      demo", run.stdout)
         self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
 
+    @staticmethod
+    def stamp(ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - ago))
+
+    def test_a_lock_skipped_job_is_stale_though_its_log_is_fresh(self):
+        """sd:3538: a skip line touches the log; only an outcome line counts."""
+        self.install("demo", 5 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3 * 86400)} done\n"
+            f"[demo] {self.stamp(3600)} skipped: previous run still active\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (last finished run 72h ago)", run.stdout)
+
+    def test_a_failed_run_counts_as_a_run(self):
+        self.install("demo", 5 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3 * 86400)} done\n[demo] {self.stamp(3600)} FAILED rc=2\n")
+        run = self.watchdog()
+        self.assertIn("ok      demo", run.stdout)
+
+    def test_a_log_without_an_outcome_measures_from_install(self):
+        self.install("demo", 3 * 86400)
+        (self.fx.folder / "logs" / "demo.log").write_text(
+            f"[demo] {self.stamp(3600)} skipped: previous run still active\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
+
+    def test_an_unreadable_run_time_is_stale_not_fresh(self):
+        self.install("demo", 3600)
+        (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
+        run = self.watchdog()
+        self.assertIn("STALE   demo (cannot read the time of its last run: 12)", run.stdout)
+        self.assertIn("SD_REPORT_ATTENTION: watchdog: 1 cron job(s)", run.stdout)
+
 
 class UnfinishedRunTest(unittest.TestCase):
     """A run that started and recorded nothing withdraws the record's success.

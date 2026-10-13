@@ -1490,14 +1490,19 @@ cmd_logs() {
 }
 
 # Is the automation layer itself alive? For every job installed on this
-# machine, compare its log age against the cadence implied by its schedule
-# (weekday pinned = weekly, day-of-month pinned = monthly, else daily, each
-# with slack). A job whose LaunchAgent silently stopped firing — machine
-# asleep/off at its slot, plist unloaded, launchd wedged — never writes a
-# failure; this is the check that notices the silence. A stale job prints an
-# SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today.
+# machine, compare the age of its last finished run against the cadence
+# implied by its schedule (weekday pinned = weekly, day-of-month pinned =
+# monthly, else daily, each with slack). A job whose LaunchAgent silently
+# stopped firing — machine asleep/off at its slot, plist unloaded, launchd
+# wedged — never writes a failure; this is the check that notices the
+# silence. A stale job prints an SD_REPORT_ATTENTION line, so the run's
+# report reaches Reports and Today.
+#
+# The age is the last "done" or "FAILED rc=N" line, not the log's mtime: a
+# run skipped on the lock still writes a line, and kept a wedged job green
+# (sd:3538). With no such line, the age is the install time (plist mtime).
 cmd_watchdog() {
-  local job dom dow max log age ref now stale
+  local job dom dow max log age ref now stale last at
   now=$(date +%s)
   stale="$LOG_DIR/.watchdog-stale"
   : > "$stale"
@@ -1514,13 +1519,19 @@ cmd_watchdog() {
     elif [ "$dom" != "*" ]; then max=$((32 * 86400))
     else max=$((26 * 3600)); fi
     log="$LOG_DIR/$job.log"
-    if [ -f "$log" ]; then
-      age=$(( now - $(stat -f %m "$log") ))
-      ref="last log activity"
-    else
-      # Never produced a log: measure from install time (plist mtime).
+    last=$(grep -oE "^\[$job\] [0-9T:+-]+ (done|FAILED rc=[0-9]+)" "$log" 2>/dev/null \
+      | tail -1 | awk '{print $2}')
+    if [ -z "$last" ]; then
       age=$(( now - $(stat -f %m "$(plist_for "$job")") ))
-      ref="never ran, installed"
+      ref="never finished a run, installed"
+    elif at=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "$last" +%s 2>/dev/null); then
+      age=$(( now - at ))
+      ref="last finished run"
+    else
+      # An unreadable time is unknown, not fresh: name it.
+      echo "- $job: cannot read the time of its last run ($last)" >> "$stale"
+      echo "STALE   $job (cannot read the time of its last run: $last)"
+      continue
     fi
     if [ "$age" -gt "$max" ]; then
       echo "- $job: $ref $(( age / 3600 ))h ago (cadence allows $(( max / 3600 ))h)" >> "$stale"
@@ -1649,7 +1660,7 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
                adds no failure of its own -- it leaves launchd's evidence to
                decide -- and a marker from an earlier boot is debris.
   logs         tail a job's log (default 40 lines)
-  watchdog     flag installed jobs with no log activity within their cadence
+  watchdog     flag installed jobs with no finished run within their cadence
                (daily/weekly/monthly from the schedule); a stale job prints an
                SD_REPORT_ATTENTION line, so its report reaches Reports and Today
   exec         internal: what the LaunchAgent invokes
