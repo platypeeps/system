@@ -35,7 +35,7 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Data (build) ----------
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
-    let tasks = [], READ = null, AGES = [];
+    let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
@@ -77,14 +77,9 @@ addEventListener('DOMContentLoaded', () => {
   }
   const GLYPH = { warning: '■', caution: '▲' };
 
-  // Page attention: the worst lit state among open rows, and how many rows carry it. build: set after each read.
+  // Page attention: the read's own badge (sd:3446), the rule every page's rail shows: v2/pages/tasks.py. build: set after each read.
   function attention() {
-    if (!READ) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'tasks not read' }); return; }
-    const lit = listed().filter(t => t.real).map(t => [t, state(t)]).filter(([, st]) => st);
-    const worst = lit.some(([, st]) => st === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
-    const hits = lit.filter(([, st]) => st === worst).map(([t]) => t);
-    const what = worst === 'ok' ? 'nothing due' : worst === 'caution' ? 'tasks due within 2 days' : 'overdue tasks';
-    window.shell.attention?.({ state: worst, n: hits.length, what });
+    window.shell.attention?.(READ && ATTENTION ? ATTENTION : { state: 'unknown', n: 0, what: 'tasks not read' });
   }
   function dueText(t) {
     if (t.overdue && !t.due) return ['overdue', 'warning'];
@@ -1068,11 +1063,11 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || [];
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null;
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
       return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
-    clear: () => { tasks = []; READ = null; },
+    clear: () => { tasks = []; READ = null; ATTENTION = null; },
     draw,
     // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
     current: () => selected,

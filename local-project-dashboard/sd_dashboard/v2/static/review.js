@@ -48,6 +48,7 @@
       : 'The review queue was not read';
     const list = shown();
     put($('tally'), batch === null ? html`${plural(list.length, 'question')}` : header(list.length));
+    // The rail's rule is the read's (sd:3446, review_screen.document); this page keeps it current as its labels land.
     window.PAGE_ATTENTION = { state: open > 0 ? 'caution' : 'ok', n: Math.max(0, open), what: 'questions open' };
     window.shell?.attention?.();
   }

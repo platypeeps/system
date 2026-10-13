@@ -327,4 +327,13 @@ def document(connection, *, now):
         "settled": ranked[:SETTLED_REPOS],
         "settled_other": other,
         "collector": _freshness(connection, now),
+        # The rail badge (sd:3446): the open rows that want the operator, in every scope.
+        "attention": _attention(counts),
     }
+
+
+def _attention(counts) -> dict:
+    from .v2.pages import attention
+
+    mine = sum(side[lane] for side in counts.values() for lane in ("newly_unblocked", "awaiting_you"))
+    return attention(["caution"] * mine, {"caution": "contributions want you"})

@@ -73,7 +73,12 @@ def document(connection) -> dict:
              enumerate(sorted(batches, key=lambda batch: not batch["nightly"]))}
     batches.sort(key=lambda batch: order[batch["item"]])
     questions.sort(key=lambda question: (order[question["item"]], question["note"]))
-    return {"batches": batches, "questions": questions}
+    # The rail badge (sd:3446): every open question in a batch that reads. The page keeps its own badge current between
+    # reads as its labels land, from the same batches' `open`.
+    from .v2.pages import attention
+
+    found = attention(["caution"] * sum(batch.get("open") or 0 for batch in batches), {"caution": "questions open"})
+    return {"batches": batches, "questions": questions, "attention": found}
 
 
 def _ids(payload: dict, names: tuple[str, ...]) -> bool:

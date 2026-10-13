@@ -2,6 +2,7 @@
 
 import html
 import re
+import unittest
 from unittest.mock import patch
 
 from sd_dashboard import contribution_screen
@@ -186,3 +187,13 @@ class ContributionScreen(ScreenCase):
             filtered = self.render("/classic/contributions", {"q": ["Contribution 65"]})
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', body), [row["key"] for row in rows[50:]])
         self.assertEqual(re.findall(r'data-contribution-key="([^"]+)"', filtered), [rows[0]["key"]])
+
+
+class TheBadge(unittest.TestCase):
+    def test_rows_waiting_on_the_operator_count_in_every_scope_and_theirs_do_not(self):
+        # sd:3446: the rail's Contributions badge, from the totals, so a cut row list still counts in full.
+        counts = {"internal": {"newly_unblocked": 300, "awaiting_you": 100, "awaiting_them": 9},
+                  "external": {"newly_unblocked": 0, "awaiting_you": 2, "awaiting_them": 40}}
+        self.assertEqual(contribution_screen._attention(counts), {"state": "caution", "n": 402, "what": "contributions want you"})
+        counts = {side: dict.fromkeys(("newly_unblocked", "awaiting_you"), 0) | {"awaiting_them": 5} for side in counts}
+        self.assertEqual(contribution_screen._attention(counts), {"state": "ok", "n": 0, "what": "contributions want you"})

@@ -61,9 +61,8 @@ addEventListener('DOMContentLoaded', () => {
       ...Object.fromEntries(['evidence', 'dependencies', 'delivery'].map(k => [k, r[k] || { state: 'unknown', reason: 'the server sent no ' + k }])) }));
     BY = new Map(ROWS.map(r => [r.key, r]));
     document.body.dataset.observed = doc.read || '';
-    // Rail badge (shell.js): rows that want the operator, in every scope.
-    const mine = tot('newly_unblocked', 'all') + tot('awaiting_you', 'all');
-    window.PAGE_ATTENTION = { state: mine ? 'caution' : 'ok', n: mine, what: 'contributions want you' };
+    // Rail badge (shell.js): the read's own, the rule every page's rail shows (sd:3446, contribution_screen._attention).
+    window.PAGE_ATTENTION = doc.attention || { state: 'unknown', n: 0, what: 'contributions not read' };
     window.shell.attention?.();
     return { objects: [...ROWS, { id: 'collector', type: 'collector', label: 'contributions collector' }], state: stateOf(doc) };
   }

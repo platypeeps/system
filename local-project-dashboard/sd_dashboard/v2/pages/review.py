@@ -45,4 +45,6 @@ PAGE = Page(
     item="sd:3709",
     api=(Api("/api/review", _read), Api(pattern=EXPORT, example="/api/review/7/export", read=_export),
          Api("/api/review/rule", write=_rule), Api("/api/review/withdraw", write=_withdraw)),
+    count="/api/review",
+    live=True,
 )
