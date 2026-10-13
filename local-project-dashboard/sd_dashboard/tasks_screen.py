@@ -32,7 +32,9 @@ already answered for v1: status, edit (priority, due, recurrence), note
 resolve, work relink and cancel, task cancel (`/cancel-task`, the bulk
 Close of sd:3012), and Unpark (the edit route with `parked_at: null`, sd:3012).
 Fix (`/fix`, sd:3456) is new, and Reports and Today post it too: `fix_session`
-starts a herdr session for the item and adds a note. Nothing here writes.
+starts a herdr session for the item and adds a note. Draft email (`/draft-email`, sd:3463) is Tasks' alone:
+`email_draft` has claude write an email about a task or followup and saves it as a Gmail draft, never sent, with a note
+naming it. Nothing here writes.
 """
 
 from __future__ import annotations
