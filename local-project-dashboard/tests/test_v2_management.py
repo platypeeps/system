@@ -184,6 +184,14 @@ class TheDocument(ScreenCase):
         self.assertEqual((request["action"], request["status"], request["who"]), ("cancel", "accepted", "dashboard"))
         self.assertEqual(backend.calls, [("cancel", "fixture/running-fixture")])
 
+    def test_the_badge_counts_failed_jobs_and_an_unread_jobs_list_is_unknown(self):
+        # sd:3446: the read's rule, which every page's rail shows from Management's last read.
+        jobs = [{"state": "failed"}, {"state": "interrupted"}, {"state": "running"}, {"state": "failed"}]
+        self.assertEqual(management_screen._attention(jobs), {"state": "warning", "n": 2, "what": "scheduled jobs failed"})
+        self.assertEqual(management_screen._attention(jobs[1:3]), {"state": "ok", "n": 0, "what": "scheduled jobs failed"})
+        self.assertEqual(management_screen._attention(None), {"state": "unknown", "n": 0, "what": "scheduled jobs not read"})
+        self.assertEqual(self.document()["attention"], management_screen._attention(self.document()["jobs"]))
+
     def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}
         checkout = rows[self.ids["checkout"]]

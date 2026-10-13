@@ -181,11 +181,11 @@
   }
   function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; $('q').value = ''; lamps(); apply(); return had; }
 
+  // The badge is the read's own (sd:3446, health_screen._attention); the subhead counts both states.
   function attention() {
-    const w = ROWS.filter(r => r.state === 'warning').length, c = ROWS.filter(r => r.state === 'caution').length;
-    window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'findings want you' : 'findings to watch' };
+    window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'rows' };
     shell.attention(window.PAGE_ATTENTION);
-    return [w, c];
+    return ['warning', 'caution'].map(s => ROWS.filter(r => r.state === s).length);
   }
 
   // The reader (read.js, sd:2418) holds the guards: of overlapping re-reads only the newest draws, a row the read no longer

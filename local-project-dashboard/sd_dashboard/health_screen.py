@@ -908,4 +908,12 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
             _settle(area, name, readers[key])
         area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
         areas.append(area)
-    return {"read": now, "areas": areas, "snooze_error": snooze_error}
+    return {"read": now, "areas": areas, "snooze_error": snooze_error, "attention": _attention(areas)}
+
+
+def _attention(areas) -> dict:
+    """The rail badge (sd:3446): the loudest state among the rows every area raised, less the snoozed ones."""
+    from .v2.pages import attention
+
+    return attention((row["state"] for area in areas for row in area["rows"]),
+                     {"warning": "findings want you", "caution": "findings to watch"})

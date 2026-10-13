@@ -20,5 +20,6 @@ PAGE = Page(
     html="metrics.html",
     item="sd:2119",
     api=(Api("/api/metrics", _read),),
+    count="/api/metrics",
     classic={"Usage (classic)": "/operations?area=usage"},
 )

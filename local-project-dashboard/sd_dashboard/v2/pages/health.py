@@ -27,4 +27,5 @@ PAGE = Page(
     html="health.html",
     item="sd:2115",
     api=(Api("/api/health", _read), Api("/api/health/cleanup", write=_cleanup)),
+    count="/api/health",
 )

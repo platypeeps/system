@@ -447,7 +447,30 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     work, work_snoozed = snooze.split("today", items, snoozes)
     active = active_sessions.document(connection, now=now, sessions=kept.get("sessions") or {},
                                       sessions_error=sources["sessions"], herdr=herdr)
+    waiting = _waiting(connection, now)
     return {"now": now, "sources": sources, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
-            "work": work, "work_error": work_error}
+            "work": work, "work_error": work_error, "waiting": waiting, "attention": _attention(shown, waiting)}
+
+
+def _waiting(connection: sqlite3.Connection, now: str) -> int:
+    """The decisions Today lists (sd:3012), which its badge counts; a failed read counts none, as the page's own list did."""
+    from . import decisions
+
+    try:
+        return len(decisions.document(connection, now=now)["decisions"])
+    except (SdDbError, sqlite3.Error):
+        return 0
+
+
+def _attention(rows: list[dict], waiting: int) -> dict:
+    """The rail badge (sd:3446): warning rows, else caution rows and the decisions that wait, which are caution there too."""
+    warning = sum(row["band"] == "broken" for row in rows)
+    caution = sum(row["band"] == "look" for row in rows)
+    if warning:
+        return {"state": "warning", "n": warning, "what": "warning rows"}
+    if caution + waiting:
+        what = " and ".join(word for count, word in ((caution, "caution rows"), (waiting, "decisions waiting")) if count)
+        return {"state": "caution", "n": caution + waiting, "what": what}
+    return {"state": "ok", "n": 0, "what": "rows"}
 
 

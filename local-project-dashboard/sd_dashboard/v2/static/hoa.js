@@ -7,7 +7,6 @@
   const { html, put, plural, cells } = window.markup;
   const $ = id => document.getElementById(id);
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };
-  const RANK = { warning: 3, caution: 2, unknown: 1, ok: 0, queued: 0 };
   const dueText = o => o.due_days == null ? 'no due date' : o.due_days < 0 ? `overdue ${plural(-o.due_days, 'day')}` : o.due_days === 0 ? 'due today' : `in ${plural(o.due_days, 'day')}`;
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   let DOC = null, M = null, ASSETS = [], LOTS = [], OB = [], AL = [], CELLS = [];
@@ -50,10 +49,9 @@
     put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}"${c.open ? html` data-open="${c.open}"` : ''}`,
       label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${GLYPH[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
+  // The badge is the read's own (sd:3446, hoa_screen._attention), the cells above that can light.
   function attention() {
-    const lit = CELLS.filter(c => c.state === 'warning' || c.state === 'caution').sort((a, b) => RANK[b.state] - RANK[a.state]);
-    const worst = lit[0]?.state;
-    window.PAGE_ATTENTION = worst ? { state: worst, n: lit.filter(c => c.state === worst).length, what: 'HOA annunciator cells' } : { state: 'ok', n: 0, what: 'HOA water system' };
+    window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'HOA not read' };
     window.shell.attention(window.PAGE_ATTENTION);
   }
 

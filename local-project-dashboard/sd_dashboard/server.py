@@ -592,8 +592,16 @@ class Dashboard(BaseHTTPRequestHandler):
                         return self._json(403, {"error": "Open a dashboard page before reading Now."})
                     if split.query:
                         return self._json(400, {"error": "Now does not accept query parameters."})
-                    return self._json(200, now_screen.document(connection, now=self.clock(), fleet=self.fleet_backend,
-                                                           jobs=self.operations_backend, jev=self.jev_command))
+                    # Every page's rail shows what this read carried (sd:3446); a read that raised leaves its badge unknown.
+                    now = self.clock()
+                    try:
+                        document = now_screen.document(connection, now=now, fleet=self.fleet_backend,
+                                                       jobs=self.operations_backend, jev=self.jev_command)
+                    except BaseException:
+                        self.badges.remember(path, None, now)
+                        raise
+                    self.badges.remember(path, document, now)
+                    return self._json(200, document)
                 if path == "/api/usage":
                     from .usage_screen import document
 
