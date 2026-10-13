@@ -22,10 +22,10 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-# Two pythons are installed. `pin` records into $PINS; `list --pinned` reads it.
+# Two pythons are installed, plus $FORMULAE. `pin` records into $PINS; `list --pinned` reads it.
 BREW_STUB = r"""#!/bin/sh
 case "$*" in
-  "list --formula") printf '%s\n' python@3.12 python@3.14 ;;
+  "list --formula") printf '%s\n' python@3.12 python@3.14 $FORMULAE ;;
   "list --cask"|leaves|tap) : ;;
   "list --pinned") cat "$PINS" 2>/dev/null ;;
   "pin "*) echo "$2" >> "$PINS" ;;
@@ -64,8 +64,9 @@ class BrewPinTest(unittest.TestCase):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
 
-    def run_verb(self, *args):
+    def run_verb(self, *args, formulae=""):
         env = {
+            "FORMULAE": formulae,
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
             "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -87,6 +88,13 @@ class BrewPinTest(unittest.TestCase):
 
         self.assertIn("ok      pinned python@3.14", again.stdout)
         self.assertEqual(self.pins.read_text().split(), ["python@3.14"])
+
+    def test_the_brew_stage_pins_the_agent_clis_the_pack_gate_runs(self):
+        # REGRESSION sd:3542: the weekly upgrade moved opencode under the pack gate's live test.
+        result = self.run_verb("update", "brew", "--apply", formulae="opencode codex jq")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.pins.read_text().split(), ["python@3.14", "opencode", "codex"])
 
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")

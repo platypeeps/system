@@ -452,8 +452,12 @@ valid_profile() {
 
 # Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
 # patch upgrade drops the macOS grants its binary held; the operator unpins
-# and re-grants on purpose. python@3.12 is left as it is.
-BREW_PINNED="python@3.14"
+# and re-grants on purpose. python@3.12 is left as it is. opencode and codex
+# are pinned because the pack's merge gate runs a live test against the
+# installed binary, and the weekly upgrade must not move it under the gate
+# (sd:3542); the upgrade report lists what a pin holds back. A cask install
+# cannot be pinned, so only a formula install is held.
+BREW_PINNED="python@3.14 opencode codex"
 
 # Each BREW_PINNED formula that is installed and not pinned, one per line.
 unpinned_formulae() {
