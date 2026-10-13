@@ -85,6 +85,19 @@ class Entrypoints(Scratch):
                               cwd=REPO_ROOT, capture_output=True, text=True)
         self.assertTrue(done.stdout.startswith("100755 "), done.stdout)
 
+    def test_every_tracked_file_with_a_shebang_is_executable(self):
+        # A5 F12: three helpers carried a shebang at 100644, so `./<file>` exited 126.
+        done = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=REPO_ROOT,
+                              capture_output=True, text=True, check=True)
+        plain = []
+        for record in filter(None, done.stdout.split("\0")):
+            meta, path = record.split("\t", 1)
+            if meta.startswith("100644 "):
+                with open(REPO_ROOT / path, "rb") as file:
+                    if file.read(2) == b"#!":
+                        plain.append(path)
+        self.assertEqual(plain, [], "git update-index --chmod=+x, or drop the shebang")
+
     def test_the_langchain_smoke_test_answers_help_before_importing_anything(self):
         for form in ("help", "-h", "--help"):
             with self.subTest(form=form):
