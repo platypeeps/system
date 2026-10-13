@@ -38,8 +38,13 @@ checkout:
 - Each task is one transaction; the item carries the reference
   `obsidian:<vault path>` (`task-ref`, as `sd task add --ref` writes it). A
   task whose reference exists is skipped, so a second run creates nothing.
-- Output is counts only, never a task's title or file name. The vault is
-  only read. `--apply` exits 1 when any task was refused or failed.
+- A value the importer cannot read exactly refuses its task, naming the key:
+  escapes in quotes, block or folded scalars, anchors, aliases, tags, flow
+  maps, comments, continuation lines, nested maps, a date that is not one,
+  bytes that are not UTF-8. A refusal writes no reference, so a rerun
+  imports the task once the vault file is fixed.
+- Output is counts, plus the path and reason of each refused task; never a
+  title. The vault is only read. `--apply` exits 1 when any task was refused or failed.
 
 ## How it decides
 

@@ -162,8 +162,12 @@ class Migrate(unittest.TestCase):
         self.assertTrue(any(line.startswith("  rule refused: recurrence part COUNT") for line in lines), lines)
         for title in TITLES:
             self.assertNotIn(title, out.stdout + out.stderr)
+        # A file name is printed only on a refused task's line, so the operator can fix it.
+        refused = {"foxtrot", "golf", "hotel"}
         for stem in TASKS:
-            self.assertNotIn(f"{stem}.md", out.stdout + out.stderr)
+            named = [line for line in lines if f"{stem}.md" in line]
+            self.assertEqual(bool(named), stem in refused, stem)
+            self.assertTrue(all(line.startswith(f"  refused TaskNotes/Tasks/{stem}.md: ") for line in named), named)
 
     def test_apply_maps_status_priority_dates_rule_and_history(self):
         out = self.migrate("--apply")
@@ -244,6 +248,51 @@ class Migrate(unittest.TestCase):
         self.assertIn("  cancelled one-off (series ended): 1", out.stdout.splitlines())
         self.assertIn("  cancelled one-off: 1", out.stdout.splitlines())
         self.assertEqual(json.loads(self.item("kilo")["item"]["fields"])["completion"]["outcome"], "cancelled")
+
+    def test_a_value_the_reader_cannot_decode_exactly_is_refused_by_key(self):
+        # Review of sd:3460: never write what cannot be read exactly. Each value below would have been misread, and
+        # the item's reference would have kept the damage; a refusal writes no reference, so a rerun can import it.
+        head = "---\ntitle: Example refused\nstatus: open\n"
+        recur = "recurrence: DTSTART:20250101;FREQ=DAILY\nscheduled: 2026-10-01\n"
+        cases = {
+            "escape-double": ('---\ntitle: "Example \\"quoted\\" escape"\n---\n', "title: a quoted value with an escape"),
+            "escape-unicode": ('---\ntitle: "Example \\u00e9"\n---\n', "title: a quoted value with an escape"),
+            "escape-single": ("---\ntitle: 'Example''s'\n---\n", "title: a quoted value with an escape"),
+            "unclosed-quote": ('---\ntitle: "Example\n  more"\n---\n', "title: a quoted value with an escape"),
+            "folded": ("---\ntitle: >-\n  Example folded\n  title\n---\n", "title: YAML syntax"),
+            "literal": ("---\ntitle: |\n  Example literal\n---\n", "title: YAML syntax"),
+            "anchor": (head + "priority: &p high\n---\n", "priority: YAML syntax"),
+            "alias": (head + "priority: *p\n---\n", "priority: YAML syntax"),
+            "tag": ("---\ntitle: !!str Example\n---\n", "title: YAML syntax"),
+            "flow-map": ("---\ntitle: {a: b}\n---\n", "title: YAML syntax"),
+            "comment": ("---\ntitle: Example # a comment\n---\n", "title: a comment or map syntax"),
+            "continuation": ("---\ntitle: Example\n  continued\n---\n", "title: an indented line"),
+            "map-in-list": (head + recur + "complete_instances:\n  - date: 2026-09-01\n---\n", "complete_instances: a map inside a list"),
+            "flow-quoted-comma": (head + 'tags: ["a, b"]\n---\n', "tags: a quoted value with an escape"),
+            "bad-date": (head + "scheduled: 2026-10-31x\n---\n", "scheduled: not a date"),
+            "bad-history-date": (head + recur + "complete_instances: [2026-09-01, soon]\n---\n", "complete_instances: not a date"),
+            "history-not-list": (head + recur + "complete_instances: 2026-09-01\n---\n", "complete_instances: not a list"),
+            "archived-yes": (head + "archived: yes\n---\n", "archived: neither true nor false"),
+            "duplicate": (head + "status: done\n---\n", "status: given twice"),
+            "list-for-scalar": ("---\ntitle: Example\nstatus: [open]\n---\n", "status: a list where one value belongs"),
+            "quoted-key": ('---\n"title": Example\n---\n', "frontmatter line 1"),
+            "dtstart-tzid": (head + "recurrence: DTSTART;TZID=America/Denver:20250101T090000;FREQ=DAILY\nscheduled: 2026-10-01\n---\n",
+                             "recurrence: a DTSTART the importer does not decode"),
+        }
+        for path in self.tasks.iterdir():
+            path.unlink()
+        for stem, (text, _) in cases.items():
+            (self.tasks / f"{stem}.md").write_text(text)
+        (self.tasks / "not-utf8.md").write_bytes(b"---\ntitle: Example \xff\n---\n")
+        (self.tasks / "control.md").write_text('---\ntitle: "Example: a quoted colon"\nstatus: \'open\'\n---\n')
+        out = self.migrate("--apply")
+        lines = out.stdout.splitlines()
+        for stem, (_, why) in [*cases.items(), ("not-utf8", ("", "not UTF-8"))]:
+            with self.subTest(stem):
+                self.assertTrue(any(line.startswith(f"  refused TaskNotes/Tasks/{stem}.md: {why}") for line in lines), lines)
+                self.assertIsNone(self.item(stem))
+        self.assertEqual(self.item("control")["item"]["title"], "Example: a quoted colon")
+        self.assertIn("created: 1", lines)
 
     def test_the_vault_is_only_read(self):
         def files():

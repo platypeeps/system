@@ -71,57 +71,104 @@ class Refused(Exception):
     """A task this importer will not turn into an item; the message is its count key."""
 
 
+#: The keys `plan` reads. Each must decode exactly, or the task is refused:
+#: an item written from a misread value keeps its reference, and a rerun
+#: would never import the task again. Every other key is left unread.
+SCALAR_KEYS = ("title", "status", "priority", "scheduled", "due", "recurrence",
+               "recurrence_anchor", "completedDate", "archived")
+LIST_KEYS = ("complete_instances", "skipped_instances", "tags")
+READ_KEYS = SCALAR_KEYS + LIST_KEYS
+
+
 def frontmatter(text: str) -> dict | None:
-    """The YAML block's scalars and lists, or None when the file has none.
+    """The read keys of the YAML block, or None when the file has none.
 
     TaskNotes writes flat frontmatter: `key: value` scalars, inline `[a, b]`
-    lists and indented `- item` lists. That is all this reads; a nested map
-    reads as an empty value, which no field below uses.
+    lists and indented `- item` lists. That is all this decodes. A read key
+    whose value uses any other YAML syntax raises `Refused` naming the key:
+    escapes in quotes, block or folded scalars, anchors, aliases, tags, flow
+    maps, comments, continuation lines and nested maps.
     """
-    m = re.match(r"(?s)^---\r?\n(.*?)\r?\n---", text)
+    m = re.match(r"(?s)^---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", text)
     if not m:
         return None
     fields: dict = {}
+    block: set = set()  # read keys whose value is an indented `- item` list
     key = None
-    for line in m.group(1).splitlines():
-        item = re.match(r"^\s+-\s*(.*)$", line)
-        if item and key is not None:
-            if not isinstance(fields[key], list):
+    for number, line in enumerate(m.group(1).splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[0] in " \t":
+            if key not in READ_KEYS:
+                continue
+            item = re.match(r"^\s+-(?:\s+(.*))?$", line)
+            if item is None or (key not in block and fields[key] != ""):
+                raise Refused(f"{key}: an indented line the importer does not decode")
+            if key not in block:
+                block.add(key)
                 fields[key] = []
-            fields[key].append(_scalar(item.group(1)))
+            value = (item.group(1) or "").strip()
+            if re.match(r"^[^'\"]*:(\s|$)", value):
+                raise Refused(f"{key}: a map inside a list")
+            fields[key].append(_scalar(key, value))
             continue
-        pair = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
+        pair = re.match(r"^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$", line)
         if not pair:
+            raise Refused(f"frontmatter line {number}: not a plain key the importer decodes")
+        key, value = pair.group(1), (pair.group(2) or "").strip()
+        if key not in READ_KEYS:
+            fields[key] = value
             continue
-        key, value = pair.group(1), pair.group(2).strip()
+        if key in fields:
+            raise Refused(f"{key}: given twice")
         if value.startswith("[") and value.endswith("]"):
             inner = value[1:-1].strip()
-            fields[key] = [_scalar(v) for v in inner.split(",")] if inner else []
+            fields[key] = [_scalar(key, v) for v in inner.split(",")] if inner else []
         else:
-            fields[key] = _scalar(value)
+            fields[key] = _scalar(key, value)
     return fields
 
 
-def _scalar(value: str) -> str:
+def _scalar(key: str, value: str) -> str:
+    """One plain or simply quoted value, exactly, or `Refused` naming the key."""
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        return value[1:-1]
+    if not value:
+        return ""
+    if value[0] in "'\"":
+        inner = value[1:-1]
+        if len(value) < 2 or value[-1] != value[0] or value[0] in inner or (value[0] == '"' and "\\" in inner):
+            raise Refused(f"{key}: a quoted value with an escape or no closing quote")
+        return inner
+    if value[0] in "|>&*!{}[]%@`,?":
+        raise Refused(f"{key}: YAML syntax the importer does not decode "
+                      "(a block or folded scalar, anchor, alias, tag or flow value)")
+    if " #" in value or ": " in value or value.endswith(":") or "\t#" in value:
+        raise Refused(f"{key}: a comment or map syntax in a plain value")
     return value
 
 
-def _date(value) -> str | None:
-    """The `YYYY-MM-DD` a TaskNotes date or datetime starts with, else None."""
-    if not isinstance(value, str):
+#: A TaskNotes date or datetime, read whole: `YYYY-MM-DD`, then an optional time and zone.
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$")
+
+
+def _date(key: str, value) -> str | None:
+    """The `YYYY-MM-DD` of a TaskNotes date or datetime, None when empty, else `Refused`."""
+    if value in (None, ""):
         return None
+    if not isinstance(value, str) or not DATE.match(value):
+        raise Refused(f"{key}: not a date")
     try:
         return datetime.date.fromisoformat(value[:10]).isoformat()
     except ValueError:
-        return None
+        raise Refused(f"{key}: not a date") from None
 
 
-def _dates(value) -> list[str]:
-    values = value if isinstance(value, list) else []
-    return sorted({d for d in map(_date, values) if d})
+def _dates(key: str, value) -> list[str]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise Refused(f"{key}: not a list")
+    return sorted({_date(key, v) for v in value if v != ""} - {None})
 
 
 @dataclass
@@ -143,22 +190,32 @@ def plan(vault: Path, path: Path) -> Plan:
     """What one task file becomes, or `Refused` naming why it becomes nothing."""
     from sd_db import recurrence
 
-    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        raise Refused("not UTF-8") from None
     fm = frontmatter(text)
     if fm is None:
         raise Refused("no frontmatter")
+    for key in SCALAR_KEYS:
+        if isinstance(fm.get(key), list):
+            raise Refused(f"{key}: a list where one value belongs")
     relative = path.relative_to(vault).as_posix()
     raw_status = str(fm.get("status") or "open").strip().lower()
     if raw_status not in STATUS:
         raise Refused(f"status {raw_status!r} has no sd status")
-    tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
+    tags = fm.get("tags") or []
+    tags = tags if isinstance(tags, list) else [tags]
+    archived = str(fm.get("archived") or "false").lower()
+    if archived not in ("true", "false"):
+        raise Refused("archived: neither true nor false")
     status = STATUS[raw_status]
-    if str(fm.get("archived", "")).lower() == "true" or "archived" in tags:
+    if archived == "true" or "archived" in tags:
         status = "cancelled"
     raw_priority = str(fm.get("priority") or "").strip().lower()
     if raw_priority not in PRIORITY:
         raise Refused(f"priority {raw_priority!r} has no sd priority")
-    scheduled, deadline = _date(fm.get("scheduled")), _date(fm.get("due"))
+    scheduled, deadline = _date("scheduled", fm.get("scheduled")), _date("due", fm.get("due"))
     due = scheduled or deadline
     lines = [f"Imported from Obsidian TaskNotes: {relative}."]
     if scheduled and deadline and scheduled != deadline:
@@ -170,9 +227,14 @@ def plan(vault: Path, path: Path) -> Plan:
     if raw_rule:
         body = raw_rule[len("RRULE:"):] if raw_rule.upper().startswith("RRULE:") else raw_rule
         parts = [p for p in body.split(";") if p.strip()]
-        start = next((p.split(":", 1)[1] for p in parts if p.upper().startswith("DTSTART:")), "")
-        start = _date(f"{start[:4]}-{start[4:6]}-{start[6:8]}") if re.match(r"^\d{8}", start) else None
-        kept = ";".join(p for p in parts if not p.upper().startswith("DTSTART"))
+        starts = [p for p in parts if p.strip().upper().startswith("DTSTART")]
+        start = None
+        if starts:
+            found = re.match(r"^DTSTART:(\d{4})(\d{2})(\d{2})(?:T\d{6}Z?)?$", starts[0].strip(), re.I)
+            if len(starts) > 1 or found is None:
+                raise Refused("recurrence: a DTSTART the importer does not decode")
+            start = _date("recurrence", "-".join(found.groups()))
+        kept = ";".join(p for p in parts if not p.strip().upper().startswith("DTSTART"))
         try:
             parsed = recurrence.parse(kept)
         except recurrence.RecurrenceError as error:
@@ -180,8 +242,8 @@ def plan(vault: Path, path: Path) -> Plan:
         raw_anchor = str(fm.get("recurrence_anchor") or "").strip().lower()
         if raw_anchor not in ANCHOR:
             raise Refused(f"recurrence_anchor {raw_anchor!r} has no sd anchor")
-        done = _dates(fm.get("complete_instances"))
-        skipped = _dates(fm.get("skipped_instances"))
+        done = _dates("complete_instances", fm.get("complete_instances"))
+        skipped = _dates("skipped_instances", fm.get("skipped_instances"))
         history = len(done) + len(skipped)
         lines.append(f"The vault's rule: {raw_rule}; anchor {raw_anchor or 'scheduled'}.")
         if done:
@@ -205,7 +267,7 @@ def plan(vault: Path, path: Path) -> Plan:
                 recurrence.next_after(parsed, datetime.date.fromisoformat(due))
             except recurrence.RecurrenceError as error:
                 raise Refused(f"rule refused: {error}") from None
-    completed = _date(fm.get("completedDate"))
+    completed = _date("completedDate", fm.get("completedDate"))
     if status == "done" and completed:
         lines.append(f"Completed in the vault on {completed}.")
     if status == "cancelled" and not raw_rule:
@@ -224,7 +286,7 @@ def plan(vault: Path, path: Path) -> Plan:
 
 
 def _block(text: str) -> str:
-    m = re.match(r"(?s)^---\r?\n.*?\r?\n---[^\n]*\n?", text)
+    m = re.match(r"(?s)^---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|$)", text)
     return m.group(0) if m else ""
 
 
@@ -269,6 +331,7 @@ def run(argv: list[str]) -> int:
     files = sorted(tasks_dir.glob("*.md"))
     shapes: collections.Counter = collections.Counter()
     refused: collections.Counter = collections.Counter()
+    refused_tasks: list = []
     failed: collections.Counter = collections.Counter()
     present = history = 0
     who = getpass.getuser()
@@ -278,6 +341,7 @@ def run(argv: list[str]) -> int:
                 task = plan(vault, path)
             except Refused as why:
                 refused[str(why)] += 1
+                refused_tasks.append((path.relative_to(vault).as_posix(), str(why)))
                 continue
             if writes.item_by_external(connection, REF_SOURCE, task.ref) is not None:
                 present += 1
@@ -293,7 +357,7 @@ def run(argv: list[str]) -> int:
     finally:
         connection.close()
 
-    # Counts only: a task's title or file name never reaches this output.
+    # Counts, and the path of each refused task; a title never reaches this output.
     verb = "created" if args.apply else "would create"
     print(f"obsidian-tasks.sh migrate: {'apply' if args.apply else 'dry run, nothing written; --apply writes'}")
     print(f"task files: {len(files)}")
@@ -306,6 +370,10 @@ def run(argv: list[str]) -> int:
     print(f"refused: {sum(refused.values())}")
     for why, n in sorted(refused.items()):
         print(f"  {why}: {n}")
+    # The one place a file name is printed: the operator fixes each of these
+    # in the vault, and a rerun imports it, since a refusal writes no reference.
+    for relative, why in refused_tasks:
+        print(f"  refused {relative}: {why}")
     if args.apply:
         print(f"failed: {sum(failed.values())}")
         for why, n in sorted(failed.items()):
