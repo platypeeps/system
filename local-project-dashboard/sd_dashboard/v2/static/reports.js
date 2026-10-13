@@ -471,9 +471,9 @@ function registerCommands() {
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
-    // build: the report opens on v1's item page; Tasks lists no reports.
+    // build: the report opens as its row on Tasks, the item address every page uses (sd:3526).
     { id: 'report.show', on: 'report', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
-      run: o => { location.href = `/item/${o.n}`; return `#${o.n} opens on its item page`; } },
+      run: o => window.shell.openItem(o.n) },
     log('report'), task('report'),
     // Fix (sd:3456): the shared declaration (commands.js), on a report: a debug session for it, with the report's revision.
     window.commands.fix('report', { item: o => o.n, report: () => true, when: o => !o.open ? 'already acknowledged' : true,

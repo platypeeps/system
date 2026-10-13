@@ -1,6 +1,17 @@
 [
   {
     "date": "2026-10-13",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.js (itemHref, openItem) and the item links on activity, contributions, decisions, hoa, management, notes, reports, review and today",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "changes": "sd:3526 one item address from every page: Reports' Open item goes to /tasks?row=N, as Management's does; no markup, CSS or token change",
+    "constraints": "no build step; CSP default-src 'self'; navigation only",
+    "slop_test": "not applicable: no visual change (audit)",
+    "critique": "not scored: no visual change"
+  },
+  {
+    "date": "2026-10-13",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.js (rail badges on every page)",
     "scope": "component",
     "genre": "modern-minimal",

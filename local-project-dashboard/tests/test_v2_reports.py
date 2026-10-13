@@ -442,6 +442,11 @@ class TheScript(ScreenCase):
         # Acknowledge is the one command with an Undo: reporting.reopen (sd:2395).
         self.assertEqual(out["R"]["undo"], ["report.ack"])
 
+    def test_open_item_goes_to_the_reports_row_on_tasks(self):
+        """sd:3526 (review 2026-10-12, A2 F12): Reports opened the classic /item/<n> page; Management opens Tasks."""
+        out = self.run_page("R.toast = cmd('report.show').run({ n: 42 }); R.href = location.href;")
+        self.assertEqual((out["R"]["href"], out["R"]["toast"]), ("/tasks?row=42", "#42 opens in Tasks"))
+
     def test_show_log_prints_the_line_management_prints(self):
         """sd:3525 (review 2026-10-12, A2 F13): one cron-jobs line on every page, from commands.js; no checkout path of its own."""
         out = self.run_page("R.lines = REG.filter(c => c.label === 'Show log').map(c => [c.id, c.cli({ job: 'nightly-sync' })]);"

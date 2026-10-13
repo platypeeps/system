@@ -137,7 +137,7 @@
     put($('active'), a.error ? html`<tr class="empty"><td colspan="5">Sessions could not be read: ${a.error}. Refresh tries again.</td></tr>`
       : items.length ? html`${sorted(items, ACTIVE_T).map(it => { const sure = it.rows.every(r => r.verified), s = sure ? 'ok' : 'unknown', top = it.rows[0]; return html`<tr data-item="${it.item}">
         <td class="g g-${s}" title="${sure ? 'live' : 'a launch not confirmed: herdr was not read'}">${GLYPH[s]}</td>
-        <td class="what"><a href="/tasks?row=${it.item}">#${it.item} ${it.title}</a></td>
+        <td class="what"><a href="${window.shell.itemHref(it.item)}">#${it.item} ${it.title}</a></td>
         <td class="detail"><ul class="sessions">${it.rows.map(r => html`<li>${r.verified ? '' : html`<span class="g-unknown" title="not confirmed">${GLYPH.unknown} </span>`}${r.session}${r.elapsed ? html` · ${r.elapsed}` : ''}<span class="via">${r.via}</span></li>`)}</ul></td>
         <td class="when">${top.started ? html`<time datetime="${top.started}" title="${top.started.slice(11, 16)} UTC">${clock(top.started)}</time>` : 'not known'}</td>
         <td class="num">${top.elapsed || 'not known'}</td></tr>`; })}`
@@ -156,7 +156,7 @@
     put($('work'), WORK_ERROR ? html`<tr class="empty"><td colspan="4">Work could not be read: ${WORK_ERROR}. Refresh tries again.</td></tr>`
       : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-item="${r.item}">
         <td class="g g-${s}" title="${late(r) ? 'overdue' : 'queued'}">${GLYPH[s]}</td>
-        <td class="what"><a href="/tasks?row=${r.item}">${r.what}</a></td>
+        <td class="what"><a href="${window.shell.itemHref(r.item)}">${r.what}</a></td>
         <td class="detail">${r.detail}</td>
         <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="4">Nothing is due and nothing is in progress.</td></tr>`);
@@ -263,7 +263,7 @@
     $('rows').addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
     document.addEventListener('shell:open', e => {
       if (ROWS.some(r => r.id === e.detail)) select(e.detail, true);
-      const w = WORK.find(r => r.id === e.detail); if (w) location.href = `/tasks?row=${w.item}`;
+      const w = WORK.find(r => r.id === e.detail); if (w) window.shell.openItem(w.item);
     });
     document.addEventListener('shell:picked', e => { picked = e.detail; $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
     // A header press redraws its table only; Now marks the selection and the picks again and keeps the filter's hidden rows.

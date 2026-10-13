@@ -47,6 +47,8 @@ SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S 
 CONFIRM = re.search(r"^  // confirm:start\n(.*?)^  // confirm:end$", SHELL_JS, re.S | re.M)
 # The page's reads and writes, as shell.js has them (sd:2588): every page posts through shell.post and reads through shell.getJSON.
 FETCH_JS = re.search(r"^  // fetch:start\n(.*?)^  // fetch:end$", SHELL_JS, re.S | re.M).group(1)
+# An item's one address, as shell.js has it (sd:3526): every page links and opens an item through it.
+ITEM_JS = re.search(r"^  // item:start\n(.*?)^  // item:end$", SHELL_JS, re.S | re.M).group(1)
 # The list grammar, as shell.js has it (sd:2527, sd:2528, sd:2529): sort header, pager and filter chips.
 LIST_JS = re.search(r"^  // list:start\n(.*?)^  // list:end$", SHELL_JS, re.S | re.M).group(1)
 
@@ -307,7 +309,7 @@ function fetch(path, o) {
   return Promise.resolve(ANSWER(path, body)).then(a => ({ ok: a[0] < 300, status: a[0], json: () => Promise.resolve(a[1]) }));
 }
 """
-SHELL = SETTLE_JS + FETCH_JS + r"""
+SHELL = SETTLE_JS + FETCH_JS + ITEM_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
@@ -342,7 +344,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, post, getJSON, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
+window.shell = { commands: C, post, getJSON, itemHref, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
