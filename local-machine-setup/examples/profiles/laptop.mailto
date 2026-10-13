@@ -1,0 +1,3 @@
+# The bundle id of the app that answers mailto: links; one line.
+# It wins over common.mailto; with neither file the handler is Chrome.
+com.google.Chrome
