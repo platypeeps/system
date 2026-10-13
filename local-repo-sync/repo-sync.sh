@@ -727,7 +727,8 @@ start_consumers() {
 
 # Prints the way to bring database schema $1 to the pack's lib/ schema $2,
 # for pack $3, ending "refresh again $4". No migrate goes down, so a database
-# above the library needs the pack pinned forward or an older backup
+# above the library needs a newer pack on origin or an older backup restored
+# by a library at that backup's schema; a newer one would migrate it up
 # (sd:3535).
 schema_remedy() {
   case "$1:$2" in
@@ -735,7 +736,7 @@ schema_remedy() {
     *) if [ "$1" -gt "$2" ]; then sr_above=yes; else sr_above=no; fi ;;
   esac
   if [ "$sr_above" = yes ]; then
-    echo "  no migrate goes down: pin the pack to a commit whose lib/ is at schema $1 or later, or restore a backup at schema $2 with $3/bin/sd-db restore <backup>, then refresh again${4:+ $4}"
+    echo "  no migrate goes down: move the default branch of $3's origin to a commit whose lib/ is at schema $1 or later, or restore a backup at schema $2 with the sd-db of a pack whose lib/ is at schema $2, then refresh again${4:+ $4}"
   else
     echo "  after $3/bin/sd-db backup and $3/bin/sd-db migrate, refresh again${4:+ $4}"
   fi
@@ -1033,6 +1034,19 @@ refresh() {
     fi
   done 3< "$TMPD/ordered"
   echo
+  # System and the pack move together or not at all: one refused keeps the
+  # other where it is.
+  if [ "$r_hub_failed" -gt 0 ]; then
+    : > "$TMPD/plan.kept"
+    while IFS=$US read -r r_dir r_rev; do
+      if hub_checkout "$r_dir" > /dev/null; then
+        echo "!!! held: $r_dir stays at $(git -C "$r_dir" rev-parse --short HEAD): the other hub checkout failed"
+      else
+        printf '%s\n' "$r_dir$US$r_rev" >> "$TMPD/plan.kept"
+      fi
+    done < "$TMPD/plan"
+    mv "$TMPD/plan.kept" "$TMPD/plan"
+  fi
   # The services stop only for a planned move of system or the pack.
   r_hub=""
   while IFS=$US read -r r_dir r_rev; do

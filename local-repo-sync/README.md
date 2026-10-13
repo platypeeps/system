@@ -84,8 +84,9 @@ stopped one again, `sd-serve` first, but only when the database's
 one still loaded is the old process, so it is booted out first. Its line
 leaves the list only once `launchctl print` shows the new load. Otherwise
 they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
-then refresh again. A database above the library needs the pack pinned
-forward or an older backup restored instead, since no migrate goes down. `~/.local/state/repo-sync/refresh-stopped` lists each
+then refresh again. A database above the library needs a newer pack on
+origin, or an older backup restored by a pack at that backup's schema,
+since no migrate goes down. `~/.local/state/repo-sync/refresh-stopped` lists each
 one stopped and not started yet, so a refresh after a kill or a failed
 start starts them. This is steps 1 and 5 of D2 in the pack's design for
 moving `sd_db` into the pack (sd:2997).
@@ -101,7 +102,7 @@ so the backup stays until you remove it. Then it writes the rollback point,
 version and the backup. A failed backup or record write moves nothing and
 starts the services again. A database above that `SCHEMA_VERSION`, such as one
 restored from a newer backup, is refused before the backup: nothing moves, and
-refresh names the pin or backup that would match it (sd:3535).
+refresh names the pack or backup that would match it (sd:3535).
 
 After the moves it runs `bin/sd-db migrate`. Each migration commits on its own,
 so a failure can leave earlier ones applied. Then refresh moves the pack back

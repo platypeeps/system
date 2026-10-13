@@ -292,6 +292,28 @@ class HubPushTest(unittest.TestCase):
         self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
         self.assertIn("refresh : 1 step(s) failed", result.stdout)
 
+    def test_a_refused_pack_holds_system_back_and_stops_nothing(self):
+        """NEW (codex round, sd:3535 row 2). System and the pack move together
+        or not at all: a dirty pack keeps system at its old sha, and with
+        nothing of the hub's to move, no service stops."""
+        f = self.fixture()
+        system, pack = f.system_repo(), f.pack_repo()
+        for repo in (system, pack):
+            f.pin(repo)
+        old = f.head(system)
+        for repo in (system, pack):
+            f.advance_origin(repo)
+        for label in (SERVE, DASHBOARD):
+            (f.launchd / label).touch()
+        (pack / "README").write_text("local edit\n")
+
+        result = f.run("refresh", expect=1)
+
+        self.assertIn(f"!!! held: {system} stays at", result.stdout)
+        self.assertEqual(old, f.head(system))
+        self.assertNotIn("stopped ", result.stdout)
+        self.assertIsNone(f.hub_pin(system))
+
     def test_another_checkouts_failed_move_still_publishes_the_hub_pin(self):
         """NEW (sd:3710). A switch git refuses in another checkout, an
         untracked file where origin now adds one, leaves the hub's pair
