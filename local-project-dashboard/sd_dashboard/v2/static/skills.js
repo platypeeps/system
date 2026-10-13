@@ -17,6 +17,7 @@ window.PAGE_COMMANDS = [
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'skills not read' };
 addEventListener('DOMContentLoaded', () => {
   const C = window.shell.commands;
+const shq = window.shell.shq; // every value in a line the operator copies is single-quoted: $(), backticks and ; stay literal (sd:3992)
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
     const md = d => String(d || '').slice(5, 10);
   const utc = t => t ? String(t).slice(0, 16).replace('T', ' ') + ' UTC' : '—';
@@ -261,10 +262,10 @@ addEventListener('DOMContentLoaded', () => {
       <div class="cli"><code id="ad-cli"></code><button class="icon-btn" type="button" id="ad-copy" aria-label="Copy the adopt line">${I('copy')}</button></div>`);
     const src = details.querySelector('#ad-src'), out = details.querySelector('#ad-parsed'), cli = details.querySelector('#ad-cli'), copy = details.querySelector('#ad-copy');
     const scope = details.querySelector('#ad-scope'), err = details.querySelector('#ad-err'), line2 = details.querySelector('#ad-intake'), copy2 = details.querySelector('#ad-intake-copy');
-    const upd = () => { const p = parseSource(src.value), line = `claude -p "/sd-skill-adopt ${p ? `${p.owner}/${p.repo}${p.path ? '/' + p.path : ''}` : 'SOURCE'}"`;
+    const upd = () => { const p = parseSource(src.value), line = `claude -p ${shq(`/sd-skill-adopt ${p ? `${p.owner}/${p.repo}${p.path ? '/' + p.path : ''}` : 'SOURCE'}`)}`;
       put(out, html`${p ? html`<span class="chip">repo: ${p.owner}/${p.repo}</span><span class="chip${p.path ? '' : ' miss'}">path: ${p.path || 'repo root'}</span><span class="chip">lands as: contrib/${p.name}</span>${byName[p.name] ? html`<span class="chip miss">name taken: ${p.name} is ${byName[p.name].status}</span>` : ''}` : html``}`);
       cli.textContent = line; copy.dataset.copy = line;
-      const intakeLine = `sd skill intake ${GITHUB.test(src.value.trim()) ? src.value.trim() : 'URL'} --scope ${scope.value}`;
+      const intakeLine = `sd skill intake ${GITHUB.test(src.value.trim()) ? shq(src.value.trim()) : 'URL'} --scope ${shq(scope.value)}`;
       line2.textContent = intakeLine; copy2.dataset.copy = intakeLine; };
     src.addEventListener('input', upd); scope.addEventListener('change', upd); upd();
     // Evaluate takes a GitHub URL only: the route refuses anything else, and runs sd with it as one argument, never a shell.
@@ -285,6 +286,7 @@ addEventListener('DOMContentLoaded', () => {
   // Approve shows only under a report whose mode can install, with no refusal and nothing installed yet.
   const GITHUB = /^https:\/\/github\.com\/[\x21-\x7e]+$/;
   const DIFF_LINES = 400;
+  const approveLine = r => `sd skill intake ${shq(r.url)} --scope ${shq(r.scope)} --approve ${shq(r.revision)}`;
   let intake = null;
   const refused = r => r.risk.some(f => f.severity === 'refuse');
   const approvable = r => !r.installed && (r.mode === 'new' || r.mode === 're-import') && !refused(r);
@@ -296,7 +298,7 @@ addEventListener('DOMContentLoaded', () => {
       : approvable(r) ? html`<div class="row"><button class="btn" type="button" data-approve>Approve revision ${r.revision}</button></div>
         <p class="why">Installs this revision only. If the source or the installed copy changed since this report, the install is refused.</p>`
       : html`<p class="why">${refused(r) ? 'A refusal blocks any install; nothing was written.' : r.mode === 'unchanged' ? 'The installed copy matches upstream; nothing to approve.' : 'Nothing to approve.'}</p>`;
-    const line = approvable(r) ? `sd skill intake ${r.url} --scope ${r.scope} --approve ${r.revision}` : `sd skill intake ${intake.body.source}${intake.body.scope ? ` --scope ${intake.body.scope}` : ''}`;
+    const line = approvable(r) ? approveLine(r) : `sd skill intake ${shq(intake.body.source)}${intake.body.scope ? ` --scope ${shq(intake.body.scope)}` : ''}`;
     return html`<section class="intake" aria-labelledby="intake-h"><h3 id="intake-h">Intake report</h3>
       <p class="verdict"><span class="g-${st}" aria-hidden="true">${g}</span> <b>${r.verdict.action}</b> · ${r.verdict.reason}</p>
       <dl><dt>Source</dt><dd>${r.url} at ${r.commit.slice(0, 12)}</dd>
@@ -325,7 +327,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const APPROVE = { id: 'skill.intake.approve', on: 'intake report', label: 'Approve revision', risk: 'confirm',
     consequence: o => `This installs ${o.label} at revision ${o.revision} into ${o.destination}, replacing the copy there. It installs only what the report showed.`,
-    cli: o => `sd skill intake ${o.url} --scope ${o.scope} --approve ${o.revision}`,
+    cli: o => approveLine(o),
     run: o => { const at = intake;
       return window.shell.post('/api/skills/intake', { source: o.url, scope: o.scope, approve: o.revision }).then(r => {
         intake = { ...at, report: r }; drawIntake(); reread();
@@ -409,7 +411,7 @@ addEventListener('DOMContentLoaded', () => {
         consequence: o => `This queues a task that moves ${o.id} from skills/ to contrib/ and off every path, and opens a pull request. No verb withdraws it.`,
         cli: o => `sd skill demote ${o.id}`, run: o => write(o, 'demote', 'demotion queued', out => `Removal of ${o.id} from paths queued${itemOf(out)}`) },
       { id: 'skill.reimport', on: 'skill', label: 'Re-import', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
-        cli: o => `sd skill intake ${o.id}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
+        cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
       { id: 'skill.schedule', on: 'skill', label: 'Schedule', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.

@@ -13,6 +13,7 @@ reader (`read.js`). The browser half -- the look at 1440 and 375 px, the confirm
 
 from __future__ import annotations
 
+import html
 import inspect
 import json
 import os
@@ -196,6 +197,30 @@ exit "${INTAKE_EXIT:-0}"
 """
 
 
+#: A source URL that runs commands if a shell reads it unquoted: `$( )`, backticks and `;`, then a `'`.
+#: Each command touches a file in `folder`. `tick=False` drops the backtick part, which the route refuses on its own;
+#: `quote=False` drops the `'`, whose unbalanced quote would stop sh before the other parts run.
+def hostile(folder, tick=True, quote=True):
+    touch = "touch${IFS}%s/" % folder
+    url = f"https://github.com/o/r/tree/main/x$({touch}p1)" + (f"`{touch}p2`" if tick else "") + f";{touch}p3"
+    return url + (";'q" if quote else "")
+
+
+def shell_argv(case, line, folder):
+    """The arguments `sd` or `claude` gets when the operator pastes `line` into sh; nothing else may run."""
+    stubs = 'sd() { printf "%s\\0" "$@"; }; claude() { printf "%s\\0" "$@"; }; '
+    done = subprocess.run(["sh", "-c", stubs + line], cwd=folder, capture_output=True, text=True, timeout=10, check=False)
+    case.assertEqual(sorted(os.listdir(folder)), [], f"pasting {line!r} ran a command")
+    case.assertEqual(done.returncode, 0, done.stderr)
+    return done.stdout.split("\0")[:-1]
+
+
+def scratch(case):
+    folder = Path(tempfile.mkdtemp(prefix="intake-")).resolve()
+    case.addCleanup(lambda: subprocess.run(["rm", "-rf", str(folder)], check=False))
+    return folder
+
+
 class TheIntakeRoute(Pack, BrowserSession):
     """POST /api/skills/intake runs `sd skill intake` once, as an argv list, and installs only with --approve (sd:3992)."""
 
@@ -281,6 +306,15 @@ class TheIntakeRoute(Pack, BrowserSession):
         self.assertIsNone(re.search(r'--method|git push|pr create|"gh"|"git"|shell=True', source))
         self.assertEqual(source.count("subprocess.run("), 1)
         self.assertIn('[command("sd"), "skill", "intake", "--json"', source)
+
+    def test_a_url_with_shell_syntax_reaches_sd_as_one_literal_argument(self):
+        folder = scratch(self)
+        status, _, argv = self.intake({"source": hostile(folder), "scope": "pack"})
+        self.assertEqual((status, argv), (400, None))
+        url = hostile(folder, tick=False)
+        status, _, argv = self.intake({"source": url, "scope": "pack", "approve": REVISION}, out=json.dumps(dict(REPORT, installed=True)))
+        self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--scope", "pack", "--approve", REVISION, "--", url]))
+        self.assertEqual(os.listdir(folder), [], "the route ran the URL through a shell")
 
     def test_a_run_past_its_bound_is_unknown_for_an_approve(self):
         with mock.patch.object(skill_intake, "INTAKE_SECONDS", 0.5), mock.patch.dict(os.environ, {"INTAKE_SLEEP": "5"}):
@@ -458,7 +492,7 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         out = self.run_page("R.off = [cmd('skill.reimport').when(C.get('sd-extra')), cmd('skill.reimport').when(C.get('sd-used'))];"
                             " R.cli = cmd('skill.reimport').cli(C.get('sd-extra'));")
         self.assertEqual(out["R"]["off"], [True, "not installed by sd skill intake"])
-        self.assertEqual(out["R"]["cli"], "sd skill intake sd-extra")
+        self.assertEqual(out["R"]["cli"], "sd skill intake 'sd-extra'")
 
     def test_reimport_shows_the_report_and_approve_posts_the_exact_revision(self):
         answer = self.imported()
@@ -494,6 +528,53 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         out = self.run_page("shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush(); R.slot = ELS['intake-slot'].html;", answer=answer)
         self.assertIn("Not evaluated: git fetch failed", out["R"]["slot"])
         self.assertNotIn("data-approve", out["R"]["slot"])
+
+    # The lines the operator copies quote every value (sd:3992 review): pasted into sh, each runs sd with the URL as one argument.
+    OPEN_ADOPT = ("ELS.details.querySelector = s => s[0] === '#' ? document.getElementById(s.slice(1)) : El('x');"
+                  " ELS['adopt-btn'].listeners.click[0](); ELS['ad-src'].value = %s; ELS['ad-scope'].value = 'user';"
+                  " ELS['ad-src'].listeners.input[0]();")
+
+    def test_the_adopt_panel_lines_quote_the_url(self):
+        folder = scratch(self)
+        for url in (hostile(folder, quote=False), hostile(folder)):
+            self.adopt_lines(url, folder)
+
+    def adopt_lines(self, url, folder):
+        out = self.run_page(self.OPEN_ADOPT % json.dumps(url) + " R.intake = ELS['ad-intake'].textContent;"
+                            " R.copy = ELS['ad-intake-copy'].dataset.copy; R.adopt = ELS['ad-cli'].textContent;")
+        self.assertEqual(out["R"]["copy"], out["R"]["intake"])
+        self.assertEqual(shell_argv(self, out["R"]["intake"], folder), ["skill", "intake", url, "--scope", "user"])
+        self.assertEqual(shell_argv(self, out["R"]["adopt"], folder), ["-p", "/sd-skill-adopt o/r/" + url.split("/main/", 1)[1]])
+
+    def test_the_report_line_and_the_approve_confirm_quote_the_url(self):
+        for quote in (False, True):
+            for name in ("approvable", "unchanged"):
+                with self.subTest(report=name, quote=quote):
+                    folder = scratch(self)
+                    self.report_lines(name, hostile(folder, quote=quote), folder)
+
+    def report_lines(self, name, url, folder):
+        if name == "approvable":
+            report, want = dict(REPORT, url=url), ["skill", "intake", url, "--scope", "pack", "--approve", REVISION]
+        else:
+            report, want = dict(REPORT, url=url, mode="unchanged", diff=[]), ["skill", "intake", url, "--scope", "pack"]
+        body = (self.OPEN_ADOPT % json.dumps(url) + " ELS['ad-scope'].value = 'pack';"
+                " ELS['adopt-form'].listeners.submit[0]({ preventDefault() {} }); await flush(); R.slot = ELS['intake-slot'].html;"
+                " const run = C.run; C.run = (c, o) => { R.confirm = c.cli(o); return run(c, o); }; " + self.CLICK_APPROVE + " await flush();")
+        out = self.run_page(body, answer=self.INTAKE % json.dumps(report))
+        self.assertEqual(out["posts"][0], ["/api/skills/intake", {"source": url, "scope": "pack"}, 64])
+        copied = [html.unescape(c) for c in re.findall(r'data-copy="([^"]*)"', out["R"]["slot"])]
+        self.assertEqual([shell_argv(self, line, folder) for line in copied], [want])
+        if name == "approvable":
+            self.assertEqual(shell_argv(self, out["R"]["confirm"], folder), want)
+        else:
+            self.assertNotIn("confirm", out["R"])
+
+    def test_the_reimport_line_quotes_the_name(self):
+        folder = scratch(self)
+        for name in (hostile(folder, quote=False), hostile(folder)):
+            out = self.run_page("R.cli = cmd('skill.reimport').cli({ id: %s });" % json.dumps(name))
+            self.assertEqual(shell_argv(self, out["R"]["cli"], folder), ["skill", "intake", name])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_reader_of_its_own(self):
         self.assertNotIn("innerHTML", PAGE_JS)
