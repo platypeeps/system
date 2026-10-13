@@ -233,7 +233,7 @@ class TheScript(unittest.TestCase):
                   + "\nlocation.search = " + json.dumps(search) + ";\nvar DOC = " + json.dumps(doc) + ";\nANSWER = " + answer + ";\n"
                   + "window.shell.commands.select = id => { OUT.selected = id; };\n"
                   # The stand-in element has no CSSOM; the page sets the lamp count through style.setProperty.
-                  + "var BareEl = El; El = id => { const e = BareEl(id); e.style.setProperty = (k, v) => { e.style[k] = v; }; return e; };\n"
+                  + "var BareEl = El; El = id => { const e = BareEl(id); e.style.setProperty = (k, v) => { e.style[k] = v; }; e.click = () => { (OUT.saved = OUT.saved || []).push(e.download); }; return e; };\n"
                   + PAGE_JS
                   + "\nvar R = {};\nconst key = k => (DOC_LISTENERS.keydown || []).forEach(f => f({ key: k, target: { matches: () => false }, preventDefault() {} }));\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
@@ -288,6 +288,38 @@ class TheScript(unittest.TestCase):
                             doc=doc)
         self.assertEqual(out["selected"], "q10")
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · ")
+
+    # Batch-level actions sit on the batch header, which a lamp opens; none waits on a selected question (lane review 235).
+    DOWNLOAD = ("globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL() {} }; globalThis.Blob = function (parts) { this.parts = parts; };"
+                " ELS.tally.listeners.click[0]({ target: { closest: s => s === '#export' ? { disabled: false } : null } }); await flush();")
+    EXPORT = """(path, body) => path === '/api/review' ? [200, DOC]
+      : [200, { name: 'review-nightly-x.jsonl', lines: [{ kind: 'manifest' }, { note: 10 }, { note: 11 }, { note: 12 }] }]"""
+
+    def test_a_finished_blind_batch_downloads_from_its_header_with_no_question_selected(self):
+        doc = doc_with(3, mode="blind", open=0, labels=3)
+        doc["questions"] = []
+        out = self.run_page("R.tally = ELS.tally.html; R.details = ELS.details.html; " + self.DOWNLOAD, self.EXPORT,
+                            search="?batch=11", doc=doc)
+        self.assertIsNone(out["selected"])
+        self.assertIn('id="export">Download labels</button>', out["R"]["tally"])
+        self.assertNotIn("disabled", out["R"]["tally"])
+        self.assertEqual(out["gets"], ["/api/review", "/api/review/11/export"])
+        self.assertIn("Downloaded review-nightly-x.jsonl · 3 questions", [t[0] for t in out["toasts"]])
+        self.assertEqual(out["saved"], ["review-nightly-x.jsonl"])
+
+    def test_a_blind_batch_with_open_questions_keeps_download_off_and_says_why(self):
+        out = self.run_page("R.tally = ELS.tally.html; R.details = ELS.details.html;", self.EXPORT,
+                            search="?batch=11", doc=doc_with(2, mode="blind"))
+        self.assertIn('id="export" disabled>Download labels</button>', out["R"]["tally"])
+        self.assertIn("A blind batch downloads once every question is ruled.", out["R"]["tally"])
+        self.assertNotIn('id="export"', out["R"]["details"])
+
+    def test_the_batch_header_links_the_batch_task_with_no_question_selected(self):
+        # A comment on the whole batch is a note on its task; the header links it, so it waits on no question.
+        doc = doc_with(3, open=0, labels=3)
+        doc["questions"] = []
+        out = self.run_page("R.tally = ELS.tally.html;", self.EXPORT, search="?batch=11", doc=doc)
+        self.assertIn('<a href="/tasks?row=11">sd:11</a>', out["R"]["tally"])
 
     def test_a_digit_past_the_options_a_held_key_and_a_chord_label_nothing(self):
         out = self.run_page("key('7'); (DOC_LISTENERS.keydown || []).forEach(f => f({ key: '1', repeat: true, target: { matches: () => false }, preventDefault() {} }));"

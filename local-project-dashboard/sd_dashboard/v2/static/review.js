@@ -47,10 +47,19 @@
       ? `${labelled} labelled · ${Math.max(0, open)} open · ${SKIPPED.size} skipped · read ${clock(READ)}`
       : 'The review queue was not read';
     const list = shown();
-    put($('tally'), batch === null ? html`${plural(list.length, 'question')}`
-      : html`${plural(list.length, 'question')} in sd:${batch} · <button class="linkbtn" type="button" id="clear-batch">Show every batch</button>`);
+    put($('tally'), batch === null ? html`${plural(list.length, 'question')}` : header(list.length));
     window.PAGE_ATTENTION = { state: open > 0 ? 'caution' : 'ok', n: Math.max(0, open), what: 'questions open' };
     window.shell?.attention?.();
+  }
+
+  // The batch header, open while a lamp filters the ledger: the batch's own actions, none waiting on a selected question.
+  // Download is on whenever the batch exports: an open batch at once, a blind or sealed one once nothing is open.
+  function header(count) {
+    const b = B.get(batch) || {}, blind = b.mode === 'blind' || b.mode === 'sealed';
+    const exportable = !b.error && b.mode && (!blind || b.open === 0);
+    return html`${plural(count, 'question')} in <a href="/tasks?row=${batch}">sd:${batch}</a> · <button class="linkbtn" type="button" id="clear-batch">Show every batch</button>
+      · <button class="btn quiet sm" type="button" id="export"${exportable ? '' : html` disabled`}>Download labels</button>${exportable ? ''
+      : html` <span class="why">${b.error ? 'Not read, so it does not download.' : `A ${b.mode} batch downloads once every question is ruled.`}</span>`}`;
   }
 
   function rows() {
@@ -71,7 +80,6 @@
     }
     const b = B.get(q.item) || {};
     const blind = b.mode === 'blind' || b.mode === 'sealed';
-    const exportable = !blind || b.open === 0;
     put(d, html`<p class="kind"><span class="g-caution" aria-hidden="true">${G.caution}</span> Question · note #${q.note} · <a href="/tasks?row=${q.item}">sd:${q.item}</a></p>
       <h2 class="ask">${q.text}</h2>
       <div class="options" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet opt" data-i="${i}"><kbd>${i + 1}</kbd><span>${o}</span></button>`)}</div>
@@ -79,9 +87,7 @@
       <dl>${q.subject ? html`<dt>Subject</dt><dd>${q.subject}</dd>` : ''}${(q.evidence || []).map(e => html`<dt>Evidence</dt><dd>${e}</dd>`)}
         <dt>Batch</dt><dd>${b.title || `sd:${q.item}`}</dd><dt>Queue</dt><dd>${b.queue || '—'} · ${b.mode || '—'}</dd>
         <dt>Source</dt><dd>${b.source || '—'}</dd><dt>Asked</dt><dd><time class="rel" datetime="${q.asked}"></time></dd></dl>
-      <p class="note">Undo (u) withdraws a label while its toast shows. n adds a comment on this question to the batch.</p>
-      <button class="btn quiet sm" type="button" id="export"${exportable ? '' : html` disabled`}>Download labels</button>
-      ${exportable ? '' : html`<p class="why">A ${b.mode} batch downloads once every question is ruled.</p>`}`);
+      <p class="note">Undo (u) withdraws a label while its toast shows. n adds a comment on this question to the batch. The batch's lamp opens its header, with Download.</p>`);
   }
 
   function draw() { lamps(); rows(); details(); progress(); }
@@ -233,10 +239,12 @@
     $('rows').addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(noteOf(tr.dataset.id), true); });
     $('annunciator').addEventListener('click', e => { const c = e.target.closest('button[data-batch]'); if (c) filter(batch === +c.dataset.batch ? null : +c.dataset.batch); });
     $('details').addEventListener('click', e => {
-      const o = e.target.closest('button[data-i]'); if (o && sel !== null) return void label(sel, +o.dataset.i);
-      const x = e.target.closest('#export'); if (x && !x.disabled && sel !== null) return void download(find(sel).item);
+      const o = e.target.closest('button[data-i]'); if (o && sel !== null) label(sel, +o.dataset.i);
     });
-    $('tally').addEventListener('click', e => { if (e.target.closest('#clear-batch')) filter(null); });
+    $('tally').addEventListener('click', e => {
+      if (e.target.closest('#clear-batch')) return void filter(null);
+      const x = e.target.closest('#export'); if (x && !x.disabled && batch !== null) download(batch);
+    });
     $('reload').addEventListener('click', () => load());
     document.addEventListener('shell:open', e => { const n = noteOf(e.detail); if (find(n)) select(n, true); });
     load();

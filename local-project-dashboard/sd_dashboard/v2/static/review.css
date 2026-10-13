@@ -34,4 +34,4 @@
   .review .g { grid-area: g; } .review .q { grid-area: q; } .review .b { grid-area: b; font-size: var(--text-xs); } .review .at { grid-area: at; }
   .review tr.empty { display: block; }
 }
-@media (pointer: coarse) { .review tbody tr[data-id] { min-height: var(--row-touch); } }
+@media (pointer: coarse) { .review tbody tr[data-id], .tally .btn { min-height: var(--row-touch); } }
