@@ -111,7 +111,8 @@ ADDITIVE=0
 ADDITIVE_HELD=0
 # capture only: write even though the checkout is behind its upstream.
 STALE_OK=0
-# dotfiles/envs/agents: overwrite a file this machine edited, not only a stale one.
+# dotfiles/agents: overwrite a file this machine edited, not only a stale one.
+# envs never reads it: a live .env holds credentials the template omits.
 FORCE=0
 
 # Dotfiles safe to copy into the repo. ~/.bash_profile is deliberately absent:
@@ -342,6 +343,22 @@ matches_record() { # key, file
 backup_file() { # path
   [ -e "$1" ] || return 0
   cp -p "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"
+}
+
+# capture rewrites files in the config folder, which need not be a git
+# checkout: without one, an overwrite had no way back (sd:3546). A file git
+# tracks with no uncommitted change is left to git; any other gets the dated
+# copy, and one that cannot be made stops the write. A failed git probe
+# counts as not held.
+capture_backup() { # path
+  [ -e "$1" ] || return 0
+  cb_dir=$(dirname "$1"); cb_name=$(basename "$1")
+  if command -v git >/dev/null 2>&1 \
+      && git -C "$cb_dir" ls-files --error-unmatch -- "$cb_name" >/dev/null 2>&1 \
+      && git -C "$cb_dir" diff --quiet HEAD -- "$cb_name" >/dev/null 2>&1; then
+    return 0
+  fi
+  backup_file "$1" || die "capture: cannot keep a copy of $1; not written"
 }
 
 # Commands that could not run because sudo was refused, one per line, reported
@@ -2590,6 +2607,12 @@ write_manifest() { # target, body-file, header-line...
     if [ -s "$wm_body" ]; then echo; cat "$wm_body"; fi
   } > "$wm_new"
   rm -f "$wm_hdr"
+  # Unchanged is not rewritten, so a nightly capture keeps no copy of it.
+  if [ -f "$wm_target" ] && cmp -s "$wm_new" "$wm_target"; then
+    rm -f "$wm_new"
+    return 0
+  fi
+  capture_backup "$wm_target"
   mv "$wm_new" "$wm_target"
 }
 
@@ -2811,6 +2834,7 @@ capture_dotfiles() {
       # would be a duplicate that goes stale the next time common changes.
       if [ -f "$prof" ]; then
         if [ "$APPLY" -eq 1 ]; then
+          capture_backup "$prof"
           rm -f "$prof"
         fi
         echo "    drop    $f — now identical to common/, profile copy removed"
@@ -2822,6 +2846,7 @@ capture_dotfiles() {
     else
       if [ "$APPLY" -eq 1 ]; then
         mkdir -p "$(dirname "$prof")"
+        capture_backup "$prof"
         cp "$src" "$prof"
       fi
       echo "    capture $f"
@@ -2918,6 +2943,7 @@ capture_agents() {
       # reading the diff.
       if [ "$APPLY" -eq 1 ] && [ "$ADDITIVE" -eq 0 ]; then
         mkdir -p "$AGENT_DIR"
+        capture_backup "$AGENT_DIR/$label.plist"
         cp "$pl" "$AGENT_DIR/$label.plist"
         echo "    capture $label"
       elif [ "$ADDITIVE" -eq 1 ]; then
@@ -2974,7 +3000,8 @@ capture_macos() {
     fi
   done < "$f"
   echo "    refreshed $n value(s)"
-  if [ "$APPLY" -eq 1 ]; then
+  if [ "$APPLY" -eq 1 ] && ! printf '%s' "$out" | cmp -s - "$f"; then
+    capture_backup "$f"
     printf '%s' "$out" > "$f"
   fi
 }
@@ -5074,7 +5101,9 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    judged against what was last installed: STALE means the repo
                    moved and --apply refreshes it, DIFFERS means this machine
                    edited it and it is left alone
-                   --force overwrites a DIFFERS file too, keeping a .bak- copy
+                   --force overwrites a DIFFERS dotfile or launch agent too,
+                   keeping a .bak- copy; a .env is never overwritten, only
+                   given the keys its template added
   capture          write this machine's current state back into its profile,
                    so a change made on one machine reaches the others
                    --additive writes roster entries that appeared and refuses
@@ -5089,6 +5118,8 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    to write from one behind its upstream, since
                    those commits may be what changed the manifests
                    --stale-ok writes anyway
+                   a file it changes that git does not hold as it is keeps a
+                   dated .bak- copy beside it
   status           drift report: what the profile wants vs what is installed
                    --fail-on-drift exits 1 when drift exists (for cron)
   doctor           read-only sanity check: CLT, brew, docker, fnm, key

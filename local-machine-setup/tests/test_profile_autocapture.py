@@ -67,9 +67,9 @@ class Fixture(unittest.TestCase):
         stub.write_text(STUB_MACHINE_SETUP)
         stub.chmod(0o755)
 
-    def run_job(self, env=None):
+    def run_job(self, *args, env=None):
         return subprocess.run(
-            ["sh", str(self.script)],
+            ["sh", str(self.script), *args],
             cwd=self.tmp,
             capture_output=True,
             text=True,
@@ -113,6 +113,23 @@ class Capture(Fixture):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"no profile directory at {missing}/machine-setup/profiles",
                       result.stderr)
+
+
+class Arguments(Fixture):
+    def test_an_unknown_argument_is_refused_and_captures_nothing(self):
+        """REGRESSION: a mistyped `--help` ran a real capture (sd:3546)."""
+        result = self.run_job("--hlep")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("usage: profile-autocapture.sh", result.stderr)
+        self.assertFalse((self.config / "stub-args").exists(), "the job ran a capture")
+        self.assertEqual(self.roster(), "seed-entry\n")
+
+    def test_help_prints_usage_and_captures_nothing(self):
+        """PIN: convention 1, help exits 0."""
+        result = self.run_job("help")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("usage: profile-autocapture.sh", result.stdout)
+        self.assertFalse((self.config / "stub-args").exists(), "the job ran a capture")
 
 
 class NoGitHistory(Fixture):

@@ -109,8 +109,9 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 `machine-setup.env` in the config folder.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
-write from a checkout behind its upstream. Without git, it simply writes the
-files. `profile-autocapture.sh` never commits either way.
+write from a checkout behind its upstream. A file it changes that git does not
+hold as it is (no checkout, untracked, or edited) keeps a dated `.bak-<stamp>`
+copy beside it. `profile-autocapture.sh` never commits either way.
 
 LaunchAgent labels start with `$SYSTEM_TOOLS_LABEL_PREFIX` (default
 `local.system-tools`). A template in `launchagents/` may use `@LABEL@`,
