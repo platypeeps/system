@@ -22,7 +22,7 @@ from sd_db import reads, workflow
 from . import controls
 from .listing import Column, Listing
 from .markup import Markup, join, markdown, tag
-from .pages import command_reference, page
+from .pages import command_reference, shell_page
 
 __all__ = ["item"]
 
@@ -223,9 +223,9 @@ def item(connection, item_id: int, *, now: str, parameters) -> str | None:
     from .reports_screen import report_controls
     from .skills_screen import review_controls
 
-    return page(
+    return shell_page(
         row["title"],
-        "item",
+        "Tasks",
         *[
             command_reference(f"sd store item {item_id}"),
             completion_summary(row),
@@ -247,6 +247,9 @@ def item(connection, item_id: int, *, now: str, parameters) -> str | None:
             shadow_block,
         ],
         subtitle=f"#{item_id} · {kind_label} · {status_label.replace('_', ' ')} · {row['repo'] or 'no repository'}",
+        note=f"#{item_id} on its own page: Tasks lists open items and those done this week, and an item it does not list "
+             "opens here. Every control, record and note for the item is on the left.",
+        screen="item",
     )
 
 
