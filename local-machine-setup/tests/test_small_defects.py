@@ -171,6 +171,21 @@ class CaptureApps(Case):
         self.assertEqual([c for c in self.calls() if c.startswith("brew search")], [])
 
 
+    def test_a_failed_app_scan_writes_no_app_list(self):
+        # The scan runs where set -e is off; a failed step read as a list.
+        write_exec(self.stubs / "brew", LOGGING_STUB.replace("exit 1", "exit 0"))
+        (self.stubs / "mas").unlink()
+        cp = shutil.which("cp")
+        write_exec(self.stubs / "cp", f'#!/bin/sh\nfor last; do :; done\ncase "$last" in */scan.app) exit 1 ;; esac\nexec {cp} "$@"\n')
+        (self.profiles / "personal.app").write_text("# kept\n\nOld Tool\n")
+        apps = self.base / "Applications"
+        (apps / "Example Tool.app/Contents").mkdir(parents=True)
+        result = self.run_script("capture", "--apply", MACHINE_SETUP_APPLICATIONS_DIR=str(apps))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  app: UNKNOWN — the standalone app scan failed; personal.app not written", result.stdout)
+        self.assertEqual((self.profiles / "personal.app").read_text(), "# kept\n\nOld Tool\n")
+
+
 class DoctorCron(Case):
     def test_doctor_checks_the_cron_stages_list(self):
         (self.profiles / "personal.cron").write_text("shared-job\nold-job\n")

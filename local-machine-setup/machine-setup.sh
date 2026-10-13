@@ -3655,7 +3655,9 @@ cmd_candidates() {
 # capture's form.
 standalone_scan() { # out [names]
   out="$1"
-  tmp=$(mktemp -d)
+  # Each step that could leave a partial list returns 1: capture runs this
+  # where set -e is off, and writes <profile>.app from the list.
+  tmp=$(mktemp -d) || return 1
   trap_tmp
 
   if command -v brew >/dev/null 2>&1; then
@@ -3690,11 +3692,11 @@ print("\n".join(sorted(apps)))' > "$tmp/cask-apps" || : > "$tmp/cask-apps"
     norm=$(echo "$name" | tr -d ' -.' | tr '[:upper:]' '[:lower:]')
     grep -qxF "$norm" "$tmp/cask-tokens" && continue
     echo "$name"
-  done | sort > "$tmp/standalone"
+  done | sort > "$tmp/standalone" || return 1
 
   : > "$out"
   if [ "${2:-}" = names ]; then
-    cat "$tmp/standalone" > "$out"
+    cp "$tmp/standalone" "$out" || return 1
     return 0
   fi
   while IFS= read -r name; do
