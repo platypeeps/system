@@ -6,6 +6,8 @@
 // creates the item a run needs, adds a launchd job, adopts a skill or scans sessions, and the reference's chat proposals are
 // not ported. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
+// A skill the intake installed in ~/.claude/skills (sd:3997) is a "user skill": the Adopt panel lists it with Re-import, which
+// runs the intake with the user scope. It is no catalog row, so Try, Review, Promote and Demote are not on it.
 const { html, put, plural, cells } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter, run or adopt a skill'], ['→', 'In the field: the next reading (filter, run, adopt)']];
@@ -23,7 +25,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const utc = t => t ? String(t).slice(0, 16).replace('T', ' ') + ' UTC' : '—';
 
   // ---------- Data (build: /api/skills) ----------
-  let DOC = null, S = [], byName = {}, FAILED = '', selected = null, picked = [];
+  let DOC = null, S = [], byName = {}, U = [], FAILED = '', selected = null, picked = [];
   let onPath = [], trials = [], contrib = [], unusedPath = [];
   const total = s => s.weeks.reduce((a, b) => a + b, 0);
   const now = s => s.weeks[s.weeks.length - 1];
@@ -43,17 +45,18 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     byName = Object.fromEntries(S.map(s => [s.name, s]));
     onPath = S.filter(s => s.status === 'path'); trials = S.filter(s => s.status === 'trial'); contrib = S.filter(s => s.status === 'contrib');
     unusedPath = onPath.filter(s => !total(s));
+    U = (doc.user || []).map(u => ({ ...u, id: `user:${u.name}`, type: 'user skill', label: u.name }));
     // Attention: the read's own, unused path skills (row glyph ▲) and the use-record fault (sd:3446, skills_screen._attention).
     window.PAGE_ATTENTION = doc.attention || { state: 'unknown', n: 0, what: 'skills not read' };
     window.shell.attention?.();
     return {
       objects: [...S, { id: 'hygiene', type: 'use records', label: `${plural(doc.junk, 'skill_use row')} name a path` },
-        { id: 'surfaces', type: 'use surfaces', label: 'Use records by surface' }, { id: 'adopt', type: 'adopt form', label: 'Adopt a skill' }],
+        { id: 'surfaces', type: 'use surfaces', label: 'Use records by surface' }, { id: 'adopt', type: 'adopt form', label: 'Adopt a skill' }, ...U],
       state: S.length ? null : { kind: 'empty', title: 'No skills', text: 'The pack catalog lists no skill.', source: '/api/skills' },
     };
   }
   function clear(err) {
-    DOC = null; S = []; byName = {}; onPath = trials = contrib = unusedPath = []; FAILED = err.message;
+    DOC = null; S = []; byName = {}; U = []; onPath = trials = contrib = unusedPath = []; FAILED = err.message;
     window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'skills not read' };
     window.shell.attention?.();
   }
@@ -179,7 +182,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   }
   const mark = () => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected)));
   function show(id) {
-    if (id === 'adopt') return showAdopt();
+    if (id === 'adopt' || String(id).startsWith('user:')) return showAdopt(); // a user skill's details are its Adopt panel line
     if (!DOC) return false;
     if (id === 'hygiene' || id === 'surfaces') return showNote(id);
     const s = byName[id]; if (!s) return false;
@@ -256,6 +259,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         <div class="row"><label class="target">Install to<select id="ad-scope"><option value="pack">pack · contrib/</option><option value="user">user · ~/.claude/skills</option></select></label>
           <button class="btn" type="submit">Evaluate</button></div>
         <p class="err" id="ad-err" hidden></p></form>
+      ${U.length ? html`<h3>Imported to ~/.claude/skills</h3><ul class="imported">${U.map(u => html`<li><span><b>${u.name}</b><span class="src">${u.url} at ${u.commit.slice(0, 12)}</span></span>${C.rowActions(u.id)}</li>`)}</ul>` : ''}
       <div id="intake-slot"></div>
       <h3>Same thing from the CLI</h3><div class="cli"><code id="ad-intake"></code><button class="icon-btn" type="button" id="ad-intake-copy" aria-label="Copy the intake line">${I('copy')}</button></div>
       <h3>Or adopt by hand</h3><p class="why"><code>sd-skill-adopt</code> also takes owner/repo shorthand; the dashboard does not run it.</p>
@@ -393,25 +397,27 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const itemOf = out => out?.item?.id ? ` as item #${out.item.id}` : '';
   const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', risk: 'confirm',
     consequence: o => `This queues a task that moves ${o.id} into skills/ on the ${o.path} path, in an isolated checkout, and opens a pull request. No verb withdraws it.`,
-    cli: o => `sd skill promote ${o.id} --path ${o.path}`,
+    cli: o => `sd skill promote ${shq(o.id)} --path ${shq(o.path)}`,
     run: o => write(o, 'promote', `promotion to ${o.path} queued`, out => `Promotion of ${o.id} to ${o.path} queued${itemOf(out)}`, { path_name: o.path }) };
   function registerCommands() {
     C.register(
       { id: 'skill.try', on: 'skill', label: 'Try', key: 't', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
         when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : queued(o, 'trial queued'),
         consequence: o => `This starts a 30-day trial of ${o.id}; it installs at the next sd install. No verb ends a trial early.`,
-        cli: o => `sd skill try ${o.id}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
+        cli: o => `sd skill try ${shq(o.id)}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
       { id: 'skill.review', on: 'skill', label: 'Review', key: 'v', risk: 'confirm', bulk: true, when: o => queued(o, 'review queued'),
         consequence: o => `This queues a review of ${o.id} by a reviewer independent of its latest author. No verb withdraws it.`,
-        cli: o => `sd skill review ${o.id}`, run: o => write(o, 'review', 'review queued', out => `Review of ${o.id} queued${itemOf(out)}`) },
+        cli: o => `sd skill review ${shq(o.id)}`, run: o => write(o, 'review', 'review queued', out => `Review of ${o.id} queued${itemOf(out)}`) },
       { id: 'skill.promote', on: 'skill', label: 'Promote', key: 'p', risk: 'safe', fills: true, when: o => sk(o).status !== 'path' || `on ${sk(o).paths.join(', ')} already`,
-        cli: o => `sd skill promote ${o.id} --path PATH`, run: o => { select(o.id, true); openPromote(sk(o)); return null; } },
+        cli: o => `sd skill promote ${shq(o.id)} --path PATH`, run: o => { select(o.id, true); openPromote(sk(o)); return null; } },
       { id: 'skill.demote', on: 'skill', label: 'Demote', key: 'd', risk: 'confirm', primary: o => sk(o).status === 'path' && !total(sk(o)),
         when: o => sk(o).status === 'path' ? queued(o, 'demotion queued') : 'not on a path',
         consequence: o => `This queues a task that moves ${o.id} from skills/ to contrib/ and off every path, and opens a pull request. No verb withdraws it.`,
-        cli: o => `sd skill demote ${o.id}`, run: o => write(o, 'demote', 'demotion queued', out => `Removal of ${o.id} from paths queued${itemOf(out)}`) },
+        cli: o => `sd skill demote ${shq(o.id)}`, run: o => write(o, 'demote', 'demotion queued', out => `Removal of ${o.id} from paths queued${itemOf(out)}`) },
       { id: 'skill.reimport', on: 'skill', label: 'Re-import', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
         cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
+      { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', key: 'i', risk: 'safe', primary: () => true,
+        cli: o => `sd skill intake ${shq(o.name)} --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user' }); } },
       { id: 'skill.schedule', on: 'skill', label: 'Schedule', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.

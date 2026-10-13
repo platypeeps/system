@@ -1,10 +1,10 @@
 """The Skills page's Re-import and Evaluate (sd:3992): one `sd skill intake --json` run, whose report the page shows.
 
-The run is an argv list, never a shell, and the source is one argument after `--`: a https://github.com/ URL or a
-catalog skill's name. It installs only with `--approve` and the revision a report printed, for the URL and scope that
-report named; the pack's verb checks that revision against what it fetches and what is installed, so an approve of a
-stale report writes nothing. The verb fetches with git into its own temporary directory; nothing here calls git or gh,
-and `skills_screen` stays free of any process call (test_skill_states).
+The run is an argv list, never a shell, and the source is one argument after `--`: a https://github.com/ URL or the name
+of an installed skill, a catalog one or one in ~/.claude/skills (sd:3997). It installs only with `--approve` and the
+revision a report printed, for the URL and scope that report named; the pack's verb checks that revision against what it
+fetches and what is installed, so an approve of a stale report writes nothing. The verb fetches with git into its own
+temporary directory; nothing here calls git or gh, and `skills_screen` stays free of any process call (test_skill_states).
 """
 
 import json
@@ -17,7 +17,8 @@ from .queue_screen import command
 
 #: An intake fetches with git, each call bounded at 120 s by the verb; a run past this is stopped and its outcome unknown.
 INTAKE_SECONDS = 300
-SOURCE = re.compile(r"https://github\.com/[\x21-\x7e]{1,1000}|sd-[a-z0-9-]{1,100}")
+#: A user-scope skill keeps its upstream name, so a name is any one path segment sd-skill-adopt accepts (SAFE_NAME_RE).
+SOURCE = re.compile(r"https://github\.com/[\x21-\x7e]{1,1000}|[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 APPROVE = re.compile(r"[0-9a-f]{16}")
 REFUSAL = "Give a https://github.com/ skill URL or the name of a skill sd skill intake installed."
 UNKNOWN = "Evaluate again: its next run finishes or undoes a stopped install, and its report says what is installed."
