@@ -523,8 +523,7 @@ function registerCommands() {
       run: () => 'Copy it into a terminal in the checkout: the dashboard does not open pull requests' },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
-    { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd assignments get ${o.n}`, executes: false,
-      run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } },
+    window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
     { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => { location.href = `/tasks?row=${o.item}`; return `#${o.item} opens in Tasks`; } },
@@ -537,24 +536,18 @@ function registerCommands() {
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
     { id: 'svc.start', on: 'service', label: 'Start', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
-    // launchd calendar jobs. Retry is `sd jobs retry`, which sends the kickstart (commands.md, one declaration). build: it posts
-    // /api/jobs/<name>/retry; operations.inventory's capability is the off reason. Exit 127 is "command not found": Print is the
-    // row's act, and Retry asks first, naming the exit, so a path fixed outside the dashboard can be tested (sd:3392).
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
-      when: o => capWhy(o, 'retry', o.failed || 'no failed run to retry'),
-      askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
-      cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: o => landing(job(o, 'retry'), out => answered(out, o.job, 'retried', `Retry started · ${o.job}`)) },
+    // launchd calendar jobs. Retry (commands.js) posts /api/jobs/<name>/retry; operations.inventory's capability is the off
+    // reason. Exit 127 is "command not found": Print is the row's act (sd:3392).
+    window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
+      run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
     { id: 'jobs.cancel', on: 'job', label: 'Cancel', key: 'x', risk: 'confirm', primary: o => o.running,
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
-    { id: 'job.log', on: 'job', label: 'Show log', key: 'o', risk: 'safe', executes: false, cli: o => `local-cron-jobs/cron-jobs.sh logs ${o.job}`,
-      run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } },
-    { id: 'job.print', on: 'job', label: 'Print', key: 'l', risk: 'safe', primary: o => o.exit === 127, executes: false, cli: o => `launchctl print ${o.service}`,
-      run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' },
+    window.commands.showLog({ job: o => ({ name: o.job }), run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } }),
+    window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
   );
 }
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
@@ -570,13 +563,7 @@ async function cancelJob(o) {
     return { text: `Not known whether ${o.job} was cancelled: ${err.message}. The jobs were read again; check ${o.job} before you cancel it again.` };
   }
   await reread();
-  return { text: answered(out, o.job, 'cancelled', `Cancel sent · ${o.job}`) };
-}
-// A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
-function answered(out, name, verb, done) {
-  const r = out && out.request || {};
-  return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
-    : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
+  return { text: window.commands.answered(out, o.job, 'cancelled', `Cancel sent · ${o.job}`) };
 }
 async function job(o, action) { const out = await window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/${action}`, { revision: o.revision }); await reread(); return out; }
 document.addEventListener('shell:open', e => {

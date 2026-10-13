@@ -313,6 +313,9 @@ esac
         cls.dns_site_count = text.count(cls.dns_site)
         cls.forgetful = cls.tmp / "forgetful" / "health-check.sh"
         cls.forgetful.parent.mkdir()
+        # The script reads ../lib/config.sh beside its folder.
+        (cls.tmp / "lib").mkdir()
+        shutil.copy(HERE.parents[1] / "lib" / "config.sh", cls.tmp / "lib" / "config.sh")
         cls.forgetful.write_text(text.replace(cls.dns_site, cls.dns_site[:-2]))
         cls.runs["unshareable"] = cls.run_check(
             "unshareable", {"JEV_HEALTH_CHECK": "1", "JEV_STUB_MODE": "answer"},

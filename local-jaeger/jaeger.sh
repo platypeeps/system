@@ -51,10 +51,10 @@ case "$1" in
   update)
     if [ "$TARGET" = "hotrod" ]; then
       docker stop jaeger-hotrod 2>/dev/null || true
-      docker images -a | grep "jaegertracing/example-hotrod" | awk '{print $3}' | xargs docker rmi
+      docker images -aq --filter "reference=jaegertracing/example-hotrod" | sort -u | xargs docker rmi
     else
       docker stop jaeger 2>/dev/null || true
-      docker images -a | grep "jaegertracing/all-in-one" | awk '{print $3}' | xargs docker rmi
+      docker images -aq --filter "reference=jaegertracing/all-in-one" | sort -u | xargs docker rmi
     fi
     ;;
   -h|--help|help)

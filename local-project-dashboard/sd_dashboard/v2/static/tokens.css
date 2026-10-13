@@ -87,6 +87,8 @@
   --rail:       13.5rem;
   --drawer:     26rem;
   --bulk-bar:   3.5rem;    /* sticky bulk-action bar */
+  --measure:      72ch;    /* longest line of running prose: notes, help, Details text */
+  --measure-list: 52rem;   /* widest one-column list of label and value rows, such as Settings */
 
   /* Icons: Lucide, stroked in currentColor. */
   --icon-sm:     1rem;     /* inline with --text-sm, help icons */
@@ -95,6 +97,7 @@
 
   --rule-hair:  1px;
   --rule-lamp:  3px;
+  --rule-focus: 2px;       /* the :focus-visible outline, drawn in --color-focus */
   --radius-sm:  3px;
   --radius-md:  5px;
 

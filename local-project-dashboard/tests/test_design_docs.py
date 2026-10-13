@@ -26,6 +26,41 @@ from unittest import mock
 import design_docs
 from sd_dashboard import documents
 
+#: foundation/theme.js, verbatim. The pack pins its copy (THEME_JS in
+#: sd_research_tokens.py) by SHA-256; this one ties the digest in documents.py
+#: to the same text without a pack checkout.
+THEME_JS = """// Theme control for foundation UIs: dark (default), light or system.
+// Load it in <head> without defer, so the stored choice applies before first paint.
+// Any element with data-theme-choice="dark|light|system" becomes a control;
+// the selected one gets aria-pressed="true".
+(() => {
+  const KEY = 'theme';
+  const CHOICES = ['dark', 'light', 'system'];
+  const root = document.documentElement;
+
+  const read = () => {
+    try { const v = localStorage.getItem(KEY); return CHOICES.includes(v) ? v : 'dark'; }
+    catch { return 'dark'; }
+  };
+  const mark = (choice) => {
+    document.querySelectorAll('[data-theme-choice]').forEach((el) =>
+      el.setAttribute('aria-pressed', String(el.dataset.themeChoice === choice)));
+  };
+  const apply = (choice) => {
+    root.dataset.theme = choice;
+    try { localStorage.setItem(KEY, choice); } catch { /* storage blocked: choice lasts this page */ }
+    mark(choice);
+  };
+
+  root.dataset.theme = read();
+  document.addEventListener('DOMContentLoaded', () => mark(root.dataset.theme));
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-theme-choice]');
+    if (el && CHOICES.includes(el.dataset.themeChoice)) apply(el.dataset.themeChoice);
+  });
+})();
+"""
+
 
 class Inline(unittest.TestCase):
     """Spans, and the order they have to be applied in."""
@@ -327,9 +362,18 @@ class ServedPolicy(unittest.TestCase):
         self.assertIsNotNone(directive, "the policy must name a script-src")
         sources = directive.group(1).split()
         self.assertEqual(sorted(sources),
-                         sorted(f"'{d}'" for d in documents.DIAGRAM_SCRIPTS),
+                         sorted(f"'{d}'" for d in (*documents.DIAGRAM_SCRIPTS,
+                                                   documents.THEME_SCRIPT)),
                          "a script source that is not one of the pinned digests "
                          "would let a served document authorize its own script")
+
+    def test_the_foundation_theme_script_is_pinned(self):
+        # The research and design pages carry theme.js inline. Unpinned, the
+        # policy blocked it and the page hid its Dark/Light/System control.
+        self.assertEqual(documents.THEME_SCRIPT,
+                         "sha256-PUz0/EtUwWghIyXRLF1gtUh/7ueDKRMcnk6hfQKbOiQ=")
+        self.assertIn(f"'{documents.THEME_SCRIPT}'", documents.POLICY)
+        self.assertEqual(documents._digest(THEME_JS.encode()), f"'{documents.THEME_SCRIPT}'")
 
     def test_nothing_else_is_loosened(self):
         self.assertIn("default-src 'none'", documents.POLICY)
@@ -341,6 +385,71 @@ class ServedPolicy(unittest.TestCase):
         # blob: is the diagram's PNG export building an object URL.
         directive = re.search(r"img-src ([^;]+);", documents.POLICY)
         self.assertEqual(sorted(directive.group(1).split()), ["blob:", "data:"])
+
+
+class FoundationPage(unittest.TestCase):
+    """The page shell wears the foundation: its tokens, its theme control, no colour of its own."""
+
+    TOKENS = ":root{--color-paper:oklch(96% 0.006 250)}"
+
+    def pack(self, body: str) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (Path(tmp.name) / "bin").mkdir()
+        (Path(tmp.name) / "bin" / "sd_research_tokens.py").write_text(body)
+        return Path(tmp.name)
+
+    def page(self, theme_js: str = THEME_JS) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        source = Path(tmp.name) / "one.md"
+        source.write_text("---\ntitle: One\n---\n\n## Part\n\ntext\n")
+        return design_docs.build_page(source, {}, self.TOKENS, "", theme_js, [], [],
+                                      Path(tmp.name), [])
+
+    def test_diagram_figure_names_foundation_tokens_and_no_colour(self):
+        css = design_docs.DIAGRAM_CSS
+        self.assertNotRegex(css, r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(")
+        self.assertNotRegex(css, r"var\([^)]*,", "a var() fallback is a second palette")
+        for name in re.findall(r"var\((--[a-z0-9-]+)\)", css):
+            self.assertRegex(name, r"^--(color|font|text|space|radius|rule)-", name)
+
+    def test_no_stylesheet_of_its_own_stands_in_for_the_pack(self):
+        self.assertFalse(hasattr(design_docs, "FALLBACK_CSS"))
+
+    def test_a_machine_without_the_pack_skips_instead_of_rendering_plain(self):
+        with mock.patch.object(design_docs, "PACK_ROOT", Path("/nonexistent/pack")):
+            with self.assertRaises(design_docs.Skip):
+                design_docs.house_css()
+
+    def test_a_pack_without_tokens_skips_instead_of_rendering_plain(self):
+        with mock.patch.object(design_docs, "PACK_ROOT", self.pack("X = 1\n")):
+            with self.assertRaises(design_docs.Skip):
+                design_docs.house_css()
+
+    def test_house_css_hands_over_the_pack_theme_script(self):
+        pack = self.pack(f'TOKENS_CSS = {self.TOKENS!r}\nTHEME_JS = {THEME_JS!r}\n')
+        with mock.patch.object(design_docs, "PACK_ROOT", pack):
+            css, _fonts, theme = design_docs.house_css()
+        self.assertEqual((css, theme), (self.TOKENS, THEME_JS))
+
+    def test_the_page_carries_the_theme_script_the_policy_allows(self):
+        page = self.page()
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        self.assertEqual(len(scripts), 1)
+        self.assertLess(page.index("<script>"), page.index("<style>"),
+                        "in <head> before the styles, so the choice applies before first paint")
+        self.assertIn(documents._digest(scripts[0].encode()), documents.POLICY)
+
+    def test_the_page_offers_the_three_theme_choices(self):
+        page = self.page()
+        for choice in ("dark", "light", "system"):
+            self.assertIn(f'data-theme-choice="{choice}"', page)
+
+    def test_a_pack_without_a_theme_script_gets_no_dead_control(self):
+        page = self.page(theme_js="")
+        self.assertNotIn("<script", page)
+        self.assertNotIn("data-theme-choice", page)
 
 
 class Hashes(unittest.TestCase):

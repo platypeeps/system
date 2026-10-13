@@ -26,7 +26,7 @@ output to a log file in this directory.
 tail -f logs/cswap-auto.log            # follow live
 ```
 
-`status` exits `0` running, `1` loaded but not running, `2` not loaded —
+`status` exits `0` running, `1` loaded but not running, `3` not loaded —
 usable in scripts.
 
 ## Changing flags

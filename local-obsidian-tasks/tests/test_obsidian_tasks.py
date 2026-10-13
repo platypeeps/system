@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import pathlib
 import re
 import shutil
@@ -289,6 +290,95 @@ class DigestTest(unittest.TestCase):
         self.digest({**ON, "JEV_STUB_RECORD": str(record)})
         sent = json.loads(record.read_text())
         self.assertEqual(len(sent["state"]["items"]), len(sent["questions"]))
+
+
+# --- the mail wears the foundation's light palette (sd:3590) -------------
+
+TOKENS = (pathlib.Path(__file__).resolve().parents[2] / "local-project-dashboard"
+          / "sd_dashboard" / "v2" / "static" / "tokens.css")
+
+
+def light_hex(name: str) -> str:
+    """The light side of one foundation colour token, as sRGB hex."""
+    m = re.search(rf"--color-{name}:\s*light-dark\(oklch\(([\d.]+)%\s+([\d.]+)\s+([\d.]+)\)",
+                  TOKENS.read_text())
+    lightness, chroma, hue = float(m[1]) / 100, float(m[2]), math.radians(float(m[3]))
+    a, b = chroma * math.cos(hue), chroma * math.sin(hue)
+    l, m_, s = ((lightness + x) ** 3 for x in (0.3963377774 * a + 0.2158037573 * b,
+                                               -0.1055613458 * a - 0.0638541728 * b,
+                                               -0.0894841775 * a - 1.2914855480 * b))
+    lin = (4.0767416621 * l - 3.3077115913 * m_ + 0.2309699292 * s,
+           -1.2684380046 * l + 2.6097574011 * m_ - 0.3413193965 * s,
+           -0.0041960863 * l - 0.7034186147 * m_ + 1.7076147010 * s)
+    gamma = [12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055 for v in lin]
+    return "#" + "".join(f"{round(min(1, max(0, v)) * 255):02x}" for v in gamma)
+
+
+#: Every colour a mail may carry: foundation light tokens, by name.
+MAIL_TOKENS = ("paper", "panel", "rule", "ink", "ink-2", "muted", "ok", "caution", "warning")
+
+
+class MailPaletteTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = harness.build_root(self.tmp.name)
+        # A signer that answers, so the Mark done, Accept and Decline buttons are in the mail.
+        state = pathlib.Path(self.tmp.name) / "stub-state"
+        state.mkdir()
+        proc, self.html = harness.run_proc(self.root, {
+            "ACTIONS_STUB_STATE": str(state), "ACTIONS_STUB_SIGNS": "https://signer.example.test"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_every_colour_is_a_foundation_light_value_in_srgb_hex(self):
+        allowed = {light_hex(name) for name in MAIL_TOKENS}
+        found = re.findall(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch)\(", self.html)
+        self.assertTrue(found)
+        self.assertEqual(set(found) - allowed, set(), "a colour the foundation does not name")
+        self.assertNotRegex(self.html, r"\b(?:purple|violet|indigo)\b")
+
+    def test_every_style_attribute_is_well_formed(self):
+        # A double quote inside style="..." ends the attribute: the font stack
+        # once did, and the card lost its font and its ground.
+        for style in re.findall(r'style="([^"]*)"', self.html):
+            self.assertNotIn("<", style)
+            self.assertRegex(style.rstrip(";"), r"^(?:[a-z-]+:[^;]+;)*[a-z-]+:[^;]+$", style)
+        self.assertIn("background:" + light_hex("paper"), self.html.split(">", 1)[0])
+
+    def test_there_is_no_purple_button(self):
+        for colour in re.findall(r"background:(#[0-9a-f]{6})", self.html):
+            red, green, blue = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+            self.assertFalse(blue > red > green, f"{colour} reads purple")
+
+    def test_a_coloured_button_carries_a_glyph_beside_its_label(self):
+        buttons = re.findall(r"<a [^>]*background:#[0-9a-f]{6}[^>]*>([^<]+)</a>", self.html)
+        self.assertTrue(buttons)
+        for label in buttons:
+            self.assertRegex(label, r"^[^\w\s] ", f"{label!r} has no glyph")
+
+    def test_a_coloured_state_carries_its_glyph(self):
+        warning, caution = light_hex("warning"), light_hex("caution")
+        states = re.findall(rf'<span style="color:({warning}|{caution});[^"]*">([^<]+)</span>', self.html)
+        self.assertTrue(states)
+        for _, text in states:
+            self.assertRegex(text, r"^[\u25a0\u25b2] ", f"{text!r} has no glyph")
+
+    def test_text_is_readable_on_its_ground(self):
+        def luminance(colour):
+            channels = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+        def ratio(a, b):
+            hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+            return (hi + 0.05) / (lo + 0.05)
+
+        panel, paper = light_hex("panel"), light_hex("paper")
+        for button in re.findall(r"color:" + panel + r";background:(#[0-9a-f]{6})", self.html):
+            self.assertGreaterEqual(ratio(panel, button), 4.5, button)
+        for name in ("muted", "warning", "caution", "ink-2"):
+            self.assertGreaterEqual(ratio(light_hex(name), panel), 4.5, name)
+        self.assertGreaterEqual(ratio(light_hex("muted"), paper), 4.5)
 
 
 if __name__ == "__main__":

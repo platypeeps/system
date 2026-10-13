@@ -22,7 +22,7 @@ case "$1" in
     ;;
   update)
     docker stop redis 2>/dev/null || true
-    docker images -a | grep "redis-stack" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=redis/redis-stack" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

@@ -12,15 +12,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # default ~/.config/system; see .env.example) provides defaults only; an exported
 # OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins. Read it
 # before anything below uses a value it may set.
-ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
-ENV_LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
-ENV_PORT="${TASK_ACTIONS_PORT:-}"
 st_source_env task-actions
-[ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
-[ -n "$ENV_LABEL_PREFIX" ] && SYSTEM_TOOLS_LABEL_PREFIX="$ENV_LABEL_PREFIX"
-[ -n "$ENV_PORT" ] && TASK_ACTIONS_PORT="$ENV_PORT"
 
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 LABEL="$LABEL_PREFIX.task-actions"
 SRC_PLIST="$DIR/task-actions.plist.template"
 AGENT_DIR="$HOME/Library/LaunchAgents"
@@ -131,7 +125,8 @@ wait_until_unloaded() {
 cmd_run() {
   ensure_secret
   exec /usr/bin/env PORT="$PORT" VAULT="$VAULT" TASKS_SUBDIR="$TASKS_SUBDIR" \
-    SECRET_FILE="$SECRET_FILE" python3 - <<'PY'
+    SECRET_FILE="$SECRET_FILE" FOLDER="$DIR" \
+    DASH_STATIC="$DIR/../local-project-dashboard/sd_dashboard/v2/static" python3 - <<'PY'
 import datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -256,49 +251,99 @@ def apply_note(db, f, action):
     path.write_text(f"---\n{fm}\n---{rest}")
     return f"status: {cur or '(none)'} → {new}", None
 
-PAGE = """<!doctype html><meta name=viewport content="width=device-width">
-<body style="font-family:-apple-system,sans-serif;margin:3em auto;max-width:28em;text-align:center">
-<div style="font-size:3em">{icon}</div><h2>{title}</h2><p>{detail}</p>{extra}</body>"""
+# Every page is one panel on the foundation: tokens, theme control, no inline
+# style. A state is a glyph and words, and the lamp edge repeats it.
+GLYPHS = {"ok": "\u25cf", "warning": "\u25a0", "unknown": "\u25a8", "confirm": ""}
+THEME = ('<div class="theme" role="group" aria-label="Theme">'
+         '<button type="button" data-theme-choice="dark">Dark</button>'
+         '<button type="button" data-theme-choice="light">Light</button>'
+         '<button type="button" data-theme-choice="system">System</button></div>')
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/tokens.css">
+<link rel="stylesheet" href="/static/fonts.css">
+<link rel="stylesheet" href="/static/confirm.css">
+</head><body>
+<main class="panel" data-state="{state}"><h1>{title}</h1>{detail}{extra}</main>
+{theme}
+</body></html>"""
+
+# The one policy: this page runs its own files and nothing else.
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
+       "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+
+# What /static/<name> serves: the foundation copies the dashboard already
+# carries, and this page's stylesheet. Nothing else is reachable.
+DASH = pathlib.Path(os.environ["DASH_STATIC"])
+ASSETS = {
+    "tokens.css": (DASH, "text/css"),
+    "theme.js": (DASH, "text/javascript"),
+    "fonts.css": (DASH, "text/css"),
+    "fonts/ibm-plex-sans-var.woff2": (DASH, "font/woff2"),
+    "confirm.css": (pathlib.Path(os.environ["FOLDER"]), "text/css"),
+}
 
 # GET /task shows this instead of acting, so a mail scanner prefetching the
 # link cannot mutate a task; the human clicks the button, which POSTs.
 CONFIRM_BTN = """<form method="POST" action="/task">
-{inputs}<button type="submit" style="padding:10px 22px;border:0;border-radius:8px;
-font-size:15px;font-weight:600;color:#fff;background:{bg};cursor:pointer">{label}</button>
-</form><p style="color:#999;font-size:12px">nothing happens until you press the button</p>"""
+{inputs}<button type="submit" class="btn{variant}">{label}</button>
+</form><p class="hint">Nothing changes until you press the button.</p>"""
 
 def obsidian_uri(f, db=""):
     subdir = DBS[db][0] if db else os.environ["TASKS_SUBDIR"]
     return "obsidian://open?vault=%s&file=%s" % (
         urllib.parse.quote(VAULT.name), urllib.parse.quote(f"{subdir}/{f}"))
 
-# action -> (button label, button color, page icon); postpone label is
-# built dynamically from the day count.
+# action -> (button label, glyph, button variant); the postpone label is
+# built dynamically from the day count. Declining is the one danger button.
 LABELS = {
-    "done":    ("✓ Mark done", "#2c7a2c", "✓"),
-    "postpone": (None,         "#8a6d1a", "→"),
-    "accept":  ("✓ Accept",    "#2c7a2c", "✓"),
-    "decline": ("✗ Decline",   "#8a3030", "✗"),
-    "track":   ("▶ Track",     "#2c7a2c", "▶"),
-    "pause":   ("⏸ Pause",     "#8a6d1a", "⏸"),
-    "adopt":   ("✓ Adopt",     "#2c7a2c", "✓"),
-    "park":    ("⏸ Park",      "#666666", "⏸"),
+    "done":    ("Mark done", "\u2713", ""),
+    "postpone": (None,       "\u2192", ""),
+    "accept":  ("Accept",    "\u2713", ""),
+    "decline": ("Decline",   "\u2717", " danger"),
+    "track":   ("Track",     "\u25b6", ""),
+    "pause":   ("Pause",     "\u23f8", ""),
+    "adopt":   ("Adopt",     "\u2713", ""),
+    "park":    ("Park",      "\u23f8", ""),
 }
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         print("[task-actions]", self.address_string(), fmt % a, flush=True)
 
-    def reply(self, code, icon, title, detail="", extra="", headers=None):
-        b = PAGE.format(icon=icon, title=html.escape(title),
-                        detail=html.escape(detail), extra=extra).encode()
+    def reply(self, code, state, title, detail="", extra="", headers=None):
+        glyph = GLYPHS[state]
+        line = (f'<p><span class="g" aria-hidden="true">{glyph}</span>{html.escape(detail)}</p>'
+                if glyph and detail else f"<p>{html.escape(detail)}</p>" if detail else "")
+        b = PAGE.format(state=state, title=html.escape(title), detail=line,
+                        extra=extra, theme=THEME).encode()
         self.send_response(code)
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Security-Policy", CSP)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
+
+    def asset(self, name):
+        # Only the names listed in ASSETS; a name is a key, never a path.
+        where, kind = ASSETS.get(name, (None, None))
+        try:
+            body = (where / name).read_bytes() if where else None
+        except OSError:
+            body = None
+        if body is None:
+            return self.reply(404, "unknown", "Not found", "Nothing is served here.")
+        self.send_response(200)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def params(self, query):
         q = urllib.parse.parse_qs(query)
@@ -308,14 +353,15 @@ class H(BaseHTTPRequestHandler):
 
     def checked(self, f, a, d, exp, t, db=""):
         if db and db not in DBS:
-            self.reply(403, "✗", "unknown database")
+            self.reply(403, "warning", "Unknown database", "Nothing changed.")
             return False
         if not hmac.compare_digest(sign(f, a, d, exp, db), t):
-            self.reply(403, "✗", "bad signature")
+            self.reply(403, "warning", "Bad signature",
+                       "Nothing changed. Run the digest again for fresh links.")
             return False
         if exp < datetime.date.today().isoformat():
-            self.reply(403, "✗", "link expired",
-                       "run the digest again for fresh links")
+            self.reply(403, "warning", "Link expired",
+                       "Nothing changed. Run the digest again for fresh links.")
             return False
         return True
 
@@ -330,35 +376,37 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if u.path.startswith("/static/"):
+            return self.asset(u.path[len("/static/"):])
         if u.path != "/task":
-            return self.reply(404, "?", "not found")
+            return self.reply(404, "unknown", "Not found", "Nothing is served here.")
         if not self.checked(f, a, d, exp, t, db):
             return
         if a not in LABELS or (db and a not in DBS[db][1]) \
                 or (not db and a not in ("done", "postpone")):
-            return self.reply(400, "✗", "unknown action")
+            return self.reply(400, "warning", "Unknown action", "Nothing changed.")
         inputs = "".join(
             f'<input type="hidden" name="{k}" value="{html.escape(v, quote=True)}">'
             for k, v in (("f", f), ("a", a), ("d", d), ("exp", exp),
                          ("t", t), ("db", db)) if v)
-        label, bg, icon = LABELS[a]
+        label, glyph, variant = LABELS[a]
         label = label or f"Postpone {d} day(s)"
-        self.reply(200, icon, f, "confirm the action below",
-                   CONFIRM_BTN.format(inputs=inputs, label=label, bg=bg))
+        self.reply(200, "confirm", f, "Confirm the action below.",
+                   CONFIRM_BTN.format(inputs=inputs, variant=variant,
+                                      label=html.escape(f"{glyph} {label}")))
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         if u.path != "/task":
-            return self.reply(404, "?", "not found")
+            return self.reply(404, "unknown", "Not found", "Nothing is served here.")
         n = int(self.headers.get("Content-Length", "0") or "0")
         f, a, d, exp, t, db = self.params(self.rfile.read(min(n, 65536)).decode())
         if not self.checked(f, a, d, exp, t, db):
             return
         outcome, err = apply_note(db, f, a) if db else apply(f, a, int(d))
         if err:
-            return self.reply(400, "✗", err)
-        icon = LABELS.get(a, ("", "", "✓"))[2]
-        self.reply(200, icon, f, outcome)
+            return self.reply(400, "warning", err[0].upper() + err[1:], "Nothing changed.")
+        self.reply(200, "ok", f, outcome)
 
 print(f"[task-actions] listening on 127.0.0.1:{PORT}", flush=True)
 srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
@@ -443,7 +491,7 @@ cmd_status() {
   if [ -f "$DST_PLIST" ]; then echo "plist:  installed"; else echo "plist:  NOT installed"; fi
   if ! is_loaded; then
     echo "state:  not loaded"
-    exit 2
+    exit 3
   fi
   info="$(launchctl print "$SERVICE" 2>/dev/null || true)"
   echo "state:  $(echo "$info" | awk -F'= ' '/^\tstate = /{print $2; exit}')"
@@ -462,7 +510,7 @@ cmd_status() {
       exit 1
     fi
     if [ -n "$pub" ]; then
-      if curl -s --max-time 8 "$pub/x" | grep -q '<h2>not found</h2>'; then
+      if curl -s --max-time 8 "$pub/x" | grep -q '<h1>Not found</h1>'; then
         echo "public: up ($pub)"
       else
         echo "public: NOT healthy ($pub configured but our 404 page not seen)"
@@ -494,7 +542,8 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
           prefix default local.system-tools), rendered from
           task-actions.plist.template
   stop    unload the LaunchAgent
-  status  agent + HTTP state; exits 0 ok / 1 degraded / 2 not loaded
+  status  agent + HTTP state; exits 0 ok / 1 degraded / 3 not loaded (nothing
+          to check) — local-health-check reads these codes
   url     print a signed action URL (used by local-obsidian-tasks and
           local-obsidian-review to build digest email buttons); links
           expire after 7 days. `url [-b db] <stem> <action> [days]`.
