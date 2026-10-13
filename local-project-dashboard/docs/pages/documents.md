@@ -13,7 +13,9 @@ copy only. Request a document is copy only: the page files no item. Pin, hide
 and tag (sd:3428) are the workflow database's `view` state, keyed
 `<root key>/<file>`: each row carries `pinned`, `hidden` and `tags`, and each
 command posts `/api/documents/view` with the fields it changes, offers Undo
-and reads the list again. Pinned files sort first; the Hidden filter (or
+and reads the list again. Tag asks for the tag in a field filled with the one
+typed under Tags, else the last one applied; Enter in the Tags field tags the
+shown document without asking, and the toast names the tag (sd:3523). Pinned files sort first; the Hidden filter (or
 `is:hidden`, `?hidden=1`) shows the hidden files and only them. A view read
 that fails hides nothing, turns the six commands off and says why in the
 state slot. Disable render is off: no render switch exists. The page reads through the

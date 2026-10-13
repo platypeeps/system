@@ -145,7 +145,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
@@ -165,6 +165,12 @@ Run in order. Pass one as the second argument to run it alone.
 
 Most stages delegate to tools that already existed. This folder is mostly an
 ordering and profile layer over them, not a reimplementation.
+
+A remediation that fails prints `FAILED` and the run goes on to the next item
+and stage. The run ends with the list of failures and exits 1. A failed step
+skips the rest of its item: a failed backup skips the overwrite, a failed copy
+skips the record and the launchd restart. `decommission` removes a plist only
+once launchd holds no job under its label.
 
 ### Obsidian plugins
 
@@ -340,8 +346,10 @@ reported 0. `repos` was the last one left out, for want of a read-only verb —
 A stage reports divergence four ways: `DIFFERS`, `MISSING`, `STALE`, `ABSENT`,
 a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
-than a finding, which is why the appstore and cron stages now name what is
-missing before offering to fix it.
+than a finding, which is why every stage now names what is missing before
+offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
+no drift word on it or above it. `status` checks taps, formulae, casks and
+pins in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. The
 `machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last

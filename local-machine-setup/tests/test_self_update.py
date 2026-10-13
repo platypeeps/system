@@ -182,6 +182,22 @@ class SelfUpdateOffTest(unittest.TestCase):
         self.assertIn("com.apple.dock autohide 1", writes)
         self.assertFalse([w for w in writes if "Maccy" in w], writes)
 
+    def test_a_failed_settings_folder_skips_the_merge_into_it(self):
+        # VS Code's settings folder does not exist yet; its mkdir fails, so
+        # the merge that needs it does not run (sd:3543). The other apps go on.
+        folder = self.vscode.parent
+        real = shutil.which("mkdir")
+        write_exec(self.stubs / "mkdir", f'#!/bin/sh\nfor last; do :; done\n'
+                   f'[ "$last" = "{folder}" ] && exit 1\nexec {real} "$@"\n')
+
+        result = self.run_verb("update", "macos", "--apply")
+
+        self.assertIn(f"  FAILED  mkdir -p {folder} (exit 1)\n", result.stdout, result.stdout + result.stderr)
+        self.assertNotIn("update.mode not changed", result.stdout)
+        self.assertFalse(self.vscode.exists())
+        self.assertIn('"auto_update": false', self.zed.read_text())
+        self.assertEqual(result.returncode, 1)
+
     def test_an_unset_screen_saver_idle_time_is_written_with_no_manifest_line(self):
         # sd:3261: every profile turns the screen saver off. This profile has
         # no .macos manifest, so the write must come before that early return.

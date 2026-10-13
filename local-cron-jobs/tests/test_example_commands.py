@@ -128,5 +128,38 @@ class SecretScanWeeklyTest(unittest.TestCase):
                 result, _ = self.run_job(scan_rc)
                 self.assertEqual(result.returncode, scan_rc, result.stdout + result.stderr)
 
+class NightlyReviewJobTest(unittest.TestCase):
+    """The nightly review runs `nightly-review.sh run` at 06:15, bounded at 30 minutes (sd:3638).
+
+    06:15 keeps it after the night build and out of the 02:xx slot, which
+    needs a scheduled wake. Its exit code is the script's, so a failed
+    review pages like any failed job.
+    """
+
+    JOB = EXAMPLES / "nightly-review.job"
+
+    def run_job(self, rc):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        script = fx.tmp / "local-nightly-review" / "nightly-review.sh"
+        script.parent.mkdir()
+        script.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$REVIEW_MARKER"\nexit "${REVIEW_RC:-0}"\n')
+        marker = fx.tmp / "review-calls"
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, extra_env={"REVIEW_MARKER": str(marker), "REVIEW_RC": str(rc)})
+        return result, marker.read_text().splitlines() if marker.exists() else []
+
+    def test_the_job_runs_at_06_15_with_a_30_minute_limit(self):
+        text = self.JOB.read_text()
+        self.assertIn('JOB_SCHEDULE="15 6 * * *"', text)
+        self.assertIn('JOB_TIMEOUT="30m"', text)
+
+    def test_the_job_runs_the_script_once_and_keeps_its_exit_code(self):
+        for rc in (0, 1):
+            with self.subTest(rc=rc):
+                result, calls = self.run_job(rc)
+                self.assertEqual(calls, ["run"], result.stdout + result.stderr)
+                self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@
 <!--
   Home (sd:2117), at /home. Built from the design source's products/system/designs/v2/home.html, home.js, home-kiosk.js and home.css at d82daa1, with design.md and commands.md.
   Data: /api/home (home_screen.document: the tiles <config>/project-dashboard/home-tiles.conf names, each with its live Home
-  Assistant state and last change or a named error, sd:3427), read when the page opens. The design's tile states are sample
+  Assistant state and last change or a named error, sd:3427), read when the page opens and each minute after (sd:3522). The design's tile states are sample
   data; nothing here is. Every command is off with the document's write reason: nothing here writes.
 -->
 <html lang="en">
@@ -28,6 +28,7 @@
     </div>
     <div class="tools">
       <time class="clock" id="clock" aria-live="off"></time>
+      <button class="btn quiet" type="button" id="refresh"><svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>Read again</button>
       <button class="btn quiet enter" type="button" id="kiosk-on"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg>Wall display</button>
       <button class="btn quiet exit" type="button" id="kiosk-off"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg>Exit wall display</button>
     </div>
