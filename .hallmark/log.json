@@ -1,5 +1,18 @@
 [
   {
+    "date": "2026-10-13",
+    "artifact": "local-project-dashboard/sd_dashboard/v2 designs, research, contributions and today tables (designs.js, research.js, contributions.js, today.js, decisions.js)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped; the shell's sort header on existing ledgers",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3455 shell.list.sortHead on the seven tables that lacked it; groups (product, lane) stay and sort inside; state bands draw only in state order; Designs, Research and Contributions keep the sort in the URL, Today keeps its four in memory; no CSS added",
+    "constraints": "no build step; CSP default-src 'self'; no colour literal",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
     "date": "2026-10-12",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/health.js (Health: Services area)",
     "scope": "component",

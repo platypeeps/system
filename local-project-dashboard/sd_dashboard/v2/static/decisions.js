@@ -12,6 +12,13 @@
   let LIST = [], REVIEW = 0, reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set();
   const REC = /\s*\(recommended\)\s*$/i;
+  // Sort (sd:3455): the shell's sort header, in memory as Today's other tables. The read's order (priority, then the oldest)
+  // stands until a header is pressed; a tie keeps it.
+  const low = s => String(s || '').toLowerCase();
+  const SORT = { sort: '', dir: 1, page: 1 };
+  const BY = { s: d => RULED.has(d.note) ? 1 : 0, what: d => low(d.title), question: d => low(d.question) };
+  const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Item'], ['question', 'Question'], [null, 'Choose', 'act']];
+  const sorted = list => !SORT.sort ? list : [...list].sort((a, b) => { const x = BY[SORT.sort](a), y = BY[SORT.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * SORT.dir; });
 
   function choices(d) {
     const ruled = RULED.get(d.note);
@@ -28,6 +35,7 @@
 
   function draw() {
     const tb = $('decisions'), line = $('decisions-review'), n = LIST ? REVIEW : 0;
+    put($('decisions-head'), window.shell.list.sortHead(COLS, SORT));
     put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="/review">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Review</a>` : html``);
     line.hidden = !n;
     if (!LIST) {
@@ -35,7 +43,7 @@
       put($('decisions-tally'), html``);
       return tell(0);
     }
-    put(tb, LIST.length ? html`${LIST.map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
+    put(tb, LIST.length ? html`${sorted(LIST).map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
       <td class="g ${ruled ? 'g-ok' : 'g-caution'}" title="${ruled ? 'ruled' : 'waiting'}">${ruled ? '●' : '▲'}</td>
       <td class="what"><a href="/tasks?row=${d.item}"><span class="id">#${d.item}</span> ${d.title}</a><span class="repo">${repoName(d.repo)}</span></td>
       <td class="question">${d.question}<span class="asked-at">note #${d.note} · asked <time class="rel" datetime="${d.asked}"></time></span></td>
@@ -86,6 +94,8 @@
       if (b && !b.disabled) choose(+b.dataset.note, +b.dataset.option);
     });
     $('refresh').addEventListener('click', () => { say(''); load(); });
+    $('decisions-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, SORT)) window.shell.list.keepFocus(e, draw); });
+    put($('decisions-head'), window.shell.list.sortHead(COLS, SORT)); // drawn before the read, so a failed one keeps the columns
     load();
   });
 })();
