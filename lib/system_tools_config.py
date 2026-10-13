@@ -30,6 +30,12 @@ def root(environ: dict[str, str] | None = None) -> Path:
     return Path(os.path.expanduser(base)) / "system"
 
 
+def label_prefix(environ: dict[str, str] | None = None) -> str:
+    """The launchd label prefix of every job and agent; `st_label_prefix` in config.sh."""
+    env = os.environ if environ is None else environ
+    return env.get("SYSTEM_TOOLS_LABEL_PREFIX") or "local.system-tools"
+
+
 def config_dir(tool: str, environ: dict[str, str] | None = None) -> Path:
     """The tool's config directory. It may not exist."""
     return root(environ) / tool

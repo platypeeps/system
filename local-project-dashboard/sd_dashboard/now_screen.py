@@ -277,7 +277,8 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
             continue
         name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
         service = job.get("service")
-        row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs"}
+        row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs",
+               "service": service}
         log = None if cron_root is None else cron_root / "logs" / f"{name}.log"
         if state in ("failed", "interrupted"):
             logged = _log_time(log)

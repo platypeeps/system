@@ -21,7 +21,7 @@ case "$1" in
     ;;
   update)
     docker stop qdrant 2>/dev/null || true
-    docker images -a | grep "qdrant/qdrant" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=qdrant/qdrant" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

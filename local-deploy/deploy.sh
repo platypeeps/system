@@ -7,7 +7,9 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
-PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+# shellcheck source=../lib/config.sh
+. "$ROOT/lib/config.sh"
+PREFIX="$(st_label_prefix)"
 # sd-serve's default port; its plist passes no --port.
 SERVE_PORT=8769
 # The sha the last complete upgrade deployed; local disk, outside the checkout.

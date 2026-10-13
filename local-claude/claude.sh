@@ -315,7 +315,8 @@ rc = 0
 if not PROFILE:
     print("FAIL    no profile recorded and MACHINE_SETUP_PROFILE unset —")
     print("        run: machine-setup.sh setup <profile>")
-    sys.exit(1)
+    # status of a machine never set up has nothing to compare: convention 6's 3
+    sys.exit(3 if MODE == "status" else 1)
 
 for name, live_path, common_path, prof_path, expands in targets:
     print("== %s" % name)

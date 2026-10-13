@@ -23,7 +23,7 @@ STUB = """\
 #!/bin/sh
 echo "$(basename "$0") $*" >> "$STUB_LOG"
 case "$(basename "$0") $1 $2" in
-  "kind get clusters") echo otel-demo ;;
+  "kind get clusters") [ -n "$STUB_NO_CLUSTER" ] || echo otel-demo ;;
 esac
 exit 0
 """
@@ -63,6 +63,12 @@ class DemoConfig(unittest.TestCase):
     def test_help_exits_zero(self):
         done = self.run_verb("help", expect=0)
         self.assertIn("OTLP_EXPORT_URL", done.stdout)
+
+    def test_status_without_the_cluster_is_nothing_to_check(self):
+        # sd:3552. Convention 6: 3 when the cluster is absent, not 0.
+        self.env["STUB_NO_CLUSTER"] = "1"
+        done = self.run_verb("status", expect=3)
+        self.assertIn("not found", done.stdout)
 
     def test_no_args_prints_help_and_fails(self):
         done = self.run_verb(expect=1)

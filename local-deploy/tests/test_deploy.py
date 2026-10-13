@@ -74,6 +74,7 @@ class DeployTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.repo = self.tmp / "repo"
         self.write("local-deploy/deploy.sh", (FOLDER / "deploy.sh").read_text())
+        self.write("lib/config.sh", (FOLDER.parent / "lib" / "config.sh").read_text())
         self.write("local-project-dashboard/dashboard.sh",
                    ENTRYPOINT.format(name="dashboard.sh", status="DEPLOY_TEST_HEALTH"))
         self.git("init", "-q")
