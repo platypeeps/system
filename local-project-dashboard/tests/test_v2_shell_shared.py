@@ -241,10 +241,14 @@ class TheDefaultCapture(unittest.TestCase):
         self.assertNotIn("'Captured'", close.group(0))
         self.assertNotIn("Note added", close.group(0))
 
-    def test_only_tasks_keeps_a_page_hook(self):
+    def test_only_tasks_and_review_keep_a_page_hook_and_review_files_tasks_through_the_shell(self):
         # Today's and Briefs' hooks filed the same POST the shell now files; Tasks keeps its own to reread its board.
+        # Review (sd:3709, merged from main) keeps one for a note on a question, a comment on its batch; a task or a
+        # followup goes through the shell's fileCapture, so the box's priority and repo (sd:3521) reach the item.
         hooks = sorted(name for name, js in PAGE_JS.items() if re.search(r"window\.SHELL_CAPTURE\s*=", js))
-        self.assertEqual(hooks, ["tasks.js"])
+        self.assertEqual(hooks, ["review.js", "tasks.js"])
+        self.assertTrue("return window.shell.fileCapture({ kind, title, item, priority, repo });" in PAGE_JS["review.js"],
+                        "Review's capture drops the priority and repo the operator picked")
 
 
 class TheActBar(unittest.TestCase):
