@@ -1,5 +1,5 @@
 """The backbone knows the new pieces: criterion 22 of
-docs/work/2026-09-05-one-database-one-front-door, the half this repository
+the one-database design (sd:234; `git show 8aef46ba:docs/work/2026-09-05-one-database-one-front-door/prd.md`), the half this repository
 can assert.
 
 Every case runs machine-setup.sh against a fixture home with the state

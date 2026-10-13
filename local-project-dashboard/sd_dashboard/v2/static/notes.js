@@ -26,7 +26,7 @@
       src: 'sd-ship delivery note (ship.note_merge)', open: m.url ? [m.url, 'Open the pull request'] : null }));
     A.done.forEach(x => out.push({ id: x.id, type: 'done task', label: `#${x.item} ${x.title}`, at: x.at, g: G.ok, s: x.title, small: `#${x.item}`, item: x.item,
       facts: [['Item', `#${x.item}`], ['Kind', x.kind], ['Repository', x.repo || 'none'], ['From', x.from], ['Done at', stamp(x.at)], ['By', x.by || 'not recorded']],
-      src: 'sd.db note.kind = status_change, "-> done"', open: [`${window.shell.pages?.Tasks || '/tasks'}?row=${x.item}`, 'Open in Tasks'] }));
+      src: 'sd.db note.kind = status_change, "-> done"', open: [window.shell.itemHref(x.item), 'Open in Tasks'] }));
     A.runs.forEach(r => out.push({ id: r.id, type: 'run', label: `assignment ${r.n}`, at: r.at, g: G[r.s] || G.unknown, s: r.what, small: `${r.status} · ${r.provider || 'no provider'}`, item: r.item,
       facts: [['Assignment', r.n], ['Item', r.item ? `sd:${r.item}` : '—'], ['Repository', r.repo || '—'], ['Role', r.role], ['Provider', r.provider || '—'], ['Status', r.status], ['Started', stamp(r.started)], ['Ended', stamp(r.ended)]],
       src: 'runner assignments (operations.assignment_state)', open: null }));

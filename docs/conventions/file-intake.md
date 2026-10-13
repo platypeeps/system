@@ -13,7 +13,7 @@ Each rule below comes with the failure that produced it. Keep the failure with
 the rule: a rule without its reason gets dropped by the next person who finds
 it inconvenient.
 
-Written from item `sd:1096`, `docs/work/2026-09-19-a-file-intake-convention/`.
+Written from item `sd:1096`.
 
 ## Shape
 

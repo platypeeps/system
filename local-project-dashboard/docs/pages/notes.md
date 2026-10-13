@@ -33,7 +33,13 @@ shows as a named state with the reason.
 A source that raises is named, its section is unknown with that reason, and
 the page reports a partial read.
 
-Gaps from the design: quick notes stay on the page for the visit, as the
-design states, because sd store has no loose-note kind. Declaring a
-`notes.quick` kind is a pack change and waits on a decision (sd:2120). The
-read covers seven days; an older day says it was not read.
+Quick notes (sd:2549) are `sdw.quick-note` items in the vault, a kind the
+writing pack declares. `GET /api/notes/quick` lists them through `sd store
+list`, and `POST /api/notes/quick/add` keeps one through `sd store add`, each
+the `sd` on the dashboard's PATH. The server checks the kind's rules: one line,
+no control character, no double quote, at most `QUICK_MAX` characters. The
+title is the local time; a taken title gets ` 2`, ` 3` and so on. A machine
+without the kind says so, and Keep is off.
+
+Gap from the design: the read covers seven days; an older day says it was not
+read.

@@ -22,6 +22,9 @@ each off where sd would refuse it. The page reads through the shell's reader,
 no command, and a failed reread keeps the rows and says the write landed.
 Tasks queues no runs since the runner stopped (sd:3041). An assignment's Cancel
 posts `/api/assignments/<id>/cancel` with the revision the Details read.
+Every page opens an item at `/tasks?row=<id>` (`shell.itemHref`, sd:3526); an
+item the read does not list, a quiet report or one done before the week,
+goes on to its item page, `/item/<id>`.
 
 A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
