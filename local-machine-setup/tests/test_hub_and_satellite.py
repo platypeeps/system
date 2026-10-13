@@ -1,4 +1,4 @@
-"""Steps 8 and 9 of docs/work/2026-09-22-run-the-framework-from-a-second-machine.
+"""Steps 8 and 9 of the second-machine plan (sd:1335).
 
 Step 8: the hub runs `<prefix>.sd-serve`, and the `sd` stage says when the
 profile or the config folder lacks it and when a `hub.json` sits on the hub.

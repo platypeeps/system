@@ -1616,7 +1616,7 @@ stage_tooling() {
 }
 
 # The database and the dashboard's private route — the two pieces of
-# docs/work/2026-09-05-one-database-one-front-door that the `agents` stage
+# one-database design (sd:234; `git show 8aef46ba:docs/work/2026-09-05-one-database-one-front-door/prd.md`) that the `agents` stage
 # cannot build. A profile's .agent lists <prefix>.sd-dashboard, and that
 # stage installs and loads it; what the agent cannot do for itself is create the database it opens or the tailscale
 # serve route the dashboard's HTTPS front door sits behind. Gated on the
@@ -3828,7 +3828,7 @@ plist_env_value() { # plist, key
 }
 
 # The checks requirement 9 of
-# docs/work/2026-09-05-one-database-one-front-door asks doctor for, less the
+# one-database design (sd:234) asks doctor for, less the
 # runner's, and the version report beside them: the database opens and
 # passes integrity_check; the dashboard answers over its HTTPS name; the
 # serve route exists. Every failure is a FAIL, which is what
@@ -5027,7 +5027,7 @@ cmd_status() {
   # repo-sync grew `check` for exactly this, so every comparing stage is now
   # here and the nightly job sees all of them.
   # `sd` is the database and the dashboard's route: two of criterion 22's four
-  # drift items (docs/work/2026-09-05-one-database-one-front-door); the other
+  # drift items (the one-database design, sd:234); the other
   # two were the agents stage's rows for <prefix>.sd-dashboard and the
   # runner, which is gone.
   for st in shell bin dotfiles envs prompts repos appstore cron sd satellite agents services tooling system macos obsidian iterm2; do
