@@ -43,9 +43,12 @@ def document(connection) -> dict:
     from sd_db import review
 
     batches, questions = [], []
-    for row in _rows(connection):
+    rows = _rows(connection)
+    # One batched revision read for the page; `review.read` still reads each batch's notes (sd:3531).
+    revisions = reads.revisions(connection, [row["id"] for row in rows])
+    for row in rows:
         item = row["id"]
-        revision = workflow.item_state(connection, item)["revision"]
+        revision = revisions[item]
         try:
             found = review.read(connection, item)
         except review.ReviewError as problem:
