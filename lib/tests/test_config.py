@@ -116,6 +116,15 @@ class EnvFile(unittest.TestCase):
         done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
         self.assertEqual(done.stdout, "from-shell|two words|")
 
+    def test_an_exported_value_wins_wherever_the_file_assigns_it(self):
+        # sd:3553 review: jev and notify kept their own snapshots, which also
+        # covered a second assignment on one line and a `${X:=...}` default.
+        # The loader alone must too, now that they lean on it.
+        (self.conf / "notify/.env").write_text('export A=1 B=2\n: "${C:=file}"\n')
+        env = dict(self.envv, B="from-shell", C="")
+        done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
+        self.assertEqual(done.stdout, "1|from-shell|")
+
     def test_a_script_default_that_is_not_exported_loses_to_the_file(self):
         # sd:3553 review. Only the environment is the operator's override. A
         # default the script assigned itself (mezmo-pipeline/lib.sh sets
