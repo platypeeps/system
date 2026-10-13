@@ -54,7 +54,7 @@ addEventListener('DOMContentLoaded', () => {
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
-    if ('body' in state.item) DET.body[t.id] = state.item.body ?? '';
+    if ('body' in state.item) DET.body[t.id] = bodyText(state.item.body);
     staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
   }
@@ -265,6 +265,9 @@ addEventListener('DOMContentLoaded', () => {
   // Each read carries the item's generation; a write bumps it, so an answer sent before the write is dropped, not cached.
   // DET.body keeps the last description read or written back: a write drops the reading, not the description field, so a
   // redraw before the next read still draws it and keeps the operator's draft (review 2026-10-12, lane entry 225).
+  // The stored body is JSON, {"text": …} (workflow._fields), and the field edits its text, as the classic item page does
+  // (controls.py); null marks a body that does not parse, whose field is withheld so no save overwrites it.
+  const bodyText = raw => { try { const b = JSON.parse(raw || '{}'); return b && typeof b === 'object' && !Array.isArray(b) ? String(b.text ?? '') : ''; } catch { return null; } };
   const DET = { items: {}, reading: {}, failed: {}, gen: {}, body: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
     if (!id || (!force && (DET.items[id] || DET.reading[id] === (DET.gen[id] || 0)))) return;
@@ -274,7 +277,7 @@ addEventListener('DOMContentLoaded', () => {
     try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
-    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = got.item.body ?? ''; }
+    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = bodyText(got.item.body); }
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
@@ -634,7 +637,10 @@ addEventListener('DOMContentLoaded', () => {
     if (!t.id) return '';
     const d = detOf(t), body = DET.body[t.id];
     // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
-    const desc = body === undefined ? '' : html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${body}</textarea>`;
+    // edit_item takes a body for a task or a followup only.
+    const desc = body === undefined || !['task', 'followup'].includes(t.kind) ? ''
+      : body === null ? html`<h3>Description</h3><p class="why">The stored description is not valid JSON, so the field is withheld and no save here can overwrite it. Repair it with <code>sd task edit ${t.id} --body</code>.</p>`
+      : html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${body}</textarea>`;
     if (!d) return html`${desc}<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
     const it = d.item;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;

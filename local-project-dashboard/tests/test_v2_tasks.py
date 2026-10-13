@@ -723,7 +723,7 @@ change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
     def test_the_title_and_description_edit_in_place_with_undo(self):
         # sd:3467: the v2 Details lost the classic item page's Details textarea; the title and body are fields again.
         plan = self.ids["plan"]
-        self.details[str(plan)]["item"]["body"] = "Old words"
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
         out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.html = ELS.details.html;
 change('det-title', '   '); await flush();
 change('det-title', ' Plan the big review '); await flush(); lastUndo().undo(); await flush();
@@ -736,6 +736,23 @@ change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush()
         self.assertEqual(msgs[0], f"#{plan} not changed: a title is required")
         self.assertIn(f"#{plan} title → Plan the big review · sd task edit {plan} --title 'Plan the big review'", msgs)
         self.assertIn(f"#{plan} description changed · sd task edit {plan} --body 'New words'", msgs)
+
+    def test_the_description_edits_the_stored_bodys_text(self):
+        # Review 2026-10-12, lane entry 225 class pass: the item body is stored as JSON, {"text": ...} (workflow._fields), and
+        # the field showed that JSON. It edits the text, as the classic item page does (controls.py); a body that does not
+        # parse is withheld, so no save here overwrites it; a kind edit_item takes no body for has no field.
+        plan, port = self.ids["plan"], self.ids["port"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        out = self.run_page(f"open({plan}); await flush(); R.text = ELS.details.html;")
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', out["R"]["text"], "the field shows the stored JSON")
+        self.details[str(plan)]["item"]["body"] = "{not json"
+        out = self.run_page(f"open({plan}); await flush(); R.bad = ELS.details.html;")
+        self.assertNotIn('id="det-body"', out["R"]["bad"])
+        self.assertIn(f"The stored description is not valid JSON, so the field is withheld and no save here can overwrite it. "
+                      f"Repair it with <code>sd task edit {plan} --body</code>.", out["R"]["bad"])
+        self.details[str(port)]["item"]["body"] = json.dumps({"text": "Report words"})
+        out = self.run_page(f"open({port}); await flush(); R.port = ELS.details.html;")
+        self.assertNotIn('id="det-body"', out["R"]["port"])
 
     # A field the operator is in when Details redraws: its live node, the text and the caret, as the redraw found them.
     EDITING = """const editing = (id, value, extra) => { const n = Object.assign(El(id), { value, selectionStart: 4, selectionEnd: 6 }, extra || {});
@@ -771,13 +788,13 @@ change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush()
 
     # ECHO, with the item's body as the server keeps it: a write's readback carries every item field.
     BODY_ECHO = ECHO.replace("repo: 'repo' in body ? body.repo : row.repo_path };",
-                             "repo: 'repo' in body ? body.repo : row.repo_path, body: 'body' in body ? (window.BODY = body.body) : (window.BODY ?? 'Old words') };")
+                             "repo: 'repo' in body ? body.repo : row.repo_path, body: JSON.stringify({ text: 'body' in body ? (window.BODY = body.body) : (window.BODY ?? 'Old words') }) };")
 
     def test_a_description_draft_survives_a_write_that_drops_the_details_reading(self):
         # Review 2026-10-12, lane entry 225: a priority write's absorb() dropped DET.items, so the redraw drew no description
         # field and the operator's unsaved description went with it. The title survived: it is drawn from the row.
         plan = self.ids["plan"]
-        self.details[str(plan)]["item"]["body"] = "Old words"
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
         # The browser's getElementById answers null for a field the redraw did not draw.
         absent = """const gid = document.getElementById.bind(document);
 document.getElementById = x => x === 'det-body' && !String(ELS.details.html).includes('id="det-body"') ? null : gid(x);
@@ -799,7 +816,7 @@ change('det-p', '1'); await flush(); R.html = ELS.details.html;""", self.BODY_EC
         # Review 2026-10-12, lane entry 225: the description's Undo read its value when the change was queued. With A saved,
         # B and then C queued, C's Undo wrote A back. Every Details field's Undo reads the value as its write is sent.
         plan = self.ids["plan"]
-        self.details[str(plan)]["item"]["body"] = "Old words"
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
         cases = {
             "title": ("det-title", "Plan B", "Plan C", "title", "Plan B"),
             "description": ("det-body", "Words B", "Words C", "body", "Words B"),
