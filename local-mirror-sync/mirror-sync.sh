@@ -202,7 +202,11 @@ VOLUMES=/Volumes
 unmounted_volume() {
   case "$1/" in "$VOLUMES"/?*/*) ;; *) return 0 ;; esac
   vol="${1#"$VOLUMES"/}"; vol="$VOLUMES/${vol%%/*}"
-  mount 2>/dev/null | grep -qF " on $vol " || printf '%s\n' "$vol"
+  # The mountpoint ends where the options start: " (opts)" on macOS, " type T (opts)" on Linux. A space alone
+  # does not end it, or "/Volumes/Offsite Disk" counts as /Volumes/Offsite.
+  mount 2>/dev/null | ST_VOL=" on $vol" awk '{ sub(/ \([^()]*\)$/, ""); sub(/ type [^ ]+$/, "")
+    if (substr($0, length($0) - length(ENVIRON["ST_VOL"]) + 1) == ENVIRON["ST_VOL"]) found = 1 }
+    END { exit !found }' || printf '%s\n' "$vol"
 }
 # Physical path TEXT does not identify a folder. A case-folding volume (APFS
 # by default) takes /Backups for /backups, and a firmlink gives one folder

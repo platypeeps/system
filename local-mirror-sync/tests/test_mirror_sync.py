@@ -330,6 +330,20 @@ class UnmountedShare(Fixture):
         self.assertIn(f"{dest} (volume not mounted)", result.stdout)
         self.assertEqual(list(volume.iterdir()), [])
 
+    def test_a_volume_whose_name_extends_the_wanted_one_does_not_count(self) -> None:
+        # REGRESSION sd:3522 review: " on /Volumes/Offsite " matched the mount line of "/Volumes/Offsite Disk".
+        source = self.work / "source"
+        self.write(source / "keep.txt", "keep\n")
+        volume = self.work / "Volumes" / "Offsite"
+        volume.mkdir(parents=True)
+        conf = self.write(self.work / "pairs.conf", f"{source}|{volume}/mirror\n")
+
+        result = self.run_on_volumes(conf, mounted=f"/dev/disk9s1 on {volume} Disk (apfs, local, journaled)\n")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"destination volume not mounted: {volume}", result.stderr)
+        self.assertEqual(list(volume.iterdir()), [])
+
     def test_a_mounted_volume_is_mirrored(self) -> None:
         source = self.work / "source"
         self.write(source / "keep.txt", "keep\n")
