@@ -3,8 +3,8 @@
 Usage keeps its past-month picker (Metrics reads the current month only), Services keeps each service's last request,
 Resources keeps Toolbox, Vault and Queues, Trackers keeps the tracker issues, and Sessions keeps the live worktree
 rows. The Jobs, Ports, Progress, Reports, Repos and Commands areas were retired in sd:3402, once Management, Health,
-Metrics, Reports and Activity carried their controls; an address naming one is a 404. Trackers draws inside the v2 shell
-(sd:3586); the other areas keep the classic page.
+Metrics, Reports and Activity carried their controls; an address naming one is a 404. Trackers and Sessions draw inside the v2
+shell (sd:3586, `SHELLED`); the other areas keep the classic page.
 """
 
 import contextlib
@@ -33,6 +33,12 @@ BILL_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
 
 AREAS = (("usage", "Usage"), ("services", "Services"), ("resources", "Resources"), ("trackers", "Trackers"),
          ("sessions", "Sessions"))
+#: The areas drawn inside the v2 shell (sd:3586), each with its Details note. They sit under Today, whose Pull requests
+#: and Sessions rows open them; the other areas keep the classic page.
+SHELLED = {
+    "trackers": "Trackers lists the open pull requests and issues that sd shadow sync last saw.",
+    "sessions": "Sessions lists the worktrees each checkout registered and the sd commands running at this read.",
+}
 
 
 def _navigation(area):
@@ -289,15 +295,14 @@ def operations_page(connection, *, parameters, now, services_backend=None):
     elif area == "trackers":
         from .trackers_screen import trackers_panel
 
-        # sd:3586: the first Operations area in the v2 shell, under Today, whose Pull requests rows open it.
-        return shell_page("Operations", "Today", _navigation(area), trackers_panel(connection, parameters, now=now),
-                          subtitle=_subtitle(), screen="operations",
-                          note="Trackers lists the open pull requests and issues that sd shadow sync last saw. "
-                               "The other Operations areas open on their classic screens.")
+        content = trackers_panel(connection, parameters, now=now)
     else:
         from .sessions_screen import sessions_panel
 
         content = sessions_panel(parameters)
+    if area in SHELLED:
+        return shell_page("Operations", "Today", _navigation(area), content, subtitle=_subtitle(), screen="operations",
+                          note=SHELLED[area] + " The other Operations areas open on their classic screens.")
     return page("Operations", "operations", _navigation(area), content,
                 subtitle=_subtitle())
 

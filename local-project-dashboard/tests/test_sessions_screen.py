@@ -101,6 +101,23 @@ class SessionsArea(FleetCase):
         self.assertNotIn("unittest", page)
         self.assertIn(" · 2 sd-* commands running", page)
 
+    def test_the_area_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 3: Sessions is a v2 shell page under Today, whose Sessions rows open it; Usage stays classic."""
+        pack = self.checkout("pack", "acme")
+        self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
+        self.shim("ps", f"printf '{PS}'")
+        page = self.sessions()
+        self.assertIn('<body data-page="Today" data-scope="today">', page)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', page)
+        for asset in ("tokens.css", "shell.css", "classic.css", "shell.js"):
+            self.assertRegex(page, rf'"/ui/{re.escape(asset)}\?v=[0-9a-f]{{16}}"', asset)
+        self.assertNotIn("/static/dashboard.css", page)
+        self.assertNotIn('class="nav"', page)
+        self.assertEqual(page.count("<h1>"), 1)
+        self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
+        self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
+        self.assertIn("/static/dashboard.css", self.render("/operations", {"area": ["usage"]}))
+
     def test_the_area_is_in_the_navigation_and_the_subtitle_names_it(self):
         self.shim("ps", "exit 0")
         page = self.sessions()
@@ -108,7 +125,8 @@ class SessionsArea(FleetCase):
         self.assertIn('href="/operations?area=sessions"', navigation)
         self.assertIn(">Sessions</a>", navigation)
         self.assertIn(("sessions", "Sessions"), operations_screen.AREAS)
-        subtitle = re.search(r'<p class="subtitle">([^<]*)</p>', page).group(1)
+        # The v2 shell (sd:3586) draws the subtitle as the paragraph after the one h1.
+        subtitle = re.search(r'</h1><p[^>]*>([^<]*)</p>', page).group(1)
         self.assertIn("sessions", subtitle)
 
     def test_a_missing_root_is_said_rather_than_shown_as_no_worktrees(self):
