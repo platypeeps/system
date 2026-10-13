@@ -121,6 +121,14 @@ class TheBadges(unittest.TestCase):
             self.assertEqual(found["Live"], {"state": "unknown", "n": 0, "what": "Live not read"}, failure)
             self.assertEqual(found["Kept"]["state"], "warning")
 
+    def test_with_no_database_a_live_page_is_unknown_and_not_read(self):
+        self.badges.remember("/api/example-kept", self.stand.kept, "2026-10-13T12:00:00Z")
+        with patch("sys.stderr") as stderr:
+            found = self.badges.read(Read(), connected=False)
+        self.assertEqual(found["Live"], {"state": "unknown", "n": 0, "what": "Live not read"})
+        self.assertEqual(found["Kept"]["state"], "warning")
+        self.assertEqual((self.stand.calls, stderr.write.call_count), ([], 0))
+
     def test_each_server_keeps_its_own(self):
         self.badges.remember("/api/example-kept", self.stand.kept, "2026-10-13T12:00:00Z")
         self.assertNotIn("Kept", v2.Badges().read(Read()))

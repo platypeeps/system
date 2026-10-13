@@ -775,10 +775,10 @@ class Dashboard(BaseHTTPRequestHandler):
             try:
                 connection = sd_db.connect(self.database, write=False)
             except (FileNotFoundError, SdDbError, sqlite3.Error):
-                # Each live page's read fails on no connection, so its badge says unknown; the kept ones still show.
+                # No live page can be read, so each says unknown; the kept ones still show.
                 connection = None
             try:
-                badges = self.badges.read(self._read(connection, "", {}))
+                badges = self.badges.read(self._read(connection, "", {}), connected=connection is not None)
             finally:
                 if connection is not None:
                     connection.close()

@@ -134,12 +134,16 @@ class Badges:
             if self._last.get(page.section, {}).get("at", "") <= now:
                 self._last[page.section] = {**found, "at": now}
 
-    def read(self, read) -> dict:
-        """Section -> badge: a live page's from a read made now, every other page's last one."""
+    def read(self, read, connected: bool = True) -> dict:
+        """Section -> badge: a live page's from a read made now, every other page's last one. With no database
+        (`connected` false) a live page is unknown and its read does not run."""
         with self._lock:
             found = {section: dict(value) for section, value in self._last.items()}
         for entry in registry.PAGES:
             if not (entry.count and entry.live):
+                continue
+            if not connected:
+                found[entry.section] = {"state": "unknown", "n": 0, "what": f"{entry.section} not read"}
                 continue
             try:
                 route = api(entry.count)[1]
