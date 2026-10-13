@@ -104,6 +104,12 @@ class TheRegistry(unittest.TestCase):
                 self.assertEqual(v2.PAGES[route], page.html)
         self.assertEqual(set(v2.PAGES), {route for page in registry().PAGES for route in page.routes})
 
+    def test_every_page_has_its_page_document(self):
+        """sd:3527 (review 2026-10-12): Queue, Management, Review and Settings shipped with no `docs/pages/<page>.md`."""
+        missing = sorted(page.html for page in registry().PAGES
+                         if not (HERE / "docs" / "pages" / page.html.replace(".html", ".md")).is_file())
+        self.assertEqual(missing, [], "add docs/pages/<page>.md: the README promises one file per page")
+
     def test_a_pattern_route_carries_an_example_it_matches(self):
         for page in registry().PAGES:
             for entry in page.api:
