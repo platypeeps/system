@@ -355,6 +355,10 @@ case "$SUITE_LEG" in
     # cswap.sh has no test verb; the suite is named directly, like
     # statusline above. It stubs launchctl, so Linux runs it.
     run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
+    # clickhouse.sh and falkordb.sh take no test verb; the suites are
+    # named directly. They stub docker, so Linux runs them.
+    run_suite clickhouse "$PYTHON" local-clickhouse/tests/test_ports.py -v
+    run_suite falkordb "$PYTHON" local-falkordb/tests/test_ports.py -v
     # codebase-memory-mcp.sh takes only `run`, which launchd calls; the
     # suite is named directly. It stubs the binary, so Linux runs it.
     run_suite codebase-memory-mcp "$PYTHON" local-codebase-memory-mcp/tests/test_codebase_memory_mcp.py -v

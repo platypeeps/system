@@ -22,6 +22,13 @@ port adds no collector:
 - Credentials (sd:2203): the latest `credentials:nightly` heartbeat that
   `sd-db credentials` writes each night: presence, validity and expiry,
   never a value. Expiry is judged against the request's time.
+- Services (sd:3707): `sd_db.services.inventory`, what `sd services list`
+  and Operations > Services read, cut to the long-running user LaunchAgents.
+  Restart and Start post `/api/services/<label>/<action>`, the route
+  Operations posts, into `sd services restart|start`'s code with the row's
+  revision. The dashboard's own row adds `runtime.served_behind`, the check
+  `dashboard.sh health` makes (sd:3528); its service is protected, so the row
+  offers the kickstart line to copy.
 - Doctor (sd:3393): `health_collectors.doctor_scan`, `machine-setup.sh
   doctor` in a child under its own deadline. Its answer is kept for
   `DOCTOR_FRESH_SECONDS`, since the doctor runs `brew doctor`; the page waits
@@ -44,8 +51,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 import shlex
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -59,7 +68,7 @@ from sd_db.errors import SdDbError
 from sd_db import protection as protection_module
 
 from . import fleet as fleet_module
-from . import health_collectors, ports_screen, snooze
+from . import health_collectors, ports_screen, runtime, snooze
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
 __all__ = ["AREAS", "document"]
@@ -76,6 +85,7 @@ AREAS = (
     ("sec", "Security", "sd shadow sync → repo_protection alerts · security_and_analysis · secret-scanning/alerts per public managed repo", ()),
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
+    ("svc", "Services", "sd services list · launchctl print per user LaunchAgent · the dashboard's /health commit", ()),
     ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
 )
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
@@ -663,6 +673,62 @@ def _doctor_rows(found: dict) -> tuple[list[dict], dict]:
     return rows, {}
 
 
+#: launchd's states as Health's: down is caution, a non-zero exit or a signal for cause is warning (sd:3707).
+SERVICE_STATE = {"running": "ok", "idle": "caution", "unloaded": "caution", "failed": "warning", "unknown": "unknown"}
+
+
+def read_services(connection: sqlite3.Connection, backend=None) -> dict:
+    """`sd services list`'s inventory; the seam a test fills, since a real read runs launchctl."""
+    from sd_db import services
+
+    try:
+        return services.inventory(connection, backend=backend)
+    except subprocess.SubprocessError as failure:
+        raise RuntimeError(f"launchctl gave no answer: {failure}") from failure
+
+
+def _service_rows(inventory, *, served_commit=None) -> list[dict]:
+    """One row per long-running user LaunchAgent; the dashboard's row also says whether it serves the checkout."""
+    if not isinstance(inventory, dict) or not isinstance(inventory.get("services"), list):
+        raise ValueError("the service inventory is incomplete")
+    rows = []
+    for entry in inventory["services"]:
+        if entry.get("scope") != "user" or entry.get("category") != "service":
+            continue
+        label, state = entry["label"], entry["state"]
+        facts = {"Label": label, "Domain": entry["domain"], "State": state,
+                 "PID": "—" if entry["pid"] is None else str(entry["pid"]),
+                 "Last exit": "—" if entry["last_exit"] is None else str(entry["last_exit"])}
+        row = {"id": f"svc:{label}", "state": SERVICE_STATE.get(state, "unknown"), "type": "service",
+               "revision": entry["revision"], "what": f"{entry['name']} · {state}",
+               "detail": " · ".join(part for part in (
+                   f"PID {entry['pid']}" if entry["pid"] is not None else "",
+                   f"last exit {entry['last_exit']}" if entry["last_exit"] is not None else "",
+                   entry.get("reason") or "") if part) or "user LaunchAgent",
+               "kind": "Service · user LaunchAgent", "facts": facts,
+               "can": {action: entry["capabilities"][action] for action in ("start", "restart")},
+               "note": (entry.get("last_request") or {}).get("message") or ""}
+        if label == runtime.LABEL:
+            row["type"], row["kind"] = "dashboard service", "Service · this dashboard"
+            row["kickstart"] = f"launchctl kickstart -k gui/{os.getuid()}/{label}"
+            facts["Served commit"] = served_commit or "unknown"
+            try:
+                behind = runtime.served_behind(served_commit)
+            except runtime.RuntimeRefused as failure:
+                row.update(state="unknown", detail=f"the checkout's commit was not read: {failure}")
+            else:
+                if behind and state == "running":
+                    row.update(state="caution", what=f"{entry['name']} · stale", detail=behind)
+            row["note"] = ("The dashboard's own service is protected: restarting it ends the request that asks. "
+                           "Run the kickstart line in a terminal.")
+        rows.append(row)
+    if not rows:
+        rows.append({"id": "svc:none", "state": "unknown", "type": "check", "what": "No long-running user service found",
+                     "detail": "no user LaunchAgent declares KeepAlive, Sockets or MachServices", "kind": "Services",
+                     "facts": {}, "cli": "sd services list"})
+    return rows
+
+
 #: The whole document's budget. The readers run at once, each inside its own budget, the fleet's 12 seconds the
 #: longest, so this is that figure and a margin; a reader still running at it is its area's error.
 PAGE_SECONDS = 13.0
@@ -751,14 +817,15 @@ def _settle(area: dict, name: str, read) -> None:
 
 
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
-             disk=None, branches=None, credentials=None, doctor=None) -> dict:
+             disk=None, branches=None, credentials=None, doctor=None, services=None, served_commit=None) -> dict:
     """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
 
     `fleet` is `fleet.collect`'s shape, `area -> document`, `ports`
     `collect_ports`' (no argument) and
     `protection` `protection.rows`', and `disk` and `branches`
     `health_collectors.disk_scan`'s and `branch_scan`'s, and `credentials`
-    `read_credentials`'; each is a seam a test fills. Each reader
+    `read_credentials`', and `services` the service backend `read_services` hands
+    `sd_db.services` (`served_commit` is the commit this process started on); each is a seam a test fills. Each reader
     is guarded on its own, so one failure is its area's `error` and the
     others still answer. A reader returns its rows, or its rows and what the
     page draws above them (`extra`).
@@ -802,6 +869,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "dep": lambda: _dependency_rows(read_protection(connection), now=now),
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
+        "svc": lambda: _service_rows(read_services(connection, services), served_commit=served_commit),
         "doc": lambda: _doctor_rows(read_doctor()),
     }
     snoozes, snooze_error = snooze.held(connection, now=now)
