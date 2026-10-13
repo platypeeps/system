@@ -278,6 +278,59 @@ class DivergedBranchSyncTest(unittest.TestCase):
         self.assertNotIn("diverged:", result.stdout)
 
 
+class NoUpstreamBranchSyncTest(unittest.TestCase):
+    """A checkout on a local branch with no upstream is kept that way on
+    purpose; `git pull` fails there with "no tracking information" and failed
+    the nightly sync every night (sd:3744)."""
+
+    def fixture(self):
+        f = PinFixture()
+        self.addCleanup(f.destroy)
+        return f
+
+    def local_branch(self, f):
+        """A checkout on branch `keep`, one local commit, no upstream."""
+        repo = f.repo()
+        f.git(repo, "switch", "-q", "-c", "keep", "--no-track", "origin/main")
+        mine = f.commit(repo, "mine", "mine\n", "local work")
+        f.advance_origin(repo)
+        return repo, mine
+
+    def test_a_branch_with_no_upstream_is_fetched_kept_not_failed(self):
+        """NEW. Listed as kept, fetched, left where it is, and sync exits 0."""
+        f = self.fixture()
+        repo, mine = self.local_branch(f)
+
+        result = f.run("sync", expect=0)
+
+        self.assertIn("kept: 1 checkout(s), on a local branch with no upstream", result.stdout)
+        self.assertIn("owner/proj on keep", result.stdout)
+        self.assertNotIn("failed", result.stdout + result.stderr)
+        self.assertEqual((mine, "keep"), (f.head(repo), f.branch(repo)))
+        f.git(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main")
+
+    def test_nightly_exits_0_for_a_branch_with_no_upstream(self):
+        """NEW. The nightly run reports no failure for it."""
+        f = self.fixture()
+        self.local_branch(f)
+
+        result = f.run("nightly", expect=0)
+
+        self.assertIn("all repos synced", result.stdout)
+        self.assertNotIn("repo(s) failed", result.stdout)
+
+    def test_a_branch_with_no_upstream_whose_fetch_fails_still_fails(self):
+        """PIN. An unreachable origin is unknown, not kept."""
+        f = self.fixture()
+        repo, _ = self.local_branch(f)
+        f.git(repo, "remote", "set-url", "origin", str(f.tmp / "no-such-origin"))
+
+        result = f.run("sync", expect=1)
+
+        self.assertIn("failed: 1 repo(s)", result.stdout)
+        self.assertNotIn("kept:", result.stdout)
+
+
 class RefreshTest(unittest.TestCase):
     def fixture(self):
         f = PinFixture()

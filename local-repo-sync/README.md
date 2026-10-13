@@ -460,5 +460,8 @@ list, and `terra` is the one that reads a single conf instead of layering on
   request branch. sync lists it under `diverged:` with its ahead and behind
   counts, leaves it alone, and does not count it as failed. A failed fetch
   still fails.
+- A checkout on a local branch with no upstream (sd:3744) has nothing to pull.
+  sync fetches it, skips the pull, lists it under `kept:`, and does not count
+  it as failed. A failed fetch still fails.
 - The old script also had a commented-out `git log --since=` block writing to a
   `github-commit-audit/output` folder. It was dead and is not carried over.
