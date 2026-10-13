@@ -3,8 +3,8 @@
 Usage keeps its past-month picker (Metrics reads the current month only), Services keeps each service's last request,
 Resources keeps Toolbox, Vault and Queues, Trackers keeps the tracker issues, and Sessions keeps the live worktree
 rows. The Jobs, Ports, Progress, Reports, Repos and Commands areas were retired in sd:3402, once Management, Health,
-Metrics, Reports and Activity carried their controls; an address naming one is a 404. Trackers and Sessions draw inside the v2
-shell (sd:3586, `SHELLED`); the other areas keep the classic page.
+Metrics, Reports and Activity carried their controls; an address naming one is a 404. Every area draws inside the v2
+shell (sd:3586), under the rail section `SECTIONS` names.
 """
 
 import contextlib
@@ -18,7 +18,7 @@ from sd_db.errors import SdDbError
 from .controls import field, form, select
 from .listing import Column, Listing
 from .markup import Markup, join, tag
-from .pages import page, shell_page, tile
+from .pages import shell_page, tile
 
 #: A bill name the cap route (`/api/bills/<name>/cap`, `server.action_route`)
 #: accepts in its path. The registry puts no rule on a bill name:
@@ -33,11 +33,18 @@ BILL_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}"
 
 AREAS = (("usage", "Usage"), ("services", "Services"), ("resources", "Resources"), ("trackers", "Trackers"),
          ("sessions", "Sessions"))
-#: The areas drawn inside the v2 shell (sd:3586), each with its Details note. They sit under Today, whose Pull requests
-#: and Sessions rows open them; the other areas keep the classic page.
-SHELLED = {
-    "trackers": "Trackers lists the open pull requests and issues that sd shadow sync last saw.",
-    "sessions": "Sessions lists the worktrees each checkout registered and the sd commands running at this read.",
+#: Every area draws inside the v2 shell (sd:3586): the rail section it sits under, the v2 page that links it, and its
+#: Details note.
+SECTIONS = {
+    "usage": ("Metrics",
+              "Usage keeps the past months Metrics does not read: each bill's four numbers, its rows and charts."),
+    "services": ("Management",
+                 "Services lists this Mac's launchd services with each one's last request and its controls."),
+    "resources": ("Research",
+                  "Resources shows what the local collectors read: Toolbox, Briefs, Vault, Research and Queues."),
+    "trackers": ("Today", "Trackers lists the open pull requests and issues that sd shadow sync last saw."),
+    "sessions": ("Today",
+                 "Sessions lists the worktrees each checkout registered and the sd commands running at this read."),
 }
 
 
@@ -300,11 +307,9 @@ def operations_page(connection, *, parameters, now, services_backend=None):
         from .sessions_screen import sessions_panel
 
         content = sessions_panel(parameters)
-    if area in SHELLED:
-        return shell_page("Operations", "Today", _navigation(area), content, subtitle=_subtitle(), screen="operations",
-                          note=SHELLED[area] + " The other Operations areas open on their classic screens.")
-    return page("Operations", "operations", _navigation(area), content,
-                subtitle=_subtitle())
+    section, note = SECTIONS[area]
+    return shell_page("Operations", section, _navigation(area), content, subtitle=_subtitle(), screen="operations",
+                      note=note)
 
 
 def _subtitle():

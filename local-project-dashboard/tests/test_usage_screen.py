@@ -143,7 +143,7 @@ class UsageScreen(Seeds, ScreenCase):
     def test_the_operations_subtitle_names_every_area_the_nav_draws(self):
         # A written sentence named ten of eleven areas (PR #427 review).
         page = self.render("/operations", {"area": ["usage"]})
-        subtitle = re.search(r'<p class="subtitle">([^<]*)</p>', page).group(1)
+        subtitle = re.search(r'</h1><p[^>]*>([^<]*)</p>', page).group(1)
         for key, label in operations_screen.AREAS:
             with self.subTest(area=key):
                 self.assertIn(label.lower(), subtitle.lower())

@@ -46,9 +46,10 @@ STATIC = HERE / "sd_dashboard" / "static"
 class TheSections(ScreenCase):
     def test_the_three_sections_this_pull_request_lands_exist(self):
         self.item("an item")
-        # Classic Today was retired in sd:3402; Operations is a classic screen that stays. The item page draws in the
-        # v2 shell (sd:3586).
-        for path, stylesheet in (("/operations", "/static/dashboard.css"), ("/item/1", "/ui/shell.css")):
+        # Classic Today was retired in sd:3402; Contributions is the classic screen that stays. The item page and
+        # Operations draw in the v2 shell (sd:3586).
+        for path, stylesheet in (("/classic/contributions", "/static/dashboard.css"), ("/item/1", "/ui/shell.css"),
+                                 ("/operations", "/ui/shell.css")):
             page = self.render(path)
             self.assertIn("<!doctype html>", page)
             self.assertIn(stylesheet, page)
@@ -73,7 +74,7 @@ class TheSections(ScreenCase):
         later = [section.key for section in SECTIONS if not section.built]
         self.assertEqual(later, [])
         self.assertEqual([section.key for section in SECTIONS], ["today", "backlog", "contributions", "writing", "operations", "protection", "item", "skills", "documents", "designs"])
-        page = self.render("/operations")
+        page = self.render("/classic/contributions")
         self.assertNotIn("nav-later", page)
         for section in SECTIONS:
             if not section.built:
@@ -81,7 +82,7 @@ class TheSections(ScreenCase):
 
     def test_a_ported_section_links_its_new_page_from_the_registry(self):
         """sd:2473: the classic nav opens the page the v2 registry ports; the palette keeps the classic screen."""
-        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/operations"), re.S)[0]
+        nav = re.search(r'<nav class="nav".*?</nav>', self.render("/classic/contributions"), re.S)[0]
         links = {label: re.search(r'href="([^"]*)"', attributes)[1]
                  for attributes, label in re.findall(r"<a\b([^>]*)>([^<]*)</a>", nav)}
         ported = [section.label for section in SECTIONS if section.in_nav and section.label in v2.SECTIONS]
