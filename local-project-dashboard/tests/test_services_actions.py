@@ -5,9 +5,14 @@ import plistlib
 import subprocess
 from pathlib import Path
 
+import json
+from unittest.mock import patch
+
 from sd_db import services
+from sd_dashboard import health_collectors, health_screen, runtime
 from sd_dashboard.runtime import LABEL as DASHBOARD_LABEL
 
+from .test_v2_health import BRANCHES, CHECKOUT, CLEAN_DOCTOR, DISK, TREES, fleet_of, ports_snapshot, scan_of
 from .test_workflow_actions import BrowserSession
 
 
@@ -179,4 +184,58 @@ class ServicesActions(BrowserSession):
             self.assertEqual(self.post(f"/api/services/{self.label}/stop", {"revision": state["revision"]}, **headers)[0], 403)
         self.assertEqual(self.request(f"/api/services/{self.label}/stop")[0], 404)
         self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.actions(), [])
+
+
+class HealthServiceRows(ServicesActions):
+    """sd:3707: Health's service rows read this fake launchctl, and their Restart posts the route `sd services` shares."""
+
+    fleet_backend = staticmethod(fleet_of(TREES))
+
+    def setUp(self):
+        super().setUp()
+        self.listening.RequestHandlerClass.ports_backend = staticmethod(ports_snapshot)
+        for name, value in (("disk_scan", scan_of(DISK)), ("branch_scan", scan_of(BRANCHES)),
+                            ("doctor_scan", lambda **_: CLEAN_DOCTOR)):
+            patcher = patch.object(health_collectors, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(runtime, "checkout_commit", lambda: CHECKOUT)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        health_screen._SCANS.clear()
+        self.addCleanup(health_screen._SCANS.clear)
+
+    def rows(self):
+        status, _, body = self.request("/api/health", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        area = next(area for area in json.loads(body)["areas"] if area["id"] == "svc")
+        self.assertEqual(area["error"], "")
+        return {row["id"]: row for row in area["rows"]}
+
+    def test_rows_read_launchctl_and_restart_runs_the_sd_services_code(self):
+        self.listening.RequestHandlerClass.served_commit = CHECKOUT
+        rows = self.rows()
+        self.assertEqual(sorted(rows), sorted([f"svc:{self.label}", f"svc:{DASHBOARD_LABEL}"]))
+        row = rows[f"svc:{self.label}"]
+        self.assertEqual((row["state"], row["type"], row["can"]["restart"]["allowed"]), ("ok", "service", True))
+        self.assertEqual(rows[f"svc:{DASHBOARD_LABEL}"]["state"], "ok")
+        self.assertEqual(self.actions(), [])
+        status, _, answer = self.post(f"/api/services/{self.label}/restart", {"revision": row["revision"]})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual([call[1] for call in self.actions()], ["bootout", "bootstrap", "kickstart"])
+        self.assertEqual(answer["request"]["status"], "accepted")
+        # The revision the page showed is spent: a second post of it is refused, and launchctl hears nothing more.
+        status, _, _ = self.post(f"/api/services/{self.label}/restart", {"revision": row["revision"]})
+        self.assertEqual(status, 409)
+        self.assertEqual(len(self.actions()), 3)
+
+    def test_a_dashboard_started_on_another_commit_is_stale_and_cannot_be_restarted_from_its_page(self):
+        self.listening.RequestHandlerClass.served_commit = "a" * 40
+        row = self.rows()[f"svc:{DASHBOARD_LABEL}"]
+        self.assertEqual((row["state"], row["type"]), ("caution", "dashboard service"))
+        self.assertIn(f"served {'a' * 40}, checkout {CHECKOUT}", row["detail"])
+        status, _, answer = self.post(f"/api/services/{DASHBOARD_LABEL}/restart", {"revision": row["revision"]})
+        self.assertEqual(status, 400)
+        self.assertIn("protected", answer["error"])
         self.assertEqual(self.actions(), [])
