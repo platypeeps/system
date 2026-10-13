@@ -15,7 +15,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/hoa.css">
 </head>
 <body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system">
@@ -31,7 +33,7 @@
   <div id="state" hidden></div>
 
   <h2 class="sr">Readings</h2>
-  <ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul>
+  <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul></annunciator-strip>
 
   <section class="panel" id="map-panel" aria-labelledby="map-h">
     <div class="panel-head">

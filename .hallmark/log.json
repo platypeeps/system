@@ -13,6 +13,20 @@
     "critique": "P4 H4 E4 S4 R5 V3"
   },
   {
+    "date": "2026-10-13",
+    "artifact": "local-project-dashboard/sd_dashboard/v2: the annunciator on 11 pages (static/annunciator-strip.css and .js, shell.css)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3588 the lamps sit in the foundation's <annunciator-strip>; its stylesheet and script are pinned copies of ui-design 8e5eede; shell.css drops its lamp rules and pages their --cells; the strip's container queries set 2, 3 or 4 columns; Today's clock spans two columns; shell.css keeps the sd:2530 hover ring in the lamp ink token and cancels the strip's 4% dim (operator ruling 2026-10-13)",
+    "constraints": "no build step; CSP default-src 'self'; no colour literal; foundation files copied unchanged",
+    "verified": "320, 375, 768, 1440 px in dark and light; no horizontal scroll",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
     "date": "2026-10-12",
     "artifact": "local-project-dashboard/sd_dashboard/v2/static/health.js (Health: Services area)",
     "scope": "component",
@@ -46,19 +60,6 @@
     "nav": "none",
     "footer": "none",
     "changes": "sd:3591 confirm and result pages on tokens and theme.js; sd:3593 diagram figure on token names, theme script pinned; sd:3590 mail palette, glyph beside each colour, no purple button"
-  },
-  {
-    "date": "2026-10-05",
-    "artifact": "local-project-dashboard/sd_dashboard/v2/reports.html (static/reports.js, reports.css; shared shell.css, shell.js)",
-    "scope": "page",
-    "genre": "modern-minimal",
-    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
-    "macrostructure": "operations list: annunciator strip, cadence grid, filter row, sortable ledger with numbered pages",
-    "nav": "shell rail (shared by every v2 page)",
-    "footer": "none (shell status line)",
-    "changes": "sd:2530 lamp hover is an inset ring in the lamp's ink token, not filter: brightness; sd:2527 sortable headers; sd:2528 numbered pager; sd:2529 active filter chips",
-    "constraints": "no build step; CSP default-src 'self', so no inline style or script",
-    "critique": "P4 H4 E4 S4 R5 V3"
   },
   {
     "date": "2026-10-12",
@@ -121,5 +122,18 @@
     "slop_test": "pass: tokens (48) no raw colour or font; inputs (39) 1px border in every state, 2px focus outline, row-touch height beside buttons, disabled by attribute plus cursor plus colour; mobile (34, 49) no sideways scroll and no wrapped clickable label at 320-1440; contrast (40-41) measured in every run: lowest 5.92:1 for text (card dropdowns), 6.02:1 for help icons, against 4.5:1 and 3:1",
     "viewports": "320 375 414 768 1024 1440 x dark, light, system/light, system/dark: 24 runs, 0 failures, served from the branch on a copy of the workflow database (Playwright, headless Chromium)",
     "critique": "P4 H4 E4 S4 R4 V3"
+  },
+  {
+    "date": "2026-10-05",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/reports.html (static/reports.js, reports.css; shared shell.css, shell.js)",
+    "scope": "page",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "operations list: annunciator strip, cadence grid, filter row, sortable ledger with numbered pages",
+    "nav": "shell rail (shared by every v2 page)",
+    "footer": "none (shell status line)",
+    "changes": "sd:2530 lamp hover is an inset ring in the lamp's ink token, not filter: brightness; sd:2527 sortable headers; sd:2528 numbered pager; sd:2529 active filter chips",
+    "constraints": "no build step; CSP default-src 'self', so no inline style or script",
+    "critique": "P4 H4 E4 S4 R5 V3"
   }
 ]

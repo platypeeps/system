@@ -17,7 +17,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/activity.css">
 </head>
 <body data-page="Activity" data-scope="fleet">
@@ -50,7 +52,7 @@
 
   <div id="state" hidden></div>
   <h2 class="sr">Event kinds</h2>
-  <ul class="annunciator" id="annunciator"></ul>
+  <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
   <section class="chart" aria-labelledby="chart-h">
     <div class="sec-head">

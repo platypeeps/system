@@ -20,7 +20,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/today.css">
 </head>
 <body data-page="Today" data-scope="fleet">
@@ -53,13 +55,13 @@
     </header>
 
     <h2 class="sr">Subsystems</h2>
-    <ul class="annunciator" id="annunciator">
+    <annunciator-strip><ul class="annunciator" id="annunciator">
       <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
-    </ul>
+    </ul></annunciator-strip>
 
     <section aria-labelledby="now-h">
       <div class="sec-head">
