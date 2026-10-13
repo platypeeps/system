@@ -2649,6 +2649,27 @@ class NasFullCopy(unittest.TestCase):
         self.assertIn(f"refused: {self.src} is not mounted", result.stdout)
         self.assertFalse(self.calls.exists())
 
+    def mount_table(self, *lines: str) -> None:
+        self.stub(self.stubs / "mount", "#!/bin/sh\ncat <<'EOF'\n" + "\n".join(lines) + "\nEOF\n")
+
+    def test_a_volume_path_is_matched_literally_against_the_mount_table(self) -> None:
+        # A "." in the path stood for any character: Backup.NAS matched the mounted BackupXNAS.
+        dst = self.work / "Backup.NAS"
+        self.mount_table(f"/dev/disk1s1 on {self.src} (apfs, local, journaled)",
+                         f"//host/share on {self.work}/BackupXNAS (smbfs, nodev, nosuid)")
+        result = self.run_copy(NAS_COPY_SKIP_MOUNT_CHECK=None, NAS_COPY_DST=str(dst))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"refused: {dst} is not mounted", result.stdout)
+        self.assertFalse(self.calls.exists())
+
+    def test_a_volume_that_is_in_the_mount_table_is_copied(self) -> None:
+        dst = self.work / "Backup.NAS"
+        self.mount_table(f"/dev/disk1s1 on {self.src} (apfs, local, journaled)",
+                         f"//host/share on {dst} (smbfs, nodev, nosuid)")
+        result = self.run_copy(NAS_COPY_SKIP_MOUNT_CHECK=None, NAS_COPY_DST=str(dst))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.calls.exists())
+
     def test_rsync_is_additive_and_keeps_no_owners_or_modes(self) -> None:
         result = self.run_copy()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

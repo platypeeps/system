@@ -71,7 +71,8 @@ say() { echo "[nas-full-copy] $(date '+%Y-%m-%dT%H:%M:%S%z') $*"; }
 
 mounted() { # path fstype
   [ -n "${NAS_COPY_SKIP_MOUNT_CHECK:-}" ] && return 0
-  mount | grep -q " on $1 ($2,"
+  # index() matches the path literally; grep read "." and "[" in a volume name as pattern characters.
+  mount | awk -v needle=" on $1 ($2," 'index($0, needle) { found = 1 } END { exit !found }'
 }
 
 hour=$(date +%H | sed 's/^0//'); hour="${NAS_COPY_HOUR:-$hour}"

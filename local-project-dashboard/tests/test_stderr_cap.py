@@ -39,7 +39,8 @@ PATH_MAX = 1024
 
 def collectors(environment):
     """A fresh `collectors` module, its `VAULT` derived under `environment`."""
-    with patch.dict(os.environ, environment):
+    # An empty config folder: the operator's own shared.env must not decide the vault.
+    with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {**environment, "SYSTEM_TOOLS_CONFIG": config}):
         os.environ.pop("OBSIDIAN_VAULT", None)
         spec = importlib.util.spec_from_file_location("stderr_cap_collectors", HERE / "collectors.py")
         module = importlib.util.module_from_spec(spec)

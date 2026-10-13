@@ -367,7 +367,9 @@ class GithubSecretState(unittest.TestCase):
         self.env.pop("S4S_CONF", None)
         isolate_jev(self.env)
         self.state = self.state_home / "system/scan-for-secrets/gh-secrets-state"
-        self.addCleanup(lambda: (FOLDER / ".gh-secrets-state").unlink(missing_ok=True))
+        # The checkout's own path: a run must never touch it, and a test must never delete it.
+        self.legacy = FOLDER / ".gh-secrets-state"
+        self.legacy_before = self.legacy.read_bytes() if self.legacy.exists() else None
 
     def refresh(self, *flags: str) -> subprocess.CompletedProcess:
         return subprocess.run(["sh", str(SCRIPT), "refresh", *flags], cwd=self.home, env=self.env,
@@ -379,7 +381,8 @@ class GithubSecretState(unittest.TestCase):
         self.assertTrue(self.state.is_file(), "no state file in the XDG state folder")
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
         self.assertTrue(self.state.read_text().startswith(f"{self.NAME} {self.SLUG} "))
-        self.assertFalse((FOLDER / ".gh-secrets-state").exists(), "state written beside the script")
+        after = self.legacy.read_bytes() if self.legacy.exists() else None
+        self.assertEqual(after, self.legacy_before, "a run changed the file beside the script")
         self.assertFalse(list((self.tmp / "config").rglob("*gh-secrets-state*")), "state written to the config folder")
 
     def test_the_next_run_reads_that_record(self) -> None:
