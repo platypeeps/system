@@ -3,7 +3,7 @@
 Five readers, each one the tree already had, joined per work item; this module adds only the join:
 
   lane       the `sd-ship lane` entries: the latest `state` row (kind `checkpoint`) of each key `lane:v1:<repo>:<id>`,
-             as the pack's `sd_lane.stored` reads one repository's. A `running` entry is a session from its `started_at`,
+             read through the pack's `reads.lane_entries`. A `running` entry is a session from its `started_at`,
              a `pending` one from its `enqueued_at`. Every entry, in any status, also ties its `worktree` to its `item`.
   launch     the comment notes Fix writes (sd:3456, `fix_session.NOTE`) on items that are not done. The newest note per
              herdr pane ties that pane to the note's item, from the note's time. A note whose pane was not recorded
@@ -46,8 +46,6 @@ __all__ = ["document", "elapsed", "herdr_agents"]
 
 #: One herdr control call's bound; a herdr that does not answer within it is an unknown, not an empty list.
 HERDR_SECONDS = 5
-#: The lane's key prefix, the pack's `sd_lane.KEY_PREFIX`.
-LANE_PREFIX = "lane:v1:"
 #: An item number in a branch name: digits after the start, `sd`, `-`, `_` or `/`, and before the end or a separator.
 BRANCH_ITEM = re.compile(r"(?:^|[-_/]|sd)(\d+)(?=$|[-_/])", re.ASCII)
 #: Fix's note, read back: the pattern is `fix_session.NOTE` with its four fields as groups.
@@ -129,11 +127,8 @@ def _inside(path: str, joined: dict[str, int]) -> str | None:
 
 
 def _lane(connection) -> list[dict]:
-    rows = connection.execute(
-        "SELECT key, body FROM state WHERE id IN (SELECT MAX(id) FROM state WHERE kind = 'checkpoint' "
-        "AND substr(key, 1, ?) = ? GROUP BY key)", (len(LANE_PREFIX), LANE_PREFIX)).fetchall()
     entries = []
-    for key, body in rows:
+    for key, _, body in reads.lane_entries(connection):
         try:
             entry = json.loads(body)
         except (TypeError, ValueError):
@@ -148,12 +143,8 @@ def _lane(connection) -> list[dict]:
 def _launches(connection) -> dict[str, dict]:
     """The newest launch note per herdr pane, on items that are not done."""
     prefix = fix_session.NOTE.split("{", 1)[0]
-    rows = connection.execute(
-        "SELECT note.item, note.timestamp, note.body FROM note JOIN item ON item.id = note.item "
-        "WHERE note.kind = 'comment' AND substr(note.body, 1, ?) = ? AND item.status != 'done' ORDER BY note.id",
-        (len(prefix), prefix)).fetchall()
     out = {}
-    for item, stamp, body in rows:
+    for _, item, stamp, body in reads.launch_notes(connection, prefix):
         found = LAUNCH.match(body)
         if found and found["pane"] != "unknown":
             out[found["pane"]] = {"item": item, "at": _when(stamp), "session": found["session"]}
