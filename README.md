@@ -112,10 +112,16 @@ the list of suites; the preflight fails on a `*/tests/test_*.py` folder that no
 line names. No GitHub workflow runs the suites. The pack pin is one full commit
 sha in `.sd-pack-rev`; bump it deliberately.
 
+To run one suite as the gate does, name it by its `run_suite` or
+`tests/macos-only-suites.txt` name: `make test SUITE=repo-sync`. It runs the
+preflight, then that suite, against the pinned pack in `.ci/pack`, not the
+live pack checkout.
+
 Some tests need macOS: the Swift build and dyld shim in `local-msgsnap`.
 Linux cannot run them, and a skipped test fails the check, so they live in
 separate suites named in `tests/macos-only-suites.txt`. `make check` runs them
-on a Mac; to run only them:
+on a Mac; to run only them, against the pack `make check` or `make test`
+fetched into `.ci/pack`:
 
     tests/run-macos-only.sh all
 

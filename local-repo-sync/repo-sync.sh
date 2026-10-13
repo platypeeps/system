@@ -696,7 +696,7 @@ start_consumers() {
   c_db=$(db_version "$REFRESH_DB" || :)
   if [ -z "$c_lib" ] || [ "$c_db" != "$c_lib" ]; then
     echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
-    echo "  after $c_pack/bin/sd-db backup and $c_pack/bin/sd-db migrate, refresh again to start them"
+    schema_remedy "$c_db" "$c_lib" "$c_pack" "to start them"
     return 1
   fi
   for c in $CONSUMERS; do
@@ -723,6 +723,23 @@ start_consumers() {
     echo "started $c_label"
   done
   rm -f "$REFRESH_STOPPED"
+}
+
+# Prints the way to bring database schema $1 to the pack's lib/ schema $2,
+# for pack $3, ending "refresh again $4". No migrate goes down, so a database
+# above the library needs a newer pack on origin or an older backup restored
+# by a library at that backup's schema; a newer one would migrate it up
+# (sd:3535).
+schema_remedy() {
+  case "$1:$2" in
+    :*|*:|*[!0-9:]*) sr_above=no ;;
+    *) if [ "$1" -gt "$2" ]; then sr_above=yes; else sr_above=no; fi ;;
+  esac
+  if [ "$sr_above" = yes ]; then
+    echo "  no migrate goes down: move the default branch of $3's origin to a commit whose lib/ is at schema $1 or later, or restore a backup at schema $2 with the sd-db of a pack whose lib/ is at schema $2, then refresh again${4:+ $4}"
+  else
+    echo "  after $3/bin/sd-db backup and $3/bin/sd-db migrate, refresh again${4:+ $4}"
+  fi
 }
 
 # --- the refresh record (pack design D2, sd:3345) ---------------------------
@@ -826,6 +843,11 @@ rollback_point() {
   if [ -z "$p_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   if ! p_db=$(db_version "$REFRESH_DB"); then
     echo "!!! refused: cannot read the schema version of $REFRESH_DB, so whether it needs a migrate is unknown; nothing moved"
+    return 1
+  fi
+  if [ "$p_db" -gt "$p_lib" ]; then
+    echo "!!! refused: $REFRESH_DB is at schema $p_db, above the $p_lib of the pack's lib/ at $p_rev; nothing moved"
+    schema_remedy "$p_db" "$p_lib" "$p_pack" ""
     return 1
   fi
   [ "$p_db" -lt "$p_lib" ] || return 0
@@ -963,7 +985,8 @@ pin_ready() {
   if [ -z "$q_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   q_db=$(db_version "$REFRESH_DB" || :)
   [ "$q_db" != "$q_lib" ] || return 0
-  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib; refresh again to migrate"
+  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib"
+  schema_remedy "$q_db" "$q_lib" "$(hub_dir pack)" "to publish it"
   return 1
 }
 
@@ -993,37 +1016,65 @@ refresh() {
   while IFS= read -r r_target; do
     [ "$(hub_checkout "$r_target" || true)" = system ] || printf '%s\n' "$r_target"
   done < "$TMPD/targets" >> "$TMPD/ordered"
+  # r_failed counts every failed step, for the exit code. r_hub_failed
+  # counts those that leave the hub's own state unknown: hub-pin must name
+  # what the hub serves, so only these withhold it (sd:3710). Another
+  # checkout's failure, or a service that did not start again, leaves system
+  # and the pack where they are, and the satellites follow them.
   r_failed=0
+  r_hub_failed=0
+  : > "$TMPD/plan"
+  # Every check and fetch runs before the services stop (sd:3535):
+  # refresh_one only plans, so a refusal or a slow fetch costs no outage.
+  # The list is on fd 3, so a git or make that reads stdin cannot eat it.
+  while IFS= read -r r_target <&3; do
+    if ! refresh_one "$r_target"; then
+      r_failed=$((r_failed + 1))
+      if hub_checkout "$r_target" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
+    fi
+  done 3< "$TMPD/ordered"
+  echo
+  # System and the pack move together or not at all: one refused keeps the
+  # other where it is.
+  if [ "$r_hub_failed" -gt 0 ]; then
+    : > "$TMPD/plan.kept"
+    while IFS=$US read -r r_dir r_rev; do
+      if hub_checkout "$r_dir" > /dev/null; then
+        echo "!!! held: $r_dir stays at $(git -C "$r_dir" rev-parse --short HEAD): the other hub checkout failed"
+      else
+        printf '%s\n' "$r_dir$US$r_rev" >> "$TMPD/plan.kept"
+      fi
+    done < "$TMPD/plan"
+    mv "$TMPD/plan.kept" "$TMPD/plan"
+  fi
+  # The services stop only for a planned move of system or the pack.
   r_hub=""
-  while IFS= read -r r_target; do
-    if hub_checkout "$r_target" > /dev/null; then r_hub=1; fi
-  done < "$TMPD/ordered"
+  while IFS=$US read -r r_dir r_rev; do
+    if hub_checkout "$r_dir" > /dev/null; then r_hub=1; fi
+  done < "$TMPD/plan"
   # A record left by a refresh that did not finish is settled first,
   # whatever this one moves: nothing may start the services before that.
   [ ! -e "$REFRESH_INTENT" ] || r_hub=1
-  : > "$TMPD/plan"
   if [ -n "$r_hub" ] && ! stop_consumers; then
     echo "!!! refused: a library consumer did not stop; nothing moved"
-    r_failed=1
+    r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
   else
-    # The list is on fd 3, so a git or make that reads stdin cannot eat it.
-    while IFS= read -r r_target <&3; do
-      refresh_one "$r_target" || r_failed=$((r_failed + 1))
-    done 3< "$TMPD/ordered"
-    echo
     r_point=0
     if [ -n "$r_hub" ]; then rollback_point || r_point=$?; fi
     if [ "$r_point" -ne 0 ]; then
-      r_failed=$((r_failed + 1))
+      r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
     else
       while IFS=$US read -r r_dir r_rev <&3; do
-        pin_move "$r_dir" "$r_rev" refresh refreshed || r_failed=$((r_failed + 1))
+        if ! pin_move "$r_dir" "$r_rev" refresh refreshed; then
+          r_failed=$((r_failed + 1))
+          if hub_checkout "$r_dir" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
+        fi
         echo
       done 3< "$TMPD/plan"
       if [ -e "$REFRESH_INTENT" ]; then
         r_settle=0
         settle || r_settle=$?
-        if [ "$r_settle" -ne 0 ]; then r_failed=$((r_failed + 1)); fi
+        if [ "$r_settle" -ne 0 ]; then r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1)); fi
         if [ "$r_settle" -eq 2 ]; then
           echo "!!! the services stay stopped and $REFRESH_INTENT stays, so no hub-pin goes out; refresh again to retry, or put the database and checkouts right by hand"
         fi
@@ -1033,10 +1084,10 @@ refresh() {
   # A failed move still starts them: the checkouts stay where git left them.
   # A record left keeps them stopped.
   start_consumers || r_failed=$((r_failed + 1))
-  if [ "$r_failed" -eq 0 ] && ! pin_ready; then
-    r_failed=$((r_failed + 1))
+  if [ "$r_hub_failed" -eq 0 ] && ! pin_ready; then
+    r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
   fi
-  if [ "$r_failed" -eq 0 ] && ! push_pins; then
+  if [ "$r_hub_failed" -eq 0 ] && ! push_pins; then
     r_failed=$((r_failed + 1))
   fi
   echo "----------------------------------------"
@@ -1058,9 +1109,10 @@ hub_dir() {
   done
 }
 
-# After a hub refresh with no failure, publishes the pinned system and pack
-# shas as one annotated tag, hub-pin, on the system origin: the tag names the
-# system sha, and its message carries `pack=<sha>`. One push publishes both,
+# After a hub refresh whose system and pack steps all passed, publishes the
+# pinned system and pack shas as one annotated tag, hub-pin, on the system
+# origin: the tag names the system sha, and its message carries `pack=<sha>`.
+# One push publishes both,
 # so a satellite never sees one without the other (sd:3100). The `+` lets
 # that one tag move backwards; nothing else is forced.
 push_pins() {
