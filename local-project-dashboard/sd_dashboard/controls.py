@@ -198,7 +198,7 @@ def note_capture(connection, item_id):
         textarea("Add a note", "body", id="note-body", rows=3, required=True),
         select("Kind", "kind", [(value, value.capitalize()) for value in
             ("comment", "followup", "question", "decision", "proposal")], "comment"),
-        label="Add note", command=f"sd task note {item_id} --kind comment --body TEXT", revision=revision)
+        label="Add note", command=f"sd task note {item_id} TEXT --kind comment", revision=revision)
 
 
 def note_resolution(note, revision):

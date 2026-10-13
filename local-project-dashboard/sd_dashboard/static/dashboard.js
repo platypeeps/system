@@ -33,7 +33,7 @@
     if (!match || !kind) { return; }
     kind.addEventListener("change", function () {
       var previous = form.dataset.cli;
-      var command = "sd task note " + match[1] + " --kind " + kind.value + " --body TEXT";
+      var command = "sd task note " + match[1] + " TEXT --kind " + kind.value;
       form.dataset.cli = command;
       document.querySelectorAll(".cli-equivalents code.command").forEach(function (node) {
         if (node.textContent === previous) { node.textContent = command; }

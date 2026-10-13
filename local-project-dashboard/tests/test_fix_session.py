@@ -159,7 +159,8 @@ class TheRefusals(FixCase):
             status, _, answer = self.fix(item)
         self.assertEqual(status, 503)
         self.assertIn("claude started in herdr pane w9:p1, but the note was not recorded: database is locked", answer["error"])
-        self.assertIn(f"sd task note {item} --body", answer["error"])
+        self.assertIn(f"Record it with: sd task note {item} '", answer["error"])
+        self.assertNotIn("--body", answer["error"])
 
     def test_a_second_click_from_the_same_page_is_stale_and_launches_nothing(self):
         self.running()

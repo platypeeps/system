@@ -376,6 +376,7 @@ class WorkflowControls(BrowserSession):
                 self.assertEqual(status, 200)
                 self.assertIn("Report source", page)
                 self.assertIn("not valid JSON", page)
+                self.assertIn(f"Read its log, then acknowledge report {item} in a terminal: ", page)
                 self.assertIn(f"sd reports acknowledge {item}", page)
                 self.assertNotIn("Not recorded", page)
                 self.assertNotIn(f'action="/api/reports/{item}/acknowledge"', page)
