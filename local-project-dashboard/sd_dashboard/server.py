@@ -432,6 +432,8 @@ class Dashboard(BaseHTTPRequestHandler):
     frontdoor_check = None
     direct_listener = False
     peer_lookup = None
+    #: The checkout commit this process started on (sd:3528); None when git could not say.
+    served_commit = None
 
     # `_policy` lets one response replace the shared Content-Security-Policy,
     # and only that header. A served document carries its stylesheet in its own
@@ -676,7 +678,7 @@ class Dashboard(BaseHTTPRequestHandler):
         healthy = version == SCHEMA_VERSION and not changed and direct_ok
         result = {
             "service": "sd-dashboard", "ok": healthy, "code_changed": changed,
-            "pid": os.getpid(),
+            "pid": os.getpid(), "commit": self.served_commit,
             "schema": version, "expected_schema": SCHEMA_VERSION,
             "library": str(Path(sd_db.__file__).resolve()),
             **self.loaded_build,
@@ -731,7 +733,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"{page.section} does not accept query parameters."})
         answer = entry.read(v2.registry.Read(connection=connection, now=self.clock(), path=split.path, parameters=parameters,
                                              fleet=self.fleet_backend, jobs=self.operations_backend,
-                                             services=self.services_backend, ports=self.ports_backend))
+                                             services=self.services_backend, ports=self.ports_backend,
+                                             served_commit=self.served_commit))
         status, document = answer if isinstance(answer, tuple) else (200, answer)
         return self._json(status, document)
 
@@ -979,6 +982,14 @@ class DashboardServer(Listener):
             super().server_close()
 
 
+def _served_commit():
+    """The checkout commit this process starts on, which /health reports (sd:3528); None when git cannot say."""
+    try:
+        return runtime.checkout_commit()
+    except runtime.RuntimeRefused:
+        return None
+
+
 def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
@@ -1008,6 +1019,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "frontdoor_check": staticmethod(frontdoor_check) if frontdoor_check else None,
         "peer_lookup": staticmethod(peer_lookup) if peer_lookup else None,
         "loaded_build": runtime.build_digests(),
+        "served_commit": _served_commit(),
     })
     primary = DashboardServer((host, port), handler, bind_and_activate=bind)
     try:
