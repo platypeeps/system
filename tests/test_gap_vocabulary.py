@@ -17,7 +17,8 @@ also reads it.
 
 Stdlib only, read with `ast` so nothing is imported: this runs in the
 `tests/ci-native.sh` preflight, before the virtualenv exists.
-`python3 tests/test_gap_vocabulary.py` from the repository root runs it.
+`python3 tests/test_gap_vocabulary.py` from the repository root runs it once
+`.ci/pack` holds the pin, which any `make test SUITE=<name>` fetches.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ import ast
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCREEN = ROOT / "local-project-dashboard" / "sd_dashboard" / "protection_screen.py"
@@ -47,7 +50,8 @@ def pinned_pack() -> pathlib.Path:
     """The pack copy at the pin, or an AssertionError that says how to get one."""
     pin = (ROOT / ".sd-pack-rev").read_text(encoding="utf-8").strip()
     pack = pathlib.Path(os.environ.get("SD_ACCEPTANCE_PACK") or ROOT / ".ci" / "pack")
-    remedy = "run `make check`, which fetches the pack at the pin into .ci/pack, or set SD_ACCEPTANCE_PACK"
+    remedy = ("run `make test SUITE=<any suite>` or `make check`, which fetch the pack at the pin into .ci/pack "
+              "and run this in the preflight, or set SD_ACCEPTANCE_PACK")
     try:
         head = (pack / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     except OSError as error:
@@ -68,6 +72,16 @@ class GapVocabulary(unittest.TestCase):
 
     def test_the_dashboard_draws_a_column_for_each_of_the_pack_s_gap_ids(self) -> None:
         self.one_side_only({gap for gap, _ in assigned(SCREEN, "GAPS")}, "protection_screen.GAPS")
+
+
+class PinnedPack(unittest.TestCase):
+    def test_a_missing_copy_fails_naming_the_one_suite_command(self) -> None:
+        # A4 F12, sd:3555: a hand run without .ci/pack fails rather than read
+        # the live pack (sd:3534); the message names the command that fetches the pin.
+        with tempfile.TemporaryDirectory() as empty, mock.patch.dict(os.environ, {"SD_ACCEPTANCE_PACK": empty}):
+            with self.assertRaises(AssertionError) as caught:
+                pinned_pack()
+        self.assertIn("make test SUITE=", str(caught.exception))
 
 
 if __name__ == "__main__":

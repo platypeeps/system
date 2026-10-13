@@ -246,6 +246,15 @@ class TheLiveRead(unittest.TestCase):
         self.doc({"SYSTEM_TOOLS_CONFIG": str(self.config), "HA_TOKEN": "from-env"})
         self.assertEqual(stub.calls, [("/api/states", "Bearer from-file"), ("/api/states", "Bearer from-env")])
 
+    def test_an_exported_empty_token_beats_the_file(self):
+        """sd:3964: ha-mcp.sh keeps an exported empty value (st_source_env), so the file's token is not sent."""
+        stub = self.stub()
+        (self.config / "ha-mcp").mkdir()
+        (self.config / "ha-mcp" / ".env").write_text(f"HA_TOKEN=from-file\nHA_MCP_URL={stub.url}/mcp_server/sse\n", encoding="utf-8")
+        doc = self.doc({"SYSTEM_TOOLS_CONFIG": str(self.config), "HA_TOKEN": ""})
+        self.assertEqual(stub.calls, [])
+        self.assertIn("HA_TOKEN not set", doc["reader"]["reason"])
+
     def test_unset_settings_are_named_and_nothing_is_called(self):
         (self.config / "ha-mcp").mkdir()
         (self.config / "ha-mcp" / ".env").write_text("HA_TOKEN=change-me\nHA_MCP_URL=http://change-me:8123/mcp_server/sse\n", encoding="utf-8")
