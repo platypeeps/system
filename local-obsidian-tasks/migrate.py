@@ -105,7 +105,11 @@ def frontmatter(text: str) -> dict | None:
     a) `key: value` at column 0, the value one `_scalar` or a `[a, b]` list;
     b) `key:` at column 0 with nothing after it, then only list items;
     c) a list item `<indent>- value`, every item under a key at the indent
-       of its first.
+       of its first;
+    d) under a key `plan` does not read, such as TaskNotes' `reminders`, a
+       map item: `<indent>- name: value`, then `name: value` lines at
+       exactly `<indent>` + 2. Its values pass `_scalar`, so none can open
+       a multi-line value that would swallow a later column-0 key.
     Blank lines and column-0 comments are allowed between keys, not in a list.
     Any other line raises `Refused` naming its number: a deeper or different
     indent, a tab, a continuation, a nested map, a fence out of place. A
@@ -121,6 +125,7 @@ def frontmatter(text: str) -> dict | None:
     key = None
     indent = None  # the indent of `key`'s first list item
     in_list = False  # the last key line was `key:`, so only items may follow
+    entry_indent = None  # the indent of the current unread map item's `name: value` lines
     for number, line in enumerate(re.split(r"\r?\n", m.group(1)), 1):
         where = f"frontmatter line {number}"
         if NOT_IN_A_LINE.search(line) or "\r" in line:
@@ -129,7 +134,13 @@ def frontmatter(text: str) -> dict | None:
             if in_list:
                 raise Refused(f"{where}: a blank or comment line inside a list")
             continue
+        entry = KEY_LINE.match(line[entry_indent:]) if entry_indent and line[:entry_indent].strip(" ") == "" else None
+        if entry and line[entry_indent] != " ":
+            _scalar(key, entry.group(2) or "")
+            fields[key][-1][entry.group(1)] = entry.group(2) or ""
+            continue
         item = ITEM_LINE.match(line)
+        entry_indent = None
         if item and in_list:
             if indent is None:
                 indent = len(item.group(1))
@@ -138,6 +149,12 @@ def frontmatter(text: str) -> dict | None:
             elif len(item.group(1)) != indent:
                 raise Refused(f"{where}: a list item at another indent")
             value = item.group(2) or ""
+            entry = KEY_LINE.match(value)
+            if entry and key not in READ_KEYS:
+                _scalar(key, entry.group(2) or "")
+                fields[key].append({entry.group(1): entry.group(2) or ""})
+                entry_indent = indent + 2
+                continue
             if re.match(r"^[^'\"]*:(\s|$)", value):
                 raise Refused(f"{key}: a map inside a list")
             decoded = _scalar(key, value)

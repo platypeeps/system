@@ -408,6 +408,21 @@ class Migrate(unittest.TestCase):
         self.assertIn("created: 2", lines)
         self.assertEqual(self.item("shape-column-zero-items")["item"]["status"], "done")  # the `archived` tag read
 
+    def test_an_unread_list_of_maps_reads_only_its_own_shape(self):
+        # TaskNotes writes `reminders` as a list of maps. Under a key `plan` does not read, a map item passes when
+        # its lines sit exactly at the item's indent + 2 and every value is one `_scalar`; anything else refuses.
+        reminder = "reminders:\n  - id: rem-1\n    type: relative\n    offset: -PT15M\n"
+        lines = self.assert_refused({
+            "map-deeper": (self.OPEN + reminder + "      extra: x\n---\n", "frontmatter line 7: not a line shape"),
+            "map-shallower": (self.OPEN + reminder + "   extra: x\n---\n", "frontmatter line 7: not a line shape"),
+            "map-multi-line": (self.OPEN + "reminders:\n  - id: rem-1\n    description: |\n"
+                                           "title: Swallowed\n---\n", "reminders: YAML syntax"),
+            "map-open-quote": (self.OPEN + "reminders:\n  - id: \"rem-1\n---\n", "reminders: a quoted value"),
+            "map-in-read-list": (self.OPEN + "tags:\n  - id: x\n---\n", "tags: a map inside a list"),
+            "map-entry-after-scalar": (self.OPEN + "  id: x\n---\n", "frontmatter line 3: not a line shape"),
+        }, {"map-reminders": self.OPEN + reminder + "  - id: rem-2\n    type: absolute\nstatus2: x\n---\n"})
+        self.assertIn("created: 1", lines)
+
     def test_codex_round_3_findings_are_refused(self):
         # A no-break space is YAML content, not white space: `status: \u00a0done` is not `done`. And a history
         # item is read whether or not the task has a rule: `- true` is YAML's true, not a date.
