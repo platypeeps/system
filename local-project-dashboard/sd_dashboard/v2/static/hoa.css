@@ -7,7 +7,6 @@
  */
 
 /* ---------- Annunciator (v1 grammar) ---------- */
-.annunciator { --cells: 4; }
 .cell kbd { font: 400 var(--text-2xs)/1 var(--font-data); letter-spacing: 0; }
 
 /* ---------- Panels ---------- */
