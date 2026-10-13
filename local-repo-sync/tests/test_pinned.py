@@ -156,6 +156,13 @@ class PinFixture(HygieneFixture):
             return []
         return self.make_log.read_text().splitlines()
 
+    def no_pause(self):
+        """A `sleep` that returns at once, for a case that waits out svc_wait's
+        bound: it still polls launchd 50 times, without the 10 s between them
+        (sd:3962)."""
+        (self.bin / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        (self.bin / "sleep").chmod(0o755)
+
 
 class PinnedSyncTest(unittest.TestCase):
     def fixture(self):
@@ -676,6 +683,7 @@ class ConsumersTest(unittest.TestCase):
         self.assertFalse(self.stopped.exists())
 
     def test_an_unload_that_never_comes_moves_nothing_and_keeps_the_record(self):
+        self.f.no_pause()
         before = self.f.head(self.pack)
         result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_UNLOAD_DELAY": "100000"})
         self.assertIn(f"{SERVE} did not unload", result.stdout)
@@ -703,6 +711,7 @@ class ConsumersTest(unittest.TestCase):
         self.assertFalse(self.stopped.exists())
 
     def test_a_bootstrap_that_loads_nothing_keeps_the_record(self):
+        self.f.no_pause()
         result = self.f.run("refresh", expect=1, extra_env={"LAUNCHCTL_NO_LOAD": SERVE})
         self.assertIn(f"{SERVE} did not load", result.stdout)
         self.assertIn(SERVE, self.stopped.read_text())
