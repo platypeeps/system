@@ -165,6 +165,12 @@ Run in order. Pass one as the second argument to run it alone.
 Most stages delegate to tools that already existed. This folder is mostly an
 ordering and profile layer over them, not a reimplementation.
 
+A remediation that fails prints `FAILED` and the run goes on to the next item
+and stage. The run ends with the list of failures and exits 1. A failed step
+skips the rest of its item: a failed backup skips the overwrite, a failed copy
+skips the record and the launchd restart. `decommission` removes a plist only
+once launchd holds no job under its label.
+
 ### Obsidian plugins
 
 The vault gitignores `.obsidian/` (it holds the Local REST API TLS private
@@ -339,8 +345,10 @@ reported 0. `repos` was the last one left out, for want of a read-only verb —
 A stage reports divergence four ways: `DIFFERS`, `MISSING`, `STALE`, `ABSENT`,
 a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
-than a finding, which is why the appstore and cron stages now name what is
-missing before offering to fix it.
+than a finding, which is why every stage now names what is missing before
+offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
+no drift word on it or above it. `status` checks taps, formulae, casks and
+pins in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. The
 `machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
