@@ -13,7 +13,7 @@ lists nothing here and gets no buttons, because prose options are not parsed.
 
 - `document` is `/api/decisions`: every unresolved decision on an open item Tasks lists (`reads.backlog_items`,
   `reads.brief_notes`), the item's priority first, then the oldest, each with the revision `workflow.item_state` gives.
-  A question on a review batch (sd:3638, a task under a `review:` ref) is Review's: it is counted in `review`, and
+  A question on a review batch (sd:3709, a task under a `review:` ref) is Review's: it is counted in `review`, and
   Today draws one line that links there in place of its rows.
 - `answer` is `/api/decisions/answer`, posted with the item, the note, the option and that revision: the CLI's two
   verbs in one transaction under the revision.

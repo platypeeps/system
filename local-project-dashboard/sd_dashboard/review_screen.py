@@ -1,4 +1,4 @@
-"""Review (sd:3638): the labelling queue's page, one question at a time (design docs/work/2026-10-12-review-queue).
+"""Review (sd:3709): the labelling queue's page, one question at a time (design docs/work/2026-10-12-review-queue).
 
 A batch is a task filed under `review:<queue>:<batch>` by `sd-db review file`; its questions are question notes and a
 label is the Decisions ruling. Every read and write here is `sd_db.review`'s, the code `sd-db review` runs, so the page

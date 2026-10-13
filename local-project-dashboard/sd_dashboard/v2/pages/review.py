@@ -1,4 +1,4 @@
-"""Review (sd:3638): the labelling queue, its own rail page (operator ruling Q1). `/api/review` lists the open batches
+"""Review (sd:3709): the labelling queue, its own rail page (operator ruling Q1). `/api/review` lists the open batches
 and their open questions; a label posts `/api/review/rule` and its undo `/api/review/withdraw`; a batch's labels download
 from `/api/review/<item>/export`. Each is `sd_db.review`, the code `sd-db review` runs (`review_screen`)."""
 
@@ -42,7 +42,7 @@ PAGE = Page(
     section="Review",
     routes=("/review",),
     html="review.html",
-    item="sd:3638",
+    item="sd:3709",
     api=(Api("/api/review", _read), Api(pattern=EXPORT, example="/api/review/7/export", read=_export),
          Api("/api/review/rule", write=_rule), Api("/api/review/withdraw", write=_withdraw)),
 )

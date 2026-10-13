@@ -8,7 +8,7 @@
   const repoName = path => String(path || '').split('/').filter(Boolean).pop() || '';
 
   // LIST is the last read; null when it failed. RULED and REFUSED hold what a click did to a row until the next read.
-  // REVIEW counts the questions on review batches (sd:3638): Review asks them, so Today draws one line that links there.
+  // REVIEW counts the questions on review batches (sd:3709): Review asks them, so Today draws one line that links there.
   let LIST = [], REVIEW = 0, reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set();
   const REC = /\s*\(recommended\)\s*$/i;

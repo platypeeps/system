@@ -8,7 +8,7 @@
     "macrostructure": "operations list: annunciator of open batches, ledger of open questions, one question in Details",
     "nav": "v2 shell rail, Now group (g l)",
     "footer": "none (shell)",
-    "changes": "sd:3638 Review page: numbered option buttons at --row-touch, mono progress line, lamp filter by batch; Today counts batch questions in one line that links to Review",
+    "changes": "sd:3709 Review page: numbered option buttons at --row-touch, mono progress line, lamp filter by batch; Today counts batch questions in one line that links to Review",
     "constraints": "tokens only, no colour literal; no confidence score; blind and sealed batches show text and options only",
     "critique": "P4 H5 E4 S4 R5 V3",
     "slop_test": "headless Chrome 320, 375, 414, 768, 1024, 1440 px in Dark, Light and System: no horizontal scroll, no element past the viewport, option buttons 44 px"

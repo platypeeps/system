@@ -205,7 +205,7 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["posts"][0][1]["option"], "Map it to its report (Recommended)")
 
     def test_review_batch_questions_are_one_line_that_links_to_review(self):
-        # sd:3638: a review batch's questions are counted, not listed; a failed read draws no count.
+        # sd:3709: a review batch's questions are counted, not listed; a failed read draws no count.
         doc = json.dumps({"decisions": [decision_row()], "review": 292})
         out = self.run_page("R.line = ELS['decisions-review'].html; R.hidden = ELS['decisions-review'].hidden; R.rows = ELS.decisions.html;",
                             f"(path, body) => [200, {doc}]")

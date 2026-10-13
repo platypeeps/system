@@ -1,4 +1,4 @@
-"""The v2 Review page (sd:3638): the labelling queue on its own rail page.
+"""The v2 Review page (sd:3709): the labelling queue on its own rail page.
 
 What this slice promises: `/review` is a registered page in the rail's Now group (`g l`); `/api/review` lists each open
 batch, nightly suggestions first, and its open questions, and a blind or sealed batch sends no subject or evidence; a
