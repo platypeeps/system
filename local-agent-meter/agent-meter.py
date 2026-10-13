@@ -57,10 +57,8 @@ DEFAULT_OUT = str(system_tools_config.config_dir(TOOL) / "meter.jsonl")
 
 
 def default_out():
-    """AGENT_METER_FILE, exported or from <config>/agent-meter/.env, else DEFAULT_OUT."""
-    return (os.environ.get("AGENT_METER_FILE")
-            or system_tools_config.read_env(TOOL).get("AGENT_METER_FILE")
-            or DEFAULT_OUT)
+    """AGENT_METER_FILE, exported (an empty value too) or from <config>/agent-meter/.env, else DEFAULT_OUT."""
+    return system_tools_config.setting("AGENT_METER_FILE", system_tools_config.read_env(TOOL)) or DEFAULT_OUT
 PROVIDERS = ["claude", "codex"]
 # launchd runs with a minimal PATH that finds neither Homebrew nor ~/.local
 BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]

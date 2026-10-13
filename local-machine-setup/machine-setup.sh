@@ -33,19 +33,18 @@ DOTFILE_DIR="${MACHINE_SETUP_DOTFILE_DIR:-$CONFIG_DIR/dotfiles}"
 ENV_DIR="${MACHINE_SETUP_ENV_DIR:-$CONFIG_DIR/envs}"
 AGENT_DIR="${MACHINE_SETUP_AGENT_DIR:-$CONFIG_DIR/launchagents}"
 
+# shellcheck source=../lib/config.sh
+. "$ROOT/lib/config.sh"
+
 # Per-owner values the script needs and the repository cannot hold: the
 # vault path, the ssh key names, extra LaunchAgent globs. Every one has a
-# default that checks nothing, so a missing file is fine.
+# default that checks nothing, so a missing file is fine. An exported value
+# wins over the file, an empty one too (sd:3964).
 # See machine-setup.env.example for the names.
-if [ -f "$CONFIG_DIR/machine-setup.env" ]; then
-  # shellcheck disable=SC1091
-  . "$CONFIG_DIR/machine-setup.env"
-fi
+st_source_env machine-setup machine-setup.env
 
 # launchd labels this repository's tools install: <prefix>.<name>, and
 # <prefix>.cron.<job> for local-cron-jobs.
-# shellcheck source=../lib/config.sh
-. "$ROOT/lib/config.sh"
 LABEL_PREFIX="$(st_label_prefix)"
 
 # fd 4 is this run's stderr, the job log under cron: bound_step names each step

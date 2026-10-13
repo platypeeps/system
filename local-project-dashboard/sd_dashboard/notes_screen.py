@@ -188,7 +188,7 @@ def _vault(environ) -> Path:
 
     named, source = environ.get("OBSIDIAN_VAULT", ""), "OBSIDIAN_VAULT"
     for tool in VAULT_TOOLS:
-        if named:
+        if "OBSIDIAN_VAULT" in environ or named:  # an exported empty value wins too, as in the tools (sd:3964)
             break
         named = system_tools_config.read_env(tool, environ).get("OBSIDIAN_VAULT", "")
         source = f"OBSIDIAN_VAULT in {system_tools_config.config_dir(tool, environ) / '.env'}"
@@ -285,7 +285,7 @@ def close_session(url: str, client) -> None:
 
 
 def workspace(environ=None) -> tuple[str, str, str]:
-    """`(url, account, why)`: workspace-mcp's URL and Gmail account, each exported or from `<config>/notify/.env`.
+    """`(url, account, why)`: workspace-mcp's URL and Gmail account, each exported (an empty value too) or from `<config>/notify/.env`.
 
     `why` names the remedies when the account is not set, and is empty when it is. Mail reads with it, and Draft email
     (sd:3463, `email_draft`) saves with it.
@@ -297,8 +297,8 @@ def workspace(environ=None) -> tuple[str, str, str]:
     import system_tools_config
 
     saved = system_tools_config.read_env("notify", environ)
-    url = environ.get("WORKSPACE_MCP_URL") or saved.get("WORKSPACE_MCP_URL") or MAIL_URL
-    account = environ.get("EMAIL_FROM") or saved.get("EMAIL_FROM") or ""
+    url = system_tools_config.setting("WORKSPACE_MCP_URL", saved, environ) or MAIL_URL
+    account = system_tools_config.setting("EMAIL_FROM", saved, environ) or ""
     why = "" if account else (system_tools_config.missing("EMAIL_FROM", "notify", ".env", environ=environ)
                               + " It is the Google account workspace-mcp reads mail for.")
     return url, account, why

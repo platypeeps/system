@@ -137,6 +137,15 @@ class KnownProfiles(Case):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("setup needs a profile: personal, work\n", result.stderr)
 
+    def test_an_exported_value_beats_machine_setup_env_an_empty_one_too(self):
+        # sd:3964: the env file was sourced bare, so it beat the environment.
+        (self.config / "machine-setup/machine-setup.env").write_text('MACHINE_SETUP_PROFILES="from-file"\n')
+        for exported, listed in ((None, "from-file"), ("from-shell", "from-shell"), ("", "personal, work")):
+            with self.subTest(exported=exported):
+                extra = {} if exported is None else {"MACHINE_SETUP_PROFILES": exported}
+                result = self.run_script("setup", **extra)
+                self.assertIn(f"setup needs a profile: {listed}\n", result.stderr)
+
 
 class Obsidian(Case):
     def setUp(self):
