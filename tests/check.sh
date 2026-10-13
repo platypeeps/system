@@ -16,10 +16,12 @@ PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
 PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 # Longest first, so that when the jobs run fewer at a time (below) the long
-# ones start at once. repo-sync is one suite in a leg of its own (sd:3750):
-# dealt into a tools shard it held that shard to 13 minutes.
+# ones start at once. repo-sync is a leg of its own (sd:3750): dealt into a
+# tools shard it held that shard to 13 minutes. Its two suites run as two
+# shards (sd:3962): whole, the leg took 450 s, the longest job of the gate.
 LEGS="repo-sync dashboard tools shared"
 TOOLS_SHARDS=3
+REPO_SYNC_SHARDS=2
 
 usage() {
   cat <<'USAGE'
@@ -208,7 +210,12 @@ if [ "$1" = suite ]; then
     for leg in $LEGS; do
       isolated SUITE_ONLY="$2" /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "$leg"
     done
-    if [ ! -f "$work/$2.log" ]; then
+    # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
+    ran=""
+    for log in "$work/$2.log" "$work/$2"-[1-9].log; do
+      [ ! -f "$log" ] || ran=1
+    done
+    if [ -z "$ran" ]; then
       echo "check.sh: no suite named $2; the run_suite lines in tests/ci-native.sh and the lines of tests/macos-only-suites.txt name them" >&2
       exit 1
     fi
@@ -228,7 +235,8 @@ fi
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.
 # The tools leg holds dozens of suites, one after another. It runs as
-# TOOLS_SHARDS processes, each taking every n-th suite.
+# TOOLS_SHARDS processes, each taking every n-th suite; the repo-sync leg
+# runs as REPO_SYNC_SHARDS the same way.
 # The macOS-only suites go first, so that when the jobs run fewer at a time
 # (below) they start at once.
 jobs=""
@@ -238,15 +246,16 @@ if [ "$(uname -s)" = Darwin ]; then
   done
 fi
 for leg in $LEGS; do
-  if [ "$leg" = tools ]; then
-    shard=1
-    while [ "$shard" -le "$TOOLS_SHARDS" ]; do
-      jobs="$jobs tools-$shard"
-      shard=$((shard + 1))
-    done
-  else
-    jobs="$jobs leg-$leg"
-  fi
+  case "$leg" in
+    tools) shards=$TOOLS_SHARDS ;;
+    repo-sync) shards=$REPO_SYNC_SHARDS ;;
+    *) jobs="$jobs leg-$leg"; continue ;;
+  esac
+  shard=1
+  while [ "$shard" -le "$shards" ]; do
+    jobs="$jobs $leg-$shard"
+    shard=$((shard + 1))
+  done
 done
 
 # sd:2719: each job keeps about one CPU busy, and a slot holder such as
@@ -277,6 +286,8 @@ while [ "$lane" -lt "$lanes" ]; do
       leg-*) isolated /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "${job#leg-}" ;;
       tools-*) isolated SUITE_SHARD="${job#tools-}/$TOOLS_SHARDS" \
                  /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
+      repo-sync-*) isolated SUITE_SHARD="${job#repo-sync-}/$REPO_SYNC_SHARDS" \
+                     /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg repo-sync ;;
       macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
     esac > "$work/$job.log" 2>&1 || status=$?
     signal_group KILL "$work/$job.pid"

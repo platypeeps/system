@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ from sd_db.writes import record_cost
 from sd_dashboard.server import NotFound, route
 
 from support import ScreenCase
+
+DASHBOARD = Path(__file__).resolve().parents[1] / "sd_dashboard"
 
 
 def maintenance_children(checkout):
@@ -176,6 +179,39 @@ class Item(ScreenCase):
             route(self.connection, "/item/9999", {}, now=self.now)
         with self.assertRaises(NotFound):
             route(self.connection, "/item/../../etc/passwd", {}, now=self.now)
+
+    def test_the_page_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 1: the item page is a v2 shell page under Tasks, on foundation tokens, with no classic chrome."""
+        self.note(self.id, "a followup")
+        page = self.render(f"/item/{self.id}")
+        self.assertIn('<body data-page="Tasks" data-scope="tasks">', page)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', page)
+        for asset in ("fonts.css", "tokens.css", "theme.js", "markup.js", "shell.css", "classic.css", "icons.js", "shell.js"):
+            self.assertRegex(page, rf'"/ui/{re.escape(asset)}\?v=[0-9a-f]{{16}}"', asset)
+        self.assertNotIn("/static/dashboard.css", page)
+        self.assertNotIn('class="nav"', page)
+        self.assertNotIn("page-footer", page)
+        # The forms still post through dashboard.js, loaded before shell.js, which runs last; Details is the shell's last child.
+        scripts = re.findall(r'<script src="([^"?]+)', page)
+        self.assertEqual(scripts[-3:], ["/ui/sections.js", "/static/dashboard.js", "/ui/shell.js"])
+        self.assertNotIn(" defer", page)
+        self.assertRegex(page, r'<div class="details" id="details"><p class="note">[^<]+</p></div></div><script')
+        self.assertEqual(page.count("<h1>"), 1)
+        self.assertIn('data-palette-open aria-keyshortcuts="p"', page)
+        self.assertIn('<form method="post" action="/api/items/', page)
+        self.assertIn("<summary>CLI equivalents</summary>", page)
+
+    def test_its_stylesheet_names_foundation_tokens_and_dashboard_css_lost_its_rules(self):
+        """sd:3586 PR 1: classic.css has no colour literal and names only declared tokens; dashboard.css keeps no item-only rule."""
+        strip = lambda text: re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        css = strip((DASHBOARD / "v2/static/classic.css").read_text(encoding="utf-8"))
+        self.assertIsNone(re.search(r"#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch|oklab|lab|lch|color)\(", css))
+        declared = set(re.findall(r"(--[\w-]+)\s*:", (DASHBOARD / "v2/static/tokens.css").read_text(encoding="utf-8")))
+        self.assertEqual(sorted(set(re.findall(r"var\((--[\w-]+)", css)) - declared), [])
+        classic = strip((DASHBOARD / "static/dashboard.css").read_text(encoding="utf-8"))
+        for selector in (".history", ".status-change", ".artifact", ".item-controls", ".writing-controls", ".secondary-panel",
+                         ".shadow", ".selection-option", ".status-done"):
+            self.assertIsNone(re.search(re.escape(selector) + r"\b", classic), selector)
 
     def test_the_title_is_escaped(self):
         nasty = self.item("<script>window.pwned=1</script>")

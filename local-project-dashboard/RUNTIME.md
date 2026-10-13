@@ -201,6 +201,13 @@ Today's Working now (sd:3466, `active_sessions.py`) reads `herdr session list --
 session, 5 seconds each, only when a Fix note or a worktree could tie an agent to an open item.
 A herdr that does not answer leaves Fix launches shown as not confirmed, never as ended.
 
+Draft email on Tasks (sd:3463, `email_draft.py`) runs `claude -p` on Sonnet with no tools and no MCP servers.
+The item's title, description and notes go on stdin.
+It sources `~/.config/shell/env.sh` on the same line for the token and finds claude on PATH, else at `~/.local/bin/claude`.
+It saves the reply through workspace-mcp's `draft_gmail_message`, as Notes' `EMAIL_FROM`, with no recipient; no send tool is called.
+The model has 120 seconds and the draft call 30. Every run that reaches the model adds a note to the item: the subject, draft id and Drafts link, or the failure.
+A draft call with no answer is recorded as not known, never as no draft.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists

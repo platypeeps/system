@@ -168,6 +168,22 @@ case "${{1:-}}" in
   *) echo "usage: declares-exit124.sh status" >&2; exit 1 ;;
 esac
 """)
+        # A vendor folder names its entrypoint without the vendor prefix and
+        # keeps a helper beside it, so neither `<folder>.sh` nor a lone
+        # script finds it. The sweep skipped one such tool that declares the
+        # codes, and its status ran nowhere (sd:3552).
+        cls.vendor = _fixture(cls.root, "acme-declares-vendor", "declares-vendor", f"""\
+echo "declares-vendor $1" >> "{cls.calls}"
+case "${{1:-}}" in
+  help)
+    echo "usage: declares-vendor.sh status"
+    echo "  status  0 healthy, 3 nothing to check, 1 broken; {PHRASE}"
+    exit 0 ;;
+  status) echo "SKIP — not configured on this machine"; exit 3 ;;
+  *) echo "usage: declares-vendor.sh status" >&2; exit 1 ;;
+esac
+""")
+        (cls.root / "acme-declares-vendor" / "lib.sh").write_text("# sourced helper\n")
         # No phrase and no `status` verb: convention 1's usage-and-exit-1,
         # which is the finding code, and which the sweep must never see.
         cls.silent = _fixture(cls.root, "local-silent", "silent", f"""\
@@ -305,6 +321,10 @@ esac
         # omission.
         self.assertIn("declares-skip status", self.calls_made())
 
+    def test_a_vendor_folder_s_entrypoint_is_asked_for_status(self):
+        self.assertIn("declares-vendor status", self.calls_made(), self.out)
+        self.assertNotIn("acme-declares-vendor", self.out)
+
     def test_silent_entrypoint_is_never_asked_for_status(self):
         self.assertNotIn("local-silent", self.out)
         self.assertNotIn("usage:", self.out)
@@ -312,9 +332,9 @@ esac
         self.assertEqual(calls, ["silent help"])
 
     def test_notes_count_declared_and_checked(self):
-        # Six fixtures say the phrase; the three hangs are declared but never
+        # Seven fixtures say the phrase; the three hangs are declared but never
         # answered, so they are not counted as checked.
-        self.assertIn("- status sweep: 6 tool(s) declared, 3 checked",
+        self.assertIn("- status sweep: 7 tool(s) declared, 4 checked",
                       self.out.splitlines())
 
     def test_bound_is_enforced_from_the_moment_the_hang_began(self):

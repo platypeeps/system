@@ -20,11 +20,13 @@ from dataclasses import dataclass
 import re
 from html import unescape
 
+from . import caching
 from .caching import STATIC_VERSIONS
 from .markup import Markup, join, tag
 from .v2 import SECTIONS as PORTED
+from .v2 import VERSIONS as UI_VERSIONS
 
-__all__ = ["SECTIONS", "Section", "page", "tile", "command_hint"]
+__all__ = ["SECTIONS", "Section", "page", "shell_page", "tile", "command_hint"]
 
 
 @dataclass(frozen=True)
@@ -127,12 +129,7 @@ def page(title: str, current: str, *body: object, subtitle: str | None = None,
     if subtitle:
         header.append(tag("p", subtitle, class_="subtitle"))
     rendered_body = join(body)
-    commands = list(dict.fromkeys(unescape(value) for value in
-                    re.findall(r'\bdata-cli="([^"]*)"', str(rendered_body))))
-    equivalents = (tag("details", tag("summary", "CLI equivalents"),
-        tag("p", "Commands run from the matching repository.", class_="hint"),
-        tag("ul", join(tag("li", command_hint(command)) for command in commands)),
-        class_="cli-equivalents") if commands and cli_equivalents else Markup(""))
+    equivalents = _equivalents(rendered_body) if cli_equivalents else Markup("")
     from .palette import dialog
 
     document = tag(
@@ -154,6 +151,67 @@ def page(title: str, current: str, *body: object, subtitle: str | None = None,
         lang="en",
     )
     return "<!doctype html>" + str(document)
+
+
+def _equivalents(rendered_body: Markup) -> Markup:
+    """The CLI line of every control in `rendered_body`, folded below them; nothing when no control names one."""
+    commands = list(dict.fromkeys(unescape(value) for value in
+                    re.findall(r'\bdata-cli="([^"]*)"', str(rendered_body))))
+    return (tag("details", tag("summary", "CLI equivalents"),
+        tag("p", "Commands run from the matching repository.", class_="hint"),
+        tag("ul", join(tag("li", command_hint(command)) for command in commands)),
+        class_="cli-equivalents") if commands else Markup(""))
+
+
+def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str) -> str:
+    """A classic screen inside the v2 shell (sd:3586): the rail, pane and keys are shell.js's, the tokens the foundation's.
+
+    `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope.
+    The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
+    shell but `/` and `p`. `/ui/classic.css` styles that markup.
+    """
+    from .palette import dialog
+
+    rendered_body = join(body)
+    head = tag(
+        "head",
+        tag("meta", charset="utf-8"),
+        tag("meta", name="viewport", content="width=device-width, initial-scale=1, viewport-fit=cover"),
+        tag("title", f"{title} · system"),
+        tag("link", rel="stylesheet", href="/ui/fonts.css"),
+        tag("link", rel="stylesheet", href="/ui/tokens.css"),
+        tag("script", src="/ui/theme.js"),
+        tag("script", src="/ui/markup.js"),
+        tag("link", rel="stylesheet", href="/ui/shell.css"),
+        tag("link", rel="stylesheet", href="/ui/classic.css"),
+    )
+    main = tag(
+        "main",
+        tag("div", tag("div", tag("h1", title), tag("p", subtitle)),
+            tag("button", "Registered commands", type="button", class_="btn quiet", data_palette_open=True,
+                aria_keyshortcuts="p"), class_="head"),
+        tag("div", id="state", hidden=True),
+        dialog(screen),
+        rendered_body,
+        _equivalents(rendered_body),
+        tag("noscript", tag("p", "Enable JavaScript to use these controls. Reading still works.", class_="hint")),
+        id="main", class_="classic",
+    )
+    document = tag(
+        "html",
+        head,
+        tag(
+            "body",
+            tag("script", src="/ui/icons.js"),
+            tag("div", main, tag("div", tag("p", note, class_="note"), class_="details", id="details"), class_="shell"),
+            tag("script", src="/ui/sections.js"),
+            tag("script", src=f"/static/dashboard.js?v={STATIC_VERSIONS['dashboard.js']}"),
+            tag("script", src="/ui/shell.js"),
+            data_page=section, data_scope=section.lower(),
+        ),
+        lang="en",
+    )
+    return "<!doctype html>" + caching.link(str(document), "/ui/", UI_VERSIONS)
 
 
 def error_page(status: int, message: str) -> str:

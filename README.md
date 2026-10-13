@@ -77,24 +77,32 @@ matching a pattern in `$SYSTEM_TOOLS_CONFIG/privacy-patterns`.
 
 ## Ports
 
-No two `local-*` services collide; each can move with a variable listed by its
-script's `-h`.
+No two tools bind the same port, and `tests/test_ports.py` (part of the
+`make check` preflight) fails when two do or when this table differs from what
+the scripts and compose files bind. Each port moves with a variable listed by
+its script's `-h`. Keep one row per folder, its ports as backticked numbers in
+the second column; the third column is free text.
 
-| Port | Kept by | Moved |
+| Folder | Ports | What |
 | --- | --- | --- |
-| `6379` | local-redis | falkordb `6380`, graphiti's bundled falkordb `6381` |
-| `3003` | local-falkordb browser UI | graphiti UI `3004` |
-| `4317/4318` (OTLP) | local-opentelemetry-collector | local-genai-traces `4337/4338` |
-| `8001` | local-redis RedisInsight | clickhouse MCP `8002` |
-
-Other fixed ports:
-
-- `8084`: local-llama-cpp (override with `PORT`); graphiti MCP HTTP is on 8085.
-- `8009`: local-kev on loopback, Kev's documented port (override with `KEV_PORT`).
-- `8766`: local-task-actions (override with `TASK_ACTIONS_PORT`).
-- `8767`: the workflow dashboard in `local-project-dashboard` (override with
-  `dashboard.sh serve --port`).
-- `5434`: local-postgres (override with `POSTGRES_HOST_PORT`).
+| local-clickhouse | `8123`, `9000`, `8002` | ClickHouse HTTP, native, MCP server |
+| local-codebase-memory-mcp | `9749` | daemon UI |
+| local-deploy | `8769` | sd-serve, which the upgrade checks (the pack runs it) |
+| local-falkordb | `6380`, `3003` | FalkorDB, browser UI |
+| local-genai-traces | `4337`, `4338`, `6016`, `13137` | OTLP gRPC, OTLP HTTP, Phoenix UI, health |
+| local-graphiti-mcp | `6381`, `3004`, `8085` | bundled FalkorDB, its UI, MCP HTTP |
+| local-kev | `8009` | Kev's documented port, on loopback |
+| local-llama-cpp | `8084`, `50052` | server (override with `PORT`), RPC |
+| local-machine-setup | `8443` | Tailscale HTTPS front for the dashboard |
+| local-milvus | `19530`, `9091`, `2379`, `8000` | gRPC, metrics, etcd, Attu UI |
+| local-mock-mcp | `9992` | mock MCP server |
+| local-opentelemetry-collector | `4317`, `4318`, `55679` | OTLP gRPC, OTLP HTTP, zPages |
+| local-opentelemetry-demo | `8080`, `18080`, `18081` | demo frontend, Kubernetes and Prometheus MCP forwards |
+| local-postgres | `5434` | PostgreSQL (`POSTGRES_HOST_PORT`) |
+| local-project-dashboard | `8767` | the workflow dashboard (`dashboard.sh serve --port`) |
+| local-redis | `6379`, `8001` | Redis Stack, RedisInsight |
+| local-task-actions | `8766` | signed task actions (`TASK_ACTIONS_PORT`) |
+| mezmo-aura | `3033`, `3101`, `3102` | Aura, experiment orchestrator, single-agent |
 
 ## Tests
 
@@ -112,7 +120,8 @@ sha in `.sd-pack-rev`; bump it deliberately.
 To run one suite as the gate does, name it by its `run_suite` or
 `tests/macos-only-suites.txt` name: `make test SUITE=repo-sync`. It runs the
 preflight, then that suite, against the pinned pack in `.ci/pack`, not the
-live pack checkout.
+live pack checkout. A suite the gate runs in parts, such as `repo-sync-1` and
+`repo-sync-2`, runs whole under its own name, or one part under the part's name.
 
 Some tests need macOS: the Swift build and dyld shim in `local-msgsnap`.
 Linux cannot run them, and a skipped test fails the check, so they live in

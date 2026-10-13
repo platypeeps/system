@@ -624,6 +624,7 @@ class TheScript(ScreenCase):
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
+            ["item.email", "item", "safe", None, True, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
             ["work.cancel", "item", "confirm", "w", True, True, False],
@@ -1264,6 +1265,31 @@ shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
         self.assertEqual(len(out["posts"]), 1)
         self.assertIn("run herdr.sh start first", out["toasts"][-1][0])
         self.assertFalse(out["toasts"][-1][1])
+
+    def test_draft_email_asks_first_posts_the_row_revision_and_names_the_draft(self):
+        """sd:3463. Draft email asks first, naming a Gmail draft that is not sent; the post carries only the row's revision."""
+        plan = self.ids["plan"]
+        answer = f"""(path, body) => [200, {{ item: {{ id: {plan}, status: 'planning', priority: 2, due: '2026-09-09', recurrence: null }},
+  notes: [], revision: 'd'.repeat(64), draft: {{ subject: 'The plan is ready', id: 'r-1', link: 'https://mail.google.com/mail/#drafts' }} }}]"""
+        out = self.run_page(f"""R.what = cmd('item.email').consequence(C.get('{plan}')); R.cli = cmd('item.email').cli(C.get('{plan}'));
+shellRun(cmd('item.email'), C.get('{plan}')); await flush();""", answer)
+        self.assertEqual(out["confirms"], ["item.email"])
+        self.assertIn(f"from #{plan}'s title and notes", out["R"]["what"])
+        self.assertIn("Nothing is sent.", out["R"]["what"])
+        self.assertTrue(out["R"]["cli"].startswith("no sd verb:"))
+        self.assertEqual(out["posts"], [[f"/api/items/{plan}/draft-email", {"revision": self.row("plan")["revision"]}, 64]])
+        self.assertEqual(out["toasts"], [[f'Draft saved · #{plan} · "The plan is ready" · in Gmail Drafts, not sent', False]])
+
+    def test_draft_email_is_off_for_a_kind_it_does_not_fit_and_a_failure_reads_again(self):
+        plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
+        answer = """(path, body) => [504, { error: 'Draft email failed: claude -p gave no answer in 120 s. No Gmail draft was saved.' }]"""
+        out = self.run_page(f"""R.on = [{plan}, {ask}, {port}].map(i => cmd('item.email').when(C.get(String(i))));
+const before = OUT.gets.length; shellRun(cmd('item.email'), C.get('{plan}')); await flush(); R.reads = OUT.gets.slice(before);""", answer)
+        self.assertEqual(out["R"]["on"], [True, True, "Draft email writes about a task or followup; this is a work item"])
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertIn("No Gmail draft was saved.", out["toasts"][-1][0])
+        self.assertFalse(out["toasts"][-1][1])
+        self.assertIn("/api/tasks", out["R"]["reads"])
 
     def test_commands_are_off_where_the_library_would_refuse_them(self):
         plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]

@@ -137,6 +137,8 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
 | `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
+| `.node` | node majors the `tooling` stage installs with fnm and `doctor` checks; with no `.node` file at all, 18, 20 and 24 |
+| `.mailto` | bundle id of the app that answers mailto: links, one line; the profile's wins over `common.mailto`; with neither, `com.google.Chrome` |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
 format as `local-repo-sync`.
@@ -163,7 +165,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | turn self-update off in installed apps that hold a TCC grant, set the screen saver idle time to 0 on every profile (`defaults -currentHost`, no manifest line), then apply `defaults` settings | `python3` |
-| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), the mailto handler; node versions and the handler come from `.node` and `.mailto` | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |
