@@ -435,7 +435,6 @@ window.PAGE_COMMANDS = [
 // ---------- Commands (products/system/commands.md) ----------
 // Each row is an object; each command is declared once and the shell renders row, menu, Details and palette.
 const logOf = o => /\.log$/.test(o.source.src || '');
-const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
 // The reader (read.js) retires what a reading no longer lists: the pick is dropped and the object becomes a type no command
 // is on, so the bulk bar cannot acknowledge a report or retry a job from a stale reading.
 function objects() {
@@ -460,13 +459,6 @@ async function acknowledge(o) {
   const out = await write(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision });
   return { text: `Acknowledged · #${o.n}`, revision: out.revision };
 }
-// A job write's 200 carries launchctl's answer (operations._act), worded as Management words it (sd:3388): only `accepted`
-// sent the request; `failed` sent nothing; anything else, or an answer with no request, is not known.
-function answered(out, name, verb, done) {
-  const r = out && out.request || {};
-  return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
-    : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
-}
 const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
@@ -486,28 +478,17 @@ function registerCommands() {
     { id: 'report.show', on: 'report', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => { location.href = `/item/${o.n}`; return `#${o.n} opens on its item page`; } },
     log('report'), task('report'),
-    // Fix (sd:3456): the declaration Tasks makes, on a report: a herdr workspace with claude on a debug session for it. It
-    // asks first and posts /api/items/<n>/fix with the report's revision; a post with no answer may have started one.
-    { id: 'report.fix', on: 'report', label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot',
-      when: o => !o.open ? 'already acknowledged' : true,
-      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
-      sends: o => `POST /api/items/${o.n}/fix {revision}`,
-      consequence: o => `Opens a herdr workspace and starts claude on report #${o.n}: the sd-debug skill finds the cause and fixes it, and acknowledges the report after a clean run.`,
-      run: o => write(`/api/items/${o.n}/fix`, { revision: o.source.revision }).then(
-        out => `Fix started · #${o.n} · ${out.fix.session} session in herdr pane ${out.fix.pane}`,
-        err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) },
+    // Fix (sd:3456): the shared declaration (commands.js), on a report: a debug session for it, with the report's revision.
+    window.commands.fix('report', { item: o => o.n, report: () => true, when: o => !o.open ? 'already acknowledged' : true,
+      post: (o, path) => write(path, { revision: o.source.revision }) }),
     // build: no status mail object is put (no reader), so these two never show; they keep the design's declarations.
     { id: 'mail.ack', on: 'status mail', label: 'Acknowledge', key: 'a', risk: 'undo', journal: () => null, bulk: true, when: () => 'the message store is not built; Gmail holds the only copy', cli: o => `sd message ack ${o.source.gid}` },
     { id: 'mail.open', on: 'status mail', label: 'Open in Gmail', key: 'o', risk: 'safe', executes: false, primary: o => o.act, cli: o => `open https://mail.google.com/mail/u/0/#all/${o.source.gid}`, run: () => 'Opens in Gmail, read-only' },
     log('status mail'), task('status mail'),
-    // build: the declaration Management makes (sd:2118): it posts /api/jobs/<name>/retry with the job's revision, and
-    // operations.inventory's capability is the off reason. Exit 127 is "command not found": Retry is not the row's act, and
-    // it asks first, naming the exit, so a path fixed outside the dashboard can be tested (sd:3392).
-    { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
-      when: o => capWhy(o, 'retry', o.failed || 'no failed run to retry'),
-      askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
-      cli: o => `sd jobs retry ${o.job}`, sends: o => `launchctl kickstart ${o.service}`,
-      run: async o => answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Retry started · ${o.job}`) },
+    // Retry (commands.js): it posts /api/jobs/<name>/retry with the job's revision; operations.inventory's capability is the
+    // off reason (sd:2118).
+    window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
+      run: async o => window.commands.answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Retry started · ${o.job}`) }),
     // build (sd:3386): the attributed batch. It confirms: one batch may move up to the library's max_batch reports, and no
     // dashboard Undo reopens a batch. The name typed is the batch report's `who`; the server records its own principal.
     { id: 'clean batch.ack', on: 'clean batch', label: 'Acknowledge', key: 'a', risk: 'confirm', primary: () => true, executes: true,

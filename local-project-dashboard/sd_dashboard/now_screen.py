@@ -116,6 +116,11 @@ FRESH = 4
 STALE_DAYS = 14
 # One row for every abandoned worktree, not one row each.
 ABANDONED = 3
+# A pinned checkout behind its origin (sd:3539): on the hub, a merged fix that
+# is not live until a refresh. Not in the pack; the look band, with AHEAD.
+PINNED = 3
+#: What moves a pinned checkout, named in its row.
+REFRESH = "local-repo-sync/repo-sync.sh refresh"
 
 #: The three bands, loudest first; the script paints each as a class name.
 BANDS = ("broken", "look", "queued")
@@ -151,6 +156,19 @@ def backbone_rows(repos: list[dict]) -> list[dict]:
     for repo in repos:
         name, branch = repo["name"], repo.get("branch") or "?"
         ahead, dirty = repo.get("ahead") or 0, repo.get("dirty") or 0
+        # pin_state's "pinned at <sha>, N behind origin/<default>" (sd:3539),
+        # beside whatever else the checkout says; an unread count raises none.
+        behind = repo.get("pinned_behind") or 0
+        if behind:
+            target = f"origin/{repo.get('default') or '?'}"
+            out.append({
+                "rank": PINNED,
+                "kind": "pinned",
+                "id": f"pinned:{name}:{behind}",
+                "what": f"{name} pinned {behind} behind {target}",
+                "detail": f"merged commits on {target} are not live here until a refresh · refresh: {REFRESH}",
+                "source": "repos",
+            })
         if ahead:
             out.append({
                 "rank": AHEAD,
@@ -277,7 +295,8 @@ def job_rows(jobs: list[dict], cron_root: Path | None) -> list[dict]:
             continue
         name, code, killed = job["name"], job.get("last_exit"), job.get("last_signal")
         service = job.get("service")
-        row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs"}
+        row = {"rank": FAILED if state == "failed" else ATTENTION, "kind": "job", "state": state, "source": "jobs",
+               "service": service}
         log = None if cron_root is None else cron_root / "logs" / f"{name}.log"
         if state in ("failed", "interrupted"):
             logged = _log_time(log)
@@ -338,6 +357,8 @@ def _repos(fleet_read) -> list[dict]:
     if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("name"), str)
                                          or (row.get("ahead") is not None and type(row.get("ahead")) is not int)
                                          or (row.get("dirty") is not None and type(row.get("dirty")) is not int)
+                                         or (row.get("pinned_behind") is not None
+                                             and type(row.get("pinned_behind")) is not int)
                                          for row in rows):
         raise ValueError("fleet collector returned an incomplete repos document")
     return backbone_rows(rows)

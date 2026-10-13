@@ -19,6 +19,9 @@ Linux cannot run these suites, so the legs of tests/ci-native.sh leave them
 out; `make check` runs them on a Mac. Run this on a Mac before pushing a change
 to a folder the list names. As in the legs, a suite fails when it reports a
 skipped test or prints no unittest summary. Exits 1 when any suite fails.
+
+The pack is SD_ACCEPTANCE_PACK, else .ci/pack at the pin in .sd-pack-rev,
+which `make test SUITE=<suite>` and `make check` fetch; it refuses another.
 USAGE
 }
 
@@ -34,21 +37,28 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 
-# The ship lifecycle needs the pack.
-pack="$HOME/repos/platypeeps/sd-ai-command-pack"
-if [ -z "${SD_ACCEPTANCE_PACK:-}" ] && [ -f "$pack/bin/sd-ship" ]; then
-  SD_ACCEPTANCE_PACK="$pack"; export SD_ACCEPTANCE_PACK
+# The ship lifecycle needs the pack: the gate's, at the pin in .sd-pack-rev,
+# which tests/check.sh fetches into .ci/pack (sd:3534). The live checkout
+# moves after every pack landing, so a hand run against it and the gate
+# disagreed.
+if [ -z "${SD_ACCEPTANCE_PACK:-}" ]; then
+  pin="$(cat "$ROOT/.sd-pack-rev" 2>/dev/null || true)"
+  if [ -z "$pin" ] || [ "$(git -C "$ROOT/.ci/pack" rev-parse -q --verify HEAD 2>/dev/null)" != "$pin" ]; then
+    echo "run-macos-only.sh: .ci/pack is not at the pin in .sd-pack-rev (${pin:-none}); run make test SUITE=<suite>, which fetches it, or set SD_ACCEPTANCE_PACK" >&2
+    exit 1
+  fi
+  SD_ACCEPTANCE_PACK="$ROOT/.ci/pack"; export SD_ACCEPTANCE_PACK
 fi
 
 logs="$(mktemp -d "${TMPDIR:-/tmp}/run-macos-only.XXXXXX")"
 # As the preflight does: the ship lifecycle runs the pack's sd-ship, which imports an
 # installed sd_db, not source on PYTHONPATH. Suites run under this venv.
 # The pack owns sd_db (sd:2997); its lib/ is what gets installed.
-if [ -z "${SD_ACCEPTANCE_PACK:-}" ] || [ ! -f "$SD_ACCEPTANCE_PACK/lib/pyproject.toml" ]; then
-  echo "run-macos-only.sh: no pack with lib/ at ${SD_ACCEPTANCE_PACK:-$pack}; set SD_ACCEPTANCE_PACK" >&2
+if [ ! -f "$SD_ACCEPTANCE_PACK/lib/pyproject.toml" ]; then
+  echo "run-macos-only.sh: no pack with lib/ at $SD_ACCEPTANCE_PACK; set SD_ACCEPTANCE_PACK" >&2
   exit 1
 fi
-echo "== installing sd_db from pack lib/ at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD) into a throwaway venv"
+echo "== installing sd_db from $SD_ACCEPTANCE_PACK/lib at $(git -C "$SD_ACCEPTANCE_PACK" rev-parse HEAD) into a throwaway venv"
 python3 -m venv "$logs/venv"  # no --copies: see tests/ci-native.sh
 "$logs/venv/bin/python" -m pip install -q --no-index "$SD_ACCEPTANCE_PACK/lib" > "$logs/pip.log" 2>&1 || {
   cat "$logs/pip.log" >&2

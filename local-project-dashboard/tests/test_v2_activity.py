@@ -42,6 +42,7 @@ from test_v2_shell_shared import cell_grammar
 V2 = Path(v2.__file__).resolve().parent
 ACTIVITY_JS = (V2 / "static" / "activity.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 
 INSIDE = "2026-09-06T09:30:00Z"   # 2.5 hours before NOW
 OUTSIDE = "2026-09-05T08:00:00Z"  # 28 hours before NOW
@@ -260,7 +261,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Activity · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "activity.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "activity.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -302,7 +303,7 @@ class TheScript(ScreenCase):
                   + """ANSWER = (path, body) => {
   if (path === '/api/activity') return DOC.status ? [DOC.status, { error: DOC.error }] : [200, DOC];
   return WRITE ? WRITE(path, body) : [404, { error: 'no answer' }];
-};\n""" + ACTIVITY_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + ACTIVITY_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -320,7 +321,7 @@ class TheScript(ScreenCase):
             ["pr.item", "pull request", "safe", "i", None, True, False, False],
             ["review.open", "review", "safe", "o", None, True, False, False],
             ["review.item", "review", "safe", "i", None, True, False, False],
-            ["asg.get", "assignment", "safe", "o", None, True, False, False],
+            ["asg.get", "assignment", "safe", "o", False, True, False, False],  # copy only: Details show it (sd:3524)
             ["asg.item", "assignment", "safe", "i", None, True, False, False],
             ["jobs.retry", "job", "safe", "t", None, True, False, True],
             ["jobs.log", "job", "safe", "l", False, True, False, False],
@@ -366,7 +367,8 @@ R.rows = ELS.rows.html;""")
 R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync'));
 R.sends = cmd('jobs.retry').sends ? cmd('jobs.retry').sends(C.get('job:nightly-sync')) : null;
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", ACCEPTED)
-        self.assertEqual(out["R"]["off"], "no failed run to retry")
+        # The capability is the server's answer, so its reason is the off text on every page (sd:3524).
+        self.assertEqual(out["R"]["off"], "only a currently failed or interrupted job can retry")
         # The line to copy is the sd verb, which passes the operation gate and the audit; kickstart is only what it sends.
         self.assertEqual(out["R"]["cli"], "sd jobs retry nightly-sync")
         self.assertEqual(out["R"]["sends"], "launchctl kickstart fixture/nightly-sync")

@@ -7,7 +7,8 @@
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
 // Most fixes are a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
 // the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, and
-// the three cleanups (sd:3393), each behind a confirm that names what goes, posting the row's revision.
+// the three cleanups (sd:3393), each behind a confirm that names what goes, posting the row's revision, and a service's
+// Restart and Start (sd:3707), each a confirm that posts /api/services/<label>/<action>, `sd services`' own code.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put, plural, cells } = window.markup;
@@ -24,10 +25,12 @@
     sec: ['shield-alert', '<b>Secret scanning, public repos only.</b> Private repos are not scanned, by policy. A public repo with scanning off is a finding.'],
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
     doc: ['shield-check', '<b>What machine-setup doctor says.</b> Its WARN and FAIL lines, one row each, and the lines that pass. The doctor runs <code>brew doctor</code>, so an answer stands for ten minutes; a run still going, stopped at its deadline or failed is unknown, never clean.'],
+    svc: ['activity', '<b>Long-running user services.</b> Each LaunchAgent that keeps a process alive, as <code>sd services list</code> reads it. Restart and Start run <code>sd services restart</code> and <code>start</code> here, against the row as shown. The dashboard compares the commit it serves with the checkout; its own service is protected, so a stale one gives the kickstart line to copy.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
   };
   // Protection has no lamp: the annunciator holds 2 to 8 (the design's rule), and its matrix is Health's evidence strip.
-  const NO_LAMP = new Set(['prot']);
+  // Services (sd:3707) is a further area past a full strip: no lamp, its chip and section only (design.md, lamp: false).
+  const NO_LAMP = new Set(['prot', 'svc']);
   const PH = 10; // one matrix line in the SVG's own units
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const $ = id => document.getElementById(id);
@@ -239,14 +242,16 @@
     return `Not known what changed · ${o.label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
   const revised = o => !!o.revision || 'the row carries no revision: read Health again';
-  // As contributions.js's: success is quiet, since the reread shows it; a failed tracker or a broken run stays as a toast.
-  const SYNC_POLL = 5000;
-  const awaitSync = () => setTimeout(() => shell.getJSON('/api/shadow/state').then(s => {
-    if (s.running) return awaitSync();
+  // A service write (sd:3707) answers the request launchd took and what it reads now; the page reads again either way.
+  const service = action => o => shell.post(`/api/services/${encodeURIComponent(o.facts.Label)}/${action}`, { revision: o.revision }).then(out => {
     load();
-    const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
-    if (bad) shell.toast(`Shadow sync ended with a problem: ${bad}`);
-  }, e => shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
+    return `${o.facts.Label}: ${out.request.status} · ${out.request.message}`;
+  }, e => {
+    load();
+    if (e.status >= 400 && e.status < 500) throw e;
+    return `Not known what changed · ${o.facts.Label}: ${e.message}. Health was read again; check the row before you act again.`;
+  });
+  const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
@@ -280,6 +285,22 @@
         primary: () => true, when: o => o.disabled || revised(o), cli: o => o.cli,
         consequence: o => `Deletes ${o.facts.Merged} local branches already in origin's default branch: ${names(o.branches)}. git branch -d refuses any unmerged one.`, run: cleanup },
     );
+    // Services (sd:3707): Restart and Start run sd services' code through Operations' route. sd_db.services protects the
+    // dashboard's own service, and a restart from its page would end the request that asks, so that row is copy only.
+    C.register(
+      { id: 'service.restart', on: 'service', label: 'Restart', key: 'r', risk: 'confirm', executes: true,
+        primary: o => o.facts.State === 'running', when: can('restart'),
+        cli: o => `sd services restart ${o.facts.Label}`,
+        consequence: o => `Stops ${o.facts.Label} and starts it again through launchctl (bootout, bootstrap, kickstart). Its open connections drop.`,
+        run: service('restart') },
+      { id: 'service.start', on: 'service', label: 'Start', key: 's', risk: 'confirm', executes: true,
+        primary: o => o.facts.State !== 'running', when: can('start'),
+        cli: o => `sd services start ${o.facts.Label}`,
+        consequence: o => `Loads ${o.facts.Label} if it is unloaded and kickstarts it through launchctl.`,
+        run: service('start') },
+      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', key: 'l', risk: 'safe', executes: false,
+        primary: () => true, cli: o => o.kickstart, run: copyOnly },
+    );
     // Ports and Protection are read-only: each line is copy only.
     C.register(
       { id: 'port.inspect', on: 'port', label: 'Inspect listener', key: 'i', risk: 'safe', primary: () => true, executes: false,
@@ -287,11 +308,8 @@
       { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', key: 'o', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
-      // Re-run collector (sd:2894) posts the route Contributions posts (sd:2207): the server runs sd shadow sync, which
-      // writes the protection rows, in a thread, bounded to 120 s, one run at a time. Health reads again once it ends.
-      { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
-        cli: () => 'sd shadow sync --max-seconds 120',
-        run: () => shell.post('/api/shadow/sync', {}).then(() => { awaitSync(); return 'Shadow sync started · Health reads again when it ends'; }) },
+      // Re-run collector (commands.js); Health reads again once the run ends.
+      window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
       { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
@@ -303,7 +321,7 @@
     // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
     window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
       types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port',
-        'branch protection', 'dependabot alerts', 'secret scanning', 'credential'] });
+        'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service'] });
 
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));

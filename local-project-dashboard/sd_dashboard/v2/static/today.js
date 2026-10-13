@@ -21,8 +21,8 @@
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
   // Each source's label, icon, and the page that shows it in full, with that page's name (sd:3402).
   const SRC = { jobs: ['Jobs', 'activity', '/management', 'Management'], prs: ['Pull requests', 'git-pull-request', '/operations?area=trackers', 'Trackers'], sessions: ['Sessions', 'bot', '/operations?area=sessions', 'Operations'], repos: ['Repos', 'hard-drive-download', '/management', 'Management'] };
-  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
-  const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', worktree: 'Sessions', dark: 'Collector' };
+  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', pinned: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
+  const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', pinned: 'Repo', worktree: 'Sessions', dark: 'Collector' };
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 
@@ -79,6 +79,7 @@
     const pr = r.kind === 'pr' && r.id.match(/^pr:(.+)#(\d+):\d+$/);
     const job = r.kind === 'job' && r.id.match(/^job:(.+):[^:]+$/);
     return { id: r.id, type: TYPE[r.kind] || r.kind, label: r.what, failed: r.kind === 'job' && !!r.retry, retry: r.retry, job: job && job[1],
+             service: r.service,
              exit: r.exit, revision: r.revision, capability: r.capability, repo: pr && pr[1], number: pr && +pr[2], seen: r.seen,
              item: r.item, itemKind: r.item_kind };
   }
@@ -184,13 +185,6 @@
 
   function clearSource() { srcFilter = null; document.querySelectorAll('.cell[data-src]').forEach(x => x.setAttribute('aria-pressed', 'false')); applyFilter(); }
 
-  // A job write's 200 carries launchctl's answer (operations._act): only `accepted` sent the request; `failed` sent nothing.
-  function answered(out, name, verb, done) {
-    const r = out && out.request || {};
-    return r.status === 'accepted' ? done : r.status === 'failed' ? `${name} not ${verb}: ${r.message}`
-      : `Not known whether ${name} was ${verb}: ${r.message || 'the answer named no outcome'}`;
-  }
-
   window.PAGE_COMMANDS = [
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
@@ -199,37 +193,24 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
+    const K = window.commands;
     C.register(
-      // jobs.retry: one declaration with ui-design commands.md. build (sd:3386): it posts /api/jobs/<job>/retry with the
-      // revision the Now read brought, as Management does; launchd starts the run. Exit 127 is "command not found": Retry is
-      // not the row's act, and it asks first, naming the exit, as in Management (sd:3392). A refused retry reads Now again; one
-      // with no answer may have started, so it says the outcome is not known. A 200 carries launchctl's answer, worded as
-      // Management words it (sd:3388): only `accepted` started a retry; `failed` sent nothing; anything else is not known.
-      { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true, primary: o => o.failed && o.exit !== 127,
-        when: o => !o.retry ? 'launchd refuses a retry for a job that is not failed or interrupted; the row says what to run'
-          : o.capability?.allowed || o.capability?.reason || 'launchd refuses a retry now',
-        askFirst: o => o.exit === 127, consequence: o => o.exit === 127 ? `${o.job}'s last run ended with exit 127: command not found. A retry tests the path, and fails the same way unless the path was fixed.` : '',
-        cli: o => `sd jobs retry ${o.job}`, sends: o => o.retry,
+      // jobs.retry (commands.js). build (sd:3386): it posts /api/jobs/<job>/retry with the revision the Now read brought, as
+      // Management does; launchd starts the run. A refused retry reads Now again; one with no answer may have started, so it
+      // says the outcome is not known.
+      K.retry({ job: o => ({ name: o.job, failed: o.failed, exit: o.exit, capability: o.capability, sends: o.retry }),
         run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
-          out => reading.reread().then(() => answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
-          err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) },
-      { id: 'pr.open', on: 'pull request', label: 'Open on GitHub', key: 'o', risk: 'safe', primary: o => !!o.repo,
-        when: o => !!(o.repo && o.number) || 'the row names no pull request',
-        cli: o => `gh pr view --web --repo ${o.repo} ${o.number}`,
-        run: o => { window.open(`https://github.com/${o.repo}/pull/${o.number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } },
+          out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
+          err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) }),
+      // Each row kind's commands from the page that shows it in full (sd:3449): a job's log and launchd record, as Management
+      // and Activity declare them; Show log opens the job on Management > Schedules.
+      K.showLog({ job: o => ({ name: o.job }) }),
+      K.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
+      K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo }),
+      // Fix (sd:3456, commands.js) on a work row, with the revision the Now read gave; a refused one reads Now again.
+      K.fix('work item', { item: o => o.item, report: o => o.itemKind === 'report',
+        post: (o, path) => window.shell.post(path, { revision: o.revision }).then(out => reading.reread().then(() => out), err => { load(); throw err; }) }),
     );
-    // Fix (sd:3456): the declaration Tasks makes, on a work row: a herdr workspace with claude on a builder session for a
-    // task, or a debug session for a report. It asks first and posts /api/items/<id>/fix with the revision the Now read
-    // gave; a refused one reads Now again, and one with no answer may have started a session, so it says that.
-    C.register({ id: 'work item.fix', on: 'work item', label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot',
-      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
-      sends: o => `POST /api/items/${o.item}/fix {revision}`,
-      consequence: o => o.itemKind === 'report'
-        ? `Opens a herdr workspace and starts claude on report #${o.item}: the sd-debug skill finds the cause and fixes it, and acknowledges the report after a clean run.`
-        : `Opens a herdr workspace in the item's checkout and starts claude as a builder on #${o.item}: a worktree, commits, a pull-request body and the lane.`,
-      run: o => window.shell.post(`/api/items/${o.item}/fix`, { revision: o.revision }).then(
-        out => reading.reread().then(() => `Fix started · #${o.item} · ${out.fix.session} session in herdr pane ${out.fix.pane}`),
-        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) });
     // Snooze (sd:1896) on every row type: the row leaves Now until its time, and Unsnooze brings it back sooner.
     window.snooze.register(C, { page: 'today', types: [...new Set(Object.values(TYPE))], reread: () => load() });
 
