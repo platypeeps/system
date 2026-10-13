@@ -292,6 +292,20 @@ class DefaultBehaviourTest(NotifyTestCase):
         want = self.fx.config / "notify" / ".env"
         self.assertIn(f"copy local-notify/.env.example to {want}", r.stderr)
 
+    def test_an_exported_empty_topic_beats_the_dotenv(self):
+        """One rule for every tool (sd:3553): an empty export wins too."""
+        (self.fx.config / "notify" / ".env").write_text(f"NTFY_TOPIC={TOPIC}\n")
+        r = self.fx.run(["-c", "ntfy", "msg"], env={"NTFY_TOPIC": "", "JEV_NOTIFY": "0"})
+        self.assertFalse(self.ntfy_sent(), r.stderr)
+        self.assertIn("NTFY_TOPIC", r.stderr)
+
+    def test_a_dotenv_server_is_used_when_nothing_is_exported(self):
+        """The file still fills what the caller left unset."""
+        (self.fx.config / "notify" / ".env").write_text("JEV_NOTIFY=0\nNTFY_SERVER=https://ntfy.example.test\n")
+        r = self.fx.run(["-c", "ntfy", "msg"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("https://ntfy.example.test/", self.fx.read(self.fx.curl_log))
+
     def test_a_dotenv_still_supplies_the_stage_when_the_caller_says_nothing(self):
         """Defaults-only means the file is still read when nothing overrides."""
         (self.fx.config / "notify" / ".env").write_text("JEV_NOTIFY=0\n")

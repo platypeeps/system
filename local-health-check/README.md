@@ -45,7 +45,8 @@ loudest line in the report is the one that matters — see **Ordering with Jev**
 ## The status sweep
 
 No tool is named in `health-check.sh`. It asks every sibling folder's
-convention-1 entrypoint (`<folder minus local->.sh`) for `help`,
+convention-1 entrypoint (`<folder minus local->.sh`, else the folder
+name after its first `-`, for a vendor folder) for `help`,
 bounded at 5 seconds, and a tool is in the sweep when that output contains
 the phrase `local-health-check` — the sentence its author writes anyway,
 "local-health-check reads these codes", next to the `status` line. Those

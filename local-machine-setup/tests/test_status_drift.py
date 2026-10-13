@@ -146,7 +146,7 @@ class StatusDrift(unittest.TestCase):
                      "  MISSING node 24 (fnm)",
                      "  MISSING rtk hook in ~/.claude/settings.json",
                      "  MISSING rtk hook for Gemini CLI",
-                     "  DIFFERS mailto handler is not Chrome",
+                     "  DIFFERS mailto handler is not com.google.Chrome",
                      "  DIFFERS application firewall off",
                      "  DIFFERS firewall stealth mode off",
                      "  MISSING Spotlight read sudoers drop-in",

@@ -42,13 +42,16 @@ st_config_file() {
 # file is fine when the values are exported. A value in the environment wins
 # over the file, an empty one too, so `VAR=x tool start` overrides it for one
 # run (sd:3553): each exported name the file assigns is saved before sourcing
-# and put back. Only the environment counts: a default the script assigned to
-# an unexported variable before this call loses to the file.
+# and put back. Every `NAME=` and `NAME:=` in the file counts, so a second
+# assignment on a line and a `${X:=v}` default are caught; a match inside a
+# value only saves an exported value, which wins anyway. Only the environment
+# counts: a default the script assigned to an unexported variable before this
+# call loses to the file.
 st_source_env() {
     _st_env="$SYSTEM_TOOLS_CONFIG/$1/.env"
     if [ -f "$_st_env" ]; then
         _st_n=0
-        for _st_name in $(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' "$_st_env"); do
+        for _st_name in $(grep -o -E '[A-Za-z_][A-Za-z0-9_]*:?=' "$_st_env" | sed 's/:*=$//'); do
             if printenv "$_st_name" >/dev/null 2>&1; then
                 _st_val=$(printenv "$_st_name")
                 _st_n=$((_st_n + 1))

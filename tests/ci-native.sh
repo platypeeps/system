@@ -15,7 +15,7 @@ Usage: ci-native.sh preflight
        ci-native.sh leg repo-sync|dashboard|tools|shared
 
   preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
-             product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
+             product-name, ports and entrypoint-mode gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -104,6 +104,12 @@ python3 tests/test_gap_vocabulary.py
 # reason. Stdlib and git only, so it runs here before the venv, and
 # the guard below demands this line.
 python3 tests/test_product_name.py
+
+# No two tool folders bind one port, and README § Ports lists what the
+# code binds (sd:3965): read from the tracked scripts and compose files,
+# failing naming both claimants or the table row. Stdlib and git only, so
+# it runs here before the venv, and the guard below demands this line.
+python3 tests/test_ports.py
 
 # The repo CLAUDE.md stays at or under 150 lines and the shared agent
 # block at or under 200 (sd:3005). Stdlib only, so it runs here before
@@ -255,7 +261,8 @@ exit 0
 fi
 
 # SUITE_SHARD=i/n runs only every n-th suite of the leg, starting at the
-# i-th, so tests/check.sh can split the long tools leg across processes.
+# i-th, so tests/check.sh can split the tools and repo-sync legs across
+# processes.
 # Unset, every suite runs.
 shard_index="${SUITE_SHARD:-}"; shard_index="${shard_index%/*}"
 shard_count="${SUITE_SHARD:-}"; shard_count="${shard_count#*/}"
@@ -272,7 +279,13 @@ mine() {
 
 # SUITE_ONLY=<name> runs only the suite of that name: tests/check.sh's
 # `suite`, which `make test SUITE=<name>` runs (sd:3534). Unset, every one.
-wanted() { [ -z "${SUITE_ONLY:-}" ] || [ "$1" = "$SUITE_ONLY" ]; }
+# A suite split into parts <name>-1, <name>-2 runs whole under its own name,
+# so `make test SUITE=repo-sync` still runs all of repo-sync (sd:3962).
+wanted() {
+  [ -n "${SUITE_ONLY:-}" ] || return 0
+  case "$1" in "$SUITE_ONLY"|"$SUITE_ONLY"-[1-9]) return 0 ;; esac
+  return 1
+}
 
 run_suite() {
   mine || return 0
@@ -310,8 +323,12 @@ case "$SUITE_LEG" in
     ;;
   repo-sync)
     # The longest suite, alone in its leg: in a tools shard it set the
-    # gate's floor (sd:3750).
-    run_suite repo-sync sh local-repo-sync/repo-sync.sh test -v
+    # gate's floor (sd:3750). Whole, it took 450 s and set the floor still,
+    # so it runs as two halves of its test modules, one per shard (sd:3962).
+    # The second pattern is the complement of the first, so a new module
+    # runs in one of them.
+    run_suite repo-sync-1 sh local-repo-sync/repo-sync.sh test -v -p 'test_[fh]*.py'
+    run_suite repo-sync-2 sh local-repo-sync/repo-sync.sh test -v -p 'test_[!fh]*.py'
     ;;
   tools)
     run_suite bin-links sh local-bin-links/bin-links.sh test -v

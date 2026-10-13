@@ -20,40 +20,14 @@ done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
 
-# <config>/jev/.env provides defaults only — values already in the environment win, so
-# `JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one call as expected.
+# <config>/jev/.env provides defaults only — values already in the environment win,
+# an empty one too, so `JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one
+# call and a suite's `JEV_METER=0` beats a `JEV_METER=1` in the file (sd:2799).
+# st_source_env keeps that rule for every name the file sets (sd:3553).
 # The key normally comes from ~/.config/shell/env.sh and not from .env at all.
 # The .env lives outside the checkout, in <config>/jev/ (<config> is
 # $SYSTEM_TOOLS_CONFIG, default ~/.config/system).
-ENV_TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-}"
-ENV_JEV_URL="${JEV_URL:-}"
-ENV_JEV_MODEL="${JEV_MODEL:-}"
-ENV_JEV_TIMEOUT="${JEV_TIMEOUT:-}"
-ENV_JEV_RETRIES="${JEV_RETRIES:-}"
-ENV_JEV_ENABLED="${JEV_ENABLED:-}"
-ENV_JEV_SHADOW="${JEV_SHADOW:-}"
-ENV_JEV_FLAG_FILE="${JEV_FLAG_FILE:-}"
-ENV_JEV_TRACES_URL="${JEV_TRACES_URL:-}"
-ENV_JEV_TRACES_TIMEOUT="${JEV_TRACES_TIMEOUT:-}"
-# The comparison arms' settings (jev_compare.py), the corpus's
-# (jev_corpus.py) and the meter's (jev_meter.py) follow the same rule: a
-# suite's JEV_METER=0 must beat a JEV_METER=1 in the .env (sd:2799).
-COMPARE_VARS="JEV_METER JEV_METER_DB JEV_CORPUS JEV_CORPUS_DIR JEV_CORPUS_DAYS JEV_COMPARE_STAGES JEV_COMPARE_KEV_URL JEV_COMPARE_KEV_MODEL KEV_API_KEY KEV_MODEL
-  JEV_COMPARE_HAIKU_VIA JEV_COMPARE_HAIKU_MODEL JEV_COMPARE_HAIKU_USD_IN JEV_COMPARE_HAIKU_USD_OUT
-  JEV_COMPARE_ANTHROPIC_KEY JEV_COMPARE_ANTHROPIC_URL JEV_COMPARE_OPENROUTER_KEY
-  JEV_COMPARE_OPENROUTER_URL OPENROUTER_API_KEY JEV_COMPARE_BASETEN_KEY JEV_COMPARE_BASETEN_URL
-  JEV_COMPARE_BASETEN_MODEL BASETEN_API_KEY JEV_COMPARE_CLAUDE JEV_COMPARE_TIMEOUT JEV_COMPARE_LOG"
-# Set-ness is kept apart from the value: an exported empty switch, such as
-# `JEV_COMPARE_HAIKU_VIA= jev ...`, is an off arm and must beat an on-value
-# in the .env, so it is restored even when empty.
-for var in $COMPARE_VARS; do
-  eval "SET_$var=\${$var+set}; ENV_$var=\"\${$var:-}\""
-done
 st_source_env jev
-for var in $COMPARE_VARS; do
-  eval "was=\"\${SET_$var:-}\"; value=\"\${ENV_$var:-}\""
-  [ "$was" != set ] || eval "$var=\"\$value\"; export $var"
-done
 
 # The Kev arm asks the server local-kev runs, so it also reads that service's
 # <config>/kev/.env: a checkpoint, port or key changed for `kev.sh serve` is
@@ -77,21 +51,6 @@ fi
 for var in KEV_MODEL KEV_API_KEY JEV_COMPARE_KEV_URL; do
   eval "value=\${$var:-}"
   [ -z "$value" ] || export "$var"
-done
-[ -n "$ENV_TYPESAFE_API_KEY" ] && TYPESAFE_API_KEY="$ENV_TYPESAFE_API_KEY"
-[ -n "$ENV_JEV_URL" ]     && JEV_URL="$ENV_JEV_URL"
-[ -n "$ENV_JEV_MODEL" ]   && JEV_MODEL="$ENV_JEV_MODEL"
-[ -n "$ENV_JEV_TIMEOUT" ] && JEV_TIMEOUT="$ENV_JEV_TIMEOUT"
-[ -n "$ENV_JEV_RETRIES" ] && JEV_RETRIES="$ENV_JEV_RETRIES"
-[ -n "$ENV_JEV_ENABLED" ] && JEV_ENABLED="$ENV_JEV_ENABLED"
-[ -n "$ENV_JEV_SHADOW" ] && JEV_SHADOW="$ENV_JEV_SHADOW"
-[ -n "$ENV_JEV_FLAG_FILE" ] && JEV_FLAG_FILE="$ENV_JEV_FLAG_FILE"
-[ -n "$ENV_JEV_TRACES_URL" ] && JEV_TRACES_URL="$ENV_JEV_TRACES_URL"
-[ -n "$ENV_JEV_TRACES_TIMEOUT" ] && JEV_TRACES_TIMEOUT="$ENV_JEV_TRACES_TIMEOUT"
-for var in TYPESAFE_API_KEY JEV_URL JEV_MODEL JEV_TIMEOUT JEV_RETRIES \
-           JEV_ENABLED JEV_SHADOW JEV_FLAG_FILE JEV_TRACES_URL JEV_TRACES_TIMEOUT; do
-  eval "value=\${$var:-}"
-  [ -n "$value" ] && export "$var"
 done
 
 # The meter loads `sd_db` from the command pack's lib/ (jev_meter.py, sd:3279),

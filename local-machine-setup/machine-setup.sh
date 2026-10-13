@@ -72,7 +72,7 @@ STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite ag
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node mailto"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -443,6 +443,23 @@ manifest() {
     f="$PROFILE_DIR/$p.$kind"
     [ -f "$f" ] && sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f"
   done | grep -v '^$' | sort -u
+}
+
+# The node majors fnm keeps: common.node and <profile>.node, one per line.
+# With neither file, the three every machine had before they moved (sd:3966).
+node_versions() {
+  nv=$(manifest node)
+  printf '%s\n' "${nv:-18
+20
+24}"
+}
+
+# The bundle id that answers mailto: links: the first line of <profile>.mailto,
+# else of common.mailto, else Chrome, the handler before it moved (sd:3966).
+mailto_handler() {
+  mh=$(profile_entries "$PROFILE" mailto | head -1)
+  [ -n "$mh" ] || mh=$(profile_entries common mailto | head -1)
+  echo "${mh:-com.google.Chrome}"
 }
 
 # Every verb that reads a profile needs the profile directory. A missing one is
@@ -1513,13 +1530,13 @@ stage_services() {
 # ----------------------------------------------------------------- verbs ----
 
 # Developer tooling that doctor already checks for: fnm node versions,
-# rtk hooks, and Chrome as the mailto handler (via duti, in common.brew).
+# rtk hooks, and the mailto handler (via duti, in common.brew).
 # Everything is idempotent — present things are skipped, not reinstalled.
 stage_tooling() {
   echo "== tooling"
   if command -v fnm >/dev/null 2>&1; then
     have=$(fnm ls 2>/dev/null || :)
-    for v in 18 20 24; do
+    for v in $(node_versions); do
       case "$have" in
         *"v$v."*) echo "  ok      node $v (fnm)" ;;
         *)
@@ -1664,12 +1681,14 @@ stage_tooling() {
   if command -v duti >/dev/null 2>&1; then
     # duti -x only answers for file extensions; URL-scheme handlers have to
     # be read back from the LaunchServices store.
+    # LaunchServices stores the bundle id lower-cased, hence -i.
+    mh=$(mailto_handler)
     if defaults read com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers 2>/dev/null \
-       | grep -B2 'LSHandlerURLScheme = .*mailto' | grep -qi chrome; then
-      echo "  ok      mailto handler is Chrome"
+       | grep -B2 'LSHandlerURLScheme = .*mailto' | grep -qiF "\"$mh\""; then
+      echo "  ok      mailto handler is $mh"
     else
-      echo "  DIFFERS mailto handler is not Chrome"
-      run duti -s com.google.Chrome mailto:
+      echo "  DIFFERS mailto handler is not $mh"
+      run duti -s "$mh" mailto:
     fi
   else
     echo "  SKIP    duti not installed (it is in common.brew)"
@@ -3791,7 +3810,7 @@ cmd_report() {
 
   report_list() {
     case "$2" in
-      cron|macos|iterm2|spotlight)
+      cron|macos|iterm2|spotlight|mailto)
         profile_entries "$1" "$2" | sed 's/^/      /' ;;
       *)
         if command -v column >/dev/null 2>&1; then
@@ -4441,7 +4460,7 @@ cmd_doctor() {
   esac
 
   if command -v fnm >/dev/null 2>&1; then
-    for v in 18 20 24; do
+    for v in $(node_versions); do
       if fnm ls 2>/dev/null | grep -q "v$v\."; then
         echo "  ok      fnm node $v installed"
       else
@@ -5301,9 +5320,12 @@ HELPEOF
 
 Profiles layer: common.<kind> applies everywhere, <profile>.<kind> adds to it.
 Kinds are tap, brew, cask, mas, service, cron, agent, macos, app, obsidian, iterm2,
-spotlight — plain lists with # comments. macos lines are "<domain> <key> <type> <value>";
-only keys listed there are ever touched or captured. iterm2 holds a single folder path.
+spotlight, satellite, node, mailto — plain lists with # comments. macos lines are
+"<domain> <key> <type> <value>"; only keys listed there are ever touched or captured.
+iterm2 holds a single folder path.
 spotlight holds absolute paths; a leading ~ is this account's home.
+node lists the node majors fnm keeps (none listed anywhere: 18, 20, 24). mailto holds
+one bundle id, the profile's before common's (neither: com.google.Chrome).
 
 configuration (outside this repo; nothing private is committed here):
   $SYSTEM_TOOLS_CONFIG/machine-setup/

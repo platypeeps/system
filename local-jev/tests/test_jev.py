@@ -550,6 +550,14 @@ class TestEnvFile(StubServer):
         self.assertEqual(Stub.seen[-1]["auth"], "Bearer exported")
         self.assertEqual(Stub.seen[-1]["payload"]["model"], "exported")
 
+    def test_an_exported_empty_value_beats_the_env_file(self):
+        # One rule for every tool (sd:3553): an empty export wins too, so
+        # `TYPESAFE_API_KEY= jev ...` is unkeyed whatever the file holds.
+        link = self.copy("TYPESAFE_API_KEY=from-env-file\n")
+        done = self.run_link(link, ["noul", "q"], {"TYPESAFE_API_KEY": ""})
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertEqual(Stub.seen, [])
+
     def test_an_exported_shadow_switch_beats_the_env_file_both_ways(self):
         link = self.copy("TYPESAFE_API_KEY=k\nJEV_SHADOW=1\n")
         self.assertIn("shadow=on", self.run_link(link, ["status"], {}).stdout)

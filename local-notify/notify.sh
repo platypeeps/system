@@ -19,35 +19,12 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
 NOTIFY_ENV_FILE="$(st_config_dir notify)/.env"
 
-# <config>/notify/.env provides defaults only — values already in the environment win, so
-# `NTFY_TOPIC=other notify.sh ...` targets a different topic as expected.
-ENV_NTFY_TOPIC="${NTFY_TOPIC:-}"
-ENV_NTFY_SERVER="${NTFY_SERVER:-}"
-ENV_NTFY_TOKEN="${NTFY_TOKEN:-}"
-ENV_IMESSAGE_TO="${IMESSAGE_TO:-}"
-ENV_EMAIL_TO="${EMAIL_TO:-}"
-ENV_NOTIFY_EMAIL_TO="${NOTIFY_EMAIL_TO:-}"
-ENV_EMAIL_FROM="${EMAIL_FROM:-}"
-ENV_WORKSPACE_MCP_URL="${WORKSPACE_MCP_URL:-}"
-# JEV_NOTIFY joins them because it is this tool's kill switch: a caller that
-# writes `JEV_NOTIFY=0 notify.sh ...` to keep one message off the wire must
-# win over whatever .env says, exactly as an explicit NTFY_TOPIC does.
-ENV_JEV_NOTIFY="${JEV_NOTIFY:-}"
-[ -f "$NOTIFY_ENV_FILE" ] && . "$NOTIFY_ENV_FILE"
-[ -n "$ENV_JEV_NOTIFY" ] && JEV_NOTIFY="$ENV_JEV_NOTIFY"
-# Exported, not just set: `jev enabled JEV_NOTIFY` is a subprocess and reads
-# the environment. Sourcing .env above sets a shell variable only, so without
-# this a `JEV_NOTIFY=0` line in .env would be read by nothing and the stage
-# would keep running -- a kill switch that looks set and is not.
-[ -z "${JEV_NOTIFY:-}" ] || export JEV_NOTIFY
-[ -n "$ENV_NTFY_TOPIC" ]  && NTFY_TOPIC="$ENV_NTFY_TOPIC"
-[ -n "$ENV_NTFY_SERVER" ] && NTFY_SERVER="$ENV_NTFY_SERVER"
-[ -n "$ENV_NTFY_TOKEN" ]  && NTFY_TOKEN="$ENV_NTFY_TOKEN"
-[ -n "$ENV_IMESSAGE_TO" ] && IMESSAGE_TO="$ENV_IMESSAGE_TO"
-[ -n "$ENV_EMAIL_TO" ]   && EMAIL_TO="$ENV_EMAIL_TO"
-[ -n "$ENV_NOTIFY_EMAIL_TO" ] && NOTIFY_EMAIL_TO="$ENV_NOTIFY_EMAIL_TO"
-[ -n "$ENV_EMAIL_FROM" ] && EMAIL_FROM="$ENV_EMAIL_FROM"
-[ -n "$ENV_WORKSPACE_MCP_URL" ] && WORKSPACE_MCP_URL="$ENV_WORKSPACE_MCP_URL"
+# <config>/notify/.env provides defaults only — values already in the environment
+# win, an empty one too (st_source_env, sd:3553), so `NTFY_TOPIC=other notify.sh ...`
+# targets a different topic, and a caller's `JEV_NOTIFY=0` keeps one message off
+# the wire whatever the file says. The file's values are exported, so a
+# `JEV_NOTIFY=0` line there reaches `jev enabled JEV_NOTIFY`, a subprocess.
+st_source_env notify
 
 TITLE="Alert"
 PRIORITY="default"
