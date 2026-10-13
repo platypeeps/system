@@ -106,9 +106,11 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 `machine-setup.env.example` lists the optional settings:
 `MACHINE_SETUP_SSH_KEYS`, `MACHINE_SETUP_AGENT_GLOBS`,
 `MACHINE_SETUP_PLACEHOLDER_EXPECTED` and `MACHINE_SETUP_PROFILES`. Copy it to
-`machine-setup.env` in the config folder. The obsidian stage reads
+`machine-setup.env` in the config folder. An exported value wins over the
+file, an empty one too, as for every tool's `.env`. The obsidian stage reads
 `OBSIDIAN_VAULT`, and every tool `SYSTEM_TOOLS_LABEL_PREFIX`, from
-`<config>/shared.env`; an exported value wins.
+`<config>/shared.env`; a `machine-setup.env` that still sets either name
+overrides it for machine-setup.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
 write from a checkout behind its upstream. A file it changes that git does not

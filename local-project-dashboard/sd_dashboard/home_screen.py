@@ -133,7 +133,7 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedire
 
 
 def _settings(environ) -> tuple[str, str]:
-    """local-ha-mcp's REST base and token: the environment wins over `<config>/ha-mcp/.env`, a `change-me` value is unset."""
+    """local-ha-mcp's REST base and token: the environment, an empty value too, wins over `<config>/ha-mcp/.env`; a `change-me` value is unset."""
     import system_tools_config  # documents._config_dir put lib/ on sys.path
 
     try:
@@ -142,7 +142,7 @@ def _settings(environ) -> tuple[str, str]:
         raise _Failed("HA not configured", f"<config>/ha-mcp/.env was not read: {error.__class__.__name__}") from None
     values = {}
     for name in ("HA_TOKEN", "HA_MCP_URL"):
-        value = environ.get(name) or saved.get(name) or ""
+        value = system_tools_config.setting(name, saved, environ) or ""
         values[name] = "" if "change-me" in value else value
     missing = [name for name, value in values.items() if not value]
     if missing:

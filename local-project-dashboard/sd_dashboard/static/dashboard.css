@@ -114,7 +114,7 @@ summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 textarea:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
 .lead { font-size: 1.2rem; color: var(--ink-quiet); }
-.capture-panel, .control-panel, .secondary-panel {
+.capture-panel, .control-panel {
   border: 1px solid var(--rule); border-radius: 14px;
   padding: 1.25rem; margin: 1.25rem 0; background: var(--card);
 }
@@ -136,8 +136,7 @@ textarea:focus-visible, select:focus-visible { outline: 3px solid var(--focus); 
   background: var(--paper); color: var(--ink);
 }
 .field textarea { resize: vertical; }
-.field-row, .item-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-.item-controls { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: center; }
 .form-actions .command { font-size: 0.75rem; background: transparent; color: var(--ink-quiet); }
 .primary, .button-link {
@@ -152,16 +151,14 @@ textarea:focus-visible, select:focus-visible { outline: 3px solid var(--focus); 
 .form-result[data-error] { color: var(--stop); }
 .compact-form { font-size: 0.9rem; }
 .compact-form .command { display: block; }
-.secondary-panel > summary { min-height: 44px; cursor: pointer; font-weight: 600; }
 .writing-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; align-items: end; margin: 1.5rem 0; }
-.writing-controls > .workflow-form { margin: 1rem 0; }
-.writing-controls > details > summary, .control-panel > details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.control-panel > details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .cli-equivalents { margin-top: 2rem; border-top: 1px solid var(--rule); color: var(--ink-quiet); padding-top: 0.75rem; }
 .cli-equivalents summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .cli-equivalents li { margin: 0.6rem 0; }
 @media (max-width: 46rem) {
-  .item-controls, .field-row, .writing-filters { grid-template-columns: minmax(0, 1fr); }
-  .capture-panel, .control-panel, .secondary-panel { padding: 1rem; }
+  .field-row, .writing-filters { grid-template-columns: minmax(0, 1fr); }
+  .capture-panel, .control-panel { padding: 1rem; }
 }
 
 code, .command {
@@ -334,7 +331,6 @@ code, .command {
 }
 .status-blocked { color: var(--stop); }
 .status-ready_to_send { color: var(--warn); }
-.status-done { color: var(--good); }
 
 /* -- now: the band is a class the server named, never a colour by kind -- */
 .now-table .now-band { width: 6rem; }
@@ -357,35 +353,6 @@ code, .command {
 .protection-summary { font-weight: 600; }
 .protection-detail { display: inline; }
 .protection-sentence { margin: .25rem 0 0; font-size: .85rem; max-width: 28rem; overflow-wrap: anywhere; }
-
-/* -- history, notes, artifact -------------------------------------------- */
-
-.history { padding-left: 1.1rem; }
-.history-entry { margin-bottom: 0.35rem; }
-.status-change { font-weight: 500; }
-.history-entry time { color: var(--ink-quiet); font-size: 0.9rem; }
-.artifact {
-  background: var(--card);
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 1rem;
-  max-width: 42rem;
-}
-.artifact pre {
-  background: var(--paper);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  padding: 0.75rem;
-  white-space: pre-wrap;
-}
-.artifact blockquote {
-  margin: 0 0 1rem;
-  padding-left: 0.9rem;
-  border-left: 3px solid var(--rule);
-  color: var(--ink-quiet);
-}
-.shadow dt { color: var(--ink-quiet); }
-.shadow dd { margin: 0 0 0.5rem; }
 
 /* -- charts -------------------------------------------------------------- */
 
@@ -440,23 +407,6 @@ code, .command {
 .operation-actions { display: flex; flex-wrap: wrap; gap: .7rem; align-items: start; }
 .operation-request { border-left: .2rem solid currentColor; padding-left: .7rem; }
 
-/* Whole labels are touch targets; checkboxes keep their native appearance. */
-.selection-option {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-height: 44px;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--rule);
-  overflow-wrap: anywhere;
-}
-.selection-option input[type="checkbox"] {
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
-}
-.selection-option:has(input:disabled) { color: var(--ink-quiet); }
 .skill-card .operation-actions { align-items: start; }
 
 #command-palette { width:min(48rem,calc(100vw - 2rem)); max-height:85dvh; overflow:auto; padding:1.25rem; border:1px solid var(--rule); border-radius:.8rem; background:var(--card); color:var(--ink); }

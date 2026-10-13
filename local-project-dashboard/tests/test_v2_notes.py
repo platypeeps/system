@@ -204,6 +204,16 @@ class TheDailyNote(Fixture):
         self.write("2026-09-06.md", "from the shared vault")
         self.assertEqual(self.daily()["text"], "from the shared vault")
 
+    def test_an_exported_empty_vault_beats_shared_env(self):
+        """sd:3964: the obsidian tools keep an exported empty value and fall to their default, not to shared.env."""
+        os.environ["OBSIDIAN_VAULT"] = ""
+        self.config.mkdir(parents=True, exist_ok=True)
+        (self.config / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        self.write("2026-09-06.md", "from the shared vault")
+        with mock.patch.dict(os.environ, {"HOME": str(Path(self.tmp.name) / "home")}):
+            note = self.daily()
+        self.assertEqual(note["state"], "unconfigured")
+
     def test_no_vault_anywhere_is_vault_not_configured(self):
         os.environ.pop("OBSIDIAN_VAULT")
         with mock.patch.dict(os.environ, {"HOME": str(Path(self.tmp.name) / "home")}):
@@ -567,6 +577,18 @@ class TheMail(NoVault, Zoned, ScreenCase):
         (self.config / "notify" / ".env").write_text("EMAIL_FROM=from-config@example.test\n")
         self.assertEqual(notes_screen.mail(now=NOW)["state"], "ok")
         self.assertEqual(self.tools()[0][1]["user_google_email"], "from-config@example.test")
+
+    def test_exported_empty_values_beat_local_notify_s_config(self):
+        """sd:3964: notify.sh keeps an exported empty value, so neither the file's account nor its URL is used."""
+        (self.config / "notify").mkdir(parents=True)
+        (self.config / "notify" / ".env").write_text(f"EMAIL_FROM=from-config@example.test\nWORKSPACE_MCP_URL={self.url}\n")
+        os.environ["EMAIL_FROM"] = ""
+        out = notes_screen.mail(now=NOW)
+        self.assertEqual(out["state"], "unconfigured")
+        os.environ.update(EMAIL_FROM="operator@example.test", WORKSPACE_MCP_URL="")
+        with mock.patch.object(notes_screen, "MAIL_URL", "http://127.0.0.1:9/mcp"):
+            out = notes_screen.mail(now=NOW)
+        self.assertEqual((out["state"], self.server.calls), ("down", []))
 
     def test_no_account_is_mail_not_configured_and_calls_nothing(self):
         os.environ.pop("EMAIL_FROM")

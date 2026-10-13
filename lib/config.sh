@@ -83,7 +83,8 @@ st_config_file() {
     esac
 }
 
-# st_source_env <tool>: source <config>/<tool>/.env when it exists, with
+# st_source_env <tool> [file]: source <config>/<tool>/<file> (default .env,
+# machine-setup reads machine-setup.env) when it exists, with
 # `set -a` so its assignments are exported. Returns 0 either way; a missing
 # file is fine when the values are exported. A value in the environment wins
 # over the file, an empty one too, so `VAR=x tool start` overrides it for one
@@ -94,7 +95,7 @@ st_config_file() {
 # counts: a default the script assigned to an unexported variable before this
 # call loses to the file.
 st_source_env() {
-    _st_env="$SYSTEM_TOOLS_CONFIG/$1/.env"
+    _st_env="$SYSTEM_TOOLS_CONFIG/$1/${2:-.env}"
     if [ -f "$_st_env" ]; then
         _st_n=0
         for _st_name in $(grep -o -E '[A-Za-z_][A-Za-z0-9_]*:?=' "$_st_env" | sed 's/:*=$//'); do
