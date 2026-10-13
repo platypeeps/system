@@ -68,7 +68,7 @@
         <p class="tally" id="tally"></p>
       </div>
       <table class="ledger" aria-labelledby="now-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">What</th><th scope="col">Detail</th><th scope="col">Source</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <thead id="rows-head"></thead>
         <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
       </table>
       <p class="filtered" id="filtered" hidden></p>
@@ -82,7 +82,7 @@
         <p class="tally" id="active-tally"></p>
       </div>
       <table class="ledger active" aria-labelledby="active-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Session</th><th scope="col">Started</th><th scope="col" class="num">Elapsed</th></tr></thead>
+        <thead id="active-head"></thead>
         <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
       </table>
       <p class="filtered" id="active-note" hidden></p>
@@ -95,7 +95,7 @@
         <p class="tally" id="work-tally"></p>
       </div>
       <table class="ledger work" aria-labelledby="work-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <thead id="work-head"></thead>
         <tbody id="work"><tr class="empty"><td colspan="4">Reading work…</td></tr></tbody>
       </table>
     </section>
@@ -107,7 +107,7 @@
         <p class="tally" id="decisions-tally"></p>
       </div>
       <table class="ledger decisions" aria-labelledby="decisions-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Question</th><th scope="col" class="act">Choose</th></tr></thead>
+        <thead id="decisions-head"></thead>
         <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
       </table>
       <p class="filtered" id="decisions-review" hidden></p>

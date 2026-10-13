@@ -55,7 +55,7 @@ writes; there is no dismiss.
 
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
-`sd task note N --kind question --body $'Which store?\nOption: Pack store kind\nOption: Database rows'`.
+`sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.
 Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,
 `Ruling on note #<id>: <option>`, and resolves the question, in one transaction under the item's revision, so a
 stale page writes nothing and reads the list again. `sd task show N` prints both. A prose "Decision needed"

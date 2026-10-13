@@ -6,7 +6,7 @@ A decision is a `question` note whose body names its choices, one line each:
     Option: A pack store kind
     Option: Workflow database rows
 
-`sd task note N --kind question --body "$(printf 'Q\\nOption: A\\nOption: B')"` writes one. A line that starts
+`sd task note N "$(printf 'Q\\nOption: A\\nOption: B')" --kind question` writes one. A line that starts
 `Option:` is a choice and every other line is the question. A repeated choice counts once, and a note with fewer
 than two choices is a plain question, not a decision. An old prose "Decision needed" comment stays a comment: it
 lists nothing here and gets no buttons, because prose options are not parsed.

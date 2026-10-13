@@ -693,7 +693,7 @@
   const typedP = title => { const p = title.match(/\bp([1-4])\b/i); return p ? [+p[1], title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim()] : [null, title]; };
   // The CLI files into the checkout it runs in, so a repo is a cd; with none, --no-repo.
   const captureCli = ({ kind, title, item, priority, repo }) => {
-    if (kind === 'note') return `sd task note ${item} --kind comment --body ${shq(title)}`;
+    if (kind === 'note') return `sd task note ${item} ${shq(title)} --kind comment`;
     const [p, named] = typedP(title), where = repo ? `cd ${/^~?[\w./-]+$/.test(repo) ? repo : shq(repo)} && ` : '';
     return `${where}sd task add${repo ? '' : ' --no-repo'}${kind === 'followup' ? ' --kind followup' : ''}${p || priority ? ` --priority ${p || priority}` : ''} ${shq(named)}`;
   };

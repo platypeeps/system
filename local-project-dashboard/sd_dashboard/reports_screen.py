@@ -180,8 +180,9 @@ def report_controls(connection, row, revision):
         # acknowledge takes a named `who`, still finishes such a report and
         # the notice names it.
         return tag("section", tag("h2", "Report source"),
-            tag("p", "This report's stored fields are missing or not valid JSON, so its source cannot be "
-                     "read and acknowledging it here is disabled. Acknowledge it from the command line: ",
+            tag("p", "This report's stored fields are missing or not valid JSON, so its source cannot be read. "
+                     "This page withholds Acknowledge: one click would close a report nobody has read. "
+                     f"Read its log, then acknowledge report {row['id']} in a terminal: ",
                 tag("code", f"sd reports acknowledge {row['id']}"), ".", class_="notice"),
             class_="control-panel")
     provenance = fields.get("report", {}) if isinstance(fields, dict) else {}

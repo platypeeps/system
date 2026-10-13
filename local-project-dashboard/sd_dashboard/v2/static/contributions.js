@@ -45,7 +45,13 @@ addEventListener('DOMContentLoaded', () => {
   const tot = (k, sc = scope) => (sc === 'all' ? ['internal', 'external'] : [sc]).reduce((a, s) => a + ((DOC.counts || {})[s]?.[k] || 0), 0);
   const openN = sc => ORDER.reduce((a, l) => a + tot(l, sc), 0);
   const words = r => [r.title, r.repo, r.url, LABEL[r.lane], ...(r.reasons || [])].join(' ').toLowerCase();
-  const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))); };
+  // The header sorts the rows inside their lane (sd:3455, the shell's list grammar). Observed, newest first, is the server's
+  // order and the default; a tie keeps it. The lane carries the state, so State has no order of its own.
+  const SORTS = { what: r => String(r.title || '').toLowerCase(), at: r => Date.parse(r.observed_at) || 0 };
+  const LIST = { sort: 'at', dir: -1, size: 50 }, L = window.shell.list.listParams(u0, { ...LIST, page: 1 }, { sorts: Object.keys(SORTS), size: LIST.size });
+  const COLS = [[null, html`<span class="sr">State</span>`], ['what', 'Contribution'], ['at', 'Observed'], [null, 'Act']];
+  const order = (a, b) => { const x = SORTS[L.sort](a), y = SORTS[L.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir; };
+  const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))).sort(order); };
   // The reader (read.js) puts the objects adopt returns and retires the ones a reading no longer lists: the pick is dropped
   // and the object becomes a type no command is on, so no stale Acknowledge can act.
   function adopt(doc) {
@@ -184,6 +190,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   function renderRows() {
     const all = scoped(), rows = shown(), v = q.value.trim();
+    put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L));
     const head = l => html`<tr class="lane" data-lane="${l}"><td colspan="4"><span class="label">${LABEL[l]} · ${rows.filter(r => r.lane === l).length}</span></td></tr>`;
     putKeep(tbody, html`${rows.length ? ORDER.filter(l => rows.some(r => r.lane === l)).map(l => [head(l), rows.filter(r => r.lane === l).map(rowHtml)])
       : html`<tr class="lane"><td colspan="4"><span class="label">${all.length ? `Nothing matches${v ? ` “${v}”` : ''}` : empty()}</span></td></tr>`}`);
@@ -192,7 +199,8 @@ addEventListener('DOMContentLoaded', () => {
     f.hidden = !(lane || v || cut);
     f.textContent = [lane || v ? (rows.length ? `${rows.length} of ${all.length} shown${lane ? ' · ' + LABEL[lane] : ''}${v ? ` · “${v}”` : ''}. Esc clears.` : `Nothing matches${v ? ` “${v}”` : ''}. Esc clears.`) : '', cut].filter(Boolean).join(' ');
     put(document.getElementById('tally'), html`<span class="g-caution">▲ ${n(tot('newly_unblocked') + tot('awaiting_you'))} yours</span><span class="g-queued">◌ ${n(tot('awaiting_them'))} theirs</span><span class="g-unknown">▨ ${n(tot('unknown'))} unknown freshness</span>`);
-    window.shell.url({ ...(scope !== 'all' && { scope }), ...(lane && { lane }), ...(v && { q: v }) });
+    const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
+    window.shell.url({ ...(scope !== 'all' && { scope }), ...(lane && { lane }), ...(v && { q: v }), ...sort });
   }
 
   // ---------- Settled: counts per repository; no dates ----------
@@ -304,6 +312,8 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Events ----------
   document.getElementById('annunciator').addEventListener('click', e => { const c = e.target.closest('button.cell'); if (c) setLane(c.dataset.cell); });
   document.getElementById('scope').addEventListener('change', e => setScope(e.target.value));
+  document.getElementById('rows-head').addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, applyFilter); });
+  put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   document.addEventListener('contributions:scope', e => setScope(e.detail));
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
   tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });

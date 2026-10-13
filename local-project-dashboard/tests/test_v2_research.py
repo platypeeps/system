@@ -455,6 +455,25 @@ class TheScript(ScreenCase):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
 
+    def test_a_header_sorts_the_board_and_the_url_keeps_it(self):
+        # sd:3455: the shell's sort header. State is the default; its bands draw only in that order.
+        head = "ELS['rows-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'what' } } : null } });"
+        ids = r'<tr data-id="([^"]+)"'
+        out = self.run_page(f"R.head = ELS['rows-head'].html; R.rows = ELS.rows.html; {head} R.up = ELS.rows.html; R.head2 = ELS['rows-head'].html;"
+                            f" {head} R.down = ELS.rows.html; R.url = String(OUT.urls[OUT.urls.length - 1]);")
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["s", "what", "stage", "render", "last"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head"]), [("ascending", "s")])
+        self.assertEqual(re.findall(ids, out["R"]["rows"]), ["research/beta", "group/gamma", "research/alpha"])
+        self.assertIn("band-start", out["R"]["rows"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head2"]), [("ascending", "what")])
+        self.assertEqual(re.findall(ids, out["R"]["up"]), ["research/alpha", "research/beta", "group/gamma"])
+        self.assertNotIn("band-start", out["R"]["up"])
+        self.assertEqual(re.findall(ids, out["R"]["down"]), ["group/gamma", "research/beta", "research/alpha"])
+        self.assertIn("sort=what", out["R"]["url"])
+        self.assertIn("dir=desc", out["R"]["url"])
+        out = self.run_page("R.rows = ELS.rows.html;", search="?sort=what&dir=desc")
+        self.assertEqual(re.findall(ids, out["R"]["rows"]), ["group/gamma", "research/beta", "research/alpha"])
+
     def test_render_and_review_are_copy_only_and_name_the_checkout(self):
         out = self.run_page("""const beta = C.get('research/beta');
 R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cmd(id).cli(beta), cmd(id).primary ? cmd(id).primary(beta) : null]);

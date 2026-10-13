@@ -292,7 +292,7 @@ function show(id) {
   const strip = CAD[r.job] ? html`<h3>Last 7 days</h3><p class="tally">${DAYS.map(d => { const [s, g, t] = mark(r.job, d); return html`<span title="${d}: ${t}"><span class="${glyphClass(s)}" aria-hidden="true">${g}</span> ${dayName(d)}<span class="sr"> ${t}</span></span>`; })}</p>` : '';
   const rep = x.repeats ? `${x.repeats.count} runs, last ended ${x.repeats.last ? new Date(x.repeats.last).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'not recorded'}` : 'one run';
   // build: a report's open followups, and fields the store cannot parse, are named where the design had only the attention line.
-  const waits = !x.fields_read ? html`<p class="why">This report's stored fields are missing or not valid JSON, so its source cannot be read. Acknowledge it from the command line: <code>sd reports acknowledge ${x.id}</code>.</p>`
+  const waits = !x.fields_read ? html`<p class="why">This report's stored fields are missing or not valid JSON, so its source cannot be read. This page withholds Acknowledge: one click would close a report nobody has read. Read its log, then acknowledge report ${x.id} in a terminal: <code>sd reports acknowledge ${x.id}</code>.</p>`
     : r.open && x.followups.length ? html`<p class="why">An open followup (${x.followups.map(n => `note ${n}`).join(', ')}) holds this report. Resolve it with <code>sd note resolve ${x.followups[0]}</code>, then acknowledge.</p>` : '';
   put(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${G[r.s]}</span> Database report #${x.id} · ${r.open ? (r.attn ? 'needs attention' : 'open') : 'acknowledged'}</p>
     <h2>${r.what}</h2>
