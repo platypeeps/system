@@ -205,6 +205,24 @@ class TheDocument(ScreenCase):
         self.assertEqual(got["runs"]["2026-09-09"], [1, 0])
         self.assertEqual(got["runs"]["2026-09-08"], [0, 0])
 
+    def test_a_log_that_cannot_be_read_is_no_log_with_its_reason_and_a_fifo_does_not_block(self):
+        """sd:3532 (review 2026-10-12, A1 F7, F11): Reports read the log as Management does, without blocking."""
+        import os
+        import threading
+
+        (self.dir / "folder.log").mkdir()
+        os.mkfifo(self.dir / "pipe.log")
+        got = {}
+        reader = threading.Thread(target=lambda: got.update({name: reports_screen.job_log(self.dir / f"{name}.log", DAYS)
+                                                             for name in ("folder", "pipe")}), daemon=True)
+        reader.start()
+        reader.join(5)
+        self.assertFalse(reader.is_alive(), "reading a FIFO log blocked the document")
+        for name in ("folder", "pipe"):
+            with self.subTest(log=name):
+                self.assertEqual((got[name]["log"], got[name]["runs"]), (False, {}))
+                self.assertTrue(got[name]["reason"].startswith("the log is "), got[name]["reason"])
+
     def test_a_log_longer_than_the_read_says_where_the_read_began(self):
         lines = [f"[big] 2026-09-0{n}T01:00:00-0600 done" for n in range(4, 10) for _ in range(200)]
         path = self.dir / "big.log"
@@ -423,6 +441,11 @@ class TheScript(ScreenCase):
         self.assertEqual(out["R"]["reg"], COMMANDS)
         # Acknowledge is the one command with an Undo: reporting.reopen (sd:2395).
         self.assertEqual(out["R"]["undo"], ["report.ack"])
+
+    def test_open_item_goes_to_the_reports_row_on_tasks(self):
+        """sd:3526 (review 2026-10-12, A2 F12): Reports opened the classic /item/<n> page; Management opens Tasks."""
+        out = self.run_page("R.toast = cmd('report.show').run({ n: 42 }); R.href = location.href;")
+        self.assertEqual((out["R"]["href"], out["R"]["toast"]), ("/tasks?row=42", "#42 opens in Tasks"))
 
     def test_show_log_prints_the_line_management_prints(self):
         """sd:3525 (review 2026-10-12, A2 F13): one cron-jobs line on every page, from commands.js; no checkout path of its own."""

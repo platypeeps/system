@@ -1056,6 +1056,9 @@ addEventListener('DOMContentLoaded', () => {
       drawn = true;
       const q = new URLSearchParams(location.search), row = shell.row();
       if (row && byKey(row)) selected = row;
+      // sd:3526: a linked item the read does not list, a quiet report or one done before the week, opens on its item page
+      // rather than the first card in its place. READ is set only by a read that answered.
+      else if (row && READ) { location.replace(shell.itemPage(row)); return; }
       readFilterURL();
       setView(['list', 'board', 'matrix'].includes(q.get('view')) ? q.get('view') : 'board');
     } else { subhead(); render(); }

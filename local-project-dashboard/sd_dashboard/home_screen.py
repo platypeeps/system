@@ -47,7 +47,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .documents import _config_dir
+from .documents import _config_dir, pipe_lines
 
 __all__ = ["CONFIG", "NOT_LISTED", "NO_TILES", "TIMEOUT", "TYPES", "WRITES_REASON", "document", "parse"]
 
@@ -79,11 +79,7 @@ TYPES = ("alarm", "lock", "toggle", "sensor")
 def parse(text: str) -> tuple[dict | None, list[dict], list[str]]:
     """The headline, the groups in file order, and one problem per line that was not read."""
     headline, groups, problems, seen = None, {}, [], set()
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = [f.strip() for f in line.split("|")]
+    for number, _, fields in pipe_lines(text):
         kind, kind_type = fields[0], None
         if kind == "headline" and len(fields) in (3, 4):
             group, entity, name = None, fields[1], fields[2]

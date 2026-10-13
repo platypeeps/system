@@ -52,5 +52,13 @@ class OneDeclaration(unittest.TestCase):
                 self.assertLess(scripts.index(SHARED), scripts.index(name))
 
 
+class OneItemAddress(unittest.TestCase):
+    def test_only_the_shell_builds_an_items_address(self):
+        """sd:3526 (review 2026-10-12, A2 F12): Reports linked /item/<n>, Management /tasks?row=<n>, and five pages wrote
+        the address themselves. Every page links an item through shell.itemHref and opens one through shell.openItem."""
+        built = re.compile(r"/item/\$\{|tasks\?row=|\.Tasks\b")
+        self.assertEqual(sorted(name for name, body in SCRIPTS.items() if built.search(body)), ["shell.js"])
+
+
 if __name__ == "__main__":
     unittest.main()
