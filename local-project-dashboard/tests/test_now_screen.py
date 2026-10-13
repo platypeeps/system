@@ -95,6 +95,32 @@ class Ranking(ScreenCase):
         self.assertEqual(rows[1]["what"], "dirty-only has 1 uncommitted file")
         self.assertEqual(rows[1]["detail"], "main · last commit 2026-09-01")
 
+    def test_a_pinned_checkout_behind_its_origin_is_a_row_naming_refresh(self):
+        """sd:3539: the hub ran a merged fix only once someone remembered refresh;
+        Now says the pinned checkout is behind, as repo-sync's pin_state does."""
+        rows = now_screen.backbone_rows([
+            {**repo("system", branch="HEAD"), "default": "main", "pinned_behind": 3},
+            {**repo("level", branch="HEAD"), "default": "main", "pinned_behind": 0},
+            {**repo("unread", branch="HEAD"), "default": "main", "pinned_behind": None},
+            {**repo("dirty-pin", dirty=1, branch="HEAD"), "default": "main", "pinned_behind": 1},
+        ])
+        self.assertEqual([(row["rank"], row["id"], row["kind"]) for row in rows], [
+            (now_screen.PINNED, "pinned:system:3", "pinned"),
+            (now_screen.PINNED, "pinned:dirty-pin:1", "pinned"),
+            (now_screen.DIRTY, "dirty:dirty-pin:1", "dirty"),
+        ])
+        self.assertEqual(rows[0]["what"], "system pinned 3 behind origin/main")
+        self.assertIn("refresh: local-repo-sync/repo-sync.sh refresh", rows[0]["detail"])
+        self.assertEqual(now_screen.band(now_screen.PINNED), "look")
+
+    def test_a_pinned_count_that_is_not_a_number_darkens_the_repos_source(self):
+        bad = {**repo("system", branch="HEAD"), "pinned_behind": "3"}
+        with self.assertRaises(ValueError):
+            now_screen._repos(lambda area: fleet_document(area, repos=[bad]))
+        good = {**repo("system", branch="HEAD"), "default": "main", "pinned_behind": 2}
+        self.assertEqual([row["id"] for row in now_screen._repos(lambda area: fleet_document(area, repos=[good]))],
+                         ["pinned:system:2"])
+
     def test_pr_rows_take_the_pulls_that_need_you_and_rank_the_quiet_ones_louder(self):
         today = "2026-09-20"
         rows = now_screen.pr_rows([
