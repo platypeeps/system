@@ -46,9 +46,8 @@ partly running or failing. `local-health-check` reads those codes.
   `restart: unless-stopped` instead of `--rm`, so Docker brings them back
   after a restart. Docker Desktop must start at login for that to happen.
   `status` reports 1 while the marker says started and the containers are missing.
-- **Ports.** 4317/4318 belong to `local-opentelemetry-collector`, 4327/4328
-  to `local-jaeger` and 6006 to `local-phoenix`. This service takes
-  4337/4338, 6016 and 13137 (collector health), so all can run at once.
+- **Ports.** 4317/4318 belong to `local-opentelemetry-collector`. This service
+  takes 4337/4338, 6016 and 13137 (collector health), so both can run at once.
 - **Containers reach it through the host.** A container exports to
   `http://host.docker.internal:4337`; `127.0.0.1` inside a container is the
   container itself.

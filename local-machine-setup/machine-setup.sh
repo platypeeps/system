@@ -3206,7 +3206,7 @@ triage_file() {
 # docker. A list would go stale the first time a folder is added.
 #
 # Comments are stripped before the docker test, and that is not a nicety:
-# local-nginx runs `brew services start nginx` and keeps a `docker run -p
+# one wrapper ran `brew services start nginx` and kept a `docker run -p
 # 8083:80` line commented underneath. Reading comments called it a docker
 # service on a port it does not publish, and invented a conflict with
 # google_workspace_mcp that does not exist.
