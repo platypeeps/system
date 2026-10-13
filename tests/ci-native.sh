@@ -12,7 +12,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage: ci-native.sh preflight
-       ci-native.sh leg shared|dashboard|tools
+       ci-native.sh leg repo-sync|dashboard|tools|shared
 
   preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
              product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
@@ -308,8 +308,12 @@ case "$SUITE_LEG" in
   dashboard)
     run_suite dashboard sh local-project-dashboard/dashboard.sh test
     ;;
-  tools)
+  repo-sync)
+    # The longest suite, alone in its leg: in a tools shard it set the
+    # gate's floor (sd:3750).
     run_suite repo-sync sh local-repo-sync/repo-sync.sh test -v
+    ;;
+  tools)
     run_suite bin-links sh local-bin-links/bin-links.sh test -v
     run_suite agent-prompt sh local-agent-prompt/agent-prompt.sh test -v
     run_suite health-check sh local-health-check/health-check.sh test -v

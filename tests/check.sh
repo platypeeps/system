@@ -15,7 +15,10 @@ ROOT="$(cd "$DIR/.." && pwd)"
 PIN_FILE="$ROOT/.sd-pack-rev"
 PACK_URL="${CI_PACK_URL:-https://github.com/platypeeps/sd-ai-command-pack.git}"
 PACK_CLONE="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
-LEGS="shared dashboard tools"
+# Longest first, so that when the jobs run fewer at a time (below) the long
+# ones start at once. repo-sync is one suite in a leg of its own (sd:3750):
+# dealt into a tools shard it held that shard to 13 minutes.
+LEGS="repo-sync dashboard tools shared"
 TOOLS_SHARDS=3
 
 usage() {
@@ -24,8 +27,9 @@ Usage: check.sh run
        check.sh suite <name>
        check.sh legs
 
-  run    the preflight, then the three legs and (on macOS) each suite of
-         tests/macos-only-suites.txt in parallel; exits 1 when any fails
+  run    the preflight, then the legs and (on macOS) each suite of
+         tests/macos-only-suites.txt in parallel; the first failure stops
+         the rest, and the run exits 1
   suite  the preflight, then the one suite named by a run_suite line in
          tests/ci-native.sh or a line of tests/macos-only-suites.txt, in the
          same environment; `make test SUITE=<name>` runs this
@@ -115,7 +119,60 @@ echo "check.sh: pack $pin, $("$python" --version)"
 # socket under /var/folders/.../T/ plus the temp directories nested in it
 # goes past that, so local-mirror-sync's socket tests failed there.
 work="$(mktemp -d /tmp/system-check.XXXXXX)"
-trap 'rm -rf "$work"' EXIT
+
+# sd:3749: the first failed job stops the run. A lane runs each job through
+# own_group, whose leader takes a process group of its own, writes its id to
+# $work/<job>.pid, and then, when $work/stop exists, marks the job stopped and
+# exits 143 instead of starting it. signal_jobs marks each job named by a pid
+# file stopped and signals its group. The stopping lane creates stop before it
+# reads the files, so either it sees the leader's id or the leader sees stop.
+# When a job ends, its lane kills the group, so nothing the job left running
+# outlives it, then removes the pid file.
+LEADER='import os, sys
+os.setpgid(0, 0)
+with open(sys.argv[1] + ".pid", "w") as pid_file:
+    pid_file.write(str(os.getpid()))
+if os.path.isdir(sys.argv[2]):
+    open(sys.argv[1] + ".stopped", "w").close()
+    sys.exit(143)
+os.execvp(sys.argv[3], sys.argv[3:])'
+own_group() { "$python" -I -c "$LEADER" "$work/$job" "$work/stop" "$@"; }
+signal_group() {
+  group="$(cat "$2" 2>/dev/null)" || return 0
+  case "$group" in ''|*[!0-9]*) return 0 ;; esac
+  kill -"$1" "-$group" 2>/dev/null || :
+}
+signal_jobs() {
+  for pid_file in "$work"/*.pid; do
+    [ -f "$pid_file" ] || continue
+    : > "${pid_file%.pid}.stopped"
+    signal_group "$1" "$pid_file"
+  done
+}
+# TERM, then KILL for a job still running after about 5 seconds.
+stop_jobs() {
+  signal_jobs TERM
+  wait_for=5
+  while [ "$wait_for" -gt 0 ] && running_jobs; do
+    sleep 1
+    wait_for=$((wait_for - 1))
+  done
+  signal_jobs KILL
+}
+running_jobs() {
+  for pid_file in "$work"/*.pid; do
+    [ ! -f "$pid_file" ] || return 0
+  done
+  return 1
+}
+# A job's group no longer hears a signal sent to this script's group, so a
+# signal ends the script, and its exit ends every job still running. It waits
+# for the lanes, which then see stop and claim nothing, before it removes
+# $work: a lane left running could claim a job once stop was gone.
+trap 'mkdir "$work/stop" 2>/dev/null || :; signal_jobs TERM; signal_jobs KILL; wait; rm -rf "$work"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 tool_path="$env_dir/bin"
 for tool in git sqlite3 lsof ps rsync make; do
   tool_path="$tool_path:$(dirname "$(command -v "$tool")")"
@@ -123,9 +180,10 @@ done
 tool_path="$tool_path:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Each job gets its own HOME and TMPDIR under $work/<job>: parallel suites must not share a home's state.
+# A lane sets `lead=own_group`, so each job leads a process group of its own (sd:3749).
 isolated() {
   mkdir -p "$work/$job/home" "$work/$job/tmp.noindex"
-  env -i PATH="$tool_path" HOME="$work/$job/home" TMPDIR="$work/$job/tmp.noindex" \
+  ${lead:-} env -i PATH="$tool_path" HOME="$work/$job/home" TMPDIR="$work/$job/tmp.noindex" \
     CI_WORK_ROOT="$work" CI_SYSTEM_ROOT="$ROOT" \
     SD_ACCEPTANCE_PACK="$pack" SD_PACK_ROOT="$pack" \
     SD_PR_BODY="" \
@@ -169,8 +227,8 @@ fi
 # and sd-check stops a check at 15. Each job
 # writes its own log, printed whole once it ends, so the output does not
 # interleave.
-# The tools leg is the longest: dozens of short suites, one after another.
-# It runs as TOOLS_SHARDS processes, each taking every n-th suite.
+# The tools leg holds dozens of suites, one after another. It runs as
+# TOOLS_SHARDS processes, each taking every n-th suite.
 # The macOS-only suites go first, so that when the jobs run fewer at a time
 # (below) they start at once.
 jobs=""
@@ -207,9 +265,11 @@ if [ "$pool" -gt 1 ] && [ $((cores / pool)) -lt "$lanes" ]; then
   [ "$lanes" -ge 1 ] || lanes=1
 fi
 echo "check.sh: $# jobs, $lanes at a time (SD_GATE_POOL_SIZE=${SD_GATE_POOL_SIZE:-unset}, $cores CPUs)"
+lead=own_group
 lane=0
 while [ "$lane" -lt "$lanes" ]; do
   for job in $jobs; do
+    [ ! -d "$work/stop" ] || break
     mkdir "$work/$job.claim" 2>/dev/null || continue
     started=$(date +%s)
     status=0
@@ -219,19 +279,37 @@ while [ "$lane" -lt "$lanes" ]; do
                  /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
       macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
     esac > "$work/$job.log" 2>&1 || status=$?
+    signal_group KILL "$work/$job.pid"
+    rm -f "$work/$job.pid"
+    # The first failure stops the rest. A job the stop marked and that ended
+    # nonzero was stopped; one that ended 0 as the stop reached it passed.
+    if [ "$status" -ne 0 ]; then
+      if mkdir "$work/stop" 2>/dev/null; then
+        stop_jobs
+      elif [ -f "$work/$job.stopped" ]; then
+        status=stopped
+      fi
+    fi
     echo "$status $(($(date +%s) - started))" > "$work/$job.status"
   done &
   lane=$((lane + 1))
 done
 wait
-failed=""
+failed="" stopped=""
 for job in $jobs; do
-  # A job with no status file never finished: count it failed.
+  # A job with no status file never finished: count it failed, or stopped
+  # when a failure stopped the run before a lane claimed it.
   status=1 seconds=0
+  [ ! -d "$work/stop" ] || status=stopped
   [ ! -f "$work/$job.status" ] || read -r status seconds < "$work/$job.status"
-  echo "== $job (${seconds}s)"
+  label=""
+  [ "$status" != stopped ] || { label=", stopped"; stopped="$stopped $job"; }
+  echo "== $job (${seconds}s$label)"
   [ ! -f "$work/$job.log" ] || cat "$work/$job.log"
-  [ "$status" -eq 0 ] || { echo "check.sh: $job exited $status" >&2; failed="$failed $job"; }
+  case "$status" in
+    0|stopped) ;;
+    *) echo "check.sh: $job exited $status" >&2; failed="$failed $job" ;;
+  esac
 done
 
 if [ -s "$work/launchctl-leaks" ]; then
@@ -240,7 +318,7 @@ if [ -s "$work/launchctl-leaks" ]; then
   failed="$failed launchctl-guard"
 fi
 
-if [ -n "$failed" ]; then
+if [ -n "$failed$stopped" ]; then
   # sd-check keeps only the end of the output, so the end names the failure.
   for job in $failed; do
     echo "== tail of $job"
@@ -248,7 +326,8 @@ if [ -n "$failed" ]; then
   done
   # Each job's whole log is printed above, and sd-check keeps a failing
   # check's whole output, so the EXIT trap removes $work here too.
-  echo "check.sh: failed:$failed" >&2
+  [ -z "$stopped" ] || echo "check.sh: stopped:$stopped" >&2
+  [ -z "$failed" ] || echo "check.sh: failed:$failed" >&2
   exit 1
 fi
 echo "check.sh: every suite passed"
