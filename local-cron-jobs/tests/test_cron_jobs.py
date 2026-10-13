@@ -2521,11 +2521,17 @@ class WatchdogTest(unittest.TestCase):
         then = time.time() - installed_ago
         os.utime(plist, (then, then))
 
-    def watchdog(self):
+    def watchdog(self, day=""):
+        # FAKE_DAY stands for the run's date in the report's reason.
+        stub = self.fx.tmp / "day-bin" / "date"
+        stub.parent.mkdir(exist_ok=True)
+        stub.write_text('#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                        'exec /bin/date "$@"\n')
+        stub.chmod(0o755)
         return subprocess.run(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "watchdog"],
-            env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
-                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config)},
+            env={"PATH": self.fx.path(stub.parent), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "FAKE_DAY": day},
             capture_output=True, text=True, timeout=60)
 
     def test_a_stale_job_needs_attention_and_mails_nothing(self):
@@ -2570,18 +2576,16 @@ class WatchdogTest(unittest.TestCase):
         run = self.watchdog()
         self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
 
-    def test_another_stale_job_opens_another_report(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body,
-        so a reason that held only the count named yesterday's stale job."""
-        self.install("alpha", 3 * 86400)
-        first = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        again = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        (self.agents / "local.system-tools.cron.alpha.plist").unlink()
-        self.install("beta", 3 * 86400)
-        other = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        self.assertEqual(len(first), 1)
-        self.assertEqual(first, again)
-        self.assertNotEqual(first, other)
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum of job names alone made "never finished" and "cannot read
+        its time" for one job one report."""
+        self.install("demo", 3 * 86400)
+        first = [l for l in self.watchdog("2026-10-12").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
+        second = [l for l in self.watchdog("2026-10-13").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(second), r", 2026-10-13$")
 
     def test_an_unreadable_run_time_is_stale_not_fresh(self):
         self.install("demo", 3600)

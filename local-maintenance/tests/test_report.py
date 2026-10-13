@@ -37,6 +37,10 @@ class ReportTest(unittest.TestCase):
         _stub(self.bin / "mas", "exit 0\n")
         _stub(self.bin / "docker", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
+        # FAKE_DAY stands for the run's date in the report's reason.
+        _stub(self.bin / "date", '''[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }
+exec /bin/date "$@"
+''')
         # df reports DF_USED percent used, 50 unless a test sets it.
         _stub(self.bin / "df", 'echo "Filesystem 512-blocks Used Available Capacity Mounted on"\n'
               'echo "/dev/disk1 100 ${DF_USED:-50} 0 ${DF_USED:-50}% /"\n')
@@ -59,26 +63,16 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(f"- cert: {self.tmp}/missing.pem missing", run.stdout)
         [line] = self.attention(run)
-        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
+        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost, \d{4}-\d\d-\d\d$")
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
 
-    def test_other_findings_open_another_report_and_the_same_fold(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body,
-        so a reason that held only the count showed last night's finding."""
-        first = self.attention(self.maintenance(f"cert|{self.tmp}/one.pem|30\n"))
-        again = self.attention(self.maintenance(f"cert|{self.tmp}/one.pem|30\n"))
-        other = self.attention(self.maintenance(f"cert|{self.tmp}/two.pem|30\n"))
-        self.assertEqual(first, again)
-        self.assertNotEqual(first, other)
-
-    def test_a_moved_number_folds_into_the_open_report(self):
-        """sd:3537: digits count as one, so "19% free" and "17% free" are one
-        report while the body keeps the real numbers."""
-        first = self.maintenance("disk|/|25\n", DF_USED="81")
-        second = self.maintenance("disk|/|25\n", DF_USED="83")
-        self.assertIn("only 17% free on /", second.stdout)
-        self.assertEqual(len(self.attention(first)), 1, first.stdout)
-        self.assertEqual(self.attention(first), self.attention(second))
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum with digits erased made worker1 and worker2 one report."""
+        first = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\n", FAKE_DAY="2026-10-12"))
+        second = self.attention(self.maintenance(f"cert|{self.tmp}/worker2.pem|30\n", FAKE_DAY="2026-10-13"))
+        self.assertEqual(first, ["SD_REPORT_ATTENTION: maintenance: 1 finding(s) on fixturehost, 2026-10-12"])
+        self.assertEqual(second, ["SD_REPORT_ATTENTION: maintenance: 1 finding(s) on fixturehost, 2026-10-13"])
 
     def test_a_clean_run_needs_nothing(self):
         run = self.maintenance("# nothing to check\n")

@@ -90,6 +90,10 @@ class EndToEndTest(unittest.TestCase):
         self.doctor_rc.write_text("1\n")
         _stub(self.bin / "brew", f'case "$1" in doctor) cat "{self.doctor}"; exit "$(cat "{self.doctor_rc}")";; esac\nexit 0\n')
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
+        # The day file stands for the run's date in the report's reason.
+        self.day = self.tmp / "day"
+        self.day.write_text("2026-10-12\n")
+        _stub(self.bin / "date", f'[ "$1" = "+%Y-%m-%d" ] && {{ cat "{self.day}"; exit 0; }}\nexec /bin/date "$@"\n')
         self.database = self.tmp / "sd.db"
         initialise(self.database)
 
@@ -111,25 +115,20 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
         self.assertEqual(state["recorded"], "report")
-        self.assertRegex(state["why"], r"^brew doctor: 2 warning\(s\) on fixturehost \[\d+\]$")
+        self.assertEqual(state["why"], "brew doctor: 2 warning(s) on fixturehost, 2026-10-12")
         self.assertIn("Warning: two", state["item"]["body"])
 
-    def test_other_warnings_open_a_new_report_with_their_own_body(self):
+    def test_the_next_day_files_its_own_report_with_its_own_body(self):
         """sd:3537: the ingest folds a reason it holds open and keeps the
-        first body, so a count-only reason showed last night's warnings."""
+        first body. A checksum with digits erased folded worker2 into
+        worker1's report and showed worker1."""
+        self.doctor.write_text("Warning: worker1 is unlinked\n")
         self.doctor_run("r1")
-        self.doctor.write_text("Warning: three\nWarning: four\n")
+        self.day.write_text("2026-10-13\n")
+        self.doctor.write_text("Warning: worker2 is unlinked\n")
         _, state = self.doctor_run("r2")
         self.assertEqual(state["recorded"], "report", state)
-        self.assertIn("Warning: four", state["item"]["body"])
-
-    def test_a_moved_number_folds_into_the_open_report(self):
-        """Digits count as one, and the body keeps the real numbers."""
-        self.doctor.write_text("Warning: You have 2 unlinked kegs.\n")
-        self.doctor_run("r1")
-        self.doctor.write_text("Warning: You have 3 unlinked kegs.\n")
-        _, state = self.doctor_run("r2")
-        self.assertEqual(state["recorded"], "folded", state)
+        self.assertIn("worker2", state["item"]["body"])
 
     def test_the_same_warnings_fold_into_the_open_report(self):
         self.doctor_run("r1")

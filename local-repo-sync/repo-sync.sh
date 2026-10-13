@@ -1386,10 +1386,10 @@ follow() {
 # A field separator that is not whitespace, so `read` keeps empty fields.
 US=$(printf '\037')
 
-hyg_act()    { echo "  $*"; printf '%s\n' "$*" >> "$HYG_TMP/acted"; }
+hyg_act()    { echo "  $*"; echo x >> "$HYG_TMP/acted"; }
 hyg_found()  { echo "  would $*"; echo x >> "$HYG_TMP/found"; }
-hyg_list()   { echo "  $*"; printf '%s\n' "$*" >> "$HYG_TMP/listed"; }
-hyg_fail()   { echo "  FAILED $*"; printf '%s\n' "$*" >> "$HYG_TMP/failed"; }
+hyg_list()   { echo "  $*"; echo x >> "$HYG_TMP/listed"; }
+hyg_fail()   { echo "  FAILED $*"; echo x >> "$HYG_TMP/failed"; }
 hyg_note()   { echo "  note: $*"; }
 
 # Prints "<name> <compare-ref>" for the default branch: origin/HEAD first,
@@ -2196,15 +2196,10 @@ case "$1" in
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
     # The ingest folds a reason it already holds open into that report and
-    # keeps its first body, so the reason ends in a checksum of every finding
-    # behind it: other findings open a new report, the same ones fold into
-    # the open one (sd:3537). Digits count as one: a count or a size that
-    # moves is the same problem, and the report body keeps the real numbers.
-    if [ -n "$ATTENTION" ]; then
-      sum=$(cat "$ADDED" "$REMOVED" "$MISMATCHED" "$FAILLOG" "$HYG_TMP/acted" \
-        "$HYG_TMP/listed" "$HYG_TMP/failed" 2>/dev/null | sed 's/[0-9][0-9]*/N/g' | cksum | awk '{print $1}')
-      echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
-    fi
+    # keeps its first body. The reason ends in the date, as weekly-digest's
+    # does, so each day's run files its own report and no fold hides another
+    # failure (sd:3537).
+    [ -z "$ATTENTION" ] || echo "SD_REPORT_ATTENTION: $ATTENTION, $(date '+%Y-%m-%d')"
     # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true
 

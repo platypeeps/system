@@ -412,10 +412,8 @@ fi
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
 # The ingest folds a reason it already holds open into that report and keeps
-# its first body, so the reason ends in a checksum of the findings: other
-# findings open a new report, the same ones fold into the open one (sd:3537).
-# Digits count as one: "81% free" and "83% free" are one problem, and the
-# report body keeps the real numbers.
+# its first body. The reason ends in the date, as weekly-digest's does, so each
+# day's run files its own report and no fold hides another failure (sd:3537).
 if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(sed 's/[0-9][0-9]*/N/g' "$FINDINGS" | sort | cksum | awk '{print $1}')]"
+  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s), $(date '+%Y-%m-%d')"
 fi

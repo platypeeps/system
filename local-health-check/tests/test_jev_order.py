@@ -172,7 +172,9 @@ esac
         _stub(cls.bin, "dscacheutil", "exit 0\n")
         _stub(cls.bin, "uptime", 'echo "up 1 day, 0 users, load averages: 1 1 1"\n')
         _stub(cls.bin, "hostname", 'echo "%s"\n' % HOSTNAME)
-        _stub(cls.bin, "date", 'echo "2026-01-01 00:00"\n')
+        # FAKE_DAY stands for the run's date in the report's reason.
+        _stub(cls.bin, "date", 'if [ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ]; then echo "$FAKE_DAY"; '
+                               'else echo "2026-01-01 00:00"; fi\n')
         _stub(cls.bin, "sysctl", """\
 case "$2" in
   kern.memorystatus_vm_pressure_level) echo 1 ;;
@@ -421,23 +423,17 @@ esac
 
     # -- cases -------------------------------------------------------------
 
-    def test_other_findings_open_another_report_and_the_same_fold(self):
-        """sd:3537: the ingest folds a reason it holds open and keeps the
-        first body, so a count-only reason showed last night's findings."""
-        def reason(name, smart):
-            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart}, verb="run")
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum with digits erased made worker1 and worker2 one report."""
+        def reason(name, smart, day):
+            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart, "FAKE_DAY": day},
+                                 verb="run")
             return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        first, again, other = reason("smart-a", "Failing"), reason("smart-a2", "Failing"), reason("smart-b", "Unknown")
-        self.assertEqual(len(first), 1, first)
-        self.assertEqual(first, again)
-        self.assertNotEqual(first, other)
-
-    def test_a_moved_number_folds_into_the_open_report(self):
-        """sd:3537: digits count as one, so a moved number is the same problem."""
-        def reason(name, smart):
-            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart}, verb="run")
-            return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        self.assertEqual(reason("smart-n1", "Failing 81"), reason("smart-n2", "Failing 83"))
+        first = reason("day-1", "Failing on worker1", "2026-10-12")
+        second = reason("day-2", "Failing on worker2", "2026-10-13")
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(second), r", 2026-10-13$")
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

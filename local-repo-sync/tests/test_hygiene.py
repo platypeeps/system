@@ -1048,19 +1048,6 @@ class LaneStorageTest(unittest.TestCase):
         age(path, days)
         return path
 
-    def test_a_moved_count_folds_into_the_open_report(self):
-        """REGRESSION (sd:3537). The reason ends in a checksum of the findings,
-        digits counted as one: "deleted 2" and "deleted 3" lane files are one
-        report, not a new one each night."""
-        self.file("a.log", 20)
-        self.file("b.log", 20)
-        first = attention(self.f.run("nightly", expect=0, extra_env=self.env))
-        for name in ("c.log", "d.log", "e.log"):
-            self.file(name, 20)
-        second = attention(self.f.run("nightly", expect=0, extra_env=self.env))
-        self.assertEqual(len(first), 1, first)
-        self.assertEqual(first, second)
-
     def test_old_lane_files_and_old_empty_folders_go_new_ones_stay(self):
         """NEW. A file unmodified for 14 days goes, and so does a folder that
         is empty after it and saw no change in 14 days; newer ones stay."""

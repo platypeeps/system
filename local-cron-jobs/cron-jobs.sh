@@ -1546,10 +1546,9 @@ cmd_watchdog() {
   fi
   echo "fix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not."
   # The ingest folds a reason it already holds open into that report and keeps
-  # its first body, so the reason ends in a checksum of the stale jobs: other
-  # stale jobs open a new report, the same ones fold into the open one (sd:3537).
-  # Job names only: the hours grow every day.
-  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s) [$(cut -d: -f1 "$stale" | cksum | awk '{print $1}')]"
+  # its first body. The reason ends in the date, as weekly-digest's does, so
+  # each day's run files its own report and no fold hides another (sd:3537).
+  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s), $(date '+%Y-%m-%d')"
 }
 
 # Has machine-setup recorded a profile here? Its cron stage then owns the set

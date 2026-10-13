@@ -267,7 +267,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", result.stdout)
         self.assertIn("TCC grants (dashboard.sh grants, exit 1)", result.stdout)
         [reason] = self.attention(result)
-        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+ \[\d+\]$")
+        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+, \d{4}-\d\d-\d\d$")
 
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """`claude update` runs in a quiet week too, and can drop a grant."""
@@ -296,22 +296,19 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.attention(result), [])
 
-    def test_other_leftovers_open_another_report_and_the_same_fold(self):
-        """sd:3537: the ingest folds a reason it holds open and keeps the
-        first body, so a count-only reason showed last week's leftovers."""
-        first = self.attention(self.run_verb("upgrade-report"))
-        again = self.attention(self.run_verb("upgrade-report"))
-        other = self.attention(self.run_verb("upgrade-report", BREW_OUTDATED="other-formula"))
-        self.assertEqual(len(first), 1, first)
-        self.assertEqual(first, again)
-        self.assertNotEqual(first, other)
-
-    def test_another_missing_grant_opens_another_report(self):
-        first = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1"))
-        other = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_RC="1",
-                                             GRANTS_OUT=REFUSED.replace("python3", "python3.13")))
-        self.assertEqual(len(first), 1, first)
-        self.assertNotEqual(first, other)
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum of "upgrade sweep failed" made a failed cleanup and a
+        failed claude update one report."""
+        write_exec(self.stubs / "date", '#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && '
+                                        '{ echo "$FAKE_DAY"; exit 0; }\nexec /bin/date "$@"\n')
+        first = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1",
+                                             FAKE_DAY="2026-10-12"))
+        self.brew_log.with_name(self.brew_log.name + ".upgraded").unlink()
+        write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
+        second = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", FAKE_DAY="2026-10-13"))
+        self.assertRegex(" ".join(first), r"^upgrade: upgrade sweep failed on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(second), r"^upgrade: upgrade sweep failed on \S+, 2026-10-13$")
 
     def test_an_inconclusive_probe_is_reported_and_needs_no_attention(self):
         """Exit 3 is not a missing grant: the report says so and asks nothing."""

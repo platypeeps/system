@@ -433,20 +433,23 @@ class RepoSyncTest(unittest.TestCase):
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
-    def test_another_failed_repo_opens_another_report(self):
+    def test_each_day_files_its_own_report(self):
         """REGRESSION (sd:3537). The ingest folds a reason it holds open and
-        keeps the first body, so a count-only reason named last night's
-        failed repo."""
+        keeps the first body. A checksum with digits erased made worker1 and
+        worker2 failing one report."""
         reasons = []
-        for bad in ("badone", "badtwo"):
+        for bad, day in (("worker1", "2026-10-12"), ("worker2", "2026-10-13")):
             f = self.fixture()
+            (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                                        'exec /bin/date "$@"\n')
+            (f.bin / "date").chmod(0o755)
             f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
             f.checkout(f"a/{bad}", f"owner/{bad}")
             for name in ("good1", "good2"):
                 f.local_clone(f"a/{name}")
-            reasons.append(attention(f.run("nightly", expect=0)))
-        self.assertEqual(len(reasons[0]), 1, reasons)
-        self.assertNotEqual(reasons[0], reasons[1])
+            reasons.append(attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": day})))
+        self.assertRegex(" ".join(reasons[0]), r"^repo-sync: 1 repo\(s\) failed on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(reasons[1]), r", 2026-10-13$")
 
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
         """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission

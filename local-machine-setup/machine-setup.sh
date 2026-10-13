@@ -255,7 +255,7 @@ note_failure() { # what, exit code
 }
 
 # Printed last, like the deferred list. Returns 1 when anything failed, so
-# the run exits 1 under set -e and a nightly caller's failure push fires.
+# the run exits 1 under set -e and a nightly caller's report needs attention.
 report_failures() {
   [ -n "$FAILED_LOG" ] || return 0
   rf_log="$FAILED_LOG"
@@ -4586,16 +4586,15 @@ grants_push() {
 }
 
 # One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
-# every reason this run needs attention and ends in a checksum of what is left
-# to do: the ingest folds a reason it already holds open into that report and
-# keeps its first body, so other leftovers must open a new one (sd:3537).
+# every reason this run needs attention and ends in the date, as
+# weekly-digest's does: the ingest folds a reason it already holds open into
+# that report and keeps its first body, so each day's run files its own
+# report and no fold hides another failure (sd:3537).
 upgrade_attention() { # reason...
   [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
   [ "$#" -gt 0 ] || return 0
   why=$(printf '%s, ' "$@"); why=${why%, }
-  sum=$({ cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" "$tmp/regrant" 2>/dev/null; echo "$why"; } \
-    | cksum | awk '{print $1}')
-  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s) [$sum]"
+  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s), $(date '+%Y-%m-%d')"
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
