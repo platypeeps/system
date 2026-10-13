@@ -15,10 +15,48 @@
 
 SYSTEM_TOOLS_CONFIG="${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}"
 
+# st_shared <NAME>: the value of a name every tool shares, kept once in
+# <config>/shared.env (SYSTEM_TOOLS_LABEL_PREFIX, OBSIDIAN_VAULT; sd:3990). A
+# variable that is set wins, an empty one too; else the file, read in a
+# subshell so none of its other names reach the caller; else nothing. A tool's
+# own .env, loaded by st_source_env, sets the variable and so still overrides
+# the file. A file that does not source is named on stderr and gives nothing.
+st_shared() {
+    eval "_st_set=\${$1+x}"
+    if [ -n "$_st_set" ]; then
+        unset _st_set
+        eval "printf '%s\n' \"\$$1\""
+        return 0
+    fi
+    unset _st_set
+    [ -f "$SYSTEM_TOOLS_CONFIG/shared.env" ] || return 0
+    _st_out=$(
+        . "$SYSTEM_TOOLS_CONFIG/shared.env" >/dev/null 2>&1 </dev/null || exit 1
+        eval "printf '%s\n' \"\${$1-}\""
+    ) || {
+        printf 'st_shared: %s does not source; its values are ignored\n' "$SYSTEM_TOOLS_CONFIG/shared.env" >&2
+        unset _st_out
+        return 0
+    }
+    printf '%s\n' "$_st_out"
+    unset _st_out
+}
+
 # st_label_prefix: the launchd label prefix of every job and agent here
 # (convention 7): SYSTEM_TOOLS_LABEL_PREFIX, else local.system-tools.
 st_label_prefix() {
-    printf '%s\n' "${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+    _st_prefix=$(st_shared SYSTEM_TOOLS_LABEL_PREFIX)
+    printf '%s\n' "${_st_prefix:-local.system-tools}"
+    unset _st_prefix
+}
+
+# st_obsidian_vault: the Obsidian vault path of every tool that reads one:
+# OBSIDIAN_VAULT, else ~/Documents/Obsidian Vault. machine-setup keeps
+# st_shared, since an unset vault skips its stage.
+st_obsidian_vault() {
+    _st_vault=$(st_shared OBSIDIAN_VAULT)
+    printf '%s\n' "${_st_vault:-$HOME/Documents/Obsidian Vault}"
+    unset _st_vault
 }
 
 # st_config_dir <tool>: the tool's config directory. It may not exist.
@@ -26,13 +64,21 @@ st_config_dir() {
     printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1"
 }
 
+# st_state_dir <tool>: where the tool keeps what its runs write and nobody
+# edits (a last-run marker, a lock, a push hash): the XDG state folder, never
+# the config folder, which holds values only (sd:3990). It may not exist.
+st_state_dir() {
+    printf '%s/system/%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"
+}
+
 # st_config_file <tool> <file>: where the tool reads <file>, the copy of its
 # committed <file>.example. Most files sit in the tool's config directory;
 # privacy-patterns sits at the root, where every clone's pre-push guard finds
-# it. The reader and local-config-check both resolve paths here.
+# it, and shared.env sits there for every tool that reads it. The reader and
+# local-config-check both resolve paths here.
 st_config_file() {
     case "$2" in
-        privacy-patterns) printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$2" ;;
+        privacy-patterns|shared.env) printf '%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$2" ;;
         *) printf '%s/%s/%s\n' "$SYSTEM_TOOLS_CONFIG" "$1" "$2" ;;
     esac
 }

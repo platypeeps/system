@@ -236,7 +236,7 @@ class Control(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="control-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.module = collectors({"VAULT": str(self.root / "vault")})
+        self.module = collectors({"OBSIDIAN_VAULT": str(self.root / "vault")})
 
     def test_a_probe_that_said_nothing_names_both_of_its_causes(self):
         # `probe_vault` documents '' as two stories -- a TCC prompt nobody
@@ -367,7 +367,7 @@ class ThroughTheScript(unittest.TestCase):
         shutil.copytree(HERE.parent / "lib", self.dashboard.parent / "lib")
 
     def grants(self, *arguments, **environment):
-        base = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "VAULT": str(self.vault)}
+        base = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "OBSIDIAN_VAULT": str(self.vault)}
         return subprocess.run(["sh", str(self.dashboard / "dashboard.sh"), *(arguments or ["grants"])],
                               capture_output=True, text=True, env={**base, **environment}, timeout=60)
 

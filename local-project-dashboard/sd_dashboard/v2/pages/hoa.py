@@ -1,5 +1,5 @@
 """HOA (sd:2116): the water system's map, Mission export trends, open followups and alarm events, from the checkout
-`hoa.conf` names. The page has no classic screen to keep: v1 had no HOA view."""
+the repo table holds as `hoa`. The page has no classic screen to keep: v1 had no HOA view."""
 
 from __future__ import annotations
 

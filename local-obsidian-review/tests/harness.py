@@ -204,7 +204,10 @@ def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
                 "ACTIONS_STUB_HANG", "ACTIONS_STUB_RECORD",
                 "ACTIONS_STUB_SIGNS", "ACTIONS_STUB_SIGN_HANG"):
         env.pop(key, None)
-    env.update(env_extra or {})
+    env.update({k: v for k, v in (env_extra or {}).items() if v is not None})
+    for key, value in (env_extra or {}).items():
+        if value is None:
+            env.pop(key, None)  # None unsets: the tool must find the value elsewhere
     proc = subprocess.run(
         ["sh", str(root / "local-obsidian-review" / TOOL.name), "run"],
         capture_output=True, text=True, env=env, timeout=120)
