@@ -216,6 +216,54 @@ class Item(ScreenCase):
         self.assertIn("&lt;script&gt;", page)
 
 
+#: dashboard.js under a stand-in document: one filter field, no palette dialog, the shell's chord state settable.
+KEYS_HARNESS = r"""
+var window = this, OUT = { focused: 0, prevented: [] }, LISTENERS = {}, STATE = { chording: false, dialog: false };
+window.shell = { chording: () => STATE.chording };
+var field = { focus() { OUT.focused += 1; } };
+var document = {
+  querySelectorAll: () => [],
+  querySelector: selector => selector === "[data-listing-filter]" ? field
+    : selector === "dialog[open]" ? (STATE.dialog ? {} : null) : null,
+  getElementById: () => null,
+  addEventListener: (type, listener) => (LISTENERS[type] = LISTENERS[type] || []).push(listener),
+};
+var location = { pathname: "/item/1", search: "" };
+SCRIPT
+function press(key, target) {
+  var event = { key, target: target || { tagName: "BODY" }, preventDefault() { OUT.prevented.push(key); } };
+  (LISTENERS.keydown || []).forEach(listener => listener(event));
+}
+press("j"); press("k"); press("Enter"); press("?"); press("Escape");
+OUT.afterShellKeys = OUT.focused;
+press("/"); OUT.afterSlash = OUT.focused;
+press("/", { tagName: "INPUT" }); OUT.whileTyping = OUT.focused;
+STATE.chording = true; press("/"); STATE.chording = false; OUT.whileChording = OUT.focused;
+STATE.dialog = true; press("/"); STATE.dialog = false; OUT.underADialog = OUT.focused;
+OUT.pageKeys = window.PAGE_KEYS;
+JSON.stringify(OUT);
+"""
+
+
+class TheServerDrawnScreensKeys(unittest.TestCase):
+    """sd:3586 PR 6: every server-drawn screen is a shell page, so dashboard.js keeps only / and p for the shell."""
+
+    def test_slash_focuses_the_filter_and_the_shell_keys_stay_the_shells(self):
+        script = (DASHBOARD / "static/dashboard.js").read_text(encoding="utf-8")
+        result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", KEYS_HARNESS.replace("SCRIPT", script)],
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        # j, k, Enter, ? and Escape are shell.js's: this script neither acts on them nor swallows them.
+        self.assertEqual(out["afterShellKeys"], 0)
+        self.assertEqual(out["prevented"], ["/"])
+        self.assertEqual(out["afterSlash"], 1)
+        # Typing, a pending g-chord and an open dialog keep the key.
+        self.assertEqual([out["whileTyping"], out["whileChording"], out["underADialog"]], [1, 1, 1])
+        self.assertEqual(out["pageKeys"], [["/", "focus the notes filter"], ["p", "run a registered command"]])
+        self.assertNotRegex(script, r"keymap|data-active|\bshelled\b")
+
+
 class TheItemPageUnderASecondHome(ScreenCase):
     """sd:1439 criterion 4: a row written under `HOME=A` and read under `B`.
 
