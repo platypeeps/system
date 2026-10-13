@@ -52,6 +52,12 @@
     });
   });
 
+  // A screen inside the v2 shell (sd:3586, pages.shell_page) leaves j, k, Enter, ? and Escape to shell.js; it keeps / and
+  // p, which the shell's key sheet lists from PAGE_KEYS. A key that ends a pending g-chord is the shell's.
+  var shelled = !!document.querySelector(".shell");
+  if (shelled) { window.PAGE_KEYS = [["/", "focus the notes filter"], ["p", "run a registered command"]]; }
+  function chording() { return !!(window.shell && window.shell.chording && window.shell.chording()); }
+
   var KEYS = [
     ["j", "next row"],
     ["k", "previous row"],
@@ -209,6 +215,8 @@
 
   document.addEventListener("keydown", function (event) {
     if (event.metaKey || event.ctrlKey || event.altKey) { return; }
+    if (shelled && event.key !== "/") { return; }
+    if (shelled && (chording() || document.querySelector("dialog[open]"))) { return; }
     if (event.key === "Escape") {
       var box = document.querySelector(".keymap");
       if (box) { box.remove(); }
@@ -369,8 +377,12 @@
   document.querySelectorAll("[data-palette-open]").forEach(function (button) { button.addEventListener("click", function () { open(button); }); });
   dialog.querySelector("[data-palette-close]").addEventListener("click", function () { dialog.close(); });
   dialog.addEventListener("close", function () { if (opener && opener.isConnected) { opener.focus(); } });
+  var shelled = !!document.querySelector(".shell");
   document.addEventListener("keydown", function (event) {
     var typing = event.target.closest("input,select,textarea,[contenteditable=true]");
+    // Inside the v2 shell, Cmd-K is the shell's palette and p after g is the shell's chord (sd:3586).
+    if (shelled && ((event.ctrlKey || event.metaKey) || (window.shell && window.shell.chording()) ||
+        document.querySelector("dialog[open]"))) { return; }
     if ((!typing && event.key === "p" && !event.ctrlKey && !event.metaKey && !event.altKey) ||
         ((event.ctrlKey || event.metaKey) && event.key === "k")) {
       event.preventDefault(); open();
