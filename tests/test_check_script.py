@@ -19,8 +19,10 @@ Stdlib and git only. This runs in the `tests/ci-native.sh` preflight as
 preflight's unwired-suite guard fails when `tests/ci-native.sh` stops naming it.
 """
 
+import fnmatch
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -83,7 +85,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 7 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -194,7 +196,7 @@ class FailFast(CheckFixture):
     def setUp(self):
         super().setUp()
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
-            "leg-repo-sync", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
+            "repo-sync-1", "repo-sync-2", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
 
     def slow(self, *legs, ends_ok=(), ignores_term=()):
         for leg in legs:
@@ -241,7 +243,7 @@ class FailFast(CheckFixture):
 
     def test_after_a_failure_no_lane_claims_a_job(self):
         first = self.jobs[0]
-        (self.root / f"fail-{first.split('-', 1)[1]}").touch()
+        (self.root / f"fail-{leg_of(first)}").touch()
         done = self.check(expect=1, SD_GATE_POOL_SIZE=str(self.cores))
         self.assertIn(f"check.sh: {self.jobs.__len__()} jobs, 1 at a time", done.stdout)
         self.assertEqual(1, len(self.ran()), self.ran())
@@ -276,11 +278,11 @@ class FailFast(CheckFixture):
     def test_a_job_that_fails_on_its_own_after_the_stop_reads_failed(self):
         """Codex review: only a job the stop signalled, or kept from starting,
         reads stopped; another failure keeps its exit code and tail."""
-        (self.root / "fails-alone-repo-sync").touch()
+        (self.root / "fails-alone-shared").touch()
         done = self.check(expect=1)
-        self.assertIn("check.sh: leg-repo-sync exited 4", done.stderr)
-        self.assertRegex(done.stderr, r"check.sh: failed: leg-repo-sync\n")
-        self.assertIn("== tail of leg-repo-sync", done.stdout)
+        self.assertIn("check.sh: leg-shared exited 4", done.stderr)
+        self.assertRegex(done.stderr, r"check.sh: failed: leg-shared\n")
+        self.assertIn("== tail of leg-shared", done.stdout)
 
     def test_a_job_claimed_as_the_stop_lands_does_not_start(self):
         """A lane checks for a stop, then claims; a stop landing between the two
@@ -326,6 +328,13 @@ class FailFast(CheckFixture):
                 self.assert_all_ended(self.pids())
                 [work] = made.read_text().split()
                 self.assertFalse(Path(work).exists(), work)
+
+
+def leg_of(job):
+    """The name the stub suite gets as $2 for a job: its leg, its macOS
+    suite, or the leg a shard (`tools-1`, `repo-sync-2`) belongs to."""
+    kind, name = job.split("-", 1)
+    return name if kind in ("leg", "macos") else job.rsplit("-", 1)[0]
 
 
 def alive_pid(pid):
@@ -430,28 +439,47 @@ class LegWithSuiteOnly(unittest.TestCase):
     def test_repo_sync_runs_in_a_leg_of_its_own(self):
         """sd:3750: the tools leg dealt its suites round-robin to three jobs,
         and the one holding repo-sync, the longest suite, took 13 minutes. Its
-        own leg is a job of its own."""
+        own leg is a job of its own. sd:3962: whole, that leg took 450 s, so
+        it holds two suites, and each of its two shards runs one."""
         legs = subprocess.run(["sh", str(ROOT / "tests/check.sh"), "legs"], capture_output=True, text=True,
                               check=True).stdout.split()
         self.assertIn("repo-sync", legs)
         self.entrypoint("local-repo-sync/repo-sync.sh")
-        done = subprocess.run(["bash", str(self.root / "tests/ci-native.sh"), "leg", "repo-sync"], cwd=self.root,
-                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
-                              env=self.environment)
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertEqual("local-repo-sync/repo-sync.sh\n", (self.work / "entrypoints").read_text())
-        (self.work / "entrypoints").unlink()
-        done = self.leg("tools", "repo-sync")
+        for shard, ran in (("", ["repo-sync-1", "repo-sync-2"]), ("1/2", ["repo-sync-1"]), ("2/2", ["repo-sync-2"])):
+            with self.subTest(shard=shard):
+                done = subprocess.run(["bash", str(self.root / "tests/ci-native.sh"), "leg", "repo-sync"],
+                                      cwd=self.root, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                      timeout=60, env={**self.environment, "SUITE_SHARD": shard})
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual("local-repo-sync/repo-sync.sh\n" * len(ran), (self.work / "entrypoints").read_text())
+                self.assertEqual(ran, sorted(log.stem for log in self.work.glob("repo-sync*.log")))
+                for path in [self.work / "entrypoints", *self.work.glob("repo-sync*.log")]:
+                    path.unlink()
+        done = self.leg("tools", "repo-sync-1")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse((self.work / "entrypoints").exists(), "the tools leg still runs repo-sync")
+
+    def test_the_repo_sync_suites_split_its_test_modules_between_them(self):
+        """sd:3962: each repo-sync suite takes the modules its -p pattern
+        matches. Every module must match exactly one, or it runs twice or
+        never."""
+        patterns = re.findall(r"(?m)^\s*run_suite repo-sync-\d sh local-repo-sync/repo-sync\.sh test -v -p '([^']+)'",
+                              (ROOT / "tests/ci-native.sh").read_text())
+        self.assertEqual(2, len(patterns), patterns)
+        modules = sorted(path.name for path in (ROOT / "local-repo-sync/tests").glob("test_*.py"))
+        self.assertTrue(modules)
+        for module in modules:
+            self.assertEqual(1, sum(fnmatch.fnmatch(module, pattern) for pattern in patterns), module)
+        self.assertTrue(all(any(fnmatch.fnmatch(module, pattern) for module in modules) for pattern in patterns),
+                        "a pattern that matches no module runs no test")
 
     def test_a_leg_without_the_named_suite_runs_nothing(self):
         for leg in ("shared", "dashboard", "tools"):
             with self.subTest(leg=leg):
-                done = self.leg(leg, "repo-sync")
+                done = self.leg(leg, "repo-sync-1")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertFalse((self.work / "entrypoints").exists())
-                self.assertFalse((self.work / "repo-sync.log").exists())
+                self.assertFalse((self.work / "repo-sync-1.log").exists())
 
 
 # Stand-ins for run-macos-only.sh: uname says Darwin, and python3 stops the

@@ -113,7 +113,7 @@ line names. No GitHub workflow runs the suites. The pack pin is one full commit
 sha in `.sd-pack-rev`; bump it deliberately.
 
 To run one suite as the gate does, name it by its `run_suite` or
-`tests/macos-only-suites.txt` name: `make test SUITE=repo-sync`. It runs the
+`tests/macos-only-suites.txt` name: `make test SUITE=repo-sync-1`. It runs the
 preflight, then that suite, against the pinned pack in `.ci/pack`, not the
 live pack checkout.
 
