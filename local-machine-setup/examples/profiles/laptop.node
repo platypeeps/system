@@ -1,0 +1,5 @@
+# The node majors fnm keeps, one per line; common.node adds to it.
+# With no .node file anywhere the tooling stage keeps 18, 20 and 24.
+18
+20
+24
