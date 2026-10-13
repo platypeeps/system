@@ -71,5 +71,19 @@
     "constraints": "no new CSS: both reuse .btn quiet and the confirm dialog's .cap-in field; CSP default-src 'self'",
     "slop_test": "universal subset: no colour or font literal added (48); no layout transition (14); headless Chrome at 320, 375, 414, 768, 1024, 1440 in Dark, Light and System: no sideways scroll, the Tag dialog inside the viewport, the filled field at 15.61 (dark) and 15.73 (light) contrast, the minute read moves no tile",
     "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
+    "date": "2026-10-12",
+    "artifact": "local-project-dashboard v2 review.html, static/review.css, static/review.js; Today's decisions-review line",
+    "scope": "page",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "operations list: annunciator of open batches, ledger of open questions, one question in Details",
+    "nav": "v2 shell rail, Now group (g l)",
+    "footer": "none (shell)",
+    "changes": "sd:3709 Review page: numbered option buttons at --row-touch, mono progress line, lamp filter by batch; Today counts batch questions in one line that links to Review",
+    "constraints": "tokens only, no colour literal; no confidence score; blind and sealed batches show text and options only",
+    "critique": "P4 H5 E4 S4 R5 V3",
+    "slop_test": "headless Chrome 320, 375, 414, 768, 1024, 1440 px in Dark, Light and System: no horizontal scroll, no element past the viewport, option buttons 44 px"
   }
 ]
