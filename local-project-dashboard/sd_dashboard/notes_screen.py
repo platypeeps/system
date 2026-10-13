@@ -188,7 +188,7 @@ def _vault(environ) -> Path:
 
     named, source = environ.get("OBSIDIAN_VAULT", ""), "OBSIDIAN_VAULT"
     for tool in VAULT_TOOLS:
-        if named:
+        if "OBSIDIAN_VAULT" in environ or named:  # an exported empty value wins too, as in the tools (sd:3964)
             break
         named = system_tools_config.read_env(tool, environ).get("OBSIDIAN_VAULT", "")
         source = f"OBSIDIAN_VAULT in {system_tools_config.config_dir(tool, environ) / '.env'}"
@@ -311,8 +311,8 @@ def mail(*, now: str, environ=None) -> dict:
     import system_tools_config
 
     saved = system_tools_config.read_env("notify", environ)
-    url = environ.get("WORKSPACE_MCP_URL") or saved.get("WORKSPACE_MCP_URL") or MAIL_URL
-    account = environ.get("EMAIL_FROM") or saved.get("EMAIL_FROM") or ""
+    url = system_tools_config.setting("WORKSPACE_MCP_URL", saved, environ) or MAIL_URL
+    account = system_tools_config.setting("EMAIL_FROM", saved, environ) or ""
     if not account:
         return {"state": "unconfigured", "why": system_tools_config.missing("EMAIL_FROM", "notify", ".env", environ=environ)
                 + " It is the Google account workspace-mcp reads mail for."}

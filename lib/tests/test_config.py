@@ -1,6 +1,7 @@
 """The shared config location: lib/config.sh and lib/system_tools_config.py agree."""
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -197,6 +198,46 @@ class CronJobDirs(unittest.TestCase):
         self.assertEqual(stc.cron_job_dirs(env)[0], self.jobs / "mini")
         self.assertEqual(self.twin.cron_job_dirs(env)[0], self.jobs / "mini")
         self.assertEqual(stc.cron_job_dirs({**env, "CRON_JOBS_HOST": "studio"})[0], self.jobs / "studio")
+
+    def test_an_exported_empty_value_beats_the_file(self):
+        # sd:3964: cron-jobs.sh keeps an exported empty value (st_source_env),
+        # so the file's host and extra folder must not come back here. The
+        # pack twin still lets the file win until its own fix lands.
+        (self.conf / "cron-jobs/.env").write_text('CRON_JOBS_HOST="mini"\nCRON_JOBS_EXTRA_DIRS=/a\n')
+        short = subprocess.run(["hostname", "-s"], capture_output=True, text=True, check=True).stdout.strip()
+        env = {**self.cases()[2], "CRON_JOBS_HOST": "", "CRON_JOBS_EXTRA_DIRS": ""}
+        self.assertEqual(stc.cron_job_dirs(env), [self.jobs / short.lower(), self.jobs])
+
+
+#: `<environ>.get(X) or <file values>.get(X)`, the same name on both sides: an
+#: exported empty value is falsy, so the file wins where the shell keeps it.
+HAND_ROLLED = re.compile(r'\.get\(\s*("[A-Za-z_]\w*"|[A-Za-z_]\w*)(?=[\s,)])[^()]*\)\s*or\s*'
+                         r'(?!(?:os\.)?environ\b)[\w.]+(?:\([^()]*\))?\.get\(\s*\1(?=[\s,)])')
+
+
+class PythonReaders(unittest.TestCase):
+    """The Python readers keep st_source_env's rule (sd:3964)."""
+
+    def test_an_exported_value_wins_an_empty_one_too(self):
+        saved = {"A": "file", "B": "file"}
+        env = {"A": "", "C": "shell"}
+        self.assertEqual([stc.setting(name, saved, env) for name in "ABCD"], ["", "file", "shell", None])
+
+    def test_no_tracked_python_reader_lets_the_file_win(self):
+        files = subprocess.run(["git", "ls-files", "-z", "*.py", ":(exclude)tests", ":(exclude)*/tests/*"],
+                               cwd=LIB.parent, capture_output=True, text=True, check=True).stdout.split("\0")
+        hits = []
+        for name in filter(None, files):
+            text = (LIB.parent / name).read_text(encoding="utf-8", errors="replace")
+            hits += [f"{name}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(0)}" for m in HAND_ROLLED.finditer(text)]
+        self.assertEqual(hits, [], "read the value with system_tools_config.setting")
+
+    def test_the_guard_sees_each_shape_it_names(self):
+        for line in ('env.get("X") or saved.get("X")', "environ.get(name) or saved.get(name) or ''",
+                     'os.environ.get("X")\n    or system_tools_config.read_env(TOOL).get("X")'):
+            self.assertRegex(line, HAND_ROLLED)
+        for line in ('env.get("X") or env.get("Y")', 'environ.get("X") or os.environ.get("X")'):
+            self.assertNotRegex(line, HAND_ROLLED)
 
 
 if __name__ == "__main__":
