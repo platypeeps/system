@@ -210,7 +210,12 @@ if [ "$1" = suite ]; then
     for leg in $LEGS; do
       isolated SUITE_ONLY="$2" /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg "$leg"
     done
-    if [ ! -f "$work/$2.log" ]; then
+    # A suite in parts (repo-sync-1, repo-sync-2) leaves a log per part.
+    ran=""
+    for log in "$work/$2.log" "$work/$2"-[1-9].log; do
+      [ ! -f "$log" ] || ran=1
+    done
+    if [ -z "$ran" ]; then
       echo "check.sh: no suite named $2; the run_suite lines in tests/ci-native.sh and the lines of tests/macos-only-suites.txt name them" >&2
       exit 1
     fi

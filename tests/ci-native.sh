@@ -273,7 +273,13 @@ mine() {
 
 # SUITE_ONLY=<name> runs only the suite of that name: tests/check.sh's
 # `suite`, which `make test SUITE=<name>` runs (sd:3534). Unset, every one.
-wanted() { [ -z "${SUITE_ONLY:-}" ] || [ "$1" = "$SUITE_ONLY" ]; }
+# A suite split into parts <name>-1, <name>-2 runs whole under its own name,
+# so `make test SUITE=repo-sync` still runs all of repo-sync (sd:3962).
+wanted() {
+  [ -n "${SUITE_ONLY:-}" ] || return 0
+  case "$1" in "$SUITE_ONLY"|"$SUITE_ONLY"-[1-9]) return 0 ;; esac
+  return 1
+}
 
 run_suite() {
   mine || return 0

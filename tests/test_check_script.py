@@ -80,6 +80,9 @@ if [ -f "$CI_SYSTEM_ROOT/slow-${2:-}" ]; then
 fi
 # A leg that holds the suite SUITE_ONLY names writes its log, as run_suite does.
 [ -z "${SUITE_ONLY:-}" ] || [ ! -f "$CI_SYSTEM_ROOT/holds-${2:-}-$SUITE_ONLY" ] || echo ran > "$CI_WORK_ROOT/$SUITE_ONLY.log"
+# A leg that holds the named suite in two parts writes each part's log.
+[ -z "${SUITE_ONLY:-}" ] || [ ! -f "$CI_SYSTEM_ROOT/parts-${2:-}-$SUITE_ONLY" ] || {
+  echo ran > "$CI_WORK_ROOT/$SUITE_ONLY-1.log"; echo ran > "$CI_WORK_ROOT/$SUITE_ONLY-2.log"; }
 """
 MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
@@ -354,6 +357,13 @@ class OneSuite(CheckFixture):
         self.assertIn("check.sh: suite repo-sync passed", done.stdout)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
+    def test_a_suite_in_parts_runs_by_its_whole_name(self):
+        """NEW (sd:3962). repo-sync runs as repo-sync-1 and repo-sync-2;
+        `make test SUITE=repo-sync` still names it, and runs both."""
+        (self.root / "parts-repo-sync-repo-sync").touch()
+        done = self.check("suite", "repo-sync")
+        self.assertIn("check.sh: suite repo-sync passed", done.stdout)
+
     def test_a_macos_only_suite_runs_through_its_runner(self):
         self.check("suite", "two")
         self.assertEqual([["macos", "two"]], self.ran())
@@ -458,6 +468,19 @@ class LegWithSuiteOnly(unittest.TestCase):
         done = self.leg("tools", "repo-sync-1")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertFalse((self.work / "entrypoints").exists(), "the tools leg still runs repo-sync")
+
+    def test_the_whole_name_runs_every_part(self):
+        """NEW (sd:3962). SUITE_ONLY=repo-sync runs repo-sync-1 and
+        repo-sync-2; the name of one part runs that part alone."""
+        self.entrypoint("local-repo-sync/repo-sync.sh")
+        for only, ran in (("repo-sync", ["repo-sync-1", "repo-sync-2"]), ("repo-sync-2", ["repo-sync-2"]),
+                          ("repo-syn", [])):
+            with self.subTest(only=only):
+                done = self.leg("repo-sync", only)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(ran, sorted(log.stem for log in self.work.glob("repo-sync*.log")))
+                for path in [self.work / "entrypoints", *self.work.glob("repo-sync*.log")]:
+                    path.unlink(missing_ok=True)
 
     def test_the_repo_sync_suites_split_its_test_modules_between_them(self):
         """sd:3962: each repo-sync suite takes the modules its -p pattern
