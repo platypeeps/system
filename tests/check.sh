@@ -155,6 +155,11 @@ if [ "$1" = suite ]; then
       exit 1
     fi
   fi
+  if [ -s "$work/launchctl-leaks" ]; then
+    echo "== launchctl calls that missed their stub"
+    cat "$work/launchctl-leaks"
+    exit 1
+  fi
   echo "check.sh: suite $2 passed"
   exit 0
 fi

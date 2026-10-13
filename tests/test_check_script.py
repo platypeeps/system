@@ -42,6 +42,8 @@ sleep 0.5
 rm "$running/$$"
 echo "$1 ${2:-} ${SUITE_SHARD:-} ${SUITE_ONLY:-}" >> "$CI_SYSTEM_ROOT/ran"
 [ ! -f "$CI_SYSTEM_ROOT/fail-${2:-}" ] || exit 3
+# A suite that reached the real launchctl and still exited 0.
+[ ! -f "$CI_SYSTEM_ROOT/leak-${2:-}" ] || launchctl list > /dev/null 2>&1 || :
 # A leg that holds the suite SUITE_ONLY names writes its log, as run_suite does.
 [ -z "${SUITE_ONLY:-}" ] || [ ! -f "$CI_SYSTEM_ROOT/holds-${2:-}-$SUITE_ONLY" ] || echo ran > "$CI_WORK_ROOT/$SUITE_ONLY.log"
 """
@@ -176,6 +178,15 @@ class OneSuite(CheckFixture):
         (self.root / "holds-dashboard-dashboard").touch()
         (self.root / "fail-dashboard").touch()
         done = self.check("suite", "dashboard", expect=3)
+        self.assertNotIn("passed", done.stdout)
+
+    def test_a_suite_that_reached_launchctl_fails_as_in_the_gate(self):
+        """NEW (codex round): the full run fails a leak a suite swallowed;
+        one suite must too."""
+        (self.root / "holds-tools-repo-sync").touch()
+        (self.root / "leak-tools").touch()
+        done = self.check("suite", "repo-sync", expect=1)
+        self.assertIn("== launchctl calls that missed their stub", done.stdout)
         self.assertNotIn("passed", done.stdout)
 
     def test_suite_takes_exactly_one_name(self):
