@@ -366,6 +366,9 @@ function stored(a) {
   return a;
 }
 const storing = a => a && typeof a.then === 'function' ? a.then(stored) : stored(a);
+// The Details and the rows are one item_state: a Details read carries the stored row's revision, as the server's does.
+const detailNow = id => { const row = DOC.rows.find(r => String(r.id) === String(id)), d = DETAILS[id];
+  return row && d ? Object.assign({}, d, { revision: row.revision }) : d; };
 """
 
 
@@ -588,7 +591,7 @@ class TheScript(ScreenCase):
                   + f"location.search = {json.dumps(search)}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q.toString());\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
-  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, DETAILS[m[1]]];
+  var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : [200, detailNow(m[1])];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
 };\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -835,6 +838,49 @@ R.undo = !!lastUndo(); if (R.undo) {{ await lastUndo().undo(); await flush(); }}
                 self.assertEqual([x.get(key) for x in bodies[:2]], [b if key != "priority" else int(b), c if key != "priority" else int(c)] if key != "repo" else [None, c])
                 self.assertTrue(out["R"]["undo"], f"{name}: no Undo offered")
                 self.assertEqual(bodies[-1].get(key, "missing"), want, f"{name}: Undo did not restore the value C replaced")
+
+    # Another tool edits the plan item: its row and its Details read bring the new revision. A write on another task lands,
+    # and the page rereads the rows, as after any landed write.
+    ELSEWHERE = """const NEW = 'c'.repeat(64), prow = DOC.rows.find(r => r.id === PLAN);
+const elsewhere = () => { prow.revision = NEW; DETAILS[PLAN] = Object.assign(JSON.parse(JSON.stringify(DETAILS[PLAN])), { revision: NEW });
+  DETAILS[PLAN].item.body = JSON.stringify({ text: 'CLI words' }); DETAILS[PLAN].notes.push({ id: 999, kind: 'comment', at: '2026-09-02T00:00:00Z', body: 'Noted elsewhere', resolved: null }); };
+const reread = () => ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit: 'p', key: String(ASK) }, value: '1' } }));
+"""
+
+    def test_a_description_edit_refuses_a_text_another_tool_replaced(self):
+        # Review 2026-10-12, sd:3520 lane: after a CLI edit, adopt() took the row's new revision and kept the cached
+        # description, so an edit wrote over the CLI's text with no conflict, and its Undo wrote the old text back. The cached
+        # description carries the revision it was read at; a field drawn from another text, or a write that leaves while the
+        # description known is older than the row, is refused, and the Details are read again.
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        self.details[str(plan)]["item"]["body"] = json.dumps({"text": "Old words"})
+        cases = {
+            # The field drawn from the old text is left after the reread brought the new one.
+            "field": "change('det-body', 'My words', 'Old words');",
+            # The Details read again fails, so the description known is the old one when the write leaves.
+            "send": "DETAIL = () => [500, { error: 'not read' }]; change('det-body', 'My words');",
+        }
+        for name, edit in cases.items():
+            with self.subTest(case=name):
+                before = "DETAIL = () => [500, { error: 'not read' }];" if name == "send" else ""
+                out = self.run_page(self.ELSEWHERE.replace("PLAN", str(plan)).replace("ASK", str(ask))
+                                    + "const change = (id, value, defaultValue) => ELS.details.listeners.change.forEach(f => f({ target: { id, value, defaultValue } }));\n"
+                                    + f"""open({plan}); await flush(); elsewhere(); {before} reread(); await flush(); await flush();
+{edit} await flush(); await flush();""", self.BODY_ECHO)
+                self.assertIsNone(out.get("error"))
+                bodies = [p[1] for p in out["posts"] if "body" in p[1]]
+                self.assertEqual(bodies, [], f"{name}: the edit wrote over the text another tool saved")
+                self.assertIn(f"#{plan} not changed: the description changed since it was read", "\n".join(t[0] for t in out["toasts"]))
+
+    def test_a_reread_that_brings_a_new_revision_reads_the_details_again(self):
+        # The same review, class pass: the Details' notes, history and documents are cached beside the revision they were
+        # read at too. A reread whose row carries another revision drops them and reads them again.
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        out = self.run_page(self.ELSEWHERE.replace("PLAN", str(plan)).replace("ASK", str(ask))
+                            + f"""open({plan}); await flush(); elsewhere(); reread(); await flush(); await flush(); R.html = ELS.details.html;""", self.ECHO)
+        self.assertIsNone(out.get("error"))
+        self.assertIn("Noted elsewhere", out["R"]["html"], "the Details kept the notes read at the old revision")
+        self.assertIn("cccccccccccc…", out["R"]["html"])
 
     def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
         # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
@@ -1089,6 +1135,7 @@ R.filtered = window.PAGE_REPO(null);""", "(path, body) => [201, { item: { id: 99
         plan = self.ids["plan"]
         after = json.loads(json.dumps(self.details[str(plan)]))
         after["notes"][0]["body"] = "Written after the move"
+        after["revision"] = "b" * 64  # the read after the write carries the revision the write answered
         answer = f"(path, body) => [200, {{ item: {{ id: {plan}, status: body.status, priority: 2, due: '2026-09-09', recurrence: null }}, notes: [], revision: 'b'.repeat(64) }}]"
         out = self.run_page(f"""var release, reads = 0;
 DETAIL = id => ++reads === 1 ? new Promise(r => {{ release = () => r([200, DETAILS[id]]); }}) : [200, AFTER];

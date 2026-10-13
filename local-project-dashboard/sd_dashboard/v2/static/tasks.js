@@ -54,7 +54,7 @@ addEventListener('DOMContentLoaded', () => {
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
-    if ('body' in state.item) DET.body[t.id] = bodyText(state.item.body);
+    if ('body' in state.item) DET.body[t.id] = { text: bodyText(state.item.body), rev: state.revision };
     staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
   }
@@ -266,7 +266,8 @@ addEventListener('DOMContentLoaded', () => {
   // DET.body keeps the last description read or written back: a write drops the reading, not the description field, so a
   // redraw before the next read still draws it and keeps the operator's draft (review 2026-10-12, lane entry 225).
   // The stored body is JSON, {"text": …} (workflow._fields), and the field edits its text, as the classic item page does
-  // (controls.py); null marks a body that does not parse, whose field is withheld so no save overwrites it.
+  // (controls.py); null marks a body that does not parse, whose field is withheld so no save overwrites it. Each cached
+  // description and reading carries the revision it was read at: a row read at another revision makes it stale (adopt).
   const bodyText = stored => { try { const b = JSON.parse(stored || '{}'); return b && typeof b === 'object' && !Array.isArray(b) ? String(b.text ?? '') : ''; } catch { return null; } };
   const DET = { items: {}, reading: {}, failed: {}, gen: {}, body: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
@@ -277,7 +278,7 @@ addEventListener('DOMContentLoaded', () => {
     try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
-    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = bodyText(got.item.body); }
+    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = { text: bodyText(got.item.body), rev: got.revision }; }
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
@@ -610,12 +611,18 @@ addEventListener('DOMContentLoaded', () => {
   // Undo. Status runs the status command, Quadrant the quadrant move (it asks for a date when it crosses the urgency line),
   // and the rest edit the item. `check` refuses a change a write queued before it already made. A refused change redraws,
   // so the field shows the row as it is.
-  function fieldChange(t, id, v) {
+  const STALE_BODY = 'the description changed since it was read. Your text was not saved; the Details are read again.';
+  function fieldChange(t, id, v, base) {
     if (id === 'det-title') { const n = v.trim(); if (n === t.title) return false;
       if (!n) { toast(`${label(t)} not changed: a title is required`); return false; }
       commitEdit(t, { title: n }, `title → ${n}`, { check: r => r.title !== n || 'the title is already that' }); return true; }
-    if (id === 'det-body') { if (v === (DET.body[t.id] ?? '')) return false;
-      commitEdit(t, { body: v }, 'description changed', { before: () => ({ body: DET.body[t.id] ?? '' }), check: () => v !== (DET.body[t.id] ?? '') || 'the description is already that' }); return true; }
+    // The description is not in the row, so a write over it is refused unless the text it replaces is the row's (read at the
+    // row's revision) and is the text the field was drawn from (`base`): another tool's edit is never written over.
+    if (id === 'det-body') { const known = () => DET.body[t.id], text = () => known()?.text ?? '';
+      if (v === text() && (base === undefined || base === text())) return false;
+      if (known()?.rev !== t.revision || (base !== undefined && base !== text())) { toast(`${label(t)} not changed: ${STALE_BODY}`); redrawDet(t.id); return true; }
+      commitEdit(t, { body: v }, 'description changed', { before: () => ({ body: text() }),
+        check: r => known()?.rev !== r.revision ? STALE_BODY : v !== text() || 'the description is already that' }); return true; }
     if (id === 'det-status') return v !== t.status && move(t.key, v);
     if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
     if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
@@ -630,12 +637,12 @@ addEventListener('DOMContentLoaded', () => {
   document.getElementById('details').addEventListener('change', e => {
     const t = byKey(selected), id = e.target.id || '';
     if (!t || !id.startsWith('det-')) return;
-    if (!fieldChange(t, id, e.target.value)) renderDetails();
+    if (!fieldChange(t, id, e.target.value, e.target.defaultValue)) renderDetails();
   });
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
   function more(t, dis = '') {
     if (!t.id) return '';
-    const d = detOf(t), body = DET.body[t.id];
+    const d = detOf(t), body = DET.body[t.id] && DET.body[t.id].text;
     // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
     // edit_item takes a body for a task or a followup only.
     const desc = body === undefined || !['task', 'followup'].includes(t.kind) ? ''
@@ -1062,6 +1069,8 @@ addEventListener('DOMContentLoaded', () => {
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
     adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || [];
+      // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
+      tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
       return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
     clear: () => { tasks = []; READ = null; },
     draw,
