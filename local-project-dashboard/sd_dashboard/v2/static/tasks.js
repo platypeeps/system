@@ -267,7 +267,7 @@ addEventListener('DOMContentLoaded', () => {
   // redraw before the next read still draws it and keeps the operator's draft (review 2026-10-12, lane entry 225).
   // The stored body is JSON, {"text": …} (workflow._fields), and the field edits its text, as the classic item page does
   // (controls.py); null marks a body that does not parse, whose field is withheld so no save overwrites it.
-  const bodyText = raw => { try { const b = JSON.parse(raw || '{}'); return b && typeof b === 'object' && !Array.isArray(b) ? String(b.text ?? '') : ''; } catch { return null; } };
+  const bodyText = stored => { try { const b = JSON.parse(stored || '{}'); return b && typeof b === 'object' && !Array.isArray(b) ? String(b.text ?? '') : ''; } catch { return null; } };
   const DET = { items: {}, reading: {}, failed: {}, gen: {}, body: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
     if (!id || (!force && (DET.items[id] || DET.reading[id] === (DET.gen[id] || 0)))) return;
