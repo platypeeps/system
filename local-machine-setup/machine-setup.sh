@@ -187,13 +187,14 @@ keep_sessions_cp() { # dotfile, src, dst
   mv "$3.merge.$$" "$3"
 }
 
+# Returns the first failed step, so the caller records nothing after it.
 copy_dotfile() { # dotfile, src, dst
   if [ -n "$(dotfile_session_re "$1")" ] && [ -f "$3" ]; then
-    run keep_sessions_cp "$1" "$2" "$3"
+    run_ok keep_sessions_cp "$1" "$2" "$3" || return
   else
-    run cp "$2" "$3"
+    run_ok cp "$2" "$3" || return
   fi
-  case " $DOTFILES_PRIVATE " in *" $1 "*) run chmod 600 "$3" ;; esac
+  case " $DOTFILES_PRIVATE " in *" $1 "*) run_ok chmod 600 "$3" ;; esac
 }
 
 env_src() {
@@ -221,10 +222,19 @@ say() {
 # each stage bare under `set -e`, so a bare `run` that returned its failure
 # ended the stage loop, the stage and the run: one dead formula skipped every
 # later formula, cask and stage. The failure goes to FAILED_LOG, and the run
-# ends with the list and exit 1. try_run is the bare form, for a caller that
-# handles the failure itself.
+# ends with the list and exit 1.
+#
+# `run` is for a step nothing later depends on. A step that later steps need
+# (a copy before its record, a folder before the file in it) uses run_ok,
+# which reports the same way and also returns the failure, so the caller
+# skips the rest of that item: `if run_ok cp ...; then record ...; fi`.
+# try_run is the bare form, for a caller that reports the failure itself.
 run() {
-  try_run "$@" || note_failure "$*" "$?"
+  run_ok "$@" || :
+}
+
+run_ok() {
+  try_run "$@" || { ro_rc=$?; note_failure "$*" "$ro_rc"; return "$ro_rc"; }
 }
 
 try_run() {
@@ -310,13 +320,6 @@ matches_record() { # key, file
 backup_file() { # path
   [ -e "$1" ] || return 0
   cp -p "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"
-}
-
-# backup_file through run. A failed backup is reported and returns 1, so the
-# caller skips the overwrite it guards: under set -e it ended the run before
-# the overwrite, and run now goes on.
-run_backup() { # path
-  try_run backup_file "$1" || { note_failure "backup_file $1" "$?"; return 1; }
 }
 
 # Commands that could not run because sudo was refused, one per line, reported
@@ -688,9 +691,9 @@ stage_dotfiles() {
       echo "  MISSING $f"
       # Entries may be nested (.ssh/config, .config/gh/config.yml), so the
       # parent directory may not exist on a fresh machine.
-      run mkdir -p "$(dirname "$dst")"
-      copy_dotfile "$f" "$src" "$dst"
-      record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+      if run_ok mkdir -p "$(dirname "$dst")" && copy_dotfile "$f" "$src" "$dst"; then
+        record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+      fi
     elif cmp -s "$src" "$(dotfile_view "$f" "$dst" "$view")"; then
       echo "  ok      $f"
       record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
@@ -699,15 +702,13 @@ stage_dotfiles() {
       # touched it, so the repo is what moved.
       if matches_record "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"; then
           echo "  STALE   $f — untouched here, repo moved ahead"
-          if run_backup "$dst"; then
-            copy_dotfile "$f" "$src" "$dst"
+          if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
             record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
           fi
       elif has_record "dotfiles/$f"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $f — edited here; --force overwrites (backup kept)"
-            if run_backup "$dst"; then
-              copy_dotfile "$f" "$src" "$dst"
+            if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
               record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
             fi
           else
@@ -715,8 +716,7 @@ stage_dotfiles() {
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $f — nothing recorded; --force overwrites (backup kept)"
-          if run_backup "$dst"; then
-            copy_dotfile "$f" "$src" "$dst"
+          if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
             record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
           fi
       else
@@ -797,10 +797,12 @@ stage_envs() {
       echo "  --      $f/ not in this repo"
     elif [ ! -e "$dst" ]; then
       echo "  MISSING $dst"
-      run mkdir -p "$(dirname "$dst")"
-      run cp "$src" "$dst"
-      run chmod 600 "$dst"
-      record_hash "envs/$f" "$src"
+      # install -m 600: the file holds credentials, so it is never readable
+      # by others, not even between a copy and a chmod. Recorded only once
+      # it is in place; a failed step leaves it MISSING for the next run.
+      if run_ok mkdir -p "$(dirname "$dst")" && run_ok install -m 600 "$src" "$dst"; then
+        record_hash "envs/$f" "$src"
+      fi
     elif bad=$(env_template_diff "$src" "$dst"); then
       echo "  ok      $f/.env"
       record_hash "envs/$f" "$src"
@@ -1251,6 +1253,19 @@ agent_render() { # label, tracked plist, rendered plist
 # embeds absolute paths, so it only transplants between machines with the same
 # username and checkout location; a plist written with the agent_render
 # placeholders transplants anywhere.
+# Boots a job out. Succeeds when launchd holds no job under the label
+# afterwards: the bootout did it, or the job was never loaded, which makes
+# bootout fail. A job still loaded is reported FAILED and returns 1, so the
+# caller does not bootstrap over it or remove its plist.
+agent_bootout() { # label
+  ab_rc=0
+  try_run launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || ab_rc=$?
+  [ "$ab_rc" -ne 0 ] || return 0
+  launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1 || return 0
+  note_failure "launchctl bootout gui/$(id -u)/$1" "$ab_rc"
+  return 1
+}
+
 stage_agents() {
   echo "== agents"
   agents=$(manifest agent)
@@ -1281,39 +1296,40 @@ stage_agents() {
       # was never installed showed a remediation and still counted as zero
       # drift -- how one metering agent stayed missing for a day.
       echo "  MISSING $label — no plist here yet"
-      run cp "$src" "$dst"
-      record_hash "agents/$label" "$dst"
-      run launchctl bootstrap "gui/$(id -u)" "$dst"
+      if run_ok cp "$src" "$dst"; then
+        record_hash "agents/$label" "$dst"
+        run launchctl bootstrap "gui/$(id -u)" "$dst"
+      fi
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
-          if run_backup "$dst"; then
-            run cp "$src" "$dst"
+          if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
             record_hash "agents/$label" "$dst"
             # launchd holds the plist it was handed; a replaced file on disk
             # changes nothing until the job is booted out and back in.
-            try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
+            if agent_bootout "$label"; then
+              run launchctl bootstrap "gui/$(id -u)" "$dst"
+            fi
           fi
       elif has_record "agents/$label"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $label — edited here; --force overwrites (backup kept)"
-            if run_backup "$dst"; then
-              run cp "$src" "$dst"
+            if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
               record_hash "agents/$label" "$dst"
-              try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-              run launchctl bootstrap "gui/$(id -u)" "$dst"
+              if agent_bootout "$label"; then
+                run launchctl bootstrap "gui/$(id -u)" "$dst"
+              fi
             fi
           else
             echo "  DIFFERS $label — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $label — nothing recorded; --force overwrites (backup kept)"
-          if run_backup "$dst"; then
-            run cp "$src" "$dst"
+          if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
             record_hash "agents/$label" "$dst"
-            try_run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
+            if agent_bootout "$label"; then
+              run launchctl bootstrap "gui/$(id -u)" "$dst"
+            fi
           fi
       else
           echo "  DIFFERS $label — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
@@ -1439,17 +1455,19 @@ stage_tooling() {
       echo "  ok      claude-hud plugin"
     else
       echo "  MISSING claude-hud plugin"
-      [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
-        || run claude plugin marketplace add jarrodwatts/claude-hud
-      run claude plugin install claude-hud@claude-hud
+      if [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
+        || run_ok claude plugin marketplace add jarrodwatts/claude-hud; then
+        run claude plugin install claude-hud@claude-hud
+      fi
     fi
     hud_config="$HOME/.claude/plugins/claude-hud/config.json"
     if [ -e "$hud_config" ] || [ -L "$hud_config" ]; then
       echo "  ok      claude-hud config"
     else
       echo "  MISSING claude-hud config"
-      run mkdir -p "${hud_config%/*}"
-      run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
+      if run_ok mkdir -p "${hud_config%/*}"; then
+        run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
+      fi
     fi
     if [ ! -f "$HOME/.claude/settings.json" ]; then
       echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
@@ -1470,7 +1488,7 @@ stage_tooling() {
           echo "  ok      settings.json baseline"
         else
           printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
-          if run_backup "$HOME/.claude/settings.json"; then
+          if run_ok backup_file "$HOME/.claude/settings.json"; then
             run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
           fi
         fi
@@ -1493,7 +1511,7 @@ stage_tooling() {
         has*) echo "  DIFFERS opencode.json $gaps" ;;
         *)
           printf '%s\n' "$gaps" | sed 's/^/  MISSING opencode.json /'
-          if run_backup "$opencode_json"; then
+          if run_ok backup_file "$opencode_json"; then
             run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
           fi
           ;;
@@ -2273,8 +2291,8 @@ self_update_json() { # file key json-value
     unset) echo "  MISSING $1 $2 = $3" ;;
     *) echo "  DIFFERS $1 $2 $gap, want $3" ;;
   esac
-  run_backup "$1" || return 0
-  run mkdir -p "$(dirname "$1")"
+  run_ok backup_file "$1" || return 0
+  run_ok mkdir -p "$(dirname "$1")" || return 0
   try_run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
     || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
 }
@@ -4775,12 +4793,16 @@ cmd_decommission() {
 
   echo "== launch agents (manifest)"
   load_profile 2>/dev/null || true
-  uid=$(id -u)
   for label in $(manifest agent 2>/dev/null); do
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$dst" ]; then
-      run launchctl bootout "gui/$uid/$label"
-      run rm "$dst"
+      # The plist goes only once launchd holds no job under the label: a
+      # removed plist under a loaded job leaves nothing to boot it out from.
+      if agent_bootout "$label"; then
+        run rm "$dst"
+      else
+        echo "  KEPT    $dst — $label is still loaded; boot it out, then remove the file"
+      fi
     else
       echo "  --      $label not installed"
     fi

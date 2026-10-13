@@ -166,8 +166,10 @@ Most stages delegate to tools that already existed. This folder is mostly an
 ordering and profile layer over them, not a reimplementation.
 
 A remediation that fails prints `FAILED` and the run goes on to the next item
-and stage. The run ends with the list of failures and exits 1. A failed
-backup skips the overwrite it guards.
+and stage. The run ends with the list of failures and exits 1. A failed step
+skips the rest of its item: a failed backup skips the overwrite, a failed copy
+skips the record and the launchd restart. `decommission` removes a plist only
+once launchd holds no job under its label.
 
 ### Obsidian plugins
 

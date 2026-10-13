@@ -9,8 +9,13 @@ it. Stubs on PATH stand in for brew and launchctl; nothing real runs.
 """
 
 import hashlib
+import os
 import pathlib
+import pty
+import select
+import shutil
 import stat
+import time
 import subprocess
 import tempfile
 import unittest
@@ -41,7 +46,25 @@ exit 0
 """
 
 
+# A stand-in for a real tool that fails when its last argument is $FAIL_TARGET
+# (cp, mkdir) or names it, and runs the real tool otherwise.
+FAILING_STUB = r"""#!/bin/sh
+for last; do :; done
+case "$last" in "$FAIL_TARGET") echo "{name}: $last: refused" >&2; exit 1 ;; esac
+exec {real} "$@"
+"""
+
+
+def failing(name):
+    return FAILING_STUB.replace("{name}", name).replace("{real}", shutil.which(name))
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def write_exec(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -178,6 +201,220 @@ class RemediationFailure(unittest.TestCase):
         self.assertEqual(live.read_text(), "A=1\nB=2\n")
         self.assertEqual(record.read_text().strip(), hashlib.sha256(b"A=1\nB=2\n").hexdigest())
         self.assertEqual(second.returncode, 0)
+
+    # ------------------------------------------------- dependent steps ----
+    # A step that later steps depend on stops them when it fails: the next
+    # independent item still runs. Each case fails one step and checks that
+    # nothing after it in the same sequence ran or was recorded.
+
+    def test_a_failed_agent_copy_records_nothing_and_loads_nothing(self):
+        # No LaunchAgents folder, so the copy of a MISSING agent fails.
+        result = self.run_verb("update", "agents", "--apply")
+        out = result.stdout
+        self.assertIn("  FAILED  cp ", out, out + result.stderr)
+        self.assertEqual([line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")], [], out)
+        self.assertFalse((self.state / "installed").exists())
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_copy_over_a_stale_agent_leaves_launchd_and_the_record_alone(self):
+        label, plist = self.stale_agent()
+        record = self.state / f"installed/agents_{label}.sha"
+        before = record.read_text()
+        write_exec(self.stubs / "cp", failing("cp"))
+        result = self.run_verb("update", "agents", "--apply", FAIL_TARGET=str(plist))
+        out = result.stdout
+        self.assertIn(f"  FAILED  cp ", out, out + result.stderr)
+        self.assertEqual(plist.read_text(), "<plist>older</plist>\n")
+        self.assertEqual(record.read_text(), before)
+        self.assertEqual([line for line in self.log(self.launchctl_log)
+                          if line.startswith(("bootout ", "bootstrap "))], [], out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_stale_agent_whose_old_job_will_not_boot_out_is_not_bootstrapped_over(self):
+        label, plist = self.stale_agent()
+        write_exec(self.stubs / "launchctl", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$LAUNCHCTL_LOG"\n'
+                   'case "$1" in bootout) exit 5 ;; esac\nexit 0\n')
+        result = self.run_verb("update", "agents", "--apply")
+        out = result.stdout
+        self.assertIn(f"  FAILED  launchctl bootout gui/", out, out + result.stderr)
+        self.assertIn(f"/{label} (exit 5)\n", out)
+        self.assertEqual([line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")], [], out)
+        self.assertEqual(result.returncode, 1)
+
+    def dotfile(self, name, text):
+        src = self.config / "machine-setup/dotfiles/common" / name
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text(text)
+        return self.home / name
+
+    def test_a_failed_forced_dotfile_copy_is_not_recorded(self):
+        # Recording the local edit as installed would let the next plain
+        # update read it STALE and overwrite it without --force.
+        dst = self.dotfile(".gitconfig", "[user]\n\tname = Example\n")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text("[user]\n\tname = Edited here\n")
+        write_exec(self.stubs / "cp", failing("cp"))
+        result = self.run_verb("update", "dotfiles", "--apply", "--force", FAIL_TARGET=str(dst))
+        out = result.stdout
+        self.assertIn(f"  FAILED  cp ", out, out + result.stderr)
+        self.assertEqual(dst.read_text(), "[user]\n\tname = Edited here\n")
+        self.assertFalse((self.state / "installed/dotfiles_.gitconfig.sha").exists(), out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_dotfile_folder_skips_the_copy(self):
+        dst = self.dotfile(".config/gh/config.yml", "git_protocol: ssh\n")
+        write_exec(self.stubs / "mkdir", failing("mkdir"))
+        result = self.run_verb("update", "dotfiles", "--apply", FAIL_TARGET=str(dst.parent))
+        out = result.stdout
+        self.assertIn(f"  FAILED  mkdir -p {dst.parent} (exit 1)\n", out, out + result.stderr)
+        self.assertNotIn("FAILED  cp", out)
+        self.assertFalse(dst.exists())
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_dotfile_merge_whose_awk_fails_leaves_the_dotfile(self):
+        # .aws/config keeps this machine's login_session lines through
+        # keep_sessions_cp: awk writes a merge and mv puts it in place. A
+        # failed awk must not move a half-written merge over the file.
+        dst = self.home / ".aws/config"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("[profile old]\nregion = us-east-1\n")
+        installed = self.state / "installed"
+        installed.mkdir()
+        (installed / "dotfiles_.aws_config.sha").write_text(sha(dst.read_text()) + "\n")
+        write_exec(self.stubs / "awk", '#!/bin/sh\ncase "$*" in *"-v re="*) exit 2 ;; esac\n'
+                   f'exec {shutil.which("awk")} "$@"\n')
+        result = self.run_verb("update", "dotfiles", "--apply")
+        out = result.stdout
+        self.assertIn("  STALE   .aws/config", out, out + result.stderr)
+        self.assertIn("  FAILED  keep_sessions_cp .aws/config ", out)
+        self.assertEqual(dst.read_text(), "[profile old]\nregion = us-east-1\n")
+        self.assertEqual(list(dst.parent.glob("config.merge.*")), [])
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_env_seed_records_no_template(self):
+        template = self.config / "machine-setup/envs/personal/local-notify.env"
+        template.parent.mkdir(parents=True)
+        template.write_text("A=1\n")
+        live = self.config / "notify/.env"
+        live.parent.mkdir(parents=True)
+        live.parent.chmod(0o500)
+        self.addCleanup(live.parent.chmod, 0o700)
+        result = self.run_verb("update", "envs", "--apply")
+        out = result.stdout
+        self.assertIn(f"  MISSING {live}", out, out + result.stderr)
+        self.assertIn("  FAILED  ", out)
+        self.assertFalse(live.exists())
+        self.assertFalse((self.state / "installed/envs_local-notify.sha").exists(), out)
+        self.assertEqual(result.returncode, 1)
+
+    def claude(self, fail):
+        """A `claude` stub that logs each call and fails `plugin $fail`."""
+        self.claude_log = self.base / "claude.log"
+        write_exec(self.stubs / "claude", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$CLAUDE_LOG"\n'
+                   f'case "$*" in "plugin {fail}"*) exit 1 ;; esac\nexit 0\n')
+
+    def test_a_failed_marketplace_add_skips_the_plugin_install(self):
+        self.claude("marketplace add")
+        result = self.run_verb("update", "tooling", "--apply", CLAUDE_LOG=str(self.base / "claude.log"))
+        out = result.stdout
+        self.assertIn("  FAILED  claude plugin marketplace add jarrodwatts/claude-hud (exit 1)\n", out,
+                      out + result.stderr)
+        self.assertNotIn("plugin install claude-hud@claude-hud", self.log(self.claude_log))
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_hud_config_folder_skips_the_seeded_config(self):
+        self.claude("none")
+        folder = self.home / ".claude/plugins/claude-hud"
+        write_exec(self.stubs / "mkdir", failing("mkdir"))
+        result = self.run_verb("update", "tooling", "--apply", CLAUDE_LOG=str(self.base / "claude.log"),
+                               FAIL_TARGET=str(folder))
+        out = result.stdout
+        self.assertIn(f"  FAILED  mkdir -p {folder} (exit 1)\n", out, out + result.stderr)
+        self.assertNotIn("FAILED  cp", out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_settings_backup_skips_the_baseline_merge(self):
+        settings = self.home / ".claude/settings.json"
+        settings.parent.mkdir(parents=True)
+        # statusLine already set, so the statusline step leaves the file alone.
+        current = '{"statusLine": {"command": "sh local-statusline/statusline.sh render"}}\n'
+        settings.write_text(current)
+        self.claude("none")
+        # The plugin and its config are present, so only the baseline is due.
+        (self.home / ".claude/plugins/cache/x/claude-hud/1.0").mkdir(parents=True)
+        (self.home / ".claude/plugins/claude-hud").mkdir(parents=True)
+        (self.home / ".claude/plugins/claude-hud/config.json").write_text("{}\n")
+        write_exec(self.stubs / "cp", '#!/bin/sh\ncase "$*" in *.bak-*) exit 1 ;; esac\n'
+                   f'exec {shutil.which("cp")} "$@"\n')
+        result = self.run_verb("update", "tooling", "--apply", CLAUDE_LOG=str(self.base / "claude.log"))
+        out = result.stdout
+        self.assertIn(f"  FAILED  backup_file {settings} (exit 1)\n", out, out + result.stderr)
+        self.assertEqual(settings.read_text(), current)
+        self.assertEqual(result.returncode, 1)
+
+    # ------------------------------------------------------ decommission ----
+
+    def decommission(self, still_loaded):
+        """`decommission --apply` on a terminal, typing the confirmation."""
+        label = "local.system-tools.sd-serve"
+        (self.profiles / "personal.agent").write_text(f"{label}\n")
+        plist = self.home / "Library/LaunchAgents" / f"{label}.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_text("<plist/>\n")
+        # bootout fails; print answers whether launchd still holds the job.
+        write_exec(self.stubs / "launchctl", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$LAUNCHCTL_LOG"\n'
+                   'case "$1" in bootout) exit 5 ;; print) exit "$PRINT_RC" ;; esac\nexit 0\n')
+        env = {
+            "HOME": str(self.home),
+            "MACHINE_SETUP_STATE": str(self.state),
+            "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "en_US.UTF-8",
+            **fixture_config.env(self.config),
+            "LAUNCHCTL_LOG": str(self.launchctl_log),
+            "PRINT_RC": "0" if still_loaded else "113",
+        }
+        # The folder alone, so cron-jobs.sh is missing and its step fails:
+        # nothing real is uninstalled.
+        folder = self.base / "repo/local-machine-setup"
+        shutil.copytree(FOLDER, folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        shutil.copytree(FOLDER.parent / "lib", self.base / "repo/lib",
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.tmp.name)
+            os.execve(str(folder / "machine-setup.sh"), [str(folder / "machine-setup.sh"),
+                                                          "decommission", "--apply"], env)
+        out = b""
+        sent = False
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 1)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+            if not sent and b'type "decommission"' in out:
+                os.write(fd, b"decommission\n")
+                sent = True
+        _, status = os.waitpid(pid, 0)
+        return plist, out.decode(errors="replace").replace("\r\n", "\n"), os.waitstatus_to_exitcode(status)
+
+    def test_decommission_keeps_the_plist_of_an_agent_still_loaded(self):
+        plist, out, rc = self.decommission(still_loaded=True)
+        self.assertTrue(plist.exists(), out)
+        self.assertIn("  FAILED  launchctl bootout gui/", out)
+        self.assertIn(f"  KEPT    {plist}", out)
+        self.assertEqual(rc, 1, out)
+
+    def test_decommission_removes_the_plist_once_launchd_holds_no_job(self):
+        plist, out, rc = self.decommission(still_loaded=False)
+        self.assertFalse(plist.exists(), out)
+        self.assertNotIn("FAILED  launchctl bootout", out)
 
 
 if __name__ == "__main__":
