@@ -56,8 +56,21 @@ fi
 [ ! -f "$CI_SYSTEM_ROOT/leak-${2:-}" ] || launchctl list > /dev/null 2>&1 || :
 # A slow suite and a child of its own hold on until stopped (sd:3749); with
 # ends-ok, the suite ends 0 when the stop reaches it, as one finishing then would.
+# With ignores-term, the suite and its child ignore SIGTERM. With leaves, a
+# suite ends 0 and leaves its child running. With fails-alone, a suite fails
+# once stop exists, though no stop signalled it.
+if [ -f "$CI_SYSTEM_ROOT/leaves-${2:-}" ]; then
+  sleep 30 > /dev/null 2>&1 &
+  echo $! >> "$CI_SYSTEM_ROOT/pids"
+  exit 0
+fi
+if [ -f "$CI_SYSTEM_ROOT/fails-alone-${2:-}" ]; then
+  mkdir "$CI_WORK_ROOT/stop"
+  exit 4
+fi
 if [ -f "$CI_SYSTEM_ROOT/slow-${2:-}" ]; then
   [ ! -f "$CI_SYSTEM_ROOT/ends-ok-${2:-}" ] || trap 'exit 0' TERM
+  [ ! -f "$CI_SYSTEM_ROOT/ignores-term-${2:-}" ] || trap '' TERM
   sleep 30 &
   echo $! >> "$CI_SYSTEM_ROOT/pids"
   echo $$ >> "$CI_SYSTEM_ROOT/pids"
@@ -183,15 +196,17 @@ class FailFast(CheckFixture):
         self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
             "leg-repo-sync", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
 
-    def slow(self, *legs, ends_ok=()):
+    def slow(self, *legs, ends_ok=(), ignores_term=()):
         for leg in legs:
             (self.root / f"slow-{leg}").touch()
         for leg in ends_ok:
             (self.root / f"ends-ok-{leg}").touch()
+        for leg in ignores_term:
+            (self.root / f"ignores-term-{leg}").touch()
 
-    def all_slow_but_a_failing_dashboard(self, ends_ok=()):
+    def all_slow_but_a_failing_dashboard(self, ends_ok=(), ignores_term=()):
         """Every other job holds on; leg-dashboard fails once they all run."""
-        self.slow("repo-sync", "shared", "tools", "one", "two", ends_ok=ends_ok)
+        self.slow("repo-sync", "shared", "tools", "one", "two", ends_ok=ends_ok, ignores_term=ignores_term)
         (self.root / "fail-dashboard").touch()
         (self.root / "fail-waits-for").write_text(f"{2 * (len(self.jobs) - 1)}\n")
 
@@ -240,6 +255,32 @@ class FailFast(CheckFixture):
         self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s\)$")
         self.assertNotRegex(done.stderr, r"check.sh: (failed|stopped):.* leg-shared( |$)")
         self.assert_all_ended(self.pids())
+
+    def test_a_job_that_ignores_sigterm_is_killed(self):
+        """Codex review: TERM alone left the run waiting on such a job."""
+        self.all_slow_but_a_failing_dashboard(ignores_term=("shared",))
+        started = time.monotonic()
+        done = self.check(expect=1)
+        self.assertLess(time.monotonic() - started, 20, "the run waited out the job that ignores SIGTERM")
+        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s, stopped\)$")
+        self.assert_all_ended(self.pids())
+
+    def test_what_a_passing_job_leaves_running_ends_with_it(self):
+        """Codex review: a job's group no longer hears sd-check's end of make's
+        group, so the lane ends the group when the job ends."""
+        (self.root / "leaves-shared").touch()
+        done = self.check()
+        self.assertIn("check.sh: every suite passed", done.stdout)
+        self.assert_all_ended(self.pids())
+
+    def test_a_job_that_fails_on_its_own_after_the_stop_reads_failed(self):
+        """Codex review: only a job the stop signalled, or kept from starting,
+        reads stopped; another failure keeps its exit code and tail."""
+        (self.root / "fails-alone-repo-sync").touch()
+        done = self.check(expect=1)
+        self.assertIn("check.sh: leg-repo-sync exited 4", done.stderr)
+        self.assertRegex(done.stderr, r"check.sh: failed: leg-repo-sync\n")
+        self.assertIn("== tail of leg-repo-sync", done.stdout)
 
     def test_a_job_claimed_as_the_stop_lands_does_not_start(self):
         """A lane checks for a stop, then claims; a stop landing between the two

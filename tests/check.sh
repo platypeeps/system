@@ -122,31 +122,54 @@ work="$(mktemp -d /tmp/system-check.XXXXXX)"
 
 # sd:3749: the first failed job stops the run. A lane runs each job through
 # own_group, whose leader takes a process group of its own, writes its id to
-# $work/<job>.pid, and then exits 143 instead of starting the job when
-# $work/stop exists. stop_jobs signals each group named by a pid file; the
-# lane removes its job's file once the job ends. The stopping lane creates
-# stop before stop_jobs reads the files, so either it sees the leader's id or
-# the leader sees stop.
+# $work/<job>.pid, and then, when $work/stop exists, marks the job stopped and
+# exits 143 instead of starting it. signal_jobs marks each job named by a pid
+# file stopped and signals its group. The stopping lane creates stop before it
+# reads the files, so either it sees the leader's id or the leader sees stop.
+# When a job ends, its lane kills the group, so nothing the job left running
+# outlives it, then removes the pid file.
 LEADER='import os, sys
 os.setpgid(0, 0)
-with open(sys.argv[1], "w") as pid_file:
+with open(sys.argv[1] + ".pid", "w") as pid_file:
     pid_file.write(str(os.getpid()))
 if os.path.isdir(sys.argv[2]):
+    open(sys.argv[1] + ".stopped", "w").close()
     sys.exit(143)
 os.execvp(sys.argv[3], sys.argv[3:])'
-own_group() { "$python" -I -c "$LEADER" "$work/$job.pid" "$work/stop" "$@"; }
-stop_jobs() {
+own_group() { "$python" -I -c "$LEADER" "$work/$job" "$work/stop" "$@"; }
+signal_group() {
+  group="$(cat "$2" 2>/dev/null)" || return 0
+  case "$group" in ''|*[!0-9]*) return 0 ;; esac
+  kill -"$1" "-$group" 2>/dev/null || :
+}
+signal_jobs() {
   for pid_file in "$work"/*.pid; do
-    group="$(cat "$pid_file" 2>/dev/null)" || continue
-    case "$group" in ''|*[!0-9]*) continue ;; esac
-    kill -"$1" "-$group" 2>/dev/null || :
+    [ -f "$pid_file" ] || continue
+    : > "${pid_file%.pid}.stopped"
+    signal_group "$1" "$pid_file"
   done
+}
+# TERM, then KILL for a job still running after about 5 seconds.
+stop_jobs() {
+  signal_jobs TERM
+  wait_for=5
+  while [ "$wait_for" -gt 0 ] && running_jobs; do
+    sleep 1
+    wait_for=$((wait_for - 1))
+  done
+  signal_jobs KILL
+}
+running_jobs() {
+  for pid_file in "$work"/*.pid; do
+    [ ! -f "$pid_file" ] || return 0
+  done
+  return 1
 }
 # A job's group no longer hears a signal sent to this script's group, so a
 # signal ends the script, and its exit ends every job still running. It waits
 # for the lanes, which then see stop and claim nothing, before it removes
 # $work: a lane left running could claim a job once stop was gone.
-trap 'mkdir "$work/stop" 2>/dev/null || :; stop_jobs TERM; stop_jobs KILL; wait; rm -rf "$work"' EXIT
+trap 'mkdir "$work/stop" 2>/dev/null || :; signal_jobs TERM; signal_jobs KILL; wait; rm -rf "$work"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -256,11 +279,16 @@ while [ "$lane" -lt "$lanes" ]; do
                  /bin/bash --noprofile --norc "$DIR/ci-native.sh" leg tools ;;
       macos-*) isolated sh "$DIR/run-macos-only.sh" "${job#macos-}" ;;
     esac > "$work/$job.log" 2>&1 || status=$?
+    signal_group KILL "$work/$job.pid"
     rm -f "$work/$job.pid"
-    # The first failure stops the rest; a job that fails once stop exists
-    # was stopped. A job that ends 0 as the stop reaches it passed.
+    # The first failure stops the rest. A job the stop marked and that ended
+    # nonzero was stopped; one that ended 0 as the stop reached it passed.
     if [ "$status" -ne 0 ]; then
-      if mkdir "$work/stop" 2>/dev/null; then stop_jobs TERM; else status=stopped; fi
+      if mkdir "$work/stop" 2>/dev/null; then
+        stop_jobs
+      elif [ -f "$work/$job.stopped" ]; then
+        status=stopped
+      fi
     fi
     echo "$status $(($(date +%s) - started))" > "$work/$job.status"
   done &
