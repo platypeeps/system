@@ -30,7 +30,7 @@ Every card also gets an Open button (https `/open` redirect to the
 ```
 
 No pending decisions = no email; `run` exits 1 only when the email itself
-failed, so the cron failure push covers a lost digest, not findings.
+failed, so the run's report on Today covers a lost digest, not findings.
 
 ## How it works
 

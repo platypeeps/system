@@ -4070,23 +4070,12 @@ cmd_doctor() {
     fi
   fi
 
-  # Each of these lives in the tool's config folder, or in the tool's own
-  # folder where an older checkout keeps it.
-  notify_conf="$SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf"
-  [ -f "$notify_conf" ] || notify_conf="$ROOT/local-cron-jobs/notify.conf"
+  # A failed or flagged job reaches Reports and Today without a channel
+  # (sd:3454); notify.sh still serves one-off callers, so a machine without
+  # one is a warning, not a failure. A topic left at change-me is no channel.
   notify_env=$(live_env local-notify)
-  if [ -f "$notify_conf" ]; then
-    echo "  ok      $notify_conf present (job failures reach the phone)"
-  else
-    echo "  WARN    cron-jobs notify.conf missing — no phone push on job failure"
-  fi
-
-  # Presence of the conf is not reach. A topic left at change-me, or a profile
-  # whose only channel was email, still leaves a machine unable to tell anyone
-  # a nightly job died — which is the failure nobody sees, because the thing
-  # that would report it is the thing that is broken.
   chans=""
-  topic=$(sed -n 's/^[[:space:]]*NTFY_TOPIC=//p' "$notify_conf" 2>/dev/null | tr -d '"')
+  topic=$(sed -n 's/^[[:space:]]*NTFY_TOPIC=//p' "$notify_env" 2>/dev/null | tr -d '"')
   [ -z "$topic" ] && topic="${NTFY_TOPIC:-}"
   case "$topic" in ""|change-me*|xxx*) ;; *) chans="$chans ntfy" ;; esac
   # EMAIL_FROM only. EMAIL_TO used to be required here too, until the recipient
@@ -4102,9 +4091,8 @@ cmd_doctor() {
   if [ -n "$chans" ]; then
     echo "  ok      notification channels configured:$chans"
   else
-    echo "  FAIL    no notification channel configured — nothing can report a failed job"
-    echo "          set NTFY_TOPIC in $SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf (see local-notify/README.md)"
-    fails=$((fails + 1))
+    echo "  WARN    no notification channel configured — notify.sh can reach no one"
+    echo "          set NTFY_TOPIC in $notify_env (see local-notify/README.md)"
   fi
 
   # One-off system state that no stage manages.
@@ -4454,8 +4442,8 @@ grants_report() {
   } > "$tmp/grants"
 }
 
-# One push, with mail, when a grant is missing. Returns 1 when it could not
-# be delivered.
+# When a grant is missing, print what to re-grant and an SD_REPORT_ATTENTION
+# line, so the run's report reaches Reports and Today (sd:3454).
 grants_push() {
   [ -s "$tmp/regrant" ] || return 0
   {
@@ -4466,23 +4454,20 @@ grants_push() {
       cat "$tmp/changed"
     fi
   } > "$tmp/push"
-  if ! sh "$notify" -t "TCC: re-grant on $(hostname -s)" -k status -F -c ntfy,email -b "$(cat "$tmp/push")"; then
-    echo "grant push FAILED — exiting 1 so the cron failure push fires" >&2
-    return 1
-  fi
+  cat "$tmp/push"
+  echo "SD_REPORT_ATTENTION: TCC: re-grant on $(hostname -s)"
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
-# after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel, with the AI-app inventory
-# capture and the TCC grants probe's result. When nothing is outdated it only
-# updates Claude Code, captures the inventory and probes the grants. A missing grant sends one push naming each binary to re-grant.
-# Exits 1 when the email or that push could not be delivered, or when the
-# quiet-week Claude update or capture failed, so the cron failure push covers
-# a lost report or a silent failure, not mere findings.
+# after the sweep, and prints what got upgraded / what failed / what is still
+# pending, with the AI-app inventory capture and the TCC grants probe's
+# result. When nothing is outdated it only updates Claude Code, captures the
+# inventory and probes the grants. Leftovers, a failed capture or a missing
+# grant print an SD_REPORT_ATTENTION line, so the run's report reaches Reports
+# and Today; nothing is mailed (sd:3454). Exits 1 when the quiet-week Claude
+# update or capture failed.
 cmd_upgrade_report() {
   APPLY=1
-  notify="$ROOT/local-notify/notify.sh"
   tmp=$(mktemp -d)
   # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
   # that only removed it returned into the run, which then wrote into the
@@ -4491,7 +4476,7 @@ cmd_upgrade_report() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # fd 3 is the job log. The sweep's output goes into the mail, and each step
+  # fd 3 is the job log. The sweep's output goes into the report, and each step
   # names itself here as it starts, so a hang names its step.
   exec 3>&2
   # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
@@ -4510,13 +4495,13 @@ cmd_upgrade_report() {
     if [ -x "$HOME/.local/bin/claude" ]; then
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
-    echo "nothing outdated — no upgrade, no email"
+    echo "nothing outdated — no upgrade"
     held_section before
     inventory_capture || rc=1
     cat "$tmp/inventory"
     grants_report
     cat "$tmp/grants"
-    grants_push || rc=1
+    grants_push
     return "$rc"
   fi
 
@@ -4554,19 +4539,13 @@ cmd_upgrade_report() {
 
   n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
   n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
-  subject="upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
-  # A clean upgrade is a receipt, not a problem — only the leftovers are worth
-  # flagging, so -F is conditional here where the other status jobs hardcode it.
-  # Those only send at all when they have findings; this one always sends.
-  fu=""
-  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then fu="-F"; fi
-  push_rc=0
-  grants_push || push_rc=1
-  if ! sh "$notify" -t "$subject" -k status $fu -c ntfy,email -b "$(cat "$tmp/body")"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
+  cat "$tmp/body"
+  grants_push
+  # A clean upgrade is a receipt, not a problem: only the leftovers or a
+  # failed capture need attention.
+  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then
+    echo "SD_REPORT_ATTENTION: upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
   fi
-  return "$push_rc"
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the
@@ -4591,8 +4570,8 @@ are the `system` and `tooling` stages — run `update system --apply` /
 
 notifications  (nothing provisions these: the ntfy topic doubles as the
 secret on the public server, so it is never committed)
-  - NTFY_TOPIC into $SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf, 0600 —  *
-    launchd jobs do not inherit the shell environment, so the conf is
+  - NTFY_TOPIC into local-notify's .env, 0600 —  *
+    launchd jobs do not inherit the shell environment, so the .env is
     what they read
   - same NTFY_TOPIC exported in ~/.config/shell/env.sh, for interactive use
   - local-notify's .env comes from the `envs` stage where the profile has
@@ -4813,7 +4792,7 @@ cmd_status() {
   echo "drift   : $drift item(s)"
   # --fail-on-drift turns drift into exit 1, which is what lets the cron job
   # machine-setup-update-nightly (its last step) route "this machine drifted"
-  # into the failure notification path (banner + ntfy push).
+  # into a failure report that Today shows.
   if [ "$FAIL_ON_DRIFT" -eq 1 ] && [ "$drift" -gt 0 ]; then
     exit 1
   fi
@@ -4881,15 +4860,14 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
-  upgrade-report   cron flavor of upgrade: always applies, emails what got
+  upgrade-report   cron flavor of upgrade: always applies, prints what got
                    upgraded / what failed / what is still outdated, with the
                    ai-apps inventory capture and the result of
                    local-project-dashboard's `grants` probe; when nothing
                    is outdated it only runs claude update, the capture and
-                   the probe; a missing grant sends one push naming each
-                   binary to re-grant; exits 1 when the email or that push
-                   could not be delivered or that quiet-week claude update
-                   or capture failed
+                   the probe; leftovers or a missing grant print an
+                   SD_REPORT_ATTENTION line for Reports and Today; exits 1
+                   when that quiet-week claude update or capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall

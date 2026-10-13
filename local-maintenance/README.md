@@ -2,22 +2,23 @@
 
 Nightly machine upkeep in one sweep: pending macOS / App Store updates,
 docker prune (Sundays), backup freshness, certificate expiry, log rotation,
-disk space. Findings that need a human are emailed through local-notify's
-email channel; safe fixes (log rotation, docker prune) happen automatically.
+disk space. Findings that need a human go to the run's report, which Reports
+and Today show; safe fixes (log rotation, docker prune) happen automatically.
 
 ## Usage
 
 ```sh
 ./maintenance.sh check   # read-only: print findings and would-be fixes
-./maintenance.sh run     # apply safe fixes, email findings (cron entrypoint)
+./maintenance.sh run     # apply safe fixes, report findings (cron entrypoint)
 ./maintenance.sh uv-prune  # prune uv's cache (the login agent's entrypoint)
 ./maintenance.sh uv-prune-plist  # print that login agent's plist
 ./maintenance.sh test    # run the unit tests
 ```
 
-`run` exits 1 only when the findings email could not be delivered, so the
-cron failure notification covers a lost report, not mere findings — the
-email itself is the report.
+With findings, `run` prints `SD_REPORT_ATTENTION: maintenance: <n> finding(s)
+on <host>` and exits 0. The cron run's ingest maps that line to a report that
+needs attention, so Reports and Today carry the findings until the report is
+acknowledged; nothing is mailed (sd:3454).
 
 ## Checks
 

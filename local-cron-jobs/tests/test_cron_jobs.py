@@ -92,9 +92,10 @@ class Fixture:
         self.claude.write_text(FAKE_CLAUDE)
         self.claude.chmod(self.claude.stat().st_mode | stat.S_IXUSR)
         self.claude_log = self.tmp / "claude-call"
-        # `notify_failure` calls bare `osascript`, so every staged failure
-        # posted a real desktop notification: the suite fired 9 of them at
-        # the user per run, measured with a recording stub on PATH. The stub
+        # `notify_failure` called bare `osascript` until sd:3454, so every
+        # staged failure posted a real desktop notification: the suite fired 9
+        # of them at the user per run, measured with a recording stub on PATH.
+        # It stays, so a banner that comes back is caught, not shown. The stub
         # goes on the fixture rather than beside `launchctl` in `stub_bin`,
         # because the two PATHs the runs use are built in two places --
         # `exec_job` below and `stub_env` -- and only the second one consults
@@ -2454,34 +2455,35 @@ class NeverSpawnedTest(unittest.TestCase):
 
 
 class FailureNotificationTest(unittest.TestCase):
-    """A staged failure notifies the fixture's stub, not the user's desktop.
+    """A failed run is recorded and reported, and posts nothing (sd:3454).
 
-    The suite posted 9 real macOS notifications per run at the user, measured
-    with a recording `osascript` first on PATH. `notify_failure` calls bare
-    `osascript`, and the fixture's PATH reached `/usr/bin/osascript`.
-
-    Both PATHs a run can be started with are asserted here. The obvious fix --
-    an `osascript` beside `launchctl` in `stub_bin` -- covers only the five
-    that came through `stub_env`; the other four came through the plain PATH
-    `Fixture.exec_job` builds, which never consults `stub_bin`. The stub is on
-    the fixture and both builders go through `Fixture.path`.
-
-    PIN, and a rig fix: `cron-jobs.sh` is unchanged, so these pass against
-    earlier code too. A stub nothing asserts on goes stale silently.
+    The run's report carries the failure to Reports and Today, so the desktop
+    banner and the ntfy push are gone. The fixture's recording `osascript`
+    and `curl` would catch either one, on both PATHs a run can be started
+    with: the plain one `Fixture.exec_job` builds and `stub_env`'s.
     """
 
     def setUp(self):
         self.fx = Fixture()
         self.addCleanup(self.fx.destroy)
         self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="exit 3"\n')
+        # A notify.conf of the kind the wrapper used to read; nothing may use it.
+        (self.fx.conf_dir / "notify.conf").write_text("NTFY_TOPIC=example-topic\n")
+        self.curl_log = self.fx.tmp / "curl-calls.txt"
+        curl = self.fx.quiet / "curl"
+        curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{self.curl_log}'\n")
+        curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
 
-    def test_a_failure_run_plainly_notifies_the_stub(self):
+    def assert_recorded_and_silent(self):
+        self.assertEqual(self.fx.notifications(), [])
+        self.assertFalse(self.curl_log.exists(), self.curl_log.read_text() if self.curl_log.exists() else "")
+        self.assertIn("demo FAILED rc=3", (self.fx.folder / "logs" / "failures.log").read_text())
+
+    def test_a_failure_run_posts_nothing(self):
         self.assertEqual(self.fx.exec_job("demo").returncode, 3)
-        posted = self.fx.notifications()
-        self.assertEqual(len(posted), 1, posted)
-        self.assertIn("Job 'demo' failed (rc=3)", posted[0])
+        self.assert_recorded_and_silent()
 
-    def test_a_failure_run_under_the_launchctl_stubs_notifies_the_stub(self):
+    def test_a_failure_run_under_the_launchctl_stubs_posts_nothing(self):
         agents = self.fx.home / "Library" / "LaunchAgents"
         agents.mkdir(parents=True, exist_ok=True)
         (agents / "local.system-tools.cron.demo.plist").write_text("<plist/>\n")
@@ -2490,10 +2492,56 @@ class FailureNotificationTest(unittest.TestCase):
             env=stub_env(self.fx, stub_bin(self.fx.tmp), 2),
             capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 3, run.stderr)
-        posted = self.fx.notifications()
-        self.assertEqual(len(posted), 1, posted)
-        self.assertIn("Job 'demo' failed (rc=3)", posted[0])
+        self.assert_recorded_and_silent()
 
+
+class WatchdogTest(unittest.TestCase):
+    """`watchdog` names a job that stopped running to its own report.
+
+    sd:3454: a stale job prints an `SD_REPORT_ATTENTION:` line, which the
+    run's ingest maps to a report that needs attention, so Reports and Today
+    carry it. It mails nothing: a notify.sh beside the fixture records any
+    call, and must record none.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        notify = self.fx.tmp / "local-notify" / "notify.sh"
+        notify.parent.mkdir()
+        self.notify_log = self.fx.tmp / "notify-calls.txt"
+        notify.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{self.notify_log}'\n")
+        self.agents = self.fx.home / "Library" / "LaunchAgents"
+        self.agents.mkdir(parents=True)
+
+    def install(self, job, installed_ago):
+        self.fx.write_job(job, 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n')
+        plist = self.agents / f"local.system-tools.cron.{job}.plist"
+        plist.write_text("<plist/>\n")
+        then = time.time() - installed_ago
+        os.utime(plist, (then, then))
+
+    def watchdog(self):
+        return subprocess.run(
+            ["sh", str(self.fx.folder / "cron-jobs.sh"), "watchdog"],
+            env={"PATH": self.fx.path(), "HOME": str(self.fx.home),
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config)},
+            capture_output=True, text=True, timeout=60)
+
+    def test_a_stale_job_needs_attention_and_mails_nothing(self):
+        self.install("demo", 3 * 86400)
+        run = self.watchdog()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("STALE   demo", run.stdout)
+        self.assertRegex(run.stdout, r"(?m)^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on ")
+        self.assertFalse(self.notify_log.exists(), self.notify_log.read_text() if self.notify_log.exists() else "")
+
+    def test_a_job_within_its_cadence_needs_nothing(self):
+        self.install("demo", 3600)
+        run = self.watchdog()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("ok      demo", run.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
 
 
 class UnfinishedRunTest(unittest.TestCase):

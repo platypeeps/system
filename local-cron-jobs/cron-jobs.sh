@@ -36,10 +36,9 @@
 #   cron-jobs.sh exec <job>               internal: what launchd invokes
 #   cron-jobs.sh test                     run the unittest suite in tests/
 #
-# Failure reporting: on a non-zero exit the wrapper posts a macOS notification,
-# appends to logs/failures.log, and — if NTFY_TOPIC is set in
-# <config>/cron-jobs/notify.conf — pushes to ntfy.sh (reaches your phone).
-# See notify.conf.example.
+# Failure reporting: on a non-zero exit the wrapper appends to
+# logs/failures.log; every run's report goes to the workflow database, where
+# a failure or an SD_REPORT_ATTENTION line opens a Reports row that Today shows.
 #
 # Local configuration (environment, or <config>/cron-jobs/.env; a value
 # already exported wins over .env). See .env.example.
@@ -427,21 +426,12 @@ EOF
   } > "$plist"
 }
 
+# Records the failure only. The run's report carries it to Reports and Today,
+# so nothing is posted or pushed (sd:3454).
 notify_failure() { # job, exit code
   local job="$1" rc="$2" ts
   ts="$(date '+%Y-%m-%dT%H:%M:%S%z')"
   echo "$ts $job FAILED rc=$rc (log: logs/$job.log)" >> "$FAIL_LOG"
-  osascript -e "display notification \"Job '$job' failed (rc=$rc). See local-cron-jobs/logs.\" with title \"cron-jobs failure\"" 2>/dev/null || true
-  # Optional phone push via ntfy.sh — set NTFY_TOPIC in
-  # <config>/cron-jobs/notify.conf
-  local NTFY_TOPIC=""
-  # shellcheck source=/dev/null
-  [ -f "$CONF_DIR/notify.conf" ] && . "$CONF_DIR/notify.conf"
-  if [ -n "$NTFY_TOPIC" ]; then
-    curl -s -m 10 -H "Title: cron-jobs: $job failed" -H "Priority: high" \
-      -d "Exit $rc at $ts on $(hostname -s). Log: local-cron-jobs/logs/$job.log" \
-      "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true
-  fi
 }
 
 # launchd points a job's stdout at its log (StandardOutPath in the plist); a
@@ -1164,7 +1154,7 @@ cmd_exec() { # invoked by launchd (and by `run`)
   if [ -n "$JOB_COMMAND" ]; then
     run_bounded "$job" "$JOB_TIMEOUT_SECONDS" bash -c "$JOB_COMMAND" || rc=$?
   # Resolved here and not at the top of the script: a missing agent is this
-  # job's failure, and it reaches the log, failures.log and the notification
+  # job's failure, and it reaches the log, failures.log and the report
   # like any other non-zero exit instead of killing the script before the
   # lock and the tee are in place.
   elif claude_bin="$(claude_binary)"; then
@@ -1504,8 +1494,8 @@ cmd_logs() {
 # (weekday pinned = weekly, day-of-month pinned = monthly, else daily, each
 # with slack). A job whose LaunchAgent silently stopped firing — machine
 # asleep/off at its slot, plist unloaded, launchd wedged — never writes a
-# failure, so the ntfy failure push stays quiet; this is the check that
-# notices the silence. Emails findings; exits 1 only when the email failed.
+# failure; this is the check that notices the silence. A stale job prints an
+# SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today.
 cmd_watchdog() {
   local job dom dow max log age ref now stale
   now=$(date +%s)
@@ -1543,15 +1533,8 @@ cmd_watchdog() {
     echo "watchdog: all installed jobs alive"
     return 0
   fi
-  local n subject body
-  n=$(wc -l < "$stale" | tr -d ' ')
-  subject="watchdog: $n cron job(s) not running on $(hostname -s)"
-  body=$(printf 'cron watchdog — %s on %s\n\nThese installed jobs show no activity within their cadence:\n%s\n\nfix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not.\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$stale")")
-  if ! sh "$ROOT/../local-notify/notify.sh" -t "$subject" -k status -F -c ntfy,email -b "$body"; then
-    echo "watchdog email FAILED" >&2
-    return 1
-  fi
+  echo "fix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not."
+  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s)"
 }
 
 # Has machine-setup recorded a profile here? Its cron stage then owns the set
@@ -1667,7 +1650,8 @@ usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|
                decide -- and a marker from an earlier boot is debris.
   logs         tail a job's log (default 40 lines)
   watchdog     flag installed jobs with no log activity within their cadence
-               (daily/weekly/monthly from the schedule) and email the list
+               (daily/weekly/monthly from the schedule); a stale job prints an
+               SD_REPORT_ATTENTION line, so its report reaches Reports and Today
   exec         internal: what the LaunchAgent invokes
   test         run the unittest suite in tests/ (extra args go to unittest)
 
@@ -1681,8 +1665,6 @@ configuration: <config> is ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.conf
                                  folder of each job.
   <config>/cron-jobs/.env        the variables below; an exported value wins
                                  (copy local-cron-jobs/.env.example)
-  <config>/cron-jobs/notify.conf NTFY_TOPIC for a phone push on failure
-                                 (copy local-cron-jobs/notify.conf.example)
   CRON_JOBS_EXTRA_DIRS       colon-separated extra job directories; a job
                              there overrides a same-named one in
                              <config>/cron-jobs/jobs

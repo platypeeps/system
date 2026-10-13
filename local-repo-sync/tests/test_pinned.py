@@ -210,7 +210,7 @@ class PinnedSyncTest(unittest.TestCase):
 
     def test_nightly_does_not_report_a_pinned_checkout(self):
         """NEW. A pinned checkout behind its origin is neither a sync failure
-        nor a hygiene finding, so nightly exits 0 and sends nothing."""
+        nor a hygiene finding, so nightly exits 0 and reports nothing."""
         f = self.fixture()
         repo = f.repo()
         f.pin(repo)
@@ -219,6 +219,7 @@ class PinnedSyncTest(unittest.TestCase):
         result = f.run("nightly", expect=0)
 
         self.assertIn("1 behind origin/main", result.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", result.stdout)
         self.assertFalse(f.notify_log.exists(),
                          f.notify_log.read_text() if f.notify_log.exists() else "")
 

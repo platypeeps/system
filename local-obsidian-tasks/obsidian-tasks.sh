@@ -449,5 +449,5 @@ if sh "$NOTIFY" -t "$subject" -k brief -c ntfy,email -b -f html "$(cat "$TMPD/bo
   echo "email sent"
   exit 0
 fi
-echo "email FAILED — exiting 1 so the cron failure push fires" >&2
+echo "email FAILED — exiting 1 so the run's report needs attention" >&2
 exit 1
