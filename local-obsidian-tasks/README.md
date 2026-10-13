@@ -38,7 +38,11 @@ checkout:
 - Each task is one transaction; the item carries the reference
   `obsidian:<vault path>` (`task-ref`, as `sd task add --ref` writes it). A
   task whose reference exists is skipped, so a second run creates nothing.
-- A read value passes only when YAML reads it as the exact string the
+- Each frontmatter line is `key: value` or `key:` at column 0, or a
+  `- item` at the indent of its list's first item; any other line refuses
+  the task, naming its number. Blank and comment lines may sit between
+  keys, not inside a list.
+- A value passes only when YAML reads it as the exact string the
   importer uses; any other refuses its task, naming the key. Refused: a
   first character that is a YAML indicator, escapes in quotes, null, bool
   and number forms where a string belongs, comments, leading or trailing

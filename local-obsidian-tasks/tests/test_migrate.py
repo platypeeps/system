@@ -266,7 +266,7 @@ class Migrate(unittest.TestCase):
             "tag": ("---\ntitle: !!str Example\n---\n", "title: YAML syntax"),
             "flow-map": ("---\ntitle: {a: b}\n---\n", "title: YAML syntax"),
             "comment": ("---\ntitle: Example # a comment\n---\n", "title: a comment or map syntax"),
-            "continuation": ("---\ntitle: Example\n  continued\n---\n", "title: an indented line"),
+            "continuation": ("---\ntitle: Example\n  continued\n---\n", "frontmatter line 2: not a line shape"),
             "map-in-list": (head + recur + "complete_instances:\n  - date: 2026-09-01\n---\n", "complete_instances: a map inside a list"),
             "flow-quoted-comma": (head + 'tags: ["a, b"]\n---\n', "tags: a quoted value with an escape"),
             "bad-date": (head + "scheduled: 2026-10-31x\n---\n", "scheduled: not a date"),
@@ -376,6 +376,48 @@ class Migrate(unittest.TestCase):
                             "recurrence_anchor 'Scheduled' has no sd anchor"),
             "case-archived": (self.OPEN + "archived: tRuE\n---\n", "archived: neither true nor false"),
         })
+
+    # Review round 3 of sd:3460: the reader is an allowlist of line shapes too. `  - task\n    - archived` is one
+    # YAML string, not two tags; any line that is not `key: value`, `key:` or a list item at its list's indent
+    # refuses the task, naming the line.
+    def test_a_line_outside_the_three_shapes_is_refused_by_number(self):
+        def line(n, why):
+            return f"frontmatter line {n}: {why}"
+        indent, shape, gap = "a list item at another indent", "not a line shape", "a blank or comment line inside a list"
+        lines = self.assert_refused({
+            "shape-deeper-tags": (self.OPEN + "tags:\n  - task\n    - archived\n---\n", line(5, indent)),
+            "shape-deeper-history": (self.OPEN + self.RECUR + "complete_instances:\n  - 2026-09-01\n    - 2026-09-02\n---\n",
+                                     line(7, indent)),
+            "shape-deeper-skipped": (self.OPEN + self.RECUR + "skipped_instances:\n  - 2026-09-01\n    - 2026-09-02\n---\n",
+                                     line(7, indent)),
+            "shape-shallower": (self.OPEN + "tags:\n    - a\n  - b\n---\n", line(5, indent)),
+            "shape-continuation": (self.OPEN + "tags:\n  - task\n    archived\n---\n", line(5, shape)),
+            "shape-tab": (self.OPEN + "tags:\n\t- task\n---\n", line(4, shape)),
+            "shape-blank-in-list": (self.OPEN + "tags:\n  - a\n\n  - b\n---\n", line(5, gap)),
+            "shape-blank-before-item": (self.OPEN + "tags:\n\n  - a\n---\n", line(4, gap)),
+            "shape-comment-in-list": (self.OPEN + "tags:\n  - a\n# note\n  - b\n---\n", line(5, gap)),
+            "shape-item-after-value": (self.OPEN + "  - a\n---\n", line(3, shape)),
+            "shape-fence-indented": ("---\ntitle: Example\n  ---\n---\n", line(2, shape)),
+            "shape-fence-text": ("---\ntitle: Example\n--- x\n---\n", line(2, shape)),
+            "shape-document-end": ("---\ntitle: Example\n...\n---\n", line(2, shape)),
+            "shape-line-separator": ("---\ntitle: a\u2028status: done\n---\n", line(1, "a control character")),
+            "shape-lone-cr": ("---\ntitle: a\rstatus: done\n---\n", line(1, "a control character")),
+            "shape-flow-indicator": (self.OPEN + "tags: [a, b]c]\n---\n", "tags: a flow indicator inside a list item"),
+        }, {"shape-column-zero-items": self.OPEN + "tags:\n- task\n- archived\n---\n",
+            "shape-gap-between-keys": "---\ntitle: Example\n\n# a note\nstatus: open\n---\n"})
+        self.assertIn("created: 2", lines)
+        self.assertEqual(self.item("shape-column-zero-items")["item"]["status"], "done")  # the `archived` tag read
+
+    def test_codex_round_3_findings_are_refused(self):
+        # A no-break space is YAML content, not white space: `status: \u00a0done` is not `done`. And a history
+        # item is read whether or not the task has a rule: `- true` is YAML's true, not a date.
+        lines = self.assert_refused({
+            "codex-nbsp-title": ("---\ntitle: \u00a0Pay invoice\n---\n", "title: leading or trailing whitespace"),
+            "codex-nbsp-status": ("---\ntitle: Example\nstatus: \u00a0done\n---\n", "status: leading or trailing"),
+            "codex-nbsp-tag": (self.OPEN + "tags: [\u00a0archived]\n---\n", "tags: leading or trailing whitespace"),
+            "codex-history-bool": (self.OPEN + "complete_instances:\n  - true\n---\n", "complete_instances: not a date"),
+        }, {"codex-history-no-rule": self.OPEN + "complete_instances:\n  - 2026-09-01\n---\n"})
+        self.assertIn("created: 1", lines)
 
     def test_a_series_moved_off_its_dtstart_is_refused(self):
         # Review of sd:3460: sd keeps no DTSTART, so the due date becomes the series start. A task postponed off its

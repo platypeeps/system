@@ -92,36 +92,52 @@ NOT_STRINGS = frozenset({"null", "~", "true", "false", "yes", "no", "on", "off"}
 YAML_SPECIAL_FLOAT = re.compile(r"^[-+]?\.(?:inf|nan)$", re.I)
 
 
-def frontmatter(text: str) -> dict | None:
-    """The read keys of the YAML block, or None when the file has none.
+#: Characters YAML reads as a line break, or refuses, but `str.split("\n")` keeps inside a line.
+NOT_IN_A_LINE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
+KEY_LINE = re.compile(r"^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$")
+ITEM_LINE = re.compile(r"^( *)-(?: (.*))?$")
 
-    TaskNotes writes flat frontmatter: `key: value` scalars, inline `[a, b]`
-    lists and indented `- item` lists. That is all this decodes, and it is
-    an allowlist: a read key passes only when YAML reads its value as the
-    exact string returned (`_scalar`). Anything else raises `Refused` naming
-    the key: other YAML syntax, continuation lines, nested maps, a duplicate,
-    and an empty value, which YAML reads as null. An empty `title` is the one
-    empty value kept: it takes the file-name fallback, as YAML intends.
+
+def frontmatter(text: str) -> dict | None:
+    """The keys of the YAML block, or None when the file has none.
+
+    TaskNotes writes flat frontmatter, and this decodes only its line shapes:
+    a) `key: value` at column 0, the value one `_scalar` or a `[a, b]` list;
+    b) `key:` at column 0 with nothing after it, then only list items;
+    c) a list item `<indent>- value`, every item under a key at the indent
+       of its first.
+    Blank lines and column-0 comments are allowed between keys, not in a list.
+    Any other line raises `Refused` naming its number: a deeper or different
+    indent, a tab, a continuation, a nested map, a fence out of place. A
+    value raises `Refused` naming its key unless YAML reads it as the exact
+    string returned (`_scalar`). An empty value is YAML null and refuses,
+    except an empty `title`, which takes the file-name fallback.
     """
     m = re.match(r"(?s)^---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", text)
     if not m:
         return None
     fields: dict = {}
-    block: set = set()  # read keys whose value is an indented `- item` list
+    block: set = set()  # keys whose value is an indented `- item` list
     key = None
-    for number, line in enumerate(m.group(1).splitlines(), 1):
-        if not line.strip() or line.lstrip().startswith("#"):
+    indent = None  # the indent of `key`'s first list item
+    in_list = False  # the last key line was `key:`, so only items may follow
+    for number, line in enumerate(re.split(r"\r?\n", m.group(1)), 1):
+        where = f"frontmatter line {number}"
+        if NOT_IN_A_LINE.search(line) or "\r" in line:
+            raise Refused(f"{where}: a control character or line break the importer does not decode")
+        if not line.strip(" \t") or line.startswith("#"):
+            if in_list:
+                raise Refused(f"{where}: a blank or comment line inside a list")
             continue
-        if line[0] in " \t":
-            if key not in READ_KEYS:
-                continue
-            item = re.match(r"^\s+-(?:\s+(.*))?$", line)
-            if item is None or (key not in block and fields[key] != ""):
-                raise Refused(f"{key}: an indented line the importer does not decode")
-            if key not in block:
+        item = ITEM_LINE.match(line)
+        if item and in_list:
+            if indent is None:
+                indent = len(item.group(1))
                 block.add(key)
                 fields[key] = []
-            value = item.group(1) or ""
+            elif len(item.group(1)) != indent:
+                raise Refused(f"{where}: a list item at another indent")
+            value = item.group(2) or ""
             if re.match(r"^[^'\"]*:(\s|$)", value):
                 raise Refused(f"{key}: a map inside a list")
             decoded = _scalar(key, value)
@@ -129,18 +145,18 @@ def frontmatter(text: str) -> dict | None:
                 raise Refused(f"{key}: an empty list item, which YAML reads as null")
             fields[key].append(decoded)
             continue
-        pair = re.match(r"^([A-Za-z_][\w-]*):(?:[ \t]+(.*))?$", line)
+        pair = KEY_LINE.match(line)
         if not pair:
-            raise Refused(f"frontmatter line {number}: not a plain key the importer decodes")
-        key, value = pair.group(1), pair.group(2) or ""
-        if key not in READ_KEYS:
-            fields[key] = value
-            continue
+            raise Refused(f"{where}: not a line shape the importer decodes")
+        key, value, indent = pair.group(1), pair.group(2) or "", None
         if key in fields:
             raise Refused(f"{key}: given twice")
-        if value.startswith("[") and value.rstrip().endswith("]"):
+        in_list = not value.strip(" \t")
+        if in_list:
+            fields[key] = ""
+        elif value.startswith("[") and value.rstrip().endswith("]"):
             _spaces(key, value)
-            inner = value.rstrip()[1:-1].strip()
+            inner = value.rstrip()[1:-1].strip(" \t")
             fields[key] = [_scalar(key, v, flow=True) for v in inner.split(",")] if inner else []
             if "" in fields[key]:
                 raise Refused(f"{key}: an empty list item, which YAML reads as null")
@@ -166,7 +182,10 @@ def _scalar(key: str, raw: str, *, flow: bool = False) -> str:
     """
     if not flow:
         _spaces(key, raw)
-    value = raw.strip()
+    value = raw.strip(" \t")
+    if value != value.strip():
+        # YAML keeps a no-break or other Unicode space as content; Python's strip() would drop it.
+        raise Refused(f"{key}: leading or trailing whitespace")
     if not value:
         return ""
     if value[0] in "'\"":
@@ -176,6 +195,8 @@ def _scalar(key: str, raw: str, *, flow: bool = False) -> str:
         if inner != inner.strip():
             raise Refused(f"{key}: leading or trailing whitespace inside quotes")
         return inner
+    if flow and any(c in value for c in "[]{}"):
+        raise Refused(f"{key}: a flow indicator inside a list item")
     if value[0] in INDICATORS or value == "-" or value.startswith(("- ", "-\t")):
         raise Refused(f"{key}: YAML syntax the importer does not decode "
                       "(a value that starts with a YAML indicator)")
@@ -303,6 +324,9 @@ def plan(vault: Path, path: Path) -> Plan:
 
     rule = anchor = None
     raw_rule = fm.get("recurrence", "")
+    # Read the history even without a rule, so a misread item refuses whatever the rule.
+    done = _dates("complete_instances", fm.get("complete_instances"))
+    skipped = _dates("skipped_instances", fm.get("skipped_instances"))
     history = 0
     if raw_rule:
         body = raw_rule[len("RRULE:"):] if raw_rule.upper().startswith("RRULE:") else raw_rule
@@ -322,8 +346,6 @@ def plan(vault: Path, path: Path) -> Plan:
         raw_anchor = fm.get("recurrence_anchor", "")
         if raw_anchor not in ANCHOR:
             raise Refused(f"recurrence_anchor {raw_anchor!r} has no sd anchor")
-        done = _dates("complete_instances", fm.get("complete_instances"))
-        skipped = _dates("skipped_instances", fm.get("skipped_instances"))
         history = len(done) + len(skipped)
         lines.append(f"The vault's rule: {raw_rule}; anchor {raw_anchor or 'scheduled'}.")
         if done:
