@@ -750,5 +750,16 @@ class TheRegistration(Registers, unittest.TestCase):
         self.assertNotRegex(shell_js, r"Commands: 'commands\.html'")
 
 
+class TheBadge(unittest.TestCase):
+    def test_the_badge_counts_the_24_hour_window_only(self):
+        # sd:3446: the read's rule, which every page's rail shows; an old journal record or an undated one never lights it.
+        start = activity_screen._utc("2026-09-05T12:00:00Z")
+        events = [{"at": "2026-09-06T10:00:00Z", "s": "warning"}, {"at": "2026-09-05T12:00:00Z", "s": "caution"},
+                  {"at": "2026-09-01T10:00:00Z", "s": "warning"}, {"at": None, "s": "warning"}]
+        self.assertEqual(activity_screen._attention(events, start), {"state": "warning", "n": 1, "what": "failed events in 24 h"})
+        self.assertEqual(activity_screen._attention(events[1:], start), {"state": "caution", "n": 1, "what": "caution events in 24 h"})
+        self.assertEqual(activity_screen._attention(events[2:], start)["state"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

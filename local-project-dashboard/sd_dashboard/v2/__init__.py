@@ -18,7 +18,9 @@ Each asset is linked as `/ui/<name>?v=<digest>`, from `VERSIONS`, the map of
 digests computed when this module loads (sd:2141): `page` adds the query to the
 page's links, and `asset` adds it to a stylesheet's `url(...)` references, so a
 font change changes the stylesheet's digest too. `sd_dashboard.caching` says
-when the server may cache an answer for good.
+when the server may cache an answer for good. `/ui/sections.js` is the one
+exception: the server writes it on each request (`sections`), unversioned and
+`no-store`, because it carries every page's rail badge (sd:3446, `Badges`).
 
 Since sd:2163 the pages are served at the root (`/today`) and the assets under
 `/ui/`, a prefix no v1 route uses; v1 keeps `/static/`. A `/v2/` address that
@@ -27,16 +29,20 @@ names a page or an asset redirects to its new one (`moved`).
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
+import sys
+import threading
+from dataclasses import replace
 from pathlib import Path
 
 from .. import caching
 from . import pages as registry
 
-__all__ = ["ASSETS", "CLASSIC", "PAGES", "SCREENS", "SECTIONS", "VERSIONS", "action", "api", "asset", "digests", "listing",
-           "moved", "old", "page"]
+__all__ = ["ASSETS", "Badges", "CLASSIC", "PAGES", "SCREENS", "SECTIONS", "VERSIONS", "action", "api", "asset", "digests",
+           "listing", "moved", "old", "page", "sections"]
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -79,18 +85,86 @@ def _enumerate() -> dict[str, str]:
     return found
 
 
-def _sections() -> bytes:
-    lines = ["// The rail's section map, written by sd_dashboard/v2/__init__.py from the page registry in sd_dashboard/v2/pages/ (sd:2418)."]
-    for key, value in (("SHELL_PAGES", SECTIONS), ("SHELL_CLASSIC", CLASSIC), ("SHELL_SCREENS", SCREENS)):
+#: Published name (relative to /ui/) -> content type, for the files in `static/`; `sections.js` is the server's.
+ASSETS = _enumerate()
+
+
+def sections(badges: dict | None = None) -> bytes:
+    """`/ui/sections.js`: the rail's section map and, as `SHELL_COUNTS`, each page's badge from `Badges.read`."""
+    lines = ["// The rail's section map, written by sd_dashboard/v2/__init__.py from the page registry in sd_dashboard/v2/pages/ (sd:2418),",
+             "// and each page's rail badge, written on this request (sd:3446)."]
+    for key, value in (("SHELL_PAGES", SECTIONS), ("SHELL_CLASSIC", CLASSIC), ("SHELL_SCREENS", SCREENS),
+                       ("SHELL_COUNTS", {"pages": badges or {}})):
         lines.append(f"window.{key} = {json.dumps(value)};")
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-#: Generated asset name -> its bytes; served beside the files in `static/`.
-GENERATED = {"sections.js": _sections()}
+STATES = ("ok", "caution", "warning", "unknown")
 
-#: Published name (relative to /ui/) -> content type.
-ASSETS = _enumerate() | {name: TYPES[Path(name).suffix] for name in GENERATED}
+
+def _attention(document) -> dict | None:
+    """A read document's `attention`, `{state, n, what}`, or None when it carries none of that shape."""
+    found = document.get("attention") if isinstance(document, dict) else None
+    if (not isinstance(found, dict) or set(found) != {"state", "n", "what"} or found["state"] not in STATES
+            or type(found["n"]) is not int or found["n"] < 0 or not isinstance(found["what"], str)):
+        return None
+    return found
+
+
+class Badges:
+    """Each page's rail badge (sd:3446), one per server.
+
+    A page names the read whose document carries its `attention` (`Page.count`). A `live` page's read runs again on
+    each `/ui/sections.js` request; every other page shows what its last read carried, kept here with that read's
+    time, so the rail never waits on the network, launchd or a slow file walk. A failed or shapeless read leaves
+    `unknown`, never the value before it, and a read that started earlier never replaces one that started later: each
+    read takes a ticket as it starts, since two reads can start in one second. The values live in memory: a restarted
+    server shows no such badge until the page is read again.
+    """
+
+    def __init__(self):
+        self._last: dict[str, tuple[int, dict]] = {}
+        self._lock = threading.Lock()
+        self._tickets = itertools.count(1)
+
+    def ticket(self) -> int:
+        """The order of a read that starts now."""
+        with self._lock:
+            return next(self._tickets)
+
+    def remember(self, path: str, document, now: str, ticket: int | None = None) -> None:
+        """Keep the badge in `document`, read at `now` from `path`, for the page that names `path` as its count.
+        `ticket` is the read's, taken as it started; none means a read that starts and ends now."""
+        page = next((entry for entry in registry.PAGES if entry.count == path and not entry.live), None)
+        if page is None:
+            return
+        found = _attention(document) or {"state": "unknown", "n": 0, "what": f"{page.section} read failed"}
+        with self._lock:
+            ticket = next(self._tickets) if ticket is None else ticket
+            if self._last.get(page.section, (0, None))[0] < ticket:
+                self._last[page.section] = (ticket, {**found, "at": now})
+
+    def read(self, read, connected: bool = True) -> dict:
+        """Section -> badge: a live page's from a read made now, every other page's last one. With no database
+        (`connected` false) a live page is unknown and its read does not run."""
+        with self._lock:
+            found = {section: dict(value) for section, (_, value) in self._last.items()}
+        for entry in registry.PAGES:
+            if not (entry.count and entry.live):
+                continue
+            if not connected:
+                found[entry.section] = {"state": "unknown", "n": 0, "what": f"{entry.section} not read"}
+                continue
+            try:
+                route = api(entry.count)[1]
+                answer = route.read(replace(read, path=entry.count))
+                status, document = answer if isinstance(answer, tuple) else (200, answer)
+                badge = _attention(document) if status == 200 else None
+            except Exception as problem:  # noqa: BLE001 - one page's failed count must not take the rail's map with it
+                print(f"rail badge for {entry.section} failed: {problem!r}", file=sys.stderr)
+                badge = None
+            found[entry.section] = badge or {"state": "unknown", "n": 0, "what": f"{entry.section} not read"}
+        return found
 
 
 def _stylesheet(name: str, body: bytes, versions: dict[str, str]) -> bytes:
@@ -107,8 +181,8 @@ def _stylesheet(name: str, body: bytes, versions: dict[str, str]) -> bytes:
 
 
 def _served(name: str, root: Path, versions: dict[str, str]) -> bytes:
-    """The bytes `/ui/<name>` answers with: the file, a stylesheet's references versioned, or a generated one."""
-    body = GENERATED[name] if name in GENERATED else (root / name).read_bytes()
+    """The bytes `/ui/<name>` answers with: the file, or a stylesheet with its references versioned."""
+    body = (root / name).read_bytes()
     return _stylesheet(name, body, versions) if name.endswith(".css") else body
 
 
@@ -117,7 +191,7 @@ def digests(root: Path = STATIC) -> dict[str, str]:
 
     Stylesheets last: their bytes carry the digests of the files they name.
     """
-    names = {name for name in ASSETS if name in GENERATED or (root / name).is_file()}
+    names = {name for name in ASSETS if (root / name).is_file()}
     versions = {name: caching.digest(_served(name, root, {})) for name in sorted(names) if not name.endswith(".css")}
     for name in sorted(names):
         if name.endswith(".css"):
@@ -174,7 +248,7 @@ def listing() -> list[str]:
 
 
 def asset(name: str) -> tuple[bytes, str] | None:
-    """One file from `static/` or a generated one, by its exact published name, or None."""
+    """One file from `static/`, by its exact published name, or None."""
     kind = ASSETS.get(name)
     if kind is None:
         return None
@@ -189,7 +263,7 @@ def moved(path: str) -> str | None:
     """
     if path.startswith("/v2/static/"):
         name = path[len("/v2/static/") :]
-        return f"/ui/{name}" if name in ASSETS else None
+        return f"/ui/{name}" if name in ASSETS or name == "sections.js" else None
     if path.startswith("/v2/"):
         target = "/" + path[len("/v2/") :]
         return target if target != "/" and target in PAGES else None

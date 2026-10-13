@@ -452,7 +452,16 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
             out["sources"][source] = str(failure) or f"{source} could not be read"
             continue
         out["sources"][source] = ""
+    out["attention"] = _attention(out["jobs"])
     return out
+
+
+def _attention(jobs) -> dict:
+    """The rail badge (sd:3446): scheduled jobs whose last run failed. A jobs read that failed is unknown, not none failed."""
+    if jobs is None:
+        return {"state": "unknown", "n": 0, "what": "scheduled jobs not read"}
+    failed = sum(job.get("state") == "failed" for job in jobs)
+    return {"state": "warning" if failed else "ok", "n": failed, "what": "scheduled jobs failed"}
 
 
 #: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.

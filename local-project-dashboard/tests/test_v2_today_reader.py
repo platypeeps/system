@@ -314,7 +314,9 @@ class TheBadge(TheReader):
     """Today's badge (shell.attention) counts the decisions waiting beside the Now rows (sd:3012).
 
     today.js and decisions.js run together, as today.html loads them; /api/decisions answers with one decision, and the
-    Now document keeps only its caution row, so the badge is caution and its count is the row plus the decision."""
+    Now document keeps only its caution row, so the badge is caution and its count is the row plus the decision. The rule
+    is the server's (sd:3446): /api/now answers with the badge `now_screen._attention` gives for the decisions still open,
+    as the server reads them, so a ruling here is counted once Now is read again."""
 
     DECISION = {"note": 7, "item": 3012, "title": "Dashboard v2", "repo": "/repos/system", "asked": "2026-10-08T21:00:00Z",
                 "question": "Which shape?", "options": ["Option lines", "Free text"], "revision": "a" * 64}
@@ -322,12 +324,16 @@ class TheBadge(TheReader):
     def run_badge(self, body, decisions, keep_job=False):
         self.doc["rows"] = [row for row in self.doc["rows"] if keep_job or row["kind"] != "job"]
         self.assertEqual([row["band"] for row in self.doc["rows"]], ["broken", "look"] if keep_job else ["look"])
+        # What /api/now answers while the decision is open, and once it is ruled or resolved.
+        before, after = (dict(self.doc, waiting=n, attention=now_screen._attention(self.doc["rows"], n)) for n in (len(decisions), 0))
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   # As shell.js does: a page passes its badge, or sets window.PAGE_ATTENTION and passes nothing.
                   + "\nwindow.shell.attention = a => { if (a) window.PAGE_ATTENTION = a; OUT.attention.push(window.PAGE_ATTENTION); };"
-                  + f"\nconst DOC0 = {json.dumps(self.doc)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
-                  + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : path === '/api/decisions' ? [200, DECISIONS]"
-                    " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
+                  + f"\nconst DOC0 = {json.dumps(before)}, DOC1 = {json.dumps(after)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
+                  + "var ruled = false;\n"
+                  + "ANSWER = (path, body) => path === '/api/now' ? [200, ruled || !DECISIONS.decisions.length ? DOC1 : DOC0]"
+                    " : path === '/api/decisions' ? [200, DECISIONS]"
+                    " : (ruled = true, [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }]);\n"
                   + SNOOZE_JS + COMMANDS_JS + TODAY_JS + "\n" + DECISIONS_JS
                   + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
                     " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
@@ -357,10 +363,11 @@ class TheBadge(TheReader):
         self.assertEqual(out["R"]["before"]["n"], 2)
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "caution rows"})
 
-    def test_a_decision_waiting_while_now_is_unread_still_lights_the_badge(self):
+    def test_an_unread_now_is_unknown_while_a_decision_waits(self):
+        # sd:3446: the badge is the Now read's, so a failed read is unknown here as on every other page's rail.
         out = self.run_badge("ANSWER0 = ANSWER; ANSWER = (p, b) => p === '/api/now' ? [500, { error: 'stopped' }] : ANSWER0(p, b);"
                              " refresh(); await flush();", [self.DECISION])
-        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "decisions waiting"})
+        self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "rows"})
 
     def test_a_warning_row_outranks_a_waiting_decision(self):
         """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""

@@ -49,9 +49,12 @@
   const page = body.dataset.page;
   // Rail badges: data/counts.js (window.SHELL_COUNTS) is generated from every page's window.PAGE_ATTENTION.
   // The current page overrides its own badge with its live value, so a badge never disagrees with its page.
+  // build (sd:3446): /ui/sections.js sets SHELL_COUNTS on each request from the server's rule for each page. A badge with
+  // `at` is the page's last read, not one made now (Health, Today and the others that leave the database), so it says when.
   const counts = Object.assign({}, window.SHELL_COUNTS && window.SHELL_COUNTS.pages);
+  const seen = c => c.at && !Number.isNaN(Date.parse(c.at)) ? `, read ${new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
   // The badge says what the number is, so a screen reader hears "Tasks, 3 overdue" and not just "3".
-  const badge = c => c && c.n && c.state !== 'ok' ? html`<span class="count ${c.state}" title="${c.n} ${c.what}">${c.n}<span class="sr"> ${c.what}</span></span>` : html``;
+  const badge = c => c && c.n && c.state !== 'ok' ? html`<span class="count ${c.state}" title="${c.n} ${c.what}${seen(c)}">${c.n}<span class="sr"> ${c.what}${seen(c)}</span></span>` : html``;
 
   // ---------- Rail ----------
   const rail = document.createElement('aside');

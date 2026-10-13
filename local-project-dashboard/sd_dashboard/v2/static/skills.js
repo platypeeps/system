@@ -41,9 +41,8 @@ addEventListener('DOMContentLoaded', () => {
     byName = Object.fromEntries(S.map(s => [s.name, s]));
     onPath = S.filter(s => s.status === 'path'); trials = S.filter(s => s.status === 'trial'); contrib = S.filter(s => s.status === 'contrib');
     unusedPath = onPath.filter(s => !total(s));
-    // Attention: unused path skills (row glyph ▲) and the use-record fault (annunciator ▲). Nothing on this page is warning.
-    const n = unusedPath.length + (doc.junk ? 1 : 0);
-    window.PAGE_ATTENTION = n ? { state: 'caution', n, what: 'unused path skills and use-record faults' } : { state: 'ok', n: 0, what: 'skill flags' };
+    // Attention: the read's own, unused path skills (row glyph ▲) and the use-record fault (sd:3446, skills_screen._attention).
+    window.PAGE_ATTENTION = doc.attention || { state: 'unknown', n: 0, what: 'skills not read' };
     window.shell.attention?.();
     return {
       objects: [...S, { id: 'hygiene', type: 'use records', label: `${plural(doc.junk, 'skill_use row')} name a path` },

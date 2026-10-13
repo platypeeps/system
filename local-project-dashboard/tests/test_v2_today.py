@@ -155,14 +155,14 @@ class TheAssets(BrowserSession):
                     ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8"}
         on_disk = sorted(path.relative_to(V2 / "static").as_posix()
                          for path in (V2 / "static").rglob("*") if path.is_file())
-        self.assertEqual(sorted(v2.ASSETS), sorted(on_disk + list(v2.GENERATED)))
+        self.assertEqual(sorted(v2.ASSETS), sorted(on_disk))
         for name in v2.ASSETS:
             with urllib.request.urlopen(f"{self.base}/ui/{name}", timeout=5) as answer:
                 status, headers, body = answer.status, answer.headers, answer.read()
             self.assertEqual(status, 200, name)
             # A stylesheet's references carry their digests (sd:2141); with those taken out it is the file.
             self.assertEqual(re.sub(rb"\?v=[0-9a-f]{16}", b"", body) if name.endswith(".css") else body,
-                             v2.GENERATED.get(name) or (V2 / "static" / name).read_bytes(), name)
+                             (V2 / "static" / name).read_bytes(), name)
             self.assertEqual(headers["Content-Type"], expected[Path(name).suffix], name)
             self.assertEqual(headers["X-Content-Type-Options"], "nosniff", name)
         self.assertIn("fonts/ibm-plex-sans-var.woff2", on_disk)
@@ -179,7 +179,7 @@ class TheAssets(BrowserSession):
         for first in faces:
             self.assertIn(first, v2.ASSETS)
         for name in v2.ASSETS:
-            if name.endswith((".css", ".js")) and name not in v2.GENERATED:
+            if name.endswith((".css", ".js")):
                 text = (V2 / "static" / name).read_text(encoding="utf-8")
                 self.assertNotRegex(text, r"url\(\s*['\"]?(https?:)?//", name)
 

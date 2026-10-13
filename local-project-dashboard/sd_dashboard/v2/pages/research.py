@@ -28,4 +28,5 @@ PAGE = Page(
     item="sd:2122",
     api=(Api("/api/research", _board), Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources)),
     classic={"Resources (classic)": "/operations?area=resources"},
+    count="/api/research",
 )

@@ -291,6 +291,16 @@ class TheDocument(Collectors, ScreenCase):
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
 
+    def test_the_badge_is_the_loudest_state_of_every_area_s_rows(self):
+        # sd:3446: the read's rule, which every page's rail shows from Health's last read.
+        doc = self.doc()
+        states = [row["state"] for area in doc["areas"] for row in area["rows"]]
+        loudest = "warning" if "warning" in states else "caution" if "caution" in states else "ok"
+        self.assertEqual((doc["attention"]["state"], doc["attention"]["n"]), (loudest, states.count(loudest) if loudest != "ok" else 0))
+        areas = [{"rows": [{"state": "caution"}, {"state": "warning"}, {"state": "caution"}]}, {"rows": [{"state": "unknown"}]}]
+        self.assertEqual(health_screen._attention(areas), {"state": "warning", "n": 1, "what": "findings want you"})
+        self.assertEqual(health_screen._attention(areas[1:]), {"state": "ok", "n": 0, "what": "findings to watch"})
+
     def seen(self, row_id, doc=None):
         """The row's fingerprint as the page reads it, which the page posts with its snooze."""
         return next(row["seen"] for area in (doc or self.doc())["areas"] for row in area["rows"] if row["id"] == row_id)

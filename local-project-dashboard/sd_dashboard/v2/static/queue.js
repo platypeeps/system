@@ -84,8 +84,8 @@
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
       put($('subhead'), html`${plural(DOC.lanes.length, 'lane')} of ${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
-      const blocked = DOC.lanes.reduce((n, l) => n + l.rows.filter(x => x.state === 'blocked').length, 0);
-      S.attention({ state: blocked ? 'caution' : 'ok', n: blocked, what: 'blocked' });
+      // The badge is the read's own (sd:3446, queue_screen._attention): blocked rows in every lane.
+      S.attention(DOC.attention || { state: 'unknown', n: 0, what: 'lanes not read' });
     } catch (err) {
       DOC = null;
       S.state({ kind: 'error', text: `The lanes were not read: ${err.message}. Read again retries it.`, source: '/api/queue' });

@@ -73,4 +73,6 @@ PAGE = Page(
          Api("/api/shadow/sync", write=_sync), Api("/api/shadow/state", _sync_status)),
     classic={"Contributions (classic)": "/classic/contributions"},
     takes=(Old("/classic/contributions", _classic),),
+    count="/api/contributions/page",
+    live=True,
 )

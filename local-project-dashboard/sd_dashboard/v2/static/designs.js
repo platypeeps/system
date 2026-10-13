@@ -192,11 +192,9 @@ document.addEventListener('keydown', e => {
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false) };
 
 // Declared before shell.js runs: the badge, the palette's "This page" group and the key sheet read these.
-// The badge counts what a commit or a retake clears: uncommitted pages, and pages with no or a stale screenshot.
-const WHAT = 'pages uncommitted or without a current screenshot';
+// The badge is the read's own (sd:3446, designs.with_views): uncommitted pages, and pages with no or a stale screenshot.
 function attention() {
-  const n = ROWS.filter(r => r.state === 'caution' && !r.hidden).length;
-  window.PAGE_ATTENTION = !D ? { state: 'unknown', n: 0, what: 'designs not read' } : { state: n ? 'caution' : 'ok', n, what: WHAT };
+  window.PAGE_ATTENTION = D && D.attention || { state: 'unknown', n: 0, what: 'designs not read' };
   shell.attention?.(window.PAGE_ATTENTION);
 }
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'designs not read' };

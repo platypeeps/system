@@ -98,6 +98,8 @@ class TheDocument(Pack, ScreenCase):
         self.assertEqual(doc["surfaces"], {"claude": 7, "codex": 1})
         self.assertEqual(doc["use"], {"first": "2026-08-01T10:00:00+00:00", "last": "2026-09-22T12:00:00+00:00", "rows": 8})
         self.assertEqual(by["sd-used"]["modes"], {"direct": 4})
+        # sd:3446: the rail's badge, the idle path skill and the use-record fault, from the read every page's rail runs.
+        self.assertEqual(doc["attention"], {"state": "caution", "n": 2, "what": "unused path skills and use-record faults"})
         self.assertEqual({s["name"]: s["status"] for s in doc["skills"]}, {"sd-used": "path", "sd-idle": "path", "sd-extra": "contrib"})
         self.assertEqual(doc["paths"], {"build": "plan to ship"})
 

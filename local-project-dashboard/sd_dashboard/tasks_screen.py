@@ -14,6 +14,7 @@ query of the store:
   Operations' histogram counts with (sd:2589). Each row also carries whether `workflow.edit_item`
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
+  The document's `attention` is the page's rail badge (sd:3446, `_attention`).
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
@@ -37,7 +38,7 @@ starts a herdr session for the item and adds a note. Nothing here writes.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from sd_db import reads, repos, workflow
@@ -116,7 +117,25 @@ def _document(connection, *, now: str) -> dict:
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
-    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out}
+    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now)}
+
+
+def _attention(rows, *, now: str) -> dict:
+    """The rail badge (sd:3446): open, unparked rows past their due day are warning, and those due within 2 days caution.
+
+    Days are calendar days in this machine's zone, as the page's row glyphs count them in the browser on the same machine.
+    """
+    today = datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone().date()
+
+    def state(row) -> str:
+        if row["status"] == "done" or row["parked"] or not row["due"]:
+            return ""
+        days = (date.fromisoformat(row["due"][:10]) - today).days
+        return "warning" if days < 0 else "caution" if days <= 2 else ""
+
+    from .v2.pages import attention
+
+    return attention(map(state, rows), {"warning": "overdue tasks", "caution": "tasks due within 2 days", "ok": "nothing due"})
 
 
 def _note(note) -> dict:

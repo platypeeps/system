@@ -271,6 +271,27 @@ class TheScript(Controlled):
         self.assertEqual(out["R"]["reg"], [["providers.configure", "provider", "undo", "f", True],
                                            ["bill.cap", "bill", "undo", "p", True]])
 
+    def test_the_badge_rule_lights_what_the_lamps_light(self):
+        # sd:3446: the rule is the server's, and every page's rail shows it; it must count the cells metrics.js lights.
+        def lit(doc):
+            lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+            states = re.findall(r'data-cell="[\w-]+"[^>]*data-state="(\w+)"', lamps)
+            worst = "warning" if "warning" in states else "caution" if "caution" in states else "ok"
+            return worst, states.count(worst) if worst != "ok" else 0
+
+        counted = []
+        for used, bound in ((80, False), (100, True), (40, False), (None, True)):
+            doc = self.doc()
+            for meter in doc["usage"]["meter"]:
+                meter["used_percent"] = used
+            doc["usage"]["bound"] = [{"bill": "example"}] if bound else []
+            doc["attention"] = metrics_screen._attention(doc["usage"], doc["trend"])
+            self.assertEqual(lit(doc), (doc["attention"]["state"], doc["attention"]["n"]), (used, bound))
+            counted.append(doc["attention"]["state"])
+        self.assertEqual(counted, ["caution", "warning", "ok", "caution"])
+        self.assertEqual(metrics_screen._attention({"error": "OSError: locked"}, {}),
+                         {"state": "unknown", "n": 0, "what": "readings not read"})
+
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html;")
         self.assertEqual(out["gets"], ["/api/metrics"])

@@ -694,10 +694,9 @@ document.getElementById('view-deploys').addEventListener('click', e => {
 // ---------- Schedules ----------
 const SS = { sort: 'rank', dir: 1, page: 1, size: 25 };
 const RANK = { warning: 0, caution: 1, unknown: 2, ok: 3 };
+// The badge is the read's own (sd:3446, management_screen._attention): scheduled jobs whose last run failed.
 function pageAttention() {
-  const failed = CRON.filter(c => c.rank === 'warning').length;
-  window.PAGE_ATTENTION = !DOC ? { state: 'unknown', n: 0, what: 'scheduled jobs not read' }
-    : { state: failed ? 'warning' : 'ok', n: failed, what: 'scheduled jobs failed' };
+  window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'scheduled jobs not read' };
   window.shell?.attention?.(window.PAGE_ATTENTION);
 }
 function renderSchedules() {

@@ -78,12 +78,11 @@ addEventListener('DOMContentLoaded', () => {
   }
 
   // ---------- Strip ----------
-  // Rail badge (shell.js): the loudest gate state across active pieces.
-  const pageAttention = (xs, what) => { const w = xs.filter(s => s === 'warning').length, c = xs.filter(s => s === 'caution').length; window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: what[w ? 'warning' : 'caution'] }; window.shell?.attention?.(window.PAGE_ATTENTION); };
+  // Rail badge (shell.js): the read's own, the loudest gate state across active pieces (sd:3446, writing_screen._attention).
   function renderStrip() {
-    if (!D) { window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'pieces not read' }; window.shell?.attention?.(window.PAGE_ATTENTION); put(document.getElementById('strip'), html``); return; }
+    window.PAGE_ATTENTION = D && D.attention || { state: 'unknown', n: 0, what: 'pieces not read' }; window.shell?.attention?.(window.PAGE_ATTENTION);
+    if (!D) { put(document.getElementById('strip'), html``); return; }
     const act = pieces.filter(p => !p.parked);
-    pageAttention(act.map(p => worst(gates(p))), { warning: 'pieces fail a gate', caution: 'pieces need a gate' });
     const bad = act.filter(p => !p.gates_ok).length;
     const pub = act.filter(p => publishState(p).ok).length;
     put(document.getElementById('strip'), html`<span class="fact"><b>${act.length}</b> active</span>

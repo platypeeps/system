@@ -510,7 +510,16 @@ def with_views(doc: dict, connection) -> dict:
     for product in doc["products"]:
         product["hidden"] = kept.get(view_key(f"product:{product['name']}"), {}).get("hidden", False)
     doc["store"] = {"available": not unread, "reason": unread}
+    doc["attention"] = _attention(doc)
     return doc
+
+
+def _attention(doc: dict) -> dict:
+    """The rail badge (sd:3446): what a commit or a retake clears, on the pages the operator has not hidden."""
+    from .v2.pages import attention
+
+    return attention(("caution" if caution(page) else "" for page in doc["pages"] if not page.get("hidden")),
+                     {"caution": "pages uncommitted or without a current screenshot"})
 
 
 def request(payload: dict, root: Path | None = None):

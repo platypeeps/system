@@ -638,9 +638,18 @@ R.det = ELS.details.html;""")
         out = self.run_page("")
         self.assertEqual(out["states"][0]["text"], "Reading the research checkouts. Rows appear when /api/research answers.")
 
+    def test_the_badge_rule_counts_render_stale_projects_and_an_unread_board_is_unknown(self):
+        # sd:3446: the read's rule, which every page's rail shows; Gamma's unread config is unknown and counts nothing.
+        self.assertEqual(self.doc["attention"], {"state": "caution", "n": 1, "what": "render-stale projects"})
+        def broken(*_):
+            raise OSError("the collector timed out")
+        self.assertEqual(research_screen.document(now=NOW, backend=broken)["attention"],
+                         {"state": "unknown", "n": 0, "what": "research not read"})
+
     def test_a_project_the_next_read_drops_runs_no_command_and_loses_the_selection(self):
         out = self.run_page("""const first = ANSWER('/api/research')[1], A = ANSWER;
-ANSWER = path => path === '/api/research' ? [200, { ...first, projects: first.projects.filter(p => p.key !== 'research/beta') }] : A(path);
+ANSWER = path => path === '/api/research' ? [200, { ...first, projects: first.projects.filter(p => p.key !== 'research/beta'),
+  attention: { state: 'ok', n: 0, what: 'render-stale projects' } }] : A(path);
 await load(); await flush();
 R.type = C.get('research/beta').type; R.rows = ELS.rows.html; R.selected = selected; R.det = ELS.details.html;""")
         self.assertEqual(out["R"]["type"], "not listed")

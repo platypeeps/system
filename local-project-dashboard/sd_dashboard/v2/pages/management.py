@@ -19,4 +19,5 @@ PAGE = Page(
     html="management.html",
     item="sd:2118",
     api=(Api("/api/management", _read),),
+    count="/api/management",
 )

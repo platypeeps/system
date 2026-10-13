@@ -646,8 +646,9 @@ class TheScript(ScreenCase):
         self.assertIn('data-f="p" data-v="1"', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
-        # The seeded due date is in the past on any day this runs after 2026-09-09: one overdue task lights the page.
-        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "overdue tasks"})
+        # The badge is the read's own (sd:3446): at NOW the seeded due date is 3 days off, so nothing is due yet.
+        self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "nothing due"})
+        self.assertEqual(out["attention"][-1], self.doc["attention"])
 
     def test_a_combobox_picks_one_value_and_all_clears_it(self):
         out = self.run_page("""const pick = (fsel, value) => ELS.filters.listeners.change[0]({ target: { dataset: { fsel }, value } });
@@ -1214,7 +1215,7 @@ R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
         self.assertIn("parked=1", out["R"]["url"])
-        self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "overdue tasks"})
+        self.assertEqual(out["attention"][-1], self.doc["attention"])
 
     def test_the_parked_chip_is_read_from_the_address(self):
         self.park()
@@ -1973,3 +1974,28 @@ class TheDocumentLinks(ScreenCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheBadge(BrowserSession):
+    """sd:3446: the rail's Tasks badge is the read's own rule, and every page's rail reads it on each request."""
+
+    def rows(self, *dues, status="ready", parked=None):
+        return [{"status": status, "parked": parked, "due": due} for due in dues]
+
+    def test_overdue_is_warning_and_due_within_two_days_is_caution(self):
+        rule = lambda rows: tasks_screen._attention(rows, now=NOW)  # noqa: E731
+        # NOW is 2026-09-06 at noon UTC, the same calendar day in every zone this runs in.
+        self.assertEqual(rule(self.rows("2026-09-05", "2026-09-06", "2026-09-08", "2026-09-09", None)),
+                         {"state": "warning", "n": 1, "what": "overdue tasks"})
+        self.assertEqual(rule(self.rows("2026-09-06", "2026-09-08", "2026-09-09")),
+                         {"state": "caution", "n": 2, "what": "tasks due within 2 days"})
+        self.assertEqual(rule(self.rows("2026-09-01", status="done") + self.rows("2026-09-01", parked="2026-09-02T02:00:00Z")),
+                         {"state": "ok", "n": 0, "what": "nothing due"})
+
+    def test_every_page_shows_the_tasks_badge_read_now(self):
+        self.item("Pay the bill", kind="task", due="2026-01-02")
+        sections = lambda: self.request("/ui/sections.js", headers={"Cookie": self.cookie})[2]  # noqa: E731
+        badge = lambda: json.loads(re.search(r"^window\.SHELL_COUNTS = (.*);$", sections(), re.M).group(1))["pages"]["Tasks"]  # noqa: E731
+        self.assertEqual(badge(), {"state": "warning", "n": 1, "what": "overdue tasks"})
+        self.item("Renew the domain", kind="task", due="2026-01-03")
+        self.assertEqual(badge()["n"], 2)

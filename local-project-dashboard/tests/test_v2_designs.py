@@ -62,6 +62,7 @@ DOC = {
         page("products/system/designs/v1-today.html", kind="v1 mockup", dirty=True, shots=["products/system/designs/shots/v1-375.png"], changed="2026-09-22T10:00:00Z"),
     ],
 }
+DOC["attention"] = designs._attention(DOC)
 
 #: The design's commands (design source products/system/designs/pages/designs.js): id, object type, label, key, risk.
 COMMANDS = [
@@ -113,9 +114,20 @@ class ThePage(BrowserSession):
         doc = json.loads(body)
         self.assertEqual([p["path"] for p in doc["pages"]], ["products/system/designs/v1-today.html"])
         self.assertEqual({p["name"]: p["pages"] for p in doc["products"]}, {"empty": 0, "system": 1})
-        self.assertEqual(set(doc), set(designs.ledger(self.root)) | {"store"})
+        self.assertEqual(set(doc), set(designs.ledger(self.root)) | {"store", "attention"})
         self.assertEqual(doc["store"], {"available": True, "reason": ""})
         self.assertEqual([p["hidden"] for p in doc["pages"]], [False])
+
+    def test_every_page_shows_the_badge_the_last_read_carried(self):
+        # sd:3446: the ledger runs git, so the rail never reads it; it shows the page's own last read, with its time.
+        cookie = {"Cookie": self.cookie}
+        badges = lambda: json.loads(re.search(r"^window\.SHELL_COUNTS = (.*);$", self.request("/ui/sections.js", headers=cookie)[2],  # noqa: E731
+                                              re.M).group(1))["pages"]
+        self.assertNotIn("Designs", badges())
+        doc = json.loads(self.request("/api/designs", headers=cookie)[2])
+        kept = badges()["Designs"]
+        self.assertEqual({key: kept[key] for key in ("state", "n", "what")}, doc["attention"])
+        self.assertRegex(kept["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_hide_writes_the_view_state_the_ledger_reads_back_and_refuses_an_unlisted_row(self):
         # sd:3447: the write is Documents' view store, keyed designs/<path>; a row the checkout does not list writes nothing.
@@ -200,6 +212,7 @@ class TheScript(unittest.TestCase):
         doc = json.loads(json.dumps(DOC))
         doc["pages"][1]["hidden"] = True
         doc["store"] = {"available": True, "reason": ""}
+        doc["attention"] = designs._attention(doc)
         out = self.run_page("R.lamps = ELS.annunciator.html; click({ s: '.annunciator .cell', dataset: { filter: 'hidden' } });"
                             " R.hidden = ELS.rows.html; R.unhide = cmd('design.unhide').when(C.get('" + PAGES + "/tasks.html'));"
                             " R.hide = cmd('design.hide').when(C.get('" + PAGES + "/tasks.html'));", answer=f"(path) => [200, {json.dumps(doc)}]")

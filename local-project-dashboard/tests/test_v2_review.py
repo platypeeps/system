@@ -94,6 +94,15 @@ class TheDocument(ScreenCase):
                          ("Is file 1 right?\nRead it whole.", ["yes", "no"], "example.test/repo@1a2b3c4:file1.py",
                           ["diff: git show 1a2b3c4 -- file1.py"]))
 
+    def test_the_rail_badge_counts_every_open_question_in_a_batch_that_reads(self):
+        # sd:3446: the rule every page's rail shows; the broken batch counts nothing, a blind one counts its questions.
+        ids = seed(self)
+        self.assertEqual(review_screen.document(self.connection)["attention"], {"state": "caution", "n": 7, "what": "questions open"})
+        note = questions_of(self.connection, ids["open"])[0]
+        revision = workflow.item_state(self.connection, ids["open"])["revision"]
+        review_screen.rule_request({"item": ids["open"], "note": note, "option": "no", "revision": revision})(self.connection)
+        self.assertEqual(review_screen.document(self.connection)["attention"]["n"], 6)
+
     def test_a_blind_batch_sends_no_subject_and_no_evidence(self):
         ids = seed(self)
         doc = review_screen.document(self.connection)
@@ -124,7 +133,8 @@ class TheDocument(ScreenCase):
         self.assertEqual(bodies, [f"Ruling on note #{note}: no", f"Withdrawn: ruling #{out['ruling']} on note #{note}"])
 
     def test_nothing_open_is_an_empty_document(self):
-        self.assertEqual(review_screen.document(self.connection), {"batches": [], "questions": []})
+        self.assertEqual(review_screen.document(self.connection), {"batches": [], "questions": [],
+                                                                   "attention": {"state": "ok", "n": 0, "what": "questions open"}})
 
 
 class TheExport(ScreenCase):

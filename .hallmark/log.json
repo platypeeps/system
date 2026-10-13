@@ -1,6 +1,19 @@
 [
   {
     "date": "2026-10-13",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/static/shell.js (rail badges on every page)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped; the rail's existing .count badge",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3446 /ui/sections.js serves every page's badge per request; a badge kept from a page's last read adds its read time to the title and the screen-reader text; no CSS added",
+    "constraints": "no build step; CSP default-src 'self'; no colour literal",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
+    "date": "2026-10-13",
     "artifact": "local-project-dashboard/sd_dashboard/v2 designs, research, contributions and today tables (designs.js, research.js, contributions.js, today.js, decisions.js)",
     "scope": "component",
     "genre": "modern-minimal",

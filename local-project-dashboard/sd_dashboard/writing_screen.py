@@ -1,7 +1,8 @@
 """Writing pieces: `document` feeds /api/writing (sd:2125); the old screen was retired in sd:3402.
 
 `document` is each piece's stage, gates and next moves as `writing.piece_state` gives them, its files' sizes, and the
-opening of its draft. The repository goes out by its folder name only, so no local path leaves.
+opening of its draft. The repository goes out by its folder name only, so no local path leaves. Its `attention` is the
+page's rail badge (sd:3446, `_attention`).
 """
 
 from pathlib import Path
@@ -45,4 +46,31 @@ def document(connection, *, now):
             "next": state["available_stages"], "corrections": state["correction_stages"],
             "files": files, "draft": draft, "words": words,
         })
-    return {"read": now, "stages": list(writing.STAGES), "pieces": pieces}
+    return {"read": now, "stages": list(writing.STAGES), "pieces": pieces, "attention": _attention(pieces)}
+
+
+def _gate_state(piece) -> str:
+    """A piece's loudest gate lamp, as writing.js `gates` lights them: a verdict not pass is warning; an unstamped
+    research file, an unresolved finding or another gate problem with its file present is caution."""
+    states = []
+    if any("research.md" in problem for problem in piece["problems"]) and piece["files"].get("research.md"):
+        states.append("caution")
+    for name in ("fact-check", "adversarial"):
+        found = [problem for problem in piece["problems"] if name in problem]
+        if not found or not piece["files"].get(f"{name}.md"):
+            continue
+        if any("verdict is not pass" in problem for problem in found):
+            states.append("warning")
+        elif any("unresolved" in problem for problem in found):
+            states.append("caution")
+        elif not any("no explicit current gate record" in problem for problem in found):
+            states.append("caution")
+    return "warning" if "warning" in states else "caution" if states else ""
+
+
+def _attention(pieces) -> dict:
+    """The rail badge (sd:3446): active pieces by their loudest gate lamp."""
+    from .v2.pages import attention
+
+    return attention((_gate_state(piece) for piece in pieces if not piece["parked"]),
+                     {"warning": "pieces fail a gate", "caution": "pieces need a gate"})

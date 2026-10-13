@@ -259,6 +259,26 @@ class TheScript(Fixture):
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "HOA annunciator cells"})
         self.assertIsNone(out["states"][-1])
 
+    def test_the_badge_rule_lights_what_the_lamps_light(self):
+        # sd:3446: the rule is the server's, and every page's rail shows it; it must count the cells hoa.js lights.
+        def lit(doc):
+            lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+            states = re.findall(r'data-cell="\w+"[^>]*data-state="(\w+)"', lamps)
+            worst = "warning" if "warning" in states else "caution" if "caution" in states else "ok"
+            return worst, states.count(worst) if worst != "ok" else 0
+
+        cases = []
+        for alarms, stale, rows in ((None, False, None), (2, True, None), (0, True, []), (1, False, [])):
+            doc = self.doc()
+            doc["mission"]["alarms_today"]["count"], doc["mission"]["stale"] = alarms, stale
+            if rows is not None:
+                doc["followups"]["rows"] = [dict(row, state="caution") for row in doc["followups"]["rows"]]
+            doc["attention"] = hoa_screen._attention(doc["mission"], doc["followups"])
+            cases.append((lit(doc), (doc["attention"]["state"], doc["attention"]["n"])))
+        for drawn, counted in cases:
+            self.assertEqual(drawn, counted)
+        self.assertEqual([counted for _, counted in cases], [("warning", 1), ("warning", 2), ("caution", 2), ("warning", 1)])
+
     def test_the_map_draws_every_asset_and_outline_and_the_legend_hides_a_type(self):
         out = self.run_page("""R.map = ELS.map.html; R.legend = ELS.legend.html;
 ELS.legend.listeners.click[0]({ target: { closest: s => s === 'button[data-type]' ? { dataset: { type: 'valve' } } : null } });

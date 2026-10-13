@@ -74,9 +74,9 @@
     put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}" data-ev="${c.ev || ''}"`,
       label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${G[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
+  // The badge is the read's own (sd:3446, metrics_screen._attention), the cells above that can light.
   function attention() {
-    const lit = CELLS.filter(c => c.state === 'warning' || c.state === 'caution'), worst = lit.some(c => c.state === 'warning') ? 'warning' : lit.length ? 'caution' : 'ok';
-    window.PAGE_ATTENTION = { state: worst, n: worst === 'ok' ? 0 : lit.filter(c => c.state === worst).length, what: 'readings past a threshold' };
+    window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'Metrics not read' };
     window.shell.attention(window.PAGE_ATTENTION);
   }
 

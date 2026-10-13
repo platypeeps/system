@@ -19,4 +19,6 @@ PAGE = Page(
     html="writing.html",
     item="sd:2125",
     api=(Api("/api/writing", _read),),
+    count="/api/writing",
+    live=True,
 )

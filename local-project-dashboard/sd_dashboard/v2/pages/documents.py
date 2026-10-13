@@ -24,4 +24,5 @@ PAGE = Page(
     html="documents.html",
     item="sd:2114",
     api=(Api("/api/documents", _read), Api("/api/documents/view", write=_view)),
+    count="/api/documents",
 )

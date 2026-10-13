@@ -28,4 +28,6 @@ PAGE = Page(
     html="tasks.html",
     item="sd:2124",
     api=(Api("/api/tasks", _rows), Api(pattern=r"/api/tasks/[1-9][0-9]{0,18}", example="/api/tasks/1", read=_details)),
+    count="/api/tasks",
+    live=True,
 )

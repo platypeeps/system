@@ -97,12 +97,9 @@ addEventListener('DOMContentLoaded', () => {
     (!F.q || `${e.what} ${e.repo || ''} ${e.ref} ${e.detail || ''}`.toLowerCase().includes(F.q.toLowerCase())); // ?q= keeps its case
 
   // ---------- Annunciator ----------
-  // Rail badge (shell.js): the loudest state on this page and how many events carry it.
+  // Rail badge (shell.js): the read's own, the loudest state in the 24 h window (sd:3446, activity_screen._attention).
   function pageAttention() {
-    // The badge says "in 24 h", so it counts the window only: an old journal record never lights it.
-    const day = EVENTS.filter(inWindow), w = day.filter(e => e.s === 'warning').length, c = day.filter(e => e.s === 'caution').length;
-    if (!DOC) { window.shell.attention?.({ state: 'unknown', n: 0, what: 'events' }); return; }
-    window.shell.attention?.({ state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: w ? 'failed events in 24 h' : 'caution events in 24 h' });
+    window.shell.attention?.(DOC && DOC.attention || { state: 'unknown', n: 0, what: 'events' });
   }
   function renderAnnunciator() {
     pageAttention();

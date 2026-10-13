@@ -125,7 +125,19 @@ def document(*, now: str, backend=None) -> dict:
         "dirs": list(DIRS),
         "rounds": {"available": False, "reason": ROUNDS_REASON},
         "claims": {"available": False, "reason": CLAIMS_REASON},
+        "attention": _attention(projects, error),
     }
+
+
+def _attention(projects, error: str) -> dict:
+    """The rail badge (sd:3446): render-stale projects. An unread config is unknown, not caution, so it does not count;
+    a board that was not read at all is unknown."""
+    from .v2.pages import attention
+
+    if error:
+        return {"state": "unknown", "n": 0, "what": "research not read"}
+    return attention(("caution" if (project.get("render") or {}).get("s") == "caution" else "" for project in projects),
+                     {"caution": "render-stale projects"})
 
 
 def sources(key: str, *, now: str, backend=None) -> dict | None:

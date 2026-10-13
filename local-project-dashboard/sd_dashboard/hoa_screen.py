@@ -213,11 +213,25 @@ def document(connection, *, now: str, config: Path | None = None) -> dict:
         state = "partial" if problems else "read"
     today = datetime.fromisoformat(now.replace("Z", "+00:00")).date()
     paths = _paths(found)
+    mission, followups = _mission(paths["mission"], today), _followups(connection, found.get("repo"), now, today)
     return {
         "read": now,
         "config": {"state": state, "source": source, "problems": problems},
-        "mission": _mission(paths["mission"], today),
+        "mission": mission,
         "assets": _geojson(paths["assets"], ASSET_KEYS, "assets"),
         "base": _geojson(paths["base"], BASE_KEYS, "base"),
-        "followups": _followups(connection, found.get("repo"), now, today),
+        "followups": followups,
+        "attention": _attention(mission, followups),
     }
+
+
+def _attention(mission: dict, followups: dict) -> dict:
+    """The rail badge (sd:3446): the annunciator cells that can light, as hoa.js draws them: alarms today, overdue or
+    soon followups, and a stale export. Water, tank, pumps and aquifer are never lit."""
+    from .v2.pages import attention
+
+    states = [r["state"] for r in followups["rows"]] if not followups["error"] else []
+    cells = ["warning" if mission["alarms_today"]["count"] else "",
+             "warning" if "warning" in states else "caution" if "caution" in states else "",
+             "caution" if mission["latest"] and mission["stale"] else ""]
+    return attention(cells, {"caution": "HOA annunciator cells", "warning": "HOA annunciator cells", "ok": "HOA water system"})

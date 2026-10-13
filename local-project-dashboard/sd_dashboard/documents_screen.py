@@ -250,4 +250,13 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         "contested": contested,
         "store": {"available": not unread, "reason": unread},
         "documents": rows,
+        "attention": _attention(rows),
     }
+
+
+def _attention(rows) -> dict:
+    """The rail badge (sd:3446): documents whose source changed after their page, less the ones the operator hid."""
+    from .v2.pages import attention
+
+    return attention(("caution" if row["stale"] and not row.get("hidden") else "" for row in rows),
+                     {"caution": "render-stale documents"})

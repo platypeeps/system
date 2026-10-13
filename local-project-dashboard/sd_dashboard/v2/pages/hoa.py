@@ -18,4 +18,5 @@ PAGE = Page(
     html="hoa.html",
     item="sd:2116",
     api=(Api("/api/hoa", _read),),
+    count="/api/hoa",
 )

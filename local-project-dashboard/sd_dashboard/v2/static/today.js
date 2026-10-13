@@ -164,17 +164,12 @@
     put($('work-tally'), WORK.length ? html`<span>${WORK.length} listed</span>${n ? html`<span class="g-caution">▲ ${n} overdue</span>` : ''}` : html``);
   }
 
-  // The badge counts the loudest state: warning rows, else caution rows and the decisions decisions.js says wait (sd:3012),
-  // which are caution (▲) there too. An unread Now is unknown unless a decision waits; the title counts warnings only.
-  let waiting = 0;
+  // The badge is the read's own (sd:3446, now_screen._attention): warning rows, else caution rows and the decisions that
+  // wait. A ruling here lowers the count decisions.js tells, so Now is read again for a badge that counts it.
   function attend() {
-    const count = s => ROWS.filter(r => STATE[r.band] === s).length;
-    const w = count('warning'), rows = count('caution'), c = rows + waiting;
-    const what = [rows && 'caution rows', waiting && 'decisions waiting'].filter(Boolean).join(' and ');
-    shell.attention(w ? { state: 'warning', n: w, what: 'warning rows' } : c ? { state: 'caution', n: c, what }
-      : { state: DOC ? 'ok' : 'unknown', n: 0, what: 'rows' });
+    shell.attention(DOC && DOC.attention || { state: 'unknown', n: 0, what: 'rows' });
   }
-  document.addEventListener('today:decisions', e => { waiting = e.detail; attend(); });
+  document.addEventListener('today:decisions', e => { if (DOC && reading && e.detail < (DOC.waiting || 0)) reading.reread(); });
 
   // The filter hides rows; it moves no selection. applyFilter() also moves the selection off a row the filter hid.
   function hideRows() {

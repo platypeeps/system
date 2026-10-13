@@ -25,4 +25,6 @@ PAGE = Page(
     html="today.html",
     item="sd:2110",
     api=(Api("/api/decisions", _decisions), Api("/api/decisions/answer", write=_answer)),
+    # server.py serves /api/now and keeps each read's badge for the rail (sd:3446).
+    count="/api/now",
 )

@@ -554,6 +554,7 @@ R.ext = ELS.rows.html; R.bars = ELS.bars.html;""")
         self.doc["truncated"], self.doc["open_total"] = True, 904
         # Internal: 300 + 100 open, 50 unknown, 7 linked, 2 unfiled. External, from rows(): 2 awaiting them, both unknown, 1 unfiled.
         self.doc["counts"]["internal"].update(newly_unblocked=300, awaiting_you=100, unknown=50, linked=7, unfiled=2)
+        self.doc["attention"] = contribution_screen._attention(self.doc["counts"])
         out = self.run_page("""R.sub = ELS.sub.html; R.lamps = ELS.annunciator.html; R.tally = ELS.tally.html; R.source = ELS.source.html;
 document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'external' })); R.ext = ELS.annunciator.html;""")
         self.assertEqual(out["attention"], {"state": "caution", "n": 400, "what": "contributions want you"})

@@ -69,6 +69,23 @@ def _guard(read):
         return {"error": f"{error.__class__.__name__}: {error}"}
 
 
+def _attention(spend: dict, trend: dict) -> dict:
+    """The rail badge (sd:3446): the lamps metrics.js can light, each week window at 75 % or more and the estimated
+    spend rows. An unread usage is unknown: no lamp could be read."""
+    from .v2.pages import attention
+
+    if spend["error"]:
+        return {"state": "unknown", "n": 0, "what": "readings not read"}
+
+    def level(used):
+        number = isinstance(used, (int, float)) and not isinstance(used, bool)
+        return "warning" if number and used >= 100 else "caution" if number and used >= 75 else ""
+
+    window = trend.get("window")
+    cells = [level(meter["used_percent"]) for meter in spend["meter"] if meter["window_minutes"] == window]
+    return attention([*cells, "caution" if spend["bound"] else ""], {"caution": "readings past a threshold"})
+
+
 def _trend(connection, today):
     since = today - timedelta(days=TREND_DAYS - 1)
     days = [(since + timedelta(days=n)).isoformat() for n in range(TREND_DAYS)]
@@ -145,10 +162,12 @@ def _controls(connection):
 def document(connection, *, now: str) -> dict:
     """The Metrics page's document: every reading, each guarded on its own, and the panels no reader covers."""
     today = _stamp(now).date()
+    spend, trend = _guard(lambda: {"error": "", **usage.read(connection, month=None, now=now).document()}), _guard(lambda: _trend(connection, today))
     return {
         "read": now,
-        "usage": _guard(lambda: {"error": "", **usage.read(connection, month=None, now=now).document()}),
-        "trend": _guard(lambda: _trend(connection, today)),
+        "attention": _attention(spend, trend),
+        "usage": spend,
+        "trend": trend,
         "numbers": _guard(lambda: _numbers(connection, now)),
         "scorecard": _guard(lambda: _scorecard(connection, now)),
         "skills": _guard(lambda: _skills(connection, today)),

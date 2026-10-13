@@ -273,4 +273,14 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
     events.sort(key=lambda event: (event["at"], event["id"]), reverse=True)
     return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS), "unknown": UNKNOWN,
             "sources": sources, "undated": undated, "review_unrecorded": unrecorded["n"], "journal_skipped": skipped,
-            "journal_cap": JOURNAL_CAP, "journal_unread": journal["unread"], "events": events}
+            "journal_cap": JOURNAL_CAP, "journal_unread": journal["unread"], "events": events,
+            "attention": _attention(events, start)}
+
+
+def _attention(events, start: datetime) -> dict:
+    """The rail badge (sd:3446): the loudest state in the 24 hours, and how many events carry it. The badge says "in 24 h",
+    so an older journal record never lights it."""
+    from .v2.pages import attention
+
+    day = [event["s"] for event in events if (at := _utc(event["at"])) is not None and at >= start]
+    return attention(day, {"warning": "failed events in 24 h", "caution": "caution events in 24 h"})
