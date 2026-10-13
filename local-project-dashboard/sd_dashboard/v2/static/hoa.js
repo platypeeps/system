@@ -1,6 +1,6 @@
 // HOA (sd:2116): the design source's products/system/designs/pages/hoa.js, ported. Each change from the reference is marked
 // "build:". The data is /api/hoa (hoa_screen.py): the asset map, the Mission export and the open followups of the checkout
-// <config>/project-dashboard/hoa.conf names, never sample data. A part that did not read is unknown with its reason.
+// the repo table's hoa folder names, never sample data. A part that did not read is unknown with its reason.
 // build: no Leaflet. The design vendored Leaflet 1.9.4; this page draws the same vectors as one SVG with Fit, zoom and drag,
 // so the dashboard ships no third-party script. Clusters and the aerial button are not built (docs/pages/hoa.md).
 (() => {
@@ -256,7 +256,7 @@
         ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
         ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
-      const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Copy project-dashboard/hoa.conf.example to ${c.source} and name the HOA checkout.`, source: c.source }
+      const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
