@@ -68,8 +68,10 @@ checkout first, whatever the conf or argument order (sd:3218); it knows
 that checkout by `local-repo-sync/repo-sync.sh`. It exits 1 when any
 checkout failed.
 
-When it moves system or the pack, refresh first stops `sd-serve` and the
-dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
+Every check and fetch runs first, while the services still serve: a
+refused checkout, a failed fetch or a kill in that phase moves nothing and
+stops nothing (sd:3535). When it then moves system or the pack, refresh
+stops `sd-serve` and the dashboard (`<prefix>.sd-serve` and `<prefix>.sd-dashboard`, the prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`) with `launchctl bootout` (sd:3279). Each imports
 `sd_db` lazily from those checkouts, so a running one would load new modules
 into an old process. After each bootout it waits up to 10 s until
@@ -82,7 +84,9 @@ stopped one again, `sd-serve` first, but only when the database's
 one still loaded is the old process, so it is booted out first. Its line
 leaves the list only once `launchctl print` shows the new load. Otherwise
 they stay stopped and refresh exits 1, so no `hub-pin` goes out: migrate,
-then refresh again. `~/.local/state/repo-sync/refresh-stopped` lists each
+then refresh again. A database above the library needs a newer pack on
+origin, or an older backup restored by a pack at that backup's schema,
+since no migrate goes down. `~/.local/state/repo-sync/refresh-stopped` lists each
 one stopped and not started yet, so a refresh after a kill or a failed
 start starts them. This is steps 1 and 5 of D2 in the pack's design for
 moving `sd_db` into the pack (sd:2997).
@@ -96,7 +100,9 @@ database is below, and before anything moves, it runs the pack's
 so the backup stays until you remove it. Then it writes the rollback point,
 `~/.local/state/repo-sync/refresh-intent`: the system and pack shas, the
 version and the backup. A failed backup or record write moves nothing and
-starts the services again.
+starts the services again. A database above that `SCHEMA_VERSION`, such as one
+restored from a newer backup, is refused before the backup: nothing moves, and
+refresh names the pack or backup that would match it (sd:3535).
 
 After the moves it runs `bin/sd-db migrate`. Each migration commits on its own,
 so a failure can leave earlier ones applied. Then refresh moves the pack back
@@ -161,8 +167,13 @@ the pack.
 ### Satellites follow the hub
 
 A satellite never moves its system and pack checkouts on its own (sd:3100).
-After a refresh with no failure, the hub pushes one annotated tag, `hub-pin`,
-to the system origin, as `+refs/tags/hub-pin`. The tag names the pinned
+After a refresh whose system and pack steps passed, the hub pushes one
+annotated tag, `hub-pin`, to the system origin, as `+refs/tags/hub-pin`.
+The tag names what the hub serves (sd:3710): a failure in another checkout,
+or a service that did not start again, still fails the refresh but does not
+withhold it, since system and the pack stay where they are. A refused or
+failed check, fetch, move or `make setup` of system or the pack, a stop that
+failed, or a migrate that is not settled withholds it. The tag names the pinned
 system sha, and its message carries `pack=<sha>`, so one push publishes the
 pair. That one tag may move backwards; nothing else is forced. A failed
 push, or a pinned system without a pinned pack, exits 1: satellites keep the

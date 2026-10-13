@@ -325,7 +325,7 @@ class Unreadable(Exception):
 
 UNKNOWN = {"branch": "?", "dirty": None, "ahead": None, "behind": None,
            "last": "", "last_iso": "", "subject": "", "author": "", "web": "", "truncated": [],
-           "default": "", "behind_default": None, "fetched_iso": ""}
+           "default": "", "behind_default": None, "pinned_behind": None, "fetched_iso": ""}
 
 #: What `symbolic-ref` answers for a remote whose default branch is known.
 ORIGIN_HEAD = "refs/remotes/origin/"
@@ -400,14 +400,19 @@ def facts(collectors, repo):
     # upstream count above follows whatever branch is checked out, and a
     # primary checkout parked on a feature branch still lags `main`. Counted
     # only on the default branch; on any other the page says why it cannot.
-    default, behind_default = "", None
+    # A detached HEAD is a pinned checkout (repo-sync's pin_state, sd:3539):
+    # its count is `pinned_behind`, so the default-branch lag keeps its meaning.
+    default, behind_default, pinned_behind = "", None, None
     head = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
     if head.startswith(ORIGIN_HEAD):
         default = head[len(ORIGIN_HEAD):]
-        if branch == default:
+        if branch in (default, "HEAD"):
             count = git("rev-list", "--count", f"HEAD..{head}")
             if count.isdigit():
-                behind_default = int(count)
+                if branch == default:
+                    behind_default = int(count)
+                else:
+                    pinned_behind = int(count)
     remote = git("remote", "get-url", "origin")
     web = ""
     m = re.match(r"(?:git@github\.com:|https://github\.com/)(.+?)(?:\.git)?$", remote)
@@ -417,7 +422,8 @@ def facts(collectors, repo):
         "branch": branch, "dirty": dirty, "ahead": ahead, "behind": behind,
         "last": when[:10], "last_iso": when, "subject": subject, "author": author,
         "web": web, "truncated": sorted(set(cut)),
-        "default": default, "behind_default": behind_default, "fetched_iso": fetched(repo),
+        "default": default, "behind_default": behind_default, "pinned_behind": pinned_behind,
+        "fetched_iso": fetched(repo),
     }
 
 

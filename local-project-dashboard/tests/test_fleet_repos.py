@@ -72,6 +72,24 @@ class ReposRead(FleetCase):
         self.git(clone, "checkout", "-q", "--detach")
         self.assertEqual(fleet.facts(fleet._collectors(), clone)["branch"], "HEAD")
 
+    def test_a_pinned_checkout_counts_its_lag_behind_origin_apart(self):
+        """sd:3539: a detached HEAD is pinned, as repo-sync reads it; its lag
+        behind origin's default is `pinned_behind`, never `behind_default`."""
+        origin = self.checkout("origin", "remote")
+        clone = self.root / "clone"
+        self.git(self.root, "clone", "-q", str(origin), str(clone))
+        self.configure(clone)
+        self.git(clone, "checkout", "-q", "--detach")
+        (origin / "README").write_text("merged later\n")
+        self.git(origin, "commit", "-q", "-am", "a merge the hub has not taken")
+        self.git(clone, "fetch", "-q", "origin")
+        row = fleet.facts(fleet._collectors(), clone)
+        self.assertEqual((row["branch"], row["default"], row["behind_default"], row["pinned_behind"]),
+                         ("HEAD", "main", None, 1))
+        self.git(clone, "checkout", "-q", "main")
+        row = fleet.facts(fleet._collectors(), clone)
+        self.assertEqual((row["behind_default"], row["pinned_behind"]), (1, None))
+
     def test_a_missing_root_is_said_rather_than_shown_as_an_empty_fleet(self):
         with patch.dict("os.environ", {"REPO_ROOT": str(self.root / "elsewhere")}):
             document = self.repos()

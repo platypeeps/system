@@ -236,6 +236,24 @@ def _pack_commit(pack):
     return result.stdout.strip() or None
 
 
+def checkout_commit():
+    """This dashboard checkout's HEAD; None for an installed copy outside any checkout (sd:3528)."""
+    return _pack_commit(HERE)
+
+
+def served_behind(served):
+    """None when a process that started on commit `served` serves this checkout's HEAD; else why it does not.
+
+    `dashboard.sh health` and the Health page's dashboard row both ask this (sd:3528, sd:3707). A HEAD that git
+    cannot read raises RuntimeRefused: an unknown checkout is not a match.
+    """
+    checkout = checkout_commit()
+    if served == checkout:
+        return None
+    return (f"served {served or 'unknown'}, checkout {checkout or 'unknown'}: "
+            f"launchctl kickstart -k gui/{os.getuid()}/{LABEL}")
+
+
 def installed_library(database):
     """Prove the runtime uses the pack checkout's `lib/sd_db` and can read this database.
 
@@ -422,6 +440,7 @@ def health_check(port, *, wait=30.0):
     once, so 20 attempts gave a slow start about 5 seconds (sd:2811).
     """
     deadline = time.monotonic() + wait
+    last = None
     while True:
         client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
         try:
@@ -430,12 +449,16 @@ def health_check(port, *, wait=30.0):
             body = json.loads(response.read())
             if response.status == 200 and body.get("service") == "sd-dashboard" and body.get("ok") is True:
                 return body
+            last = body if isinstance(body, dict) and body.get("service") == "sd-dashboard" else last
         except (OSError, ValueError, http.client.HTTPException):
             pass
         finally:
             client.close()
         if time.monotonic() >= deadline:
-            raise RuntimeRefused(f"new dashboard did not return its healthy /health response within {wait:g}s")
+            # A stale process answers 503; say what it serves (sd:3528).
+            serves = "" if last is None else (f"; it serves {last.get('commit') or 'an unknown commit'}"
+                                              + (" and its build changed on disk" if last.get("code_changed") else ""))
+            raise RuntimeRefused(f"new dashboard did not return its healthy /health response within {wait:g}s{serves}")
         time.sleep(0.25)
 
 
@@ -621,6 +644,9 @@ def main():
             config = read_config(args.config)
             load_frontdoor(args.config, config["port"])
             result = health_check(config["port"], wait=args.wait)
+            behind = served_behind(result.get("commit"))
+            if behind:
+                raise RuntimeRefused(behind)
         elif args.action == "install" and args.apply:
             if not args.expected_fingerprint:
                 raise RuntimeRefused("--apply requires --expected-fingerprint from preflight")

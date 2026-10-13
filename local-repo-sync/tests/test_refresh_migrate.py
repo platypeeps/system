@@ -557,16 +557,17 @@ class RefreshMigrateTest(unittest.TestCase):
         f.run("refresh", expect=1)
         self.assert_at_first_pair(f)
 
-    def test_a_kill_after_the_record_delete_starts_and_pushes_on_rerun(self):
+    def test_a_kill_after_the_record_delete_starts_on_rerun(self):
         f = self.f
         target = f.upstream_migrations(f.good("one"))
         # A start that fails leaves what a kill after the record delete
-        # leaves: migrated, no record, the services down.
+        # leaves: migrated, no record, the services down. The checkouts and
+        # the database are at the target, so hub-pin names them (sd:3710).
         f.run("refresh", expect=1, extra_env={"LAUNCHCTL_FAIL": f"bootstrap {SERVE}"})
         self.assertFalse(f.record.exists())
         self.assertEqual(f.n + 1, f.version())
         self.assertEqual([], f.loaded())
-        self.assertIsNone(f.hub_pin(f.system))
+        self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
         f.run("refresh", expect=0)
         self.assertEqual([DASHBOARD, SERVE], f.loaded())
         self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
