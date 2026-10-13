@@ -120,7 +120,8 @@ sha in `.sd-pack-rev`; bump it deliberately.
 To run one suite as the gate does, name it by its `run_suite` or
 `tests/macos-only-suites.txt` name: `make test SUITE=repo-sync`. It runs the
 preflight, then that suite, against the pinned pack in `.ci/pack`, not the
-live pack checkout.
+live pack checkout. A suite the gate runs in parts, such as `repo-sync-1` and
+`repo-sync-2`, runs whole under its own name, or one part under the part's name.
 
 Some tests need macOS: the Swift build and dyld shim in `local-msgsnap`.
 Linux cannot run them, and a skipped test fails the check, so they live in
