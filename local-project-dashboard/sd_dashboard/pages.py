@@ -163,10 +163,12 @@ def _equivalents(rendered_body: Markup) -> Markup:
         class_="cli-equivalents") if commands else Markup(""))
 
 
-def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str) -> str:
+def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str,
+               cli_equivalents: bool = True) -> str:
     """A classic screen inside the v2 shell (sd:3586): the rail, pane and keys are shell.js's, the tokens the foundation's.
 
     `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope.
+    `cli_equivalents=False` leaves out the folded list of the body's commands.
     The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
     shell but `/` and `p`. `/ui/classic.css` styles that markup.
     """
@@ -193,7 +195,7 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
         tag("div", id="state", hidden=True),
         dialog(screen),
         rendered_body,
-        _equivalents(rendered_body),
+        _equivalents(rendered_body) if cli_equivalents else Markup(""),
         tag("noscript", tag("p", "Enable JavaScript to use these controls. Reading still works.", class_="hint")),
         id="main", class_="classic",
     )
@@ -215,13 +217,10 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
 
 
 def error_page(status: int, message: str) -> str:
-    """An error is a page too, and it carries the same policy the others do."""
-    return page(
-        f"{status}",
-        "today",
-        tag("p", message),
-        tag("p", tag("a", "Back to Today", href="/")),
-    )
+    """An error is a page too, and it carries the same policy the others do: a shell page under Today (sd:3586)."""
+    return shell_page(f"{status}", "Today", tag("p", tag("a", "Back to Today", href="/")), subtitle=message,
+                      note="The dashboard answered this address with an error; the rail still opens every page.",
+                      screen="today")
 
 
 def empty(message: str, next_step: str) -> Markup:

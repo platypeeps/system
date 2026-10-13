@@ -157,6 +157,19 @@
 .classic .cli-equivalents ul { margin: 0; padding-left: var(--space-lg); }
 .classic .cli-equivalents li { margin: var(--space-xs) 0; }
 
+/* Contributions: each row is a card; its details hold the branch facts, dependencies, notices and test evidence. */
+.classic .contribution-card { min-width: 0; overflow-wrap: anywhere; }
+.classic .contribution-card h3 { margin: 0 0 var(--space-3xs); font-size: var(--text-base); }
+.classic .contribution-card > p, .classic .contribution-card ul { margin: var(--space-3xs) 0; font-size: var(--text-sm); }
+.classic .contribution-card details { margin: var(--space-sm) 0; }
+.classic .contribution-card h4 { margin: var(--space-sm) 0 var(--space-3xs); color: var(--color-muted); font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; }
+.classic .contribution-card dl { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: var(--space-3xs) var(--space-md); margin: var(--space-xs) 0; font-size: var(--text-sm); }
+.classic .contribution-card dl > div { display: contents; }
+.classic .contribution-card dt { color: var(--color-muted); }
+.classic .contribution-card dd { margin: 0; }
+.classic .contribution-card pre { margin: var(--space-2xs) 0; font: 400 var(--text-xs)/1.5 var(--font-data); white-space: pre-wrap; overflow-wrap: anywhere; }
+.classic .contribution-evidence { margin-top: var(--space-xs); padding-top: var(--space-xs); border-top: var(--rule-hair) solid var(--color-rule-2); }
+
 /* The registered-command dialog (p): a floating layer, so it alone casts a shadow. */
 .classic #command-palette {
   width: min(48rem, calc(100vw - 2rem)); max-height: 85dvh; overflow: auto; padding: var(--space-lg);

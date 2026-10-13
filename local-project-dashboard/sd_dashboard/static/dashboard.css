@@ -53,14 +53,6 @@
 
 * { box-sizing: border-box; }
 
-.contribution-card { min-width: 0; overflow-wrap: anywhere; }
-.contribution-card h3 { margin-top: 0; }
-.contribution-card pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.contribution-card details { margin: .75rem 0; }
-.contribution-card dd { margin: .25rem 0 .75rem; }
-.contribution-evidence { border-top: 1px solid var(--rule); padding-top: .5rem; }
-.contribution-lane { color: var(--accent); font-weight: 600; }
-.contribution-preview > div { border-bottom: 1px solid var(--rule); padding: .5rem 0; }
 
 html {
   /* The iPad is the reference device and it is not the only one: nothing
