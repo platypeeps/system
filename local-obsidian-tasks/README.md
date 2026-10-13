@@ -14,6 +14,32 @@ and **Postpone 3 days** (signed links served by `local-task-actions`).
 Installed as the `obsidian-tasks-nightly` job (03:00), defined in
 `<config>/cron-jobs/jobs/` (examples in `local-cron-jobs/examples/`).
 
+## Moving the tasks into sd
+
+Tracking moves to the sd database; the vault stays a publication target
+(sd:3460). `migrate` turns each TaskNotes file into one sd `task` with no
+checkout:
+
+```sh
+./obsidian-tasks.sh migrate          # dry run: counts by shape, writes nothing
+./obsidian-tasks.sh migrate --apply  # create the items
+```
+
+- Status none/open is `planning`, in-progress `in_progress`, done `done`;
+  priority high/normal/low is 1/2/3, none leaves it unset.
+- `scheduled`, else `due`, becomes the item's due date. A different `due`
+  is kept in the item's import note.
+- A rule loses its `DTSTART:YYYYMMDD;` prefix and goes through the pack's
+  `sd_db.recurrence`; anchor scheduled is `schedule`, completion is
+  `completion`. A rule the pack refuses refuses the task, counted.
+- `complete_instances` and `skipped_instances` go into the import note; sd's
+  chain of done rows starts at the import.
+- Each task is one transaction; the item carries the reference
+  `obsidian:<vault path>` (`task-ref`, as `sd task add --ref` writes it). A
+  task whose reference exists is skipped, so a second run creates nothing.
+- Output is counts only, never a task's title or file name. The vault is
+  only read. `--apply` exits 1 when any task was refused or failed.
+
 ## How it decides
 
 Reads the TaskNotes plugin's per-task files (`TaskNotes/Tasks/*.md`
