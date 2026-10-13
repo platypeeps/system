@@ -115,7 +115,7 @@ class Shadow(ScreenCase):
         (self.jobs.cron_root / "logs" / "nightly-sync.log").write_text(
             f"[nightly-sync] 2026-09-27T02:00:00-0600 starting (cwd: /)\n{SECRET}\nCould not resolve host: example.test\n")
 
-    def document(self, jev):
+    def document(self, jev, wait=30):
         threads = []
         real = job_failures.shadow
 
@@ -129,7 +129,7 @@ class Shadow(ScreenCase):
                                            jev=jev)
         for thread in threads:
             if thread is not None:
-                thread.join(30)
+                thread.join(wait)
         return document, threads
 
     def calls_made(self):
@@ -193,6 +193,15 @@ class Shadow(ScreenCase):
             _, threads = self.document([str(self.stub)])
         self.assertEqual(threads, [None])
         self.assertEqual(len(self.calls_made()), 2)
+
+    def test_a_jev_that_never_answers_is_ended_at_the_deadline(self):
+        """sd:3530 (review 2026-10-12, A1 F4): a hung `jev` held the shadow thread for the life of the server."""
+        hung = Path(self.tmp.name) / "hung-jev"
+        hung.write_text('#!/bin/sh\ncase "$1" in enabled) exit 0 ;; esac\nexec sleep 30\n')
+        hung.chmod(hung.stat().st_mode | stat.S_IEXEC)
+        with patch.object(job_failures, "JEV_DEADLINE", 0.5):
+            _, threads = self.document([str(hung)], wait=5)
+        self.assertFalse(threads[0].is_alive(), "the shadow thread still waits on a jev that never answers")
 
     def test_no_command_asks_nothing(self):
         _, threads = self.document(None)

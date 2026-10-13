@@ -151,6 +151,32 @@ class TheDocument(ScreenCase):
         rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
         self.assertEqual((rows["deep.html"]["src"], rows["deep.html"]["stale"]), ("a/b/c/d/Deep.md", False))
 
+    def test_an_unchanged_checkout_is_not_walked_again_and_a_new_source_is_found(self):
+        """sd:3530 (review 2026-10-12, A1 F5): every read walked each research checkout whole."""
+        listed = []
+        real = os.scandir
+
+        def counted(path="."):
+            listed.append(path)
+            return real(path)
+
+        with mock.patch.object(os, "scandir", counted):
+            again = documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)
+        self.assertEqual(again["documents"], self.doc["documents"])
+        # The roots' own listing reads the checkout's top folder; only the walk reads the folders below it.
+        lab = self.base / "lab"
+        self.assertEqual([path for path in listed if Path(path).is_relative_to(lab) and Path(path) != lab
+                          and not Path(path).is_relative_to(lab / "docs")], [], "an unchanged checkout was walked again")
+        # A new folder deep in the tree changes its parent's mtime, so the next read walks and finds the source.
+        write(self.base / "lab" / "docs" / "dashboard" / "deep.html", page(title="Deep"), T0 + DAY)
+        write(self.base / "lab" / "a" / "b" / "Deep.md", "# deep\n", T0)
+        rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
+        self.assertEqual(rows["deep.html"]["src"], "a/b/Deep.md")
+        # A source renamed in place changes only its own folder's mtime.
+        (self.base / "lab" / "a" / "b" / "Deep.md").rename(self.base / "lab" / "a" / "b" / "Other.md")
+        rows = {r["file"]: r for r in documents_screen.document(now=NOW, config_path=self.conf, repo_root=self.base)["documents"]}
+        self.assertEqual(rows["deep.html"]["src"], "")
+
     def test_a_configured_source_that_is_not_a_file_is_not_a_source(self):
         # A missing src leaves the name match; a src that is a folder leaves the render state unknown, never fresh.
         write(self.base / "lab" / "research.conf.py",

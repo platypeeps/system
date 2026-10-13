@@ -58,7 +58,8 @@ exits 1 when that is not the checkout's HEAD now, and prints the kickstart line 
 with `--config` rechecks those files every 30 seconds. On a change it runs the
 new checkout's `dashboard.sh preflight`, then the new code's own start in a
 child process: imports, configuration, library and listeners, short
-of the bind. If that passes, it exits, and the
+of the bind. A thread runs that check, so no request waits on it (sd:3530).
+If that passes, it exits, and the
 LaunchAgent's `KeepAlive` starts the new code. If it fails, the old build keeps
 serving and logs one line; the next library or dashboard change retries it. An ordinary
 installation failure restores the previous plist and reloads its service when

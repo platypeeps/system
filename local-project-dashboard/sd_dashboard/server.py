@@ -1010,12 +1010,29 @@ class DashboardServer(Listener):
     # The new build's start check as a command; `main` sets it for a --config start. None never restarts.
     restart_probe = None
     refused_build = None
+    # The probe in flight: a thread that leaves `(build, reason)` in `probed` when it ends (sd:3530).
+    probing = None
+    probed = None
     # A check hashes the library and the package, about 30 ms.
     build_check_seconds = 30
+    # The probe's own bound; it runs beside the accept loop, so no request waits on it.
+    probe_seconds = 60
 
     def service_actions(self):
         super().service_actions()
-        if self.restart_probe is None or time.monotonic() - self.build_checked < self.build_check_seconds:
+        if self.restart_probe is None:
+            return
+        if self.probing is not None:
+            if self.probing.is_alive():
+                return
+            (build, reason), self.probing, self.probed = self.probed, None, None
+            if not reason:
+                raise CodeChanged("the dashboard build changed on disk")
+            self.refused_build = build
+            print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
+                  file=sys.stderr, flush=True)
+            return
+        if time.monotonic() - self.build_checked < self.build_check_seconds:
             return
         self.build_checked = time.monotonic()
         try:
@@ -1024,19 +1041,23 @@ class DashboardServer(Listener):
             return  # A checkout mid-update can lack a file; the next check sees it settled.
         if current in (self.RequestHandlerClass.loaded_build, self.refused_build):
             return
-        # ponytail: the probe holds new connections for its run (about a second), once per change.
+        # The probe takes a second or, with a slow git or Tailscale, up to its bound: on the accept loop every
+        # request waited that long (sd:3530). A thread runs it; the next tick after it ends acts on its answer.
+        self.probing = threading.Thread(target=self._probe, args=(current,), daemon=True,
+                                        name="sd-dashboard-restart-probe")
+        self.probing.start()
+
+    def _probe(self, build):
         try:
             probe = subprocess.run(self.restart_probe, stdin=subprocess.DEVNULL, capture_output=True,
-                                   text=True, timeout=60, check=False)
+                                   text=True, timeout=self.probe_seconds, check=False)
             reason = "" if probe.returncode == 0 else (
                 probe.stderr.strip().splitlines() or [f"exit {probe.returncode}"])[-1]
         except (OSError, subprocess.SubprocessError) as error:
             reason = str(error) or type(error).__name__
-        if not reason:
-            raise CodeChanged("the dashboard build changed on disk")
-        self.refused_build = current
-        print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
-              file=sys.stderr, flush=True)
+        except BaseException as error:  # noqa: BLE001 - an answer is owed, or the probe never ends
+            reason = f"the probe failed: {type(error).__name__}: {error}"
+        self.probed = (build, reason)
 
     def direct_listener_healthy(self):
         return self.direct_server is None or (
