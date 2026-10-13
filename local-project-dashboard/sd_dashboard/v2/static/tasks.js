@@ -125,9 +125,9 @@ addEventListener('DOMContentLoaded', () => {
   // build (sd:3012): sd_db.progress.CANCELLABLE_TASK_KINDS, the kinds task_guard lets sd task cancel close.
   const CLOSES = ['task', 'followup'];
   const repeats = t => !!t?.recurrence;
-  // build (sd:2250): sd stores a rule only from sd_db.recurrence.PARTS. A rule with any other part (BYDAY), written around
+  // build (sd:2250): sd stores a rule only from sd_db.recurrence.PARTS. A rule with any other part (COUNT), written around
   // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
-  const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY']);
+  const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY', 'BYDAY']);
   const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
   // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
   const ends = t => !walkable(t) || t.nextDue === null;
