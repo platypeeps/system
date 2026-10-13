@@ -80,6 +80,18 @@ exec /bin/date "$@"
         self.assertIn("all checks clean", run.stdout)
         self.assertEqual(self.attention(run), [])
 
+    def test_a_mount_counts_only_at_its_own_mountpoint(self):
+        """sd:3718: a mountpoint ends at " (" or " type ", not at a space, so
+        "/Volumes/Offsite Disk" does not mount /Volumes/Offsite."""
+        _stub(self.bin / "mount", 'echo "/dev/disk5s1 on /Volumes/Offsite Disk (apfs, local, journaled)"\n'
+              'echo "server:/export on /Volumes/Share type nfs (rw)"\n')
+        run = self.maintenance("mount|/Volumes/Offsite\nmount|/Volumes/Offsite Disk\nmount|/Volumes/Share\n"
+                               "mount|/Volumes/Off\n", "check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        findings = [line for line in run.stdout.splitlines() if line.startswith("- mount: ")]
+        self.assertEqual(findings, ["- mount: /Volumes/Offsite is not mounted",
+                                    "- mount: /Volumes/Off is not mounted"])
+
     def test_check_prints_findings_without_the_line(self):
         run = self.maintenance(f"cert|{self.tmp}/missing.pem|30\n", "check")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

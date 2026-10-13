@@ -255,7 +255,11 @@ check_cert() { # pem warn-days
 }
 
 check_mount() { # path
-  mount | grep -qF " on $1 " || finding "mount: $1 is not mounted"
+  # The mountpoint ends where the options start: " (opts)" on macOS, " type T (opts)" on Linux. A space alone
+  # does not end it, or "/Volumes/Offsite Disk" counts as /Volumes/Offsite (sd:3718; mirror-sync's unmounted_volume).
+  mount 2>/dev/null | ST_MNT=" on $1" awk '{ sub(/ \([^()]*\)$/, ""); sub(/ type [^ ]+$/, "")
+    if (substr($0, length($0) - length(ENVIRON["ST_MNT"]) + 1) == ENVIRON["ST_MNT"]) found = 1 }
+    END { exit !found }' || finding "mount: $1 is not mounted"
 }
 
 check_process() { # name label
