@@ -57,7 +57,7 @@
   function header(count) {
     const b = B.get(batch) || {}, blind = b.mode === 'blind' || b.mode === 'sealed';
     const exportable = !b.error && b.mode && (!blind || b.open === 0);
-    return html`${plural(count, 'question')} in <a href="/tasks?row=${batch}">sd:${batch}</a> · <button class="linkbtn" type="button" id="clear-batch">Show every batch</button>
+    return html`${plural(count, 'question')} in <a href="${window.shell.itemHref(batch)}">sd:${batch}</a> · <button class="linkbtn" type="button" id="clear-batch">Show every batch</button>
       · <button class="btn quiet sm" type="button" id="export"${exportable ? '' : html` disabled`}>Download labels</button>${exportable ? ''
       : html` <span class="why">${b.error ? 'Not read, so it does not download.' : `A ${b.mode} batch downloads once every question is ruled.`}</span>`}`;
   }
@@ -80,7 +80,7 @@
     }
     const b = B.get(q.item) || {};
     const blind = b.mode === 'blind' || b.mode === 'sealed';
-    put(d, html`<p class="kind"><span class="g-caution" aria-hidden="true">${G.caution}</span> Question · note #${q.note} · <a href="/tasks?row=${q.item}">sd:${q.item}</a></p>
+    put(d, html`<p class="kind"><span class="g-caution" aria-hidden="true">${G.caution}</span> Question · note #${q.note} · <a href="${window.shell.itemHref(q.item)}">sd:${q.item}</a></p>
       <h2 class="ask">${q.text}</h2>
       <div class="options" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet opt" data-i="${i}"><kbd>${i + 1}</kbd><span>${o}</span></button>`)}</div>
       ${blind ? html`<p class="why">A ${b.mode} batch: its subject and evidence stay hidden until it is exported.</p>` : ''}

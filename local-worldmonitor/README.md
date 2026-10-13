@@ -16,9 +16,8 @@ Wrapper for running world-monitor locally. The checkout path is
 
 ## Gotchas
 
-- Port `3000` conflicts with `local-grafana` — only one at a time. `DEV_PORT`
-  overrides the dev-server port (non-integer or out-of-range values silently
-  fall back to 3000).
+- `DEV_PORT` overrides the dev-server port (non-integer or out-of-range values
+  silently fall back to 3000).
 - `build` is not just `vite build`: it also runs the vite-env secret check
   (`--strict-local`) and the blog/crawlable/content corpus prebuilds, so it is
   slow and can fail on missing local env.

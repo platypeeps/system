@@ -1,5 +1,5 @@
 """The backbone knows the new pieces: criterion 22 of
-docs/work/2026-09-05-one-database-one-front-door, the half this repository
+the one-database design (sd:234; `git show 8aef46ba:docs/work/2026-09-05-one-database-one-front-door/prd.md`), the half this repository
 can assert.
 
 Every case runs machine-setup.sh against a fixture home with the state
@@ -303,12 +303,11 @@ class SetupAndStatusTest(unittest.TestCase):
     def test_setup_builds_the_database_before_it_loads_the_agents(self):
         # Both agents open the database at startup, so `agents` running
         # first bootstraps them into a restart loop on a fresh machine.
-        # status walks its own list; it keeps the same order.
+        # status walks STAGES too (sd:3548), so it keeps the same order.
         text = SCRIPT.read_text()
         stages = re.search(r'^STAGES="([^"]*)"', text, re.M).group(1).split()
         self.assertLess(stages.index("sd"), stages.index("agents"), stages)
-        status = re.search(r"^  for st in ([^;]*); do$", text, re.M).group(1).split()
-        self.assertLess(status.index("sd"), status.index("agents"), status)
+        self.assertRegex(text, r"(?m)^  for st in \$STAGES; do$")
 
     def test_a_port_held_by_another_route_is_named_and_not_replaced(self):
         self.fixture.make_database()

@@ -109,8 +109,9 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 `machine-setup.env` in the config folder.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
-write from a checkout behind its upstream. Without git, it simply writes the
-files. `profile-autocapture.sh` never commits either way.
+write from a checkout behind its upstream. A file it changes that git does not
+hold as it is (no checkout, untracked, or edited) keeps a dated `.bak-<stamp>`
+copy beside it. `profile-autocapture.sh` never commits either way.
 
 LaunchAgent labels start with `$SYSTEM_TOOLS_LABEL_PREFIX` (default
 `local.system-tools`). A template in `launchagents/` may use `@LABEL@`,
@@ -136,6 +137,8 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
 | `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
+| `.node` | node majors the `tooling` stage installs with fnm and `doctor` checks; with no `.node` file at all, 18, 20 and 24 |
+| `.mailto` | bundle id of the app that answers mailto: links, one line; the profile's wins over `common.mailto`; with neither, `com.google.Chrome` |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
 format as `local-repo-sync`.
@@ -162,7 +165,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | turn self-update off in installed apps that hold a TCC grant, set the screen saver idle time to 0 on every profile (`defaults -currentHost`, no manifest line), then apply `defaults` settings | `python3` |
-| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), Chrome as mailto handler | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), the mailto handler; node versions and the handler come from `.node` and `.mailto` | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |
@@ -341,9 +344,8 @@ The satellite runs none of the hub's agents and jobs; `SD_HUB_ONLY_AGENTS` in `m
 
 ### Drift alerts
 
-`status` runs every reporting stage — bin, dotfiles, envs, prompts, repos,
-appstore, cron, sd, agents, services, tooling, system, macos, obsidian, iterm2 — and folds
-each one's divergence into a single count. It forces dry-run mode around those
+`status` runs every stage in `STAGES` but `brew`, which has a block of its
+own, and folds each one's divergence into a single count. It forces dry-run mode around those
 stages, so `status --apply` stays read-only no matter what.
 
 It used to run six of them, and the eight it skipped were exactly the ones
@@ -360,10 +362,10 @@ offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
 no drift word on it or above it. `status` checks taps, formulae, casks and
 pins in a brew block of its own.
 
-`status --fail-on-drift` exits 1 when anything drifted. The
-`machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
-step, after `update --apply`, so drift the update could not fix files a
-failure report that Today shows. A clean machine stays silent.
+`status --fail-on-drift` exits 1 when anything drifted. A cron job that runs
+it as its last step, after `update --apply`, turns drift the update could not
+fix into a failure report that Today shows; `local-cron-jobs/examples/` ships
+no such job, so write one in the config folder. A clean machine stays silent.
 
 ### Additive capture, unattended
 

@@ -286,7 +286,7 @@
     reader = S.read(spec);
     // ---------- Commands (products/system/commands.md) ----------
     // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
-    const openItem = o => { const to = S.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${o.item}`; return `sd:${o.item} opens in Tasks`; };
+    const openItem = o => S.openItem(o.item);
     C.register(
       { id: 'followup.draft', on: 'followup', label: 'Draft followup', key: 'd', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },

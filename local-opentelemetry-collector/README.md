@@ -29,9 +29,7 @@ base URL) and `OTLP_EXPORT_AUTH` (the `Authorization` header value), from
 ## Gotchas
 
 - Keeps the standard OTLP `4317`/`4318`: receiving OTLP is this service's
-  whole purpose. `local-jaeger` moved to `4327`/`4328`, so the usual
-  app -> collector -> jaeger pipeline can run end to end.
-- Use `local-opentelemetry-traces` to send test traces at it.
+  whole purpose.
 - A pasted URL containing `undefined` usually means a web UI's copy failed;
   the collector would start and then die on the DNS lookup. `start` rejects
   that string rather than letting it fail at runtime.

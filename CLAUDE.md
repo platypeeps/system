@@ -84,12 +84,14 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 Deliberate deviations:
 
-- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-opentelemetry-traces` runs the generator; `local-agent-meter` appends a reading.
+- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-agent-meter` appends a reading.
 - Bash, not POSIX sh: `local-cswap` and `tests/ci-native.sh`.
 - Compose, not `--rm` and `docker run`: `local-genai-traces` (`restart: unless-stopped`, to stay always on), `local-graphiti-mcp` and `mezmo-aura`.
 - Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.
 - `local-cswap` reads the tracked `cswap-auto.conf`, which holds defaults only.
 - `local-cron-jobs` uses `local`.
+- Not a shell entrypoint: `local-agent-meter` runs `agent-meter.py`, `mezmo-webhook` runs `mezmo-webhook.js`, `mezmo-langchain` runs `main.py`.
+- `status` reports state and exits 0, so it declares nothing: `local-agent-prompt`, `local-ai-apps`, `local-bin-links`; `tests/test_entrypoint_mode.py` wants 3 from every other `status` on an empty machine.
 
 ## Planned work lives in `docs/work/`
 

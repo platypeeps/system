@@ -35,7 +35,8 @@ from sd_db import operations, reporting, workflow
 from sd_db.errors import SdDbError
 
 from .controls import form
-from .documents import _config_dir
+from .documents import _config_dir, pipe_lines
+from .management_screen import log_tail, unreadable
 from .markup import Markup, escape, join, tag
 
 # Queues joined this tuple rather than taking a screen of its own (sd:719 step
@@ -233,11 +234,7 @@ FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 def parse_families(text: str) -> tuple[list[dict], list[str]]:
     """The families in file order, and one problem per line that was not read."""
     families, problems, owner = [], [], {}
-    for number, line in enumerate(text.splitlines(), 1):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = [f.strip() for f in line.split("|")]
+    for number, _, fields in pipe_lines(text):
         if len(fields) != 5 or fields[0] != "family":
             problems.append(f"line {number}: expected family|<key>|<label>|<icon>|<job>,<job>,...")
             continue
@@ -320,18 +317,14 @@ def job_log(path: Path, days: list[str]) -> dict:
     read begins when the log is longer than `TAIL_BYTES`. A job with no log is `log: false`. `cut` says the read began
     partway through the log; a cut read with no whole stamped line (`read_from` None) read no day at all."""
     try:
-        with path.open("rb") as handle:
-            first = handle.readline(4096).decode("utf-8", "replace")
-            size = handle.seek(0, 2)
-            start = max(0, size - TAIL_BYTES)
-            handle.seek(start)
-            tail = handle.read().decode("utf-8", "replace")
+        first, tail, start = log_tail(path, TAIL_BYTES)
     except FileNotFoundError:
         return {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}}
-    lines = tail.splitlines()
-    if start:
-        lines = lines[1:]  # the first line of a cut read is a part line
-    begins = STAMP.match(first)
+    except OSError as error:
+        # Unreadable, or not a regular file: no log, with the reason Management gives for the same file (sd:3532).
+        return {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}, "reason": unreadable(error)}
+    lines = tail.decode("utf-8", "replace").splitlines()
+    begins = STAMP.match(first.decode("utf-8", "replace"))
     read_from = None
     if start:
         read_from = next((m[1] for m in map(STAMP.match, lines) if m), None)

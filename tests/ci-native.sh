@@ -15,7 +15,7 @@ Usage: ci-native.sh preflight
        ci-native.sh leg repo-sync|dashboard|tools|shared
 
   preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
-             product-name and entrypoint-mode gates, the unwired-suite guard, and the venv at
+             product-name, ports and entrypoint-mode gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
 
@@ -104,6 +104,12 @@ python3 tests/test_gap_vocabulary.py
 # reason. Stdlib and git only, so it runs here before the venv, and
 # the guard below demands this line.
 python3 tests/test_product_name.py
+
+# No two tool folders bind one port, and README § Ports lists what the
+# code binds (sd:3965): read from the tracked scripts and compose files,
+# failing naming both claimants or the table row. Stdlib and git only, so
+# it runs here before the venv, and the guard below demands this line.
+python3 tests/test_ports.py
 
 # The repo CLAUDE.md stays at or under 150 lines and the shared agent
 # block at or under 200 (sd:3005). Stdlib only, so it runs here before

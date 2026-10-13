@@ -537,6 +537,10 @@ class TheMail(NoVault, Zoned, ScreenCase):
     def tools(self):
         return [(c["params"]["name"], c["params"]["arguments"]) for c in self.server.calls if c["method"] == "tools/call"]
 
+    def test_the_mail_client_is_loaded_once_per_process(self):
+        """sd:3532 (review 2026-10-12, A1 F10): each read compiled it again and rebound `sys.modules` under another read."""
+        self.assertIs(notes_screen._mail_intake(), notes_screen._mail_intake())
+
     def test_the_inbox_rows_are_newest_first_with_sender_subject_and_time(self):
         out = notes_screen.mail(now=NOW)
         self.assertEqual(out["state"], "ok", out)

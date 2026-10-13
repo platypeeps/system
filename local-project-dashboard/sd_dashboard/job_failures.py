@@ -39,6 +39,10 @@ __all__ = ["LEVELS", "classify", "shadow"]
 #: Jev's levels and the rule's, in order: the score is the index.
 LEVELS = ("transient", "probably transient", "unclear", "needs a person")
 
+#: The caller's deadline on one `jev` call, in seconds (sd:3530). Past `jev`'s own bound (30 s an attempt, three
+#: retries with backoff), so it ends only a call that hangs; a call ended here writes no ledger row.
+JEV_DEADLINE = 180
+
 #: Who this is in the judgment ledger, and which decision.
 JEV_CALLER = "local-project-dashboard"
 JEV_STAGE = "JEV_JOB_TRIAGE"
@@ -145,20 +149,21 @@ def _ask(jev: list[str], rows: list[dict]) -> None:
     try:
         gate = subprocess.run(jev + ["enabled", JEV_STAGE, "--record",
                                      "--caller", JEV_CALLER, "--stage", JEV_STAGE],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=env, timeout=JEV_DEADLINE)
         if gate.returncode != 0:
             return
         for row in rows:
             state = {"job": row["job"], "state": "failed", "outcome": row["what"],
                      "rule_class": row["triage"]["class"], "rule_reason": row["triage"]["why"]}
-            # No caller deadline: `jev` bounds its own request (JEV_TIMEOUT)
-            # and writes its rows only if it is left to finish.
+            # `jev` bounds its own request (JEV_TIMEOUT) and writes its rows only if it is left to
+            # finish; JEV_DEADLINE ends one that hangs, so the thread does not wait for the server's life.
             subprocess.run(jev + ["score", QUESTION, "--levels", ",".join(LEVELS),
                                   "--state", "-", "--state-format", "json",
                                   "--shadow", str(row["triage"]["score"]),
                                   "--caller", JEV_CALLER, "--stage", JEV_STAGE,
                                   "--subject", subject(row)],
-                           input=json.dumps(state), capture_output=True, text=True, env=env)
+                           input=json.dumps(state), capture_output=True, text=True, env=env,
+                           timeout=JEV_DEADLINE)
     except (OSError, subprocess.SubprocessError):
         pass  # A shadow may never fail the page.
 

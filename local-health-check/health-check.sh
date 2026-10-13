@@ -453,6 +453,9 @@ for d in "$TOOLS_ROOT"/*/; do
   [ "$name" != "local-health-check" ] || continue
   stem=${name#local-}
   e="$d/$stem.sh"
+  # A vendor folder drops its own prefix too (convention 1), and one that
+  # keeps a helper beside its entrypoint was never swept (sd:3552).
+  [ -f "$e" ] || e="$d/${name#*-}.sh"
   # local-project-dashboard/dashboard.sh does not follow convention 1's name,
   # and renaming it means editing and reloading launchd plists and the pack's sd-plugin.json, which was
   # rejected. A folder with no <stem>.sh and exactly one *.sh at its root is

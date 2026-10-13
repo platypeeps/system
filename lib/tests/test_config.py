@@ -116,6 +116,15 @@ class EnvFile(unittest.TestCase):
         done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
         self.assertEqual(done.stdout, "from-shell|two words|")
 
+    def test_an_exported_value_wins_wherever_the_file_assigns_it(self):
+        # sd:3553 review: jev and notify kept their own snapshots, which also
+        # covered a second assignment on one line and a `${X:=...}` default.
+        # The loader alone must too, now that they lean on it.
+        (self.conf / "notify/.env").write_text('export A=1 B=2\n: "${C:=file}"\n')
+        env = dict(self.envv, B="from-shell", C="")
+        done = shell('st_source_env notify; sh -c \'printf "%s|%s|%s" "$A" "$B" "$C"\'', env)
+        self.assertEqual(done.stdout, "1|from-shell|")
+
     def test_a_script_default_that_is_not_exported_loses_to_the_file(self):
         # sd:3553 review. Only the environment is the operator's override. A
         # default the script assigned itself (mezmo-pipeline/lib.sh sets
@@ -139,6 +148,30 @@ class EnvFile(unittest.TestCase):
     def test_sourcing_leaves_no_helper_variables_behind(self):
         done = shell('st_source_env notify; set | grep -c "^_st_" || true', dict(self.envv, A="x"))
         self.assertEqual(done.stdout.strip(), "0")
+
+    def test_no_tracked_script_loads_its_env_file_its_own_way(self):
+        # sd:3553 class pass. st_source_env is the one loader; a hand-rolled
+        # snapshot (ENV_X="${X:-}") let an exported empty value lose, and a
+        # bare `. "$..._ENV_FILE"` let the file win.
+        def files(pattern):
+            done = subprocess.run(
+                ["git", "grep", "-nE", pattern, "--", "*.sh", ":(exclude)tests", ":(exclude)*/tests/*"],
+                cwd=LIB.parent, capture_output=True, text=True)
+            # A subshell that reads one value changes nothing in its caller.
+            hits = [line for line in done.stdout.splitlines()
+                    if not line.split(":", 2)[2].lstrip().startswith("(")]
+            return {line.split(":")[0] for line in hits}, done.stdout
+
+        snapshots, out = files(r'^[^#]*ENV_[A-Z_]+="\$\{[A-Z_]+:-\}"')
+        self.assertEqual(set(), snapshots, out)
+        sourced, out = files(r'^[^#]*(^|[;&|[:space:]])\. "?\$[^ ]*(ENV_FILE|\.env)\b')
+        allowed = {
+            # Third-party tools' own files, outside the config root (CLAUDE.md deviations).
+            "local-gito/gito.sh", "local-prism/prism.sh",
+            # machine-setup.env lets the file win; filed for the machine-setup lane.
+            "local-machine-setup/machine-setup.sh",
+        }
+        self.assertLessEqual(sourced, allowed, out)
 
     def test_shell_absent_is_fine(self):
         self.assertEqual(shell("st_source_env nothing; echo ok", self.envv).stdout.strip(), "ok")
