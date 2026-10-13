@@ -2332,7 +2332,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              and commits nothing. Exits 1 when half or more of the fleet
              failed.
   refresh [path ...]
-             drain the lanes first: hold every lane's runner lock under the
+             wait while another refresh or follow holds refresh.lock in
+             the lane root, so two drains never split the lanes, then
+             drain the lanes: hold every lane's runner lock under the
              lane root (SD_LANE_ROOT, else sd.lane_root, else
              ~/.local/state/sd/lanes), making it for a lane folder, a
              registered repository (sd-db repo list) or a conf checkout
@@ -2343,7 +2345,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              of the helper leaves the locks held until the refresh steps
              end. The wait is
              bounded: 45 minutes in total for the lane locks and the gate
-             together (REPO_SYNC_DRAIN_WAIT seconds overrides it); past it,
+             together, the refresh lock included (REPO_SYNC_DRAIN_WAIT
+             seconds overrides it); past it,
              refresh refuses with nothing moved and names what was busy.
              Then move each pinned checkout named, or with no path every
              pinned conf checkout, to origin's default branch, still
