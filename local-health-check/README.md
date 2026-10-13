@@ -21,8 +21,8 @@ nothing is mailed (sd:3454). A clean run prints no such line.
 
 - app crash reports (`.ips`, last day) and kernel panics (last week) from
   both DiagnosticReports folders
-- every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`) /
-  `com.platypeeps.*` LaunchAgent: loaded, and last exit code clean
+- every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
+  LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status
 - memory pressure level, swap usage, 5-minute load vs core count
 - unified-log fault volume — flagged only when it more than doubles the

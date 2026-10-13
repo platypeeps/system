@@ -86,6 +86,9 @@ class CronGuardAgainstFixtures(unittest.TestCase):
         agents.mkdir(parents=True)
         for job in LAUNCHD:
             (agents / f"org.example.cron.{job}.plist").write_text("<plist/>\n")
+        # A plist under the prefix the script used to hardcode: outside
+        # SYSTEM_TOOLS_LABEL_PREFIX, so not this machine's to check (sd:3541).
+        (agents / "com.platypeeps.example.plist").write_text("<plist/>\n")
 
         cls.root = cls.tmp / "tools"
         folder = cls.root / "local-cron-jobs"
@@ -211,6 +214,9 @@ class CronGuardAgainstFixtures(unittest.TestCase):
     def test_the_run_finished_and_reported(self):
         self.assertEqual(self.rc, 0, self.err)
         self.assertIn("findings:", self.out, self.out)
+
+    def test_only_the_configured_label_prefix_is_checked(self):
+        self.assertEqual([h for h, _ in self.findings() if "com.platypeeps" in h], [], self.out)
 
     def test_a_recorded_failure_is_a_finding_although_launchd_is_clean(self):
         """The finding itself. launchd's counter says the last run it spawned

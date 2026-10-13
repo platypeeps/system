@@ -151,6 +151,9 @@ Check `pmset -g sched` for a `Repeating power events:` block before trusting a
 green night. A machine that happened to be awake passes this slot on its own —
 exactly the kind of green that hides the bug.
 
+`machine-setup.sh status` does that check: with no repeating wake it prints
+`wake    : MISSING` and counts one drift item.
+
 ## Status
 
 **Verified in this build.** The two verbs and the refusal of both or neither;

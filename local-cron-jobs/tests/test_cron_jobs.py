@@ -3108,5 +3108,21 @@ class JobPathTest(unittest.TestCase):
         self.assertIn(str(self.prefix / "bin"), path)
 
 
+class UsageTest(unittest.TestCase):
+    """The no-arg usage and the help print one usage line (sd:3541)."""
+
+    def test_no_arg_usage_is_the_help_usage_and_names_every_verb(self):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        env = {"PATH": fx.path(), "HOME": str(fx.home), "SYSTEM_TOOLS_CONFIG": str(fx.config)}
+        script = str(fx.folder / "cron-jobs.sh")
+        bare = subprocess.run(["sh", script], env=env, capture_output=True, text=True, timeout=60)
+        helped = subprocess.run(["sh", script, "help"], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(bare.returncode, 1)
+        self.assertEqual(bare.stderr.strip(), helped.stdout.splitlines()[0])
+        for verb in ("verify", "exec <job>", "watchdog", "test"):
+            self.assertIn(verb, bare.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4789,6 +4789,13 @@ cmd_status() {
     status_stage "$st"
     echo
   done
+  # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
+  # pmset lists it as "wakepoweron at"; a failed read is unknown, not clean.
+  if ! sched=$(pmset -g sched 2>/dev/null); then
+    echo "wake    : UNKNOWN (pmset -g sched failed)"; drift=$((drift + 1))
+  elif ! printf '%s\n' "$sched" | sed -n '/^Repeating/,/^[^ ]/p' | grep -qE 'wake(poweron)? at'; then
+    echo "wake    : MISSING (sudo pmset repeat wakeorpoweron MTWRFSU 02:40:00)"; drift=$((drift + 1))
+  fi
   echo "drift   : $drift item(s)"
   # --fail-on-drift turns drift into exit 1, which is what lets the cron job
   # machine-setup-update-nightly (its last step) route "this machine drifted"

@@ -1582,6 +1582,9 @@ each_or_one() { # cmd, target
   fi
 }
 
+# One usage line for help and the no-arg error, so neither drifts (sd:3541).
+USAGE="usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|exec <job>|status [job]|logs <job> [lines]|watchdog|test"
+
 case "${1:-}" in
   list)      cmd_list ;;
   watchdog)  cmd_watchdog ;;
@@ -1598,8 +1601,8 @@ case "${1:-}" in
   test)      shift
              exec "${PYTHON:-python3}" -m unittest discover -s "$ROOT/tests" -t "$ROOT" "$@" ;;
   -h|--help|help)
+    echo "$USAGE"
     cat <<'HELPEOF'
-usage: cron-jobs.sh list|install <job>|--all|verify [job]|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog|test
 
   list         jobs, schedules, installed state, the folder each came from
   install      generate plist + load into launchd (<job>, or --all for
@@ -1685,7 +1688,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") list|install <job>|--all|uninstall <job>|--all|run <job>|status [job]|logs <job> [lines]|watchdog" >&2
+    echo "$USAGE" >&2
     exit 1
     ;;
 esac

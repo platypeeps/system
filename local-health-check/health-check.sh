@@ -44,8 +44,7 @@ checks:
   - app crash reports (.ips) from the last day, kernel panics from the
     last week (~/Library and /Library DiagnosticReports)
   - launchd: every loaded $SYSTEM_TOOLS_LABEL_PREFIX.* (default
-    local.system-tools.*) or com.platypeeps.* job/agent whose last exit
-    was nonzero
+    local.system-tools.*) job/agent whose last exit was nonzero
   - disk0 SMART status, NVMe wear/media errors via smartctl if installed
   - memory pressure level and swap in use
   - unified-log fault volume: flagged when it more than doubles against
@@ -241,8 +240,7 @@ fi
 # --- launchd job health --------------------------------------------------
 
 uid=$(id -u)
-for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist \
-             "$HOME"/Library/LaunchAgents/com.platypeeps.*.plist; do
+for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist; do
   [ -e "$plist" ] || continue
   label=$(basename "$plist" .plist)
   out=$(launchctl print "gui/$uid/$label" 2>/dev/null) || {
