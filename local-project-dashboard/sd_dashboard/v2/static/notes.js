@@ -56,7 +56,8 @@
     if (!MAIL) return sect('mail', 'Mail', '…', 'Gmail inbox via workspace-mcp', html`<p class="why">Reading the inbox…</p>`);
     if (!mailOk()) return sect('mail', 'Mail', '▨', 'not read', html`<div class="unknown"><b>${MAIL_DOWN[MAIL.state] || MAIL_DOWN.error}</b> ${MAIL.why || 'No reason given.'}</div>`);
     const rows = MAIL.rows || [], gap = MAIL.missing ? html`<p class="why">${plural(MAIL.missing, 'message')} found but not read: Gmail throttled the fetch.</p>` : '';
-    return sect('mail', 'Mail', rows.length, `Gmail inbox via workspace-mcp · the newest within ${plural(MAIL.days, 'day')}`, rows.length
+    // The inbox is the newest of the last MAIL.days days whatever day is shown (sd:3525): the heading names that window.
+    return sect('mail', `Mail, last ${plural(MAIL.days, 'day')}`, rows.length, 'Gmail inbox via workspace-mcp · the newest, not per day', rows.length
       ? html`<ul class="rows" aria-label="inbox mail">${rows.map(m => html`<li class="row mail"><span class="t">${m.at ? html`<time class="rel" datetime="${m.at}"></time>` : 'no date'}</span><span class="g" aria-hidden="true"></span><span class="s"><span class="sr">mail · </span>${m.subject}<small>${m.from}</small></span></li>`)}</ul>${gap}`
       : html`<p class="why">No inbox mail in the last ${plural(MAIL.days, 'day')}.</p>${gap}`);
   }
@@ -175,6 +176,7 @@
     document.addEventListener('shell:open', e => { if (OBJS.some(o => o.id === e.detail)) select(e.detail, true); });
     document.addEventListener('keydown', e => {
       if (e.target.matches?.('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
+      if (e.key === '/') { e.preventDefault(); $('qn-in').focus(); return; }
       if (e.key === 'ArrowLeft') { e.preventDefault(); window.notesDay(-1); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); window.notesDay(1); }
     });
@@ -213,4 +215,4 @@
   });
 })();
 // Top level, not inside DOMContentLoaded: shell.js builds the ? sheet from PAGE_KEYS when it loads.
-window.PAGE_KEYS = [['← / →', 'The previous or next day'], ['⌘↵', 'In the note field: keep the note']];
+window.PAGE_KEYS = [['/', 'Write a quick note'], ['← / →', 'The previous or next day'], ['⌘↵', 'In the note field: keep the note']];

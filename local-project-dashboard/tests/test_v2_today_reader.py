@@ -135,6 +135,29 @@ R.sel = selected(); R.details = ELS.details.html;""", search="?row=job%3Anightly
         self.assertIn("shell.read(", TODAY_JS)
         self.assertNotIn("fetch('/api/now'", TODAY_JS)
 
+    # sd:3525 (review 2026-10-12, A2 F14): the shell owns j / k and Esc through PAGE_LIST, so a g-chord and the keys sheet
+    # read the same on Today as on every other page. The page binds neither key itself.
+    KEY = ("ROWS_EL.querySelectorAll().forEach(tr => { tr.scrollIntoView = () => {}; });\n"
+           "const key = k => document.dispatchEvent({ type: 'keydown', key: k, target: El('main'), preventDefault() {} });\n")
+
+    def test_the_shell_walks_the_rows_through_page_list_and_the_page_binds_no_j(self):
+        out = self.run_page(self.KEY + """key('j'); R.afterJ = selected();
+const L = window.PAGE_LIST, rows = [...L.rows()]; L.select(rows[1].dataset.id, rows[1]); R.sel = selected(); R.row = location.search;""")
+        self.assertEqual(out["R"]["afterJ"], ["job:nightly-sync:7"], "today.js moved the row on j itself; the shell owns j")
+        self.assertEqual(out["R"]["sel"], ["ahead:pushy:1"])
+        self.assertEqual(out["R"]["row"], "?row=ahead%3Apushy%3A1")
+        self.assertNotRegex(TODAY_JS, r"e\.key === '[jk]'")
+
+    def test_esc_through_page_list_clears_the_source_filter_once(self):
+        out = self.run_page(self.KEY + """const cell = { id: 'jobs-cell', dataset: { src: 'jobs' } };
+ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? cell : null } });
+R.hidden = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).map(tr => tr.dataset.id);
+key('Escape'); R.afterEsc = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).length;
+R.cleared = window.PAGE_LIST.clear(); R.shown = ROWS_EL.querySelectorAll().filter(tr => tr.hidden).length; R.again = window.PAGE_LIST.clear();""")
+        self.assertEqual(out["R"]["hidden"], ["ahead:pushy:1"])
+        self.assertEqual(out["R"]["afterEsc"], 1, "today.js cleared the filter on Esc itself; the shell sends Esc to PAGE_LIST.clear")
+        self.assertEqual((out["R"]["cleared"], out["R"]["shown"], out["R"]["again"]), (True, 0, False))
+
 
 
 class TheFix(TheReader):

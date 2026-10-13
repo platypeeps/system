@@ -335,10 +335,28 @@ class TheScript(Fixture):
     def test_the_inbox_rows_show_sender_subject_and_age(self):
         out = self.run_page("R.daily = ELS.daily.html;")
         mail = out["R"]["daily"].split('id="mail"', 1)[1]
-        self.assertIn('<span class="src">Gmail inbox via workspace-mcp · the newest within 2 days</span>', mail)
+        self.assertIn('<span class="src">Gmail inbox via workspace-mcp · the newest, not per day</span>', mail)
         self.assertIn('<time class="rel" datetime="2026-09-06T11:15:00Z"></time>', mail)
         self.assertIn("Lunch &lt;Friday&gt;?<small>Pat Example</small>", mail)
         self.assertLess(mail.index("Lunch"), mail.index("Nightly report"))
+
+    def test_mail_is_headed_by_its_own_window_on_every_day(self):
+        """sd:3525 (review 2026-10-12, A2 F8): the inbox is the newest of the last MAIL_DAYS days, not the shown day's; the
+        heading says so, so a past day's note does not read as sitting beside that day's mail."""
+        out = self.run_page("R.today = ELS.daily.html; ELS.prev.listeners.click[0](); R.past = ELS.daily.html; R.day = ELS['day-name'].textContent;")
+        self.assertEqual(out["R"]["day"], "Saturday, September 5")
+        for shown in ("today", "past"):
+            with self.subTest(day=shown):
+                self.assertIn('<h2 id="mail-h">Mail, last 2 days</h2>', out["R"][shown])
+
+    def test_slash_writes_a_quick_note_as_the_palette_and_keys_sheet_say(self):
+        """sd:3525 (review 2026-10-12, A2 F9): the palette offers / for the quick note, so the page binds it and the ? sheet lists it."""
+        out = self.run_page("""ELS['qn-in'].focus = () => { R.focused = true; };
+document.dispatchEvent({ type: 'keydown', key: '/', target: El('main'), preventDefault() { R.prevented = true; } });
+R.keys = window.PAGE_KEYS; R.palette = window.PAGE_COMMANDS.filter(c => c.key === '/').map(c => c.label);""")
+        self.assertEqual((out["R"].get("focused"), out["R"].get("prevented")), (True, True), "/ did not reach the quick note field")
+        self.assertEqual(out["R"]["palette"], ["Write a quick note"])
+        self.assertIn(["/", "Write a quick note"], out["R"]["keys"])
 
     def test_mail_that_cannot_be_read_is_named_and_the_rest_of_the_page_still_draws(self):
         down = {"state": "down", "why": "workspace-mcp did not answer at http://127.0.0.1:9/mcp within 8 s."}
