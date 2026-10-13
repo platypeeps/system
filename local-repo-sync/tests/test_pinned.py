@@ -653,6 +653,67 @@ class ConsumersTest(unittest.TestCase):
         self.assertIn(f"{SERVE} did not load", result.stdout)
         self.assertIn(SERVE, self.stopped.read_text())
 
+    # sd:3535: three rows the D2 failure table lacked. Row 1, another
+    # checkout's failure withholding hub-pin, is in test_follow.HubPushTest.
+
+    def test_a_refused_refresh_never_stops_the_services(self):
+        """NEW (sd:3535 row 2). Every check and fetch runs before the stop: a
+        dirty pack or a fetch that fails moves nothing and costs no outage."""
+        before = self.f.head(self.pack)
+        (self.pack / "README").write_text("local edit\n")
+        result = self.f.run("refresh", expect=1)
+        self.assertIn("has uncommitted changes", result.stdout)
+        (self.pack / "README").unlink()
+        self.f.git(self.pack, "checkout", "-q", "--", "README")
+        self.f.wrap_git("before", "*fetch*", 'echo "fetch: no network" >&2; exit 1')
+        result = self.f.run("refresh", expect=1)
+        self.assertIn("!!! failed: fetch in", result.stdout)
+        self.assertEqual([], [c for c in self.f.make_calls() if c.startswith("launchctl")])
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+
+    def test_the_fetch_runs_before_the_stop(self):
+        """NEW (sd:3535 row 2). A refresh that moves still fetches first,
+        while the services serve, so the fetch's wall time is no downtime."""
+        self.f.wrap_git("before", "*fetch*", f'echo fetch >> "{self.f.make_log}"')
+        self.f.run("refresh", expect=0)
+        calls = self.f.make_calls()
+        self.assertLess(len(calls) - 1 - calls[::-1].index("fetch"), calls.index(f"launchctl bootout {SERVE}"))
+        self.assertEqual(self.new, self.f.head(self.pack))
+
+    def test_a_refresh_killed_in_the_plan_stopped_and_moved_nothing(self):
+        """NEW (sd:3535 row 2). The plan lives in the run's temp folder: a
+        kill during the pack's fetch leaves the services up and every checkout
+        where it was, and the next refresh moves as if none ran."""
+        before = self.f.head(self.pack)
+        self.f.wrap_git("before", f"*{self.pack}*fetch*", 'kill -KILL $PPID')
+        self.f.run("refresh", expect=None)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+        self.assertFalse(self.stopped.exists())
+        self.assertFalse((self.f.tmp / "state/repo-sync/refresh-intent").exists())
+        self.f.wrap_git("before", "no-match", ":")
+        self.f.run("refresh", expect=0)
+        self.assertEqual(self.new, self.f.head(self.pack))
+        self.assertEqual([DASHBOARD, SERVE], self.loaded())
+
+    def test_a_database_above_the_library_moves_nothing_and_names_the_way_out(self):
+        """NEW (sd:3535 row 3). A database restored from a newer backup is
+        above the pack's lib/ at the target; no migrate goes down, so the
+        refresh moves nothing and names pinning forward or an older backup,
+        not a migrate."""
+        before = self.f.head(self.pack)
+        self.schema(6)
+        result = self.f.run("refresh", expect=1)
+        self.assertIn(f"is at schema 6, above the 5 of the pack's lib/ at origin/main; nothing moved", result.stdout)
+        self.assertIn("no migrate goes down: pin the pack to a commit whose lib/ is at schema 6 or later",
+                      result.stdout)
+        self.assertNotIn("sd-db migrate", result.stdout)
+        self.assertEqual(before, self.f.head(self.pack))
+        self.assertNotIn(f"-C {self.pack} setup", self.f.make_calls())
+        self.assertFalse((self.f.tmp / "state/repo-sync/refresh-intent").exists())
+
     def test_a_refresh_of_no_hub_checkout_stops_nothing(self):
         other = self.f.repo("a/other")
         self.f.pin(other)

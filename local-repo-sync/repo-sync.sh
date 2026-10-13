@@ -696,7 +696,7 @@ start_consumers() {
   c_db=$(db_version "$REFRESH_DB" || :)
   if [ -z "$c_lib" ] || [ "$c_db" != "$c_lib" ]; then
     echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
-    echo "  after $c_pack/bin/sd-db backup and $c_pack/bin/sd-db migrate, refresh again to start them"
+    schema_remedy "$c_db" "$c_lib" "$c_pack" "to start them"
     return 1
   fi
   for c in $CONSUMERS; do
@@ -723,6 +723,22 @@ start_consumers() {
     echo "started $c_label"
   done
   rm -f "$REFRESH_STOPPED"
+}
+
+# Prints the way to bring database schema $1 to the pack's lib/ schema $2,
+# for pack $3, ending "refresh again $4". No migrate goes down, so a database
+# above the library needs the pack pinned forward or an older backup
+# (sd:3535).
+schema_remedy() {
+  case "$1:$2" in
+    :*|*:|*[!0-9:]*) sr_above=no ;;
+    *) if [ "$1" -gt "$2" ]; then sr_above=yes; else sr_above=no; fi ;;
+  esac
+  if [ "$sr_above" = yes ]; then
+    echo "  no migrate goes down: pin the pack to a commit whose lib/ is at schema $1 or later, or restore a backup at schema $2 with $3/bin/sd-db restore <backup>, then refresh again${4:+ $4}"
+  else
+    echo "  after $3/bin/sd-db backup and $3/bin/sd-db migrate, refresh again${4:+ $4}"
+  fi
 }
 
 # --- the refresh record (pack design D2, sd:3345) ---------------------------
@@ -826,6 +842,11 @@ rollback_point() {
   if [ -z "$p_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   if ! p_db=$(db_version "$REFRESH_DB"); then
     echo "!!! refused: cannot read the schema version of $REFRESH_DB, so whether it needs a migrate is unknown; nothing moved"
+    return 1
+  fi
+  if [ "$p_db" -gt "$p_lib" ]; then
+    echo "!!! refused: $REFRESH_DB is at schema $p_db, above the $p_lib of the pack's lib/ at $p_rev; nothing moved"
+    schema_remedy "$p_db" "$p_lib" "$p_pack" ""
     return 1
   fi
   [ "$p_db" -lt "$p_lib" ] || return 0
@@ -963,7 +984,8 @@ pin_ready() {
   if [ -z "$q_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   q_db=$(db_version "$REFRESH_DB" || :)
   [ "$q_db" != "$q_lib" ] || return 0
-  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib; refresh again to migrate"
+  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib"
+  schema_remedy "$q_db" "$q_lib" "$(hub_dir pack)" "to publish it"
   return 1
 }
 
@@ -1000,26 +1022,29 @@ refresh() {
   # and the pack where they are, and the satellites follow them.
   r_failed=0
   r_hub_failed=0
+  : > "$TMPD/plan"
+  # Every check and fetch runs before the services stop (sd:3535):
+  # refresh_one only plans, so a refusal or a slow fetch costs no outage.
+  # The list is on fd 3, so a git or make that reads stdin cannot eat it.
+  while IFS= read -r r_target <&3; do
+    if ! refresh_one "$r_target"; then
+      r_failed=$((r_failed + 1))
+      if hub_checkout "$r_target" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
+    fi
+  done 3< "$TMPD/ordered"
+  echo
+  # The services stop only for a planned move of system or the pack.
   r_hub=""
-  while IFS= read -r r_target; do
-    if hub_checkout "$r_target" > /dev/null; then r_hub=1; fi
-  done < "$TMPD/ordered"
+  while IFS=$US read -r r_dir r_rev; do
+    if hub_checkout "$r_dir" > /dev/null; then r_hub=1; fi
+  done < "$TMPD/plan"
   # A record left by a refresh that did not finish is settled first,
   # whatever this one moves: nothing may start the services before that.
   [ ! -e "$REFRESH_INTENT" ] || r_hub=1
-  : > "$TMPD/plan"
   if [ -n "$r_hub" ] && ! stop_consumers; then
     echo "!!! refused: a library consumer did not stop; nothing moved"
-    r_failed=1 r_hub_failed=1
+    r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
   else
-    # The list is on fd 3, so a git or make that reads stdin cannot eat it.
-    while IFS= read -r r_target <&3; do
-      if ! refresh_one "$r_target"; then
-        r_failed=$((r_failed + 1))
-        if hub_checkout "$r_target" > /dev/null; then r_hub_failed=$((r_hub_failed + 1)); fi
-      fi
-    done 3< "$TMPD/ordered"
-    echo
     r_point=0
     if [ -n "$r_hub" ]; then rollback_point || r_point=$?; fi
     if [ "$r_point" -ne 0 ]; then
