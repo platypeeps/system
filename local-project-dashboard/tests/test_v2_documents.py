@@ -58,7 +58,9 @@ COMMANDS = [
     ["document.untag", "document tag", "Untag", "u", "undo"],
     ["document.skip", "document", "Disable render", "s", "safe"],
     ["document.skip-repo", "document", "Disable render for repo", "e", "safe"],
-    ["document.request", "document request draft", "Run", "r", "undo"],
+    # build (sd:3525, review 2026-10-12 A2 F5): the design's "Run", r, undo read as a run with an Undo, and r is Render on a
+    # document. It only copies the line, so it is Request, safe, and has no key until it files the request.
+    ["document.request", "document request draft", "Request", None, "safe"],
 ]
 
 #: Seconds since the epoch, a day apart: the fixture's files and sources are dated with them.

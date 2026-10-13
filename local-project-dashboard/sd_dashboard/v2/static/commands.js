@@ -49,9 +49,11 @@
   // The filter puts the row on Schedules' first page.
   const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
     location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
+  // The one cron-jobs line (sd:3525): Reports' report.log prints it too, so no page names the wrapper or a checkout path.
+  const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
   function showLog({ job, run = o => openSchedule(job(o).name) }) {
     return { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false,
-      cli: o => `local-cron-jobs/cron-jobs.sh logs ${job(o).name}`, run };
+      cli: o => logLine(job(o).name), run };
   }
 
   // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
@@ -94,5 +96,5 @@
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }
 
-  window.commands = { answered, fix, retry, showLog, printJob, showAssignment, openPullRequest, syncCollector };
+  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector };
 })();

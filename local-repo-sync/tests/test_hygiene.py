@@ -21,7 +21,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from test_repo_sync import Fixture  # noqa: E402
+from test_repo_sync import Fixture, attention  # noqa: E402
 
 IDENTITY = [
     "-c", "user.name=t", "-c", "user.email=t@example.invalid",
@@ -1209,14 +1209,14 @@ class NightlyHygieneTest(unittest.TestCase):
         self.addCleanup(f.destroy)
         return f
 
-    def test_nightly_runs_hygiene_apply_after_sync_and_mails_the_report(self):
-        """NEW. Criterion 8, first half."""
+    def test_nightly_runs_hygiene_apply_after_sync_and_its_report_needs_attention(self):
+        """NEW. Criterion 8, first half; sd:3454 reports it, and mails nothing."""
         f = self.fixture()
         repo = f.repo()
         wt = f.add_worktree(repo, "gone-dir")
         shutil.rmtree(wt)
 
-        f.run("nightly", expect=0)
+        result = f.run("nightly", expect=0)
 
         verbs = f.git_verbs()
         pulls = [i for i, v in enumerate(verbs) if v.startswith("pull")]
@@ -1225,17 +1225,19 @@ class NightlyHygieneTest(unittest.TestCase):
         self.assertTrue(prunes, verbs)
         self.assertLess(pulls[0], prunes[0])
         self.assertNotIn(real(wt), f.worktree_paths(repo))
-        log = f.notify_log.read_text()
-        self.assertIn("hygiene", log)
-        self.assertIn(real(wt), log)
+        self.assertEqual(len(attention(result)), 1, result.stdout)
+        self.assertRegex(attention(result)[0], r"^repo-sync: hygiene report on ")
+        self.assertIn(real(wt), result.stdout)
+        self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
     def test_nightly_is_silent_when_hygiene_finds_nothing(self):
-        """NEW. Criterion 8, second half: a clean fleet mails nothing."""
+        """NEW. Criterion 8, second half: a clean fleet reports nothing."""
         f = self.fixture()
         f.repo()
 
-        f.run("nightly", expect=0)
+        result = f.run("nightly", expect=0)
 
+        self.assertEqual(attention(result), [])
         self.assertFalse(
             f.notify_log.exists(),
             f.notify_log.read_text() if f.notify_log.exists() else "",
@@ -1350,11 +1352,12 @@ class NightlyJevShadowTest(unittest.TestCase):
                         "owner/proj", str(f.tmp), str(f.root)):
             self.assertNotIn(private, sent)
 
-    def test_the_mailed_report_is_the_report_without_jev(self):
+    def test_the_report_is_the_report_without_jev(self):
         f = self.fixture()
-        self.nightly(f, JEV_STUB_EXIT="1")
-        self.assertIn("LOCAL    branch sd-2094-private-topic", f.notify_log.read_text())
-        self.assertNotIn("jev", f.notify_log.read_text().lower())
+        out = self.nightly(f, JEV_STUB_EXIT="1").stdout
+        self.assertIn("LOCAL    branch sd-2094-private-topic", out)
+        self.assertIn("SD_REPORT_ATTENTION: repo-sync: hygiene report on ", out)
+        self.assertNotIn("jev", out[:out.index("SD_REPORT_ATTENTION: ")].lower())
 
     def test_the_stage_switched_off_asks_nothing(self):
         f = self.fixture()

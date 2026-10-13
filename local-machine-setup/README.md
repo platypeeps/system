@@ -41,7 +41,7 @@ change I made on this machine back into its profile*.
                                        # each step is logged as it starts and
                                        # stopped at its bound (300-1800 s, or
                                        # MACHINE_SETUP_STEP_TIMEOUT seconds)
-./machine-setup.sh upgrade-report      # upgrade + email summary (cron: weekly)
+./machine-setup.sh upgrade-report      # upgrade + report summary (cron: weekly)
                                        # plus the TCC grants probe; one push
                                        # names each binary to re-grant
 ./machine-setup.sh checklist           # manual new-machine steps
@@ -59,15 +59,16 @@ and `capture` need no argument after the first `setup`.
 
 **The weekly `upgrade-report` owns every package and app upgrade** (sd:3062).
 It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
-mails its diff. The `macos` stage turns self-update off in every cask that
+prints its diff. The `macos` stage turns self-update off in every cask that
 updates itself, where the app documents a switch. Both machines then move once a
 week, and grants are re-granted in one sitting. After the sweep, and in a quiet
 week after `claude update`, it runs `local-project-dashboard/dashboard.sh
-grants` and puts the result in the mail. The cron job runs under launchd, where
-the probe's answer is the binary's own. A binary that lost Full Disk Access gets
-one push (`-F`, ntfy and email) naming its path. The push also lists a new Claude Code
-binary or python Cellar path, the two known grant droppers. A missing grant
-does not fail the job; a push or mail that cannot be delivered does.
+grants` and puts the result in the report. The cron job runs under launchd, where
+the probe's answer is the binary's own. A binary that lost Full Disk Access is named
+with its path, beside a new Claude Code binary or python Cellar path, the two
+known grant droppers. Leftovers or a missing grant print an
+`SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
+nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
 
 ## Configuration
 
@@ -164,6 +165,12 @@ Run in order. Pass one as the second argument to run it alone.
 
 Most stages delegate to tools that already existed. This folder is mostly an
 ordering and profile layer over them, not a reimplementation.
+
+A remediation that fails prints `FAILED` and the run goes on to the next item
+and stage. The run ends with the list of failures and exits 1. A failed step
+skips the rest of its item: a failed backup skips the overwrite, a failed copy
+skips the record and the launchd restart. `decommission` removes a plist only
+once launchd holds no job under its label.
 
 ### Obsidian plugins
 
@@ -339,13 +346,15 @@ reported 0. `repos` was the last one left out, for want of a read-only verb —
 A stage reports divergence four ways: `DIFFERS`, `MISSING`, `STALE`, `ABSENT`,
 a `defaults write` it would have made, or an `extra` line. A would-be action
 alone does not count — `[dry-run] mas install <id>` looked like a note rather
-than a finding, which is why the appstore and cron stages now name what is
-missing before offering to fix it.
+than a finding, which is why every stage now names what is missing before
+offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
+no drift word on it or above it. `status` checks taps, formulae, casks and
+pins in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. The
 `machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
-step, after `update --apply`, so drift the update could not fix triggers the
-cron failure notification (banner + ntfy push). A clean machine stays silent.
+step, after `update --apply`, so drift the update could not fix files a
+failure report that Today shows. A clean machine stays silent.
 
 ### Additive capture, unattended
 

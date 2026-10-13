@@ -2,7 +2,8 @@
 
 Today is the first page, at `/` and `/today`: the same
 `/api/now` rows the classic Now drew, as an annunciator and a ranked ledger. Its
-capture files a task through `POST /api/items`.
+capture is the shell's, as on every page: a task or followup through `POST /api/items`,
+a note on the selected item through `POST /api/items/<id>/notes`.
 It reads `/api/now` through the shell's reader (`read.js`): of two refreshes
 only the newer one draws, and a failed read clears every row and its commands.
 Status mail, backups, HOA water and Wants you wait for collectors.

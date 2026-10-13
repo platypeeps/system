@@ -6,15 +6,7 @@
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   // The rail's map (built sections, and the old screen each unported one opens) is /ui/sections.js, loaded before this.
-  // Capture files through the same route and library call as v1 Today's capture form (POST /api/items).
-  window.SHELL_CAPTURE = async ({ kind, title, item }) => {
-    if (kind === 'note') throw new Error('Not filed: v2 files tasks and followups only. Add the note from the item page.');
-    const body = { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) };
-    const p = title.match(/\bp([1-4])\b/i);
-    if (p) { body.priority = +p[1]; body.title = title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim(); }
-    const out = await window.shell.post('/api/items', body).catch(e => { throw new Error(`Not filed: ${e.message}`); });
-    return `Captured #${out.item?.id}: ${out.item?.title || body.title}`;
-  };
+  // Capture (n) and the field's task mode file through the shell's default capture (sd:3520): POST /api/items.
 
   // now_screen bands → design.md state grammar.
   const STATE = { broken: 'warning', look: 'caution', queued: 'queued' };
@@ -214,6 +206,9 @@
 
   function clearSource() { srcFilter = null; document.querySelectorAll('.cell[data-src]').forEach(x => x.setAttribute('aria-pressed', 'false')); applyFilter(); }
 
+  // build (sd:3521): capture's repo default is the row's: a repo row names it in its id, a pull request as owner/name.
+  window.PAGE_REPO = o => o && o.type === 'repo' ? o.id.split(':')[1] : (o && o.repo) || null;
+
   window.PAGE_COMMANDS = [
     { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
@@ -275,7 +270,7 @@
       if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
       if (e.key === 'Enter' && input.value.trim()) {
         e.preventDefault(); const v = input.value.trim();
-        if (mode === 'task') { window.SHELL_CAPTURE({ kind: 'task', title: v }).then(shell.toast, err => shell.toast(err.message)); input.value = ''; paint(); }
+        if (mode === 'task') { shell.fileCapture({ kind: 'task', title: v }).then(shell.toast, err => shell.toast(err.message)); input.value = ''; paint(); }
         if (mode === 'ask') { shell.openChat(); shell.send(v); input.value = ''; paint(); }
       }
       if (e.key === 'Escape') { input.value = ''; paint(); input.blur(); }
@@ -284,14 +279,10 @@
     document.addEventListener('keydown', e => {
       if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest('.actmenu')) return;
       if (e.key === '/') { e.preventDefault(); input.focus(); }
-      if (e.key === 'j' || e.key === 'k') {
-        const vis = [...$('rows').querySelectorAll('tr[data-id]')].filter(tr => tr.getClientRects().length); if (!vis.length) return;
-        const i = vis.findIndex(tr => tr.getAttribute('aria-selected') === 'true');
-        const n = vis[Math.max(0, Math.min(vis.length - 1, i + (e.key === 'j' ? 1 : -1)))];
-        select(n.dataset.id, false); n.scrollIntoView({ block: 'nearest' });
-      }
-      if (e.key === 'Escape' && srcFilter) clearSource();
     });
+    // The shell walks the rows on j / k, and Esc clears the source filter through clear() (sd:3525): the page binds neither.
+    window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(id, false),
+      clear: () => !!srcFilter && (clearSource(), true) };
 
     reading = shell.read({
       source: '/api/now', what: 'the Now rows', adopt, clear, draw,

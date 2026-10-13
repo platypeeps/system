@@ -261,7 +261,9 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         if set(values) != {"revision"}:
             raise ValueError("Provide the current report revision.")
-        return lambda connection: reporting.acknowledge(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
+        # The ingest's own followup goes with the report (sd:3533); one a person wrote still refuses.
+        return lambda connection: reporting.acknowledge(connection, int(match[1]), expected_revision=values["revision"], who="dashboard",
+                                                        resolve_ingest_followups=True)
     # The Reports page's Undo (sd:2395): it posts the revision its acknowledge answered, so a report changed since is stale.
     match = re.fullmatch(r"/api/reports/([1-9][0-9]*)/reopen", path)
     if match:
@@ -601,6 +603,12 @@ class Dashboard(BaseHTTPRequestHandler):
                     except SdDbError as error:
                         return self._json(400, {"error": str(error)})
                     return self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
+                if path == "/api/capture-repos" and not split.query:
+                    from sd_db import repos
+
+                    # The capture box's repo picker (sd:3521): every registered repository's key and folder name.
+                    return self._json(200, {"repos": [{"path": row["path"], "name": Path(row["path"]).name}
+                                                      for row in repos.registered(connection)]})
                 match = re.fullmatch(r"/api/items/([1-9][0-9]{0,18})/capture-context", path)
                 if not match or split.query or int(match[1]) > 9223372036854775807:
                     return self._json(404, {"error": "No capture context at this address."})

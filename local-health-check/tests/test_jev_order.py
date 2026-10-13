@@ -172,7 +172,9 @@ esac
         _stub(cls.bin, "dscacheutil", "exit 0\n")
         _stub(cls.bin, "uptime", 'echo "up 1 day, 0 users, load averages: 1 1 1"\n')
         _stub(cls.bin, "hostname", 'echo "%s"\n' % HOSTNAME)
-        _stub(cls.bin, "date", 'echo "2026-01-01 00:00"\n')
+        # FAKE_DAY stands for the run's date in the report's reason.
+        _stub(cls.bin, "date", 'if [ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ]; then echo "$FAKE_DAY"; '
+                               'else echo "2026-01-01 00:00"; fi\n')
         _stub(cls.bin, "sysctl", """\
 case "$2" in
   kern.memorystatus_vm_pressure_level) echo 1 ;;
@@ -322,8 +324,8 @@ esac
             script=cls.forgetful)
 
     @classmethod
-    def run_check(cls, name, extra, root=None, script=SCRIPT):
-        """One `check`, with its own state dir, stub log and payload dir."""
+    def run_check(cls, name, extra, root=None, script=SCRIPT, verb="check"):
+        """One `check` (or `verb`), with its own state dir, stub log and payload dir."""
         d = cls.tmp / ("run-" + name)
         d.mkdir()
         (d / "state").mkdir()
@@ -350,7 +352,7 @@ esac
         env.pop("SYSTEM_TOOLS_LABEL_PREFIX", None)
         env.update(extra)
         proc = subprocess.run(
-            ["sh", str(script), "check"], stdin=subprocess.DEVNULL,
+            ["sh", str(script), verb], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             timeout=RUN_TIMEOUT)
         return {
@@ -420,6 +422,18 @@ esac
         return sorted(question, key=lambda i: (-question[i], i))
 
     # -- cases -------------------------------------------------------------
+
+    def test_each_day_files_its_own_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body.
+        A checksum with digits erased made worker1 and worker2 one report."""
+        def reason(name, smart, day):
+            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart, "FAKE_DAY": day},
+                                 verb="run")
+            return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        first = reason("day-1", "Failing on worker1", "2026-10-12")
+        second = reason("day-2", "Failing on worker2", "2026-10-13")
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(second), r", 2026-10-13$")
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

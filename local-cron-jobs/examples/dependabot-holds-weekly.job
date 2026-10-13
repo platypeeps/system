@@ -21,9 +21,9 @@
 # idempotent against a probe that stays true.
 #
 # Exit 0 whether or not anything lifted, for the daily sweep's reason: finding
-# nothing lifted is the job working, and a banner every week on that would
-# drain the banner. Non-zero only when it cannot run at all -- no gh, no
-# authentication, no fleet -- which is what notify_failure is for.
+# nothing lifted is the job working, and a failure report every week on that
+# would drain the signal. Non-zero only when it cannot run at all -- no gh, no
+# authentication, no fleet -- which is what a failure report is for.
 #
 # Monday 05:45: weekly matches the cadence of upstream releases and keeps the
 # pull request threads quiet. Before dependabot-daily (06:20), so a rebase

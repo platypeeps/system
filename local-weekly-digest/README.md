@@ -1,13 +1,13 @@
 # local-weekly-digest
 
-One Sunday email summarizing what the automation fleet did all week, so
+One Sunday report summarizing what the automation fleet did all week, so
 the nightly jobs can stay quiet unless something needs a human.
 
 ## Usage
 
 ```sh
 ./weekly-digest.sh check   # print the summary
-./weekly-digest.sh run     # email it via local-notify (cron entrypoint)
+./weekly-digest.sh run     # print it for the run's report (cron entrypoint)
 ./weekly-digest.sh test    # the unittest suite in tests/ (-v forwarded)
 ```
 
@@ -16,9 +16,10 @@ local-cron-jobs logs), the week's failure log entries, machine-setup drift
 count (only when a `local-machine-setup` sibling or `WEEKLY_DIGEST_MSETUP`
 exists), pending brew/mas updates, root disk usage.
 
-Unlike the other jobs this one **always emails** — the digest is the
-report, and its weekly arrival doubles as a heartbeat that the automation
-layer is alive. `run` exits 1 only when the email could not be delivered.
+Unlike the other jobs this one **always needs attention**: `run` prints an
+`SD_REPORT_ATTENTION:` line with the date, so each week's digest is its own
+report on Reports and Today until it is acknowledged. Nothing is mailed
+(sd:3454).
 The example cron job `local-cron-jobs/examples/weekly-digest.job` runs it
 Sundays 07:00; copy it into `<config>/cron-jobs/jobs/` to schedule it.
 

@@ -1,26 +1,28 @@
 # local-health-check
 
-Nightly computer health review with emailed findings and suggested fixes.
+Nightly computer health review; findings and suggested fixes go to Reports and Today.
 Complements local-maintenance (upkeep: updates, mounts, cert, disk space,
 log rotation) — this one asks "is the machine sick?", not "is it tidy?".
 
 ## Usage
 
 ```sh
-./health-check.sh check   # print the report, no email
-./health-check.sh run     # email findings via local-notify (cron entrypoint)
+./health-check.sh check   # print the report
+./health-check.sh run     # the same, marked for Reports (cron entrypoint)
 ./health-check.sh test    # the status sweep's unittest suite (-v forwarded)
 ```
 
-No email when everything is clean. `run` exits 1 only when the email could
-not be delivered, so the cron failure push covers a lost report.
+With findings, `run` prints `SD_REPORT_ATTENTION: health check: <n> finding(s)
+on <host>` and exits 0. The cron run's ingest maps that line to a report that
+needs attention, so Reports and Today carry it until it is acknowledged;
+nothing is mailed (sd:3454). A clean run prints no such line.
 
 ## Checks
 
 - app crash reports (`.ips`, last day) and kernel panics (last week) from
   both DiagnosticReports folders
-- every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`) /
-  `com.platypeeps.*` LaunchAgent: loaded, and last exit code clean
+- every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
+  LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status
 - memory pressure level, swap usage, 5-minute load vs core count
 - unified-log fault volume — flagged only when it more than doubles the
@@ -38,7 +40,7 @@ State (fault + persistence baselines) lives in `~/.config/health-check`;
 first run seeds it and says so instead of alerting.
 
 Unless that stage is switched off, `local-jev` orders those findings so the
-loudest line in the mail is the one that matters — see **Ordering with Jev**.
+loudest line in the report is the one that matters — see **Ordering with Jev**.
 
 ## The status sweep
 
@@ -50,7 +52,7 @@ the phrase `local-health-check` — the sentence its author writes anyway,
 tools are then asked `status`, bounded at 30 seconds. A tool that does not
 say the sentence is never run and never raises a finding, which is what
 keeps the 30-odd entrypoints without a `status` verb — and the ones whose
-`status` is a report that exits 0 regardless — out of the nightly mail.
+`status` is a report that exits 0 regardless — out of the nightly report.
 When a folder has no `<stem>.sh` but exactly one `*.sh` at its root, that
 one is taken as the entrypoint — for `local-project-dashboard/dashboard.sh`,
 whose name a launchd plist and the
@@ -90,9 +92,8 @@ question and carry its one answer, so they tie and keep the stages' order:
 ```
 
 **It orders and labels. That is all it does.** No finding is suppressed,
-dropped or reworded, the count in the subject line does not move, and no exit
-code changes: `run` still exits 0 with findings and 1 only when the email
-could not be delivered. The marker words a stage prints are the stage's, and
+dropped or reworded, the count in the attention line does not move, and no
+exit code changes: `run` still exits 0 with findings. The marker words a stage prints are the stage's, and
 this stage never touches them.
 
 It runs when Jev can answer here and this stage has not been switched off,

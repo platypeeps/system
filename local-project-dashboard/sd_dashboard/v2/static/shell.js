@@ -33,7 +33,7 @@
   }
   // fetch:end
   const GROUPS = [
-    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
+    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
@@ -321,7 +321,7 @@
     return html`${out}`; };
   // help:end
   function showHelp(btn) {
-    put(pop, helpText(btn.dataset.help || '')); pop.hidden = false; place(btn);
+    put(pop, btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');
   }
   function hideHelp() {
@@ -329,21 +329,33 @@
     document.querySelectorAll('.help[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     pinned = null;
   }
+  // A help icon that names a command (data-copy, sd:3444) copies it when pressed, and pins its text as any help does.
+  function copy(text) {
+    const w = navigator.clipboard?.writeText(text);
+    (w || Promise.reject(new Error('no clipboard'))).then(() => toast('Copied.'), () => toast('Copy failed: select the line and copy it.'));
+  }
   document.addEventListener('click', e => {
+    if (e.target.closest?.('[data-tip]')) { clearTimeout(hoverTimer); if (!pinned) pop.hidden = true; }
     const b = e.target.closest('.help');
     if (b) {
       e.preventDefault(); e.stopPropagation();
+      if (b.dataset.copy) copy(b.dataset.copy);
       if (pinned === b) return hideHelp();
       hideHelp(); pinned = b; b.setAttribute('aria-expanded', 'true'); showHelp(b); return;
     }
     if (pinned && !pop.contains(e.target)) hideHelp();
   }, true);
+  // A command button's tip (data-tip) shows on a mouse hover only: the same words sit under "Same thing from the CLI", and a
+  // press runs the command, so it neither pins nor shows on focus. A move onto the button's own icon keeps it.
   document.addEventListener('pointerover', e => {
-    const b = e.target.closest?.('.help');
-    if (!b || pinned || e.pointerType !== 'mouse') return;
+    const b = e.target.closest?.('.help, [data-tip]');
+    if (!b || pinned || e.pointerType !== 'mouse' || b.contains(e.relatedTarget)) return;
     clearTimeout(hoverTimer); hoverTimer = setTimeout(() => showHelp(b), DELAY);
   });
-  document.addEventListener('pointerout', e => { if (e.target.closest?.('.help') && !pinned) { clearTimeout(hoverTimer); pop.hidden = true; } });
+  document.addEventListener('pointerout', e => {
+    const b = e.target.closest?.('.help, [data-tip]');
+    if (b && !pinned && !b.contains(e.relatedTarget)) { clearTimeout(hoverTimer); pop.hidden = true; }
+  });
   document.addEventListener('focusin', e => { const b = e.target.closest?.('.help'); if (b && !pinned) showHelp(b); });
   document.addEventListener('focusout', e => { if (e.target.closest?.('.help') && !pinned) pop.hidden = true; });
   document.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
@@ -425,20 +437,26 @@
     c.batch(objs, done);
     return true;
   }
-  // bulk:end
-  // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
-  const { plural } = window.markup;
-  let selId = null;
   // A command without cli is dashboard-only (chat, navigation); it shows no CLI line.
   // A command with fields passes what the operator typed; the line shows each field's placeholder until then.
   const cliOf = (c, o, v) => c.cli ? c.cli(o, v || {}) : '';
   // A cli string that starts with "no CLI:" or "no sd verb:" is a reason, not a command.
   const noCli = s => !s || /^no (CLI|sd verb)\b/.test(s);
   const shownCli = (c, o) => { const s = cliOf(c, o); return noCli(s) ? '' : s; };
-  const offWhy = (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); };
   // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
   // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
   const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
+  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. The button carries
+  // it as data-tip; the help popover shows it after --delay-help, so a pass over the buttons shows nothing.
+  const tipOf = (c, o) => {
+    const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
+    return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
+  };
+  // bulk:end
+  // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
+  const { plural } = window.markup;
+  let selId = null;
+  const offWhy = (c, o) => { const w = c.when ? c.when(o) : true; return w === true ? '' : (w || 'not available'); };
   const cmdsFor = o => o ? REG.filter(c => c.on === o.type) : [];
   const live = o => cmdsFor(o).filter(c => !offWhy(c, o));
   // Every shell dialog opens through modal(): Tab and Shift+Tab cycle inside it, Esc closes it (native), and focus goes back
@@ -551,16 +569,16 @@
     const o = OBJ.get(id); if (!o) return html``;
     const L = live(o), p = L.find(c => c.primary?.(o));
     if (!L.length) return html`<span class="rowact"></span>`;
-    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
+    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command, off ones with their reason, each with its CLI line.
+  // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
+  // closed until opened (sd:3464).
   function bar(id) {
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
-      ${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}
-      <h3>Same thing from the CLI</h3>${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}`;
+    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+      <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
   const menuEl = document.createElement('div');
@@ -604,7 +622,7 @@
     const fold = e.target.closest('.cli-line');
     if (fold) { const open = fold.getAttribute('aria-expanded') !== 'true'; fold.setAttribute('aria-expanded', open); fold.title = open ? 'Show one line' : 'Show the full command'; return; }
     const cp = e.target.closest('[data-copy]');
-    if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => toast('Copied.'), () => toast('Copy failed: select the line and copy it.')); return; }
+    if (cp) { copy(cp.dataset.copy); return; }
     if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu();
   }, true);
   // Bulk: x adds the selected row; the bar offers commands that every picked object shares.
@@ -662,9 +680,48 @@
   cap.className = 'palette capture'; cap.setAttribute('aria-labelledby', 'cap-h');
   put(cap, html`<h2 id="cap-h"></h2>`);
   body.append(cap); trap(cap);
+  // capture:start
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe quoting for text a person typed: $(), backticks and \ stay literal
-  // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row.
-  function openCapture(target, text = '') {
+  // build (sd:3520): the shell files every capture, so no page drops one. A task or followup is POST /api/items; a note is
+  // POST /api/items/<id>/notes with the revision /api/items/<id>/capture-context reads. It answers "Captured sd:N" with the
+  // new id, or throws "Not filed" with the reason; an error with no status got no answer, so whether it filed is not known.
+  // build (sd:3521): the box also picks a priority (P3 unless changed) and a repo, defaulting to the page's: a page sets
+  // window.PAGE_REPO(o) → a repo path or name for the row o (or its filter), and captureRepo finds it in /api/capture-repos.
+  // A p1 to p4 typed in the text is the priority, as Today's field shows it, and leaves the title.
+  const captureRepo = (list, hint) => { if (!hint) return ''; const h = String(hint), n = h.split('/').pop();
+    return (list.find(r => r.path === h) || list.find(r => r.name === h) || list.find(r => r.name === n))?.path || ''; };
+  const typedP = title => { const p = title.match(/\bp([1-4])\b/i); return p ? [+p[1], title.replace(/\bp[1-4]\b/gi, '').replace(/\s+/g, ' ').trim()] : [null, title]; };
+  // The CLI files into the checkout it runs in, so a repo is a cd; with none, --no-repo.
+  const captureCli = ({ kind, title, item, priority, repo }) => {
+    if (kind === 'note') return `sd task note ${item} --kind comment --body ${shq(title)}`;
+    const [p, named] = typedP(title), where = repo ? `cd ${/^~?[\w./-]+$/.test(repo) ? repo : shq(repo)} && ` : '';
+    return `${where}sd task add${repo ? '' : ' --no-repo'}${kind === 'followup' ? ' --kind followup' : ''}${p || priority ? ` --priority ${p || priority}` : ''} ${shq(named)}`;
+  };
+  async function fileCapture({ kind, title, item, priority = null, repo = '' }) {
+    const unknown = why => new Error(`Not known if it filed: ${why}. Look in Tasks before you capture it again.`);
+    try {
+      if (kind === 'note') {
+        if (!item) throw Object.assign(new Error('select a row that has an item first'), { status: 0 });
+        const { revision } = await getJSON(`/api/items/${item}/capture-context`).catch(e => { throw Object.assign(e, { status: 0 }); });
+        await post(`/api/items/${item}/notes`, { body: title, kind: 'comment', revision });
+        return `Note added to sd:${item}`;
+      }
+      const [p, named] = typedP(title), pri = p || priority;
+      const out = await post('/api/items', { title: named, ...(pri ? { priority: pri } : {}), ...(repo ? { repo } : {}),
+        ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) });
+      if (!out.item?.id) throw unknown('the server named no item');
+      return `Captured sd:${out.item.id}: ${out.item.title || named}`;
+    } catch (e) {
+      if (e.message.startsWith('Not known')) throw e;
+      throw e.status === undefined ? unknown(e.message) : new Error(`Not filed: ${e.message}`);
+    }
+  }
+  let repoList = null; // /api/capture-repos, read once per page; a failed read is retried on the next open
+  const readRepos = () => repoList || (repoList = getJSON('/api/capture-repos').then(d => d.repos || [], e => { repoList = null; throw e; }));
+  // capture:end
+  // openCapture(target): target is the object (or its id) the command was run on; without one, the selected row. A refused
+  // capture reopens with its text and picks (kind, priority, repo), so nothing the operator chose is lost.
+  function openCapture(target, text = '', picks = null) {
     const o = (typeof target === 'string' ? OBJ.get(target) : target && target.id && OBJ.get(target.id)) || (target && target.type ? target : null) || OBJ.get(selId);
     const about = o && o.item ? o : null;
     put(cap, html`<form method="dialog" class="confirm-body" id="cap-form">
@@ -676,22 +733,42 @@
       </div>
       <label class="sr" for="cap-in">Title or note</label>
       <input id="cap-in" class="cap-in" autocomplete="off" placeholder="What needs doing" required>
+      <fieldset class="cap-pick"><legend class="sr">Priority and repo</legend>
+        <div class="seg" role="radiogroup" aria-label="Priority">${[1, 2, 3, 4].map(n => html`<label><input type="radio" name="priority" value="${n}"${n === 3 ? html` checked` : ''}><span>P${n}</span></label>`)}</div>
+        <label class="label" for="cap-repo">Repo <kbd>Alt R</kbd></label>
+        <select id="cap-repo" name="repo" aria-keyshortcuts="Alt+R"><option value="">No repo</option></select>
+      </fieldset>
       <p class="why" id="cap-why"></p>
       <div class="cli"><code id="cap-cli">sd task add ''</code></div>
       <div class="actions"><button class="btn quiet" value="no" formnovalidate>Cancel</button><button class="btn" value="yes">Capture</button></div></form>`);
     const f = cap.querySelector('form'), inp = f.querySelector('#cap-in'), cli = f.querySelector('#cap-cli'), why = f.querySelector('#cap-why');
+    const sel = f.querySelector('#cap-repo'), pick = f.querySelector('.cap-pick');
+    const fields = () => ({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, priority: +f.priority.value, repo: sel.value });
     const upd = () => {
-      const k = f.kind.value, t = shq(inp.value);
+      const k = f.kind.value;
+      pick.disabled = k === 'note';
       // build: say what POST /api/items stores. Only a followup on a row with an item links to it (followup_of).
       why.textContent = k === 'note' ? `A comment on #${about.item}`
         : k === 'followup' && about ? `A followup of #${about.item}`
         : o ? `Files to the inbox; not linked to ${o.label}` : 'No row selected · files to the inbox';
-      cli.textContent = k === 'note' ? `sd task note ${about.item} --kind comment --body ${t}` : `sd task add${k === 'followup' ? ' --kind followup' : ''} ${t}${o && o.item ? ` --followup-of ${o.item}` : ''}`;
+      cli.textContent = captureCli(fields());
     };
-    inp.value = text; f.addEventListener('input', upd); upd();
-    // build: a page that files captures sets window.SHELL_CAPTURE({ kind, title, item, about }) → Promise<toast text>.
-    cap.onclose = () => { if (cap.returnValue === 'yes' && inp.value.trim() && window.SHELL_CAPTURE) { window.SHELL_CAPTURE({ kind: f.kind.value, title: inp.value.trim(), item: about ? about.item : null, about: o }).then(toast, e => toast(String(e.message || e))); return; }
-      if (cap.returnValue === 'yes' && inp.value.trim()) { const v = inp.value.trim(); toast(`${f.kind.value === 'note' ? 'Note added' : 'Captured'}: ${v}`, () => { toast('Capture removed. The text is back in Capture.'); openCapture(o, v); }); } };
+    if (picks) { if (!f.querySelector(`[name="kind"][value="${picks.kind}"]`)?.disabled) f.kind.value = picks.kind; f.priority.value = String(picks.priority); }
+    inp.value = text; f.addEventListener('input', upd); f.addEventListener('change', upd); upd();
+    // Enter in a field captures, as in the confirm dialog: the browser's own Enter presses the first button, Cancel.
+    f.addEventListener('keydown', e => { if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sel.focus(); }
+      if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') { e.preventDefault(); f.requestSubmit(f.querySelector('[value="yes"]')); } });
+    // The page's repo is the default once the list is read; a failed read leaves No repo and says so.
+    let hint = null; try { hint = window.PAGE_REPO ? window.PAGE_REPO(o) : null; } catch { hint = null; }
+    readRepos().then(list => { if (!cap.open) return;
+      put(sel, html`<option value="">No repo</option>${list.map(r => html`<option value="${r.path}">${r.name}</option>`)}`);
+      sel.value = captureRepo(list, picks ? picks.repo : hint); upd(); },
+    e => { if (!cap.open) return; put(sel, html`<option value="">No repo (list not read: ${e.message})</option>`); });
+    // build: a page that must do more (Tasks rereads its board) sets window.SHELL_CAPTURE({ kind, title, item, about }) →
+    // Promise<toast text>; every other page files through fileCapture. A refusal opens the dialog again with the text.
+    cap.onclose = () => { if (cap.returnValue !== 'yes' || !inp.value.trim()) return; const v = inp.value.trim(), picks = fields();
+      (window.SHELL_CAPTURE || fileCapture)({ ...picks, about: o })
+        .then(toast, e => { const m = String(e.message || e); toast(m); if (m.startsWith('Not filed')) openCapture(o, v, picks); }); };
     modal(cap, inp);
   }
 
@@ -1101,7 +1178,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

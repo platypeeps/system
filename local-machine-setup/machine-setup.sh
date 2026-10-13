@@ -170,6 +170,8 @@ dotfile_view() { # dotfile, path, scratch
 # longer names is dropped with the profile.
 keep_sessions_cp() { # dotfile, src, dst
   ks_re=$(dotfile_session_re "$1")
+  # Called through run, where set -e is off: a failed awk must not move a
+  # half-written merge over the dotfile.
   awk -v re="$ks_re" '
     function header(line) { sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); return line }
     # FILENAME and not NR == FNR: an empty destination has no records, so
@@ -181,17 +183,18 @@ keep_sessions_cp() { # dotfile, src, dst
     }
     { print }
     /^[[:space:]]*\[/ { h = header($0); if (h in keep) printf "%s", keep[h] }
-  ' "$3" "$2" > "$3.merge.$$"
+  ' "$3" "$2" > "$3.merge.$$" || { rm -f "$3.merge.$$"; return 1; }
   mv "$3.merge.$$" "$3"
 }
 
+# Returns the first failed step, so the caller records nothing after it.
 copy_dotfile() { # dotfile, src, dst
   if [ -n "$(dotfile_session_re "$1")" ] && [ -f "$3" ]; then
-    run keep_sessions_cp "$1" "$2" "$3"
+    run_ok keep_sessions_cp "$1" "$2" "$3" || return
   else
-    run cp "$2" "$3"
+    run_ok cp "$2" "$3" || return
   fi
-  case " $DOTFILES_PRIVATE " in *" $1 "*) run chmod 600 "$3" ;; esac
+  case " $DOTFILES_PRIVATE " in *" $1 "*) run_ok chmod 600 "$3" ;; esac
 }
 
 env_src() {
@@ -214,12 +217,58 @@ say() {
 # that on the work machine: ripgrep, rtk, shellcheck, smartmontools, uv and
 # wget were swallowed, never installed, and never reported, because the loop
 # had no lines left to read.
+#
+# A failed command is reported and the run goes on (sd:3543). do_stages calls
+# each stage bare under `set -e`, so a bare `run` that returned its failure
+# ended the stage loop, the stage and the run: one dead formula skipped every
+# later formula, cask and stage. The failure goes to FAILED_LOG, and the run
+# ends with the list and exit 1.
+#
+# `run` is for a step nothing later depends on. A step that later steps need
+# (a copy before its record, a folder before the file in it) uses run_ok,
+# which reports the same way and also returns the failure, so the caller
+# skips the rest of that item: `if run_ok cp ...; then record ...; fi`.
+# try_run is the bare form, for a caller that reports the failure itself.
 run() {
+  run_ok "$@" || :
+}
+
+run_ok() {
+  try_run "$@" || { ro_rc=$?; note_failure "$*" "$ro_rc"; return "$ro_rc"; }
+}
+
+try_run() {
   if [ "$APPLY" -eq 1 ]; then
     "$@" </dev/null
   else
     printf '  [dry-run] %s\n' "$*"
   fi
+}
+
+# A file, not a variable: most stage loops run in a pipeline subshell, where an
+# assignment dies with the loop. Empty outside do_stages and decommission.
+FAILED_LOG=""
+
+note_failure() { # what, exit code
+  echo "  FAILED  $1 (exit $2)"
+  [ -z "$FAILED_LOG" ] || printf '%s\n' "$1" >> "$FAILED_LOG"
+}
+
+# Printed last, like the deferred list. Returns 1 when anything failed, so
+# the run exits 1 under set -e and a nightly caller's report needs attention.
+report_failures() {
+  [ -n "$FAILED_LOG" ] || return 0
+  rf_log="$FAILED_LOG"
+  FAILED_LOG=""
+  if [ ! -s "$rf_log" ]; then
+    rm -f "$rf_log"
+    return 0
+  fi
+  echo "failed — $(grep -c '^' "$rf_log") remediation(s) did not finish; fix them, then re-run:"
+  sed 's/^/    /' "$rf_log"
+  echo
+  rm -f "$rf_log"
+  return 1
 }
 
 # Which side moved? `cmp` answers "these differ", never "who changed", and every
@@ -245,13 +294,14 @@ INSTALLED_DIR="$STATE_DIR/installed"
 state_key() { printf '%s' "$1" | tr '/ ' '__'; }
 
 # Only under --apply: a dry run must not leave state behind that changes what
-# the next run decides.
+# the next run decides. A record that cannot be written is reported like a
+# failed step and the run goes on: under set -e it ended the run.
 record_hash() { # key, file
   [ "$APPLY" -eq 1 ] || return 0
   [ -f "$2" ] || return 0
-  mkdir -p "$INSTALLED_DIR"
-  shasum -a 256 < "$2" | awk '{print $1}' > "$INSTALLED_DIR/$(state_key "$1").sha"
-  return 0
+  { mkdir -p "$INSTALLED_DIR" &&
+    shasum -a 256 < "$2" | awk '{print $1}' > "$INSTALLED_DIR/$(state_key "$1").sha"; } ||
+    note_failure "record_hash $1" "$?"
 }
 
 has_record() { # key
@@ -271,7 +321,6 @@ matches_record() { # key, file
 backup_file() { # path
   [ -e "$1" ] || return 0
   cp -p "$1" "$1.bak-$(date +%Y%m%d%H%M%S)"
-  return 0
 }
 
 # Commands that could not run because sudo was refused, one per line, reported
@@ -431,6 +480,7 @@ stage_brew() {
     if brew tap 2>/dev/null | grep -qx "$t"; then
       echo "  ok      tap $t"
     else
+      echo "  MISSING tap $t"
       run brew tap "$t"
     fi
   done
@@ -441,6 +491,7 @@ stage_brew() {
     if echo "$installed" | grep -qx "$(echo "$f" | sed 's|.*/||')"; then
       echo "  ok      $f"
     else
+      echo "  MISSING $f"
       run brew install "$f"
     fi
   done
@@ -457,6 +508,7 @@ stage_brew() {
       # overwriting it; on a machine that does not have the app it changes
       # nothing. maccy and zoom were both hand-installed here and blocked the
       # brew stage until this.
+      echo "  MISSING cask $c"
       run brew install --cask --adopt "$c"
     fi
   done
@@ -464,6 +516,7 @@ stage_brew() {
   unpinned=$(unpinned_formulae)
   for f in $BREW_PINNED; do
     if printf '%s\n' "$unpinned" | grep -qx "$f"; then
+      echo "  DIFFERS $f not pinned"
       run brew pin "$f"
     elif brew list --formula 2>/dev/null | sed 's|.*/||' | grep -qx "$f"; then
       echo "  ok      pinned $f"
@@ -603,7 +656,7 @@ stage_appstore() {
       # `mas install` can need sudo, which a nightly run under launchd does
       # not have. A failure here used to end the loop and, under set -e, the
       # whole run: every later stage was skipped. Report it and go on.
-      if ! run mas install "$id"; then
+      if ! try_run mas install "$id"; then
         echo "  FAILED  mas install $id $name — install it by hand"
       fi
     fi
@@ -614,7 +667,8 @@ stage_bin() {
   echo "== bin"
   if [ -x "$ROOT/local-bin-links/bin-links.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-bin-links/bin-links.sh" install | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-bin-links/bin-links.sh" install || note_failure "bin-links.sh install" "$?"; } | sed 's/^/  /'
     else
       # Not tagged [dry-run]: `status` is already read-only and reports what
       # IS, so tagging it as a would-be action misread as "would link these"
@@ -642,9 +696,9 @@ stage_dotfiles() {
       echo "  MISSING $f"
       # Entries may be nested (.ssh/config, .config/gh/config.yml), so the
       # parent directory may not exist on a fresh machine.
-      run mkdir -p "$(dirname "$dst")"
-      copy_dotfile "$f" "$src" "$dst"
-      record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+      if run_ok mkdir -p "$(dirname "$dst")" && copy_dotfile "$f" "$src" "$dst"; then
+        record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+      fi
     elif cmp -s "$src" "$(dotfile_view "$f" "$dst" "$view")"; then
       echo "  ok      $f"
       record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
@@ -653,23 +707,23 @@ stage_dotfiles() {
       # touched it, so the repo is what moved.
       if matches_record "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"; then
           echo "  STALE   $f — untouched here, repo moved ahead"
-          run backup_file "$dst"
-          copy_dotfile "$f" "$src" "$dst"
-          record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
+            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          fi
       elif has_record "dotfiles/$f"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $f — edited here; --force overwrites (backup kept)"
-            run backup_file "$dst"
-            copy_dotfile "$f" "$src" "$dst"
-            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+            if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
+              record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+            fi
           else
             echo "  DIFFERS $f — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $f — nothing recorded; --force overwrites (backup kept)"
-          run backup_file "$dst"
-          copy_dotfile "$f" "$src" "$dst"
-          record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          if run_ok backup_file "$dst" && copy_dotfile "$f" "$src" "$dst"; then
+            record_hash "dotfiles/$f" "$(dotfile_view "$f" "$dst" "$view")"
+          fi
       else
           echo "  DIFFERS $f — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
       fi
@@ -722,6 +776,20 @@ live_env() {
   echo "$le"
 }
 
+# Appends each key's template line to the live file, after one backup. Run
+# under `if`, where set -e is off, so each step returns its own failure.
+env_append() { # src, dst, key...
+  ea_src=$1
+  ea_dst=$2
+  shift 2
+  backup_file "$ea_dst" || return
+  # One sed, no pipe: a pipe into head reported head's status, so a failed
+  # read of the template counted as an append.
+  for k in "$@"; do
+    sed -n "/^[[:space:]]*$k=/{s/^[[:space:]]*//p;q;}" "$ea_src" >> "$ea_dst" || return
+  done
+}
+
 # Tool .env files, seeded from the templates in envs/. Always 0600: they sit
 # exactly where a secret would go, and the .env is what every tool here reads
 # first.
@@ -736,10 +804,12 @@ stage_envs() {
       echo "  --      $f/ not in this repo"
     elif [ ! -e "$dst" ]; then
       echo "  MISSING $dst"
-      run mkdir -p "$(dirname "$dst")"
-      run cp "$src" "$dst"
-      run chmod 600 "$dst"
-      record_hash "envs/$f" "$src"
+      # install -m 600: the file holds credentials, so it is never readable
+      # by others, not even between a copy and a chmod. Recorded only once
+      # it is in place; a failed step leaves it MISSING for the next run.
+      if run_ok mkdir -p "$(dirname "$dst")" && run_ok install -m 600 "$src" "$dst"; then
+        record_hash "envs/$f" "$src"
+      fi
     elif bad=$(env_template_diff "$src" "$dst"); then
       echo "  ok      $f/.env"
       record_hash "envs/$f" "$src"
@@ -764,12 +834,15 @@ stage_envs() {
         if [ -n "$missing" ]; then
           echo "  STALE   $f/.env — template added:$missing"
           if [ "$APPLY" -eq 1 ]; then
-            backup_file "$dst"
-            for k in $missing; do
-              sed -n "s/^[[:space:]]*\($k=.*\)/\1/p" "$src" | head -1 >> "$dst"
-            done
-            echo "          appended from the template; fill in any placeholder"
-            record_hash "envs/$f" "$src"
+            # Recorded only when every key went in: the record is what tells
+            # the next run the repo moved, so a failed append retries.
+            # shellcheck disable=SC2086 # a space-separated key list
+            if env_append "$src" "$dst" $missing; then
+              echo "          appended from the template; fill in any placeholder"
+              record_hash "envs/$f" "$src"
+            else
+              note_failure "append$missing to $dst" "$?"
+            fi
           else
             printf '  [dry-run] append%s to %s\n' "$missing" "$dst"
           fi
@@ -790,7 +863,8 @@ stage_prompts() {
   echo "== prompts"
   if [ -x "$ROOT/local-agent-prompt/agent-prompt.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-agent-prompt/agent-prompt.sh" refresh --apply || note_failure "agent-prompt.sh refresh --apply" "$?"; } | sed 's/^/  /'
     else
       "$ROOT/local-agent-prompt/agent-prompt.sh" status | sed 's/^/  /'
     fi
@@ -803,7 +877,8 @@ stage_repos() {
   echo "== repos"
   if [ -x "$ROOT/local-repo-sync/repo-sync.sh" ]; then
     if [ "$APPLY" -eq 1 ]; then
-      "$ROOT/local-repo-sync/repo-sync.sh" sync | sed 's/^/  /'
+      # The pipe hides the tool's exit status; the braces keep it (sd:3543).
+      { "$ROOT/local-repo-sync/repo-sync.sh" sync || note_failure "repo-sync.sh sync" "$?"; } | sed 's/^/  /'
     else
       # `check`, not `list`: list prints the configured fleet without looking
       # at disk, so it could not tell a missing checkout from a present one
@@ -911,7 +986,7 @@ leak_guards() {
     fi
     if [ -f "$hook" ] && grep -qF "# installed by local-leak-guard" "$hook"; then
       echo "  STALE   $repo leak guard pre-push hook: not the executable hook leak-guard.sh install writes"
-      run sh "$guard" install "$dir" ||
+      try_run sh "$guard" install "$dir" ||
         echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
       continue
     fi
@@ -941,7 +1016,7 @@ leak_guards() {
       continue
     fi
     echo "  MISSING $repo leak guard pre-push hook"
-    run sh "$guard" install "$dir" ||
+    try_run sh "$guard" install "$dir" ||
       echo "  FAILED  $repo leak guard: leak-guard.sh install did not finish"
   done
 }
@@ -1064,7 +1139,7 @@ PY
 # under set -e would skip every later stage. A refused job keeps its plist as
 # it was, so the next update finds the same drift and retries.
 cron_jobs() { # install|uninstall, job
-  run "$ROOT/local-cron-jobs/cron-jobs.sh" "$1" "$2" ||
+  try_run "$ROOT/local-cron-jobs/cron-jobs.sh" "$1" "$2" ||
     echo "  FAILED  $2 — cron-jobs.sh $1 $2 did not finish; the next update retries it"
 }
 
@@ -1185,6 +1260,40 @@ agent_render() { # label, tracked plist, rendered plist
 # embeds absolute paths, so it only transplants between machines with the same
 # username and checkout location; a plist written with the agent_render
 # placeholders transplants anywhere.
+# Boots a job out. Succeeds when launchd holds no job under the label
+# afterwards: the bootout did it, or the job was never loaded, which makes
+# bootout fail. A job still loaded is reported FAILED and returns 1, so the
+# caller does not bootstrap over it or remove its plist.
+agent_bootout() { # label
+  ab_rc=0
+  try_run launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || ab_rc=$?
+  [ "$ab_rc" -ne 0 ] || return 0
+  launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1 || return 0
+  note_failure "launchctl bootout gui/$(id -u)/$1" "$ab_rc"
+  return 1
+}
+
+# Replaces the plist of a loaded agent; launchd holds the plist it was handed,
+# so the job goes out and back in. The new plist is staged beside the old one
+# first: a failed copy (a full disk can leave a part file) leaves the job and
+# its plist as they were. A job that will not go out keeps its old plist too.
+# A rename cannot leave a part file, so after a failed rename the old plist is
+# whole and is loaded back. Every failure records nothing, so the next run
+# finds the same drift and retries.
+agent_replace() { # label, src, dst
+  run_ok backup_file "$3" || return 0
+  if ! run_ok cp "$2" "$3.new" || ! agent_bootout "$1"; then
+    rm -f "$3.new"
+    return 0
+  fi
+  if run_ok mv "$3.new" "$3"; then
+    record_hash "agents/$1" "$3"
+  else
+    rm -f "$3.new"
+  fi
+  run launchctl bootstrap "gui/$(id -u)" "$3"
+}
+
 stage_agents() {
   echo "== agents"
   agents=$(manifest agent)
@@ -1215,37 +1324,28 @@ stage_agents() {
       # was never installed showed a remediation and still counted as zero
       # drift -- how one metering agent stayed missing for a day.
       echo "  MISSING $label — no plist here yet"
-      run cp "$src" "$dst"
-      record_hash "agents/$label" "$dst"
-      run launchctl bootstrap "gui/$(id -u)" "$dst"
+      # Staged and renamed, as in agent_replace: a part file left by a failed
+      # copy would read as a local edit on the next run.
+      if run_ok cp "$src" "$dst.new" && run_ok mv "$dst.new" "$dst"; then
+        record_hash "agents/$label" "$dst"
+        run launchctl bootstrap "gui/$(id -u)" "$dst"
+      else
+        rm -f "$dst.new"
+      fi
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
-          run backup_file "$dst"
-          run cp "$src" "$dst"
-          record_hash "agents/$label" "$dst"
-          # launchd holds the plist it was handed; a replaced file on disk
-          # changes nothing until the job is booted out and back in.
-          run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-          run launchctl bootstrap "gui/$(id -u)" "$dst"
+          agent_replace "$label" "$src" "$dst"
       elif has_record "agents/$label"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $label — edited here; --force overwrites (backup kept)"
-            run backup_file "$dst"
-            run cp "$src" "$dst"
-            record_hash "agents/$label" "$dst"
-            run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
+            agent_replace "$label" "$src" "$dst"
           else
             echo "  DIFFERS $label — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $label — nothing recorded; --force overwrites (backup kept)"
-          run backup_file "$dst"
-          run cp "$src" "$dst"
-          record_hash "agents/$label" "$dst"
-          run launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || :
-          run launchctl bootstrap "gui/$(id -u)" "$dst"
+          agent_replace "$label" "$src" "$dst"
       else
           echo "  DIFFERS $label — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
       fi
@@ -1303,6 +1403,7 @@ stage_services() {
     elif service_running "$svc" "$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
       echo "  ok      $svc running"
     else
+      echo "  MISSING $svc — not running"
       run "$entry" start
     fi
   done
@@ -1320,7 +1421,10 @@ stage_tooling() {
     for v in 18 20 24; do
       case "$have" in
         *"v$v."*) echo "  ok      node $v (fnm)" ;;
-        *) run fnm install "$v" ;;
+        *)
+          echo "  MISSING node $v (fnm)"
+          run fnm install "$v"
+          ;;
       esac
     done
   else
@@ -1330,11 +1434,13 @@ stage_tooling() {
     if [ -f "$HOME/.claude/settings.json" ] && grep -q 'rtk' "$HOME/.claude/settings.json" 2>/dev/null; then
       echo "  ok      rtk hook present in ~/.claude/settings.json"
     else
+      echo "  MISSING rtk hook in ~/.claude/settings.json"
       run rtk init -g
     fi
     if [ -f "$HOME/.gemini/hooks/rtk-hook-gemini.sh" ]; then
       echo "  ok      rtk hook present for Gemini CLI"
     else
+      echo "  MISSING rtk hook for Gemini CLI"
       run rtk init -g --gemini
     fi
     # No codex branch, deliberately. rtk has no hook for Codex — `rtk init -g
@@ -1364,17 +1470,19 @@ stage_tooling() {
       echo "  ok      claude-hud plugin"
     else
       echo "  MISSING claude-hud plugin"
-      [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
-        || run claude plugin marketplace add jarrodwatts/claude-hud
-      run claude plugin install claude-hud@claude-hud
+      if [ -d "$HOME/.claude/plugins/marketplaces/claude-hud" ] \
+        || run_ok claude plugin marketplace add jarrodwatts/claude-hud; then
+        run claude plugin install claude-hud@claude-hud
+      fi
     fi
     hud_config="$HOME/.claude/plugins/claude-hud/config.json"
     if [ -e "$hud_config" ] || [ -L "$hud_config" ]; then
       echo "  ok      claude-hud config"
     else
       echo "  MISSING claude-hud config"
-      run mkdir -p "${hud_config%/*}"
-      run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
+      if run_ok mkdir -p "${hud_config%/*}"; then
+        run cp -n "$ROOT/local-statusline/claude-hud.config.example.json" "$hud_config"
+      fi
     fi
     if [ ! -f "$HOME/.claude/settings.json" ]; then
       echo "  SKIP    statusLine not set (no ~/.claude/settings.json; start claude once)"
@@ -1395,8 +1503,9 @@ stage_tooling() {
           echo "  ok      settings.json baseline"
         else
           printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
-          run backup_file "$HOME/.claude/settings.json"
-          run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+          if run_ok backup_file "$HOME/.claude/settings.json"; then
+            run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
+          fi
         fi
       else
         echo "  DIFFERS settings.json is not valid JSON; baseline not checked"
@@ -1417,8 +1526,9 @@ stage_tooling() {
         has*) echo "  DIFFERS opencode.json $gaps" ;;
         *)
           printf '%s\n' "$gaps" | sed 's/^/  MISSING opencode.json /'
-          run backup_file "$opencode_json"
-          run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          if run_ok backup_file "$opencode_json"; then
+            run python3 "$DIR/claude_settings.py" opencode-merge "$opencode_json"
+          fi
           ;;
       esac
     else
@@ -1457,6 +1567,7 @@ stage_tooling() {
        | grep -B2 'LSHandlerURLScheme = .*mailto' | grep -qi chrome; then
       echo "  ok      mailto handler is Chrome"
     else
+      echo "  DIFFERS mailto handler is not Chrome"
       run duti -s com.google.Chrome mailto:
     fi
   else
@@ -1700,11 +1811,13 @@ stage_system() {
   if [ -e /var/db/useLS ]; then
     echo "  ok      /var/db/useLS"
   else
+    echo "  MISSING /var/db/useLS"
     sudo_run "sudo touch /var/db/useLS" sudo touch /var/db/useLS
   fi
   if [ -e /etc/sudoers.d/timestamp-timeout ]; then
     echo "  ok      sudo timestamp_timeout drop-in"
   else
+    echo "  MISSING sudo timestamp_timeout drop-in"
     # Held in a variable so the command shown in the deferred summary cannot
     # drift from the command actually run.
     sudoers_cmd='echo "Defaults timestamp_timeout=60" > /etc/sudoers.d/timestamp-timeout && chmod 440 /etc/sudoers.d/timestamp-timeout && visudo -c'
@@ -1719,22 +1832,29 @@ stage_system() {
     if [ -e "$SPOTLIGHT_SUDOERS" ]; then
       echo "  ok      Spotlight read sudoers drop-in"
     else
+      # The one sign of this gap: without the drop-in the Spotlight read
+      # below prints DEFER, which is not a drift word.
+      echo "  MISSING Spotlight read sudoers drop-in"
       sr_rule="$(id -un) ALL=(root) NOPASSWD: /usr/bin/plutil -convert xml1 -o - $SPOTLIGHT_PLIST"
       sr_tmp="$(dirname "$SPOTLIGHT_SUDOERS")/.$(basename "$SPOTLIGHT_SUDOERS").tmp"
       sr_cmd="printf '%s\\n' '$sr_rule' > $sr_tmp && chmod 440 $sr_tmp && visudo -cf $sr_tmp && mv $sr_tmp $SPOTLIGHT_SUDOERS || { rm -f $sr_tmp; exit 1; }"
       sudo_run "sudo sh -c \"$sr_cmd\"" sudo sh -c "$sr_cmd"
     fi
   fi
+  # One on PATH wins, so a test can stand in for it.
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+  if command -v socketfilterfw >/dev/null 2>&1; then fw=$(command -v socketfilterfw); fi
   if [ -x "$fw" ]; then
     if "$fw" --getglobalstate 2>/dev/null | grep -q enabled; then
       echo "  ok      application firewall on"
     else
+      echo "  DIFFERS application firewall off"
       sudo_run "sudo $fw --setglobalstate on" sudo "$fw" --setglobalstate on
     fi
     if "$fw" --getstealthmode 2>/dev/null | grep -q on; then
       echo "  ok      firewall stealth mode on"
     else
+      echo "  DIFFERS firewall stealth mode off"
       sudo_run "sudo $fw --setstealthmode on" sudo "$fw" --setstealthmode on
     fi
   fi
@@ -1745,6 +1865,7 @@ stage_system() {
     if [ "$(stat -f '%Lp' "$hp")" = "700" ]; then
       echo "  ok      ~/$d is 700"
     else
+      echo "  DIFFERS ~/$d is not 700"
       run chmod 700 "$hp"
     fi
   done
@@ -1758,6 +1879,7 @@ stage_system() {
     echo "  ok      repo config symlinks resolve"
   else
     for alias_path in $aliases; do
+      echo "  MISSING home alias $alias_path"
       sudo_run "sudo ln -s $(basename "$HOME") $alias_path" \
         sudo ln -s "$(basename "$HOME")" "$alias_path"
     done
@@ -2045,12 +2167,14 @@ do_stages() {
       *) die "unknown stage '$want' (stages: $STAGES)" ;;
     esac
   fi
+  FAILED_LOG=$(mktemp)
   for s in $STAGES; do
     if [ -n "$want" ] && [ "$want" != "$s" ]; then continue; fi
     "stage_$s"
     echo
   done
   report_deferred
+  report_failures
 }
 
 # Anything sudo_run could not run. Printed once, at the end, where it is still
@@ -2150,7 +2274,7 @@ self_update_default() { # domain key true|false
 # Under set -e that one refusal ended the run, so the key is reported and the
 # stage goes on.
 defaults_write() { # domain key type value
-  run defaults write "$1" "$2" "-$3" "$4" \
+  try_run defaults write "$1" "$2" "-$3" "$4" \
     || echo "  DIFFERS $1 $2 not written; set it by hand to $4, or grant the terminal Full Disk Access and re-run"
 }
 
@@ -2162,7 +2286,7 @@ stage_screensaver_off() {
   if [ "$cur" = "0" ]; then
     echo "  ok      com.apple.screensaver idleTime = 0 (currentHost)"
   else
-    run defaults -currentHost write com.apple.screensaver idleTime -int 0 \
+    try_run defaults -currentHost write com.apple.screensaver idleTime -int 0 \
       || echo "  DIFFERS com.apple.screensaver idleTime not written; set it by hand to 0 (defaults -currentHost write com.apple.screensaver idleTime -int 0)"
   fi
 }
@@ -2182,9 +2306,9 @@ self_update_json() { # file key json-value
     unset) echo "  MISSING $1 $2 = $3" ;;
     *) echo "  DIFFERS $1 $2 $gap, want $3" ;;
   esac
-  run backup_file "$1"
-  run mkdir -p "$(dirname "$1")"
-  run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
+  run_ok backup_file "$1" || return 0
+  run_ok mkdir -p "$(dirname "$1")" || return 0
+  try_run python3 "$DIR/claude_settings.py" pref-merge "$1" "$2" "$3" \
     || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
 }
 
@@ -4074,23 +4198,12 @@ cmd_doctor() {
     fi
   fi
 
-  # Each of these lives in the tool's config folder, or in the tool's own
-  # folder where an older checkout keeps it.
-  notify_conf="$SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf"
-  [ -f "$notify_conf" ] || notify_conf="$ROOT/local-cron-jobs/notify.conf"
+  # A failed or flagged job reaches Reports and Today without a channel
+  # (sd:3454); notify.sh still serves one-off callers, so a machine without
+  # one is a warning, not a failure. A topic left at change-me is no channel.
   notify_env=$(live_env local-notify)
-  if [ -f "$notify_conf" ]; then
-    echo "  ok      $notify_conf present (job failures reach the phone)"
-  else
-    echo "  WARN    cron-jobs notify.conf missing — no phone push on job failure"
-  fi
-
-  # Presence of the conf is not reach. A topic left at change-me, or a profile
-  # whose only channel was email, still leaves a machine unable to tell anyone
-  # a nightly job died — which is the failure nobody sees, because the thing
-  # that would report it is the thing that is broken.
   chans=""
-  topic=$(sed -n 's/^[[:space:]]*NTFY_TOPIC=//p' "$notify_conf" 2>/dev/null | tr -d '"')
+  topic=$(sed -n 's/^[[:space:]]*NTFY_TOPIC=//p' "$notify_env" 2>/dev/null | tr -d '"')
   [ -z "$topic" ] && topic="${NTFY_TOPIC:-}"
   case "$topic" in ""|change-me*|xxx*) ;; *) chans="$chans ntfy" ;; esac
   # EMAIL_FROM only. EMAIL_TO used to be required here too, until the recipient
@@ -4106,9 +4219,8 @@ cmd_doctor() {
   if [ -n "$chans" ]; then
     echo "  ok      notification channels configured:$chans"
   else
-    echo "  FAIL    no notification channel configured — nothing can report a failed job"
-    echo "          set NTFY_TOPIC in $SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf (see local-notify/README.md)"
-    fails=$((fails + 1))
+    echo "  WARN    no notification channel configured — notify.sh can reach no one"
+    echo "          set NTFY_TOPIC in $notify_env (see local-notify/README.md)"
   fi
 
   # One-off system state that no stage manages.
@@ -4458,8 +4570,8 @@ grants_report() {
   } > "$tmp/grants"
 }
 
-# One push, with mail, when a grant is missing. Returns 1 when it could not
-# be delivered.
+# When a grant is missing, print what to re-grant; the caller's
+# SD_REPORT_ATTENTION line takes the run's report to Reports and Today (sd:3454).
 grants_push() {
   [ -s "$tmp/regrant" ] || return 0
   {
@@ -4470,23 +4582,31 @@ grants_push() {
       cat "$tmp/changed"
     fi
   } > "$tmp/push"
-  if ! sh "$notify" -t "TCC: re-grant on $(hostname -s)" -k status -F -c ntfy,email -b "$(cat "$tmp/push")"; then
-    echo "grant push FAILED — exiting 1 so the cron failure push fires" >&2
-    return 1
-  fi
+  cat "$tmp/push"
+}
+
+# One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
+# every reason this run needs attention and ends in the date, as
+# weekly-digest's does: the ingest folds a reason it already holds open into
+# that report and keeps its first body, so each day's run files its own
+# report and no fold hides another failure (sd:3537).
+upgrade_attention() { # reason...
+  [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
+  [ "$#" -gt 0 ] || return 0
+  why=$(printf '%s, ' "$@"); why=${why%, }
+  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s), $(date '+%Y-%m-%d')"
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
-# after the sweep, and emails what got upgraded / what failed / what is still
-# pending through local-notify's email channel, with the AI-app inventory
-# capture and the TCC grants probe's result. When nothing is outdated it only
-# updates Claude Code, captures the inventory and probes the grants. A missing grant sends one push naming each binary to re-grant.
-# Exits 1 when the email or that push could not be delivered, or when the
-# quiet-week Claude update or capture failed, so the cron failure push covers
-# a lost report or a silent failure, not mere findings.
+# after the sweep, and prints what got upgraded / what failed / what is still
+# pending, with the AI-app inventory capture and the TCC grants probe's
+# result. When nothing is outdated it only updates Claude Code, captures the
+# inventory and probes the grants. Leftovers, a failed capture or a missing
+# grant print an SD_REPORT_ATTENTION line, so the run's report reaches Reports
+# and Today; nothing is mailed (sd:3454). Exits 1 when the quiet-week Claude
+# update or capture failed.
 cmd_upgrade_report() {
   APPLY=1
-  notify="$ROOT/local-notify/notify.sh"
   tmp=$(mktemp -d)
   # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
   # that only removed it returned into the run, which then wrote into the
@@ -4495,7 +4615,7 @@ cmd_upgrade_report() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # fd 3 is the job log. The sweep's output goes into the mail, and each step
+  # fd 3 is the job log. The sweep's output goes into the report, and each step
   # names itself here as it starts, so a hang names its step.
   exec 3>&2
   # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
@@ -4514,13 +4634,14 @@ cmd_upgrade_report() {
     if [ -x "$HOME/.local/bin/claude" ]; then
       run_step 600 "$HOME/.local/bin/claude" update || rc=1
     fi
-    echo "nothing outdated — no upgrade, no email"
+    echo "nothing outdated — no upgrade"
     held_section before
     inventory_capture || rc=1
     cat "$tmp/inventory"
     grants_report
     cat "$tmp/grants"
-    grants_push || rc=1
+    grants_push
+    upgrade_attention
     return "$rc"
   fi
 
@@ -4556,21 +4677,16 @@ cmd_upgrade_report() {
     cat "$tmp/grants"
   } > "$tmp/body"
 
-  n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
   n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
-  subject="upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
-  # A clean upgrade is a receipt, not a problem — only the leftovers are worth
-  # flagging, so -F is conditional here where the other status jobs hardcode it.
-  # Those only send at all when they have findings; this one always sends.
-  fu=""
-  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then fu="-F"; fi
-  push_rc=0
-  grants_push || push_rc=1
-  if ! sh "$notify" -t "$subject" -k status $fu -c ntfy,email -b "$(cat "$tmp/body")"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
-  fi
-  return "$push_rc"
+  cat "$tmp/body"
+  grants_push
+  # A clean upgrade is a receipt, not a problem: leftovers, a failed sweep
+  # step (claude update, brew cleanup) or a failed capture need attention.
+  set --
+  [ "$n_left" -eq 0 ] || set -- "$@" "$n_left still outdated"
+  [ "$rc" -eq 0 ] || set -- "$@" "upgrade sweep failed"
+  [ "$inv_rc" -eq 0 ] || set -- "$@" "inventory capture failed"
+  upgrade_attention "$@"
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the
@@ -4595,8 +4711,8 @@ are the `system` and `tooling` stages — run `update system --apply` /
 
 notifications  (nothing provisions these: the ntfy topic doubles as the
 secret on the public server, so it is never committed)
-  - NTFY_TOPIC into $SYSTEM_TOOLS_CONFIG/cron-jobs/notify.conf, 0600 —  *
-    launchd jobs do not inherit the shell environment, so the conf is
+  - NTFY_TOPIC into local-notify's .env, 0600 —  *
+    launchd jobs do not inherit the shell environment, so the .env is
     what they read
   - same NTFY_TOPIC exported in ~/.config/shell/env.sh, for interactive use
   - local-notify's .env comes from the `envs` stage where the profile has
@@ -4678,17 +4794,22 @@ cmd_decommission() {
   echo
 
   echo "== cron jobs (local-cron-jobs)"
+  FAILED_LOG=$(mktemp)
   run "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall --all
   echo
 
   echo "== launch agents (manifest)"
   load_profile 2>/dev/null || true
-  uid=$(id -u)
   for label in $(manifest agent 2>/dev/null); do
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$dst" ]; then
-      run launchctl bootout "gui/$uid/$label"
-      run rm "$dst"
+      # The plist goes only once launchd holds no job under the label: a
+      # removed plist under a loaded job leaves nothing to boot it out from.
+      if agent_bootout "$label"; then
+        run rm "$dst"
+      else
+        echo "  KEPT    $dst — $label is still loaded; boot it out, then remove the file"
+      fi
     else
       echo "  --      $label not installed"
     fi
@@ -4709,6 +4830,7 @@ DECOMEOF
     echo
     cat "$CONFIG_DIR/decommission.txt"
   fi
+  report_failures
 }
 
 # Runs one stage for its report half only. APPLY is forced off for the call:
@@ -4755,6 +4877,14 @@ cmd_status() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
+    # Missing only: the brew stage adds a tap and never removes one.
+    brew tap 2>/dev/null | sort -u > "$tmp/have.tap"
+    manifest tap > "$tmp/want.tap"
+    echo "taps"
+    mt=$(comm -13 "$tmp/have.tap" "$tmp/want.tap")
+    status_line missing "$mt"
+    [ -n "$mt" ] || echo "  ok      in sync"
+
     # `brew list --formula`, not `brew leaves`: a manifest entry can be
     # installed as another formula's dependency (ripgrep is), and leaves omits
     # those, which reported them as missing when they were present.
@@ -4786,7 +4916,7 @@ cmd_status() {
     echo "pins"
     status_line unpinned "$up"
     [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
-    for v in "$mb" "$xb" "$mc" "$xc" "$up"; do
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$up"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
@@ -4814,10 +4944,17 @@ cmd_status() {
     status_stage "$st"
     echo
   done
+  # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
+  # pmset lists it as "wakepoweron at"; a failed read is unknown, not clean.
+  if ! sched=$(pmset -g sched 2>/dev/null); then
+    echo "wake    : UNKNOWN (pmset -g sched failed)"; drift=$((drift + 1))
+  elif ! printf '%s\n' "$sched" | sed -n '/^Repeating/,/^[^ ]/p' | grep -qE 'wake(poweron)? at'; then
+    echo "wake    : MISSING (sudo pmset repeat wakeorpoweron MTWRFSU 02:40:00)"; drift=$((drift + 1))
+  fi
   echo "drift   : $drift item(s)"
   # --fail-on-drift turns drift into exit 1, which is what lets the cron job
   # machine-setup-update-nightly (its last step) route "this machine drifted"
-  # into the failure notification path (banner + ntfy push).
+  # into a failure report that Today shows.
   if [ "$FAIL_ON_DRIFT" -eq 1 ] && [ "$drift" -gt 0 ]; then
     exit 1
   fi
@@ -4885,15 +5022,14 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
-  upgrade-report   cron flavor of upgrade: always applies, emails what got
+  upgrade-report   cron flavor of upgrade: always applies, prints what got
                    upgraded / what failed / what is still outdated, with the
                    ai-apps inventory capture and the result of
                    local-project-dashboard's `grants` probe; when nothing
                    is outdated it only runs claude update, the capture and
-                   the probe; a missing grant sends one push naming each
-                   binary to re-grant; exits 1 when the email or that push
-                   could not be delivered or that quiet-week claude update
-                   or capture failed
+                   the probe; leftovers, a failed step or a missing grant print one
+                   SD_REPORT_ATTENTION line for Reports and Today; exits 1
+                   when that quiet-week claude update or capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall

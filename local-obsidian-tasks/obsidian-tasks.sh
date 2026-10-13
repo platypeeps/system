@@ -5,7 +5,7 @@
 # A task counts when frontmatter says "status: open" and "scheduled:" is
 # today or earlier — recurring tasks work too, since the TaskNotes plugin
 # advances "scheduled" to the next occurrence on completion.
-# Usage: obsidian-tasks.sh run|list|test
+# Usage: obsidian-tasks.sh run|list|migrate|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -29,13 +29,19 @@ case "${1:-}" in
   run|list)
     MODE="$1"
     ;;
+  migrate)
+    # sd:3460: the vault's tasks become sd items; a dry run unless --apply.
+    shift
+    OBSIDIAN_VAULT="$VAULT" OBSIDIAN_TASKS_SUBDIR="$TASKS_SUBDIR" \
+      exec "${PYTHON:-python3}" "$DIR/migrate.py" "$@"
+    ;;
   test)
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
     ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: obsidian-tasks.sh run|list|test
+usage: obsidian-tasks.sh run|list|migrate [--apply]|test
 
   list  print due/overdue open tasks (scheduled today or earlier) with
         their obsidian:// links; prints nothing when none are due
@@ -45,6 +51,10 @@ usage: obsidian-tasks.sh run|list|test
         Each task gets Open / Mark done / Postpone buttons, served by
         local-task-actions through its Tailscale Funnel URL so they work
         from any device. Action links expire after 7 days.
+  migrate [--apply]
+        move every task into the sd database as an item with no checkout
+        (sd:3460); without --apply a dry run that prints counts by shape and
+        writes nothing. A second run creates nothing; the vault is only read
   test  run the unittest suite in tests/, offline
 
 The digest asks Jev to order it, so the task that matters most is the first
@@ -72,7 +82,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") run|list|test" >&2
+    echo "usage: $(basename "$0") run|list|migrate|test" >&2
     exit 1
     ;;
 esac
@@ -449,5 +459,5 @@ if sh "$NOTIFY" -t "$subject" -k brief -c ntfy,email -b -f html "$(cat "$TMPD/bo
   echo "email sent"
   exit 0
 fi
-echo "email FAILED — exiting 1 so the cron failure push fires" >&2
+echo "email FAILED — exiting 1 so the run's report needs attention" >&2
 exit 1
