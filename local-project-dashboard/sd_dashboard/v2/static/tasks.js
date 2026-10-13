@@ -397,7 +397,7 @@ addEventListener('DOMContentLoaded', () => {
         return landing(write(t.key, x => `/api/items/${x.id}`, { parked_at: null }), () => `${label(t)} unparked · sd task edit ${t.id} --unpark`); } },
     { id: 'item.note', on: 'item', label: 'Note', key: 'n', risk: 'safe', icon: 'notebook-pen',
       when: o => !!T(o) || 'the task is no longer listed',
-      cli: o => rowOr(o, t => `sd task note ${t.id} --kind comment --body "…"`),
+      cli: o => rowOr(o, t => `sd task note ${t.id} "…" --kind comment`),
       run: o => { window.shell.capture(o); const r = document.querySelector('dialog.capture input[value="note"]'); if (r && !r.disabled) { r.checked = true; r.form.dispatchEvent(new Event('input')); } return 'Write the note'; } },
     // Fix (sd:3456): the shared declaration (commands.js). The post carries the row's revision, so a click from a page read
     // before an earlier Fix's note is stale; the Details read again after it.

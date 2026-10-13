@@ -41,9 +41,18 @@ const tbody = document.getElementById('rows'), details = document.getElementById
 let selected = null, F = { f: '', q: '' };
 let pickedIds = new Set();
 const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
-// Order: product, then the drawn pages before the skeleton and captures, then path. The state is a lamp and a glyph, not the sort.
+// Order: product, then the header's column (sd:3455) inside it. Page, the default, is the design's order: the drawn pages
+// before the skeleton and captures, then path; it also breaks a tie in the other columns.
 const KIND = { 'v2 mockup': 0, 'v1 mockup': 1, design: 2, final: 0, reference: 3, skeleton: 4, 'brief only': 5 };
-const ranked = () => ROWS.filter(match).sort((a, b) => PRODUCTS.indexOf(a.product) - PRODUCTS.indexOf(b.product) || (KIND[a.kind] ?? 9) - (KIND[b.kind] ?? 9) || a.local.localeCompare(b.local));
+const RANK = { warning: 0, caution: 1, unknown: 2, queued: 3, ok: 4 };
+const BY = {
+  s: (a, b) => RANK[a.state] - RANK[b.state],
+  page: (a, b) => (KIND[a.kind] ?? 9) - (KIND[b.kind] ?? 9) || a.local.localeCompare(b.local),
+  at: (a, b) => (Date.parse(a.changed) || 0) - (Date.parse(b.changed) || 0),
+};
+const LIST = { sort: 'page', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
+const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['page', 'Page'], ['at', 'Changed', 'r'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const ranked = () => ROWS.filter(match).sort((a, b) => PRODUCTS.indexOf(a.product) - PRODUCTS.indexOf(b.product) || BY[L.sort](a, b) * L.dir || BY.page(a, b));
 // Details times are cells too (design.md, Page contract): the shell fills the text and the exact local and UTC title.
 const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time>` : '—';
 
@@ -60,6 +69,7 @@ function renderAnnunciator() {
 function renderRows() {
   const rows = ranked();
   let last = '';
+  put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L));
   put(tbody, html`${rows.map(r => {
     const pr = D.products.find(p => p.name === r.product);
     const head = r.product !== last ? html`<tr class="prod" aria-hidden="true"><td colspan="4">${r.product}<span class="n">${markup.plural(pr.pages, 'page')}</span></td></tr>` : ''; last = r.product;
@@ -124,7 +134,11 @@ function reconcile() {
 // One name per filter (review 2026-09-29, item 18): the lamp, the view chip and the palette entry all read FILTERS[k].lbl.
 const VIEWS = ['stale', 'recent'].map(k => ({ name: FILTERS[k].lbl, params: { f: k } }));
 // A lamp and a view chip set the same key, so the chip row is redrawn to show which view the filter now is.
-function writeFilter() { shell.url({ ...(F.f && { f: F.f }), ...(input.value.trim() && { q: input.value.trim() }) }); shell.views(VIEWS); }
+// The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
+function writeFilter() {
+  const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
+  shell.url({ ...(F.f && { f: F.f }), ...(input.value.trim() && { q: input.value.trim() }), ...sort }); shell.views(VIEWS);
+}
 function update() {
   if (!D) return;
   renderAnnunciator(); renderRows(); reconcile();
@@ -168,6 +182,7 @@ document.addEventListener('click', e => {
   const tr = e.target.closest?.('tr[data-id]'); if (tr && !e.target.closest('button, a, time')) select(tr.dataset.id, false);
 });
 const input = document.getElementById('shift');
+document.getElementById('rows-head').addEventListener('click', e => { if (D && shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderRows); writeFilter(); } });
 input.addEventListener('input', () => { F.q = input.value.trim().toLowerCase(); writeFilter(); update(); });
 document.addEventListener('keydown', e => {
   if (e.target.matches?.('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
@@ -219,6 +234,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const p = new URLSearchParams(location.search);
   F.f = FILTERS[p.get('f')] ? p.get('f') : '';
   if (p.get('q')) { input.value = p.get('q'); F.q = p.get('q').trim().toLowerCase(); }
+  shell.list.listParams(p, L, { sorts: Object.keys(BY), size: LIST.size });
+  put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   reading = shell.read({
     source: '/api/designs', what: 'the designs', adopt, clear,
     draw: () => { if (D) { renderAnnunciator(); renderRows(); } attention(); },

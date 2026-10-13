@@ -197,8 +197,9 @@
     source: '/api/health', what: 'the Health rows',
     adopt: doc => {
       DOC = doc; AREAS = doc.areas;
-      AREAS.forEach(a => a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]));
-      ROWS = AREAS.flatMap(a => a.rows.map(r => ({ ...r, area: a.id })));
+      // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
+      AREAS.forEach(a => { a.rows.forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
+      ROWS = AREAS.flatMap(a => a.rows);
       SNOOZED = AREAS.flatMap(a => a.snoozed);
       document.body.dataset.observed = doc.read;
       const failed = AREAS.filter(a => a.error || a.stale);

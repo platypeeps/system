@@ -223,6 +223,23 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["off"], "Hide is off: the view store was not read: locked")
         self.assertEqual(len(re.findall(r'<tr data-id=', out["html"]["rows"])), 5)
 
+    def test_a_header_sorts_the_pages_inside_their_product_and_the_url_keeps_it(self):
+        # sd:3455: the shell's sort header; the product groups stay, a tie keeps the design's order (kind, then path).
+        head = "ELS['rows-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'at' } } : null } });"
+        ids = r'<tr data-id="([^"]+)"'
+        out = self.run_page(f"R.head = ELS['rows-head'].html; {head} R.up = ELS.rows.html; R.head2 = ELS['rows-head'].html; {head} R.down = ELS.rows.html;")
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["s", "page", "at"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head"]), [("ascending", "page")])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head2"]), [("ascending", "at")])
+        self.assertEqual(re.findall(ids, out["R"]["up"]), [f"{PAGES}/notes.html", f"{PAGES}/tasks.html", f"{PAGES}/today.html",
+                                                            "products/system/designs/v1-today.html", "product:brand"])
+        self.assertEqual(re.findall(ids, out["R"]["down"]), ["products/system/designs/v1-today.html", f"{PAGES}/today.html",
+                                                              f"{PAGES}/notes.html", f"{PAGES}/tasks.html", "product:brand"])
+        self.assertEqual(out["urls"][-1], {"sort": "at", "dir": "desc"})
+        out = self.run_page("R.rows = ELS.rows.html; R.head = ELS['rows-head'].html;", search="?sort=at&dir=desc")
+        self.assertEqual(re.findall(ids, out["R"]["rows"])[0], "products/system/designs/v1-today.html")
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head"]), [("descending", "at")])
+
     def test_a_lamp_filters_the_ledger_and_the_url_keeps_it(self):
         out = self.run_page("click({ s: '.annunciator .cell', dataset: { filter: 'stale' } }); R.rows = ELS.rows.html;")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [f"{PAGES}/tasks.html"])

@@ -212,7 +212,7 @@ class TheDefaultCapture(unittest.TestCase):
   captureCli({ kind: 'task', title: 'x', priority: 4, repo: '/tmp/a b' })];""")
         self.assertEqual(out["lines"], ["cd ~/repos/one && sd task add --priority 3 'it'\\''s'",
                                         "sd task add --no-repo --kind followup --priority 2 'x'",
-                                        "sd task note 5 --kind comment --body 'x'",
+                                        "sd task note 5 'x' --kind comment",
                                         "cd '/tmp/a b' && sd task add --priority 4 'x'"])
 
     def test_the_box_offers_the_pickers_with_p3_and_the_pages_repo_as_defaults(self):
