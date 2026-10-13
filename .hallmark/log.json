@@ -1,6 +1,19 @@
 [
   {
     "date": "2026-10-12",
+    "artifact": "local-project-dashboard/sd_dashboard/v2/static/health.js (Health: Services area)",
+    "scope": "component",
+    "genre": "modern-minimal",
+    "theme": "platypeeps foundation tokens (v2/static/tokens.css, unchanged)",
+    "macrostructure": "component scope: skipped; one more sectioned ledger on the existing page",
+    "nav": "none",
+    "footer": "none",
+    "changes": "sd:3707 Services area of ledger rows, no lamp (the strip holds 8); Restart and Start as confirm commands through the shell's one dialog; the dashboard row's kickstart line copy only; no CSS added",
+    "constraints": "no build step; CSP default-src 'self'; no colour literal",
+    "critique": "P4 H4 E4 S4 R5 V3"
+  },
+  {
+    "date": "2026-10-12",
     "artifact": "local-task-actions/confirm.css, task-actions.sh pages; design_docs.py figure; obsidian-tasks and obsidian-review HTML mails",
     "scope": "component",
     "genre": "modern-minimal",

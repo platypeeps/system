@@ -21,8 +21,8 @@
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
   // Each source's label, icon, and the page that shows it in full, with that page's name (sd:3402).
   const SRC = { jobs: ['Jobs', 'activity', '/management', 'Management'], prs: ['Pull requests', 'git-pull-request', '/operations?area=trackers', 'Trackers'], sessions: ['Sessions', 'bot', '/operations?area=sessions', 'Operations'], repos: ['Repos', 'hard-drive-download', '/management', 'Management'] };
-  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
-  const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', worktree: 'Sessions', dark: 'Collector' };
+  const TYPE = { job: 'job', pr: 'pull request', ahead: 'repo', dirty: 'repo', pinned: 'repo', worktree: 'sessions', dark: 'collector', item: 'work item' };
+  const KIND = { job: 'Job', pr: 'Pull request', ahead: 'Repo', dirty: 'Repo', pinned: 'Repo', worktree: 'Sessions', dark: 'Collector' };
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 

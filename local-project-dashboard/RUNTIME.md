@@ -52,7 +52,9 @@ and the complete preflight report under
 `/health` with the expected schema, library path, and build digests, and its
 process ID must match the newly loaded LaunchAgent. Health reports the build
 captured when the server started and becomes unhealthy if its files change;
-an older process cannot claim the new bytes just installed. A server started
+an older process cannot claim the new bytes just installed.
+It also reports `commit`, the checkout HEAD it started on; `dashboard.sh health`
+exits 1 when that is not the checkout's HEAD now, and prints the kickstart line (sd:3528). A server started
 with `--config` rechecks those files every 30 seconds. On a change it runs the
 new checkout's `dashboard.sh preflight`, then the new code's own start in a
 child process: imports, configuration, library and listeners, short
@@ -70,9 +72,10 @@ The generated launch environment includes the standard system tool directories
 needed for listener inspection. It also carries the
 installing shell's `sd` directory and `OBSIDIAN_VAULT`, which Notes' quick
 notes (sd:2549) and daily note (sd:3426) need; `install` prints one line for each it cannot find, and
-still installs. Service controls on Management and Operations > Services act only on
-eligible user LaunchAgents; system daemons and dashboard/access services remain
-read-only. See [README.md](README.md) for the Operations tabs, one per entry of
+still installs. Service controls on Management, Operations > Services and Health's
+Services rows (sd:3707) act only on eligible user LaunchAgents; system daemons and
+dashboard/access services remain read-only. Health's dashboard row shows the
+kickstart line to copy when the served commit is not the checkout's. See [README.md](README.md) for the Operations tabs, one per entry of
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet
 child (both areas), the shadow table and the launchd jobs on each `/api/now`
 request a page makes, not on the page render; a fleet child or a jobs read that
