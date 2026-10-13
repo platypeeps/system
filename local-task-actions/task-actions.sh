@@ -12,15 +12,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # default ~/.config/system; see .env.example) provides defaults only; an exported
 # OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins. Read it
 # before anything below uses a value it may set.
-ENV_OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
-ENV_LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-}"
-ENV_PORT="${TASK_ACTIONS_PORT:-}"
 st_source_env task-actions
-[ -n "$ENV_OBSIDIAN_VAULT" ] && OBSIDIAN_VAULT="$ENV_OBSIDIAN_VAULT"
-[ -n "$ENV_LABEL_PREFIX" ] && SYSTEM_TOOLS_LABEL_PREFIX="$ENV_LABEL_PREFIX"
-[ -n "$ENV_PORT" ] && TASK_ACTIONS_PORT="$ENV_PORT"
 
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 LABEL="$LABEL_PREFIX.task-actions"
 SRC_PLIST="$DIR/task-actions.plist.template"
 AGENT_DIR="$HOME/Library/LaunchAgents"
@@ -497,7 +491,7 @@ cmd_status() {
   if [ -f "$DST_PLIST" ]; then echo "plist:  installed"; else echo "plist:  NOT installed"; fi
   if ! is_loaded; then
     echo "state:  not loaded"
-    exit 2
+    exit 3
   fi
   info="$(launchctl print "$SERVICE" 2>/dev/null || true)"
   echo "state:  $(echo "$info" | awk -F'= ' '/^\tstate = /{print $2; exit}')"
@@ -516,7 +510,7 @@ cmd_status() {
       exit 1
     fi
     if [ -n "$pub" ]; then
-      if curl -s --max-time 8 "$pub/x" | grep -q '<h2>not found</h2>'; then
+      if curl -s --max-time 8 "$pub/x" | grep -q '<h1>Not found</h1>'; then
         echo "public: up ($pub)"
       else
         echo "public: NOT healthy ($pub configured but our 404 page not seen)"
@@ -548,7 +542,8 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
           prefix default local.system-tools), rendered from
           task-actions.plist.template
   stop    unload the LaunchAgent
-  status  agent + HTTP state; exits 0 ok / 1 degraded / 2 not loaded
+  status  agent + HTTP state; exits 0 ok / 1 degraded / 3 not loaded (nothing
+          to check) — local-health-check reads these codes
   url     print a signed action URL (used by local-obsidian-tasks and
           local-obsidian-review to build digest email buttons); links
           expire after 7 days. `url [-b db] <stem> <action> [days]`.

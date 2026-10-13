@@ -21,7 +21,10 @@ from urllib.parse import urlsplit
 from . import pack_library
 
 #: The launchd label prefix is shared by every system service, so a
-#: second install under another prefix keeps its own labels.
+#: second install under another prefix keeps its own labels. The default is
+#: spelled out here, not read from lib/system_tools_config.py: the package is
+#: installed into its own venv, where the checkout's lib/ is not beside it
+#: (tests/test_installed.py).
 LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
 LABEL = f"{LABEL_PREFIX}.sd-dashboard"
 LAUNCH_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

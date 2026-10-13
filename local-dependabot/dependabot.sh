@@ -8,7 +8,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-    cat >&2 <<'USAGE'
+    cat <<'USAGE'
 dependabot.sh — the Dependabot sweep's held bumps, watched.
 
 Usage: dependabot.sh <command>
@@ -88,7 +88,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        usage
+        usage >&2
         exit 1
         ;;
 esac

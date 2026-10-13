@@ -2,8 +2,8 @@
 
 `local-jev` is optional by design: every caller keeps the mechanism it had,
 and a machine with no key, a placeholder key, an unparsable `JEV_TIMEOUT` or
-the switch off behaves identically. That contract lives in eleven call sites
-and nothing enforced it. This does.
+the switch off behaves identically. That contract lives in every row of
+`KNOWN_CALLERS` and nothing enforced it. This does.
 
 The defect class it closes was found three times in one afternoon, each time
 by running code rather than reading it, and each time it wore the same shape:
@@ -23,7 +23,7 @@ Two layers, because one is not enough.
 
 **The inventory** is coarse and very hard to evade: a folder is a caller if
 any tracked file of its own names `jev` outside a comment. That is compared
-against `KNOWN_CALLERS`, so an eleventh caller cannot be added silently -- it
+against `KNOWN_CALLERS`, so a new caller cannot be added silently -- it
 fails here naming itself, and whoever adds it has to say so. A folder that
 stops calling fails too: the set only changes deliberately.
 
@@ -96,7 +96,7 @@ LOCAL_ONLY_CALLERS = frozenset({"local-scan-for-secrets"})
 RUNTIME_CRITERIA = frozenset({"local-drive-intake"})
 
 #: This file names `jev` on nearly every line, so discovery finds it and
-#: reports `tests` as a twelfth caller. `test_one_double.py` has the same
+#: reports `tests` as a caller. `test_one_double.py` has the same
 #: shape and the same answer: exclude yourself by path. Rename this file
 #: without updating the constant and `tests` comes back as a surprise, which
 #: fails loudly rather than passing quietly.

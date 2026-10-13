@@ -17,7 +17,7 @@ and the OTLP/HTTP export pipeline). It holds no destination or credential.
 
 Values live in `$SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env` (copy
 `.env.example`) or come from the environment. The file is optional when they
-are exported, and wins when both are present. A missing value fails naming the
+are exported; an exported value wins when both are present. A missing value fails naming the
 variable and both remedies.
 
 | Variable | Needed by | Meaning |

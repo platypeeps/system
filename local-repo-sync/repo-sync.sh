@@ -620,7 +620,7 @@ pin_move() {
 # again, written before its bootout, so a killed refresh's rerun starts it.
 CONSUMERS="sd-serve sd-dashboard"
 REFRESH_STOPPED="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-stopped"
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
+LABEL_PREFIX="$(st_label_prefix)"
 
 # Prints launchd's state of label $1, loaded or unloaded. 113 is launchctl's
 # "could not find service"; any other failure is no answer and returns 1.

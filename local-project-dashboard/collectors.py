@@ -125,7 +125,7 @@ def cron_job_files():
 VAULT = pathlib.Path(os.environ.get("VAULT", os.path.expanduser("~/Documents/Vault")))
 REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT", os.path.expanduser("~/repos")))
 #: launchd label prefix shared by every system job and service.
-LABEL_PREFIX = os.environ.get("SYSTEM_TOOLS_LABEL_PREFIX", "local.system-tools")
+LABEL_PREFIX = system_tools_config.label_prefix()
 
 
 TODAY = datetime.date.today

@@ -6,18 +6,18 @@
 #   cswap.sh start                   install/refresh the LaunchAgent and start it
 #   cswap.sh stop                    stop and unload (stays stopped across logins)
 #   cswap.sh stop --keep-installed   stop current process only; KeepAlive/login restarts it
-#   cswap.sh status [lines]          state + log tail (exit 0 running, 1 loaded, 2 not loaded)
+#   cswap.sh status [lines]          state + log tail (exit 0 running, 1 loaded, 3 not loaded)
 #   cswap.sh run                     the poll loop itself — invoked by launchd, not by hand
 #
 # Flags for `cswap auto` live in cswap-auto.conf; restart to apply.
 set -euo pipefail
 
-# launchd label prefix shared by every agent from this repository; override per machine.
-LABEL_PREFIX="${SYSTEM_TOOLS_LABEL_PREFIX:-local.system-tools}"
-LABEL="$LABEL_PREFIX.cswap-auto"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/config.sh
 . "$ROOT/../lib/config.sh"
+# launchd label prefix shared by every agent from this repository; override per machine.
+LABEL_PREFIX="$(st_label_prefix)"
+LABEL="$LABEL_PREFIX.cswap-auto"
 LOG_DIR="$ROOT/logs"
 OUT_LOG="$LOG_DIR/cswap-auto.log"
 ERR_LOG="$LOG_DIR/cswap-auto.err.log"
@@ -143,7 +143,7 @@ cmd_status() {
   if ! is_loaded; then
     echo "state:     not loaded"
     echo "at login:  no"
-    exit 2
+    exit 3
   fi
 
   # Right after a kickstart the state is briefly "xpcproxy"/"spawn scheduled"
@@ -158,7 +158,7 @@ cmd_status() {
 
   if [[ -z "$info" ]]; then
     echo "state:     not loaded (disappeared while querying)"
-    exit 2
+    exit 3
   fi
   pid="$(awk -F'= ' '/^\tpid = /{print $2; exit}' <<<"$info")"
   last="$(awk -F'= ' '/last exit code = /{print $2; exit}' <<<"$info")"
@@ -194,7 +194,8 @@ usage: cswap.sh run|start|stop [--keep-installed]|status [lines]
   run          exec `cswap auto` — long-running poll loop (what the LaunchAgent calls)
   start        install + load the LaunchAgent
   stop         unload the LaunchAgent (--keep-installed: keep the plist)
-  status       agent state + recent log lines (default 15); exits 0 ok / 1 degraded / 2 down
+  status       agent state + recent log lines (default 15); exits 0 ok / 1 degraded /
+               3 not loaded (nothing to check) — local-health-check reads these codes
 
 environment: SYSTEM_TOOLS_LABEL_PREFIX (launchd label prefix,
              default local.system-tools; the label is <prefix>.cswap-auto)

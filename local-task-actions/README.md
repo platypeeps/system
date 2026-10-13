@@ -27,7 +27,7 @@ that edit TaskNote frontmatter directly in the vault.
 ```
 ./task-actions.sh start    # install + load the LaunchAgent
 ./task-actions.sh stop     # unload it
-./task-actions.sh status   # agent + HTTP state (exit 0/1/2)
+./task-actions.sh status   # agent + HTTP state (exit 0 ok, 1 degraded, 3 not loaded)
 ./task-actions.sh run      # foreground server (what launchd calls)
 ./task-actions.sh url "My Task" done
 ./task-actions.sh base-url # the base every signed link is built on

@@ -6,19 +6,11 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # <config>/falkordb/.env (see lib/config.sh) provides defaults only —
-# already-exported values win (same precedence rule as local-notify). The file is optional; without it the
+# already-exported values win (st_source_env's one rule). The file is optional; without it the
 # baked-in local dev values apply.
-ENV_FALKORDB_USER="${FALKORDB_USER:-}"
-ENV_FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-}"
-ENV_FALKORDB_PORT="${FALKORDB_PORT:-}"
-ENV_FALKORDB_UI_PORT="${FALKORDB_UI_PORT:-}"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 st_source_env falkordb
-if [ -n "$ENV_FALKORDB_USER" ]; then FALKORDB_USER="$ENV_FALKORDB_USER"; fi
-if [ -n "$ENV_FALKORDB_PASSWORD" ]; then FALKORDB_PASSWORD="$ENV_FALKORDB_PASSWORD"; fi
-if [ -n "$ENV_FALKORDB_PORT" ]; then FALKORDB_PORT="$ENV_FALKORDB_PORT"; fi
-if [ -n "$ENV_FALKORDB_UI_PORT" ]; then FALKORDB_UI_PORT="$ENV_FALKORDB_UI_PORT"; fi
 FALKORDB_USER="${FALKORDB_USER:-default}"
 FALKORDB_PASSWORD="${FALKORDB_PASSWORD:-verysecure}"
 # 6380, not redis's 6379: FalkorDB speaks the Redis protocol, so the two used
@@ -42,7 +34,7 @@ case "$1" in
     ;;
   update)
     docker stop falkordb 2>/dev/null || true
-    docker images -a | grep "falkordb/falkordb" | awk '{print $3}' | xargs docker rmi
+    docker images -aq --filter "reference=falkordb/falkordb" | sort -u | xargs docker rmi
     ;;
   -h|--help|help)
     cat <<'HELPEOF'

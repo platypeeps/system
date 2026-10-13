@@ -32,6 +32,7 @@ TODAY_JS = (V2 / "static" / "today.js").read_text(encoding="utf-8")
 SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 RECONCILE = re.search(r"^  function reconcile\(.*?^  }$", SHELL_JS, re.S | re.M).group(0)
 
 # What today.js reads beyond the Tasks stand-in: the address it writes ?row= into, and the ledger's rows as elements that
@@ -79,7 +80,7 @@ class TheReader(ScreenCase):
     def run_page(self, body, search=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + PAGE + SHELL_MORE + READ_SHELL
                   + f"\nconst DOC0 = {json.dumps(self.doc)};\nlocation.search = {json.dumps(search)};\n"
-                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + TODAY_JS
+                  + "ANSWER = () => [200, DOC0];\n" + SNOOZE_JS + COMMANDS_JS + TODAY_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -155,7 +156,7 @@ class TheFix(TheReader):
     def test_fix_asks_first_names_the_session_by_the_item_kind_and_posts_the_revision(self):
         out = self.run_page(f"""ANSWER = (path, body) => path.endsWith('/fix') ? [200, {{ revision: 'e'.repeat(64), fix: {{ session: 'builder', pane: 'w9:p1' }} }}] : [200, DOC0];
 R.task = cmd('work item.fix').consequence(C.get('item:{self.task}')); R.report = cmd('work item.fix').consequence(C.get('item:{self.report}'));
-R.on = !cmd('work item.fix').when; // a listed work row is open, so Fix is always on
+R.on = cmd('work item.fix').when(C.get('item:{self.task}')) === true; // a listed work row is open, so Fix is always on
 shellRun(cmd('work item.fix'), C.get('item:{self.task}')); await flush();""")
         self.assertIn(f"starts claude as a builder on #{self.task}", out["R"]["task"])
         self.assertIn(f"starts claude on report #{self.report}: the sd-debug skill", out["R"]["report"])
@@ -179,7 +180,7 @@ class TheSnooze(TheReader):
     def test_snooze_posts_the_row_and_reads_now_again(self):
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
 R.types = REG.filter(c => c.id.endsWith('.snooze')).map(c => c.on);
-shellRun(cmd('repo.snooze-week'), C.get('ahead:pushy:1')); await flush();
+FIELD_VALUES.until = 'snooze-week'; shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - Date.now();""")
         self.assertEqual(out["R"]["types"], ["job", "pull request", "repo", "sessions", "collector", "work item"])
         # The row's own fingerprint goes with it, so the snooze holds only while the row reads the same.
@@ -210,7 +211,7 @@ R.primary = REG.filter(c => c.on === 'snoozed row').map(c => c.id);""")
                                                                  "detail": "in_progress"}], ""
         out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
 R.work = ELS.work.html; R.tally = ELS['work-tally'].html; R.obj = C.get('item:7');
-shellRun(cmd('work item.snooze-hour'), C.get('item:7')); await flush();""")
+FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('item:7')); await flush();""")
         self.assertIn("Write the brief", out["R"]["work"])
         self.assertIn('href="/tasks?row=7"', out["R"]["work"])
         self.assertIn("in_progress · due 2026-09-05", out["R"]["work"])
@@ -256,13 +257,31 @@ const show = d => [d.getDate(), d.getHours(), d.getMinutes()];
 R.early = show(S.CHOICES[0].until(at(7, 59))); R.late = show(S.CHOICES[0].until(at(8, 0)));
 R.hour = show(S.CHOICES[1].until(at(23, 30)));
 R.today = S.when(at(8, 0), at(7, 0)); R.other = S.when(new Date(2026, 9, 11, 8, 0), at(7, 0));
-R.keys = S.CHOICES.map(c => [c.id, c.label, c.key]);""")
+R.keys = S.CHOICES.map(c => [c.id, c.label]);""")
         self.assertEqual(out["R"]["early"], [10, 8, 0])
         self.assertEqual(out["R"]["late"], [11, 8, 0])
         self.assertEqual(out["R"]["hour"], [11, 0, 30])
         self.assertEqual((out["R"]["today"], out["R"]["other"]), ("08:00", "Sun Oct 11 08:00"))
-        self.assertEqual(out["R"]["keys"], [["snooze", "Snooze until 08:00", "z"], ["snooze-hour", "Snooze 1 hour", "h"],
-                                            ["snooze-week", "Snooze 1 week", "w"]])
+        self.assertEqual(out["R"]["keys"], [["snooze", "The next 08:00"], ["snooze-hour", "One hour from now"],
+                                            ["snooze-week", "One week from now"]])
+
+    def test_snooze_is_one_command_per_row_that_asks_which_time(self):
+        """sd:3450: one Snooze in the row's menu, key z, whose dialog offers the three times; the next 08:00 is the default."""
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : [200, { key: 'k', until: body.until }];
+R.repo = REG.filter(c => c.on === 'repo').map(c => [c.id, c.label, c.key]);
+R.fields = cmd('repo.snooze').fields(C.get('ahead:pushy:1'));
+shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
+R.until = new Date(OUT.posts[0][1].until); R.at8 = [R.until.getHours(), R.until.getMinutes()];
+OUT.posts = []; FIELD_VALUES.until = 'snooze-hour'; const t0 = Date.now();
+shellRun(cmd('repo.snooze'), C.get('ahead:pushy:1')); await flush();
+R.hour = Date.parse(OUT.posts[0][1].until) - t0;""")
+        self.assertEqual(out["R"]["repo"], [["repo.snooze", "Snooze", "z"]])
+        self.assertEqual(out["R"]["fields"], [{"name": "until", "label": "Snooze until", "options": [
+            {"value": "snooze", "label": "The next 08:00"}, {"value": "snooze-hour", "label": "One hour from now"},
+            {"value": "snooze-week", "label": "One week from now"}]}])
+        self.assertEqual(out["confirms"], ["repo.snooze", "repo.snooze"])
+        self.assertEqual(out["R"]["at8"], [8, 0])
+        self.assertTrue(3590e3 <= out["R"]["hour"] <= 3610e3, out["R"]["hour"])
 
 
 DECISIONS_JS = (V2 / "static" / "decisions.js").read_text(encoding="utf-8")
@@ -286,7 +305,7 @@ class TheBadge(TheReader):
                   + f"\nconst DOC0 = {json.dumps(self.doc)}, DECISIONS = {json.dumps({'decisions': decisions})};\n"
                   + "ANSWER = (path, body) => path === '/api/now' ? [200, DOC0] : path === '/api/decisions' ? [200, DECISIONS]"
                     " : [200, { revision: 'b'.repeat(64), ruling: { id: 99, kind: 'decision', body: 'x' } }];\n"
-                  + SNOOZE_JS + TODAY_JS + "\n" + DECISIONS_JS
+                  + SNOOZE_JS + COMMANDS_JS + TODAY_JS + "\n" + DECISIONS_JS
                   + "\nvar R = {};\nconst click = (note, i) => ELS.decisions.listeners.click[0]({ target: { closest: s => s === 'button[data-option]'"
                     " ? { dataset: { note: String(note), option: String(i) }, closest: () => null } : null } });\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
@@ -324,6 +343,25 @@ class TheBadge(TheReader):
         """A guard: the badge counts its loudest state, and a decision is caution, as its ▲ in the section says."""
         out = self.run_badge("", [self.DECISION], keep_job=True)
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
+
+
+class TheJobRow(TheReader):
+    """sd:3449: a job row carries the commands Management and Activity give a job, from the one declaration in commands.js."""
+
+    def test_a_job_row_shows_its_log_on_schedules_and_prints_its_launchd_record(self):
+        out = self.run_page("""const o = C.get('job:nightly-sync:7'), log = cmd('jobs.log'), print = cmd('jobs.print');
+R.got = [log.on, log.executes, log.cli(o), print.on, print.executes, print.when(o), print.cli(o), !!print.primary(o)];
+window.shell.pages = { Management: '/management' }; R.said = log.run(o);""")
+        self.assertEqual(out["R"]["got"], ["job", False, "local-cron-jobs/cron-jobs.sh logs nightly-sync",
+                                           "job", False, True, "launchctl print fixture/nightly-sync", False])
+        self.assertEqual(out["R"]["said"], "nightly-sync opens in Management > Schedules")
+        # The address it opens is the one Activity's test reads (test_v2_activity): the same declaration builds it.
+        self.assertEqual(out["posts"], [])
+
+    def test_after_exit_127_print_is_the_rows_act(self):
+        self.doc["rows"][0]["exit"] = 127
+        out = self.run_page("R.print = !!cmd('jobs.print').primary(C.get('job:nightly-sync:7'));")
+        self.assertTrue(out["R"]["print"])
 
 
 class TheRetry(TheReader):
