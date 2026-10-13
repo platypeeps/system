@@ -2198,10 +2198,11 @@ case "$1" in
     # The ingest folds a reason it already holds open into that report and
     # keeps its first body, so the reason ends in a checksum of every finding
     # behind it: other findings open a new report, the same ones fold into
-    # the open one (sd:3537).
+    # the open one (sd:3537). Digits count as one: a count or a size that
+    # moves is the same problem, and the report body keeps the real numbers.
     if [ -n "$ATTENTION" ]; then
       sum=$(cat "$ADDED" "$REMOVED" "$MISMATCHED" "$FAILLOG" "$HYG_TMP/acted" \
-        "$HYG_TMP/listed" "$HYG_TMP/failed" 2>/dev/null | cksum | awk '{print $1}')
+        "$HYG_TMP/listed" "$HYG_TMP/failed" 2>/dev/null | sed 's/[0-9][0-9]*/N/g' | cksum | awk '{print $1}')
       echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
     fi
     # After the report, so Jev never delays or changes it.

@@ -432,6 +432,13 @@ esac
         self.assertEqual(first, again)
         self.assertNotEqual(first, other)
 
+    def test_a_moved_number_folds_into_the_open_report(self):
+        """sd:3537: digits count as one, so a moved number is the same problem."""
+        def reason(name, smart):
+            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart}, verb="run")
+            return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertEqual(reason("smart-n1", "Failing 81"), reason("smart-n2", "Failing 83"))
+
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])
         self.assertIn("local-declares-broken: " + self.broken_line, heads)

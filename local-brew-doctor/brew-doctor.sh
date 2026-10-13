@@ -107,4 +107,6 @@ cat "$tmp/doctor2"
 # The ingest folds a reason it already holds open into that report and keeps
 # its first body, so the reason ends in a checksum of the findings: other
 # findings open a new report, the same ones fold into the open one (sd:3537).
-echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s) [$(cksum < "$tmp/doctor2" | awk '{print $1}')]"
+# Digits count as one: "81% free" and "83% free" are one problem, and the
+# report body keeps the real numbers.
+echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s) [$(sed 's/[0-9][0-9]*/N/g' "$tmp/doctor2" | cksum | awk '{print $1}')]"

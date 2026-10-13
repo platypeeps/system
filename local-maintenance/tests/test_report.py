@@ -37,16 +37,19 @@ class ReportTest(unittest.TestCase):
         _stub(self.bin / "mas", "exit 0\n")
         _stub(self.bin / "docker", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
+        # df reports DF_USED percent used, 50 unless a test sets it.
+        _stub(self.bin / "df", 'echo "Filesystem 512-blocks Used Available Capacity Mounted on"\n'
+              'echo "/dev/disk1 100 ${DF_USED:-50} 0 ${DF_USED:-50}% /"\n')
         self.config = self.tmp / "config"
         (self.config / "maintenance").mkdir(parents=True)
         (self.tmp / "home").mkdir()
         self.env = {"HOME": str(self.tmp / "home"), "PATH": f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
                     "SYSTEM_TOOLS_CONFIG": str(self.config), "MAINTENANCE_PROFILE": "none"}
 
-    def maintenance(self, conf, verb="run"):
+    def maintenance(self, conf, verb="run", **extra):
         (self.config / "maintenance" / "maintenance.conf").write_text(conf)
         return subprocess.run(["sh", str(self.tmp / "local-maintenance" / "maintenance.sh"), verb],
-                              capture_output=True, text=True, env=self.env, timeout=120)
+                              capture_output=True, text=True, env={**self.env, **extra}, timeout=120)
 
     def attention(self, run):
         return [line for line in run.stdout.splitlines() if line.startswith("SD_REPORT_ATTENTION: ")]
@@ -67,6 +70,15 @@ class ReportTest(unittest.TestCase):
         other = self.attention(self.maintenance(f"cert|{self.tmp}/two.pem|30\n"))
         self.assertEqual(first, again)
         self.assertNotEqual(first, other)
+
+    def test_a_moved_number_folds_into_the_open_report(self):
+        """sd:3537: digits count as one, so "19% free" and "17% free" are one
+        report while the body keeps the real numbers."""
+        first = self.maintenance("disk|/|25\n", DF_USED="81")
+        second = self.maintenance("disk|/|25\n", DF_USED="83")
+        self.assertIn("only 17% free on /", second.stdout)
+        self.assertEqual(len(self.attention(first)), 1, first.stdout)
+        self.assertEqual(self.attention(first), self.attention(second))
 
     def test_a_clean_run_needs_nothing(self):
         run = self.maintenance("# nothing to check\n")

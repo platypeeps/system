@@ -438,7 +438,7 @@ class RepoSyncTest(unittest.TestCase):
         keeps the first body, so a count-only reason named last night's
         failed repo."""
         reasons = []
-        for bad in ("bad1", "bad2"):
+        for bad in ("badone", "badtwo"):
             f = self.fixture()
             f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
             f.checkout(f"a/{bad}", f"owner/{bad}")

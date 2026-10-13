@@ -123,6 +123,14 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(state["recorded"], "report", state)
         self.assertIn("Warning: four", state["item"]["body"])
 
+    def test_a_moved_number_folds_into_the_open_report(self):
+        """Digits count as one, and the body keeps the real numbers."""
+        self.doctor.write_text("Warning: You have 2 unlinked kegs.\n")
+        self.doctor_run("r1")
+        self.doctor.write_text("Warning: You have 3 unlinked kegs.\n")
+        _, state = self.doctor_run("r2")
+        self.assertEqual(state["recorded"], "folded", state)
+
     def test_the_same_warnings_fold_into_the_open_report(self):
         self.doctor_run("r1")
         _, state = self.doctor_run("r2")
