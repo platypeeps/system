@@ -258,33 +258,7 @@ code, .command {
   .listing-table .column-item, .listing-table .column-meta { width: 100%; }
 }
 
-/* -- tiles, cards, boards ------------------------------------------------ */
-
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.75rem;
-}
-.tile {
-  background: var(--card);
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 0.9rem;
-  box-shadow: 0 1px 2px var(--shadow);
-}
-.tile-label { margin: 0; color: var(--ink-quiet); }
-.tile-value { margin: 0.2rem 0 0; font-size: 1.6rem; font-weight: 600; }
-.tile-detail summary {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  color: var(--accent);
-}
-.tile-inputs { margin: 0; }
-.tile-inputs div { display: flex; gap: 0.5rem; justify-content: space-between; }
-.tile-inputs dt { color: var(--ink-quiet); }
-.tile-inputs dd { margin: 0; }
+/* -- cards, boards ------------------------------------------------------ */
 
 .board {
   display: grid;
@@ -309,18 +283,6 @@ code, .command {
 .card h3, .card h4 { margin: 0 0 0.25rem; }
 .card-repo, .card-role { margin: 0; color: var(--ink-quiet); font-size: 0.9rem; }
 .card-wait { margin: 0.25rem 0 0; color: var(--warn); font-size: 0.9rem; }
-
-.view-toggle { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
-.view-toggle a {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 1rem;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  text-decoration: none;
-}
-.view-toggle .toggle-current { background: var(--accent-quiet); font-weight: 600; }
 
 .status {
   display: inline-block;
@@ -354,30 +316,6 @@ code, .command {
 .protection-detail { display: inline; }
 .protection-sentence { margin: .25rem 0 0; font-size: .85rem; max-width: 28rem; overflow-wrap: anywhere; }
 
-/* -- charts -------------------------------------------------------------- */
-
-.chart { width: 100%; height: auto; max-width: 46rem; }
-.chart-label, .chart-value, .chart-axis {
-  fill: var(--ink-quiet);
-  font-size: 12px;
-}
-.chart-bar { fill: var(--bar); }
-.chart-bar-ready-to-send { fill: var(--bar-alt); }
-.chart-bar-selected { stroke: var(--ink); stroke-width: 2; }
-.chart-run { fill: var(--bar); }
-.chart-run-queued { fill: var(--bar-alt); }
-.chart-run-blocked { fill: var(--stop); }
-.chart-budget { stroke: var(--ink); stroke-width: 2; }
-.chart-hatch { stroke: var(--hatch); stroke-width: 2; }
-.chart-burn { fill: none; stroke: var(--bar); stroke-width: 2; }
-.chart-point { fill: var(--bar); }
-.chart-cap { stroke: var(--stop); stroke-width: 2; }
-.chart-projection { stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 6 4; }
-.gauge-track { fill: var(--hatch); opacity: 0.35; }
-.gauge-fill { fill: var(--bar); }
-.usage-month { align-items: end; }
-.usage-numbers dd { font-variant-numeric: tabular-nums; }
-
 .page-footer {
   margin-top: 3rem;
   padding-top: 1rem;
@@ -401,14 +339,6 @@ code, .command {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
-.operations-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr)); gap: 1rem; margin: 1rem 0; }
-.operation-card { border: 1px solid var(--rule); border-radius: .7rem; padding: 1rem; min-width: 0; overflow-wrap: anywhere; background: var(--card); }
-.operation-card h3 { margin-top: 0; }
-.operation-actions { display: flex; flex-wrap: wrap; gap: .7rem; align-items: start; }
-.operation-request { border-left: .2rem solid currentColor; padding-left: .7rem; }
-
-.skill-card .operation-actions { align-items: start; }
-
 #command-palette { width:min(48rem,calc(100vw - 2rem)); max-height:85dvh; overflow:auto; padding:1.25rem; border:1px solid var(--rule); border-radius:.8rem; background:var(--card); color:var(--ink); }
 #command-palette::backdrop { background:rgb(0 0 0 / .5); }
 #command-palette .dialog-header { position:sticky; top:-1.25rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.5rem 0; background:var(--card); z-index:1; }

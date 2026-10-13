@@ -46,7 +46,6 @@ class TrackersArea(ScreenCase):
         self.assertEqual(page.count("<h1>"), 1)
         self.assertIn('<nav class="view-toggle" aria-label="Operations areas">', page)
         self.assertEqual(self.references(page), ["acme/widgets#4321"])
-        self.assertIn("/static/dashboard.css", self.render("/operations", {"area": ["usage"]}))
 
     def test_a_github_row_shows_its_number_and_a_jira_row_its_key(self):
         prs = self.trackers(view="prs")
