@@ -226,16 +226,24 @@ class RemediationFailure(unittest.TestCase):
         self.assertIn(f"  FAILED  cp ", out, out + result.stderr)
         self.assertEqual(plist.read_text(), "<plist>older</plist>\n")
         self.assertEqual(record.read_text(), before)
+        # The old job went out before the copy and comes back on the old plist.
         self.assertEqual([line for line in self.log(self.launchctl_log)
-                          if line.startswith(("bootout ", "bootstrap "))], [], out)
+                          if line.startswith(("bootout ", "bootstrap "))],
+                         [f"bootout gui/{os.getuid()}/{label}", f"bootstrap gui/{os.getuid()} {plist}"], out)
         self.assertEqual(result.returncode, 1)
 
     def test_a_stale_agent_whose_old_job_will_not_boot_out_is_not_bootstrapped_over(self):
+        # The copy waits for the bootout: a new plist under the old loaded job
+        # would read "ok" on the next run while launchd runs the old one.
         label, plist = self.stale_agent()
+        record = self.state / f"installed/agents_{label}.sha"
+        before = record.read_text()
         write_exec(self.stubs / "launchctl", '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$LAUNCHCTL_LOG"\n'
                    'case "$1" in bootout) exit 5 ;; esac\nexit 0\n')
         result = self.run_verb("update", "agents", "--apply")
         out = result.stdout
+        self.assertEqual(plist.read_text(), "<plist>older</plist>\n", out)
+        self.assertEqual(record.read_text(), before)
         self.assertIn(f"  FAILED  launchctl bootout gui/", out, out + result.stderr)
         self.assertIn(f"/{label} (exit 5)\n", out)
         self.assertEqual([line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")], [], out)
@@ -305,6 +313,40 @@ class RemediationFailure(unittest.TestCase):
         self.assertIn("  FAILED  ", out)
         self.assertFalse(live.exists())
         self.assertFalse((self.state / "installed/envs_local-notify.sha").exists(), out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_failed_template_read_is_not_an_append(self):
+        # sed piped into head reported head's status: a failed read of the
+        # template appended nothing and still recorded the template.
+        template = self.config / "machine-setup/envs/personal/local-notify.env"
+        template.parent.mkdir(parents=True)
+        template.write_text("A=1\nB=2\n")
+        live = self.config / "notify/.env"
+        live.parent.mkdir(parents=True)
+        live.write_text("A=1\n")
+        record = self.state / "installed/envs_local-notify.sha"
+        record.parent.mkdir(parents=True)
+        older = sha("A=1\n")
+        record.write_text(older + "\n")
+        write_exec(self.stubs / "sed", failing("sed"))
+        result = self.run_verb("update", "envs", "--apply", FAIL_TARGET=str(template))
+        out = result.stdout
+        self.assertIn(f"  FAILED  append B to {live} (exit 1)\n", out, out + result.stderr)
+        self.assertEqual(record.read_text().strip(), older)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_record_that_cannot_be_written_is_reported_and_the_run_goes_on(self):
+        # A file where the record folder belongs: mkdir fails. Under set -e
+        # that ended the run with no FAILED line.
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "installed").write_text("")
+        first = self.dotfile(".gitconfig", "[user]\n\tname = Example\n")
+        second = self.dotfile(".config/gh/config.yml", "git_protocol: ssh\n")
+        result = self.run_verb("update", "dotfiles", "--apply")
+        out = result.stdout
+        self.assertIn("  FAILED  record_hash dotfiles/.gitconfig (exit 1)\n", out, out + result.stderr)
+        self.assertIn("  FAILED  record_hash dotfiles/.config/gh/config.yml (exit 1)\n", out)
+        self.assertTrue(first.exists() and second.exists(), out)
         self.assertEqual(result.returncode, 1)
 
     def claude(self, fail):

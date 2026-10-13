@@ -294,13 +294,14 @@ INSTALLED_DIR="$STATE_DIR/installed"
 state_key() { printf '%s' "$1" | tr '/ ' '__'; }
 
 # Only under --apply: a dry run must not leave state behind that changes what
-# the next run decides.
+# the next run decides. A record that cannot be written is reported like a
+# failed step and the run goes on: under set -e it ended the run.
 record_hash() { # key, file
   [ "$APPLY" -eq 1 ] || return 0
   [ -f "$2" ] || return 0
-  mkdir -p "$INSTALLED_DIR"
-  shasum -a 256 < "$2" | awk '{print $1}' > "$INSTALLED_DIR/$(state_key "$1").sha"
-  return 0
+  { mkdir -p "$INSTALLED_DIR" &&
+    shasum -a 256 < "$2" | awk '{print $1}' > "$INSTALLED_DIR/$(state_key "$1").sha"; } ||
+    note_failure "record_hash $1" "$?"
 }
 
 has_record() { # key
@@ -778,8 +779,10 @@ env_append() { # src, dst, key...
   ea_dst=$2
   shift 2
   backup_file "$ea_dst" || return
+  # One sed, no pipe: a pipe into head reported head's status, so a failed
+  # read of the template counted as an append.
   for k in "$@"; do
-    sed -n "s/^[[:space:]]*\($k=.*\)/\1/p" "$ea_src" | head -1 >> "$ea_dst" || return
+    sed -n "/^[[:space:]]*$k=/{s/^[[:space:]]*//p;q;}" "$ea_src" >> "$ea_dst" || return
   done
 }
 
@@ -1303,33 +1306,35 @@ stage_agents() {
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
-          if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
-            record_hash "agents/$label" "$dst"
-            # launchd holds the plist it was handed; a replaced file on disk
-            # changes nothing until the job is booted out and back in.
-            if agent_bootout "$label"; then
-              run launchctl bootstrap "gui/$(id -u)" "$dst"
+          # launchd holds the plist it was handed, so the old job goes out
+          # before the file changes: a job that will not go out keeps its
+          # old plist, and the next run finds the same STALE and retries.
+          # A failed copy loads the old plist back and records nothing.
+          if run_ok backup_file "$dst" && agent_bootout "$label"; then
+            if run_ok cp "$src" "$dst"; then
+              record_hash "agents/$label" "$dst"
             fi
+            run launchctl bootstrap "gui/$(id -u)" "$dst"
           fi
       elif has_record "agents/$label"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $label — edited here; --force overwrites (backup kept)"
-            if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
-              record_hash "agents/$label" "$dst"
-              if agent_bootout "$label"; then
-                run launchctl bootstrap "gui/$(id -u)" "$dst"
+            if run_ok backup_file "$dst" && agent_bootout "$label"; then
+              if run_ok cp "$src" "$dst"; then
+                record_hash "agents/$label" "$dst"
               fi
+              run launchctl bootstrap "gui/$(id -u)" "$dst"
             fi
           else
             echo "  DIFFERS $label — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $label — nothing recorded; --force overwrites (backup kept)"
-          if run_ok backup_file "$dst" && run_ok cp "$src" "$dst"; then
-            record_hash "agents/$label" "$dst"
-            if agent_bootout "$label"; then
-              run launchctl bootstrap "gui/$(id -u)" "$dst"
+          if run_ok backup_file "$dst" && agent_bootout "$label"; then
+            if run_ok cp "$src" "$dst"; then
+              record_hash "agents/$label" "$dst"
             fi
+            run launchctl bootstrap "gui/$(id -u)" "$dst"
           fi
       else
           echo "  DIFFERS $label — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
