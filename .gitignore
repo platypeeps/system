@@ -96,3 +96,6 @@ local-ai-apps/profiles/*.inv
 # Vale packages fetched by `vale sync`; the vocabulary under config/ is tracked
 .vale/styles/*
 !.vale/styles/config/
+
+# Hallmark design log: the main checkout keeps it; every PR appended to it and conflicted (sd:3720).
+.hallmark/log.json
