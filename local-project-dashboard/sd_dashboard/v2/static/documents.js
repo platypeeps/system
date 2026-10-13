@@ -161,7 +161,8 @@ const tagDraft = () => tagOf(document.getElementById('tag-in')?.value) || lastTa
 const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
 // build: copy only. Filing the item and queueing the runner are two writes, and no verb deletes an item, so no Undo is declared.
-const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Run', key: 'r', icon: 'plus', risk: 'undo', primary: () => true, executes: false,
+// The design's Run, r and undo read as a run with an Undo, and r is Render on a document (sd:3525): Request, safe, no key.
+const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', icon: 'plus', risk: 'safe', primary: () => true, executes: false,
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
   run: () => 'Copy the line: the dashboard does not file document requests yet' };
 // Tag asks for the tag in a field filled with the one typed under Tags, else the last one applied, so no tag lands unseen

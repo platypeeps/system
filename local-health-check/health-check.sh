@@ -3,14 +3,13 @@
 # exits, disk SMART, memory pressure and swap, unified-log fault spikes,
 # new launch daemons/agents vs a baseline, network sanity, and the `status`
 # verb of every sibling tool that declares convention 6. Findings with
-# suggested fixes are emailed via local-notify.
+# suggested fixes go to the run's report, which Reports and Today show.
 # Usage: health-check.sh run|check|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/config.sh
 . "$DIR/../lib/config.sh"
 
-NOTIFY="$DIR/../local-notify/notify.sh"
 STATE="${HEALTH_CHECK_STATE:-$HOME/.config/health-check}"
 # Where the status sweep looks for sibling tools. A seam for a fixture tree,
 # not a per-machine setting: on every real machine it is this checkout.
@@ -23,8 +22,8 @@ SYSTEM_REPORTS="${HEALTH_CHECK_SYSTEM_REPORTS:-/Library/Logs/DiagnosticReports}"
 LABEL_PREFIX="$(st_label_prefix)"
 
 case "${1:-}" in
-  run)   EMAIL=1 ;;
-  check) EMAIL=0 ;;
+  run)   REPORT=1 ;;
+  check) REPORT=0 ;;
   test)
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
@@ -33,11 +32,11 @@ case "${1:-}" in
     cat <<'HELPEOF'
 usage: health-check.sh run|check|test
 
-  run    run all checks and email findings + suggested fixes through
-         local-notify's email channel (what the health-check-nightly cron
-         job runs). No email when everything is clean. Exits 1 only when
-         the email could not be delivered.
-  check  print the same report to stdout without emailing.
+  run    run all checks and print findings + suggested fixes (what the
+         health-check-nightly cron job runs). With findings it prints an
+         SD_REPORT_ATTENTION line, so the run's report reaches Reports and
+         Today; nothing is mailed.
+  check  print the same report without that line.
   test   run the status sweep's unittest suite (tests/) against a fixture
          tree of scratch tools; extra arguments go to unittest (-v).
 
@@ -45,8 +44,7 @@ checks:
   - app crash reports (.ips) from the last day, kernel panics from the
     last week (~/Library and /Library DiagnosticReports)
   - launchd: every loaded $SYSTEM_TOOLS_LABEL_PREFIX.* (default
-    local.system-tools.*) or com.platypeeps.* job/agent whose last exit
-    was nonzero
+    local.system-tools.*) job/agent whose last exit was nonzero
   - disk0 SMART status, NVMe wear/media errors via smartctl if installed
   - memory pressure level and swap in use
   - unified-log fault volume: flagged when it more than doubles against
@@ -242,8 +240,7 @@ fi
 # --- launchd job health --------------------------------------------------
 
 uid=$(id -u)
-for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist \
-             "$HOME"/Library/LaunchAgents/com.platypeeps.*.plist; do
+for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist; do
   [ -e "$plist" ] || continue
   label=$(basename "$plist" .plist)
   out=$(launchctl print "gui/$uid/$label" 2>/dev/null) || {
@@ -526,7 +523,7 @@ info "status sweep: $declared tool(s) declared, $checked checked"
 # runs nothing in this repository, so there is no recursion to stop, only a
 # doubled bill to avoid.
 JEV="${HEALTH_CHECK_JEV:-$DIR/../local-jev/jev.sh}"
-# One id for every jev call this run makes, the report's notify.sh included,
+# One id for every jev call this run makes,
 # so the ledger groups them (sd:2953). A run that started this one keeps its own.
 [ -n "${JEV_RUN:-}" ] || \
   JEV_RUN="health-check-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
@@ -728,16 +725,11 @@ if [ -s "$INFO" ]; then
   cat "$INFO"
 fi
 
-if [ "$EMAIL" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  n=$(grep -c '^- ' "$FINDINGS" | tr -d ' ')
-  subject="health check: $n finding(s) on $(hostname -s)"
-  body=$(printf 'health check — %s on %s\nuptime: %s\n\nFindings and suggested fixes:\n%s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$uptime_s" "$(cat "$FINDINGS")")
-  if [ -s "$INFO" ]; then
-    body=$(printf '%s\nNotes:\n%s\n' "$body" "$(cat "$INFO")")
-  fi
-  if ! sh "$NOTIFY" -t "$subject" -k status -F -c ntfy,email -b "$body"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
-  fi
+# The report above is the job log; this line makes the run's report one that
+# needs attention, so Reports and Today carry the findings (sd:3454).
+# The ingest folds a reason it already holds open into that report and keeps
+# its first body. The reason ends in the date, as weekly-digest's does, so each
+# day's run files its own report and no fold hides another failure (sd:3537).
+if [ "$REPORT" -eq 1 ] && [ -s "$FINDINGS" ]; then
+  echo "SD_REPORT_ATTENTION: health check: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s), $(date '+%Y-%m-%d')"
 fi

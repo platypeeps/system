@@ -64,8 +64,8 @@ advances `scheduled` to the next occurrence when an instance completes.
 
 Goes through `local-notify`'s `email` channel with `-f html` (Gmail via the
 local `google_workspace_mcp` server). No due tasks = no email. The job exits
-1 only when the email could not be delivered, which triggers the cron
-failure push, so a digest never vanishes silently.
+1 only when the email could not be delivered, so the run's report needs
+attention on Today and a digest never vanishes silently.
 
 All three buttons go through `local-task-actions`, fronted by its
 Tailscale Funnel URL, so they work from any device; links expire after 7

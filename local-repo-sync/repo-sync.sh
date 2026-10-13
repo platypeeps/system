@@ -90,8 +90,6 @@ case "${1:-}" in
     ;;
 esac
 
-NOTIFY="$DIR/../local-notify/notify.sh"
-
 # Emits "<subdir> <owner/repo>" lines with comments and blanks stripped,
 # separators collapsed to one space, and each entry emitted once in the order
 # it first appears. Every caller either iterates this list or counts it, so a
@@ -2014,7 +2012,7 @@ hygiene() {
 # numbers only: the line's class, its counts, and its tip's age in days. No
 # repository, branch, sha, path or lock reason is sent.
 JEV="${REPO_SYNC_JEV:-$DIR/../local-jev/jev.sh}"
-# One id for every jev call this run makes, the reports' notify.sh included,
+# One id for every jev call this run makes,
 # so the ledger groups them (sd:2953). A run that started this one keeps its own.
 [ -n "${JEV_RUN:-}" ] || \
   JEV_RUN="repo-sync-$(date -u +%Y%m%dT%H%M%S)-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
@@ -2135,43 +2133,37 @@ case "$1" in
     reconcile
     ;;
   nightly)
-    # Cron flavor: reconcile the conf against disk first (emailing the diff
-    # when the fleet changed), then sync; a sync failure emails the summary
-    # instead of relying on someone reading the log. Exits 1 when an email
-    # could not be sent, and when half or more of the fleet failed (the
-    # check at the end of this case says why that threshold), so the cron
-    # failure push covers a lost report or an outage, not mere findings.
+    # Cron flavor: reconcile the conf against disk first, then sync, then
+    # hygiene. A changed fleet, a failed repo or a hygiene finding prints an
+    # SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today
+    # instead of relying on someone reading the log; nothing is mailed
+    # (sd:3454). Exits 1 when half or more of the fleet failed (the check at
+    # the end of this case says why that threshold): an outage, not findings.
     TMPD=$(mktemp -d)
     FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
     DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
-    EMAIL_FAILED=0
     SYNC_FAILED=0
+    # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
+    ATTENTION=""
 
     RECON="$TMPD/recon"
     reconcile > "$RECON" 2>&1
     cat "$RECON"
 
-    # A MISMATCH notifies too. Before this path existed, such a checkout made
-    # $ADDED non-empty every night and so emailed every night -- badly, as a
-    # spurious list change, but the operator did hear about it. Reporting it
-    # to stdout alone would have bought silence with the fix: a green night
-    # whose only trace is a cron log nobody reads, which is how the loop this
-    # replaced went unnoticed for four nights. It cannot be auto-resolved, so
-    # it repeats until a human renames the directory or the repo.
-    if [ -s "$ADDED" ] || [ -s "$REMOVED" ] || [ -s "$MISMATCHED" ]; then
-      if [ -s "$ADDED" ] || [ -s "$REMOVED" ]; then
-        subject="repo-sync: repo list changed on $(hostname -s)"
-      else
-        subject="repo-sync: $(wc -l < "$MISMATCHED" | tr -d ' ') checkout(s) need a rename on $(hostname -s)"
-      fi
-      body=$(printf 'repo-sync reconcile — %s on %s\n\n%s\n' \
-        "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$RECON")")
-      if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
-        echo "list-change email FAILED" >&2
-        EMAIL_FAILED=1
-      fi
+    # A MISMATCH needs attention too. Before this path existed, such a
+    # checkout made $ADDED non-empty every night and so reported every night
+    # -- badly, as a spurious list change, but the operator did hear about
+    # it. Reporting it to stdout alone would have bought silence with the
+    # fix: a green night whose only trace is a cron log nobody reads, which
+    # is how the loop this replaced went unnoticed for four nights. It cannot
+    # be auto-resolved, so it repeats until a human renames the directory or
+    # the repo.
+    if [ -s "$ADDED" ] || [ -s "$REMOVED" ]; then
+      ATTENTION="repo-sync: repo list changed on $(hostname -s)"
+    elif [ -s "$MISMATCHED" ]; then
+      ATTENTION="repo-sync: $(wc -l < "$MISMATCHED" | tr -d ' ') checkout(s) need a rename on $(hostname -s)"
     fi
 
     SSH_NOTE="$TMPD/ssh"
@@ -2182,52 +2174,35 @@ case "$1" in
     if ! sync > "$OUT" 2>&1; then
       cat "$OUT"
       SYNC_FAILED=1
-      n=$(wc -l < "$FAILLOG" | tr -d ' ')
-      subject="repo-sync: $n repo(s) failed on $(hostname -s)"
-      # The SSH note goes first: when it names a locked key, it is the cause
-      # of most of the list below. A command substitution drops trailing
-      # newlines, so the blank line after it is added here.
-      ssh_part=$(cat "$SSH_NOTE")
-      [ -z "$ssh_part" ] || ssh_part="$ssh_part
-
-"
-      body=$(printf 'repo-sync nightly report — %s on %s\n\n%sFailed repos:\n%s\n\nLast output:\n%s\n' \
-        "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" \
-        "$ssh_part" \
-        "$(sed 's/^/  /' "$FAILLOG")" \
-        "$(tail -60 "$OUT")")
-      if ! sh "$NOTIFY" -t "$subject" -k status -F -c ntfy,email -b "$body"; then
-        echo "failure email FAILED" >&2
-        EMAIL_FAILED=1
-      fi
+      # The SSH note above names a locked key when that is the cause of
+      # most of this list.
+      echo "failed repos:"
+      sed 's/^/  /' "$FAILLOG"
+      # Failed repos outrank a list change as the report's reason.
+      ATTENTION="repo-sync: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s) failed on $(hostname -s)"
     else
       cat "$OUT"
     fi
 
-    # Hygiene after sync, so it sees the fleet as sync left it. It mails its
-    # report when it changed anything, failed, or lists something for the
-    # operator, like the reconcile diff; a clean sweep stays silent. Its own
-    # failures are in the report and do not fail the job.
+    # Hygiene after sync, so it sees the fleet as sync left it. Its report
+    # needs attention when it changed anything, failed, or lists something
+    # for the operator, like the reconcile diff; a clean sweep stays silent.
+    # Its own failures are in the report and do not fail the job.
     HYG_TMP="$TMPD/hygiene"; mkdir -p "$HYG_TMP"
     HYG_OUT="$TMPD/hygiene.out"
     ( hygiene --apply ) > "$HYG_OUT" 2>&1 || true
     cat "$HYG_OUT"
-    if [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; then
-      subject="repo-sync: hygiene report on $(hostname -s)"
-      body=$(printf 'repo-sync hygiene --apply — %s on %s\n\n%s\n' \
-        "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$HYG_OUT")")
-      if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
-        echo "hygiene email FAILED" >&2
-        EMAIL_FAILED=1
-      fi
+    if [ -z "$ATTENTION" ] && { [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; }; then
+      ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
-    # After the mail, so Jev never delays or changes it.
+    # The ingest folds a reason it already holds open into that report and
+    # keeps its first body. The reason ends in the date, as weekly-digest's
+    # does, so each day's run files its own report and no fold hides another
+    # failure (sd:3537).
+    [ -z "$ATTENTION" ] || echo "SD_REPORT_ATTENTION: $ATTENTION, $(date '+%Y-%m-%d')"
+    # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true
 
-    if [ "$EMAIL_FAILED" -ne 0 ]; then
-      echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-      exit 1
-    fi
     # A sync that failed the whole fleet used to exit 0, because only a dead
     # email was treated as job failure. On the work machine that hid four
     # straight nights of 41-of-41 failures: no failures.log entry, no wrapper
@@ -2241,7 +2216,7 @@ case "$1" in
     n_failed=$(wc -l < "$FAILLOG" | tr -d ' ')
     n_total=$(repo_list | wc -l | tr -d ' ')
     if [ "$SYNC_FAILED" -ne 0 ] && [ "$n_total" -gt 0 ] && [ $((n_failed * 2)) -ge "$n_total" ]; then
-      echo "sync failed $n_failed of $n_total repos — exiting 1 so the cron failure push fires" >&2
+      echo "sync failed $n_failed of $n_total repos — exiting 1, an outage, not findings" >&2
       exit 1
     fi
     ;;
@@ -2306,13 +2281,13 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              in-use worktree. Without --apply it exits 1 when it found
              anything; with --apply it exits 1 only when an action failed.
              It is not a status subcommand.
-  nightly    reconcile (emailing the diff when the repo list changed),
-             then sync (emailing the failure summary), then hygiene
-             --apply (emailing its report when it changed, listed or
-             failed anything); this is what the repo-sync-nightly cron job
+  nightly    reconcile, then sync, then hygiene --apply; a changed repo
+             list, a failed repo or a hygiene report that changed, listed
+             or failed anything prints an SD_REPORT_ATTENTION line for
+             Reports and Today; this is what the repo-sync-nightly cron job
              runs. The confs keep no git history: nightly rewrites them
-             and commits nothing. Exits 1 when an email could not be
-             delivered or when half or more of the fleet failed.
+             and commits nothing. Exits 1 when half or more of the fleet
+             failed.
   refresh [path ...]
              drain the lanes first: hold every lane's runner lock under the
              lane root (SD_LANE_ROOT, else sd.lane_root, else

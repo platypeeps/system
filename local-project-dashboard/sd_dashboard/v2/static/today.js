@@ -250,14 +250,10 @@
     document.addEventListener('keydown', e => {
       if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest('.actmenu')) return;
       if (e.key === '/') { e.preventDefault(); input.focus(); }
-      if (e.key === 'j' || e.key === 'k') {
-        const vis = [...$('rows').querySelectorAll('tr[data-id]')].filter(tr => tr.getClientRects().length); if (!vis.length) return;
-        const i = vis.findIndex(tr => tr.getAttribute('aria-selected') === 'true');
-        const n = vis[Math.max(0, Math.min(vis.length - 1, i + (e.key === 'j' ? 1 : -1)))];
-        select(n.dataset.id, false); n.scrollIntoView({ block: 'nearest' });
-      }
-      if (e.key === 'Escape' && srcFilter) clearSource();
     });
+    // The shell walks the rows on j / k, and Esc clears the source filter through clear() (sd:3525): the page binds neither.
+    window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(id, false),
+      clear: () => !!srcFilter && (clearSource(), true) };
 
     reading = shell.read({
       source: '/api/now', what: 'the Now rows', adopt, clear, draw,

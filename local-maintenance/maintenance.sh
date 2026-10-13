@@ -3,7 +3,7 @@
 # (Sundays), backup freshness, certificate expiry, log rotation, disk space.
 # Checks come from maintenance.conf plus maintenance.<profile>.conf in
 # <config>/maintenance/ (outside the checkout);
-# findings are emailed via local-notify.
+# findings go to the run's report, which Reports and Today show.
 # Usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,7 +11,6 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 CONF_DIR="$(st_config_dir maintenance)"
 CONF="$CONF_DIR/maintenance.conf"
-NOTIFY="$DIR/../local-notify/notify.sh"
 
 # Some checks only make sense on one machine, so they live in
 # maintenance.<profile>.conf, read after the common file. The profile comes from
@@ -160,11 +159,12 @@ case "${1:-}" in
 usage: maintenance.sh run|check|uv-prune|uv-prune-plist|test
 
   run    run all checks, apply the safe fixes (rotate oversized logs; docker
-         system prune on Sundays), and email the findings that need a human
-         via local-notify's email channel (what the maintenance-nightly cron
-         job runs). Exits 1 only when that email could not be delivered.
+         system prune on Sundays), and print the findings that need a human
+         (what the maintenance-nightly cron job runs). With findings it prints
+         an SD_REPORT_ATTENTION line, so the run's report reaches Reports and
+         Today; nothing is mailed.
   check  read-only: run all checks and print findings and would-be fixes
-         without changing anything or emailing.
+         without changing anything.
   uv-prune
          prune uv's cache (what the uv-cache-prune login agent runs).
          Pauses the LaunchAgents in UV_PRUNE_PAUSE (default
@@ -214,8 +214,8 @@ fi
 
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
-FINDINGS="$TMPD/findings"   # needs a human — emailed
-ACTIONS="$TMPD/actions"     # fixed automatically — footer of the email
+FINDINGS="$TMPD/findings"   # needs a human — the report needs attention
+ACTIONS="$TMPD/actions"     # fixed automatically — listed in the report
 : > "$FINDINGS"; : > "$ACTIONS"
 
 finding() { echo "- $1" >> "$FINDINGS"; }
@@ -381,7 +381,7 @@ S4S="$DIR/../local-scan-for-secrets/scan-for-secrets.sh"
 if [ -x "$S4S" ]; then
   # if, not `[ -n "$x" ] && action ...`: under set -e an AND-list that ends
   # false at statement level takes the whole script with it, and on a night
-  # with nothing to prune that would kill the report before it is emailed.
+  # with nothing to prune that would kill the report before it is printed.
   if [ "$APPLY" -eq 1 ]; then
     pruned=$(sh "$S4S" prune --apply 2>&1 | sed -n 's/^  pruned //p')
     if [ -n "$pruned" ]; then
@@ -409,16 +409,11 @@ if [ ! -s "$FINDINGS" ] && [ ! -s "$ACTIONS" ]; then
   echo "all checks clean"
 fi
 
+# The report above is the job log; this line makes the run's report one that
+# needs attention, so Reports and Today carry the findings (sd:3454).
+# The ingest folds a reason it already holds open into that report and keeps
+# its first body. The reason ends in the date, as weekly-digest's does, so each
+# day's run files its own report and no fold hides another failure (sd:3537).
 if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  n=$(grep -c '^- ' "$FINDINGS" | tr -d ' ')
-  subject="maintenance: $n finding(s) on $(hostname -s)"
-  body=$(printf 'maintenance nightly report — %s on %s\n\nFindings:\n%s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)" "$(cat "$FINDINGS")")
-  if [ -s "$ACTIONS" ]; then
-    body=$(printf '%s\nActions taken:\n%s\n' "$body" "$(cat "$ACTIONS")")
-  fi
-  if ! sh "$NOTIFY" -t "$subject" -k status -c ntfy,email -b "$body"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
-  fi
+  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s), $(date '+%Y-%m-%d')"
 fi
