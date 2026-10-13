@@ -48,8 +48,8 @@ class Stand:
             raise self.kept
         return self.kept
 
-    def pages(self):
-        return registry.PAGES + (
+    def pages(self, alone=False):
+        return (() if alone else registry.PAGES) + (
             Page(section="Live", routes=("/example-live",), html="tasks.html", item="sd:3446",
                  api=(Api("/api/example-live", self.read_live),), count="/api/example-live", live=True),
             Page(section="Kept", routes=("/example-kept",), html="tasks.html", item="sd:3446",
@@ -68,7 +68,8 @@ class TheRule(unittest.TestCase):
 class TheBadges(unittest.TestCase):
     def setUp(self):
         self.stand = Stand()
-        patcher = patch.object(registry, "PAGES", self.stand.pages())
+        # The two example pages alone: a real page's read needs a database these cases do not open.
+        patcher = patch.object(registry, "PAGES", self.stand.pages(alone=True))
         patcher.start()
         self.addCleanup(patcher.stop)
         self.badges = v2.Badges()
@@ -106,10 +107,14 @@ class TheBadges(unittest.TestCase):
             self.assertEqual(self.badges.read(Read())["Kept"]["state"], "unknown", shapeless)
 
     def test_an_older_read_never_replaces_a_newer_one(self):
-        # Steps: two reads of one page finish out of order; the badge keeps the one read later.
-        self.badges.remember("/api/example-kept", self.stand.kept, "2026-10-13T12:05:00Z")
-        self.badges.remember("/api/example-kept", {"attention": {"state": "ok", "n": 0, "what": "x"}}, "2026-10-13T12:04:00Z")
-        self.assertEqual(self.badges.read(Read())["Kept"]["at"], "2026-10-13T12:05:00Z")
+        # Steps: two reads of one page start in one second and finish out of order; the badge keeps the one started later.
+        older, newer = self.badges.ticket(), self.badges.ticket()
+        self.badges.remember("/api/example-kept", self.stand.kept, "2026-10-13T12:05:00Z", newer)
+        self.badges.remember("/api/example-kept", {"attention": {"state": "ok", "n": 0, "what": "x"}}, "2026-10-13T12:05:00Z", older)
+        self.assertEqual(self.badges.read(Read())["Kept"]["state"], "warning")
+        # A read with no ticket starts and ends now, so it is the newest.
+        self.badges.remember("/api/example-kept", None, "2026-10-13T12:05:00Z")
+        self.assertEqual(self.badges.read(Read())["Kept"]["state"], "unknown")
 
     def test_a_live_read_that_fails_is_unknown_and_the_rest_still_show(self):
         self.badges.remember("/api/example-kept", self.stand.kept, "2026-10-13T12:00:00Z")
@@ -184,6 +189,15 @@ class TheScript(BrowserSession):
                 self.get("/api/example-kept")
             except OSError:
                 pass  # the handler's exception drops the connection; the badge is what this test reads
+        self.assertEqual(counts(self.get("/ui/sections.js")[2])["Kept"]["state"], "unknown")
+
+    def test_a_counted_read_whose_database_did_not_open_leaves_unknown(self):
+        self.get("/api/example-kept")
+        self.assertEqual(counts(self.get("/ui/sections.js")[2])["Kept"]["state"], "warning")
+        with patch("sd_dashboard.server.sd_db.connect", side_effect=FileNotFoundError("no database")):
+            self.assertEqual(self.request("/api/example-kept")[0], 503)
+            self.assertEqual(counts(self.get("/ui/sections.js")[2])["Kept"]["state"], "warning", "no session, no write")
+            self.assertEqual(self.get("/api/example-kept")[0], 503)
         self.assertEqual(counts(self.get("/ui/sections.js")[2])["Kept"]["state"], "unknown")
 
     def test_a_v2_bookmark_still_reaches_it(self):

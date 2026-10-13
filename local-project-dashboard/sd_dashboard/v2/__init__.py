@@ -29,6 +29,7 @@ names a page or an asset redirects to its new one (`moved`).
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -116,29 +117,38 @@ class Badges:
     A page names the read whose document carries its `attention` (`Page.count`). A `live` page's read runs again on
     each `/ui/sections.js` request; every other page shows what its last read carried, kept here with that read's
     time, so the rail never waits on the network, launchd or a slow file walk. A failed or shapeless read leaves
-    `unknown`, never the value before it, and an older read never replaces a newer one. The values live in memory:
-    a restarted server shows no such badge until the page is read again.
+    `unknown`, never the value before it, and a read that started earlier never replaces one that started later: each
+    read takes a ticket as it starts, since two reads can start in one second. The values live in memory: a restarted
+    server shows no such badge until the page is read again.
     """
 
     def __init__(self):
-        self._last: dict[str, dict] = {}
+        self._last: dict[str, tuple[int, dict]] = {}
         self._lock = threading.Lock()
+        self._tickets = itertools.count(1)
 
-    def remember(self, path: str, document, now: str) -> None:
-        """Keep the badge in `document`, read at `now` from `path`, for the page that names `path` as its count."""
+    def ticket(self) -> int:
+        """The order of a read that starts now."""
+        with self._lock:
+            return next(self._tickets)
+
+    def remember(self, path: str, document, now: str, ticket: int | None = None) -> None:
+        """Keep the badge in `document`, read at `now` from `path`, for the page that names `path` as its count.
+        `ticket` is the read's, taken as it started; none means a read that starts and ends now."""
         page = next((entry for entry in registry.PAGES if entry.count == path and not entry.live), None)
         if page is None:
             return
         found = _attention(document) or {"state": "unknown", "n": 0, "what": f"{page.section} read failed"}
         with self._lock:
-            if self._last.get(page.section, {}).get("at", "") <= now:
-                self._last[page.section] = {**found, "at": now}
+            ticket = next(self._tickets) if ticket is None else ticket
+            if self._last.get(page.section, (0, None))[0] < ticket:
+                self._last[page.section] = (ticket, {**found, "at": now})
 
     def read(self, read, connected: bool = True) -> dict:
         """Section -> badge: a live page's from a read made now, every other page's last one. With no database
         (`connected` false) a live page is unknown and its read does not run."""
         with self._lock:
-            found = {section: dict(value) for section, value in self._last.items()}
+            found = {section: dict(value) for section, (_, value) in self._last.items()}
         for entry in registry.PAGES:
             if not (entry.count and entry.live):
                 continue

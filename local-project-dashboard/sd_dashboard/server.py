@@ -543,6 +543,8 @@ class Dashboard(BaseHTTPRequestHandler):
         try:
             connection = sd_db.connect(self.database, write=False)
         except (FileNotFoundError, SdDbError, sqlite3.Error) as problem:
+            if self._session(context):
+                self.badges.remember(path, None, self.clock())  # a counted read that could not run is unknown (sd:3446)
             return self._send(
                 503, error_page(503, str(problem)).encode("utf-8"),
                 "text/html; charset=utf-8",
@@ -593,14 +595,14 @@ class Dashboard(BaseHTTPRequestHandler):
                     if split.query:
                         return self._json(400, {"error": "Now does not accept query parameters."})
                     # Every page's rail shows what this read carried (sd:3446); a read that raised leaves its badge unknown.
-                    now = self.clock()
+                    now, ticket = self.clock(), self.badges.ticket()
                     try:
                         document = now_screen.document(connection, now=now, fleet=self.fleet_backend,
                                                        jobs=self.operations_backend, jev=self.jev_command)
                     except BaseException:
-                        self.badges.remember(path, None, now)
+                        self.badges.remember(path, None, now, ticket)
                         raise
-                    self.badges.remember(path, document, now)
+                    self.badges.remember(path, document, now, ticket)
                     return self._json(200, document)
                 if path == "/api/usage":
                     from .usage_screen import document
@@ -745,14 +747,14 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(403, {"error": f"Open a dashboard page before reading {page.section}."})
         if split.query and not entry.query:
             return self._json(400, {"error": f"{page.section} does not accept query parameters."})
-        read = self._read(connection, split.path, parameters)
+        read, ticket = self._read(connection, split.path, parameters), self.badges.ticket()
         try:
             answer = entry.read(read)
         except BaseException:
-            self.badges.remember(split.path, None, read.now)
+            self.badges.remember(split.path, None, read.now, ticket)
             raise
         status, document = answer if isinstance(answer, tuple) else (200, answer)
-        self.badges.remember(split.path, document if status == 200 else None, read.now)
+        self.badges.remember(split.path, document if status == 200 else None, read.now, ticket)
         return self._json(status, document)
 
     def _read(self, connection, path, parameters):
