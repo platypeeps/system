@@ -427,6 +427,16 @@ side_branch_diverged() {
   echo "on $d_branch, $1 ahead, $2 behind $d_up"
 }
 
+# Prints "on <branch>" when checkout $1 is on a local branch with no upstream
+# and returns 0; returns 1 otherwise. `git pull` fails there with "no tracking
+# information", and the operator keeps some checkouts that way on purpose
+# (sd:3744).
+local_branch_no_upstream() {
+  n_branch=$(git -C "$1" symbolic-ref -q --short HEAD) || return 1
+  git -C "$1" rev-parse -q --abbrev-ref '@{u}' > /dev/null 2>&1 && return 1
+  echo "on $n_branch"
+}
+
 # A satellite follows the hub (sd:3100): `$HOME/.config/sd/hub.json`, the
 # file sd_db's hub.py reads, makes this machine one.
 is_satellite() {
@@ -491,7 +501,17 @@ sync() {
       fi
     elif [ -d "$target/.git" ]; then
       echo "=== refreshing $full_repo"
-      if state=$(side_branch_diverged "$target"); then
+      if state=$(local_branch_no_upstream "$target"); then
+        # Fetched so its refs stay fresh, never pulled. A failed fetch is an
+        # unknown result, so it fails like any other repo.
+        if bound_step 300 git -C "$target" fetch -q < /dev/null; then
+          echo "$state, no upstream; fetched, not pulled"
+          echo "$full_repo $state" >> "$KEPTLOG"
+        else
+          echo "!!! failed: $full_repo (fetch; $state)" >&2
+          echo "$full_repo" >> "$FAILLOG"
+        fi
+      elif state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
         echo "$full_repo $state" >> "$DIVLOG"
       elif ! { bound_step 600 git -C "$target" pull --ff-only < /dev/null \
@@ -514,6 +534,10 @@ sync() {
   if [ -s "$PINLOG" ]; then
     echo "pinned: $(wc -l < "$PINLOG" | tr -d ' ') checkout(s), not pulled"
     sed 's/^/  /' "$PINLOG"
+  fi
+  if [ -s "$KEPTLOG" ]; then
+    echo "kept: $(wc -l < "$KEPTLOG" | tr -d ' ') checkout(s), on a local branch with no upstream, fetched, not pulled"
+    sed 's/^/  /' "$KEPTLOG"
   fi
   if [ -s "$DIVLOG" ]; then
     echo "diverged: $(wc -l < "$DIVLOG" | tr -d ' ') checkout(s), left alone; rebase or merge by hand"
@@ -2108,7 +2132,8 @@ case "$1" in
     FAILLOG=$(mktemp)
     PINLOG=$(mktemp)
     DIVLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG"' EXIT INT TERM
+    KEPTLOG=$(mktemp)
+    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG" "$KEPTLOG"' EXIT INT TERM
     sync
     ;;
   refresh)
@@ -2158,6 +2183,7 @@ case "$1" in
     FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
     PINLOG="$TMPD/pinlog"; : > "$PINLOG"
     DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
+    KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     SYNC_FAILED=0
     # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
@@ -2259,6 +2285,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              origin/<default>" when it is. A branch other than the default,
              with its own commits, that its upstream moved past is listed
              under "diverged:" and left alone, not failed (sd:3125).
+             A branch with no upstream is fetched, not pulled, and listed
+             under "kept:", not failed (sd:3744).
              A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
              (MISSING) and which sit on a different origin than the conf
