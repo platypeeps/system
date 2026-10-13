@@ -123,7 +123,12 @@ the record just before it starts the services, since a backup stops being a
 rollback point once a service writes. Before `hub-pin` it reads the version
 again; behind the pack's, it pushes nothing.
 
-`refresh` drains the lanes before it moves anything (sd:3099). POSIX sh
+`refresh` drains the lanes before it moves anything (sd:3099). First it
+takes `refresh.lock` in the lane root and waits while another refresh or
+follow holds it (sd:3999): a manual refresh and a lane's post-merge refresh
+once each held part of the lanes and waited for the rest until the bound.
+The second waits rather than skips, since the first may have fetched before
+the merge the second is for. POSIX sh
 cannot hold a flock, so `refresh_drain.py`, a stdlib helper beside the
 script, holds every lane's `runner.lock` under the lane root. The root is
 `SD_LANE_ROOT`, else the `sd.lane_root` setting, else
@@ -155,8 +160,8 @@ A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
 steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
 by hand during a refresh.
 
-The wait is bounded at 45 minutes in total, for the locks and the gate
-together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
+The wait is bounded at 45 minutes in total, for the refresh lock, the lane
+locks and the gate together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
 seconds (default 2700). It prints what it waits on
 when the wait starts and once a minute after that. Past the bound, refresh
 refuses with nothing moved and names the busy lane or the gate. When `sd`

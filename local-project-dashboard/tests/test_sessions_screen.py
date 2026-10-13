@@ -116,7 +116,6 @@ class SessionsArea(FleetCase):
         self.assertEqual(page.count("<h1>"), 1)
         self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
         self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
-        self.assertIn("/static/dashboard.css", self.render("/operations", {"area": ["usage"]}))
 
     def test_the_area_is_in_the_navigation_and_the_subtitle_names_it(self):
         self.shim("ps", "exit 0")

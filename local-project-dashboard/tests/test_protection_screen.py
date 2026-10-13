@@ -217,7 +217,7 @@ class ProtectionScreen(ScreenCase):
         self.assertEqual(v2.SCREENS["Protection"], "/protection")
         self.assertIn("No repositories registered", body)
         self.assertIn("0 protected · 0 unprotected · 0 unknown · last observed never", body)
-        self.assertIn(">Protection</a>", self.render("/operations"))
+        self.assertIn(">Protection</a>", self.render("/classic/contributions"))
 
     def test_the_page_writes_nothing(self):
         self.fleet()

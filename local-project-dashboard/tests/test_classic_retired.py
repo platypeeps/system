@@ -75,9 +75,30 @@ class TheRetiredScreens(ScreenCase):
         self.addCleanup(patcher.stop)
         for area in KEPT_AREAS:
             with self.subTest(area=area):
-                # Trackers draws inside the v2 shell (sd:3586), whose titles end "· system".
-                self.assertRegex(self.render("/operations", {"area": [area]}), r"<title>Operations (— sd|· system)</title>")
-        self.assertIn("<title>Operations — sd</title>", self.render("/operations"))
+                # Every area draws inside the v2 shell (sd:3586), whose titles end "· system".
+                self.assertIn("<title>Operations · system</title>", self.render("/operations", {"area": [area]}))
+        self.assertIn("<title>Operations · system</title>", self.render("/operations"))
+
+    def test_every_kept_area_renders_inside_the_v2_shell_under_its_section(self):
+        """sd:3586 PR 5: Usage under Metrics, Services under Management and Resources under Research join Trackers and
+        Sessions under Today; dashboard.css keeps no rule only these areas drew."""
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sections = {"usage": "Metrics", "services": "Management", "resources": "Research", "trackers": "Today",
+                    "sessions": "Today"}
+        for area in KEPT_AREAS:
+            with self.subTest(area=area):
+                body = self.render("/operations", {"area": [area]})
+                self.assertIn(f'<body data-page="{sections[area]}" data-scope="{sections[area].lower()}">', body)
+                self.assertIn('<div class="shell"><main id="main" class="classic">', body)
+                self.assertNotIn("/static/dashboard.css", body)
+                self.assertEqual(body.count("<h1>"), 1)
+        classic = (PACKAGE / "static/dashboard.css").read_text(encoding="utf-8")
+        classic = re.sub(r"/\*.*?\*/", "", classic, flags=re.DOTALL)
+        for selector in (".tiles", ".tile-", ".chart-burn", ".gauge-", ".usage-", ".operations-grid", ".operation-card",
+                         ".operation-actions", ".operation-request", ".view-toggle"):
+            self.assertNotIn(selector, classic, selector)
 
 
 class ActivityTakesCommands(ScreenCase):
