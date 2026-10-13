@@ -38,11 +38,14 @@ checkout:
 - Each task is one transaction; the item carries the reference
   `obsidian:<vault path>` (`task-ref`, as `sd task add --ref` writes it). A
   task whose reference exists is skipped, so a second run creates nothing.
-- A value the importer cannot read exactly refuses its task, naming the key:
-  escapes in quotes, block or folded scalars, anchors, aliases, tags, flow
-  maps, comments, continuation lines, nested maps, a date that is not one,
-  bytes that are not UTF-8. A refusal writes no reference, so a rerun
-  imports the task once the vault file is fixed.
+- A read value passes only when YAML reads it as the exact string the
+  importer uses; any other refuses its task, naming the key. Refused: a
+  first character that is a YAML indicator, escapes in quotes, null, bool
+  and number forms where a string belongs, comments, leading or trailing
+  whitespace, an empty value (an empty `title` takes the file name),
+  continuation lines, nested maps, a date that is not one, bytes that are
+  not UTF-8. Values are matched exactly: `Open` is not `open`. A refusal
+  writes no reference, so a rerun imports the task once the file is fixed.
 - Output is counts, plus the path and reason of each refused task; never a
   title. The vault is only read. `--apply` exits 1 when any task was refused or failed.
 
