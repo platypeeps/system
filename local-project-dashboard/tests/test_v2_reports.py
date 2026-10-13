@@ -421,6 +421,16 @@ class TheScript(ScreenCase):
         # Acknowledge is the one command with an Undo: reporting.reopen (sd:2395).
         self.assertEqual(out["R"]["undo"], ["report.ack"])
 
+    def test_show_log_prints_the_line_management_prints(self):
+        """sd:3525 (review 2026-10-12, A2 F13): one cron-jobs line on every page, from commands.js; no checkout path of its own."""
+        out = self.run_page("R.lines = REG.filter(c => c.label === 'Show log').map(c => [c.id, c.cli({ job: 'nightly-sync' })]);"
+                            "R.shared = window.commands.showLog({ job: o => ({ name: o.job }) }).cli({ job: 'nightly-sync' });")
+        self.assertTrue(out["R"]["lines"])
+        for cid, line in out["R"]["lines"]:
+            with self.subTest(command=cid):
+                self.assertEqual(line, out["R"]["shared"])
+        self.assertEqual(out["R"]["shared"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
+
     ANSWERED = "(path, body) => path.endsWith('/acknowledge') ? [200, { revision: 'after-ack' }] : path.endsWith('/reopen') ? [200, { revision: 'after-reopen' }] : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]"
 
     def test_acknowledge_posts_the_route_with_the_revision_offers_undo_and_reads_again(self):
