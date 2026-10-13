@@ -569,6 +569,13 @@ document.hidden = true; every.forEach(f => f()); await flush();""")
         self.assertEqual(out["R"]["observed"], [self.doc["read"], "1"])
         self.assertEqual(out["gets"], ["/api/home"] * 3, "the first read, Read again and one minute, and none while hidden")
 
+    def test_the_minute_read_shows_no_loading_state(self):
+        # REGRESSION sd:3522: each minute read drew the loading state above the tiles, so the wall display jumped by its height.
+        out = self.run_page("""R.first = OUT.states.length;
+INTERVALS.filter(i => i[1] === 60 * 1000).forEach(i => i[0]()); await flush();""")
+        self.assertEqual(out["gets"], ["/api/home"] * 2)
+        self.assertEqual([s for s in out["states"][out["R"]["first"]:] if s and s["kind"] == "loading"], [])
+
     def test_a_failed_read_leaves_no_reading_time_for_the_staleness_band(self):
         out = self.run_page("R.observed = document.body.dataset.observed;", answer="() => [500, { error: 'boom' }]")
         self.assertIsNone(out["R"].get("observed"))

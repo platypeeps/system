@@ -23,4 +23,5 @@ commands are registered but off with `home_screen.WRITES_REASON`, so the page
 sends nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
 `$HA_URL` and never holds a value. The page reads `/api/home` through the
 shell's reader (`read.js`) when it opens, on Read again, and each minute while
-it is visible (sd:3522); a failed read draws no tile and says why.
+it is visible (sd:3522); the minute read draws no loading state, so the tiles
+keep their place, and a failed read draws no tile and says why.
