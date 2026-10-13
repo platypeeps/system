@@ -3,7 +3,8 @@
 Usage keeps its past-month picker (Metrics reads the current month only), Services keeps each service's last request,
 Resources keeps Toolbox, Vault and Queues, Trackers keeps the tracker issues, and Sessions keeps the live worktree
 rows. The Jobs, Ports, Progress, Reports, Repos and Commands areas were retired in sd:3402, once Management, Health,
-Metrics, Reports and Activity carried their controls; an address naming one is a 404.
+Metrics, Reports and Activity carried their controls; an address naming one is a 404. Trackers draws inside the v2 shell
+(sd:3586); the other areas keep the classic page.
 """
 
 import contextlib
@@ -17,7 +18,7 @@ from sd_db.errors import SdDbError
 from .controls import field, form, select
 from .listing import Column, Listing
 from .markup import Markup, join, tag
-from .pages import page, tile
+from .pages import page, shell_page, tile
 
 #: A bill name the cap route (`/api/bills/<name>/cap`, `server.action_route`)
 #: accepts in its path. The registry puts no rule on a bill name:
@@ -288,7 +289,11 @@ def operations_page(connection, *, parameters, now, services_backend=None):
     elif area == "trackers":
         from .trackers_screen import trackers_panel
 
-        content = trackers_panel(connection, parameters, now=now)
+        # sd:3586: the first Operations area in the v2 shell, under Today, whose Pull requests rows open it.
+        return shell_page("Operations", "Today", _navigation(area), trackers_panel(connection, parameters, now=now),
+                          subtitle=_subtitle(), screen="operations",
+                          note="Trackers lists the open pull requests and issues that sd shadow sync last saw. "
+                               "The other Operations areas open on their classic screens.")
     else:
         from .sessions_screen import sessions_panel
 
