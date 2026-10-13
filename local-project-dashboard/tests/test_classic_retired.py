@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from sd_db import runner_exec
 
-from sd_dashboard import activity_screen, operations_screen, server, v2
+from sd_dashboard import activity_screen, operations_screen, pages, server, v2
 
 from support import NOW, ScreenCase
 
@@ -99,6 +99,26 @@ class TheRetiredScreens(ScreenCase):
         for selector in (".tiles", ".tile-", ".chart-burn", ".gauge-", ".usage-", ".operations-grid", ".operation-card",
                          ".operation-actions", ".operation-request", ".view-toggle"):
             self.assertNotIn(selector, classic, selector)
+
+
+class EveryPickerAsksForAKnownScreen(ScreenCase):
+    """sd:4002: a page's picker names a palette screen; `runner_exec.SCREENS` is the one list, and an unknown name made
+    /api/palette answer 400, so the picker listed nothing."""
+
+    def test_every_server_drawn_page_names_a_screen_runner_exec_knows(self):
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        item = self.item("Picker fixture")
+        rendered = {f"/operations?area={area}": self.render("/operations", {"area": [area]}) for area in KEPT_AREAS}
+        rendered |= {f"/item/{item}": self.render(f"/item/{item}"), "/protection": self.render("/protection"),
+                     "/classic/contributions": self.render("/classic/contributions"),
+                     "error page": pages.error_page(404, "Nothing here.")}
+        for name, body in rendered.items():
+            with self.subTest(page=name):
+                screens = re.findall(r'data-screen="([^"]*)"', body)
+                self.assertEqual(len(screens), 1)
+                self.assertIn(screens[0], runner_exec.SCREENS)
 
 
 class ActivityTakesCommands(ScreenCase):

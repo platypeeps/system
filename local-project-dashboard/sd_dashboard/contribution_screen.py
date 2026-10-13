@@ -141,7 +141,8 @@ def render(connection, *, parameters):
     return page("Contributions", "contributions",
         tag("p", "Newly unblocked work comes first, followed by work awaiting you, awaiting others, and merged contributions.", class_="lead"),
         tag("p", "Unknown or stale observations remain visible. Acknowledging events does not complete tasks or send notifications.", class_="hint"),
-        listing.render(), cli_equivalents=False)
+        # A repository view, so its picker offers the Operations commands (sd:4002).
+        listing.render(), cli_equivalents=False, screen="operations")
 
 
 # ---------- The default UI's Contributions page (sd:2113) ----------

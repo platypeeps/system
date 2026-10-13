@@ -113,8 +113,10 @@ def navigation(current: str) -> Markup:
 
 
 def page(title: str, current: str, *body: object, subtitle: str | None = None,
-         cli_equivalents: bool = True) -> str:
-    """One page, whole. The return is a `str` because it goes down the wire."""
+         cli_equivalents: bool = True, screen: str | None = None) -> str:
+    """One page, whole. The return is a `str` because it goes down the wire.
+
+    `screen` names the picker's palette screen, one of `runner_exec.SCREENS`; it defaults to `current` (sd:4002)."""
     head = tag(
         "head",
         tag("meta", charset="utf-8"),
@@ -139,7 +141,7 @@ def page(title: str, current: str, *body: object, subtitle: str | None = None,
             "body",
             tag("header", join(header), navigation(current),
                 tag("button", "Commands", type="button", data_palette_open=True, aria_keyshortcuts="p"), class_="page-header"),
-            dialog(current),
+            dialog(screen or current),
             tag("main", rendered_body, equivalents, id="main"),
             tag(
                 "footer",
@@ -166,7 +168,8 @@ def _equivalents(rendered_body: Markup) -> Markup:
 def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str) -> str:
     """A classic screen inside the v2 shell (sd:3586): the rail, pane and keys are shell.js's, the tokens the foundation's.
 
-    `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope.
+    `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope,
+    one of `runner_exec.SCREENS` (sd:4002).
     The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
     shell but `/` and `p`. `/ui/classic.css` styles that markup.
     """
