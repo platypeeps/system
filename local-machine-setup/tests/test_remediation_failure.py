@@ -216,20 +216,79 @@ class RemediationFailure(unittest.TestCase):
         self.assertFalse((self.state / "installed").exists())
         self.assertEqual(result.returncode, 1)
 
-    def test_a_failed_copy_over_a_stale_agent_leaves_launchd_and_the_record_alone(self):
+    # A cp that fails part-way: a full disk leaves a part file behind.
+    PART_COPY_STUB = r"""#!/bin/sh
+for last; do :; done
+case "$last" in "$FAIL_TARGET"|"$FAIL_TARGET.new") printf '<plist>trunc' > "$last"; exit 1 ;; esac
+exec /bin/cp "$@"
+"""
+
+    def agent_branch(self, branch):
+        """An installed agent that reaches one of the three overwrite branches."""
         label, plist = self.stale_agent()
         record = self.state / f"installed/agents_{label}.sha"
+        if branch == "edited":
+            record.write_text(sha("<plist>as installed</plist>\n") + "\n")
+        elif branch == "unrecorded":
+            record.unlink()
+        return label, plist, record, ("--force",) if branch != "stale" else ()
+
+    def assert_part_copy_leaves_the_job(self, branch, word, says):
+        # The job stays loaded on its old plist: no bootout, no bootstrap,
+        # and no part file in place of the plist.
+        label, plist, record, extra = self.agent_branch(branch)
+        before = record.read_text() if record.exists() else None
+        write_exec(self.stubs / "cp", self.PART_COPY_STUB)
+        result = self.run_verb("update", "agents", "--apply", *extra, FAIL_TARGET=str(plist))
+        out = result.stdout
+        self.assertIn(f"  {word} {label} — {says}", out, out + result.stderr)
+        self.assertIn("  FAILED  cp ", out)
+        self.assertEqual(plist.read_text(), "<plist>older</plist>\n", out)
+        self.assertEqual(list(plist.parent.glob("*.new")), [])
+        self.assertEqual(record.read_text() if record.exists() else None, before)
+        self.assertEqual([line for line in self.log(self.launchctl_log)
+                          if line.startswith(("bootout ", "bootstrap "))], [], out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_part_copy_over_a_stale_agent_leaves_the_job_on_its_old_plist(self):
+        self.assert_part_copy_leaves_the_job("stale", "STALE  ", "untouched here")
+
+    def test_a_part_copy_over_an_edited_agent_leaves_the_job_on_its_old_plist(self):
+        self.assert_part_copy_leaves_the_job("edited", "DIFFERS", "edited here; --force")
+
+    def test_a_part_copy_over_an_unrecorded_agent_leaves_the_job_on_its_old_plist(self):
+        self.assert_part_copy_leaves_the_job("unrecorded", "DIFFERS", "nothing recorded; --force")
+
+    def test_a_failed_rename_loads_the_old_plist_back(self):
+        # The job is out by then. A rename leaves no part file, so the plist
+        # in place is the old one, whole, and it goes back in.
+        label, plist, record, _ = self.agent_branch("stale")
         before = record.read_text()
-        write_exec(self.stubs / "cp", failing("cp"))
+        write_exec(self.stubs / "mv", failing("mv"))
         result = self.run_verb("update", "agents", "--apply", FAIL_TARGET=str(plist))
         out = result.stdout
-        self.assertIn(f"  FAILED  cp ", out, out + result.stderr)
+        self.assertIn(f"  FAILED  mv {plist}.new {plist} (exit 1)\n", out, out + result.stderr)
         self.assertEqual(plist.read_text(), "<plist>older</plist>\n")
+        self.assertEqual(list(plist.parent.glob("*.new")), [])
         self.assertEqual(record.read_text(), before)
-        # The old job went out before the copy and comes back on the old plist.
         self.assertEqual([line for line in self.log(self.launchctl_log)
                           if line.startswith(("bootout ", "bootstrap "))],
                          [f"bootout gui/{os.getuid()}/{label}", f"bootstrap gui/{os.getuid()} {plist}"], out)
+        self.assertEqual(result.returncode, 1)
+
+    def test_a_part_copy_of_a_missing_agent_leaves_no_plist(self):
+        # A part file would read as a local edit on the next run, which then
+        # refuses to overwrite it without --force.
+        label = "local.system-tools.sd-serve"
+        (self.profiles / "personal.agent").write_text(f"{label}\n")
+        plist = self.home / "Library/LaunchAgents" / f"{label}.plist"
+        plist.parent.mkdir(parents=True)
+        write_exec(self.stubs / "cp", self.PART_COPY_STUB)
+        result = self.run_verb("update", "agents", "--apply", FAIL_TARGET=str(plist))
+        out = result.stdout
+        self.assertIn("  FAILED  cp ", out, out + result.stderr)
+        self.assertEqual(list(plist.parent.iterdir()), [])
+        self.assertEqual([line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")], [], out)
         self.assertEqual(result.returncode, 1)
 
     def test_a_stale_agent_whose_old_job_will_not_boot_out_is_not_bootstrapped_over(self):

@@ -1269,6 +1269,27 @@ agent_bootout() { # label
   return 1
 }
 
+# Replaces the plist of a loaded agent; launchd holds the plist it was handed,
+# so the job goes out and back in. The new plist is staged beside the old one
+# first: a failed copy (a full disk can leave a part file) leaves the job and
+# its plist as they were. A job that will not go out keeps its old plist too.
+# A rename cannot leave a part file, so after a failed rename the old plist is
+# whole and is loaded back. Every failure records nothing, so the next run
+# finds the same drift and retries.
+agent_replace() { # label, src, dst
+  run_ok backup_file "$3" || return 0
+  if ! run_ok cp "$2" "$3.new" || ! agent_bootout "$1"; then
+    rm -f "$3.new"
+    return 0
+  fi
+  if run_ok mv "$3.new" "$3"; then
+    record_hash "agents/$1" "$3"
+  else
+    rm -f "$3.new"
+  fi
+  run launchctl bootstrap "gui/$(id -u)" "$3"
+}
+
 stage_agents() {
   echo "== agents"
   agents=$(manifest agent)
@@ -1299,43 +1320,28 @@ stage_agents() {
       # was never installed showed a remediation and still counted as zero
       # drift -- how one metering agent stayed missing for a day.
       echo "  MISSING $label — no plist here yet"
-      if run_ok cp "$src" "$dst"; then
+      # Staged and renamed, as in agent_replace: a part file left by a failed
+      # copy would read as a local edit on the next run.
+      if run_ok cp "$src" "$dst.new" && run_ok mv "$dst.new" "$dst"; then
         record_hash "agents/$label" "$dst"
         run launchctl bootstrap "gui/$(id -u)" "$dst"
+      else
+        rm -f "$dst.new"
       fi
     elif ! cmp -s "$src" "$dst"; then
       if matches_record "agents/$label" "$dst"; then
           echo "  STALE   $label — untouched here, repo moved ahead"
-          # launchd holds the plist it was handed, so the old job goes out
-          # before the file changes: a job that will not go out keeps its
-          # old plist, and the next run finds the same STALE and retries.
-          # A failed copy loads the old plist back and records nothing.
-          if run_ok backup_file "$dst" && agent_bootout "$label"; then
-            if run_ok cp "$src" "$dst"; then
-              record_hash "agents/$label" "$dst"
-            fi
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
-          fi
+          agent_replace "$label" "$src" "$dst"
       elif has_record "agents/$label"; then
           if [ "$FORCE" -eq 1 ]; then
             echo "  DIFFERS $label — edited here; --force overwrites (backup kept)"
-            if run_ok backup_file "$dst" && agent_bootout "$label"; then
-              if run_ok cp "$src" "$dst"; then
-                record_hash "agents/$label" "$dst"
-              fi
-              run launchctl bootstrap "gui/$(id -u)" "$dst"
-            fi
+            agent_replace "$label" "$src" "$dst"
           else
             echo "  DIFFERS $label — edited here; keep it with 'capture --apply', discard it with --force"
           fi
       elif [ "$FORCE" -eq 1 ]; then
           echo "  DIFFERS $label — nothing recorded; --force overwrites (backup kept)"
-          if run_ok backup_file "$dst" && agent_bootout "$label"; then
-            if run_ok cp "$src" "$dst"; then
-              record_hash "agents/$label" "$dst"
-            fi
-            run launchctl bootstrap "gui/$(id -u)" "$dst"
-          fi
+          agent_replace "$label" "$src" "$dst"
       else
           echo "  DIFFERS $label — machine and repo disagree, nothing recorded says which moved; review, then 'capture --apply' or --force"
       fi
