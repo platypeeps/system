@@ -1,8 +1,9 @@
 /* Hallmark · genre: modern-minimal · macrostructure: rail + annunciator + ledger + pane · design-system: design.md · designed-as-app
  * Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · The classic screens inside the v2 shell (sd:3586), first the item page:
  * screens.item's server-drawn forms, status history, artifact, notes and assignments, on foundation tokens. Every number is the
- * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger. A later port adds its
- * screen's components here; dashboard.css loses them in the same pull request.
+ * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger; Sessions: its worktree and
+ * process ledgers; and Protection: its status markers and gap matrix. A later port adds its screen's components here;
+ * dashboard.css loses them in the same pull request.
  */
 
 .classic .head > div { min-width: 0; }
@@ -130,6 +131,27 @@
 .classic [data-listing="trackers"] td { overflow-wrap: break-word; }
 .classic [data-listing="trackers"] td:is(.tracker-reference, :nth-child(3)) { overflow-wrap: anywhere; }
 .classic .listing-table .tracker-reference { font-family: var(--font-data); }
+/* Sessions: what a terminal prints (branch, path, PID, elapsed time, command line) reads in the data face. */
+.classic .listing-table :is(.worktree-branch, .worktree-path, .process-pid, .process-elapsed, .process-command) { font-family: var(--font-data); font-size: var(--text-xs); }
+
+/* Protection: sixteen columns scroll inside their own box, never the page. A status carries its state glyph beside its
+ * colour; unknown is its own state, never the ok one, and a GAP opens to its sentence. */
+.classic [data-listing="protection"] .listing-table { display: block; overflow-x: auto; }
+.classic [data-listing="protection"] :is(th, td) { white-space: nowrap; overflow-wrap: normal; }
+.classic [data-listing="protection"] td:last-child { min-width: 16rem; white-space: normal; }
+.classic [data-listing="protection"] .protection-sentence { white-space: normal; }
+.classic .listing-table .column-meta { padding-inline: var(--space-3xs); font-size: var(--text-xs); }
+.classic .protection-summary { font-family: var(--font-data); font-size: var(--text-sm); color: var(--color-ink); }
+.classic .protection-protected, .classic .protection-ok { color: var(--color-ok); }
+.classic .protection-protected::before { content: "● "; }
+.classic .protection-unprotected, .classic .protection-gap { color: var(--color-warning); font-weight: 600; }
+.classic .protection-unprotected::before, .classic .protection-gap::before { content: "■ "; }
+.classic .protection-unknown { border-style: dashed; color: var(--color-unknown); }
+.classic .protection-unknown::before { content: "▨ "; }
+.classic .protection-na { color: var(--color-muted); }
+.classic .protection-reason { color: var(--color-unknown); }
+.classic .protection-detail > summary { min-height: var(--row); }
+.classic .protection-sentence { max-width: 28rem; margin: var(--space-3xs) 0 0; font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 .classic .cli-equivalents { margin-top: var(--space-2xl); padding-top: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule); color: var(--color-muted); }
 .classic .cli-equivalents ul { margin: 0; padding-left: var(--space-lg); }
@@ -170,4 +192,5 @@
   .classic .listing-table tr { padding: var(--space-xs) 0; border-bottom: var(--rule-hair) solid var(--color-rule); }
   .classic .listing-table td { padding: var(--space-3xs) 0; border-bottom: 0; }
   .classic .shadow > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .classic [data-listing="protection"] td { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 }

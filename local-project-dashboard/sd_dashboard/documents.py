@@ -68,7 +68,7 @@ def _config_dir() -> Path:
 def pipe_lines(text: str):
     """Each line of a `key|value|...` config that says something: its number, the stripped line, its stripped fields.
 
-    The five pipe configs (`documents.conf`, `disk.conf`, `hoa.conf`, `home-tiles.conf`, `report-families.conf`) read
+    The pipe configs (`documents.conf`, `disk.conf`, `home-tiles.conf`, `report-families.conf`) read
     their lines here (sd:3532), so a blank line and a `#` comment say nothing in every one. What a line must hold, and
     how a refusal reads, stays each file's own.
     """

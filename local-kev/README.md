@@ -55,7 +55,7 @@ over the file, an empty one too: `KEV_API_KEY=` switches auth off, and
 | `KEV_REPO_URL` | Kev's GitHub repository | Where `install` clones from |
 | `KEV_API_KEY` | unset | A bearer token the server then requires |
 | `HF_HOME` | see above | The Hugging Face cache |
-| `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` | The LaunchAgent label is `<prefix>.kev` |
+| `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` | The LaunchAgent label is `<prefix>.kev`; set it once in `<config>/shared.env` |
 
 Kev pins Python 3.13 in its own `.python-version`; `uv` fetches it.
 The server runs on MLX, so it needs Apple Silicon.

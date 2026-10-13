@@ -10,7 +10,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins. Read it
+# OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins; the vault
+# and the prefix are kept once, in <config>/shared.env. Read it
 # before anything below uses a value it may set.
 st_source_env task-actions
 
@@ -24,7 +25,7 @@ SERVICE="$DOMAIN/$LABEL"
 OUT_LOG="$DIR/logs/task-actions.log"
 
 PORT="${TASK_ACTIONS_PORT:-8766}"
-VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
+VAULT="$(st_obsidian_vault)"
 TASKS_SUBDIR="${OBSIDIAN_TASKS_SUBDIR:-TaskNotes/Tasks}"
 SECRET_FILE="${TASK_ACTIONS_SECRET_FILE:-$HOME/.config/task-actions/secret}"
 

@@ -30,10 +30,30 @@ def root(environ: dict[str, str] | None = None) -> Path:
     return Path(os.path.expanduser(base)) / "system"
 
 
+def shared(name: str, environ: dict[str, str] | None = None) -> str:
+    """A name every tool shares, kept once in <config>/shared.env (sd:3990).
+
+    `st_shared` in config.sh. A variable that is set wins, an empty one too;
+    else the file; else `""`. A tool's own .env still overrides the file where
+    `st_source_env` loads it into the environment.
+    """
+    env = os.environ if environ is None else environ
+    if name in env:
+        return env[name]
+    return _read_env_file(root(env) / "shared.env", env).get(name, "")
+
+
 def label_prefix(environ: dict[str, str] | None = None) -> str:
     """The launchd label prefix of every job and agent; `st_label_prefix` in config.sh."""
+    return shared("SYSTEM_TOOLS_LABEL_PREFIX", environ) or "local.system-tools"
+
+
+def obsidian_vault(environ: dict[str, str] | None = None) -> Path:
+    """The Obsidian vault of every tool that reads one; `st_obsidian_vault` in config.sh."""
     env = os.environ if environ is None else environ
-    return env.get("SYSTEM_TOOLS_LABEL_PREFIX") or "local.system-tools"
+    home = env.get("HOME") or os.path.expanduser("~")
+    named = shared("OBSIDIAN_VAULT", env) or "~/Documents/Obsidian Vault"
+    return Path(home + named[1:] if named == "~" or named.startswith("~/") else named)
 
 
 def config_dir(tool: str, environ: dict[str, str] | None = None) -> Path:
@@ -53,8 +73,11 @@ def read_env(tool: str, environ: dict[str, str] | None = None) -> dict[str, str]
     quotes; no other variable expands (sd:1868).
     """
     env = os.environ if environ is None else environ
+    return _read_env_file(config_dir(tool, environ) / ".env", env)
+
+
+def _read_env_file(path: Path, env: dict[str, str]) -> dict[str, str]:
     home = env.get("HOME") or os.path.expanduser("~")
-    path = config_dir(tool, environ) / ".env"
     values: dict[str, str] = {}
     if not path.is_file():
         return values

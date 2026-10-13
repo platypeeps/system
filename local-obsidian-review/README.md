@@ -43,7 +43,7 @@ failed, so the run's report on Today covers a lost digest, not findings.
   through `local-notify`'s email channel.
 - Cron: `<config>/cron-jobs/jobs/obsidian-review-daily.job` (examples in `local-cron-jobs/examples/`), 07:30 daily —
   after market-watch (03:00) and vault-cleanup (06:52) refresh the queues.
-- Environment: `OBSIDIAN_VAULT` (default `~/Documents/Obsidian Vault`; exported, or set in `<config>/obsidian-review/.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `.env.example`),
+- Environment: `OBSIDIAN_VAULT` (default `~/Documents/Obsidian Vault`; exported, or set once in `<config>/shared.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `local-config-check/shared.env.example`),
   `JEV_OBSIDIAN_REVIEW` (on unless switched off, below),
   `OBSIDIAN_REVIEW_TODAY` (the `YYYY-MM-DD` note ages count from;
   default today, and the suite pins it),
