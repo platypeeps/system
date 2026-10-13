@@ -1,7 +1,7 @@
 # local-brew-doctor
 
 Nightly Homebrew health check. Runs `brew doctor`, auto-fixes what needs no
-human decision, and emails a summary of the rest.
+human decision, and reports the rest through the run's report.
 
 ## Usage
 
@@ -17,18 +17,16 @@ into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightl
 - **Auto-fixed**: broken symlinks and stale files (`brew cleanup
   --prune=all`), unlinked kegs that still have a formula (`brew link`,
   never `--overwrite` — an orphaned keg once clobbered a cask binary here).
-- **Report-only, emailed**: deprecated/disabled formulae and casks,
+- **Report-only**: deprecated/disabled formulae and casks,
   untrusted taps (trust is a security decision), kegs with no formula, and
   anything else `brew doctor` raises.
 
-Email goes through `local-notify`'s `email` channel (Gmail via the local
-`google_workspace_mcp` server; `NOTIFY_EMAIL_TO`/`EMAIL_FROM` in
-`<config>/notify/.env`, where `<config>` is
-`${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}`). If the email cannot be sent the job exits 1, which
-triggers `local-cron-jobs`' failure notification (banner + ntfy push), so a
-report never disappears silently.
+The summary goes to the job log with a line `SD_REPORT_ATTENTION: brew doctor:
+<n> warning(s) on <host>`. The run's ingest maps that line to a report that
+needs attention, so Reports and Today carry it until it is acknowledged;
+nothing is mailed (sd:3454).
 
 ## Gotchas
 
-- Clean machine = no email, nothing to do, exit 0.
+- Clean machine = no attention line, nothing to do, exit 0.
 - The job never installs, uninstalls, or trusts anything.

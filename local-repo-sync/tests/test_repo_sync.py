@@ -54,6 +54,12 @@ exit 0
 """
 
 
+def attention(result):
+    """The SD_REPORT_ATTENTION reasons a run printed for its report (sd:3454)."""
+    return [line.split(": ", 1)[1] for line in result.stdout.splitlines()
+            if line.startswith("SD_REPORT_ATTENTION: ")]
+
+
 SD_STUB = """#!/bin/sh
 # Test stub for sd: hygiene reads the bulk storage root from SD_BULK_STORAGE_ROOT,
 # so no case reads the machine's own config or sweeps its lane storage.
@@ -359,27 +365,29 @@ class RepoSyncTest(unittest.TestCase):
         self.assertIn("local-only", result.stdout)
         self.assertEqual(f.entries(), [])
 
-    def test_nightly_notifies_when_a_checkout_needs_a_rename(self):
+    def test_nightly_needs_attention_when_a_checkout_needs_a_rename(self):
         """REGRESSION (#231). Before the mismatch was reported, such a checkout made $ADDED
         non-empty every night and so emailed every night -- wrongly, but the
         operator did hear about it. Fixing the list without adding this would
-        have bought silence: a green night nobody reads."""
+        have bought silence: a green night nobody reads. sd:3454: the run's
+        report carries it to Reports and Today, and nothing is mailed."""
         f = self.fixture()
         f.checkout("a/fun-ai-stuff", "owner/other-name")
 
         result = f.run("nightly")
 
-        log = f.notify_log.read_text()
-        self.assertIn("need a rename", log)
-        self.assertIn("MISMATCH", log)
+        self.assertIn("need a rename", " ".join(attention(result)))
+        self.assertIn("MISMATCH", result.stdout)
+        self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
     def test_nightly_is_silent_when_nothing_drifted(self):
-        """PIN. The other half of the same guard: a notification that fires on a
-        quiet night trains its reader to ignore it."""
+        """PIN. The other half of the same guard: a report that needs
+        attention on a quiet night trains its reader to ignore it."""
         f = self.fixture()
 
-        f.run("nightly")
+        result = f.run("nightly")
 
+        self.assertEqual(attention(result), [])
         self.assertFalse(
             f.notify_log.exists(),
             f.notify_log.read_text() if f.notify_log.exists() else "",
@@ -403,11 +411,11 @@ class RepoSyncTest(unittest.TestCase):
         result = f.run("nightly", expect=1)
 
         self.assertIn("sync failed 2 of 2 repos", result.stderr)
-        self.assertIn("2 repo(s) failed", f.notify_log.read_text())
+        self.assertIn("2 repo(s) failed", " ".join(attention(result)))
 
     def test_nightly_exits_0_when_fewer_than_half_fail(self):
         """PIN. One unreachable repo out of three is a report, not an outage:
-        the summary is still mailed, the job does not fail. The healthy two
+        the report needs attention, the job does not fail. The healthy two
         pull from a local bare repository, which the dead SSH transport does
         not touch."""
         f = self.fixture()
@@ -420,8 +428,28 @@ class RepoSyncTest(unittest.TestCase):
 
         self.assertIn("failed: 1 repo(s)", result.stdout)
         self.assertNotIn("exiting 1", result.stderr)
-        self.assertIn("1 repo(s) failed", f.notify_log.read_text())
+        [reason] = attention(result)
+        self.assertRegex(reason, r"^repo-sync: 1 repo\(s\) failed on ")
+        self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
+
+    def test_each_day_files_its_own_report(self):
+        """REGRESSION (sd:3537). The ingest folds a reason it holds open and
+        keeps the first body. A checksum with digits erased made worker1 and
+        worker2 failing one report."""
+        reasons = []
+        for bad, day in (("worker1", "2026-10-12"), ("worker2", "2026-10-13")):
+            f = self.fixture()
+            (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                                        'exec /bin/date "$@"\n')
+            (f.bin / "date").chmod(0o755)
+            f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
+            f.checkout(f"a/{bad}", f"owner/{bad}")
+            for name in ("good1", "good2"):
+                f.local_clone(f"a/{name}")
+            reasons.append(attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": day})))
+        self.assertRegex(" ".join(reasons[0]), r"^repo-sync: 1 repo\(s\) failed on \S+, 2026-10-12$")
+        self.assertRegex(" ".join(reasons[1]), r", 2026-10-13$")
 
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
         """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission
@@ -441,9 +469,7 @@ class RepoSyncTest(unittest.TestCase):
 
         self.assertEqual(ssh_add_log.read_text(), "--apple-load-keychain\n")
         self.assertIn("no key authenticates to git@github.com", result.stdout)
-        log = f.notify_log.read_text()
-        self.assertIn("no key authenticates to git@github.com", log)
-        self.assertLess(log.index("mac-utils.sh addkey"), log.index("Failed repos:"))
+        self.assertLess(result.stdout.index("mac-utils.sh addkey"), result.stdout.index("failed repos:"))
 
     def test_nightly_loads_keychain_keys_before_the_sweep(self):
         """PIN (sd:2160). A key the keychain can unlock is loaded, the run says
@@ -463,7 +489,7 @@ class RepoSyncTest(unittest.TestCase):
 
         self.assertIn("loaded key(s) from the keychain", result.stdout)
         self.assertNotIn("no key authenticates", result.stdout)
-        self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
+        self.assertEqual(attention(result), [])
 
 class ConfigDirTest(unittest.TestCase):
     def fixture(self, **kwargs):

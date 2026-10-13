@@ -1,6 +1,5 @@
-# Nightly brew doctor: auto-fix safe issues (cleanup, relink), email a
-# summary of anything needing a decision (deprecations, untrusted taps).
-# Exits 1 only when the email could not be delivered, so the failure
-# notification (banner + ntfy push) covers a lost report, not mere findings.
+# Nightly brew doctor: auto-fix safe issues (cleanup, relink), and report
+# anything needing a decision (deprecations, untrusted taps) with an
+# SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today.
 JOB_SCHEDULE="15 2 * * *"
 JOB_COMMAND="sh \"$ROOT/../local-brew-doctor/brew-doctor.sh\" run"

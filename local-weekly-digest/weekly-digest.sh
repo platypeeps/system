@@ -1,20 +1,19 @@
 #!/bin/sh
-# Weekly automation digest: one Sunday email summarizing what the cron
+# Weekly automation digest: one Sunday report summarizing what the cron
 # fleet did — runs and failures per job, drift, pending updates, disk —
 # so the nightly jobs can stay quiet unless something needs a human.
 # Usage: weekly-digest.sh run|check
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-NOTIFY="$DIR/../local-notify/notify.sh"
 # Seams for a fixture tree, not per-machine settings: on every real machine
 # these are this checkout.
 CRON_LOGS="${WEEKLY_DIGEST_CRON_LOGS:-$DIR/../local-cron-jobs/logs}"
 MSETUP="${WEEKLY_DIGEST_MSETUP:-$DIR/../local-machine-setup/machine-setup.sh}"
 
 case "${1:-}" in
-  run)   EMAIL=1 ;;
-  check) EMAIL=0 ;;
+  run)   REPORT=1 ;;
+  check) REPORT=0 ;;
   test)
     shift
     exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@"
@@ -23,11 +22,11 @@ case "${1:-}" in
     cat <<'HELPEOF'
 usage: weekly-digest.sh run|check|test
 
-  run    build the weekly automation summary and email it via local-notify
-         (what the weekly-digest cron job runs on Sundays). Always emails —
-         the digest IS the report. Exits 1 only when the email could not
-         be delivered.
-  check  print the same summary to stdout without emailing.
+  run    build the weekly automation summary (what the weekly-digest cron
+         job runs on Sundays) and print an SD_REPORT_ATTENTION line, so the
+         run's report reaches Reports and Today until it is acknowledged.
+         Always — the digest IS the report. Nothing is mailed.
+  check  print the same summary without that line.
   test   run the unittest suite in tests/; extra arguments go to unittest (-v).
 
 contents: per-job run/failure counts for the last 7 days (from
@@ -184,10 +183,8 @@ order_failures || note "failure order skipped: the ordering itself failed"
 
 cat "$BODY"
 
-if [ "$EMAIL" -eq 1 ]; then
-  subject="weekly digest: automation summary for $(hostname -s)"
-  if ! sh "$NOTIFY" -t "$subject" -k brief -c ntfy,email -b "$(cat "$BODY")"; then
-    echo "email FAILED — exiting 1 so the cron failure push fires" >&2
-    exit 1
-  fi
+# The date keeps each week its own report: an open report with the same
+# reason would absorb the next week's run and keep the first week's body.
+if [ "$REPORT" -eq 1 ]; then
+  echo "SD_REPORT_ATTENTION: weekly digest: automation summary for $(hostname -s), $(date '+%Y-%m-%d')"
 fi

@@ -41,7 +41,7 @@ change I made on this machine back into its profile*.
                                        # each step is logged as it starts and
                                        # stopped at its bound (300-1800 s, or
                                        # MACHINE_SETUP_STEP_TIMEOUT seconds)
-./machine-setup.sh upgrade-report      # upgrade + email summary (cron: weekly)
+./machine-setup.sh upgrade-report      # upgrade + report summary (cron: weekly)
                                        # plus the TCC grants probe; one push
                                        # names each binary to re-grant
 ./machine-setup.sh checklist           # manual new-machine steps
@@ -59,15 +59,16 @@ and `capture` need no argument after the first `setup`.
 
 **The weekly `upgrade-report` owns every package and app upgrade** (sd:3062).
 It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
-mails its diff. The `macos` stage turns self-update off in every cask that
+prints its diff. The `macos` stage turns self-update off in every cask that
 updates itself, where the app documents a switch. Both machines then move once a
 week, and grants are re-granted in one sitting. After the sweep, and in a quiet
 week after `claude update`, it runs `local-project-dashboard/dashboard.sh
-grants` and puts the result in the mail. The cron job runs under launchd, where
-the probe's answer is the binary's own. A binary that lost Full Disk Access gets
-one push (`-F`, ntfy and email) naming its path. The push also lists a new Claude Code
-binary or python Cellar path, the two known grant droppers. A missing grant
-does not fail the job; a push or mail that cannot be delivered does.
+grants` and puts the result in the report. The cron job runs under launchd, where
+the probe's answer is the binary's own. A binary that lost Full Disk Access is named
+with its path, beside a new Claude Code binary or python Cellar path, the two
+known grant droppers. Leftovers or a missing grant print an
+`SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
+nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
 
 ## Configuration
 
@@ -352,8 +353,8 @@ pins in a brew block of its own.
 
 `status --fail-on-drift` exits 1 when anything drifted. The
 `machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
-step, after `update --apply`, so drift the update could not fix triggers the
-cron failure notification (banner + ntfy push). A clean machine stays silent.
+step, after `update --apply`, so drift the update could not fix files a
+failure report that Today shows. A clean machine stays silent.
 
 ### Additive capture, unattended
 
