@@ -12,13 +12,7 @@ addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
-  // build: capture files through the route and library call Today and Tasks use (POST /api/items, sd task add).
-  window.SHELL_CAPTURE = async ({ kind, title, item }) => {
-    if (kind === 'note') throw new Error('Not filed: a brief has no item to note. File a task or a followup.');
-    const body = { title, ...(kind === 'followup' ? { kind: 'followup', ...(item ? { followup_of: item } : {}) } : {}) };
-    const out = await window.shell.post('/api/items', body).catch(e => { throw new Error(`Not filed: ${e.message}`); });
-    return `Captured #${out.item?.id}: ${out.item?.title || title}`;
-  };
+  // build: capture files through the shell's default capture (sd:3520): POST /api/items, as Today and Tasks do.
 
   // ---------- Data (build) ----------
   // BRIEFS: { id, subj, src, day, at (null when not known), words, lead, rel, open }. READ: when the server read them.
@@ -245,7 +239,7 @@ addEventListener('DOMContentLoaded', () => {
     if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
     if (e.key === 'Enter' && input.value.trim()) {
       e.preventDefault();
-      // build: a task opens the capture form with the text; the form files it (SHELL_CAPTURE above).
+      // build: a task opens the capture form with the text; the form files it (the shell's fileCapture).
       if (mode === 'task') { const v = input.value.trim(); input.value = ''; renderShift(); shell.capture(null, v); }
       if (mode === 'ask') { shell.openChat(); shell.send(input.value.trim()); input.value = ''; renderShift(); }
     }

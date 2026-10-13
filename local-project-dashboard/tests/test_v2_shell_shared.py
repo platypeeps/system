@@ -19,7 +19,7 @@ import re
 import subprocess
 import unittest
 
-from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, STAND_IN, V2
+from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SHELL_JS, STAND_IN, V2
 from test_v2_today import OSASCRIPT
 
 STATIC = V2 / "static"
@@ -125,6 +125,147 @@ class TheFetchHelpers(unittest.TestCase):
         self.assertEqual(out["bad"], ["HTTP 400", False])
         self.assertEqual(out["read"], "changed since")
         self.assertEqual(out["posts"][0], ["/fine", {"a": 1}, 64])
+
+
+# sd:3520: the shell files every capture. A page hook only adds to it; with none, the dialog still files a row.
+CAPTURE = re.search(r"^  // capture:start\n(.*?)^  // capture:end$", SHELL_JS, re.S | re.M)
+
+
+def run_capture(case, body):
+    case.assertIsNotNone(CAPTURE, "shell.js has no capture:start block, so a page without SHELL_CAPTURE files nothing")
+    return run_js(CAPTURE.group(1) + body)
+
+
+class TheDefaultCapture(unittest.TestCase):
+    """sd:3520: a capture on a page without its own hook files a row, and a toast says Captured only with the new id."""
+
+    def test_a_task_or_followup_posts_to_api_items_and_names_the_new_id(self):
+        out = run_capture(self, """ANSWER = (path, body) => [201, { item: { id: 77, title: body.title } }];
+  R.task = await fileCapture({ kind: 'task', title: 'Read it' });
+  R.followup = await fileCapture({ kind: 'followup', title: 'Then this', item: 12 });
+  R.p = await fileCapture({ kind: 'task', title: 'Ship it p1 today' });
+  R.posts = OUT.posts;""")
+        self.assertEqual(out["task"], "Captured sd:77: Read it")
+        self.assertEqual(out["followup"], "Captured sd:77: Then this")
+        self.assertEqual(out["posts"], [["/api/items", {"title": "Read it"}, 64],
+                                        ["/api/items", {"title": "Then this", "kind": "followup", "followup_of": 12}, 64],
+                                        ["/api/items", {"title": "Ship it today", "priority": 1}, 64]])
+        self.assertEqual(out["p"], "Captured sd:77: Ship it today")
+
+    def test_a_note_reads_the_items_revision_then_posts_the_note(self):
+        out = run_capture(self, """ANSWER = path => path === '/api/items/12/capture-context' ? [200, { item: { id: 12 }, revision: 'r'.repeat(64) }] : [200, {}];
+  R.note = await fileCapture({ kind: 'note', title: 'Seen it', item: 12 });
+  R.gets = OUT.gets; R.posts = OUT.posts;""")
+        self.assertEqual(out["note"], "Note added to sd:12")
+        self.assertEqual(out["gets"], ["/api/items/12/capture-context"])
+        self.assertEqual(out["posts"], [["/api/items/12/notes", {"body": "Seen it", "kind": "comment", "revision": "r" * 64}, 64]])
+
+    def test_a_refusal_says_not_filed_and_no_answer_says_not_known(self):
+        out = run_capture(self, """ANSWER = path => [400, { error: 'A title is required.' }];
+  R.refused = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  ANSWER = path => { throw new TypeError('Load failed'); };
+  R.lost = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  ANSWER = path => [201, {}];
+  R.empty = await fileCapture({ kind: 'task', title: 'x' }).catch(e => e.message);
+  R.noRow = await fileCapture({ kind: 'note', title: 'x', item: null }).catch(e => e.message);""")
+        self.assertEqual(out["refused"], "Not filed: A title is required.")
+        self.assertEqual(out["lost"], "Not known if it filed: Load failed. Look in Tasks before you capture it again.")
+        self.assertEqual(out["empty"], "Not known if it filed: the server named no item. Look in Tasks before you capture it again.")
+        self.assertEqual(out["noRow"], "Not filed: select a row that has an item first")
+
+    def test_a_refused_capture_reopens_with_the_kind_priority_and_repo_the_operator_picked(self):
+        # Review 2026-10-12 class pass: the reopened dialog kept the text but reset Kind, Priority and Repo to the defaults.
+        reopen = re.search(r"if \(m\.startsWith\('Not filed'\)\) openCapture\(o, v(, [^)]*)?\)", SHELL_JS)
+        self.assertIsNotNone(reopen)
+        self.assertEqual(reopen.group(1), ", picks", "a refusal reopens without the operator's picks")
+        self.assertIn("function openCapture(target, text = '', picks = null) {", SHELL_JS)
+        self.assertIn("if (picks) { if (!f.querySelector(`[name=\"kind\"][value=\"${picks.kind}\"]`)?.disabled) f.kind.value = picks.kind; f.priority.value = String(picks.priority); }", SHELL_JS)
+        self.assertIn("sel.value = captureRepo(list, picks ? picks.repo : hint);", SHELL_JS)
+        # A repo the operator picked resolves from the list as any hint does; No repo stays No repo.
+        out = run_capture(self, """const LIST = [{ path: '~/repos/one', name: 'one' }];
+  R.got = [captureRepo(LIST, '~/repos/one'), captureRepo(LIST, '')];""")
+        self.assertEqual(out["got"], ["~/repos/one", ""])
+
+    def test_enter_in_the_capture_box_files_it_and_does_not_cancel(self):
+        # Review 2026-10-12 edit-during-refresh check: the form's first button is Cancel, so the browser's implicit submit on
+        # Enter closed the box with "no" and dropped the typed text. Enter in a field submits with the Capture button, as the
+        # confirm dialog does; the required text still blocks an empty capture.
+        box = SHELL_JS[SHELL_JS.index("function openCapture("):SHELL_JS.index("modal(cap, inp);")]
+        self.assertLess(box.index('value="no" formnovalidate>Cancel'), box.index('value="yes">Capture'))
+        enter = ("if (e.key === 'Enter' && !e.isComposing && e.target.tagName === 'INPUT') { e.preventDefault(); "
+                 "f.requestSubmit(f.querySelector('[value=\"yes\"]')); }")
+        self.assertTrue(enter in box, "Enter in the capture box cancels it and drops the text")
+
+    def test_the_repo_and_priority_go_with_the_capture_and_a_typed_p_wins(self):
+        # sd:3521: the box's picks (the page's repo, P3 unless changed) are fields of the new item; p1 to p4 typed in the
+        # title still sets the priority.
+        out = run_capture(self, """ANSWER = (path, body) => [201, { item: { id: 78, title: body.title } }];
+  await fileCapture({ kind: 'task', title: 'Fix it', priority: 3, repo: '~/repos/one' });
+  await fileCapture({ kind: 'followup', title: 'Fix it p1', item: 5, priority: 3, repo: '' });
+  await fileCapture({ kind: 'note', title: 'Seen', item: 5, priority: 3, repo: '~/repos/one' }).catch(() => null);
+  R.posts = OUT.posts.map(p => p[1]);""")
+        self.assertEqual(out["posts"][:2], [{"title": "Fix it", "priority": 3, "repo": "~/repos/one"},
+                                            {"title": "Fix it", "priority": 1, "kind": "followup", "followup_of": 5}])
+
+    def test_the_page_repo_resolves_by_path_or_name_and_an_unknown_one_is_no_default(self):
+        out = run_capture(self, """const LIST = [{ path: '~/repos/one', name: 'one' }, { path: '~/repos/two', name: 'two' }];
+  R.byPath = captureRepo(LIST, '~/repos/two'); R.byName = captureRepo(LIST, 'one'); R.byOwner = captureRepo(LIST, 'someone/two');
+  R.unknown = captureRepo(LIST, 'three'); R.none = captureRepo(LIST, null); R.empty = captureRepo([], '~/repos/one');""")
+        self.assertEqual([out[k] for k in ("byPath", "byName", "byOwner", "unknown", "none", "empty")],
+                         ["~/repos/two", "~/repos/one", "~/repos/two", "", "", ""])
+
+    def test_the_command_line_names_the_repo_and_priority_it_files(self):
+        out = run_capture(self, """R.lines = [captureCli({ kind: 'task', title: "it's", priority: 3, repo: '~/repos/one' }),
+  captureCli({ kind: 'followup', title: 'x', item: 5, priority: 2, repo: '' }),
+  captureCli({ kind: 'note', title: 'x', item: 5, priority: 3, repo: '~/repos/one' }),
+  captureCli({ kind: 'task', title: 'x', priority: 4, repo: '/tmp/a b' })];""")
+        self.assertEqual(out["lines"], ["cd ~/repos/one && sd task add --priority 3 'it'\\''s'",
+                                        "sd task add --no-repo --kind followup --priority 2 'x'",
+                                        "sd task note 5 --kind comment --body 'x'",
+                                        "cd '/tmp/a b' && sd task add --priority 4 'x'"])
+
+    def test_the_box_offers_the_pickers_with_p3_and_the_pages_repo_as_defaults(self):
+        self.assertIn("window.PAGE_REPO", SHELL_JS)
+        box = re.search(r"function openCapture\(.*?\n  \}\n", SHELL_JS, re.S).group(0)
+        self.assertRegex(box, r'name="priority" value="\$\{n\}"\$\{n === 3 \? html` checked` : ..\}')
+        self.assertIn('id="cap-repo"', box)
+        self.assertIn('aria-keyshortcuts="Alt+R"', box)
+        for page in ("management.js", "tasks.js", "today.js"):
+            with self.subTest(page):
+                self.assertIn("window.PAGE_REPO =", PAGE_JS[page])
+
+    def test_the_dialog_files_through_the_page_hook_or_the_default_and_never_toasts_captured_itself(self):
+        close = re.search(r"cap\.onclose = .*?\n    modal\(cap, inp\);", SHELL_JS, re.S)
+        self.assertIsNotNone(close)
+        self.assertIn("(window.SHELL_CAPTURE || fileCapture)(", close.group(0))
+        self.assertNotIn("'Captured'", close.group(0))
+        self.assertNotIn("Note added", close.group(0))
+
+    def test_only_tasks_and_review_keep_a_page_hook_and_review_files_tasks_through_the_shell(self):
+        # Today's and Briefs' hooks filed the same POST the shell now files; Tasks keeps its own to reread its board.
+        # Review (sd:3709, merged from main) keeps one for a note on a question, a comment on its batch; a task or a
+        # followup goes through the shell's fileCapture, so the box's priority and repo (sd:3521) reach the item.
+        hooks = sorted(name for name, js in PAGE_JS.items() if re.search(r"window\.SHELL_CAPTURE\s*=", js))
+        self.assertEqual(hooks, ["review.js", "tasks.js"])
+        self.assertTrue("return window.shell.fileCapture({ kind, title, item, priority, repo });" in PAGE_JS["review.js"],
+                        "Review's capture drops the priority and repo the operator picked")
+
+
+class TheActBar(unittest.TestCase):
+    """sd:3464, sd:3444: the Details Act area holds the buttons; the CLI lines and the off and copy-only notes fold away."""
+
+    def test_the_cli_section_is_a_details_element_closed_by_default(self):
+        bar = re.search(r"  function bar\(id\) \{.*?\n  \}\n", SHELL_JS, re.S).group(0)
+        self.assertIn('<details class="cli-all"><summary>Same thing from the CLI</summary>', bar)
+        self.assertNotIn("<details class=\"cli-all\" open", bar)
+        self.assertNotIn("<h3>Same thing from the CLI</h3>", bar)
+        # Nothing explains a command between the buttons and the fold: the off reasons are inside it.
+        self.assertRegex(bar, r'</div>\s*<details class="cli-all">')
+
+    def test_a_help_icon_with_a_command_copies_it_when_pressed(self):
+        click = re.search(r"document\.addEventListener\('click', e => \{\n(?:    .*\n)?    const b = e\.target\.closest\('\.help'\);.*?\}, true\);", SHELL_JS, re.S)
+        self.assertIsNotNone(click)
+        self.assertIn("if (b.dataset.copy) copy(b.dataset.copy);", click.group(0))
 
 
 class TheSharedRules(unittest.TestCase):

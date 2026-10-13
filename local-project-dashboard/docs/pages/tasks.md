@@ -1,13 +1,16 @@
 # Tasks
 
 Tasks is the second page, at `/tasks` (sd:2124): the rows v1 `/backlog` reads,
-as a board, an Eisenhower matrix and a list, filtered by kind, repo, priority
-and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
+as a board, an Eisenhower matrix and a list, filtered by kind and repo (two
+comboboxes, sd:3441), priority and due. `GET /api/tasks` (`tasks_screen.document`) gives each row its revision
 and the statuses the library allows it. `GET /api/tasks/<id>`
 (`tasks_screen.details`) splits the `sd task show --json` reading into status
 history and notes, and adds the item's assignments and its external context. A
 command that runs posts to the route v1 already answers, and its toast comes
-after the write lands. Status, priority, due and recurrence edits
+after the write lands. The Details edit the title, description, status, priority, due date, repo and
+quadrant in place (the description saves on leaving it, sd:3467), each change one write with its toast (sd:3439); a field the
+row cannot take is off with the reason. A card's priority and due date are
+dropdowns that make the same writes; Pick a date opens Edit (sd:3440). Status, priority, due, repo and recurrence edits
 carry Undo; resolving a followup note and cancelling an assignment ask first.
 Completing a repeating task asks first and names the outcome (sd:2250): the next
 occurrence's date, or that sd sets it, or, for a rule sd cannot walk, that the
