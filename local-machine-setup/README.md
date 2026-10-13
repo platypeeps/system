@@ -38,9 +38,13 @@ change I made on this machine back into its profile*.
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
 ./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy), claude update, brew cleanup + mas upgrade
-                                       # each step is logged as it starts and
-                                       # stopped at its bound (300-1800 s, or
-                                       # MACHINE_SETUP_STEP_TIMEOUT seconds)
+                                       # unattended (stdin not a terminal, as
+                                       # under cron), each brew, mas, curl and
+                                       # remote git call of every verb is logged
+                                       # as it starts and stopped at its bound
+                                       # (60-1800 s, or MACHINE_SETUP_STEP_TIMEOUT
+                                       # seconds); from a terminal it is not, so
+                                       # a sudo prompt can still be answered
 ./machine-setup.sh upgrade-report      # upgrade + report summary (cron: weekly)
                                        # plus the TCC grants probe; one push
                                        # names each binary to re-grant

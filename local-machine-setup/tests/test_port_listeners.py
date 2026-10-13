@@ -100,9 +100,11 @@ class PortListeners(unittest.TestCase):
         (machine.parent / "profiles").mkdir(parents=True)
         shutil.copyfile(SCRIPT, machine)
         machine.chmod(0o755)
-        # The script reads ../lib/config.sh beside its folder.
+        # The script reads ../lib/config.sh beside its folder, and sources
+        # ../lib/bounded.sh at its first bounded brew, mas or git call (sd:3536).
         (self.root / "lib").mkdir()
-        shutil.copyfile(HERE.parents[1] / "lib" / "config.sh", self.root / "lib" / "config.sh")
+        for name in ("config.sh", "bounded.sh"):
+            shutil.copyfile(HERE.parents[1] / "lib" / name, self.root / "lib" / name)
         self.machine = machine
         (machine.parent / "profiles" / "common.service").write_text("local-alpha\n")
         for name, ports in (("alpha", [9101, 9103]), ("beta", [9101, 9102])):

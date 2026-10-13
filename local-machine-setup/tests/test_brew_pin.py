@@ -25,10 +25,13 @@ LIB = FOLDER.parent / "lib"
 # Two pythons are installed, plus $FORMULAE. `pin` records into $PINS; `list --pinned` reads it.
 BREW_STUB = r"""#!/bin/sh
 case "$*" in
-  "list --formula") printf '%s\n' python@3.12 python@3.14 $FORMULAE ;;
+  "list --formula") [ -z "$LIST_HANG" ] || exec sleep 30
+                    [ -z "$LIST_RC" ] || exit "$LIST_RC"
+                    printf '%s\n' python@3.12 python@3.14 $FORMULAE ;;
   "list --cask"|leaves|tap) : ;;
-  "list --pinned") cat "$PINS" 2>/dev/null ;;
-  "pin "*) echo "$2" >> "$PINS" ;;
+  "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
+                   sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
+  "pin "*|"install "*) echo "$*" >> "$PINS" ;;
   --prefix) echo /usr/local ;;
 esac
 exit 0
@@ -64,7 +67,7 @@ class BrewPinTest(unittest.TestCase):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
 
-    def run_verb(self, *args, formulae=""):
+    def run_verb(self, *args, formulae="", **extra):
         env = {
             "FORMULAE": formulae,
             "HOME": str(self.home),
@@ -73,6 +76,7 @@ class BrewPinTest(unittest.TestCase):
             "LANG": "en_US.UTF-8",
             **fixture_config.env(self.config_root),
             "PINS": str(self.pins),
+            **extra,
         }
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
@@ -82,23 +86,24 @@ class BrewPinTest(unittest.TestCase):
         result = self.run_verb("update", "brew", "--apply")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pins.read_text().split(), ["python@3.14"])
+        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.14"])
 
         again = self.run_verb("update", "brew", "--apply")
 
         self.assertIn("ok      pinned python@3.14", again.stdout)
-        self.assertEqual(self.pins.read_text().split(), ["python@3.14"])
+        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.14"])
 
     def test_the_brew_stage_pins_the_agent_clis_the_pack_gate_runs(self):
         # REGRESSION sd:3542: the weekly upgrade moved opencode under the pack gate's live test.
         result = self.run_verb("update", "brew", "--apply", formulae="opencode codex jq")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pins.read_text().split(), ["python@3.14", "opencode", "codex"])
+        self.assertEqual(self.pins.read_text().splitlines(),
+                         ["pin python@3.14", "pin opencode", "pin codex"])
 
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")
-        self.pins.write_text("python@3.14\n")
+        self.pins.write_text("pin python@3.14\n")
         pinned = self.run_verb("status")
 
         self.assertIn("unpinned: python@3.14", unpinned.stdout)
@@ -106,6 +111,35 @@ class BrewPinTest(unittest.TestCase):
         before = int(unpinned.stdout.split("drift   : ")[1].split()[0])
         after = int(pinned.stdout.split("drift   : ")[1].split()[0])
         self.assertEqual(before - after, 1)
+
+
+    def test_a_list_brew_cannot_give_changes_nothing(self):
+        """sd:3536: read as empty, a failed list installed every formula again."""
+        (self.config_root / "machine-setup/profiles/personal.brew").write_text("jq\n")
+        result = self.run_verb("update", "brew", "--apply", LIST_RC="1")
+
+        self.assertIn("FAILED  brew stage: brew could not list what is installed; nothing changed",
+                      result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
+
+    def test_a_pin_list_brew_cannot_give_pins_nothing(self):
+        """sd:3536: read as nothing pinned, a failed list pinned again."""
+        result = self.run_verb("update", "brew", "--apply", PINNED_RC="1")
+
+        self.assertIn("FAILED  brew stage: brew could not list its pins; none changed", result.stdout)
+        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
+        status = self.run_verb("status", PINNED_RC="1")
+        self.assertIn("unpinned: unknown (brew could not list its pins)", status.stdout)
+
+    def test_a_brew_call_that_hangs_ends_at_its_bound_and_names_itself(self):
+        """sd:3536: an unattended brew stage bounds each brew call."""
+        result = self.run_verb("update", "brew", "--apply", LIST_HANG="1",
+                               MACHINE_SETUP_STEP_TIMEOUT="1")
+
+        self.assertRegex(result.stderr, r"\[step [\d:]+\] brew list --formula \(bound 1s\)")
+        self.assertRegex(result.stderr, r"\[step [\d:]+\] brew list --formula exited 124")
+        self.assertFalse(self.pins.exists(), self.pins.read_text() if self.pins.exists() else "")
 
 
 if __name__ == "__main__":

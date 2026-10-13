@@ -337,6 +337,9 @@ case "$SUITE_LEG" in
     # above, and the unwired-suite guard only asks that a run_suite
     # line name the folder -- which this does.
     run_suite mirror-sync "$PYTHON" local-mirror-sync/tests/test_mirror_sync.py -v
+    # brew-doctor.sh takes only `run`, which the nightly job calls; the
+    # suite is named directly. It stubs brew, so Linux runs it.
+    run_suite brew-doctor "$PYTHON" local-brew-doctor/tests/test_brew_doctor.py -v
     # scan-for-secrets.sh reads its first word as a scan mode, so a
     # `test` verb would be one more mode; the suite is named directly.
     run_suite scan-for-secrets "$PYTHON" local-scan-for-secrets/tests/test_scan_for_secrets.py -v

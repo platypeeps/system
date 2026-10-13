@@ -18,6 +18,16 @@ DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
 . "$DIR/../lib/bounded.sh"
 
+# fd 4 is this run's stderr, the job log under cron. bound_step is st_step with
+# its step line there, also when its caller captures the call's own output, as
+# nightly captures sync's: a step that hangs then names itself in the log
+# (sd:3536). A failed step names itself on the captured stderr too.
+exec 4>&2
+bound_step() { # seconds, command...
+  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+  (ST_STEP_FD3=1; st_step "$@" 3>&4)
+}
+
 # The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
 # AI_APPS_WORK_ROOT mean the same thing; SYSTEM_TOOLS_WORK_ROOT sets both.
 WORK_ROOT="${REPO_SYNC_WORK_ROOT:-${SYSTEM_TOOLS_WORK_ROOT:-}}"
@@ -410,7 +420,7 @@ side_branch_diverged() {
   d_default=$(pin_default "$1") || return 1
   [ "$d_branch" != "$d_default" ] || return 1
   d_up=$(git -C "$1" rev-parse -q --abbrev-ref '@{u}' 2>/dev/null) || return 1
-  git -C "$1" fetch -q 2>/dev/null || return 1
+  bound_step 300 git -C "$1" fetch -q < /dev/null 2>/dev/null || return 1
   d_counts=$(git -C "$1" rev-list --left-right --count 'HEAD...@{u}') || return 1
   set -- $d_counts
   [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || return 1
@@ -454,7 +464,9 @@ sync() {
   echo
 
   # A single unreachable repo must not abandon the rest of the sweep, so every
-  # git call is guarded and its failure recorded for the summary instead.
+  # git call is guarded and its failure recorded for the summary instead. Each
+  # one that reaches a remote is bounded, so one stuck SSH session cannot hold
+  # the sweep, and reads /dev/null, not the repo list (sd:3536).
   repo_list | while read -r subdir full_repo; do
     repo=$(echo "$full_repo" | awk -F/ '{ print $2 }')
     target="$ROOT/$subdir/$repo"
@@ -469,7 +481,7 @@ sync() {
       # pulled; `git pull` would refuse a detached HEAD anyway. On a
       # satellite, system and pack are never pulled, pinned or not.
       echo "=== pinned $full_repo"
-      if git -C "$target" fetch -q origin; then
+      if bound_step 300 git -C "$target" fetch -q origin < /dev/null; then
         state=$(pin_state "$target")
         echo "$state; not pulled (repo-sync.sh $mover moves it)"
         echo "$full_repo $state" >> "$PINLOG"
@@ -482,14 +494,15 @@ sync() {
       if state=$(side_branch_diverged "$target"); then
         echo "$state; left alone"
         echo "$full_repo $state" >> "$DIVLOG"
-      elif ! (cd "$target" && git pull --ff-only && git submodule update --init --recursive); then
+      elif ! { bound_step 600 git -C "$target" pull --ff-only < /dev/null \
+          && bound_step 1800 git -C "$target" submodule update --init --recursive < /dev/null; }; then
         echo "!!! failed: $full_repo" >&2
         echo "$full_repo" >> "$FAILLOG"
       fi
     else
       echo "=== cloning $full_repo"
       mkdir -p "$ROOT/$subdir"
-      if ! git clone "git@github.com:$full_repo.git" "$target"; then
+      if ! bound_step 1800 git clone "git@github.com:$full_repo.git" "$target" < /dev/null; then
         echo "!!! failed: $full_repo" >&2
         echo "$full_repo" >> "$FAILLOG"
       fi
@@ -547,7 +560,7 @@ refresh_one() {
     echo "!!! refused: $r_dir has uncommitted changes; commit or stash them, then refresh again"
     return 1
   fi
-  if ! git -C "$r_dir" fetch -q origin; then
+  if ! bound_step 300 git -C "$r_dir" fetch -q origin < /dev/null; then
     echo "!!! failed: fetch in $r_dir; still at $r_short"
     return 1
   fi
@@ -1125,7 +1138,7 @@ push_pins() {
   p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
   if git -C "$p_sys" tag -f -a -m "hub-pin: the system and pack a hub refresh moved to (sd:3100)" \
       -m "pack=$p_pack_sha" hub-pin "$p_sha" > /dev/null \
-      && git -C "$p_sys" push -q origin +refs/tags/hub-pin; then
+      && bound_step 300 git -C "$p_sys" push -q origin +refs/tags/hub-pin < /dev/null; then
     echo "hub-pin : system $(git -C "$p_sys" rev-parse --short HEAD), pack $(git -C "$p_pack" rev-parse --short HEAD), for satellites"
   else
     echo "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
@@ -1214,14 +1227,16 @@ follow() {
     echo "follow: no system checkout in the conf, and the hub-pin tag lives there; nothing to follow"
     return 0
   fi
-  if ! git -C "$f_sys" fetch -q origin refs/tags/hub-pin 2> "$TMPD/err"; then
+  # The error named below is git's last line, not the step's own.
+  if ! bound_step 300 git -C "$f_sys" fetch -q origin refs/tags/hub-pin < /dev/null 2> "$TMPD/err"; then
     f_rc=0
-    git -C "$f_sys" ls-remote --exit-code origin refs/tags/hub-pin > /dev/null 2>&1 || f_rc=$?
+    bound_step 120 git -C "$f_sys" ls-remote --exit-code origin refs/tags/hub-pin \
+      < /dev/null > /dev/null 2>&1 || f_rc=$?
     if [ "$f_rc" -eq 2 ]; then
       echo "follow: the system origin has no hub-pin tag yet; nothing to follow"
       return 0
     fi
-    echo "!!! refused: cannot fetch the hub-pin tag in $f_sys: $(tail -1 "$TMPD/err")"
+    echo "!!! refused: cannot fetch the hub-pin tag in $f_sys: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
     echo "follow  : refused, nothing moved"
     return 1
   fi
@@ -1240,8 +1255,8 @@ follow() {
   if [ -z "$f_pack" ]; then
     echo "follow: no pack checkout in the conf; skipped"
   elif ! git -C "$f_pack" cat-file -e "$f_pack_sha^{commit}" 2>/dev/null \
-      && ! git -C "$f_pack" fetch -q origin "$f_pack_sha" 2> "$TMPD/err"; then
-    echo "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(tail -1 "$TMPD/err")"
+      && ! bound_step 300 git -C "$f_pack" fetch -q origin "$f_pack_sha" < /dev/null 2> "$TMPD/err"; then
+    echo "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
     f_failed=$((f_failed + 1))
   else
     follow_want pack "$f_pack_sha" "$f_pack"
@@ -1792,7 +1807,7 @@ hyg_repo() {
     h_fresh=$h_wt_ok
     case "$def_ref" in
       refs/remotes/origin/*)
-        h_sym=$(git -C "$d" ls-remote --symref origin HEAD 2>/dev/null || true)
+        h_sym=$(bound_step 120 git -C "$d" ls-remote --symref origin HEAD < /dev/null 2>/dev/null || true)
         h_head=$(printf '%s\n' "$h_sym" | awk '$1 == "ref:" && $NF == "HEAD" { print $2; exit }')
         h_there=$(printf '%s\n' "$h_sym" | awk '$1 != "ref:" && $NF == "HEAD" { print $1; exit }')
         h_here=$(git -C "$d" rev-parse -q --verify "$def_ref" || true)

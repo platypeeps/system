@@ -433,7 +433,8 @@ class FollowTest(unittest.TestCase):
 
         result = f.run("follow", expect=1)
 
-        self.assertIn(f"cannot fetch the hub-pin tag in {system}", result.stdout)
+        # git's own last line, not the bounded step's "exited 128" (sd:3536).
+        self.assertIn(f"cannot fetch the hub-pin tag in {system}: fatal: unreachable", result.stdout)
         self.assertIn("nothing moved", result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
 

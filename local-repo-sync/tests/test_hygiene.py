@@ -1219,7 +1219,7 @@ class NightlyHygieneTest(unittest.TestCase):
         result = f.run("nightly", expect=0)
 
         verbs = f.git_verbs()
-        pulls = [i for i, v in enumerate(verbs) if v.startswith("pull")]
+        pulls = [i for i, v in enumerate(verbs) if "pull --ff-only" in v]
         prunes = [i for i, v in enumerate(verbs) if v.startswith("-C") and "worktree prune" in v]
         self.assertTrue(pulls, verbs)
         self.assertTrue(prunes, verbs)
@@ -1229,6 +1229,17 @@ class NightlyHygieneTest(unittest.TestCase):
         self.assertRegex(attention(result)[0], r"^repo-sync: hygiene report on ")
         self.assertIn(real(wt), result.stdout)
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
+
+    def test_nightly_bounds_each_remote_git_call_and_names_it(self):
+        """sd:3536: one stuck SSH session held the fleet sweep; each remote
+        git call now runs under st_step, which names it in the job log."""
+        f = self.fixture()
+        f.repo()
+
+        result = f.run("nightly", expect=0)
+
+        self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+/a/proj pull --ff-only \(bound 600s\)")
+        self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+ submodule update --init --recursive \(bound 1800s\)")
 
     def test_nightly_is_silent_when_hygiene_finds_nothing(self):
         """NEW. Criterion 8, second half: a clean fleet reports nothing."""

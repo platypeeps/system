@@ -80,6 +80,39 @@ exec /bin/date "$@"
         self.assertIn("all checks clean", run.stdout)
         self.assertEqual(self.attention(run), [])
 
+    def test_a_mount_counts_only_at_its_own_mountpoint(self):
+        """sd:3718: a mountpoint ends at " (" or " type ", not at a space, so
+        "/Volumes/Offsite Disk" does not mount /Volumes/Offsite."""
+        _stub(self.bin / "mount", 'echo "/dev/disk5s1 on /Volumes/Offsite Disk (apfs, local, journaled)"\n'
+              'echo "server:/export on /Volumes/Share type nfs (rw)"\n')
+        run = self.maintenance("mount|/Volumes/Offsite\nmount|/Volumes/Offsite Disk\nmount|/Volumes/Share\n"
+                               "mount|/Volumes/Off\n", "check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        findings = [line for line in run.stdout.splitlines() if line.startswith("- mount: ")]
+        self.assertEqual(findings, ["- mount: /Volumes/Offsite is not mounted",
+                                    "- mount: /Volumes/Off is not mounted"])
+
+    def test_each_update_check_runs_bounded_and_names_itself(self):
+        """sd:3536: softwareupdate and mas run under st_step; the step line
+        reaches the job log (stderr), not the report."""
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] softwareupdate -l \(bound 300s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] mas outdated \(bound 120s\)")
+        self.assertNotIn("[step ", run.stdout)
+
+    def test_a_failed_app_store_check_is_a_finding(self):
+        """A check that failed found nothing, which is not 'nothing pending'."""
+        _stub(self.bin / "mas", 'echo "mas: cannot reach the App Store" >&2; exit 1\n')
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("- App Store update check failed (mas outdated exit 1)", run.stdout)
+
+    def test_a_failed_softwareupdate_names_its_own_last_line(self):
+        _stub(self.bin / "softwareupdate", 'echo "Cannot reach the update server" >&2; exit 1\n')
+        run = self.maintenance("# nothing to check\n")
+        self.assertIn("- softwareupdate check failed: Cannot reach the update server", run.stdout)
+
     def test_check_prints_findings_without_the_line(self):
         run = self.maintenance(f"cert|{self.tmp}/missing.pem|30\n", "check")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

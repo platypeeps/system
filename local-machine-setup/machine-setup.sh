@@ -48,6 +48,15 @@ fi
 . "$ROOT/lib/config.sh"
 LABEL_PREFIX="$(st_label_prefix)"
 
+# fd 4 is this run's stderr, the job log under cron: bound_step names each step
+# there, also when its caller sends the call's own stderr elsewhere.
+exec 4>&2
+# A run started from a terminal has someone to answer a sudo prompt and to
+# stop a hang, and a bounded step runs in a process group of its own, where
+# that prompt would stop on SIGTTIN. So bound_step bounds an unattended run,
+# such as cron's, whose stdin is not a terminal.
+if [ -t 0 ]; then ATTENDED=1; else ATTENDED=0; fi
+
 # The Directory Service node that holds local user records (dscl paths, not
 # file paths: the record is there whatever the home directory is).
 DS_USERS=/Users
@@ -245,13 +254,14 @@ run() {
 }
 
 run_ok() {
-  try_run "$@" || { ro_rc=$?; note_failure "$*" "$ro_rc"; return "$ro_rc"; }
+  try_run "$@" || { ro_rc=$?; [ "$1" != bound_step ] || shift 2; note_failure "$*" "$ro_rc"; return "$ro_rc"; }
 }
 
 try_run() {
   if [ "$APPLY" -eq 1 ]; then
     "$@" </dev/null
   else
+    [ "$1" != bound_step ] || shift 2
     printf '  [dry-run] %s\n' "$*"
   fi
 }
@@ -471,12 +481,13 @@ valid_profile() {
 BREW_PINNED="python@3.14 opencode codex"
 
 # Each BREW_PINNED formula that is installed and not pinned, one per line.
+# Fails when brew cannot list either: unknown, not "nothing to pin" (sd:3536).
 unpinned_formulae() {
-  _have=$(brew list --formula 2>/dev/null | sed 's|.*/||')
-  _pinned=$(brew list --pinned 2>/dev/null | sed 's|.*/||')
+  _have=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
+  _pinned=$(bound_step 300 brew list --pinned 2>/dev/null) || return 1
   for _f in $BREW_PINNED; do
-    printf '%s\n' "$_have" | grep -qx "$_f" || continue
-    printf '%s\n' "$_pinned" | grep -qx "$_f" || echo "$_f"
+    printf '%s\n' "$_have" | sed 's|.*/||' | grep -qx "$_f" || continue
+    printf '%s\n' "$_pinned" | sed 's|.*/||' | grep -qx "$_f" || echo "$_f"
   done
 }
 
@@ -487,27 +498,36 @@ stage_brew() {
     return 0
   }
 
+  # A list brew could not give is unknown, not empty: read as empty, it would
+  # install every formula again, each up to its bound (sd:3536).
+  if ! taps=$(bound_step 300 brew tap 2>/dev/null) \
+      || ! formulae=$(bound_step 300 brew list --formula 2>/dev/null) \
+      || ! installed_casks=$(bound_step 300 brew list --cask 2>/dev/null); then
+    note_failure "brew stage: brew could not list what is installed; nothing changed" 1
+    return 0
+  fi
+
   manifest tap | while read -r t; do
-    if brew tap 2>/dev/null | grep -qx "$t"; then
+    if printf '%s\n' "$taps" | grep -qx "$t"; then
       echo "  ok      tap $t"
     else
       echo "  MISSING tap $t"
-      run brew tap "$t"
+      run bound_step 600 brew tap "$t"
     fi
   done
 
-  installed=$(brew list --formula 2>/dev/null | sed 's|.*/||' | sort)
+  installed=$(printf '%s\n' "$formulae" | sed 's|.*/||' | sort)
   manifest brew | while read -r f; do
     # Casks and versioned formulae report under their bare name.
     if echo "$installed" | grep -qx "$(echo "$f" | sed 's|.*/||')"; then
       echo "  ok      $f"
     else
       echo "  MISSING $f"
-      run brew install "$f"
+      run bound_step 1800 brew install "$f"
     fi
   done
 
-  installed_casks=$(brew list --cask 2>/dev/null | sort)
+  installed_casks=$(printf '%s\n' "$installed_casks" | sort)
   manifest cask | while read -r c; do
     if echo "$installed_casks" | grep -qx "$c"; then
       echo "  ok      cask $c"
@@ -520,16 +540,19 @@ stage_brew() {
       # nothing. maccy and zoom were both hand-installed here and blocked the
       # brew stage until this.
       echo "  MISSING cask $c"
-      run brew install --cask --adopt "$c"
+      run bound_step 1800 brew install --cask --adopt "$c"
     fi
   done
 
-  unpinned=$(unpinned_formulae)
+  if ! unpinned=$(unpinned_formulae); then
+    note_failure "brew stage: brew could not list its pins; none changed" 1
+    return 0
+  fi
   for f in $BREW_PINNED; do
     if printf '%s\n' "$unpinned" | grep -qx "$f"; then
       echo "  DIFFERS $f not pinned"
-      run brew pin "$f"
-    elif brew list --formula 2>/dev/null | sed 's|.*/||' | grep -qx "$f"; then
+      run bound_step 300 brew pin "$f"
+    elif printf '%s\n' "$installed" | grep -qx "$f"; then
       echo "  ok      pinned $f"
     fi
   done
@@ -561,7 +584,7 @@ stage_shell() {
   if ! command -v brew >/dev/null 2>&1; then
     for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
       if [ -x "$b" ]; then
-        eval "$("$b" shellenv)"
+        eval "$(bound_step 60 "$b" shellenv)"
         break
       fi
     done
@@ -570,9 +593,10 @@ stage_shell() {
     # NONINTERACTIVE skips the installer's confirmation prompt; it still
     # needs sudo internally, so on a no-admin machine this fails and the
     # stage reports MISSING rather than half-converting.
-    run /bin/bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    # shellcheck disable=SC2016 # the inner bash expands it
+    run bound_step 1800 /bin/bash -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL --max-time 300 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
     for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-      [ -x "$b" ] && eval "$("$b" shellenv)" && break
+      [ -x "$b" ] && eval "$(bound_step 60 "$b" shellenv)" && break
     done
   fi
   if ! command -v brew >/dev/null 2>&1; then
@@ -581,12 +605,12 @@ stage_shell() {
   fi
   echo "  ok      brew present ($(command -v brew))"
 
-  BREW_BASH="$(brew --prefix)/bin/bash"
+  BREW_BASH="$(bound_step 60 brew --prefix)/bin/bash"
   if [ -x "$BREW_BASH" ]; then
     echo "  ok      brew bash installed ($BREW_BASH)"
   else
     echo "  MISSING brew bash ($BREW_BASH)"
-    run brew install bash
+    run bound_step 1800 brew install bash
     if [ "$APPLY" -eq 1 ] && [ ! -x "$BREW_BASH" ]; then
       echo "  FAIL    brew install bash did not produce $BREW_BASH"
       return 0
@@ -643,7 +667,12 @@ stage_appstore() {
 
   # `mas list` prints "<id>  <name>  (<version>)"; compare on the id alone,
   # since names carry spaces and versions drift.
-  mas_listing=$(mas list 2>/dev/null || :)
+  # A listing mas could not give is unknown, not empty: read as empty, it
+  # would try every install again, each up to its bound (sd:3536).
+  if ! mas_listing=$(bound_step 300 mas list 2>/dev/null); then
+    echo "  FAILED  mas list did not answer; App Store apps not checked"
+    return 0
+  fi
   installed_apps=$(printf '%s\n' "$mas_listing" | awk '{print $1}' | sort)
   # A beta or TestFlight build lists under id 0, so the id alone reads it as
   # missing. Its name still matches: "<id>  <name>  (<version>)", name trimmed.
@@ -667,7 +696,7 @@ stage_appstore() {
       # `mas install` can need sudo, which a nightly run under launchd does
       # not have. A failure here used to end the loop and, under set -e, the
       # whole run: every later stage was skipped. Report it and go on.
-      if ! try_run mas install "$id"; then
+      if ! try_run bound_step 1800 mas install "$id"; then
         echo "  FAILED  mas install $id $name — install it by hand"
       fi
     fi
@@ -2440,8 +2469,8 @@ cmd_update() {
 # The checkout is the one that holds the profile directory, when that is a git
 # work tree; a profile directory under no version control has nothing to be
 # behind. Fetches first, because the local upstream ref is as stale as the
-# checkout that holds it. ConnectTimeout bounds a fetch on a machine that cannot
-# reach the remote; when it fails, this says so and compares against the ref on
+# checkout that holds it. ConnectTimeout ends a fetch on a machine that cannot
+# reach the remote early, and bound_step ends one that connects and stalls; when it fails, this says so and compares against the ref on
 # disk rather than pretending the checkout is current.
 profile_repo() {
   command -v git >/dev/null 2>&1 || return 0
@@ -2452,7 +2481,7 @@ check_repo_current() {
   repo=$(profile_repo)
   [ -n "$repo" ] || return 0
   up=$(git -C "$repo" rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo origin/main)
-  if ! GIT_SSH_COMMAND="ssh -o ConnectTimeout=5" \
+  if ! bound_step 120 env GIT_SSH_COMMAND="ssh -o ConnectTimeout=5" \
        git -C "$repo" fetch --quiet "${up%%/*}" 2>/dev/null; then
     echo "  --      could not reach ${up%%/*}; comparing against the ref on disk"
   fi
@@ -2579,8 +2608,18 @@ cmd_capture() {
 
   # A profile file holds only what common does not already provide, so capture
   # subtracts the common manifest instead of dumping the whole machine.
-  brew tap 2>/dev/null | sort > "$tmp/have.tap"
-  brew leaves 2>/dev/null | sort -u > "$tmp/have.brew"
+  # Not piped: a pipeline's status is sort's, and a list brew could not give
+  # would read as nothing installed (sd:3536). No brew lists nothing.
+  : > "$tmp/raw.tap"; : > "$tmp/raw.brew"; : > "$tmp/raw.cask"
+  if command -v brew >/dev/null 2>&1 \
+      && { ! bound_step 300 brew tap > "$tmp/raw.tap" 2>/dev/null \
+        || ! bound_step 300 brew leaves > "$tmp/raw.brew" 2>/dev/null \
+        || ! bound_step 300 brew list --cask > "$tmp/raw.cask" 2>/dev/null; }; then
+    echo "capture: brew could not list what is installed; nothing captured" >&2
+    exit 1
+  fi
+  sort "$tmp/raw.tap" > "$tmp/have.tap"
+  sort -u "$tmp/raw.brew" > "$tmp/have.brew"
   common_manifest tap  > "$tmp/common.tap"
   common_manifest brew | sed 's|.*/||' | sort -u > "$tmp/common.brew"
   comm -23 "$tmp/have.tap"  "$tmp/common.tap"  > "$tmp/out.tap"
@@ -2591,7 +2630,7 @@ cmd_capture() {
   awk 'FILENAME == ARGV[1] { common[$0] = 1; next }
        { n = $0; sub(/.*\//, "", n); if (!(n in common)) print }' \
     "$tmp/common.brew" "$tmp/have.brew" > "$tmp/out.brew"
-  brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
+  sort "$tmp/raw.cask" > "$tmp/have.cask"
   common_manifest cask > "$tmp/common.cask"
   comm -23 "$tmp/have.cask" "$tmp/common.cask" > "$tmp/out.cask"
   # Only agents local-cron-jobs installed: another installer's agent under the
@@ -2636,8 +2675,11 @@ cmd_capture() {
     # Id 0 is a beta or TestFlight build: `mas install 0` installs nothing, so
     # it has no place in a profile. A profile entry with the same name stays,
     # though: update counts it as installed, and a rebuild needs its store id.
-    mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' \
-      > "$tmp/all.mas"
+    if ! bound_step 300 mas list > "$tmp/raw.mas" 2>/dev/null; then
+      echo "capture: mas list did not answer; nothing captured" >&2
+      exit 1
+    fi
+    sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' "$tmp/raw.mas" > "$tmp/all.mas"
     { grep -v '^0 ' "$tmp/all.mas" || :; } > "$tmp/have.pre"
     if [ -f "$PROFILE_DIR/$PROFILE.mas" ]; then
       sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/  */ /g' \
@@ -3072,11 +3114,11 @@ cmd_triage() {
     if [ -n "$only_kind" ] && [ "$only_kind" != "$kind" ]; then continue; fi
     case "$kind" in
       brew) command -v brew >/dev/null 2>&1 || continue
-            brew leaves 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have" ;;
+            bound_step 300 brew leaves 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have" ;;
       cask) command -v brew >/dev/null 2>&1 || continue
-            brew list --cask 2>/dev/null | sort > "$tmp/have" ;;
+            bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have" ;;
       mas)  command -v mas >/dev/null 2>&1 || continue
-            mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' | sort > "$tmp/have" ;;
+            bound_step 300 mas list 2>/dev/null | sed -e 's/ *([^)]*)$//' -e 's/  */ /g' -e 's/^ *//' | sort > "$tmp/have" ;;
       # Neither of these comes from a package manager: services are the
       # local-* folders that can start a container, cron jobs are whatever
       # local-cron-jobs defines. Same discovery `candidates` reports from.
@@ -3522,7 +3564,7 @@ standalone_scan() {
   trap_tmp
 
   if command -v brew >/dev/null 2>&1; then
-    brew info --json=v2 --installed --cask 2>/dev/null | python3 -c '
+    bound_step 300 brew info --json=v2 --installed --cask 2>/dev/null | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 apps=set()
@@ -3535,7 +3577,7 @@ def walk(a):
 for c in d.get("casks",[]):
     walk(c.get("artifacts",[]))
 print("\n".join(sorted(apps)))' > "$tmp/cask-apps" || : > "$tmp/cask-apps"
-    brew list --cask 2>/dev/null | tr -d '-' | tr '[:upper:]' '[:lower:]' > "$tmp/cask-tokens" || :
+    bound_step 300 brew list --cask 2>/dev/null | tr -d '-' | tr '[:upper:]' '[:lower:]' > "$tmp/cask-tokens" || :
   else
     : > "$tmp/cask-apps"; : > "$tmp/cask-tokens"
   fi
@@ -3564,7 +3606,7 @@ print("\n".join(sorted(apps)))' > "$tmp/cask-apps" || : > "$tmp/cask-apps"
     # No first-word fallback: it matched "GitHub Copilot" to the `github`
     # cask, which is GitHub Desktop — a match must cover the whole name.
     for cand in "$tok" "${tok%-x}" "$(echo "$tok" | sed 's/-for-desktop/-desktop/')"; do
-      hit=$(brew search --cask "/^$cand\$/" 2>/dev/null | head -1 || :)
+      hit=$(bound_step 120 brew search --cask "/^$cand\$/" 2>/dev/null | head -1 || :)
       [ -n "$hit" ] && break
     done
     printf '%s\t%s\n' "$name" "$hit" >> "$out"
@@ -3605,7 +3647,7 @@ cmd_adopt() {
       continue
     fi
     if [ "$APPLY" -eq 1 ]; then
-      if brew install --cask --adopt "$tok"; then
+      if bound_step 1800 brew install --cask --adopt "$tok"; then
         adopted=$((adopted + 1))
         cf="$PROFILE_DIR/$PROFILE.cask"
         if ! manifest cask | grep -qxF "$tok"; then
@@ -4002,7 +4044,7 @@ cmd_doctor() {
   fi
 
   if command -v brew >/dev/null 2>&1; then
-    if brew doctor >/dev/null 2>&1; then
+    if bound_step 600 brew doctor >/dev/null 2>&1; then
       echo "  ok      brew doctor clean"
     else
       echo "  WARN    brew doctor has warnings — run: brew doctor"
@@ -4409,19 +4451,30 @@ cmd_doctor() {
   echo "  no hard failures"
 }
 
-# `run` with a bound, for the brew and mas calls of the upgrade sweep. An
-# apply logs the step as it starts and stops it after SECONDS, or after
-# MACHINE_SETUP_STEP_TIMEOUT seconds when that is set: a call that hangs then
+# Every brew, mas, curl and remote git call runs bounded (sd:2660, sd:3536):
+# it logs the step as it starts and stops it after SECONDS, or after
+# MACHINE_SETUP_STEP_TIMEOUT seconds when that is set. A call that hangs then
 # names itself in the log and ends, where it used to run until the job's limit
-# killed the whole job (sd:2660). lib/bounded.sh is sourced here, not at the
-# top: suites run copies of this script with no lib/ beside them.
-run_step() { # seconds, command...
+# killed the whole job. A call to change the machine goes through `run
+# bound_step N ...` or run_step, which keep the dry run; a read calls
+# bound_step itself. A run from a terminal is not bounded (ATTENDED above).
+# lib/bounded.sh is sourced on first use, not at the top:
+# suites run copies of this script with only lib/config.sh beside them.
+bound_step() { # seconds, command...
   _step_seconds=${MACHINE_SETUP_STEP_TIMEOUT:-$1}
   shift
+  if [ "$ATTENDED" -eq 1 ]; then "$@" </dev/null; return; fi
+  command -v st_step >/dev/null 2>&1 || . "$ROOT/lib/bounded.sh"
+  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+  (ST_STEP_FD3=1; st_step "$_step_seconds" "$@" </dev/null 3>&4)
+}
+
+# bound_step for the upgrade sweep, which prints its own dry run.
+run_step() { # seconds, command...
   if [ "$APPLY" -eq 1 ]; then
-    command -v st_step >/dev/null 2>&1 || . "$ROOT/lib/bounded.sh"
-    st_step "$_step_seconds" "$@" </dev/null
+    bound_step "$@"
   else
+    shift
     printf '  [dry-run] %s\n' "$*"
   fi
 }
@@ -4437,16 +4490,22 @@ cmd_upgrade() {
   if command -v brew >/dev/null 2>&1; then
     run_step 600 brew update || failed="$failed, brew update"
     holds=""
-    [ "$APPLY" -eq 0 ] || holds=$(pinned_holds)
-    if [ -z "$holds" ]; then
+    # A pin or outdated list brew could not give leaves the formulae as they
+    # are, named as a failed step (sd:3536).
+    if [ "$APPLY" -eq 1 ] && ! holds=$(pinned_holds); then
+      failed="$failed, brew formula lists"
+    elif [ -z "$holds" ]; then
       run_step 1800 brew upgrade || failed="$failed, brew upgrade"
     else
       # One line: a newline in an awk -v value is an error in macOS awk.
       holds=$(printf '%s\n' "$holds" | tr '\n' ' ' | sed 's/ $//')
       echo "  held    $holds"
-      rest=$(run_step 300 brew outdated --formula --quiet 2>/dev/null |
-        awk -v holds="$holds" 'BEGIN { n = split(holds, h, " "); for (i = 1; i <= n; i++) held[h[i]] = 1 }
-          { name = $0; sub(/.*\//, "", name); if (!(name in held)) print }') || :
+      if ! rest=$(run_step 300 brew outdated --formula --quiet 2>/dev/null); then
+        failed="$failed, brew formula lists"
+        rest=""
+      fi
+      rest=$(printf '%s\n' "$rest" | awk -v holds="$holds" 'BEGIN { n = split(holds, h, " "); for (i = 1; i <= n; i++) held[h[i]] = 1 }
+          NF { name = $0; sub(/.*\//, "", name); if (!(name in held)) print }')
       if [ -n "$rest" ]; then
         # shellcheck disable=SC2086 # one word per formula name
         run_step 1800 brew upgrade $rest || failed="$failed, brew upgrade"
@@ -4484,34 +4543,43 @@ cmd_upgrade() {
 # with a newer version. brew upgrade refuses such a dependent ("You must `brew
 # unpin python@3.14` as installing awscli requires the latest version of
 # pinned dependencies") and exits 1, so cmd_upgrade leaves these out and
-# upgrades the rest by name (sd:3329).
+# upgrades the rest by name (sd:3329). Fails when a read fails: what a pin
+# holds is then unknown, not nothing (sd:3536).
 pinned_holds() {
-  _pins=$(run_step 300 brew list --pinned 2>/dev/null | sed 's|.*/||') || :
+  _pins=$(run_step 300 brew list --pinned 2>/dev/null) || return 1
   [ -n "$_pins" ] || return 0
-  _outdated=$(run_step 300 brew outdated --formula --quiet 2>/dev/null | sed 's|.*/||') || :
-  for _p in $_pins; do
-    echo "$_p"
-    printf '%s\n' "$_outdated" | grep -qx "$_p" || continue
-    run_step 300 brew uses --installed --recursive "$_p" 2>/dev/null | sed 's|.*/||' || :
-  done | sort -u
+  _outdated=$(run_step 300 brew outdated --formula --quiet 2>/dev/null) || return 1
+  _holds=$(printf '%s\n' "$_pins" | sed 's|.*/||')
+  for _p in $_holds; do
+    printf '%s\n' "$_outdated" | sed 's|.*/||' | grep -qx "$_p" || continue
+    _uses=$(run_step 300 brew uses --installed --recursive "$_p" 2>/dev/null) || return 1
+    _holds="$_holds
+$_uses"
+  done
+  printf '%s\n' "$_holds" | sed 's|.*/||; /^$/d' | sort -u
 }
 
 # outdated_lists before|after: what brew and mas call outdated, one sorted
 # file per kind under $tmp. Each query is a bounded step; one that fails or
-# times out leaves its file empty. Casks are asked with --greedy, as
-# cmd_upgrade upgrades them, so a self-updating cask is in both lists.
+# times out leaves its file empty and names its kind in unknown.<when>: an
+# unknown list is not "nothing outdated" (sd:3536). Casks are asked with
+# --greedy, as cmd_upgrade upgrades them, so a self-updating cask is in both.
 outdated_lists() {
-  run_step 300 brew outdated --formula --quiet 2>/dev/null | sort > "$tmp/formula.all.$1" || :
+  : > "$tmp/unknown.$1"
+  run_step 300 brew outdated --formula --quiet > "$tmp/raw" 2>/dev/null || echo formula >> "$tmp/unknown.$1"
+  sort "$tmp/raw" > "$tmp/formula.all.$1"
   # A pinned formula with a newer version is held on purpose (BREW_PINNED),
   # not left over: it and the formulae it holds back go to their own list,
   # out of the counts.
-  pinned_holds > "$tmp/pinned"
+  pinned_holds > "$tmp/pinned" || echo formula >> "$tmp/unknown.$1"
   comm -12 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/held.$1"
   comm -23 "$tmp/formula.all.$1" "$tmp/pinned" > "$tmp/formula.$1"
-  run_step 300 brew outdated --cask --greedy --quiet 2>/dev/null | sort > "$tmp/cask.$1" || :
+  run_step 300 brew outdated --cask --greedy --quiet > "$tmp/raw" 2>/dev/null || echo cask >> "$tmp/unknown.$1"
+  sort "$tmp/raw" > "$tmp/cask.$1"
   : > "$tmp/mas.$1"
   if command -v mas >/dev/null 2>&1; then
-    run_step 300 mas outdated 2>/dev/null | sort > "$tmp/mas.$1" || :
+    run_step 300 mas outdated > "$tmp/raw" 2>/dev/null || echo mas >> "$tmp/unknown.$1"
+    sort "$tmp/raw" > "$tmp/mas.$1"
   fi
 }
 
@@ -4530,7 +4598,7 @@ grant_paths() {
   readlink "$HOME/.local/bin/claude" > "$tmp/claude.$1" 2>/dev/null || :
   : > "$tmp/python.$1"
   if command -v brew >/dev/null 2>&1; then
-    _cellar=$(brew --cellar 2>/dev/null) || _cellar=""
+    _cellar=$(bound_step 60 brew --cellar 2>/dev/null) || _cellar=""
     if [ -n "$_cellar" ]; then
       ls -d "$_cellar"/python@*/* 2>/dev/null | sort > "$tmp/python.$1" || :
     fi
@@ -4632,7 +4700,8 @@ cmd_upgrade_report() {
   outdated_lists before
   grant_paths before
 
-  if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ]      && [ ! -s "$tmp/mas.before" ]; then
+  if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ] \
+      && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/unknown.before" ]; then
     # Claude Code updates outside brew, and cmd_upgrade, which runs it, does
     # not run this week (sd:3033).
     rc=0
@@ -4664,6 +4733,11 @@ cmd_upgrade_report() {
       "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)"
     held_section after
     for kind in formula cask mas; do
+      # A list that did not answer, before or after, has no upgraded diff.
+      if grep -qx "$kind" "$tmp/unknown.before" "$tmp/unknown.after"; then
+        printf '\noutdated (%s): unknown, the list did not answer\n' "$kind"
+        continue
+      fi
       comm -23 "$tmp/$kind.before" "$tmp/$kind.after" > "$tmp/$kind.done"
       if [ -s "$tmp/$kind.done" ]; then
         printf '\nupgraded (%s):\n' "$kind"
@@ -4691,6 +4765,8 @@ cmd_upgrade_report() {
   [ "$n_left" -eq 0 ] || set -- "$@" "$n_left still outdated"
   [ "$rc" -eq 0 ] || set -- "$@" "upgrade sweep failed"
   [ "$inv_rc" -eq 0 ] || set -- "$@" "inventory capture failed"
+  unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
+  [ -z "$unknown" ] || set -- "$@" "outdated list failed ($unknown)"
   upgrade_attention "$@"
 }
 
@@ -4892,7 +4968,7 @@ cmd_status() {
     trap_tmp
 
     # Missing only: the brew stage adds a tap and never removes one.
-    brew tap 2>/dev/null | sort -u > "$tmp/have.tap"
+    bound_step 300 brew tap 2>/dev/null | sort -u > "$tmp/have.tap"
     manifest tap > "$tmp/want.tap"
     echo "taps"
     mt=$(comm -13 "$tmp/have.tap" "$tmp/want.tap")
@@ -4908,17 +4984,17 @@ cmd_status() {
     # `sort -u`, not `sort`: manifest dedupes before this strips the tap, so a
     # profile naming one formula both ways left the same bare name twice and
     # comm reported the duplicate as missing for a formula that was installed.
-    brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
+    bound_step 300 brew list --formula 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/have.brew"
     manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
     echo "brew formulae"
     mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
-    brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
+    bound_step 300 brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
     status_line extra "$xb"
     [ -n "$mb$xb" ] || echo "  ok      in sync"
 
-    brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
+    bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have.cask"
     manifest cask > "$tmp/want.cask"
     echo "casks"
     mc=$(comm -13 "$tmp/have.cask" "$tmp/want.cask")
@@ -4926,7 +5002,7 @@ cmd_status() {
     status_line missing "$mc"
     status_line extra "$xc"
     [ -n "$mc$xc" ] || echo "  ok      in sync"
-    up=$(unpinned_formulae)
+    up=$(unpinned_formulae) || up="unknown (brew could not list its pins)"
     echo "pins"
     status_line unpinned "$up"
     [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
