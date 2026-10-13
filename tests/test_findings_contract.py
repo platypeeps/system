@@ -80,6 +80,9 @@ class EndToEndTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "local-brew-doctor").mkdir()
         shutil.copy(ROOT / "local-brew-doctor/brew-doctor.sh", self.tmp / "local-brew-doctor")
+        # brew-doctor sources ../lib/bounded.sh for its bounded brew calls (sd:3536).
+        (self.tmp / "lib").mkdir()
+        shutil.copy(ROOT / "lib/bounded.sh", self.tmp / "lib")
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify/notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')
         self.bin = self.tmp / "bin"

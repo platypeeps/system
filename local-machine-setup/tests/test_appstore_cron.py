@@ -34,7 +34,7 @@ HOST = "fixturehost"
 # `mas list` prints MAS_LIST; `mas install` logs and exits MAS_INSTALL_RC.
 MAS_STUB = r"""#!/bin/sh
 case "$1" in
-  list) printf '%b' "$MAS_LIST" ;;
+  list) printf '%b' "$MAS_LIST"; exit "${MAS_LIST_RC:-0}" ;;
   install) printf 'install %s\n' "$2" >> "$MAS_LOG"
            echo "sudo: a password is required" >&2
            exit "${MAS_INSTALL_RC:-0}" ;;
@@ -154,6 +154,14 @@ class AppStoreTest(StageTest):
         # Both installs were tried: the first failure did not end the loop.
         self.assertEqual(self.mas_log.read_text(), "install 222\ninstall 333\n")
         self.assertIn("FAILED  mas install 222", result.stdout)
+
+    def test_a_listing_mas_cannot_give_installs_nothing(self):
+        """sd:3536: read as empty, a failed `mas list` tried every install again."""
+        result = self.run_stage("appstore", "--apply", MAS_LIST_RC="1", MAS_LIST="111  Alpha  (1.0)\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FAILED  mas list did not answer; App Store apps not checked", result.stdout)
+        self.assertNotIn("MISSING", result.stdout)
+        self.assertEqual(self.mas_log.read_text(), "")
 
     def test_a_truly_missing_app_is_still_missing(self):
         result = self.run_stage("appstore", MAS_LIST="111  Alpha  (1.0)\n0  Other  (1.0)\n")
@@ -570,6 +578,15 @@ class CaptureTest(StageTest):
         mas = (self.profiles / "personal.mas").read_text()
         self.assertIn("111 Alpha", mas)
         self.assertNotIn("Beta App", mas)
+
+    def test_capture_writes_nothing_when_mas_cannot_list(self):
+        """sd:3536: a failed `mas list` is unknown, not an empty roster."""
+        before = "111 Alpha\n222 Gamma\n"
+        (self.profiles / "personal.mas").write_text(before)
+        result = self.capture(MAS_LIST_RC="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("capture: mas list did not answer; nothing captured", result.stderr)
+        self.assertEqual((self.profiles / "personal.mas").read_text(), before)
 
     def test_capture_leaves_a_foreign_agent_out_of_the_profile(self):
         # A profile naming it would send the cron stage to install a job with

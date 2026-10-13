@@ -78,8 +78,10 @@ class TapQualifiedFormula(unittest.TestCase):
 
         self.stubs = base / "stubs"
         write_exec(self.stubs / "brew", BREW_STUB)
-        for name in ("defaults", "sudo", "launchctl", "mas"):
+        for name in ("defaults", "sudo", "launchctl"):
             write_exec(self.stubs / name, EXIT_1_STUB)
+        # No App Store apps: a failed `mas list` makes capture refuse (sd:3536).
+        write_exec(self.stubs / "mas", "#!/bin/sh\nexit 0\n")
         fixture_config.seal(self, self.stubs)
 
     def env(self):

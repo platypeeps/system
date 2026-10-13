@@ -35,8 +35,10 @@ LIB = FOLDER.parent / "lib"
 # value would reach the stub as the script's whole list (sd:3542).
 # BREW_OUTDATED renames the outdated formula; BREW_UPGRADES_ALL makes
 # `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
+# BREW_FAIL names one call, its arguments as logged, that exits 1.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
+[ "$*" != "$BREW_FAIL" ] || exit 1
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
                                 [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED"
@@ -56,6 +58,7 @@ exit 0
 
 MAS_STUB = r"""#!/bin/sh
 echo "$*" >> "$MAS_LOG"
+[ "$*" != "$MAS_FAIL" ] || exit 1
 exit 0
 """
 
@@ -381,6 +384,24 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n", body)
         self.assertNotIn("failed steps", body)
         self.assertIn("upgrade: 1 still outdated on ", self.attention(result)[0])
+
+    def test_a_pin_list_brew_cannot_give_upgrades_no_formula(self):
+        """sd:3536: read as no pins, a failed list ran a bare brew upgrade,
+        which a pin's dependent fails (sd:3329)."""
+        result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14",
+                               BREW_DEPENDENT="awscli", BREW_FAIL="list --pinned")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([c for c in self.brew_calls() if c.startswith("upgrade") and "--cask" not in c], [])
+        self.assertIn("failed steps: brew formula lists", result.stdout)
+
+    def test_an_outdated_list_that_did_not_answer_is_not_a_quiet_week(self):
+        """sd:3536: a failed mas outdated read as nothing outdated."""
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", MAS_FAIL="outdated")
+
+        self.assertNotIn("nothing outdated", result.stdout)
+        self.assertIn("outdated (mas): unknown, the list did not answer", result.stdout)
+        self.assertIn("outdated list failed (mas)", self.attention(result)[0])
 
     def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
         result = self.run_verb("upgrade-report", BREW_QUIET="1", STUB_PINNED="python@3.14")

@@ -5,6 +5,7 @@
 # Usage: weekly-digest.sh run|check
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/bounded.sh"
 
 # Seams for a fixture tree, not per-machine settings: on every real machine
 # these are this checkout.
@@ -66,6 +67,15 @@ NOTES="$TMPD/notes"
 cutoff=$(date -v-7d '+%Y-%m-%d' 2>/dev/null || date -d '7 days ago' '+%Y-%m-%d')
 
 note() { printf -- '%s\n' "$1" >> "$NOTES"; }
+
+# The lines COMMAND printed, run under a bound of SECONDS, or "unknown" when
+# it failed or timed out: a check that did not run counts nothing (sd:3536).
+# The step line goes to the job log through fd 3; the call's own stderr does not.
+line_count() { # seconds, command...
+  # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+  _lc=$(ST_STEP_FD3=1; st_step "$@" 3>&2 2>/dev/null) || { echo unknown; return 0; }
+  printf '%s' "$_lc" | awk 'END { print NR }'
+}
 
 if [ -s "$CRON_LOGS/failures.log" ]; then
   awk -v c="$cutoff" 'substr($1, 1, 10) >= c' "$CRON_LOGS/failures.log" > "$FAILURES"
@@ -162,12 +172,12 @@ order_failures || note "failure order skipped: the ordering itself failed"
   fi
 
   if command -v brew >/dev/null 2>&1; then
-    bf=$(brew outdated --formula --quiet 2>/dev/null | wc -l | tr -d ' ')
-    bc=$(brew outdated --cask --quiet 2>/dev/null | wc -l | tr -d ' ')
+    bf=$(line_count 300 brew outdated --formula --quiet)
+    bc=$(line_count 300 brew outdated --cask --quiet)
     echo "brew outdated       : $bf formulae, $bc casks (Sunday 04:00 sweep handles these)"
   fi
   if command -v mas >/dev/null 2>&1; then
-    mo=$(mas outdated 2>/dev/null | wc -l | tr -d ' ')
+    mo=$(line_count 120 mas outdated)
     echo "App Store outdated  : $mo"
   fi
 

@@ -31,6 +31,8 @@ class ReportTest(unittest.TestCase):
         folder = self.tmp / "local-weekly-digest"
         folder.mkdir()
         shutil.copy(SCRIPT, folder / SCRIPT.name)
+        shutil.copytree(HERE.parent.parent / "lib", self.tmp / "lib",
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
         self.script = folder / SCRIPT.name
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify" / "notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')
@@ -49,6 +51,18 @@ class ReportTest(unittest.TestCase):
     def digest(self, verb):
         return subprocess.run(["sh", str(self.script), verb], capture_output=True, text=True,
                               env=self.env, timeout=120)
+
+    def test_update_counts_run_bounded_and_a_failed_one_is_unknown(self):
+        """sd:3536: brew and mas run under st_step, which names each in the
+        job log; a check that failed counts nothing, so it reads unknown."""
+        _stub(self.bin / "brew", 'case "$3" in --quiet) echo "a"; echo "b" ;; *) exit 1 ;; esac\n')
+        _stub(self.bin / "mas", "exit 1\n")
+        run = self.digest("check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew outdated       : 2 formulae, 2 casks", run.stdout)
+        self.assertIn("App Store outdated  : unknown", run.stdout)
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] brew outdated --formula --quiet \(bound 300s\)")
+        self.assertRegex(run.stderr, r"\[step [\d:]+\] mas outdated exited 1")
 
     def test_run_prints_the_digest_and_its_attention_line_and_mails_nothing(self):
         run = self.digest("run")

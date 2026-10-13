@@ -174,5 +174,200 @@ class Step(unittest.TestCase):
         self.assertRegex(result.stderr.splitlines()[1], r"\] sleep 30 exited 124$")
 
 
+# --- every hang-prone call a cron job runs is bounded (sd:3536) -----------
+# sd:2660 bounded the brew and mas calls of one script, and the same hang
+# stayed in the others. This reads the code a cron job runs and fails on each
+# call in command position, the place a bare call stands; a bounded one is an
+# argument to st_step, st_bounded or a wrapper of them, so it never is.
+
+#: The scripts a cron job runs: each one a catalogue job names, and
+#: machine-setup, which the follow job, the weekly upgrade-report and a
+#: nightly `update --apply` run.
+def cron_scripts():
+    root = LIB.parent
+    found = {root / "local-machine-setup" / "machine-setup.sh"}
+    for job in sorted((root / "local-cron-jobs" / "examples").glob("*.job")):
+        for name in re.findall(r'\$ROOT/\.\./([\w.-]+/[\w.-]+\.sh)', job.read_text()):
+            found.add(root / name)
+    return sorted(found)
+
+
+#: Where a command starts: a line, a pipe or list, a substitution or a group;
+#: then any keywords, negations, VAR=value prefixes and runners that run their
+#: arguments as they are, machine-setup's `run` helpers among them.
+START = (r"(?:^|[;&|(`{]|\$\()\s*(?:(?:!|if|then|do|else|elif|while|until|sudo|env|exec|eval"
+         r"|command|run|run_ok|try_run)\s+|\w+=(?:\"\"|''|[^\s$`(]*)\s+)*")
+#: A hang-prone call: brew, mas, softwareupdate, curl, or git reaching a remote.
+#: A word followed by `|` or `)` is a case pattern, not a call.
+CALL = re.compile(START + r"(?:[^\s;&|()]*/)?(?P<call>(?:brew|mas|softwareupdate|curl)(?=[\s;]|$)"
+                  r"|git(?:\s+-[Cc]\s+\S+|\s+-\w+)*\s+(?:fetch|pull|push|clone|ls-remote"
+                  r"|submodule\s+update|remote\s+update)\b)")
+#: curl carries its own bound in its own command: a positive number, or a
+#: variable (blanked to "" when quoted).
+CURL_BOUND = re.compile(r"^[^;&|)]*\s(?:-m\s+|--max-time[\s=]+)(?:0*[1-9]|[\"$])")
+
+
+def code_lines(text):
+    """(line number, code) for each logical line of a shell script, read the
+    way sh reads it: continuations joined, comments and here-document bodies
+    dropped, and quoted text blanked, so a message that names a call is not
+    one. Kept: what a double-quoted $(...) or `...` runs, and a
+    single-quoted `-c` script, its newlines read as `;`. Not seen: a call in
+    an unquoted here-document's substitution, or a quoted command name."""
+    out, buf, number, line = [], [], 1, 1
+    i, n, heredocs = 0, len(text), []
+
+    def flush():
+        code = "".join(buf)
+        if code.strip():
+            out.append((number, code))
+        buf.clear()
+
+    def substitution(i):
+        """Code of a $( at i-2 up to its ), and the index after it."""
+        depth, code = 1, []
+        while i < n and depth:
+            c = text[i]
+            if c == "\\":
+                code.append(text[i:i + 2]); i += 2; continue
+            if c == "'":
+                end = text.find("'", i + 1)
+                end = n if end < 0 else end
+                i = end + 1; code.append("''"); continue
+            if c == '"':
+                inner, i = double(i + 1)
+                code.append(inner); continue
+            depth += c == "("
+            depth -= c == ")"
+            if depth:
+                code.append(" " if c == "\n" else c)
+            i += 1
+        return "$(" + "".join(code) + ")", i
+
+    def double(i):
+        """A double-quoted string from i: only its substitutions survive."""
+        kept = []
+        while i < n and text[i] != '"':
+            if text[i] == "\\":
+                i += 2; continue
+            if text.startswith("$(", i):
+                code, i = substitution(i + 2)
+                kept.append(code); continue
+            if text[i] == "`":
+                end = text.find("`", i + 1)
+                end = n - 1 if end < 0 else end
+                kept.append(text[i:end + 1]); i = end + 1; continue
+            i += 1
+        return '"' + " ".join(kept) + '"', i + 1
+
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            line += 1
+            if heredocs:
+                while heredocs:
+                    end = text.find("\n", i + 1)
+                    end = n if end < 0 else end
+                    body = text[i + 1:end]
+                    line += 1
+                    i = end
+                    if body.strip() == heredocs[0]:
+                        heredocs.pop(0)
+            flush(); number = line; i += 1; continue
+        if c == "\\" and text.startswith("\\\n", i):
+            line += 1; buf.append(" "); i += 2; continue
+        if c == "\\":
+            buf.append(text[i:i + 2]); i += 2; continue
+        if c == "#" and (not buf or buf[-1] in " \t;"):
+            end = text.find("\n", i)
+            i = n if end < 0 else end; continue
+        if c == "'":
+            end = text.find("'", i + 1)
+            end = n if end < 0 else end
+            body = text[i + 1:end]
+            line += body.count("\n")
+            script = re.search(r"(?:^|\s)-c\s*$", "".join(buf[-8:]))
+            buf.append("';" + body.replace("\n", ";") + "'" if script else "''")
+            i = end + 1; continue
+        if c == '"':
+            start = i
+            kept, i = double(i + 1)
+            line += text.count("\n", start, i)
+            buf.append(kept); continue
+        if text.startswith("$(", i):
+            start = i
+            code, i = substitution(i + 2)
+            line += text.count("\n", start, i)
+            buf.append(code); continue
+        found = re.match(r"<<-?\s*(['\"]?)(\w+)\1", text[i:])
+        if found and not text.startswith("<<<", i):
+            heredocs.append(found.group(2))
+            buf.append(found.group(0)); i += found.end(); continue
+        buf.append(c); i += 1
+    flush()
+    return out
+
+
+def unbounded_calls(path, name):
+    """'name:line: code' for each unbounded call in the script at path."""
+    found = []
+    for number, line in code_lines(path.read_text()):
+        for match in CALL.finditer(line):
+            if match.group("call") == "curl" and CURL_BOUND.search(line[match.end():]):
+                continue
+            found.append(f"{name}:{number}: {line.strip()}")
+    return found
+
+
+class CronCallsAreBounded(unittest.TestCase):
+    def test_the_scan_sees_a_bare_call(self):
+        """The scan is only as good as what it can see: each shape fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "job.sh"
+            script.write_text("\n".join([
+                "brew upgrade",
+                'x=$(mas outdated 2>/dev/null)',
+                'if softwareupdate -l > "$f" 2>&1; then :; fi',
+                'git -C "$d" fetch -q origin',
+                '(cd "$d" && git pull --ff-only && git submodule update --init)',
+                '  run brew install "$f"',
+                'curl -fsSL \\',
+                '  https://example.test/x',
+                'eval "$(/opt/homebrew/bin/brew shellenv)"',
+                "command brew upgrade",
+                "sh -c 'brew upgrade'",
+                'x="`mas outdated`"',
+                "curl https://example.test; echo --max-time 10",
+                "curl --max-time 0 https://example.test",
+            ]) + "\n")
+            found = [line.split(":")[1] for line in unbounded_calls(script, "job.sh")]
+        self.assertEqual(found, ["1", "2", "3", "4", "5", "5", "6", "7", "9", "10", "11", "12", "13", "14"])
+
+    def test_the_scan_passes_a_bounded_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "job.sh"
+            script.write_text("\n".join([
+                "st_step 1800 brew upgrade",
+                'x=$(st_step 120 mas outdated 2>/dev/null)',
+                'if st_bounded 300 git -C "$d" fetch -q origin; then :; fi',
+                '  run bound_step 1800 brew install "$f"',
+                'curl -s -m 10 https://example.test/x',
+                'command -v brew >/dev/null 2>&1',
+                'echo "  brew MISSING (brew install mas)"',
+                "# brew upgrade in a comment",
+                'git -C "$d" rev-parse HEAD',
+            ]) + "\n")
+            self.assertEqual(unbounded_calls(script, "job.sh"), [])
+
+    def test_no_cron_script_makes_an_unbounded_call(self):
+        scripts = cron_scripts()
+        for name in ("local-maintenance/maintenance.sh", "local-repo-sync/repo-sync.sh",
+                     "local-health-check/health-check.sh", "local-machine-setup/machine-setup.sh"):
+            self.assertIn(LIB.parent / name, scripts)
+        found = [line for path in scripts
+                 for line in unbounded_calls(path, path.relative_to(LIB.parent))]
+        self.assertEqual(found, [], "\n" + "\n".join(found))
+
+
 if __name__ == "__main__":
     unittest.main()
