@@ -44,7 +44,8 @@ EXTRA_PATH = "/Volumes/Scratch"
 # the way root without Full Disk Access does; ticketless has no cached ticket,
 # so `sudo -n` fails and only a `sudo -v` password prompt would succeed;
 # silent makes plutil fail without a word, as the CI runner's did; ruled has
-# no ticket but the sudoers drop-in, so `sudo -n` allows only the plutil read.
+# no ticket but the sudoers drop-in, so `sudo -n` allows only the plutil read;
+# cmdfail grants sudo and fails each `sh -c` it runs.
 SUDO_STUB = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$SUDO_LOG"
 mode="${SUDO_STUB:-ok}"
@@ -75,6 +76,7 @@ case "$1" in
     shift
     exec plutil "$@" ;;
   */PlistBuddy|launchctl|test) exec "$@" ;;
+  sh) if [ "$mode" = cmdfail ]; then exit 1; fi ;;
 esac
 exit 0
 """
@@ -153,7 +155,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
         with open(self.plist, "rb") as handle:
             return plistlib.load(handle).get("Exclusions")
 
-    def run_script(self, *args, sudo="ok", **extra):
+    def run_script(self, *args, sudo="ok", rc=0, **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -172,7 +174,7 @@ class SpotlightExclusionsTest(unittest.TestCase):
                                 capture_output=True, text=True, cwd=self.tmp.name,
                                 stdin=subprocess.DEVNULL, timeout=120)
         # Never fail the run, whatever the store says.
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         return result.stdout
 
     def system(self, *flags, **kwargs):
@@ -320,6 +322,26 @@ class SpotlightExclusionsTest(unittest.TestCase):
         runs = [x for x in self.sudo_log.read_text().splitlines() if "NOPASSWD" in x]
         self.assertEqual(len(runs), 1, runs)
         self.assertTrue(runs[0].startswith("sudo sh -c printf"), runs[0])
+
+    def test_a_command_that_fails_under_sudo_is_failed_not_deferred(self):
+        # sd:3548: sudo granted, the drop-in's install failed, and the run
+        # said it needed sudo.
+        self.write_plist([self.repos, TMP_PATH])
+        out = self.system("--apply", sudo="cmdfail", rc=1)
+        self.assertIn("  FAILED  sudo sh -c \"printf", out)
+        self.assertNotIn("needs sudo", out)
+        self.assertIn("failed — ", out)
+
+    def test_the_grace_period_drop_in_is_checked_before_it_goes_in(self):
+        # sd:3548: it was written in place, then checked; a failed check left
+        # the bad file where sudo reads it.
+        self.write_plist([self.repos, TMP_PATH])
+        drop_in = pathlib.Path(self.tmp.name) / "sudoers.d/timestamp-timeout"
+        tmp = drop_in.parent / ".timestamp-timeout.tmp"
+        out = self.system(MACHINE_SETUP_TIMEOUT_SUDOERS=str(drop_in))
+        self.assertIn("  MISSING sudo timestamp_timeout drop-in\n", out)
+        self.assertIn(f"> {tmp} && chmod 440 {tmp} && visudo -cf {tmp} && mv {tmp} {drop_in} "
+                      f"|| {{ rm -f {tmp}; exit 1; }}", out)
 
     def test_an_installed_drop_in_is_ok(self):
         self.write_plist([self.repos, TMP_PATH])

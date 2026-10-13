@@ -120,6 +120,13 @@ class StatusDrift(unittest.TestCase):
         assert found, out
         return int(found.group(1))
 
+    def test_status_runs_every_stage_but_brew_in_stage_order(self):
+        # sd:3548: status kept a hand copy of STAGES, in another order.
+        stages = re.search(r'^STAGES="([^"]*)"', (FOLDER / "machine-setup.sh").read_text(), re.M).group(1)
+        out = self.status().stdout
+        ran = re.findall(r"^== (\S+)", out, re.M)
+        self.assertEqual(ran, [s for s in stages.split() if s != "brew"], out)
+
     def test_every_planned_remediation_sits_under_a_drift_word(self):
         out = self.status().stdout
         last = ""

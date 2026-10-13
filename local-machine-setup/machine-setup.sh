@@ -1,6 +1,6 @@
 #!/bin/sh
 # Provision and maintain machines from a named profile.
-# Usage: machine-setup.sh setup|update|capture|status|compare|triage|candidates|apps|adopt|report|profiles|doctor|upgrade
+# Usage: machine-setup.sh <verb> [args] [--apply]; `help` lists the verbs (VERBS).
 set -e
 
 # Byte order for every sort and comm below. glibc's en_US.UTF-8 collation
@@ -69,6 +69,9 @@ STATE_FILE="$STATE_DIR/profile"
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
 STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
+# The verbs dispatch accepts, in help's order. Help and the no-arg usage print
+# this list; three hand copies of it disagreed (sd:3548).
+VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt"
 KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite"
 
 # Directories that hold credentials in the clear and are created world-readable
@@ -94,6 +97,8 @@ SPOTLIGHT_PLIST="${MACHINE_SETUP_SPOTLIGHT_PLIST:-/System/Volumes/Data/.Spotligh
 # The sudoers drop-in that lets a run with no ticket read that file (sd:3232).
 # The override exists for the tests, like the one above.
 SPOTLIGHT_SUDOERS="${MACHINE_SETUP_SPOTLIGHT_SUDOERS:-/etc/sudoers.d/machine-setup-spotlight-read}"
+# The sudo grace-period drop-in; the override exists for the tests too.
+TIMEOUT_SUDOERS="${MACHINE_SETUP_TIMEOUT_SUDOERS:-/etc/sudoers.d/timestamp-timeout}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -384,9 +389,11 @@ sudo_run() {
     return 0
   fi
   if sudo -n true 2>/dev/null || sudo -v; then
-    if sudo "$@" </dev/null; then
-      return 0
-    fi
+    # sudo granted, so a failure is the command's, not a deferral (sd:3548).
+    sr_rc=0
+    sudo "$@" </dev/null || sr_rc=$?
+    [ "$sr_rc" -eq 0 ] || note_failure "$shown" "$sr_rc"
+    return 0
   fi
   DEFERRED="$DEFERRED    $shown
 "
@@ -1200,6 +1207,13 @@ cron_jobs() { # install|uninstall, job
     echo "  FAILED  $2 — cron-jobs.sh $1 $2 did not finish; the next update retries it"
 }
 
+# The jobs local-cron-jobs/retired-jobs.txt lists, one per line. The cron
+# stage and doctor leave them out of what a machine should run.
+retired_cron_jobs() {
+  rcj_list="$ROOT/local-cron-jobs/retired-jobs.txt"
+  [ ! -f "$rcj_list" ] || sed 's/#.*//' "$rcj_list" | awk 'NF {print $1}'
+}
+
 stage_cron() {
   echo "== cron"
   # Without its host jobs, the sweep below read each one as an orphan and
@@ -1216,8 +1230,7 @@ stage_cron() {
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
   # This runs with the sweep off too. The config folder is not edited.
-  retired_list="$ROOT/local-cron-jobs/retired-jobs.txt"
-  retired=$([ ! -f "$retired_list" ] || sed 's/#.*//' "$retired_list" | awk 'NF {print $1}')
+  retired=$(retired_cron_jobs)
   for r in $retired; do
     if printf '%s\n' "$jobs" | grep -qxF "$r"; then
       echo "  note    $r is retired, yet this profile or this host's jobs folder names it; remove it there"
@@ -1908,13 +1921,16 @@ stage_system() {
     echo "  MISSING /var/db/useLS"
     sudo_run "sudo touch /var/db/useLS" sudo touch /var/db/useLS
   fi
-  if [ -e /etc/sudoers.d/timestamp-timeout ]; then
+  if [ -e "$TIMEOUT_SUDOERS" ]; then
     echo "  ok      sudo timestamp_timeout drop-in"
   else
     echo "  MISSING sudo timestamp_timeout drop-in"
     # Held in a variable so the command shown in the deferred summary cannot
     # drift from the command actually run.
-    sudoers_cmd='echo "Defaults timestamp_timeout=60" > /etc/sudoers.d/timestamp-timeout && chmod 440 /etc/sudoers.d/timestamp-timeout && visudo -c'
+    # The Spotlight drop-in's shape: checked before it goes in, so a failed
+    # check leaves no drop-in behind (sd:3548). sudo skips the dotted name.
+    ts_tmp="$(dirname "$TIMEOUT_SUDOERS")/.$(basename "$TIMEOUT_SUDOERS").tmp"
+    sudoers_cmd="echo \"Defaults timestamp_timeout=60\" > $ts_tmp && chmod 440 $ts_tmp && visudo -cf $ts_tmp && mv $ts_tmp $TIMEOUT_SUDOERS || { rm -f $ts_tmp; exit 1; }"
     sudo_run "sudo sh -c '$sudoers_cmd'" sudo sh -c "$sudoers_cmd"
   fi
   # Reading Spotlight's exclusions needs root on every run, and a nightly run
@@ -2179,14 +2195,21 @@ stage_obsidian() {
     return 0
   fi
   py="${MACHINE_SETUP_PYTHON:-python3}"
-  installed=$("$py" - "$vault" 2>/dev/null <<'PYEOF'
+  # Exit 1 is no vault; a vault with no plugins yet lists none. An empty
+  # list used to read as no vault (sd:3548).
+  if ! installed=$("$py" - "$vault" 2>/dev/null <<'PYEOF'
 import pathlib, sys
-d = pathlib.Path(sys.argv[1]) / ".obsidian" / "plugins"
-if d.is_dir():
-    print("\n".join(sorted(p.name for p in d.iterdir() if p.is_dir())))
+vault = pathlib.Path(sys.argv[1]) / ".obsidian"
+d = vault / "plugins"
+try:
+    if not vault.is_dir():
+        sys.exit(1)
+    names = sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
+except OSError:
+    sys.exit(1)
+print("\n".join(names))
 PYEOF
-  ) || :
-  if [ -z "$installed" ]; then
+  ); then
     echo "  SKIP    vault not found or unreadable: $vault (set OBSIDIAN_VAULT)"
     return 0
   fi
@@ -2198,6 +2221,7 @@ PYEOF
     fi
   done
   echo "$installed" | while read -r p; do
+    [ -n "$p" ] || continue
     echo "$entries" | grep -qx "$p" \
       || echo "  extra   plugin $p (installed, not in profile — add it or remove the plugin)"
   done
@@ -2765,15 +2789,19 @@ cmd_capture() {
   done
 
   # Standalone app names, for cross-machine tracking. Same classification as
-  # cmd_apps but without the per-app cask search (that is a report, not state).
-  # Two sed expressions, not \| alternation — BSD sed has no BRE alternation,
-  # and the GNU-ism silently matched nothing here.
-  cmd_apps 2>/dev/null \
-    | sed -n -e 's/^  \(.*[^ ]\)  *cask available.*/\1/p' -e 's/^  \(.*[^ ]\)  *no cask.*/\1/p' \
-    | sort > "$tmp/out.app"
-  n=$(wc -l < "$tmp/out.app" | tr -d ' ')
-  echo "  app: $n entries"
-  if [ "$APPLY" -eq 1 ]; then
+  # cmd_apps but without the per-app cask search (that is a report, not
+  # state): through cmd_apps it ran one brew search per app, nightly under
+  # --additive (sd:3548). A subshell, as the scan sets its own $tmp.
+  app_ok=1
+  ( standalone_scan "$tmp/scan.app" names ) 2>/dev/null || app_ok=0
+  if [ "$app_ok" -eq 1 ]; then
+    sort "$tmp/scan.app" > "$tmp/out.app"
+    n=$(wc -l < "$tmp/out.app" | tr -d ' ')
+    echo "  app: $n entries"
+  else
+    echo "  app: UNKNOWN — the standalone app scan failed; $PROFILE.app not written"
+  fi
+  if [ "$APPLY" -eq 1 ] && [ "$app_ok" -eq 1 ]; then
     write_manifest "$PROFILE_DIR/$PROFILE.app" "$tmp/out.app" \
       "# $PROFILE machine standalone apps (no App Store receipt, not brew-managed)." \
       "# Informational: nothing installs these; see machine-setup.sh apps."
@@ -3622,7 +3650,9 @@ cmd_candidates() {
 # com.apple.* bundles are system apps.
 # Writes "<app name>	<cask token>" (token empty when no cask exists) for
 # every standalone app to $1. Shared by cmd_apps (report) and cmd_adopt.
-standalone_scan() {
+# With `names` as $2 it writes the names alone and searches no cask:
+# capture's form.
+standalone_scan() { # out [names]
   out="$1"
   tmp=$(mktemp -d)
   trap_tmp
@@ -3662,6 +3692,10 @@ print("\n".join(sorted(apps)))' > "$tmp/cask-apps" || : > "$tmp/cask-apps"
   done | sort > "$tmp/standalone"
 
   : > "$out"
+  if [ "${2:-}" = names ]; then
+    cat "$tmp/standalone" > "$out"
+    return 0
+  fi
   while IFS= read -r name; do
     tok=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -e 's/ /-/g' -e 's/[^a-z0-9-]//g')
     hit=""
@@ -3926,7 +3960,7 @@ doctor_sd() {
       echo "  ok      database $SD_DB passes integrity_check"
       db_ok=1
     else
-      doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: sd-db restore /Volumes/local/Backup/sd-backups/<date>"
+      doctor_fail "database $SD_DB integrity_check: $integrity — restore a dated backup: sd-db restore <backup root>/<date> (SD_DB_BACKUP_ROOT, or the pack's default)"
       db_ok=0
     fi
   fi
@@ -4347,10 +4381,10 @@ cmd_doctor() {
     echo "  WARN    /var/db/useLS missing — run: sudo touch /var/db/useLS"
   fi
 
-  if [ -e /etc/sudoers.d/timestamp-timeout ]; then
+  if [ -e "$TIMEOUT_SUDOERS" ]; then
     echo "  ok      sudo timestamp_timeout drop-in present"
   else
-    echo "  WARN    /etc/sudoers.d/timestamp-timeout missing — run: sudo sh -c 'echo \"Defaults timestamp_timeout=60\" > /etc/sudoers.d/timestamp-timeout && chmod 440 /etc/sudoers.d/timestamp-timeout && visudo -c'"
+    echo "  WARN    $TIMEOUT_SUDOERS missing — run: machine-setup.sh update system --apply"
   fi
 
   fw=/usr/libexec/ApplicationFirewall/socketfilterfw
@@ -4450,7 +4484,14 @@ cmd_doctor() {
     load_profile
     uid=$(id -u)
     labels=$(manifest agent)
-    jobs=$(manifest cron | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
+    # The cron stage's list: the profile's jobs and this host's, less the
+    # retired ones. Doctor read the profile alone (sd:3548).
+    if ! dr_host=$(host_cron_jobs); then
+      echo "  WARN    cannot list this host's cron jobs (cron-jobs/jobs/<host>/); only the profile's are checked"
+      dr_host=
+    fi
+    jobs=$( { manifest cron; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
+      | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
       if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         echo "  ok      loaded: $label"
@@ -5018,6 +5059,11 @@ cmd_status() {
   drift=0
   # No profile directory: nothing to compare, convention 6's 3 and not drift's 1.
   require_config 3
+  # Nor is there with no profile recorded (sd:3548).
+  if [ -z "${MACHINE_SETUP_PROFILE:-}" ] && [ ! -f "$STATE_FILE" ]; then
+    echo "machine-setup.sh: no profile recorded; nothing to compare. Run: $(basename "$0") setup <profile>" >&2
+    exit 3
+  fi
   load_profile
   keep_sudo_ticket
   echo "profile : $PROFILE"
@@ -5094,7 +5140,10 @@ cmd_status() {
   # drift items (docs/work/2026-09-05-one-database-one-front-door); the other
   # two were the agents stage's rows for <prefix>.sd-dashboard and the
   # runner, which is gone.
-  for st in shell bin dotfiles envs prompts repos appstore cron sd satellite agents services tooling system macos obsidian iterm2; do
+  # Every stage but brew, which has its block above; read from STAGES, as a
+  # hand copy of it drifts (sd:3548).
+  for st in $STAGES; do
+    [ "$st" != brew ] || continue
     status_stage "$st"
     echo
   done
@@ -5106,9 +5155,9 @@ cmd_status() {
     echo "wake    : MISSING (sudo pmset repeat wakeorpoweron MTWRFSU 02:40:00)"; drift=$((drift + 1))
   fi
   echo "drift   : $drift item(s)"
-  # --fail-on-drift turns drift into exit 1, which is what lets the cron job
-  # machine-setup-update-nightly (its last step) route "this machine drifted"
-  # into a failure report that Today shows.
+  # --fail-on-drift turns drift into exit 1, which is what lets a cron job
+  # (as its last step) route "this machine drifted" into a failure report
+  # that Today shows.
   if [ "$FAIL_ON_DRIFT" -eq 1 ] && [ "$drift" -gt 0 ]; then
     exit 1
   fi
@@ -5127,9 +5176,10 @@ for a in "$@"; do
     --stale-ok) STALE_OK=1 ;;
     --force) FORCE=1 ;;
     -h|--help|help)
+      echo "usage: machine-setup.sh <verb> [args] [--apply]"
+      echo "verbs: $VERBS"
+      echo
       cat <<'HELPEOF'
-usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]|status|adopt|doctor [sd]|test|upgrade [--apply]|upgrade-report|checklist|decommission [--apply]
-
   setup <profile>  provision a new machine and record the profile
                    profile is any <name> with a <name>.<kind> file in the
                    profile directory (see `profiles`)
@@ -5159,6 +5209,9 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    dated .bak- copy beside it
   status           drift report: what the profile wants vs what is installed
                    --fail-on-drift exits 1 when drift exists (for cron)
+                   a drift report, not a convention-6 health status: it runs
+                   every stage, so the health sweep leaves it out; exit 3
+                   when there is no profile directory or no recorded profile
   doctor           read-only sanity check: CLT, brew, docker, fnm, key
                    material, launchd agents, and which .env files still
                    need filling in on this machine; on a profile with an sd
@@ -5277,22 +5330,32 @@ environment:
   MACHINE_SETUP_PLACEHOLDER_EXPECTED  doctor: folders whose .env may keep
                           placeholder values (space-separated)
   OBSIDIAN_VAULT          vault path for the obsidian stage; unset skips it
+  MACHINE_SETUP_PYTHON    the python3 the obsidian stage reads the vault with
+  MACHINE_SETUP_STEP_TIMEOUT  upgrade: one bound, in seconds, for every step
+  SD_PACK_ROOT            the command pack checkout
+                          (default ~/repos/platypeeps/sd-ai-command-pack)
+  SD_DB_PYTHON            satellite: the interpreter sd_db runs under
+                          (default the pack's .venv/bin/python)
+  SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run
+  SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
+                          port and its tailscale serve port (8767, 8443)
   MACHINE_SETUP_SPOTLIGHT_PLIST  tests only: the plist that stands in for
                           Spotlight's VolumeConfiguration.plist
   MACHINE_SETUP_PLISTBUDDY  tests only: the PlistBuddy that edits it
+  MACHINE_SETUP_SPOTLIGHT_SUDOERS  tests only: the Spotlight read drop-in
+  MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
+  MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
 HELPEOF
       exit 0
       ;;
-    setup|update|capture|status|compare|triage|candidates|apps|adopt|report|profiles|doctor|test|upgrade|upgrade-report|checklist|decommission)
-      if [ -z "$VERB" ]; then VERB="$a"; elif [ -z "$ARG" ]; then ARG="$a"; else ARG2="$a"; fi ;;
     # A mistyped option used to fall into the arm below as an argument, so
     # `status --fail-on-drft` ran and never failed on drift (sd:3545). `test`
     # hands its options to unittest.
     --*) [ "$VERB" = test ] || die "unknown option $a (see: $(basename "$0") help)" ;;
     *)
-      if [ -n "$VERB" ]; then
-        if [ -z "$ARG" ]; then ARG="$a"; elif [ -z "$ARG2" ]; then ARG2="$a"; fi
-      fi ;;
+      if [ -z "$VERB" ]; then
+        case " $VERBS " in *" $a "*) VERB="$a" ;; esac
+      elif [ -z "$ARG" ]; then ARG="$a"; elif [ -z "$ARG2" ]; then ARG2="$a"; fi ;;
   esac
 done
 
@@ -5338,7 +5401,8 @@ case "$VERB" in
   checklist) cmd_checklist ;;
   decommission) cmd_decommission ;;
   *)
-    echo "usage: $(basename "$0") setup <profile>|update|capture|status|compare <a> <b>|triage|candidates [kind]|apps|adopt|report [profile]|profiles|doctor [sd]|test|upgrade [--apply]" >&2
+    echo "usage: $(basename "$0") <verb> [args] [--apply]" >&2
+    echo "verbs: $VERBS  (help describes each)" >&2
     exit 1
     ;;
 esac

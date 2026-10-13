@@ -461,10 +461,10 @@ class TheSatellite(Case):
     def test_status_runs_the_stage_beside_sd_and_before_agents(self):
         text = SCRIPT.read_text()
         stages = re.search(r'^STAGES="([^"]*)"', text, re.M).group(1).split()
-        status = re.search(r"^  for st in ([^;]*); do$", text, re.M).group(1).split()
-        for order in (stages, status):
-            self.assertEqual(order.index("satellite"), order.index("sd") + 1, order)
-            self.assertLess(order.index("satellite"), order.index("agents"), order)
+        self.assertEqual(stages.index("satellite"), stages.index("sd") + 1, stages)
+        self.assertLess(stages.index("satellite"), stages.index("agents"), stages)
+        # status walks STAGES itself (sd:3548).
+        self.assertRegex(text, r"(?m)^  for st in \$STAGES; do$")
 
 
 if __name__ == "__main__":
