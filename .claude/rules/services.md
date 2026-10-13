@@ -8,7 +8,8 @@ paths:
 
 ## Ports
 
-- No two `local-*` services share a port; `README.md` § Ports is the one table. Move the non-canonical holder and update that table.
+- No two tools share a port; `README.md` § Ports is the one table, one row per folder. `tests/test_ports.py` (preflight) fails on a clash or a table that differs from the scripts; move the non-canonical holder and update the table.
+  - A tool that only points at another's port (a client) gets an `ALLOWED` entry with its reason.
 - `8767` is the workflow dashboard's loopback port (`dashboard.sh serve --port`); its explicit configuration must use the same backend port.
   - Private Tailscale access uses HTTPS on 8443; optional IP access binds the Tailscale address on 8768 and authenticates its TCP peer; both leave public 443 alone.
 
