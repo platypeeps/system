@@ -4442,8 +4442,8 @@ grants_report() {
   } > "$tmp/grants"
 }
 
-# When a grant is missing, print what to re-grant and an SD_REPORT_ATTENTION
-# line, so the run's report reaches Reports and Today (sd:3454).
+# When a grant is missing, print what to re-grant; the caller's
+# SD_REPORT_ATTENTION line takes the run's report to Reports and Today (sd:3454).
 grants_push() {
   [ -s "$tmp/regrant" ] || return 0
   {
@@ -4455,7 +4455,19 @@ grants_push() {
     fi
   } > "$tmp/push"
   cat "$tmp/push"
-  echo "SD_REPORT_ATTENTION: TCC: re-grant on $(hostname -s)"
+}
+
+# One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
+# every reason this run needs attention and ends in a checksum of what is left
+# to do: the ingest folds a reason it already holds open into that report and
+# keeps its first body, so other leftovers must open a new one (sd:3537).
+upgrade_attention() { # reason...
+  [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
+  [ "$#" -gt 0 ] || return 0
+  why=$(printf '%s, ' "$@"); why=${why%, }
+  sum=$({ cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" "$tmp/regrant" 2>/dev/null; echo "$why"; } \
+    | cksum | awk '{print $1}')
+  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s) [$sum]"
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
@@ -4502,6 +4514,7 @@ cmd_upgrade_report() {
     grants_report
     cat "$tmp/grants"
     grants_push
+    upgrade_attention
     return "$rc"
   fi
 
@@ -4537,15 +4550,16 @@ cmd_upgrade_report() {
     cat "$tmp/grants"
   } > "$tmp/body"
 
-  n_done=$(cat "$tmp"/*.done 2>/dev/null | wc -l | tr -d ' ')
   n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
   cat "$tmp/body"
   grants_push
-  # A clean upgrade is a receipt, not a problem: only the leftovers or a
-  # failed capture need attention.
-  if [ "$n_left" -gt 0 ] || [ "$inv_rc" -ne 0 ]; then
-    echo "SD_REPORT_ATTENTION: upgrade: $n_done upgraded, $n_left still outdated on $(hostname -s)"
-  fi
+  # A clean upgrade is a receipt, not a problem: leftovers, a failed sweep
+  # step (claude update, brew cleanup) or a failed capture need attention.
+  set --
+  [ "$n_left" -eq 0 ] || set -- "$@" "$n_left still outdated"
+  [ "$rc" -eq 0 ] || set -- "$@" "upgrade sweep failed"
+  [ "$inv_rc" -eq 0 ] || set -- "$@" "inventory capture failed"
+  upgrade_attention "$@"
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the
@@ -4872,7 +4886,7 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    ai-apps inventory capture and the result of
                    local-project-dashboard's `grants` probe; when nothing
                    is outdated it only runs claude update, the capture and
-                   the probe; leftovers or a missing grant print an
+                   the probe; leftovers, a failed step or a missing grant print one
                    SD_REPORT_ATTENTION line for Reports and Today; exits 1
                    when that quiet-week claude update or capture failed
   checklist        print the manual new-machine steps no stage automates

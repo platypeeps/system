@@ -433,6 +433,21 @@ class RepoSyncTest(unittest.TestCase):
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
+    def test_another_failed_repo_opens_another_report(self):
+        """REGRESSION (sd:3537). The ingest folds a reason it holds open and
+        keeps the first body, so a count-only reason named last night's
+        failed repo."""
+        reasons = []
+        for bad in ("bad1", "bad2"):
+            f = self.fixture()
+            f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
+            f.checkout(f"a/{bad}", f"owner/{bad}")
+            for name in ("good1", "good2"):
+                f.local_clone(f"a/{name}")
+            reasons.append(attention(f.run("nightly", expect=0)))
+        self.assertEqual(len(reasons[0]), 1, reasons)
+        self.assertNotEqual(reasons[0], reasons[1])
+
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
         """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission
         denied (publickey)": a reboot left the key locked. The report listed 65

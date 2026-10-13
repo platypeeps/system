@@ -322,8 +322,8 @@ esac
             script=cls.forgetful)
 
     @classmethod
-    def run_check(cls, name, extra, root=None, script=SCRIPT):
-        """One `check`, with its own state dir, stub log and payload dir."""
+    def run_check(cls, name, extra, root=None, script=SCRIPT, verb="check"):
+        """One `check` (or `verb`), with its own state dir, stub log and payload dir."""
         d = cls.tmp / ("run-" + name)
         d.mkdir()
         (d / "state").mkdir()
@@ -350,7 +350,7 @@ esac
         env.pop("SYSTEM_TOOLS_LABEL_PREFIX", None)
         env.update(extra)
         proc = subprocess.run(
-            ["sh", str(script), "check"], stdin=subprocess.DEVNULL,
+            ["sh", str(script), verb], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             timeout=RUN_TIMEOUT)
         return {
@@ -420,6 +420,17 @@ esac
         return sorted(question, key=lambda i: (-question[i], i))
 
     # -- cases -------------------------------------------------------------
+
+    def test_other_findings_open_another_report_and_the_same_fold(self):
+        """sd:3537: the ingest folds a reason it holds open and keeps the
+        first body, so a count-only reason showed last night's findings."""
+        def reason(name, smart):
+            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart}, verb="run")
+            return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        first, again, other = reason("smart-a", "Failing"), reason("smart-a2", "Failing"), reason("smart-b", "Unknown")
+        self.assertEqual(len(first), 1, first)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

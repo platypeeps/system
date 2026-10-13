@@ -40,7 +40,14 @@ command -v brew >/dev/null 2>&1 || { echo "brew missing" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-brew doctor > "$tmp/doctor1" 2>&1 || true
+# brew doctor exits 1 on a warning; a failure with none is no clean bill.
+d_rc=0
+brew doctor > "$tmp/doctor1" 2>&1 || d_rc=$?
+if [ "$d_rc" -ne 0 ] && ! grep -q '^Warning:' "$tmp/doctor1"; then
+  cat "$tmp/doctor1"
+  echo "brew doctor FAILED (exit $d_rc) with no warning" >&2
+  exit 1
+fi
 if ! grep -q '^Warning:' "$tmp/doctor1"; then
   echo "brew doctor: clean"
   exit 0
@@ -97,4 +104,7 @@ fi
 echo "Needs a decision:"
 echo
 cat "$tmp/doctor2"
-echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s)"
+# The ingest folds a reason it already holds open into that report and keeps
+# its first body, so the reason ends in a checksum of the findings: other
+# findings open a new report, the same ones fold into the open one (sd:3537).
+echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s) [$(cksum < "$tmp/doctor2" | awk '{print $1}')]"

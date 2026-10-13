@@ -31,17 +31,21 @@ LIB = FOLDER.parent / "lib"
 # BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
 # outdated only when asked with --greedy. BREW_DEPENDENT names an outdated
 # formula that depends on the pinned one (awscli on python@3.14).
+# BREW_OUTDATED renames the outdated formula; BREW_UPGRADES_ALL makes
+# `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
-  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula
+  "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
                                 [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED"
                                 [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "list --pinned") [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
   "uses --installed --recursive $BREW_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
+  "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
+           [ -z "$BREW_UPGRADES_ALL" ] || : > "$BREW_LOG.upgraded"
            [ -z "$BREW_NEW_PYTHON" ] || mkdir -p "$BREW_NEW_PYTHON"
            [ -z "$BREW_HANG" ] || exec sleep 60 ;;
 esac
@@ -232,7 +236,7 @@ class UpgradeStepTest(unittest.TestCase):
         # stderr is the job log; the sweep's own output goes into the report.
         self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
         self.assertIn("timed out after 2s: brew upgrade", result.stdout)
-        self.assertRegex(" ".join(self.attention(result)), r"^upgrade: 0 upgraded, [1-9]\d* still outdated")
+        self.assertRegex(" ".join(self.attention(result)), r"^upgrade: [1-9]\d* still outdated, upgrade sweep failed on ")
         self.assertEqual(self.sends(), [])
 
     def test_the_report_carries_the_grants_result(self):
@@ -260,7 +264,8 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", result.stdout)
         self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", result.stdout)
         self.assertIn("TCC grants (dashboard.sh grants, exit 1)", result.stdout)
-        self.assertRegex(self.attention(result)[0], r"^TCC: re-grant on ")
+        [reason] = self.attention(result)
+        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+ \[\d+\]$")
 
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """`claude update` runs in a quiet week too, and can drop a grant."""
@@ -272,6 +277,39 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.sends(), [])
         self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", result.stdout)
         self.assertEqual(len(self.attention(result)), 1, result.stdout)
+
+    def test_a_failed_sweep_step_needs_attention_with_nothing_left(self):
+        """Review of sd:3537: a failed `brew cleanup` with every package
+        upgraded exited 0 and asked nothing."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("upgrade sweep exited nonzero", result.stdout)
+        [reason] = self.attention(result)
+        self.assertRegex(reason, r"^upgrade: upgrade sweep failed on ")
+
+    def test_a_clean_sweep_needs_no_attention(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.attention(result), [])
+
+    def test_other_leftovers_open_another_report_and_the_same_fold(self):
+        """sd:3537: the ingest folds a reason it holds open and keeps the
+        first body, so a count-only reason showed last week's leftovers."""
+        first = self.attention(self.run_verb("upgrade-report"))
+        again = self.attention(self.run_verb("upgrade-report"))
+        other = self.attention(self.run_verb("upgrade-report", BREW_OUTDATED="other-formula"))
+        self.assertEqual(len(first), 1, first)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
+    def test_another_missing_grant_opens_another_report(self):
+        first = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1"))
+        other = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_RC="1",
+                                             GRANTS_OUT=REFUSED.replace("python3", "python3.13")))
+        self.assertEqual(len(first), 1, first)
+        self.assertNotEqual(first, other)
 
     def test_an_inconclusive_probe_is_reported_and_needs_no_attention(self):
         """Exit 3 is not a missing grant: the report says so and asks nothing."""
@@ -320,7 +358,7 @@ class UpgradeStepTest(unittest.TestCase):
         body = result.stdout
         self.assertIn("held (pinned):\n  python@3.14", body)
         self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
-        self.assertIn("upgrade: 0 upgraded, 1 still outdated", self.attention(result)[0])
+        self.assertIn("upgrade: 1 still outdated on ", self.attention(result)[0])
 
     def test_a_formula_a_pin_holds_back_is_left_out_of_the_upgrade(self):
         """sd:3329: brew upgrade refused awscli while python@3.14 was pinned
@@ -343,7 +381,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("held (pinned):\n  awscli\n  python@3.14", body)
         self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n", body)
         self.assertNotIn("failed steps", body)
-        self.assertIn("upgrade: 0 upgraded, 1 still outdated", self.attention(result)[0])
+        self.assertIn("upgrade: 1 still outdated on ", self.attention(result)[0])
 
     def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
         result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_PINNED="python@3.14")

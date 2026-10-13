@@ -1386,10 +1386,10 @@ follow() {
 # A field separator that is not whitespace, so `read` keeps empty fields.
 US=$(printf '\037')
 
-hyg_act()    { echo "  $*"; echo x >> "$HYG_TMP/acted"; }
+hyg_act()    { echo "  $*"; printf '%s\n' "$*" >> "$HYG_TMP/acted"; }
 hyg_found()  { echo "  would $*"; echo x >> "$HYG_TMP/found"; }
-hyg_list()   { echo "  $*"; echo x >> "$HYG_TMP/listed"; }
-hyg_fail()   { echo "  FAILED $*"; echo x >> "$HYG_TMP/failed"; }
+hyg_list()   { echo "  $*"; printf '%s\n' "$*" >> "$HYG_TMP/listed"; }
+hyg_fail()   { echo "  FAILED $*"; printf '%s\n' "$*" >> "$HYG_TMP/failed"; }
 hyg_note()   { echo "  note: $*"; }
 
 # Prints "<name> <compare-ref>" for the default branch: origin/HEAD first,
@@ -2195,7 +2195,15 @@ case "$1" in
     if [ -z "$ATTENTION" ] && { [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; }; then
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
-    [ -z "$ATTENTION" ] || echo "SD_REPORT_ATTENTION: $ATTENTION"
+    # The ingest folds a reason it already holds open into that report and
+    # keeps its first body, so the reason ends in a checksum of every finding
+    # behind it: other findings open a new report, the same ones fold into
+    # the open one (sd:3537).
+    if [ -n "$ATTENTION" ]; then
+      sum=$(cat "$ADDED" "$REMOVED" "$MISMATCHED" "$FAILLOG" "$HYG_TMP/acted" \
+        "$HYG_TMP/listed" "$HYG_TMP/failed" 2>/dev/null | cksum | awk '{print $1}')
+      echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
+    fi
     # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true
 

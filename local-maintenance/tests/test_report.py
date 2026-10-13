@@ -55,8 +55,18 @@ class ReportTest(unittest.TestCase):
         run = self.maintenance(f"cert|{self.tmp}/missing.pem|30\n")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(f"- cert: {self.tmp}/missing.pem missing", run.stdout)
-        self.assertEqual(self.attention(run), ["SD_REPORT_ATTENTION: maintenance: 1 finding(s) on fixturehost"])
+        [line] = self.attention(run)
+        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
+
+    def test_other_findings_open_another_report_and_the_same_fold(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body,
+        so a reason that held only the count showed last night's finding."""
+        first = self.attention(self.maintenance(f"cert|{self.tmp}/one.pem|30\n"))
+        again = self.attention(self.maintenance(f"cert|{self.tmp}/one.pem|30\n"))
+        other = self.attention(self.maintenance(f"cert|{self.tmp}/two.pem|30\n"))
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
 
     def test_a_clean_run_needs_nothing(self):
         run = self.maintenance("# nothing to check\n")

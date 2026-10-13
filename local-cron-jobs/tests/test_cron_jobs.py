@@ -2570,6 +2570,19 @@ class WatchdogTest(unittest.TestCase):
         run = self.watchdog()
         self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
 
+    def test_another_stale_job_opens_another_report(self):
+        """sd:3537: the ingest folds an open reason and keeps its first body,
+        so a reason that held only the count named yesterday's stale job."""
+        self.install("alpha", 3 * 86400)
+        first = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        again = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        (self.agents / "local.system-tools.cron.alpha.plist").unlink()
+        self.install("beta", 3 * 86400)
+        other = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
     def test_an_unreadable_run_time_is_stale_not_fresh(self):
         self.install("demo", 3600)
         (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")

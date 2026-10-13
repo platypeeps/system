@@ -411,6 +411,9 @@ fi
 
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
+# The ingest folds a reason it already holds open into that report and keeps
+# its first body, so the reason ends in a checksum of the findings: other
+# findings open a new report, the same ones fold into the open one (sd:3537).
 if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s)"
+  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(sort "$FINDINGS" | cksum | awk '{print $1}')]"
 fi

@@ -82,28 +82,58 @@ class EndToEndTest(unittest.TestCase):
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify/notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')
         self.bin = self.tmp / "bin"
-        # Two warnings that no auto-fix touches, before and after the fixes.
-        _stub(self.bin / "brew", 'case "$1" in doctor) printf "Warning: one\\nWarning: two\\n";; esac\nexit 0\n')
+        # brew doctor prints the doctor file and exits with the rc file:
+        # two warnings that no auto-fix touches, unless a test changes them.
+        self.doctor = self.tmp / "doctor"
+        self.doctor.write_text("Warning: one\nWarning: two\n")
+        self.doctor_rc = self.tmp / "doctor-rc"
+        self.doctor_rc.write_text("1\n")
+        _stub(self.bin / "brew", f'case "$1" in doctor) cat "{self.doctor}"; exit "$(cat "{self.doctor_rc}")";; esac\nexit 0\n')
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
+        self.database = self.tmp / "sd.db"
+        initialise(self.database)
 
-    def test_brew_doctor_warnings_open_a_report_that_needs_attention(self):
+    def doctor_run(self, run_id):
+        """One brew-doctor run, its output ingested as cron-jobs ingests it."""
         run = subprocess.run(["sh", str(self.tmp / "local-brew-doctor/brew-doctor.sh"), "run"],
                              capture_output=True, text=True, timeout=120,
                              env={"HOME": str(self.tmp), "PATH": f"{self.bin}:/usr/bin:/bin"})
+        log = self.tmp / f"{run_id}.log"
+        log.write_text(run.stdout + run.stderr)
+        with closing(connect(self.database)) as connection:
+            state = reporting.ingest_log(connection, job="brew-doctor-nightly", run_id=run_id,
+                                         started="2026-10-12T08:15:00Z", ended="2026-10-12T08:16:00Z",
+                                         exit_code=run.returncode, log_path=str(log), offset=0)
+        return run, state
+
+    def test_brew_doctor_warnings_open_a_report_that_needs_attention(self):
+        run, state = self.doctor_run("r1")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
-        log = self.tmp / "brew-doctor-nightly.log"
-        log.write_text(run.stdout + run.stderr)
-        database = self.tmp / "sd.db"
-        initialise(database)
-        with closing(connect(database)) as connection:
-            state = reporting.ingest_log(connection, job="brew-doctor-nightly", run_id="r1",
-                                         started="2026-10-12T08:15:00Z", ended="2026-10-12T08:16:00Z",
-                                         exit_code=0, log_path=str(log), offset=0)
-        self.assertEqual((state["recorded"], state["why"]),
-                         ("report", "brew doctor: 2 warning(s) on fixturehost"))
+        self.assertEqual(state["recorded"], "report")
+        self.assertRegex(state["why"], r"^brew doctor: 2 warning\(s\) on fixturehost \[\d+\]$")
         self.assertIn("Warning: two", state["item"]["body"])
 
+    def test_other_warnings_open_a_new_report_with_their_own_body(self):
+        """sd:3537: the ingest folds a reason it holds open and keeps the
+        first body, so a count-only reason showed last night's warnings."""
+        self.doctor_run("r1")
+        self.doctor.write_text("Warning: three\nWarning: four\n")
+        _, state = self.doctor_run("r2")
+        self.assertEqual(state["recorded"], "report", state)
+        self.assertIn("Warning: four", state["item"]["body"])
+
+    def test_the_same_warnings_fold_into_the_open_report(self):
+        self.doctor_run("r1")
+        _, state = self.doctor_run("r2")
+        self.assertEqual(state["recorded"], "folded", state)
+
+    def test_a_doctor_that_fails_without_a_warning_fails_the_run(self):
+        """A crash used to read as "brew doctor: clean"."""
+        self.doctor.write_text("Error: something broke\n")
+        run, state = self.doctor_run("r1")
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertEqual((state["recorded"], state["why"]), ("report", "job exited 1"))
 
 if __name__ == "__main__":
     unittest.main(argv=sys.argv)
