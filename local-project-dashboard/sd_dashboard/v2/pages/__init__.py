@@ -34,6 +34,8 @@ class Read:
     jobs: Any = None
     services: Any = None
     ports: Any = None
+    #: The checkout commit the server started on (sd:3528), for Health's dashboard row.
+    served_commit: Any = None
 
 
 @dataclass(frozen=True)

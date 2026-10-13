@@ -270,8 +270,13 @@ mine() {
   [ $(( (suite_ordinal - 1) % shard_count + 1 )) -eq "$shard_index" ]
 }
 
+# SUITE_ONLY=<name> runs only the suite of that name: tests/check.sh's
+# `suite`, which `make test SUITE=<name>` runs (sd:3534). Unset, every one.
+wanted() { [ -z "${SUITE_ONLY:-}" ] || [ "$1" = "$SUITE_ONLY" ]; }
+
 run_suite() {
   mine || return 0
+  wanted "$1" || return 0
   suite="$1"
   shift
   "$@" 2>&1 | tee "$CI_WORK_ROOT/$suite.log"
@@ -294,7 +299,7 @@ case "$SUITE_LEG" in
     # One leg, not four: the manifest is the same in every leg. The cron
     # job that runs `plugin lock --check` gates the `print` plugin, not
     # this repository's own manifest, so nothing else reads this lock.
-    python3 "$SD_ACCEPTANCE_PACK/bin/sd" plugin lock --check .
+    [ -n "${SUITE_ONLY:-}" ] || python3 "$SD_ACCEPTANCE_PACK/bin/sd" plugin lock --check .
     # A root suite that needs the venv's sd_db runs here, not in the
     # preflight; the guard above accepts a run_suite line naming it.
     run_suite writing-declaration "$PYTHON" tests/test_writing_declaration.py -v
@@ -350,6 +355,10 @@ case "$SUITE_LEG" in
     # cswap.sh has no test verb; the suite is named directly, like
     # statusline above. It stubs launchctl, so Linux runs it.
     run_suite cswap "$PYTHON" local-cswap/tests/test_cswap.py -v
+    # clickhouse.sh and falkordb.sh take no test verb; the suites are
+    # named directly. They stub docker, so Linux runs them.
+    run_suite clickhouse "$PYTHON" local-clickhouse/tests/test_ports.py -v
+    run_suite falkordb "$PYTHON" local-falkordb/tests/test_ports.py -v
     # codebase-memory-mcp.sh takes only `run`, which launchd calls; the
     # suite is named directly. It stubs the binary, so Linux runs it.
     run_suite codebase-memory-mcp "$PYTHON" local-codebase-memory-mcp/tests/test_codebase_memory_mcp.py -v
@@ -373,7 +382,7 @@ case "$SUITE_LEG" in
     # unittest, so run_suite's summary check cannot read it. It
     # stubs curl and makes no network call; the gate is a nonzero
     # pass count and zero failures on its last line.
-    if mine; then
+    if mine && wanted mezmo-pipeline; then
       sh mezmo-pipeline/pipeline.sh test 2>&1 | tee "$CI_WORK_ROOT/mezmo-pipeline.log"
       grep -Eq '^[1-9][0-9]* passed, 0 failed$' "$CI_WORK_ROOT/mezmo-pipeline.log"
     fi

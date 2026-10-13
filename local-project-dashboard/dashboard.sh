@@ -206,7 +206,9 @@ usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | instal
                    routing requires an explicit HTTPS origin and operator login;
                    ip_origin optionally enables HTTP access on the Tailscale IP :8768
   health           check the configured front door and backend /health
-                   once; --wait SECONDS retries until it answers healthy
+                   once; --wait SECONDS retries until it answers healthy.
+                   Prints the commit it serves, and exits 1 when that is not
+                   the checkout's HEAD, naming the kickstart line
   grants           probe the vault under DASHBOARD_PYTHON and under
                    SD_DASHBOARD_PYTHON, one line per path, naming the one
                    that lacks Full Disk Access. Takes no arguments. Exits 1
