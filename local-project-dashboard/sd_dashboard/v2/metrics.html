@@ -16,7 +16,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/metrics.css">
 </head>
 <body data-page="Metrics" data-scope="fleet">
@@ -38,7 +40,7 @@
   <div id="state" hidden></div>
 
   <h2 class="sr">Readings</h2>
-  <ul class="annunciator" id="annunciator" aria-label="Metrics annunciator"></ul>
+  <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Metrics annunciator"></ul></annunciator-strip>
 
   <section class="panel" id="spend" aria-labelledby="spend-h">
     <div class="panel-head"><div><h2 id="spend-h">Spend and budget <button class="help" type="button" aria-label="Help: spend and budget" data-help="<b>Two kinds of budget.</b> Metered bills spend dollars, and some have a cap. Subscription and plan bills spend a vendor window, read as percent used. Both are budgets; they do not add up."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>

@@ -223,7 +223,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Contributions · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "contributions.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "contributions.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -526,6 +526,24 @@ R.ext = ELS.rows.html; R.bars = ELS.bars.html;""")
         out = self.run_page("R.rows = ELS.rows.html;", search="?lane=awaiting_them&q=lib")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["github:" + EXTERNAL])
         self.assertEqual(out["urls"][-1], {"lane": "awaiting_them", "q": "lib"})
+
+    def test_a_header_sorts_the_rows_inside_their_lane_and_the_url_keeps_it(self):
+        # sd:3455: the shell's sort header. Observed, newest first, is the server's order and the default; lanes stay.
+        click = "ELS['rows-head'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: '{k}' }} }} : null }} }});"
+        ids = r'<tr data-id="([^"]+)"'
+        out = self.run_page(f"R.head = ELS['rows-head'].html; R.rows = ELS.rows.html; {click.format(k='at')} R.up = ELS.rows.html; R.url = OUT.urls[OUT.urls.length - 1];"
+                            f" {click.format(k='what')} R.what = ELS.rows.html; R.head2 = ELS['rows-head'].html;")
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["what", "at"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head"]), [("descending", "at")])
+        mine = ["github:https://github.com/example/project/pull/1", "issue:" + ISSUE]
+        self.assertEqual(re.findall(ids, out["R"]["rows"]), mine + ["github:" + EXTERNAL, "item:4"])
+        self.assertEqual(re.findall(ids, out["R"]["up"]), mine + ["item:4", "github:" + EXTERNAL])
+        self.assertEqual(re.findall(r'<tr class="lane" data-lane="(\w+)"', out["R"]["up"]), ["newly_unblocked", "awaiting_you", "awaiting_them"])
+        self.assertEqual(out["R"]["url"], {"sort": "at", "dir": "asc"})
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"', out["R"]["head2"]), [("ascending", "what")])
+        self.assertEqual(re.findall(ids, out["R"]["what"]), mine + ["github:" + EXTERNAL, "item:4"])
+        out = self.run_page("R.rows = ELS.rows.html;", search="?sort=at&dir=asc")
+        self.assertEqual(re.findall(ids, out["R"]["rows"]), mine + ["item:4", "github:" + EXTERNAL])
 
     def test_a_cut_document_says_how_many_rows_it_left_out(self):
         self.doc["truncated"], self.doc["open_total"] = True, 900

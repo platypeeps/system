@@ -232,8 +232,7 @@ class TheScript(unittest.TestCase):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
                   + "\nlocation.search = " + json.dumps(search) + ";\nvar DOC = " + json.dumps(doc) + ";\nANSWER = " + answer + ";\n"
                   + "window.shell.commands.select = id => { OUT.selected = id; };\n"
-                  # The stand-in element has no CSSOM; the page sets the lamp count through style.setProperty.
-                  + "var BareEl = El; El = id => { const e = BareEl(id); e.style.setProperty = (k, v) => { e.style[k] = v; }; e.click = () => { (OUT.saved = OUT.saved || []).push(e.download); }; return e; };\n"
+                  + "var BareEl = El; El = id => { const e = BareEl(id); e.click = () => { (OUT.saved = OUT.saved || []).push(e.download); }; return e; };\n"
                   + PAGE_JS
                   + "\nvar R = {};\nconst key = k => (DOC_LISTENERS.keydown || []).forEach(f => f({ key: k, target: { matches: () => false }, preventDefault() {} }));\n"
                   + "(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"

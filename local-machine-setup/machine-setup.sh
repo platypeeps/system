@@ -216,6 +216,17 @@ env_src() {
 
 die() { echo "machine-setup.sh: $*" >&2; exit 1; }
 
+# Call after `tmp=$(mktemp -d)`. EXIT removes the folder; a signal exits, and
+# so runs EXIT. A TERM or INT trap that only removed it returned into the run,
+# which then wrote into the folder it had just removed: capture --apply wrote
+# manifests from empty bodies (sd:2660, sd:3545).
+trap_tmp() {
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
 say() {
   if [ "$APPLY" -eq 1 ]; then printf '  %s\n' "$*"; else printf '  [dry-run] %s\n' "$*"; fi
 }
@@ -2593,7 +2604,7 @@ cmd_capture() {
   check_repo_current
 
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap_tmp
 
   # A profile file holds only what common does not already provide, so capture
   # subtracts the common manifest instead of dumping the whole machine.
@@ -3042,7 +3053,7 @@ cmd_compare() {
   [ "$pa" = "$pb" ] && die "compare needs two different profiles"
 
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap_tmp
 
   echo "comparing: $pa vs $pb (profile files only; common applies to both)"
   echo
@@ -3097,7 +3108,7 @@ cmd_triage() {
   echo
 
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap_tmp
 
   for kind in brew cask mas service cron; do
     if [ -n "$only_kind" ] && [ "$only_kind" != "$kind" ]; then continue; fi
@@ -3550,7 +3561,7 @@ cmd_candidates() {
 standalone_scan() {
   out="$1"
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap_tmp
 
   if command -v brew >/dev/null 2>&1; then
     bound_step 300 brew info --json=v2 --installed --cask 2>/dev/null | python3 -c '
@@ -4676,13 +4687,7 @@ upgrade_attention() { # reason...
 cmd_upgrade_report() {
   APPLY=1
   tmp=$(mktemp -d)
-  # EXIT removes the folder; a signal exits, and so runs EXIT. A TERM trap
-  # that only removed it returned into the run, which then wrote into the
-  # folder it had just removed (sd:2660).
-  trap 'rm -rf "$tmp"' EXIT
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap_tmp
   # fd 3 is the job log. The sweep's output goes into the report, and each step
   # names itself here as it starts, so a hang names its step.
   exec 3>&2
@@ -4875,8 +4880,17 @@ cmd_decommission() {
   echo
 
   echo "== launch agents (manifest)"
-  load_profile 2>/dev/null || true
-  for label in $(manifest agent 2>/dev/null); do
+  # load_profile dies without a recorded profile, and the cron jobs are gone by
+  # now: the run must reach the sign-off list. Resolve the profile as doctor
+  # does, and report an unusable one as a failure (sd:3545).
+  doctor_profile
+  labels=""
+  if [ -d "$PROFILE_DIR" ] && [ -n "$PROFILE" ] && known_profiles | grep -qxF "$PROFILE"; then
+    labels=$(manifest agent)
+  else
+    note_failure "launch agents not removed: no usable profile (recorded: '${PROFILE:-none}'); boot out the ${LABEL_PREFIX}.* agents by hand" 1
+  fi
+  for label in $labels; do
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$dst" ]; then
       # The plist goes only once launchd holds no job under the label: a
@@ -4951,7 +4965,7 @@ cmd_status() {
     # Temp files rather than <(...): process substitution is a bashism and this
     # script is POSIX sh per convention #2.
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    trap_tmp
 
     # Missing only: the brew stage adds a tap and never removes one.
     bound_step 300 brew tap 2>/dev/null | sort -u > "$tmp/have.tap"
@@ -5112,7 +5126,8 @@ usage: machine-setup.sh setup <profile> [stage]|update [stage]|capture [--apply]
                    cron jobs and manifest launch agents (--apply, after
                    typing "decommission" at an interactive prompt), and
                    print the manual sign-off list; destructive steps stay
-                   manual
+                   manual. Without a usable profile it cannot name the launch
+                   agents: it says so, still prints the list and exits 1
   compare <a> <b>  side-by-side of two profiles: matches, only-a, only-b
   report [profile] readable overview of every profile's entries across all
                    kinds (or just common + one profile)
@@ -5202,6 +5217,10 @@ HELPEOF
       ;;
     setup|update|capture|status|compare|triage|candidates|apps|adopt|report|profiles|doctor|test|upgrade|upgrade-report|checklist|decommission)
       if [ -z "$VERB" ]; then VERB="$a"; elif [ -z "$ARG" ]; then ARG="$a"; else ARG2="$a"; fi ;;
+    # A mistyped option used to fall into the arm below as an argument, so
+    # `status --fail-on-drft` ran and never failed on drift (sd:3545). `test`
+    # hands its options to unittest.
+    --*) [ "$VERB" = test ] || die "unknown option $a (see: $(basename "$0") help)" ;;
     *)
       if [ -n "$VERB" ]; then
         if [ -z "$ARG" ]; then ARG="$a"; elif [ -z "$ARG2" ]; then ARG2="$a"; fi

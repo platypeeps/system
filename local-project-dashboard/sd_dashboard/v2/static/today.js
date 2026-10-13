@@ -18,8 +18,25 @@
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 
-  let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], ACTIVE = null, srcFilter = null, query = '';
+  let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], ACTIVE = null, srcFilter = null, query = '', picked = [];
   const $ = id => document.getElementById(id);
+
+  // Sort (sd:3455): each table draws the shell's sort header (shell.list). The order stays in memory, not the address: four
+  // lists share it, and one ?sort= would name one of them. Now starts in rank order and Working now longest-running first,
+  // the server's orders; Your work keeps sd today's order until a header is pressed. A tie keeps the server's order.
+  const RANK = { warning: 0, caution: 1, unknown: 2, queued: 3, ok: 4 };
+  const low = s => String(s || '').toLowerCase();
+  const late = r => !!r.due && r.due < DOC.now.slice(0, 10);
+  const sorted = (rows, t) => !t.st.sort ? rows : [...rows].sort((a, b) => { const x = t.by[t.st.sort](a), y = t.by[t.st.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * t.st.dir; });
+  const SR = text => html`<span class="sr">${text}</span>`;
+  const NOW_T = { st: { sort: 's', dir: 1, page: 1 }, by: { s: r => r.rank, what: r => low(r.what), detail: r => low(r.detail), src: r => r.source },
+    cols: [['s', SR('State'), 'g'], ['what', 'What'], ['detail', 'Detail'], ['src', 'Source'], [null, SR('Actions'), 'act']] };
+  const ACTIVE_T = { st: { sort: 'elapsed', dir: -1, page: 1 }, by: { s: it => it.rows.every(r => r.verified) ? RANK.ok : RANK.unknown, what: it => it.item,
+    started: it => Date.parse(it.rows[0].started) || 0, elapsed: it => it.rows[0].seconds ?? -1 },
+    cols: [['s', SR('State'), 'g'], ['what', 'Item'], [null, 'Session'], ['started', 'Started'], ['elapsed', 'Elapsed', 'num']] };
+  const WORK_T = { st: { sort: '', dir: 1, page: 1 }, by: { s: r => late(r) ? RANK.caution : RANK.queued, what: r => low(r.what), detail: r => low(r.detail) },
+    cols: [['s', SR('State'), 'g'], ['what', 'Item'], ['detail', 'Status'], [null, SR('Actions'), 'act']] };
+  const head = (id, t) => put($(id), shell.list.sortHead(t.cols, t.st));
 
   function facts(r) {
     const f = { Detail: r.detail, Source: SRC[r.source]?.[0] || r.source, Rank: `${r.rank} · ${r.band}`, Id: r.id };
@@ -29,7 +46,7 @@
 
   function show(id) {
     const r = ROWS.find(x => x.id === id); if (!r) return;
-    $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
+    mark(id);
     const s = STATE[r.band];
     put($('details'), html`<p class="kind"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${KIND[r.kind] || r.kind} · ${s}</p>
       <h2>${r.what}</h2>
@@ -76,15 +93,24 @@
              item: r.item, itemKind: r.item_kind };
   }
 
-  function render() {
-    const tb = $('rows');
-    put(tb, ROWS.length ? html`${ROWS.map((r, i) => { const s = STATE[r.band]; return html`<tr data-id="${r.id}" data-src="${r.source}"${i && ROWS[i - 1].band !== r.band ? html` class="band-start"` : ''}>
+  // The selected row and the picked ones, marked again on the rows a redraw made.
+  function mark(id) {
+    $('rows').querySelectorAll('tr[data-id]').forEach(tr => { tr.setAttribute('aria-selected', tr.dataset.id === id); tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id)); });
+  }
+  // A band starts only while the list is in rank order.
+  function nowTable() {
+    const rows = sorted(ROWS, NOW_T), bands = NOW_T.st.sort === 's';
+    head('rows-head', NOW_T);
+    put($('rows'), rows.length ? html`${rows.map((r, i) => { const s = STATE[r.band]; return html`<tr data-id="${r.id}" data-src="${r.source}"${bands && i && rows[i - 1].band !== r.band ? html` class="band-start"` : ''}>
       <td class="g g-${s}" title="${s}">${GLYPH[s]}</td>
       <td class="what"><button type="button">${r.what}</button></td>
       <td class="detail">${r.detail}</td>
       <td class="src">${I(SRC[r.source]?.[1] || 'circle-help')}${r.source}</td>
       <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="5">Nothing wants you: every source was read and raised no row.</td></tr>`);
+  }
+  function render() {
+    nowTable();
     const count = s => ROWS.filter(r => STATE[r.band] === s).length;
     put($('tally'), html`<span class="g-warning">■ ${count('warning')} warning</span><span class="g-caution">▲ ${count('caution')} caution</span><span class="g-queued">◌ ${count('queued')} queued</span>`);
     const d = new Date(DOC.now);
@@ -107,8 +133,9 @@
     const a = ACTIVE || { rows: [], sources: {}, error: 'the document carried no sessions' }, rows = a.rows || [];
     const items = [];
     rows.forEach(r => { const last = items[items.length - 1]; if (last && last.item === r.item) last.rows.push(r); else items.push({ item: r.item, title: r.title, rows: [r] }); });
+    head('active-head', ACTIVE_T);
     put($('active'), a.error ? html`<tr class="empty"><td colspan="5">Sessions could not be read: ${a.error}. Refresh tries again.</td></tr>`
-      : items.length ? html`${items.map(it => { const sure = it.rows.every(r => r.verified), s = sure ? 'ok' : 'unknown', top = it.rows[0]; return html`<tr data-item="${it.item}">
+      : items.length ? html`${sorted(items, ACTIVE_T).map(it => { const sure = it.rows.every(r => r.verified), s = sure ? 'ok' : 'unknown', top = it.rows[0]; return html`<tr data-item="${it.item}">
         <td class="g g-${s}" title="${sure ? 'live' : 'a launch not confirmed: herdr was not read'}">${GLYPH[s]}</td>
         <td class="what"><a href="/tasks?row=${it.item}">#${it.item} ${it.title}</a></td>
         <td class="detail"><ul class="sessions">${it.rows.map(r => html`<li>${r.verified ? '' : html`<span class="g-unknown" title="not confirmed">${GLYPH.unknown} </span>`}${r.session}${r.elapsed ? html` · ${r.elapsed}` : ''}<span class="via">${r.via}</span></li>`)}</ul></td>
@@ -125,9 +152,9 @@
   // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row is not selectable: its title opens
   // the item on Tasks. Overdue is a due date before the day the document was read; a read that failed is said, never empty.
   function work() {
-    const day = DOC.now.slice(0, 10), late = r => !!r.due && r.due < day;
+    head('work-head', WORK_T);
     put($('work'), WORK_ERROR ? html`<tr class="empty"><td colspan="4">Work could not be read: ${WORK_ERROR}. Refresh tries again.</td></tr>`
-      : WORK.length ? html`${WORK.map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-item="${r.item}">
+      : WORK.length ? html`${sorted(WORK, WORK_T).map(r => { const s = late(r) ? 'caution' : 'queued'; return html`<tr data-item="${r.item}">
         <td class="g g-${s}" title="${late(r) ? 'overdue' : 'queued'}">${GLYPH[s]}</td>
         <td class="what"><a href="/tasks?row=${r.item}">${r.what}</a></td>
         <td class="detail">${r.detail}</td>
@@ -243,7 +270,13 @@
       if (ROWS.some(r => r.id === e.detail)) select(e.detail, true);
       const w = WORK.find(r => r.id === e.detail); if (w) location.href = `/tasks?row=${w.item}`;
     });
-    document.addEventListener('shell:picked', e => $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
+    document.addEventListener('shell:picked', e => { picked = e.detail; $('rows').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
+    // A header press redraws its table only; Now marks the selection and the picks again and keeps the filter's hidden rows.
+    const sortable = (id, t, redraw) => $(id).addEventListener('click', e => { if (shell.list.sortBy(e, t.st)) shell.list.keepFocus(e, () => DOC ? redraw() : head(id, t)); });
+    sortable('rows-head', NOW_T, () => { nowTable(); hideRows(); mark(new URLSearchParams(location.search).get('row')); });
+    sortable('active-head', ACTIVE_T, working);
+    sortable('work-head', WORK_T, work);
+    head('rows-head', NOW_T); head('active-head', ACTIVE_T); head('work-head', WORK_T); // drawn before the read, so a failed one keeps the columns
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();

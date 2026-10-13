@@ -20,7 +20,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/today.css">
 </head>
 <body data-page="Today" data-scope="fleet">
@@ -53,13 +55,13 @@
     </header>
 
     <h2 class="sr">Subsystems</h2>
-    <ul class="annunciator" id="annunciator">
+    <annunciator-strip><ul class="annunciator" id="annunciator">
       <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
-    </ul>
+    </ul></annunciator-strip>
 
     <section aria-labelledby="now-h">
       <div class="sec-head">
@@ -68,7 +70,7 @@
         <p class="tally" id="tally"></p>
       </div>
       <table class="ledger" aria-labelledby="now-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">What</th><th scope="col">Detail</th><th scope="col">Source</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <thead id="rows-head"></thead>
         <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
       </table>
       <p class="filtered" id="filtered" hidden></p>
@@ -82,7 +84,7 @@
         <p class="tally" id="active-tally"></p>
       </div>
       <table class="ledger active" aria-labelledby="active-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Session</th><th scope="col">Started</th><th scope="col" class="num">Elapsed</th></tr></thead>
+        <thead id="active-head"></thead>
         <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
       </table>
       <p class="filtered" id="active-note" hidden></p>
@@ -95,7 +97,7 @@
         <p class="tally" id="work-tally"></p>
       </div>
       <table class="ledger work" aria-labelledby="work-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
+        <thead id="work-head"></thead>
         <tbody id="work"><tr class="empty"><td colspan="4">Reading work…</td></tr></tbody>
       </table>
     </section>
@@ -107,7 +109,7 @@
         <p class="tally" id="decisions-tally"></p>
       </div>
       <table class="ledger decisions" aria-labelledby="decisions-h">
-        <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Question</th><th scope="col" class="act">Choose</th></tr></thead>
+        <thead id="decisions-head"></thead>
         <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
       </table>
       <p class="filtered" id="decisions-review" hidden></p>

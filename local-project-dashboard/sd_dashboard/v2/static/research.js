@@ -41,12 +41,24 @@ function gitSub(g) {
 }
 const tbody = document.getElementById('rows');
 let selected = null, filterText = '', picked = [];
+// The header sorts the board (sd:3455, the shell's list grammar); State is the default, and a tie keeps the board's order.
+// Stage is how far the numbered layout reaches; Rounds has no reader, so it has no order.
+const BY = {
+  s: p => RANK[p.s], what: p => p.label.toLowerCase(), stage: p => (p.dirs ? DIRS.findLastIndex(d => p.dirs.includes(d)) : -2),
+  render: p => RANK[p.render.s] ?? 9, last: p => Date.parse(p.git?.last_iso) || 0,
+};
+const LIST = { sort: 's', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
+const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Project'], ['stage', 'Stage'], ['render', 'Render'], [null, 'Rounds / cap'],
+  ['last', 'Last commit', 'last'], [null, html`<span class="sr">Actions</span>`, 'acts']];
+const order = (a, b) => { const x = BY[L.sort](a), y = BY[L.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir; };
 function visible() {
-  return PROJECTS.filter(p => (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)) && (!stateFilter || p.s === stateFilter)).sort((a, b) => RANK[a.s] - RANK[b.s]);
+  return PROJECTS.filter(p => (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)) && (!stateFilter || p.s === stateFilter)).sort(order);
 }
 function renderBoard() {
   const list = visible();
-  put(tbody, html`${list.map((p, i) => html`<tr data-id="${p.key}"${i && list[i - 1].s !== p.s ? html` class="band-start"` : ''} aria-selected="${String(p.key === selected)}"${picked.includes(p.key) ? html` data-picked` : ''}>
+  put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L));
+  // A state band starts only while the board is in state order.
+  put(tbody, html`${list.map((p, i) => html`<tr data-id="${p.key}"${i && L.sort === 's' && list[i - 1].s !== p.s ? html` class="band-start"` : ''} aria-selected="${String(p.key === selected)}"${picked.includes(p.key) ? html` data-picked` : ''}>
       <td class="g g-${p.s}" title="${p.s}: ${STATE_WORDS[p.s]}"><span aria-hidden="true">${GLYPH[p.s]}</span><span class="sr">${p.s}: ${STATE_WORDS[p.s]}</span></td>
       <td class="what"><button type="button">${p.label}</button><span class="path">${p.path}</span></td>
       <td class="stage" data-l="Stage">${stageCell(p)}</td>
@@ -80,8 +92,9 @@ function clearSelection() {
 }
 function writeURL() {
   const q = new URLSearchParams(); if (stateFilter) q.set('state', stateFilter); if (filterText) q.set('q', filterText);
-  shell.url(q); // the shell keeps ?row=
+  shell.url(shell.list.listQuery(q, L, LIST)); // the shell keeps ?row=
 }
+document.getElementById('rows-head').addEventListener('click', e => { if (shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderBoard); writeURL(); } });
 document.getElementById('tally').addEventListener('click', e => {
   if (e.target.closest('[data-clear-state]')) { setState(null); document.querySelector('#tally button')?.focus(); return; }
   const b = e.target.closest('button[data-state]'); if (!b || b.disabled) return;
@@ -326,6 +339,7 @@ function adopt(doc) {
     const u = new URLSearchParams(location.search);
     stateFilter = Object.hasOwn(STATE_WORDS, u.get('state') ?? '') ? u.get('state') : null; // own keys only: ?state=constructor is no state
     if (u.get('q')) { input.value = u.get('q'); filterText = u.get('q').toLowerCase(); }
+    shell.list.listParams(u, L, { sorts: Object.keys(BY), size: LIST.size });
   }
   const unknown = PROJECTS.filter(p => p.s === 'unknown').length;
   // build: past its print bound the board lists fewer projects (research_screen.board); say how many are missing.
@@ -350,6 +364,7 @@ function unselect() {
 // Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
 const load = () => board.load();
 document.addEventListener('DOMContentLoaded', () => {
+  put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   registerCommands();
   board = shell.read({
     source: '/api/research', what: 'the research checkouts', adopt, draw,

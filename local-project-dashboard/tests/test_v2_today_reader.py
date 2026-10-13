@@ -368,6 +368,44 @@ class TheBadge(TheReader):
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "warning rows"})
 
 
+class TheSort(TheReader):
+    """sd:3455: each of Today's four tables has the shell's sort header; its order is kept in memory, not the address."""
+
+    DECISION, ITEM, run_badge = TheBadge.DECISION, TheSnooze.ITEM, TheBadge.run_badge
+
+    SORTED = r'aria-sort="(\w+)"[^>]*><button[^>]*data-sort="(\w+)"'
+
+    def session(self, item, title, started, seconds):
+        return {"item": item, "title": title, "kind": "worktree", "session": f"worktree sd{item}", "started": started,
+                "elapsed": f"{seconds // 3600}h", "seconds": seconds, "via": "branch name", "verified": True}
+
+    def test_each_table_sorts_by_its_header_and_the_selection_stays(self):
+        self.doc["work"], self.doc["work_error"] = [self.ITEM,
+                                                    {**self.ITEM, "id": "item:9", "item": 9, "what": "#9 Another", "due": None, "detail": "in_progress"}], ""
+        self.doc["active"] = {"rows": [self.session(5, "Long", "2026-09-06T08:00:00Z", 7200), self.session(6, "Short", "2026-09-06T09:00:00Z", 3600)],
+                              "sources": {}}
+        other = {**self.DECISION, "note": 8, "item": 12, "title": "Another", "question": "All of it?"}
+        click = "ELS['{h}'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: '{k}' }} }} : null }} }});"
+        body = ("R.heads = ['rows-head', 'active-head', 'work-head', 'decisions-head'].map(h => ELS[h].html); R.sel = selected();"
+                + click.format(h="rows-head", k="what") + click.format(h="rows-head", k="what") + "R.now = ELS.rows.html; R.sel2 = selected();"
+                + click.format(h="active-head", k="elapsed") + "R.active = ELS.active.html;"
+                + click.format(h="work-head", k="what") + click.format(h="work-head", k="what") + "R.work = ELS.work.html;"
+                + click.format(h="decisions-head", k="what") + "R.decisions = ELS.decisions.html; R.url = location.search;")
+        out = self.run_badge(body, [self.DECISION, other], keep_job=True)
+        heads = out["R"]["heads"]
+        self.assertEqual([re.findall(r'data-sort="(\w+)"', h) for h in heads],
+                         [["s", "what", "detail", "src"], ["s", "what", "started", "elapsed"], ["s", "what", "detail"], ["s", "what", "question"]])
+        # Now and Working now start in the server's order and say so; Your work and Decisions keep theirs unmarked.
+        self.assertEqual([re.findall(self.SORTED, h) for h in heads], [[("ascending", "s")], [("descending", "elapsed")], [], []])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["now"]), ["ahead:pushy:1", "job:nightly-sync:7"])
+        self.assertNotIn("band-start", out["R"]["now"])
+        self.assertEqual((out["R"]["sel"], out["R"]["sel2"]), (["job:nightly-sync:7"], ["job:nightly-sync:7"]))
+        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["active"]), ["6", "5"])
+        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["work"]), ["9", "7"])
+        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["decisions"]), ["12", "3012"])
+        self.assertNotIn("sort=", out["R"]["url"])
+
+
 class TheJobRow(TheReader):
     """sd:3449: a job row carries the commands Management and Activity give a job, from the one declaration in commands.js."""
 

@@ -174,7 +174,12 @@ A remediation that fails prints `FAILED` and the run goes on to the next item
 and stage. The run ends with the list of failures and exits 1. A failed step
 skips the rest of its item: a failed backup skips the overwrite, a failed copy
 skips the record and the launchd restart. `decommission` removes a plist only
-once launchd holds no job under its label.
+once launchd holds no job under its label. With no usable profile it cannot
+name the launch agents: it prints `FAILED`, still prints the sign-off list and
+exits 1.
+
+An option the script does not know (`--fail-on-drft`) stops the run with
+`unknown option`, so a typo cannot turn a check into a no-op.
 
 ### Obsidian plugins
 

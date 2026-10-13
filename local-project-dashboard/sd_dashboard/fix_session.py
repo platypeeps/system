@@ -99,7 +99,7 @@ def start(connection, item: int, *, expected_revision: str, who: str):
             state = workflow.add_item_note(connection, item, kind="comment", who=who, body=body)
         except (SdDbError, sqlite3.Error) as problem:
             return 503, {"error": f"claude started in herdr pane {pane}, but the note was not recorded: {problem}. "
-                                  f"Record it with: sd task note {item} --body {shlex.quote(body)}"}
+                                  f"Record it with: sd task note {item} {shlex.quote(body)}"}
         state["fix"] = {"session": session, "pane": pane, "checkout": where}
         return state
 

@@ -7,9 +7,10 @@ same on every page, the list grammar's styles, and the lamp hover: a ring in the
 The JavaScript runs under JavaScriptCore (osascript) on the blocks the tests cut out of `shell.js`, so a test reads the
 shipped code, not a copy. Reports wires the list grammar end to end; `test_v2_reports` drives that page.
 
-sd:2680: one annunciator and one ledger layout. shell.css holds the whole lamp (a page sets only `--cells`, its column
-count) and the ledger's desktop rules, with the browser's auto table layout and no colgroup. `markup.cells(spec)` draws
-every page's lamps; `cell_grammar` is the markup test each page's own suite runs on what it drew.
+sd:2680: one annunciator and one ledger layout. shell.css holds the ledger's desktop rules, with the browser's auto table
+layout and no colgroup. `markup.cells(spec)` draws every page's lamps; `cell_grammar` is the markup test each page's own
+suite runs on what it drew. sd:3588: the lamps sit in the foundation's <annunciator-strip>, and its stylesheet, a pinned
+copy (test_v2_foundation), is the only one that styles a lamp, but for the sd:2530 hover ring in shell.css.
 """
 
 from __future__ import annotations
@@ -24,34 +25,24 @@ from test_v2_today import OSASCRIPT
 
 STATIC = V2 / "static"
 SHELL_CSS = (STATIC / "shell.css").read_text(encoding="utf-8")
-PAGE_CSS = {p.name: p.read_text(encoding="utf-8") for p in STATIC.glob("*.css") if p.name not in ("shell.css", "tokens.css")}
+# The foundation's own files (test_v2_foundation pins them) are neither page nor shell code.
+FOUNDATION = ("tokens.css", "theme.js", "annunciator-strip.css", "annunciator-strip.js")
+PAGE_CSS = {p.name: p.read_text(encoding="utf-8") for p in STATIC.glob("*.css") if p.name not in ("shell.css", *FOUNDATION)}
 PAGE_JS = {p.name: p.read_text(encoding="utf-8") for p in STATIC.glob("*.js")
-           if p.name not in ("shell.js", "markup.js", "sections.js", "read.js")}
-# The rules every page that draws an annunciator or a ledger shares; shell.css holds the one copy (sd:2588, sd:2680).
+           if p.name not in ("shell.js", "markup.js", "sections.js", "read.js", *FOUNDATION)}
+# The ledger rules every page that draws one shares; shell.css holds the one copy (sd:2588, sd:2680).
 SHARED = (
-    ".annunciator { display: grid; grid-template-columns: repeat(var(--cells, 3), minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-xl);"
-    " padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); list-style: none; }",
-    ".annunciator li { display: contents; }",
-    ".cell { font: inherit; border: 0; text-align: left; width: 100%; min-width: 0; display: grid; grid-template-rows: auto 1fr;"
-    " gap: var(--space-2xs); min-height: 4.5rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel);"
-    " color: var(--color-muted); text-decoration: none; }",
-    ".cell .lbl { font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; display: flex;"
-    " align-items: center; justify-content: space-between; gap: var(--space-xs); }",
-    ".cell .val { font: 400 var(--text-sm)/1.3 var(--font-data); align-self: end; color: var(--color-ink-2); overflow-wrap: anywhere; }",
-    ".cell .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }",
-    # A phrase moves to the next line whole and wraps inside only when longer than the lamp: a nowrap one ran past the edge.
-    ".cell .ph { display: inline-block; max-width: 100%; }",
-    '.cell[data-state="unknown"] { color: var(--color-ink-2); background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }',
     ".ledger { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }",
     ".ledger th { text-align: left; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase;"
     " color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }",
     ".ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }",
     ".ledger .g { text-align: center; font-family: var(--font-data); }",
 )
-# The lamp and ledger selectors only shell.css may style. A page keeps what is its own: `.annunciator { --cells: N; }`, a
-# cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.
-SHELL_ONLY = re.compile(r'(?m)^\s*(\.cell(\s*[{,]|:hover|:focus-visible|:disabled|\s+\.(lbl|ph|val)\b|\[data-state|\[aria-pressed)'
-                        r'|(a|button)\.cell\b|\.ledger(\s+(th|td)\s*[{,]|\s*[{,]|\s+col\b|\s+tbody tr(:hover td|\[aria-selected="true"\] td)?\s*[{,]))')
+# The lamp selectors only annunciator-strip.css may style, and the ledger selectors only shell.css may. A page keeps what is
+# its own: a cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.
+LAMP_ONLY = re.compile(r'(?m)^\s*((\.annunciator\s+)?\.cell(\s*[{,]|:hover|:focus-visible|:disabled|\s+\.(lbl|ph|val)\b|\[data-state|\[aria-pressed)'
+                       r'|(a|button)\.cell\b|\.annunciator(\s+li)?\s*[{,])')
+SHELL_ONLY = re.compile(LAMP_ONLY.pattern + r'|^\s*\.ledger(\s+(th|td)\s*[{,]|\s*[{,]|\s+col\b|\s+tbody tr(:hover td|\[aria-selected="true"\] td)?\s*[{,])')
 # The pages whose script draws an annunciator; each draws it through markup.cells. Today's lamps are server HTML that
 # today.js fills in place, so its test reads today.html against the same grammar.
 LAMP_PAGES = ("activity", "briefs", "contributions", "designs", "health", "hoa", "metrics", "reports", "skills")
@@ -221,7 +212,7 @@ class TheDefaultCapture(unittest.TestCase):
   captureCli({ kind: 'task', title: 'x', priority: 4, repo: '/tmp/a b' })];""")
         self.assertEqual(out["lines"], ["cd ~/repos/one && sd task add --priority 3 'it'\\''s'",
                                         "sd task add --no-repo --kind followup --priority 2 'x'",
-                                        "sd task note 5 --kind comment --body 'x'",
+                                        "sd task note 5 'x' --kind comment",
                                         "cd '/tmp/a b' && sd task add --priority 4 'x'"])
 
     def test_the_box_offers_the_pickers_with_p3_and_the_pages_repo_as_defaults(self):
@@ -284,8 +275,11 @@ class TheSharedRules(unittest.TestCase):
                 continue
             with self.subTest(name):
                 self.assertEqual([m.group(0).strip() for m in SHELL_ONLY.finditer(wide(css))], [])
-                for decl in re.findall(r"(?m)^\s*\.annunciator\s*\{([^}]*)\}", css):
-                    self.assertRegex(decl.strip(), r"^--cells: \d;$")
+
+    def test_the_shell_leaves_the_lamp_to_the_foundation_strip(self):
+        self.assertEqual([m.group(0).strip() for m in LAMP_ONLY.finditer(wide(SHELL_CSS))], [])
+        self.assertTrue(LAMP_ONLY.search(wide((STATIC / "annunciator-strip.css").read_text(encoding="utf-8"))),
+                        "the pattern finds the strip's own lamp rules")
 
     def test_one_ledger_layout_auto_with_no_colgroup(self):
         self.assertNotIn("table-layout", SHELL_CSS)
@@ -341,12 +335,21 @@ class TheCells(unittest.TestCase):
 
 
 class TheLampHover(unittest.TestCase):
-    """sd:2530: a lit lamp keeps its state colour under the pointer."""
+    """sd:2530: a lit lamp keeps its state colour under the pointer. The foundation strip (sd:3588) dims it 4%; the
+    operator ruled for the ring (2026-10-13), so shell.css cancels the dim and draws the ring."""
 
     def test_no_state_hover_shifts_brightness(self):
         for name, css in {**PAGE_CSS, "shell.css": SHELL_CSS}.items():
             with self.subTest(name):
-                self.assertNotRegex(css, r'data-state="(caution|warning)"\][^{]*:hover[^{]*\{[^}]*filter')
+                self.assertNotRegex(css, r'data-state="(caution|warning)"\][^{]*:hover[^{]*\{[^}]*filter:(?!\s*none\b)')
+
+    def test_the_shell_cancels_the_strips_dim(self):
+        strip = (STATIC / "annunciator-strip.css").read_text(encoding="utf-8")
+        self.assertIn('.annunciator :is(button, a).cell:is([data-state="caution"], [data-state="warning"], [data-state="unknown"])'
+                      ':is(:hover, .is-hover) { filter: brightness(0.96); }', strip)
+        # One more element in the selector than the strip's rule, so it wins although shell.css loads first.
+        self.assertIn('annunciator-strip .annunciator :is(a, button).cell:is([data-state="caution"], [data-state="warning"],'
+                      ' [data-state="unknown"]):hover { filter: none; }', SHELL_CSS)
 
     def test_the_hover_ring_is_drawn_in_the_lamps_ink_token(self):
         for state, ink in (("caution", "--color-caution-lamp-ink"), ("warning", "--color-warning-ink")):

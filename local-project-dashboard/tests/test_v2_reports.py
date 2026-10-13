@@ -290,7 +290,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Reports · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "reports.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "reports.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -725,6 +725,15 @@ CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.
         self.assertIn("Last 1400 characters shown.", out["R"]["clean"])
         self.assertIn("Since the previous report", out["R"]["clean"])
         self.assertIn('class="del">old', out["R"]["clean"])
+
+    def test_details_of_a_report_whose_fields_cannot_be_read_name_the_action_before_the_line(self):
+        # sd:3716, after pack sd:3503: the sentence names what to do and why the page withholds it; the line is the copy.
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["reports"] if r["id"] == self.ids["clean"])["fields_read"] = False
+        out = self.run_page(f"open('r{self.ids['clean']}'); R.det = ELS.details.html;", doc=doc)
+        self.assertIn("This page withholds Acknowledge: one click would close a report nobody has read. "
+                      f"Read its log, then acknowledge report {self.ids['clean']} in a terminal: "
+                      f"<code>sd reports acknowledge {self.ids['clean']}</code>.", out["R"]["det"])
 
     LAUNCHCTL = ("(path, body) => path.endsWith('/retry') ? [200, ANSWER] : path.startsWith('/api/reports/clean') ? [200, CLEAN]"
                  " : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]")

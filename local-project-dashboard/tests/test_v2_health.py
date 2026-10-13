@@ -1026,7 +1026,7 @@ class ThePage(Collectors, BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "snooze.js", "commands.js", "health.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "snooze.js", "commands.js", "health.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         # /health is the service's own check, which the runtime reads; the page does not take it over.
@@ -1240,6 +1240,15 @@ R.observed = document.body.dataset.observed;""")
                             + click.format(a="wt") + "R.one = ELS.areas.html;")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["both"]), ["wt", "ports"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["one"]), ["ports"])
+
+    def test_a_lamp_press_draws_the_rows_of_its_area(self):
+        # sd:3708: the filter read r.area, which only the copies in ROWS carried, so each section drew no row.
+        click = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { area: 'wt' } } : null } });"
+        out = self.run_page(click + "R.wt = ELS.areas.html; R.note = ELS.filtered.html;")
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
+        self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
+        self.assertIn('data-id="unread:beta"', out["R"]["wt"])
+        self.assertIn("Filtered to Worktrees only: ", out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;")

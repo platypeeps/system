@@ -55,7 +55,7 @@ writes; there is no dismiss.
 
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
-`sd task note N --kind question --body $'Which store?\nOption: Pack store kind\nOption: Database rows'`.
+`sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.
 Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,
 `Ruling on note #<id>: <option>`, and resolves the question, in one transaction under the item's revision, so a
 stale page writes nothing and reads the list again. `sd task show N` prints both. A prose "Decision needed"
@@ -294,6 +294,11 @@ above. Everything the dashboard did not write is escaped text and Markdown is
 an allow-listed subset (`markup.py`); behind both, every response carries a
 `Content-Security-Policy` with no inline script and `frame-ancestors 'none'`,
 so no page anywhere may frame the dashboard.
+
+`sd_dashboard/v2/static/` holds unchanged copies of ui-design foundation files:
+`tokens.css`, `theme.js` and the `<annunciator-strip>` component.
+`tests/test_v2_foundation.py` pins each copy by digest to one foundation
+commit. Change the foundation first, then copy the file and move the pin.
 
 Writes are JSON POSTs under `/api/items`, `/api/notes`, `/api/jobs`,
 `/api/assignments` and `/api/services`; GET and HEAD never
