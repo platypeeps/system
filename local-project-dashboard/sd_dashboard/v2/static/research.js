@@ -14,13 +14,12 @@ let CAP = 2;
 let PROJECTS = [], ROUNDS = '', CLAIMS = '', READ = null, CUT = 0, LOADED = false;
 const SOURCES = new Map(); // a Map, so a checkout named like an object property (constructor) is not already cached
 const RANK = { caution: 0, unknown: 1, queued: 2, ok: 3 };
-// Page attention, from the rows the board renders. An unread config is unknown, not a caution, so it does not count.
+// Page attention, the read's own (sd:3446, research_screen._attention): render-stale projects.
 // build: nothing is claimed until /api/research answers.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'research not read yet' };
+let ATTENTION = null;
 function attention() {
-  const n = PROJECTS.filter(p => p.s === 'caution').length;
-  window.shell?.attention?.(!LOADED ? { state: 'unknown', n: 0, what: 'research not read' }
-    : n ? { state: 'caution', n, what: 'render-stale projects' } : { state: 'ok', n: 0, what: 'render-stale projects' });
+  window.shell?.attention?.(LOADED && ATTENTION || { state: 'unknown', n: 0, what: 'research not read' });
 }
 // The tally filters the board by state; the URL carries it (?state=), and the tally's Clear or a second tap removes it.
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
@@ -329,7 +328,7 @@ window.PAGE_COMMANDS = [
 // lists runs no command, and a failed read clears the board, the ledger and the rail. The ledger keeps its own cache.
 let board = null, linked = false;
 function adopt(doc) {
-  READ = doc.read; CAP = doc.cap || CAP; DIRS = doc.dirs || DIRS; CUT = doc.cut || 0; LOADED = true;
+  READ = doc.read; CAP = doc.cap || CAP; DIRS = doc.dirs || DIRS; CUT = doc.cut || 0; LOADED = true; ATTENTION = doc.attention || null;
   ROUNDS = doc.rounds?.reason || 'not read'; CLAIMS = doc.claims?.reason || 'not read';
   if (READ) document.body.dataset.observed = READ; // shell time cells count from the reading, not from now
   PROJECTS = (doc.projects || []).map(p => ({ ...p, id: p.key, type: 'research project', s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));

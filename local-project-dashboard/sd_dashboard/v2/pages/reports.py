@@ -33,4 +33,5 @@ PAGE = Page(
     html="reports.html",
     item="sd:2121",
     api=(Api("/api/reports", _read), Api("/api/reports/clean", _clean, query=True)),
+    count="/api/reports",
 )

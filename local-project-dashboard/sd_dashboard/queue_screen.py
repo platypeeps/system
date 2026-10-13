@@ -300,8 +300,16 @@ def document(connection, *, now: str = "") -> dict:
                       "rows": rows(entries, path=path, lane=lane, now=clock)})
     return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": _gates(),
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
-            "managed": len(managed),
+            "managed": len(managed), "attention": _attention(lanes),
             **(retry_help() if lanes else {"retry": False, "requeue": False, "requeue_off": None})}
+
+
+def _attention(lanes) -> dict:
+    """The rail badge (sd:3446): blocked rows across every lane read."""
+    from .v2.pages import attention
+
+    return attention(("caution" if row["state"] == "blocked" else "" for lane in lanes for row in lane["rows"]),
+                     {"caution": "blocked"})
 
 
 def move(payload: dict):

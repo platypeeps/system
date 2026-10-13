@@ -392,10 +392,9 @@ window.PAGE_COMMANDS = [
 // ---------- Start (build: read /api/documents through shell.read, then draw) ----------
 // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws, a document the read no longer
 // lists runs no command, and a failed read clears the rows, the rail and Details.
+// The badge is the read's own (sd:3446, documents_screen._attention): render-stale documents the operator has not hidden.
 function attention() {
-  const n = DOCS.filter(d => d.stale && !d.hidden).length;
-  window.PAGE_ATTENTION = !DOC ? { state: 'unknown', n: 0, what: 'documents not read' }
-    : n ? { state: 'caution', n, what: 'render-stale documents' } : { state: 'ok', n: 0, what: 'render-stale documents' };
+  window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'documents not read' };
   window.shell.attention?.(window.PAGE_ATTENTION);
 }
 const shownPage = () => sorted(DOCS.filter(matches)).slice((L.page - 1) * L.size, L.page * L.size);

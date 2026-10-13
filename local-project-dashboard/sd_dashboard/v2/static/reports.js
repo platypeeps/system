@@ -223,12 +223,10 @@ function matches(r) {
 function stCell(r) {
   return r.open ? html`<td class="st open">${I('inbox')}open</td>` : html`<td class="st">${I('check')}acknowledged</td>`;
 }
-// Rail badge (shell.js): the loudest state on this page and how many rows carry it.
-const pageAttention = (xs, what) => { const w = xs.filter(s => s === 'warning').length, c = xs.filter(s => s === 'caution').length; window.PAGE_ATTENTION = { state: w ? 'warning' : c ? 'caution' : 'ok', n: w || c, what: what[w ? 'warning' : 'caution'] }; window.shell?.attention?.(); };
 // read: the reader draws, and its settle picks the selection, so no reconcile runs here.
 function renderRows(read) {
-  if (!DOC.reports) { window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'reports not read' }; window.shell?.attention?.(); }
-  else pageAttention(ROWS.map(r => r.s), { warning: 'reports want you', caution: 'status mails flagged' });
+  // Rail badge (shell.js): the read's own, open reports that ask for attention (sd:3446, reports_screen._attention).
+  window.PAGE_ATTENTION = DOC.reports && DOC.attention || { state: 'unknown', n: 0, what: 'reports not read' }; window.shell?.attention?.();
   const list = window.shell.list;
   shown = ROWS.filter(matches).sort(order);
   const slice = list.pageOf(shown, L);

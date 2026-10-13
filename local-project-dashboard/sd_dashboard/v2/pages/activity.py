@@ -17,4 +17,5 @@ PAGE = Page(
     html="activity.html",
     item="sd:2111",
     api=(Api("/api/activity", _read),),
+    count="/api/activity",
 )

@@ -151,6 +151,10 @@ class TheRows(Lane, ScreenCase):
             ("merging", 3), ("next", 9), ("next", 12), ("building", "queue-notes-1"), ("building", "sd1775-2"),
             ("blocked", 5), ("blocked", 4), ("cancelled", 1), ("landed", 7)])
 
+    def test_the_badge_counts_the_blocked_rows(self):
+        # sd:3446: the read's rule, which every page's rail shows from the page's last read.
+        self.assertEqual(self.doc()["attention"], {"state": "caution", "n": 2, "what": "blocked"})
+
     def test_merging_names_its_step_host_claim_age_and_lease(self):
         merging = self.doc()["lanes"][0]["rows"][0]
         self.assertEqual((merging["step"], merging["host"], merging["claim_age"], merging["lease_until"], merging["head"]),

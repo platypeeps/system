@@ -500,6 +500,12 @@ shellRun(r, plan); R.toast = lastToast().msg;""")
                                               "not a research repo: no source renders this page", True, False])
         self.assertIn("does not run it", out["R"]["toast"])
 
+    def test_the_badge_rule_drops_a_hidden_stale_document(self):
+        # sd:3446: the rail's rule is the read's; a stale row the operator hid no longer lights it.
+        self.assertEqual(self.doc["attention"], {"state": "caution", "n": 1, "what": "render-stale documents"})
+        self.rows_of(**{"lab/plan.html": {"hidden": True}})
+        self.assertEqual(documents_screen._attention(self.doc["documents"]), {"state": "ok", "n": 0, "what": "render-stale documents"})
+
     def test_open_opens_the_served_address_in_a_new_tab(self):
         out = self.run_page("""const o = cmd('document.open'), d = C.get('civic/brief.html'); R.cli = o.cli(d); shellRun(o, d);""")
         self.assertEqual(out["opened"], [["/documents/civic/brief.html", "_blank", "noopener"]])
@@ -612,7 +618,7 @@ window.shell.reconcile = o => { if (o.current != null) return o.current;"""
 
     def test_a_document_the_next_read_drops_runs_no_command_and_loses_the_selection(self):
         out = self.run_page("""const first = ANSWER()[1];
-ANSWER = () => [200, { ...first, documents: first.documents.filter(d => d.file !== 'plan.html') }];
+ANSWER = () => [200, { ...first, documents: first.documents.filter(d => d.file !== 'plan.html'), attention: { state: 'ok', n: 0, what: 'render-stale documents' } }];
 await load();
 R.type = C.get('lab/plan.html').type; R.rows = ELS.rows.html; R.det = ELS.details.html; R.att = window.PAGE_ATTENTION;""",
                             row="'lab/plan.html'")

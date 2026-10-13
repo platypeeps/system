@@ -435,7 +435,18 @@ def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = 
             out["sources"][source] = str(failure) or f"{source} could not be read"
             continue
         out["sources"][source] = ""
+    out["attention"] = _attention(out["reports"])
     return out
+
+
+def _attention(reports) -> dict:
+    """The rail badge (sd:3446): open reports that ask for attention. A report read that failed is unknown."""
+    from .v2.pages import attention
+
+    if reports is None:
+        return {"state": "unknown", "n": 0, "what": "reports not read"}
+    return attention(("warning" if report["status"] != "done" and report["attention"] else "" for report in reports),
+                     {"warning": "reports want you", "caution": "status mails flagged"})
 
 
 def clean(connection, before: str, *, now: str) -> dict:

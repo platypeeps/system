@@ -143,6 +143,9 @@ class TheDocument(ScreenCase):
         self.assertEqual(rows[self.ids["done"]]["status"], "done")
         self.assertEqual(doc["mail"], {"available": False, "reason": reports_screen.MAIL_REASON})
         self.assertEqual(doc["html"], 3)
+        # sd:3446: the rail badge is the read's; only the open report that asks for attention counts.
+        self.assertEqual(doc["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
+        self.assertEqual(reports_screen._attention(None), {"state": "unknown", "n": 0, "what": "reports not read"})
 
     def test_the_cadence_counts_each_local_day_from_the_log_and_the_calendar_leaves_days_out(self):
         doc = self.doc()
