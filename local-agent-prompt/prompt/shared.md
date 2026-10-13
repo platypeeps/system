@@ -113,7 +113,8 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 # Merge lane
 
-The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then `sd-ship lane watch`; build no hand-run chains.
+The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then keep one background `sd-ship lane watch --item A --item B …` naming every item you have in that lane, restarted after each enqueue and after an sd outage; build no hand-run chains.
+Treat a watch exit as done only when its output says `ok: true`: bare `lane watch` never exits (a block sat 1.5 h), and a hub build mismatch ends a watch with `ok: false` and exit 0 (2026-10-12).
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
 Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lane runs the full `make check`.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.

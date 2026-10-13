@@ -23,5 +23,6 @@ copy `.env.example` there. Exported values win over the file.
 
 - The MCP server is on `8002`, not `8001`: `8001` is the redis-stack
   convention that RedisInsight in `local-redis` publishes. Override with
-  `CLICKHOUSE_MCP_PORT`.
+  `CLICKHOUSE_MCP_PORT`; the other ports are `CLICKHOUSE_HTTP_PORT` and
+  `CLICKHOUSE_NATIVE_PORT`. All three also read from the `.env` file.
 - `start` launches both containers; `stop` stops both.

@@ -312,13 +312,13 @@ var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
 // A command with fields asks for them (shell.js's confirm): FIELD_VALUES is what the operator typed, and a required field left
-// empty keeps OK off, so nothing runs. One that asks first (shell.js's asksFirst) records its confirm and runs.
+// empty keeps OK off, so nothing runs; a field's value is typed in already. One that asks first (shell.js's asksFirst) records its confirm and runs.
 var FIELD_VALUES = {};
 function shellRun(c, o) {
   var off = c.when ? c.when(o) : true;
   if (off !== true) { OUT.toasts.push({ msg: 'off: ' + off }); return; }
   if (c.risk === 'confirm' || c.fields || asksFirst(c, o)) OUT.confirms.push(c.id);
-  var v = c.fields ? Object.fromEntries(c.fields(o).map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
+  var v = c.fields ? Object.fromEntries(c.fields(o).map(f => [f.name, String((f.name in FIELD_VALUES ? FIELD_VALUES[f.name] : f.value) || '').trim()])) : undefined;
   if (c.fields && c.fields(o).some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + c.fields(o).filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
   var msg = c.run ? c.run(o, v) : '';
   if (thenable(msg)) { settleOne(c, o, msg, { toast: shellToast }); return document.dispatchEvent(new CustomEvent('shell:ran', { detail: { cmd: c.id, obj: o.id } })); }
@@ -332,7 +332,7 @@ C.run = shellRun;
 // A command with fields asks once for the group, and every row's run gets what was typed (sd:3012).
 function shellBulk(c, objs) {
   if (handOver(c, objs, () => { OUT.cleared = (OUT.cleared || 0) + 1; })) return;
-  var fs = c.fields ? c.fields({ id: 'bulk' }) : [], v = fs.length ? Object.fromEntries(fs.map(f => [f.name, String(FIELD_VALUES[f.name] || '').trim()])) : undefined;
+  var fs = c.fields ? c.fields({ id: 'bulk' }) : [], v = fs.length ? Object.fromEntries(fs.map(f => [f.name, String((f.name in FIELD_VALUES ? FIELD_VALUES[f.name] : f.value) || '').trim()])) : undefined;
   if (c.risk === 'confirm' || fs.length || objs.length > 25 || objs.some(o => asksFirst(c, o))) OUT.confirms.push(c.id);
   if (fs.some(f => f.required && !v[f.name])) { OUT.toasts.push({ msg: 'not run: OK is off until ' + fs.filter(f => f.required && !v[f.name]).map(f => f.label).join(', ') + ' is typed' }); return; }
   OUT.bulkCli = objs.map(o => c.cli ? c.cli(o, v || {}) : '').join(' && ');

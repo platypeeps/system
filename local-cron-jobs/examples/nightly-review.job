@@ -1,0 +1,12 @@
+# Nightly review (sd:3638): settle yesterday's rulings, then one read-only
+# Sonnet run reads the past day's workflow, sessions and operations and files
+# up to five suggestions as one review batch; the operator approves or rejects
+# each in the dashboard, and the next run turns an approval into a task.
+# `local-nightly-review/README.md` has the steps and what each failure leaves.
+#
+# 06:15: after the night build, outside the 02:xx slot that needs a scheduled
+# wake. Hub only: it files into the workflow database and writes under the
+# bulk storage root. Each step is bounded; JOB_TIMEOUT bounds the whole run.
+JOB_SCHEDULE="15 6 * * *"
+JOB_TIMEOUT="30m"
+JOB_COMMAND="sh \"$ROOT/../local-nightly-review/nightly-review.sh\" run"
