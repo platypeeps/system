@@ -276,7 +276,7 @@ class ThePage(BrowserSession):
 # between the top level and run(), so run() reads what the whole flow produced.
 STAND_IN = r"""
 var window = globalThis, OUT = { posts: [], gets: [], toasts: [], confirms: [], states: [], attention: [], error: null };
-var innerWidth = 1440, location = { search: '' };
+var innerWidth = 1440, location = { search: '', replace: u => { OUT.replaced = u; } };
 function URLSearchParams(q) { var m = new Map(); (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.set(kv[0], decodeURIComponent(kv[1] || '')); });
   this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v));
   this.toString = () => [...m].map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
@@ -344,7 +344,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, post, getJSON, itemHref, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
+window.shell = { commands: C, post, getJSON, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -1851,6 +1851,14 @@ class TheFilterAddress(ScreenCase):
         self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]
         shown, _ = self.listed("?view=list&row=1055")
         self.assertIn(1055, shown)
+
+    def test_a_linked_item_tasks_does_not_list_opens_on_its_item_page(self):
+        """sd:3526: every page opens an item at /tasks?row=<n>; Tasks lists no quiet report and nothing done before the
+        week, so such an item goes on to its item page, never to the first card in its place."""
+        for row, replaced in (("4242", "/item/4242"), ("901", None)):
+            with self.subTest(row=row):
+                out = self.run_page("R.replaced = OUT.replaced || null;", search=f"?view=list&row={row}")
+                self.assertEqual(out["R"]["replaced"], replaced)
 
 
 class TheOperationsBars(ScreenCase):
