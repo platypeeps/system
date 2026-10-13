@@ -4,9 +4,13 @@
 skill's use in the last three Monday-start weeks from `skill_use`, and the use records no catalog skill explains. It
 sends no local path: the pack root and the per-file digests stay here, and a skill's source is its path inside the
 pack. `review_controls` is what the item page renders; the old screen was retired in sd:3402.
+`imported` names the GitHub source of a skill `sd skill intake` installed, which turns on the page's Re-import; the run
+itself is `skill_intake`'s, so this module still calls no git (sd:3992).
 """
 
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sd_db import skills_catalog, workflow
 
@@ -97,6 +101,7 @@ def document(connection, *, now: str) -> dict:
             "weeks": per.get(skill["name"], [0] * WEEKS),
             "modes": _modes(skill["uses"]),
             "last": last.get(skill["name"]), "revision": skill["revision"],
+            "imported": imported(Path(inventory["root"]) / skill["path"]),
         })
     return {
         "read": inventory["observed_at"],
@@ -119,3 +124,24 @@ def _attention(skills, junk) -> dict:
     unused = [skill for skill in skills if skill["status"] == "path" and not sum(skill["weeks"])]
     return attention(["caution"] * (len(unused) + (1 if junk else 0)),
                      {"caution": "unused path skills and use-record faults", "ok": "skill flags"})
+
+
+#: The line `sd skill intake` writes in a skill's trailing Provenance section (pack bin/sd_skill_intake.py
+#: PROVENANCE_LINE_RE). The page reads it only to offer Re-import; the verb reads the source again and refuses one it did not write.
+INTAKE_LINE = re.compile(r"Adopted by `sd skill intake` on \d{4}-\d{2}-\d{2} from `(https://github\.com/[^`\s]+)` "
+                         r"at revision `([0-9a-f]{40}) \(sha256:[0-9a-f]{16}\)`\.")
+PROVENANCE = "\n## Provenance\n"
+
+
+def imported(path: Path) -> dict | None:
+    """`{url, commit}` of a skill `sd skill intake` installed, from the last intake line of its one Provenance section."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    start = text.find(PROVENANCE)
+    if start == -1 or text.rfind(PROVENANCE) != start:
+        return None
+    found = [match for line in text[start + len(PROVENANCE):].splitlines() if (match := INTAKE_LINE.fullmatch(line))]
+    return {"url": found[-1][1], "commit": found[-1][2]} if found else None
+
