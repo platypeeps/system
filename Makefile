@@ -4,6 +4,13 @@
 check:
 	sh tests/check.sh run
 
+# `make test SUITE=<name>` runs one suite the way the gate runs it: the
+# preflight, then that run_suite or macOS-only line, against the pack pin in
+# .ci/pack, never the live checkout (sd:3534).
+.PHONY: test
+test:
+	sh tests/check.sh suite "$(SUITE)"
+
 # `make post-merge` runs in the hub checkout after the lane merges a PR
 # here (pack sd:3566): move the checkout to the merge, rewrite stale agent
 # prompt targets (it writes nothing current and refuses hand edits), then
