@@ -160,6 +160,18 @@ class Obsidian(Case):
         self.assertIn("  MISSING plugin dataview", result.stdout)
         self.assertNotIn("extra", result.stdout)
 
+    def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
+        # sd:3990. Kept once in <config>/shared.env, not in machine-setup.env.
+        (self.vault / ".obsidian/plugins").mkdir(parents=True)
+        (self.config / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        result = self.run_script("update", "obsidian")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  MISSING plugin dataview", result.stdout)
+
+    def test_no_vault_anywhere_is_skipped(self):
+        result = self.run_script("update", "obsidian")
+        self.assertIn("  SKIP    OBSIDIAN_VAULT not set (shared.env or the environment)", result.stdout)
+
     def test_no_vault_is_skipped(self):
         result = self.run_script("update", "obsidian", OBSIDIAN_VAULT=str(self.vault))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

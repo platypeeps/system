@@ -31,12 +31,17 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # where <config> is $SYSTEM_TOOLS_CONFIG (default ~/.config/system).
 . "$DIR/../lib/config.sh"
 st_source_env project-dashboard
-# Personal paths, the label prefix and the JEV_JOB_TRIAGE stage switch may come from .env. Export the ones set
+# The checkout root and the JEV_JOB_TRIAGE stage switch may come from .env. Export the ones set
 # so collectors.py and `install` (which copies them into the LaunchAgent) see
 # the same values this script does.
-for _name in VAULT REPO_ROOT SYSTEM_TOOLS_LABEL_PREFIX SYSTEM_TOOLS_CONFIG JEV_JOB_TRIAGE; do
+for _name in REPO_ROOT SYSTEM_TOOLS_CONFIG JEV_JOB_TRIAGE; do
   if eval "[ -n \"\${$_name:-}\" ]"; then export "$_name"; fi
 done
+# The label prefix and the vault are kept once, in <config>/shared.env (sd:3990).
+# runtime.py reads the prefix from the environment, and `sd store` the vault.
+SYSTEM_TOOLS_LABEL_PREFIX="$(st_label_prefix)"; export SYSTEM_TOOLS_LABEL_PREFIX
+OBSIDIAN_VAULT="$(st_shared OBSIDIAN_VAULT)"
+if [ -n "$OBSIDIAN_VAULT" ]; then export OBSIDIAN_VAULT; else unset OBSIDIAN_VAULT; fi
 
 cmd_tile() {
   # One tab per invocation, JSON on stdout. The five seconds and 64KB are the
@@ -244,10 +249,11 @@ environment:
                               It does not select the tiles a Resources view
                               renders -- those run under the server's
                               interpreter, below
-  VAULT                       vault path, read by collectors.py itself
-                              (default ~/Documents/Vault; set it in
+  OBSIDIAN_VAULT              vault path (default ~/Documents/Obsidian Vault;
+                              set it once in <config>/shared.env)
+  REPO_ROOT                   checkout root, read by collectors.py itself
+                              (default ~/repos; set it in
                               <config>/project-dashboard/.env)
-  REPO_ROOT                   checkout root, likewise (default ~/repos)
   SYSTEM_TOOLS_CONFIG         config root (default ~/.config/system);
                               .env and documents.conf are read from its
                               project-dashboard/, cron job files from

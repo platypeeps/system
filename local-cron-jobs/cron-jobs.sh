@@ -70,6 +70,8 @@ CONF_DIR="$(st_config_dir cron-jobs)"
 # prefix as this script. An exported value wins over the file.
 st_source_env cron-jobs
 LABEL_PREFIX="$(st_label_prefix)"
+# The prefix may sit in <config>/shared.env, which no job reads on its own.
+SYSTEM_TOOLS_LABEL_PREFIX="$LABEL_PREFIX"; export SYSTEM_TOOLS_LABEL_PREFIX
 JOBS_DIR="$CONF_DIR/jobs"
 # This machine's own jobs: jobs/<host>/, lower-cased so the folder name does
 # not depend on how the machine happens to capitalise itself. The same rule is

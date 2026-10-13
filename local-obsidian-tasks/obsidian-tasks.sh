@@ -20,9 +20,9 @@ export JEV_RUN
 
 # <config>/obsidian-tasks/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT wins.
+# OBSIDIAN_VAULT wins. The vault is kept once, in <config>/shared.env.
 st_source_env obsidian-tasks
-VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
+VAULT="$(st_obsidian_vault)"
 TASKS_SUBDIR="${OBSIDIAN_TASKS_SUBDIR:-TaskNotes/Tasks}"
 
 case "${1:-}" in

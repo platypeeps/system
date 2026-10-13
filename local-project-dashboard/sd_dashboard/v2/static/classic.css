@@ -1,8 +1,9 @@
 /* Hallmark · genre: modern-minimal · macrostructure: rail + annunciator + ledger + pane · design-system: design.md · designed-as-app
  * Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · The classic screens inside the v2 shell (sd:3586), first the item page:
  * screens.item's server-drawn forms, status history, artifact, notes and assignments, on foundation tokens. Every number is the
- * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger; then Protection: its status
- * markers and gap matrix. A later port adds its screen's components here; dashboard.css loses them in the same pull request.
+ * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger; Sessions: its worktree and
+ * process ledgers; and Protection: its status markers and gap matrix. A later port adds its screen's components here;
+ * dashboard.css loses them in the same pull request.
  */
 
 .classic .head > div { min-width: 0; }
@@ -130,6 +131,8 @@
 .classic [data-listing="trackers"] td { overflow-wrap: break-word; }
 .classic [data-listing="trackers"] td:is(.tracker-reference, :nth-child(3)) { overflow-wrap: anywhere; }
 .classic .listing-table .tracker-reference { font-family: var(--font-data); }
+/* Sessions: what a terminal prints (branch, path, PID, elapsed time, command line) reads in the data face. */
+.classic .listing-table :is(.worktree-branch, .worktree-path, .process-pid, .process-elapsed, .process-command) { font-family: var(--font-data); font-size: var(--text-xs); }
 
 /* Protection: sixteen columns scroll inside their own box, never the page. A status carries its state glyph beside its
  * colour; unknown is its own state, never the ok one, and a GAP opens to its sentence. */

@@ -538,6 +538,23 @@ class RuntimeSafety(unittest.TestCase):
             self.assertIn(name, sentence, sentence)
         self.assertNotIn("first five", sentence, sentence)
 
+    def test_the_launcher_hands_on_the_prefix_and_vault_kept_in_shared_env(self):
+        # sd:3990. The prefix and the vault sit once in <config>/shared.env;
+        # runtime.py reads the prefix, and `sd store` the vault, from the
+        # environment. A DASHBOARD_PYTHON stub prints what `tile` leaves in it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "config").mkdir()
+            (root / "config/shared.env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="org.example"\nOBSIDIAN_VAULT="/vaults/Shared"\n')
+            stub = root / "python"
+            stub.write_text('#!/bin/sh\nprintf "%s|%s" "$SYSTEM_TOOLS_LABEL_PREFIX" "$OBSIDIAN_VAULT"\n')
+            stub.chmod(0o755)
+            env = {"PATH": os.environ["PATH"], "HOME": directory, "SYSTEM_TOOLS_CONFIG": str(root / "config"),
+                   "DASHBOARD_PYTHON": str(stub)}
+            result = subprocess.run([str(runtime.HERE / "dashboard.sh"), "tile", "vault"], env=env,
+                                    capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.stdout, "org.example|/vaults/Shared", result.stderr)
+
     def test_every_runtime_python_exec_is_isolated(self):
         # Enumerated from the script, not from a list written here: a
         # subcommand added tomorrow is covered without anyone editing this
@@ -921,11 +938,11 @@ class LaunchEnvironment(unittest.TestCase):
     """The LaunchAgent carries the installing shell's personal settings."""
 
     def test_set_values_pass_through_and_unset_ones_stay_out(self):
-        values = {"VAULT": "/vaults/My Vault", "REPO_ROOT": "/checkouts"}
+        values = {"OBSIDIAN_VAULT": "/vaults/My Vault", "REPO_ROOT": "/checkouts"}
         with patch.dict(os.environ, values, clear=False):
             os.environ.pop("SYSTEM_TOOLS_LABEL_PREFIX", None)
             environment = runtime._launch_environment()
-        self.assertEqual(environment["VAULT"], "/vaults/My Vault")
+        self.assertEqual(environment["OBSIDIAN_VAULT"], "/vaults/My Vault")
         self.assertEqual(environment["REPO_ROOT"], "/checkouts")
         self.assertNotIn("SYSTEM_TOOLS_LABEL_PREFIX", environment)
         self.assertEqual(environment["SD_DASHBOARD_PYTHON"], sys.executable)

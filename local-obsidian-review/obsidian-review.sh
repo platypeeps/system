@@ -19,9 +19,9 @@ export JEV_RUN
 
 # <config>/obsidian-review/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT wins.
+# OBSIDIAN_VAULT wins. The vault is kept once, in <config>/shared.env.
 st_source_env obsidian-review
-VAULT="${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
+VAULT="$(st_obsidian_vault)"
 
 case "${1:-}" in
   run|list)

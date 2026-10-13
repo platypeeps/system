@@ -71,6 +71,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
    - An exported value wins over the file, an empty one too; `st_source_env` keeps that rule, so keep no snapshot of your own.
    - On a missing variable, fail with its name and both remedies: export it, or copy the `.example` to the config path.
    - Keep the root `.gitignore` lines for in-folder config files as a safety net.
+   - `<root>/shared.env` holds the values several tools share (`SYSTEM_TOOLS_LABEL_PREFIX`, `OBSIDIAN_VAULT`); read them with `st_shared`/`st_label_prefix` or `shared()`/`label_prefix()`, and copy them into no tool's `.env`.
    - Cron jobs are config too: `local-cron-jobs` reads `<root>/cron-jobs/jobs/`; `local-cron-jobs/examples/` is a catalogue only.
    - A job for one machine goes in `<root>/cron-jobs/jobs/<host>/`, `<host>` being the lower-cased `hostname -s`.
 4. **Data and log folders** (`storage/`, `volumes/`, `logs/`, `falkordb_data/`, `mcp_logs/`, `state/`) are gitignored contents-only, kept by `.gitkeep`; use the same pattern for new stateful services.

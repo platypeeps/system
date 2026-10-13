@@ -196,19 +196,20 @@ class TheDailyNote(Fixture):
         self.assertIn("No daily note for 2026-09-06", note["why"])
         self.assertIn("2026-09-06.md", note["why"])
 
-    def test_the_vault_comes_from_the_obsidian_tools_config_when_none_is_exported(self):
+    def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
+        # sd:3990: kept once in <config>/shared.env, not in the obsidian tools' .env files.
         os.environ.pop("OBSIDIAN_VAULT")
-        (self.config / "obsidian-tasks").mkdir(parents=True)
-        (self.config / "obsidian-tasks" / ".env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
-        self.write("2026-09-06.md", "from the tool's vault")
-        self.assertEqual(self.daily()["text"], "from the tool's vault")
+        self.config.mkdir(parents=True, exist_ok=True)
+        (self.config / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        self.write("2026-09-06.md", "from the shared vault")
+        self.assertEqual(self.daily()["text"], "from the shared vault")
 
-    def test_an_exported_empty_vault_beats_the_tools_config(self):
-        """sd:3964: the obsidian tools keep an exported empty value (st_source_env) and fall to their default."""
+    def test_an_exported_empty_vault_beats_shared_env(self):
+        """sd:3964: the obsidian tools keep an exported empty value and fall to their default, not to shared.env."""
         os.environ["OBSIDIAN_VAULT"] = ""
-        (self.config / "obsidian-tasks").mkdir(parents=True)
-        (self.config / "obsidian-tasks" / ".env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
-        self.write("2026-09-06.md", "from the tool's vault")
+        self.config.mkdir(parents=True, exist_ok=True)
+        (self.config / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        self.write("2026-09-06.md", "from the shared vault")
         with mock.patch.dict(os.environ, {"HOME": str(Path(self.tmp.name) / "home")}):
             note = self.daily()
         self.assertEqual(note["state"], "unconfigured")

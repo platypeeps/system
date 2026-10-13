@@ -102,7 +102,7 @@ with the provider they identify.
                secrets (gh secret set) to every repo under ~/repos whose
                workflows reference secrets.<NAME>. GitHub never lets a
                secret be read back, so a local salted hash of the last
-               push (.gh-secrets-state, gitignored) decides current vs
+               push (gh-secrets-state in the state folder) decides current vs
                changed. Dry run by default —
                reports per file which variables are stale, by name only,
                never showing a value; add --apply to write.
@@ -654,12 +654,12 @@ mcpServers.github.headers.Authorization=GITHUB_PERSONAL_ACCESS_TOKEN
 mcpServers.ydc-server.headers.Authorization=YDC_API_KEY'
 # GitHub Actions repo secrets that hold the same credential. GitHub's API is
 # write-only for secret values (they can never be read back), so a local
-# salted hash of what was last pushed (in .gh-secrets-state next to this
-# script, mode 600, gitignored) stands in for the comparison: hash matches ->
+# salted hash of what was last pushed (in gh-secrets-state in the tool's state
+# folder, st_state_dir, mode 600) stands in for the comparison: hash matches ->
 # current, else each name is (re-)pushed with `gh secret set` to every repo
 # under the scope whose workflows reference secrets.<NAME>.
 REFRESH_GH_SECRETS='SOCKET_SECURITY_API_KEY'
-GH_STATE="$DIR/.gh-secrets-state"
+GH_STATE="$(st_state_dir scan-for-secrets)/gh-secrets-state"
 
 if [ "$MODE" = refresh ]; then
   # Re-read ~/.bash_profile in FILE ORDER. S4S_PAIRS is sort -u'd, which is
@@ -1145,6 +1145,7 @@ sys.exit(2 if stale else 0)
           fi
           if [ "$APPLY" = 1 ]; then
             if printf '%s' "$val" | gh secret set "$name" -R "$slug" >/dev/null 2>&1; then
+              mkdir -p "${GH_STATE%/*}"
               salt=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
               hash=$(printf '%s%s' "$salt" "$val" | shasum -a 256 | cut -d' ' -f1)
               awk -v n="$name" -v s="$slug" '!($1==n && $2==s)' "$GH_STATE" 2>/dev/null \

@@ -45,6 +45,13 @@ class Location(unittest.TestCase):
         self.assertEqual(stc.config_dir("weekly-digest", env), self.home / "c/weekly-digest")
         self.assertEqual(shell("st_config_dir weekly-digest", env).stdout.strip(), str(self.home / "c/weekly-digest"))
 
+    def test_state_dir_is_the_xdg_state_folder_not_the_config_folder(self):
+        # sd:3990. Run state sat in <config>/<tool>/, where values belong.
+        self.assertEqual(shell("st_state_dir mirror-sync", self.env()).stdout.strip(),
+                         str(self.home / ".local/state/system/mirror-sync"))
+        env = self.env(XDG_STATE_HOME=str(self.home / "xs"), SYSTEM_TOOLS_CONFIG=str(self.home / "c"))
+        self.assertEqual(shell("st_state_dir mirror-sync", env).stdout.strip(), str(self.home / "xs/system/mirror-sync"))
+
     def test_config_file_sits_in_the_tool_dir_except_privacy_patterns(self):
         env = self.env(SYSTEM_TOOLS_CONFIG=str(self.home / "c"))
         self.assertEqual(shell("st_config_file notify notify.conf", env).stdout.strip(),
@@ -70,7 +77,66 @@ class LabelPrefix(unittest.TestCase):
         hits = sorted({line.split(":")[0] for line in done.stdout.splitlines()})
         # The dashboard package installs into its own venv, with no lib/ beside
         # it, so runtime.py keeps the one literal (see the comment there).
-        self.assertEqual(hits, ["lib/config.sh", "local-project-dashboard/sd_dashboard/runtime.py"])
+        self.assertEqual(hits, ["local-project-dashboard/sd_dashboard/runtime.py"])
+
+
+class SharedValues(unittest.TestCase):
+    """SYSTEM_TOOLS_LABEL_PREFIX and OBSIDIAN_VAULT live once, in <config>/shared.env (sd:3990)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.conf = self.home / "c"
+        (self.conf / "notify").mkdir(parents=True)
+        self.shared = self.conf / "shared.env"
+        self.shared.write_text('SYSTEM_TOOLS_LABEL_PREFIX="org.example"\nOBSIDIAN_VAULT="$HOME/My Vault"\n')
+        self.envv = {"PATH": os.environ["PATH"], "HOME": str(self.home), "SYSTEM_TOOLS_CONFIG": str(self.conf)}
+
+    def test_both_languages_read_the_prefix_and_the_vault_from_the_file(self):
+        self.assertEqual(shell("st_label_prefix", self.envv).stdout.strip(), "org.example")
+        self.assertEqual(stc.label_prefix(self.envv), "org.example")
+        want = f"{self.home}/My Vault"
+        self.assertEqual(shell("st_shared OBSIDIAN_VAULT", self.envv).stdout.strip(), want)
+        self.assertEqual(shell("st_obsidian_vault", self.envv).stdout.strip(), want)
+        self.assertEqual(stc.shared("OBSIDIAN_VAULT", self.envv), want)
+        self.assertEqual(stc.obsidian_vault(self.envv), Path(want))
+
+    def test_an_exported_value_wins_over_the_file_an_empty_one_too(self):
+        env = dict(self.envv, SYSTEM_TOOLS_LABEL_PREFIX="other.example", OBSIDIAN_VAULT="")
+        self.assertEqual(shell("st_label_prefix", env).stdout.strip(), "other.example")
+        self.assertEqual(stc.label_prefix(env), "other.example")
+        self.assertEqual(shell("st_shared OBSIDIAN_VAULT", env).stdout, "\n")
+        self.assertEqual(stc.shared("OBSIDIAN_VAULT", env), "")
+
+    def test_a_tool_env_file_still_overrides_the_shared_one(self):
+        # Older state: a tool .env that still sets the prefix keeps winning.
+        (self.conf / "notify/.env").write_text("SYSTEM_TOOLS_LABEL_PREFIX=old.example\n")
+        done = shell("st_source_env notify; st_label_prefix", self.envv)
+        self.assertEqual(done.stdout.strip(), "old.example")
+
+    def test_without_the_file_the_defaults_hold(self):
+        self.shared.unlink()
+        self.assertEqual(shell("st_label_prefix", self.envv).stdout.strip(), "local.system-tools")
+        self.assertEqual(stc.label_prefix(self.envv), "local.system-tools")
+        self.assertEqual(shell("st_obsidian_vault", self.envv).stdout.strip(),
+                         f"{self.home}/Documents/Obsidian Vault")
+        self.assertEqual(stc.obsidian_vault(self.envv), self.home / "Documents/Obsidian Vault")
+
+    def test_a_file_that_does_not_source_is_named_not_taken_for_empty(self):
+        self.shared.write_text('OBSIDIAN_VAULT="unterminated\n')
+        done = shell("st_shared OBSIDIAN_VAULT", self.envv)
+        self.assertEqual(done.stdout.strip(), "")
+        self.assertIn(str(self.shared), done.stderr)
+
+    def test_config_file_maps_shared_env_to_the_root(self):
+        self.assertEqual(shell("st_config_file config-check shared.env", self.envv).stdout.strip(),
+                         str(self.shared))
+
+    def test_the_file_does_not_leak_other_names_into_the_caller(self):
+        self.shared.write_text("OTHER=1\nOBSIDIAN_VAULT=/v\n")
+        done = shell('st_shared OBSIDIAN_VAULT >/dev/null; printf "%s" "${OTHER-unset}"', self.envv)
+        self.assertEqual(done.stdout, "unset")
 
 
 class EnvFile(unittest.TestCase):

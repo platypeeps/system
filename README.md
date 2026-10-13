@@ -33,7 +33,8 @@ with the public command pack
 - Docker `update` subcommands delete images by ID, listed with
   `docker images -aq --filter "reference=<repo>"`.
 - launchd labels share one prefix, read from `SYSTEM_TOOLS_LABEL_PREFIX`
-  (default `local.system-tools`).
+  (default `local.system-tools`); it and `OBSIDIAN_VAULT` are kept once, in
+  `<config>/shared.env`.
 
 ## Getting started
 
