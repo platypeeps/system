@@ -13,7 +13,10 @@ reader (`read.js`). The browser half -- the look at 1440 and 375 px, the confirm
 
 from __future__ import annotations
 
+import html
+import inspect
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -24,7 +27,7 @@ from unittest import mock
 from sd_db import skills_catalog
 from sd_db.writes import record_skill_use
 
-from sd_dashboard import server, skills_screen, v2
+from sd_dashboard import server, skill_intake, skills_screen, v2
 
 from support import ScreenCase
 from test_v2_read import READ_SHELL
@@ -49,6 +52,7 @@ COMMANDS = [
     ["skill.review", "skill", "Review", "v", "confirm"],
     ["skill.promote", "skill", "Promote", "p", "safe"],
     ["skill.demote", "skill", "Demote", "d", "confirm"],
+    ["skill.reimport", "skill", "Re-import", "i", "safe"],
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
     ["skill.apply", "skill", "Apply", "a", "confirm"],
     ["skill.scan", "use surfaces", "Scan", "s", "safe"],
@@ -115,6 +119,16 @@ class TheDocument(Pack, ScreenCase):
         catalog = {s["name"]: s["revision"] for s in skills_catalog.catalog(self.connection, now=NOW)["skills"]}
         self.assertEqual({s["name"]: s["revision"] for s in doc["skills"]}, catalog)
 
+    def test_a_skill_installed_by_intake_names_its_source(self):
+        """sd:3992: the Re-import control is on for a skill whose trailing Provenance holds the intake's line, and off for the rest."""
+        line = f"Adopted by `sd skill intake` on 2026-10-13 from `{URL}` at revision `{'c' * 40} (sha256:{'d' * 16})`."
+        (self.root / "contrib/sd-extra/SKILL.md").write_text(SKILL.format(name="sd-extra") + f"\n## Provenance\n\n{line}\n")
+        # sd-skill-adopt's own line, and the intake's line planted in the body above Provenance, name no intake source.
+        (self.root / "skills/sd-idle/SKILL.md").write_text(SKILL.format(name="sd-idle") + f"\n{line}\n\n## Provenance\n\n"
+                                                           "Adopted by `sd-skill-adopt` on 2026-10-13 from `/tmp/x` at revision `abc`.\n")
+        by = {s["name"]: s["imported"] for s in skills_screen.document(self.connection, now=NOW)["skills"]}
+        self.assertEqual(by, {"sd-extra": {"url": URL, "commit": "c" * 40}, "sd-idle": None, "sd-used": None})
+
     def test_the_document_writes_nothing(self):
         before = self.connection.total_changes
         skills_screen.document(self.connection, now=NOW)
@@ -162,6 +176,150 @@ class ThePage(Pack, BrowserSession):
         self.assertEqual(self.post("/api/skills/sd-extra/try", {"revision": skill["revision"]})[0], 200)
         again = next(s for s in json.loads(self.request("/api/skills", headers=cookie)[2])["skills"] if s["name"] == "sd-extra")
         self.assertEqual(again["status"], "trial")
+
+
+URL = "https://github.com/example/skills/tree/main/sd-example"
+REVISION = "0123456789abcdef"
+#: What `sd skill intake --json` prints (pack bin/sd_skill_intake.py `intake`): a re-import with one warning and a diff.
+REPORT = {"url": URL, "commit": "a" * 40, "scope": "pack", "skill": "sd-example", "destination": "/pack/contrib/sd-example",
+          "mode": "re-import", "installed_commit": "b" * 40, "files": {"SKILL.md": "100644"},
+          "risk": [{"severity": "warn", "rule": "ships-script", "file": "run.sh", "line": 0}],
+          "match": [{"skill": "sd-used", "overlap": 0.12}], "value": {"instruction_lines": 9, "novelty": 0.88},
+          "verdict": {"action": "install", "reason": "no refusal, enough instructions, no close match"},
+          "diff": ["--- installed/SKILL.md", "+++ upstream/SKILL.md", "@@ -1 +1 @@", "-old line", "+new line"],
+          "revision": REVISION, "recovered": [], "installed": False}
+#: A stand-in `sd`: it records its arguments, one per line, then prints INTAKE_OUT on stdout or stderr and exits INTAKE_EXIT.
+STUB_SD = """#!/bin/sh
+for arg in "$@"; do printf '%s\\n' "$arg"; done > "$INTAKE_ARGS"
+[ -z "$INTAKE_SLEEP" ] || exec sleep "$INTAKE_SLEEP"
+if [ "${INTAKE_EXIT:-0}" = 0 ]; then printf '%s' "$INTAKE_OUT"; else printf '%s\\n' "$INTAKE_OUT" >&2; fi
+exit "${INTAKE_EXIT:-0}"
+"""
+
+
+#: A source URL that runs commands if a shell reads it unquoted: `$( )`, backticks and `;`, then a `'`.
+#: Each command touches a file in `folder`. `tick=False` drops the backtick part, which the route refuses on its own;
+#: `quote=False` drops the `'`, whose unbalanced quote would stop sh before the other parts run.
+def hostile(folder, tick=True, quote=True):
+    touch = "touch${IFS}%s/" % folder
+    url = f"https://github.com/o/r/tree/main/x$({touch}p1)" + (f"`{touch}p2`" if tick else "") + f";{touch}p3"
+    return url + (";'q" if quote else "")
+
+
+def shell_argv(case, line, folder):
+    """The arguments `sd` or `claude` gets when the operator pastes `line` into sh; nothing else may run."""
+    stubs = 'sd() { printf "%s\\0" "$@"; }; claude() { printf "%s\\0" "$@"; }; '
+    done = subprocess.run(["sh", "-c", stubs + line], cwd=folder, capture_output=True, text=True, timeout=10, check=False)
+    case.assertEqual(sorted(os.listdir(folder)), [], f"pasting {line!r} ran a command")
+    case.assertEqual(done.returncode, 0, done.stderr)
+    return done.stdout.split("\0")[:-1]
+
+
+def scratch(case):
+    folder = Path(tempfile.mkdtemp(prefix="intake-")).resolve()
+    case.addCleanup(lambda: subprocess.run(["rm", "-rf", str(folder)], check=False))
+    return folder
+
+
+class TheIntakeRoute(Pack, BrowserSession):
+    """POST /api/skills/intake runs `sd skill intake` once, as an argv list, and installs only with --approve (sd:3992)."""
+
+    def setUp(self):
+        super().setUp()
+        self.make_pack()
+        folder = Path(tempfile.mkdtemp(prefix="intake-")).resolve()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(folder)], check=False))
+        self.args = folder / "args"
+        stub = folder / "sd"
+        stub.write_text(STUB_SD)
+        stub.chmod(0o755)
+        patcher = mock.patch.object(skill_intake, "command", lambda name: str(stub) if name == "sd" else name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def intake(self, payload, *, out=None, code=0):
+        environment = {"INTAKE_ARGS": str(self.args), "INTAKE_OUT": json.dumps(REPORT) if out is None else out, "INTAKE_EXIT": str(code)}
+        with mock.patch.dict(os.environ, environment):
+            status, _, body = self.post("/api/skills/intake", payload)
+        argv = self.args.read_text().splitlines() if self.args.exists() else None
+        if self.args.exists():
+            self.args.unlink()
+        return status, body, argv
+
+    def test_reimport_runs_intake_on_the_skill_name_and_answers_its_report(self):
+        status, body, argv = self.intake({"source": "sd-extra"})
+        self.assertEqual(argv, ["skill", "intake", "--json", "--", "sd-extra"])
+        self.assertEqual((status, body["revision"], body["verdict"]["action"]), (200, REVISION, "install"))
+
+    def test_a_github_url_runs_with_the_scope_the_form_chose(self):
+        status, _, argv = self.intake({"source": URL, "scope": "user"})
+        self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--scope", "user", "--", URL]))
+
+    def test_approve_passes_the_exact_revision_the_report_printed(self):
+        status, _, argv = self.intake({"source": URL, "scope": "pack", "approve": REVISION}, out=json.dumps(dict(REPORT, installed=True)))
+        self.assertEqual(status, 200)
+        self.assertEqual(argv, ["skill", "intake", "--json", "--scope", "pack", "--approve", REVISION, "--", URL])
+
+    def test_a_source_that_is_not_a_github_url_or_a_skill_name_is_refused_and_runs_nothing(self):
+        for source in ("http://github.com/example/skills", "https://github.com.example.test/example/skills",
+                       "https://example.test/example/skills", "https://github.com/example/sk ills", "https://github.com/a`b",
+                       "https://github.com/", "--approve", "file:///etc/passwd", "git@github.com:example/skills.git",
+                       "../sd-extra", "", 7, None):
+            with self.subTest(source=source):
+                status, body, argv = self.intake({"source": source})
+                self.assertEqual(status, 400)
+                self.assertIn("https://github.com/", body["error"])
+                self.assertIsNone(argv, "a refused source still ran sd")
+
+    def test_nothing_installs_without_an_approve_that_names_a_revision(self):
+        for payload in ({"source": "sd-extra"}, {"source": URL}, {"source": URL, "scope": "pack"}):
+            with self.subTest(payload=payload):
+                self.assertNotIn("--approve", self.intake(payload)[2])
+        for payload in ({"source": URL, "scope": "pack", "approve": ""}, {"source": URL, "scope": "pack", "approve": "yes"},
+                        {"source": URL, "scope": "pack", "approve": REVISION + "0"}, {"source": URL, "approve": REVISION},
+                        {"source": "sd-extra", "scope": "pack", "approve": REVISION}, {"source": URL, "scope": "all"},
+                        {"source": URL, "install": True}, {"revision": REVISION}):
+            with self.subTest(payload=payload):
+                status, _, argv = self.intake(payload)
+                self.assertEqual((status, argv), (400, None))
+
+    def test_a_refused_or_failed_run_says_what_is_known(self):
+        status, body, _ = self.intake({"source": "sd-extra"}, out="sd: no installed skill sd-extra records a GitHub source; give its URL", code=1)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "Not evaluated: no installed skill sd-extra records a GitHub source; give its URL")
+        stale = f"sd: approved revision {REVISION} is not this report's fedcba9876543210: the source, the target or the installed copy changed; nothing written"
+        status, body, _ = self.intake({"source": URL, "scope": "pack", "approve": REVISION}, out=stale, code=1)
+        self.assertEqual((status, body.get("reload")), (409, True))
+        refused = "sd: a refusal blocks the install (ships-hook-config); nothing written"
+        status, body, _ = self.intake({"source": URL, "scope": "pack", "approve": REVISION}, out=refused, code=1)
+        self.assertEqual((status, body["error"]), (400, "Not installed: a refusal blocks the install (ships-hook-config); nothing written"))
+        # An approve that failed any other way, or printed no report, may have moved files: not known, not "not installed".
+        for out, code in (("sd: [Errno 28] No space left on device", 1), ("not json", 0)):
+            with self.subTest(out=out):
+                status, body, _ = self.intake({"source": URL, "scope": "pack", "approve": REVISION}, out=out, code=code)
+                self.assertEqual((status, body["outcome"]), (502, "unknown"))
+                self.assertIn("Evaluate again", body["error"])
+
+    def test_the_run_is_sd_skill_intake_alone_and_the_screen_still_calls_no_process(self):
+        """test_skill_states keeps `skills_screen` free of process calls; the one run lives here and names no git or gh."""
+        source = inspect.getsource(skill_intake)
+        self.assertIsNone(re.search(r'--method|git push|pr create|"gh"|"git"|shell=True', source))
+        self.assertEqual(source.count("subprocess.run("), 1)
+        self.assertIn('[command("sd"), "skill", "intake", "--json"', source)
+
+    def test_a_url_with_shell_syntax_reaches_sd_as_one_literal_argument(self):
+        folder = scratch(self)
+        status, _, argv = self.intake({"source": hostile(folder), "scope": "pack"})
+        self.assertEqual((status, argv), (400, None))
+        url = hostile(folder, tick=False)
+        status, _, argv = self.intake({"source": url, "scope": "pack", "approve": REVISION}, out=json.dumps(dict(REPORT, installed=True)))
+        self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--scope", "pack", "--approve", REVISION, "--", url]))
+        self.assertEqual(os.listdir(folder), [], "the route ran the URL through a shell")
+
+    def test_a_run_past_its_bound_is_unknown_for_an_approve(self):
+        with mock.patch.object(skill_intake, "INTAKE_SECONDS", 0.5), mock.patch.dict(os.environ, {"INTAKE_SLEEP": "5"}):
+            status, body, _ = self.intake({"source": URL, "scope": "pack", "approve": REVISION})
+        self.assertEqual((status, body["outcome"]), (502, "unknown"))
 
 
 SHELL_MORE = r"""
@@ -319,6 +477,105 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         self.assertIn("claude 7 · codex 1", out["R"]["surfaces"])
         self.assertNotIn("3DPrinter", out["R"]["hygiene"])
 
+    # sd:3992: Re-import runs `sd skill intake` on an imported skill, shows its report, and offers Approve only after one.
+    INTAKE = ("(path, body) => path === '/api/skills' ? [200, DOC] : path === '/api/skills/intake' ? [200, Object.assign({}, %s,"
+              " { installed: !!(body && body.approve) })] : [200, {}]")
+    CLICK_APPROVE = "ELS.details.listeners.click.forEach(f => f({ target: { closest: s => s === '[data-approve]' ? { dataset: {} } : null } }));"
+
+    def imported(self, report=None):
+        """sd-extra installed by intake; the stand-in server's answer, with the report it gives."""
+        next(s for s in self.doc["skills"] if s["name"] == "sd-extra")["imported"] = {"url": URL, "commit": "b" * 40}
+        return self.INTAKE % json.dumps(report or REPORT)
+
+    def test_reimport_is_on_only_for_a_skill_intake_installed(self):
+        self.imported()
+        out = self.run_page("R.off = [cmd('skill.reimport').when(C.get('sd-extra')), cmd('skill.reimport').when(C.get('sd-used'))];"
+                            " R.cli = cmd('skill.reimport').cli(C.get('sd-extra'));")
+        self.assertEqual(out["R"]["off"], [True, "not installed by sd skill intake"])
+        self.assertEqual(out["R"]["cli"], "sd skill intake 'sd-extra'")
+
+    def test_reimport_shows_the_report_and_approve_posts_the_exact_revision(self):
+        answer = self.imported()
+        out = self.run_page("open('sd-extra'); R.before = ELS.details.html; shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush();"
+                            " R.slot = ELS['intake-slot'].html; R.posts = OUT.posts.length; " + self.CLICK_APPROVE + " await flush();"
+                            " R.after = ELS['intake-slot'].html;", answer=answer)
+        self.assertNotIn("data-approve", out["R"]["before"], "Approve showed before any report")
+        self.assertEqual(out["posts"][0], ["/api/skills/intake", {"source": "sd-extra"}, 64])
+        slot = out["R"]["slot"]
+        for shown in ("ships-script", "run.sh", "sd-used 0.12", "9 instruction lines", "novelty 0.88", "install",
+                      "no refusal, enough instructions, no close match", "-old line", "+new line", "re-import"):
+            self.assertIn(shown, slot)
+        self.assertEqual(re.findall(r"<button[^>]*data-approve[^>]*>([^<]*)", slot), [f"Approve revision {REVISION}"])
+        self.assertEqual(out["confirms"], ["skill.intake.approve"])
+        self.assertEqual(out["posts"][1], ["/api/skills/intake", {"source": URL, "scope": "pack", "approve": REVISION}, 64])
+        self.assertEqual(out["R"]["posts"], 1, "the report posted an approve on its own")
+        self.assertNotIn("data-approve", out["R"]["after"], "Approve stayed after the install")
+        self.assertEqual(out["toasts"][-1], [f"Installed sd-example at revision {REVISION}", False])
+
+    def test_no_approve_without_a_report_that_can_install(self):
+        refused = dict(REPORT, risk=[{"severity": "refuse", "rule": "ships-hook-config", "file": "hooks.json", "line": 0}],
+                       verdict={"action": "decline", "reason": "refused: ships-hook-config"})
+        for name, report in (("refused", refused), ("unchanged", dict(REPORT, mode="unchanged", diff=[])),
+                             ("blocked", dict(REPORT, mode="blocked", diff=[]))):
+            with self.subTest(report=name):
+                out = self.run_page("shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush();"
+                                    " R.slot = ELS['intake-slot'].html; " + self.CLICK_APPROVE + " await flush();", answer=self.imported(report))
+                self.assertIn(report["verdict"]["reason"], out["R"]["slot"])
+                self.assertNotIn("data-approve", out["R"]["slot"])
+                self.assertEqual(len(out["posts"]), 1)
+        self.imported()
+        answer = "(path) => path === '/api/skills' ? [200, DOC] : [400, { error: 'Not evaluated: git fetch failed' }]"
+        out = self.run_page("shellRun(cmd('skill.reimport'), C.get('sd-extra')); await flush(); R.slot = ELS['intake-slot'].html;", answer=answer)
+        self.assertIn("Not evaluated: git fetch failed", out["R"]["slot"])
+        self.assertNotIn("data-approve", out["R"]["slot"])
+
+    # The lines the operator copies quote every value (sd:3992 review): pasted into sh, each runs sd with the URL as one argument.
+    OPEN_ADOPT = ("ELS.details.querySelector = s => s[0] === '#' ? document.getElementById(s.slice(1)) : El('x');"
+                  " ELS['adopt-btn'].listeners.click[0](); ELS['ad-src'].value = %s; ELS['ad-scope'].value = 'user';"
+                  " ELS['ad-src'].listeners.input[0]();")
+
+    def test_the_adopt_panel_lines_quote_the_url(self):
+        folder = scratch(self)
+        for url in (hostile(folder, quote=False), hostile(folder)):
+            self.adopt_lines(url, folder)
+
+    def adopt_lines(self, url, folder):
+        out = self.run_page(self.OPEN_ADOPT % json.dumps(url) + " R.intake = ELS['ad-intake'].textContent;"
+                            " R.copy = ELS['ad-intake-copy'].dataset.copy; R.adopt = ELS['ad-cli'].textContent;")
+        self.assertEqual(out["R"]["copy"], out["R"]["intake"])
+        self.assertEqual(shell_argv(self, out["R"]["intake"], folder), ["skill", "intake", url, "--scope", "user"])
+        self.assertEqual(shell_argv(self, out["R"]["adopt"], folder), ["-p", "/sd-skill-adopt o/r/" + url.split("/main/", 1)[1]])
+
+    def test_the_report_line_and_the_approve_confirm_quote_the_url(self):
+        for quote in (False, True):
+            for name in ("approvable", "unchanged"):
+                with self.subTest(report=name, quote=quote):
+                    folder = scratch(self)
+                    self.report_lines(name, hostile(folder, quote=quote), folder)
+
+    def report_lines(self, name, url, folder):
+        if name == "approvable":
+            report, want = dict(REPORT, url=url), ["skill", "intake", url, "--scope", "pack", "--approve", REVISION]
+        else:
+            report, want = dict(REPORT, url=url, mode="unchanged", diff=[]), ["skill", "intake", url, "--scope", "pack"]
+        body = (self.OPEN_ADOPT % json.dumps(url) + " ELS['ad-scope'].value = 'pack';"
+                " ELS['adopt-form'].listeners.submit[0]({ preventDefault() {} }); await flush(); R.slot = ELS['intake-slot'].html;"
+                " const run = C.run; C.run = (c, o) => { R.confirm = c.cli(o); return run(c, o); }; " + self.CLICK_APPROVE + " await flush();")
+        out = self.run_page(body, answer=self.INTAKE % json.dumps(report))
+        self.assertEqual(out["posts"][0], ["/api/skills/intake", {"source": url, "scope": "pack"}, 64])
+        copied = [html.unescape(c) for c in re.findall(r'data-copy="([^"]*)"', out["R"]["slot"])]
+        self.assertEqual([shell_argv(self, line, folder) for line in copied], [want])
+        if name == "approvable":
+            self.assertEqual(shell_argv(self, out["R"]["confirm"], folder), want)
+        else:
+            self.assertNotIn("confirm", out["R"])
+
+    def test_the_reimport_line_quotes_the_name(self):
+        folder = scratch(self)
+        for name in (hostile(folder, quote=False), hostile(folder)):
+            out = self.run_page("R.cli = cmd('skill.reimport').cli({ id: %s });" % json.dumps(name))
+            self.assertEqual(shell_argv(self, out["R"]["cli"], folder), ["skill", "intake", name])
+
     def test_the_script_adds_no_sink_no_inline_style_and_no_reader_of_its_own(self):
         self.assertNotIn("innerHTML", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"style=\\?\"")
@@ -330,7 +587,7 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "skills", "Skills", "/skills", ("/api/skills",)
+    page, section, route, api = "skills", "Skills", "/skills", ("/api/skills", "/api/skills/intake")
 
 
 if __name__ == "__main__":

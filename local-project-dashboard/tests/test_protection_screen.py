@@ -3,10 +3,12 @@ unknown with no gap cells, and a settings link only for a github.com remote."""
 
 import json
 import re
+from pathlib import Path
 
 from sd_db import upsert_repo
 from support import ScreenCase
 
+from sd_dashboard import v2
 from sd_dashboard.protection_screen import APPLICABLE, FLAGS, GAPS
 
 AT = "2026-09-11T02:45:00Z"
@@ -64,7 +66,28 @@ class ProtectionScreen(ScreenCase):
         self.assertIn('class="status protection-unprotected">unprotected<', body)
         self.assertIn('class="status protection-unknown">unknown<', body)
         self.assertIn("1 protected · 1 unprotected · 2 unknown · last observed 2026-09-11T02:46:00Z", body)
-        self.assertIn("<title>Protection — sd</title>", body)
+        self.assertIn("<title>Protection · system</title>", body)
+
+    def test_the_page_renders_inside_the_v2_shell(self):
+        """sd:3586 PR 4: Protection is a v2 shell page under Management, which links it as the gap matrix."""
+        self.fleet()
+        body = self.render("/protection")
+        self.assertIn('<body data-page="Management" data-scope="management">', body)
+        self.assertIn('<div class="shell"><main id="main" class="classic">', body)
+        for asset in ("tokens.css", "shell.css", "classic.css", "shell.js"):
+            self.assertRegex(body, rf'"/ui/{re.escape(asset)}\?v=[0-9a-f]{{16}}"', asset)
+        self.assertNotIn("/static/dashboard.css", body)
+        self.assertNotIn('class="nav"', body)
+        self.assertEqual(body.count("<h1>"), 1)
+        self.assertEqual(len(self.rows(body)), 4)
+        # The page lists no CLI equivalents, as the classic page did not.
+        self.assertNotIn("cli-equivalents", body)
+        # Its rules moved from dashboard.css to the shell's classic.css, with a state glyph beside each colour.
+        static = Path(v2.__file__).resolve().parent.parent / "static"
+        self.assertNotRegex((static / "dashboard.css").read_text(encoding="utf-8"), r"\.protection-|column-meta")
+        classic = (Path(v2.__file__).resolve().parent / "static/classic.css").read_text(encoding="utf-8")
+        for status, glyph in (("protected", "●"), ("unprotected", "■"), ("unknown", "▨")):
+            self.assertRegex(classic, rf'\.protection-{status}::before[^{{]*{{ content: "{glyph} "; }}', status)
 
     def test_unprotected_sorts_first_then_unknown_then_protected(self):
         self.fleet()
@@ -189,8 +212,9 @@ class ProtectionScreen(ScreenCase):
 
     def test_nav_names_protection_and_an_empty_registry_says_what_to_do(self):
         body = self.render("/protection")
-        self.assertIn('href="/protection"', body)
-        self.assertIn(">Protection</a>", body)
+        # The shell draws the rail, so the page holds no server nav; the palette's Classic screens and the classic
+        # nav still name it (sd:3586).
+        self.assertEqual(v2.SCREENS["Protection"], "/protection")
         self.assertIn("No repositories registered", body)
         self.assertIn("0 protected · 0 unprotected · 0 unknown · last observed never", body)
         self.assertIn(">Protection</a>", self.render("/classic/contributions"))
