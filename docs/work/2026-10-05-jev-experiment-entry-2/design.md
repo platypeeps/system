@@ -201,7 +201,7 @@ Plan-time cross-tab of entry 1's readings (extraction A, population E) against b
 | `deep` | `deep` | 291 | 137 |
 
 The label is written to the experiment ledger only with `label`, source `review-blocking-at-head`.
-`source:local-sd-db/sd_db/judgment.py::label` refuses a comparison-arm row, so a pair's label sits on its Jev row.
+`label` in the command pack's `lib/sd_db/judgment.py` refuses a comparison-arm row, so a pair's label sits on its Jev row.
 
 ### Blinded hand labels second
 

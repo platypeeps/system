@@ -84,7 +84,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 Deliberate deviations:
 
-- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-opentelemetry-traces` runs the generator; `local-agent-meter` appends a reading.
+- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-agent-meter` appends a reading.
 - Bash, not POSIX sh: `local-cswap` and `tests/ci-native.sh`.
 - Compose, not `--rm` and `docker run`: `local-genai-traces` (`restart: unless-stopped`, to stay always on), `local-graphiti-mcp` and `mezmo-aura`.
 - Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.

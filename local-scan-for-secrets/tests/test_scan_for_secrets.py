@@ -338,7 +338,7 @@ class MaskRewrite(unittest.TestCase):
     """`mask --apply` masks in place, same length, same inode (sd:3042).
 
     One test per row of the failure table in
-    docs/work/2026-10-08-mask-rewrite/design.md. Every file here is a
+    `git show 8aef46ba:docs/work/2026-10-08-mask-rewrite/design.md`. Every file here is a
     synthetic fixture in a temporary folder.
     """
 

@@ -6,9 +6,8 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 4317/4318 belong to local-opentelemetry-collector and 4327/4328 to
-# local-jaeger; 6006 is local-phoenix's. This service takes the next free set
-# so all of them can run at once.
+# 4317/4318 belong to local-opentelemetry-collector. This service takes the
+# next free set so both can run at once.
 GENAI_TRACES_GRPC_PORT="${GENAI_TRACES_GRPC_PORT:-4337}"
 GENAI_TRACES_HTTP_PORT="${GENAI_TRACES_HTTP_PORT:-4338}"
 GENAI_TRACES_UI_PORT="${GENAI_TRACES_UI_PORT:-6016}"

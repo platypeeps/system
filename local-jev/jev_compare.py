@@ -3,7 +3,7 @@ that just went to Jev, and write down how each answered.
 
 `jev.py` starts this as a detached child process before its own request goes
 out, and never waits for it. The caller's answer, exit code and wait are
-Jev's alone; see `docs/work/2026-10-01-kev-and-haiku-arms/design.md` for why a
+Jev's alone; see `git show 8aef46ba:docs/work/2026-10-01-kev-and-haiku-arms/design.md` for why a
 detached child and not a bounded wait.
 
 **It only records.** No answer from here reaches a caller. Each arm writes one
