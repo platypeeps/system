@@ -354,11 +354,12 @@ backup_file() { # path
 # checkout: without one, an overwrite had no way back (sd:3546). A file git
 # tracks with no uncommitted change is left to git; any other gets the dated
 # copy, and one that cannot be made stops the write. A failed git probe
-# counts as not held.
+# counts as not held, and so does a symlink: git holds its target path, and
+# capture writes through it into the target.
 capture_backup() { # path
   [ -e "$1" ] || return 0
   cb_dir=$(dirname "$1"); cb_name=$(basename "$1")
-  if command -v git >/dev/null 2>&1 \
+  if [ ! -L "$1" ] && command -v git >/dev/null 2>&1 \
       && git -C "$cb_dir" ls-files --error-unmatch -- "$cb_name" >/dev/null 2>&1 \
       && git -C "$cb_dir" diff --quiet HEAD -- "$cb_name" >/dev/null 2>&1; then
     return 0

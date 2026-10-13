@@ -101,7 +101,7 @@ class CaptureBackup(unittest.TestCase):
         self.assertEqual(self.copies(self.brew), [])
         self.assertEqual(self.copies(self.dotfile), [])
 
-    def test_a_file_git_tracks_unedited_keeps_no_copy(self):
+    def commit_config(self):
         (self.stubs / "git").unlink()
         git = ["git", "-C", str(self.config_root)]
         subprocess.run([*git, "init", "-q"], check=True)
@@ -109,10 +109,26 @@ class CaptureBackup(unittest.TestCase):
                         "add", "-A"], check=True)
         subprocess.run([*git, "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
                         "commit", "-qm", "seed"], check=True)
+
+    def test_a_file_git_tracks_unedited_keeps_no_copy(self):
+        self.commit_config()
         self.capture()
         self.assertIn("new-formula", self.brew.read_text())
         self.assertEqual(self.copies(self.brew), [])
         self.assertEqual(self.copies(self.dotfile), [])
+
+    def test_a_tracked_symlink_keeps_a_copy_of_what_it_points_at(self):
+        # git holds the link's target path, not the file capture writes
+        # through it into.
+        target = pathlib.Path(self.tmp.name) / "outside/.gitconfig"
+        target.parent.mkdir()
+        target.write_text("[user]\n\tname = old\n")
+        self.dotfile.unlink()
+        self.dotfile.symlink_to(target)
+        self.commit_config()
+        self.capture()
+        self.assertEqual(target.read_text(), "[user]\n\tname = new\n")
+        self.assertEqual([p.read_text() for p in self.copies(self.dotfile)], ["[user]\n\tname = old\n"])
 
 
 if __name__ == "__main__":
