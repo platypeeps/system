@@ -2,9 +2,9 @@
  * Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · The classic screens inside the v2 shell (sd:3586), first the item page:
  * screens.item's server-drawn forms, status history, artifact, notes and assignments, on foundation tokens. Every number is the
  * item's own rows. Then Operations > Trackers: its view toggles, sync health and tracker ledger; Sessions: its worktree and
- * process ledgers; Protection: its status markers and gap matrix; and Usage, Services and Resources: tiles, bill cards,
- * gauges and burn charts, service cards and the collectors' fact lists. A later port adds its screen's components here;
- * dashboard.css loses them in the same pull request.
+ * process ledgers; Protection: its status markers and gap matrix; Usage, Services and Resources: tiles, bill cards, gauges
+ * and burn charts, service cards and the collectors' fact lists; and Contributions (classic): its cards. The last of them
+ * retired v1's stylesheet: every server-drawn screen reads this file.
  */
 
 .classic .head > div { min-width: 0; }

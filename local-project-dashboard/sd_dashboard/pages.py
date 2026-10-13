@@ -1,9 +1,9 @@
-"""The page chrome: one layout, one stylesheet, one script.
+"""The page chrome for the server-drawn screens: the v2 shell around them (sd:3586), and one script.
 
 Requirement 5's "no build step" is a construction here, not a check. There is
 no template engine, no framework and no bundler: a page is `markup.tag` calls,
-the stylesheet is one hand-written file and the script is one hand-written
-file, both served from disk. Criterion 12 asserts the folder holds no
+styled by the shell's hand-written `/ui/` stylesheets, with one hand-written
+script beside the shell's, all served from disk. Criterion 12 asserts the folder holds no
 `package.json`, no `node_modules` and no bundler config, and there is nothing
 in this module that would want one.
 
@@ -16,46 +16,15 @@ a policy the browser enforces whatever slipped the filter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 from html import unescape
 
 from . import caching
 from .caching import STATIC_VERSIONS
 from .markup import Markup, join, tag
-from .v2 import SECTIONS as PORTED
 from .v2 import VERSIONS as UI_VERSIONS
 
-__all__ = ["SECTIONS", "Section", "page", "shell_page", "tile", "command_hint"]
-
-
-@dataclass(frozen=True)
-class Section:
-    key: str
-    label: str
-    #: A section the v2 page registry ports links that page instead (sd:2473),
-    #: so only an unported section names its path here.
-    path: str = ""
-    #: Only working destinations appear in navigation.
-    built: bool = True
-    #: Item is a section and not a destination: it is one item, reached from a
-    #: row. A nav link to `/item` would be a link to a 404, which is worse
-    #: than no link.
-    in_nav: bool = True
-
-
-SECTIONS = (
-    Section("today", "Today"),
-    Section("backlog", "Tasks"),
-    Section("contributions", "Contributions"),
-    Section("writing", "Writing"),
-    Section("operations", "Operations", "/operations"),
-    Section("protection", "Protection", "/protection"),
-    Section("item", "Item", "/item/<id>", in_nav=False),
-    Section("skills", "Skills"),
-    Section("documents", "Documents"),
-    Section("designs", "Designs"),
-)
+__all__ = ["shell_page", "tile", "command_hint"]
 
 
 def command_hint(command: str) -> Markup:
@@ -91,66 +60,6 @@ def tile(label: str, value: object, *, detail: Markup | None = None, href: str |
             )
         )
     return tag("div", join(body), class_="tile")
-
-
-def navigation(current: str) -> Markup:
-    links = []
-    for section in SECTIONS:
-        if not section.in_nav:
-            continue
-        if not section.built:
-            continue
-        links.append(
-            tag(
-                "a",
-                section.label,
-                href=PORTED.get(section.label, section.path),
-                class_="nav-current" if section.key == current else None,
-                aria_current="page" if section.key == current else None,
-            )
-        )
-    return tag("nav", join(links), class_="nav", aria_label="Sections")
-
-
-def page(title: str, current: str, *body: object, subtitle: str | None = None,
-         cli_equivalents: bool = True) -> str:
-    """One page, whole. The return is a `str` because it goes down the wire."""
-    head = tag(
-        "head",
-        tag("meta", charset="utf-8"),
-        tag("meta", name="viewport", content="width=device-width, initial-scale=1, viewport-fit=cover"),
-        tag("meta", name="color-scheme", content="light dark"),
-        tag("title", f"{title} — sd"),
-        # Under their digests, so the server may cache them for good (sd:2141).
-        tag("link", rel="stylesheet", href=f"/static/dashboard.css?v={STATIC_VERSIONS['dashboard.css']}"),
-        tag("script", src=f"/static/dashboard.js?v={STATIC_VERSIONS['dashboard.js']}", defer=True),
-    )
-    header: list[object] = [tag("h1", title)]
-    if subtitle:
-        header.append(tag("p", subtitle, class_="subtitle"))
-    rendered_body = join(body)
-    equivalents = _equivalents(rendered_body) if cli_equivalents else Markup("")
-    from .palette import dialog
-
-    document = tag(
-        "html",
-        head,
-        tag(
-            "body",
-            tag("header", join(header), navigation(current),
-                tag("button", "Commands", type="button", data_palette_open=True, aria_keyshortcuts="p"), class_="page-header"),
-            dialog(current),
-            tag("main", rendered_body, equivalents, id="main"),
-            tag(
-                "footer",
-                tag("p", "Your work, in one place. Changes save to the local workflow database."),
-                tag("noscript", "Enable JavaScript to use task controls. Reading and filtering still work."),
-                class_="page-footer",
-            ),
-        ),
-        lang="en",
-    )
-    return "<!doctype html>" + str(document)
 
 
 def _equivalents(rendered_body: Markup) -> Markup:

@@ -201,17 +201,13 @@ class Item(ScreenCase):
         self.assertIn('<form method="post" action="/api/items/', page)
         self.assertIn("<summary>CLI equivalents</summary>", page)
 
-    def test_its_stylesheet_names_foundation_tokens_and_dashboard_css_lost_its_rules(self):
-        """sd:3586 PR 1: classic.css has no colour literal and names only declared tokens; dashboard.css keeps no item-only rule."""
+    def test_its_stylesheet_names_foundation_tokens(self):
+        """sd:3586 PR 1: classic.css has no colour literal and names only declared tokens."""
         strip = lambda text: re.sub(r"/\*.*?\*/", "", text, flags=re.S)
         css = strip((DASHBOARD / "v2/static/classic.css").read_text(encoding="utf-8"))
         self.assertIsNone(re.search(r"#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch|oklab|lab|lch|color)\(", css))
         declared = set(re.findall(r"(--[\w-]+)\s*:", (DASHBOARD / "v2/static/tokens.css").read_text(encoding="utf-8")))
         self.assertEqual(sorted(set(re.findall(r"var\((--[\w-]+)", css)) - declared), [])
-        classic = strip((DASHBOARD / "static/dashboard.css").read_text(encoding="utf-8"))
-        for selector in (".history", ".status-change", ".artifact", ".item-controls", ".writing-controls", ".secondary-panel",
-                         ".shadow", ".selection-option", ".status-done"):
-            self.assertIsNone(re.search(re.escape(selector) + r"\b", classic), selector)
 
     def test_the_title_is_escaped(self):
         nasty = self.item("<script>window.pwned=1</script>")

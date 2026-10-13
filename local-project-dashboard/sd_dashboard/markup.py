@@ -7,7 +7,7 @@ one way -- by escaping first and then adding tags of its own.
 
 There is no template engine here and no `|safe`, no `mark_safe`, no
 `innerHTML`. `Markup` is the type that means "this text is already markup the
-dashboard built"; every other value that reaches `tag()` or `page()` is a
+dashboard built"; every other value that reaches `tag()` or `shell_page()` is a
 string and is escaped. A grep of this folder for those three names returns
 nothing, which is criterion 12's clause, and it stays true because there is
 nothing here for them to name.
