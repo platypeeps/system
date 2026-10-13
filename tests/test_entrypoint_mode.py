@@ -1,4 +1,4 @@
-"""Every folder's entrypoint is executable in the git index (sd:2648).
+"""Every folder's entrypoint is executable and keeps convention 6 (sd:2648, sd:3552).
 
 Convention 1 gives each runnable folder one entrypoint, and `./<name>.sh`
 only runs when git tracks it as mode 100755. An entrypoint once tracked as
@@ -11,19 +11,39 @@ local-health-check probes: `<stem>.sh`, where the stem is the folder name
 minus `local-` or `mezmo-`, or else the folder's only root `*.sh`. A folder
 with neither (`lib/`, `tests/`) has no entrypoint and is skipped.
 
+Each entrypoint whose `status` answers unlike an unknown verb also runs it
+on an empty machine: a scratch HOME and config folder, stubs first on PATH
+for every service command a status asks, stdin closed. Nothing is set up
+there, so convention 6 wants exit 3, nothing to check. A status that is a
+report and exits 0 is named on its CLAUDE.md "Deliberate deviations" line.
+
 Stdlib and git only. This runs in the `tests/ci-native.sh` preflight as
 `python3 tests/test_entrypoint_mode.py` from the repository root, and the
 preflight's unwired-suite guard fails when `tests/ci-native.sh` stops naming it.
 """
 
+import re
 import subprocess
 import sys
+import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from test_product_name import PREFIX as VENDOR
 
 ROOT = Path(__file__).resolve().parent.parent
+
+#: Commands a probe could reach on this machine. Each stub fails, so a
+#: service reads as not running and nothing real is asked; the launchctl
+#: guard of tests/check.sh sits behind them.
+STUBS = ("launchctl", "docker", "kind", "kubectl", "curl", "tailscale", "osascript", "claude", "go")
+#: Seconds one probe may take; the health-check sweep allows help 5.
+PROBE_BOUND = 30
+#: The verb no entrypoint has; `status` that answers like it is no verb.
+UNKNOWN = "no-such-verb"
+#: The retired forwarder execs the command pack, absent from the sandbox.
+RETIRED = "local-" + "sd-db"
 
 
 def index(root=ROOT):
@@ -56,6 +76,55 @@ def entrypoints(entries):
     return found
 
 
+def recorded(lead, text=None):
+    """The folders that CLAUDE.md's deviation line `- <lead>...` names in backticks."""
+    if text is None:
+        text = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.startswith("- " + lead)]
+    if len(lines) != 1:
+        raise AssertionError(f"CLAUDE.md holds {len(lines)} deviation lines starting {lead!r}, not 1")
+    return set(re.findall(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`", lines[0]))
+
+
+class Sandbox:
+    """An empty machine for probes: scratch HOME and config, the stubs first on PATH."""
+
+    def __init__(self, tmp, root=ROOT):
+        stubs = tmp / "stubs"
+        stubs.mkdir()
+        for name in STUBS:
+            (stubs / name).write_text("#!/bin/sh\nexit 1\n")
+            (stubs / name).chmod(0o755)
+        (tmp / "home").mkdir()
+        self.root, self.cwd = root, tmp
+        self.env = {"PATH": f"{stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(tmp / "home"),
+                    "SYSTEM_TOOLS_CONFIG": str(tmp / "config"), "TMPDIR": str(tmp)}
+
+    def run(self, path, *args):
+        """(exit code, stdout, stderr) of `sh <path> <args>`."""
+        done = subprocess.run(
+            ["sh", str(self.root / path), *args], env=self.env, cwd=self.cwd,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=PROBE_BOUND,
+        )
+        return done.returncode, done.stdout, done.stderr
+
+    def status_codes(self, paths):
+        """{path: exit code of `status`} for each entrypoint that has the verb.
+
+        A script without it answers `status` as it answers UNKNOWN: the same
+        code and text once both words are struck out.
+        """
+        def strike(answer):
+            return answer[0], *(re.sub(rf"\bstatus\b|{UNKNOWN}", "VERB", text) for text in answer[1:])
+
+        def probe(path):
+            asked = self.run(path, "status")
+            return path, asked[0], strike(asked) != strike(self.run(path, UNKNOWN))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return {path: code for path, code, has in pool.map(probe, sorted(paths)) if has}
+
+
 class TheTree(unittest.TestCase):
     def test_every_entrypoint_is_tracked_executable(self):
         found = entrypoints(index())
@@ -72,6 +141,25 @@ class TheTree(unittest.TestCase):
         )
 
 
+class StatusOnAnEmptyMachine(unittest.TestCase):
+    def test_every_status_has_nothing_to_check(self):
+        reports = recorded("`status` reports")
+        probed = [p for p in entrypoints(index()) if not p.startswith(RETIRED + "/")]
+        with tempfile.TemporaryDirectory() as tmp:
+            codes = Sandbox(Path(tmp)).status_codes(probed)
+        self.assertIn("local-cswap/cswap.sh", codes, "the probe found no status verb")
+        wrong = {p: code for p, code in codes.items()
+                 if code != (0 if p.split("/")[0] in reports else 3)}
+        self.assertEqual({}, wrong, "status on a machine with nothing set up must exit 3 "
+                         "(convention 6); a report that exits 0 goes on CLAUDE.md's "
+                         "`status` reports deviation line")
+
+    def test_each_report_on_the_deviation_line_has_a_status(self):
+        reports = recorded("`status` reports")
+        found = {p.split("/")[0] for p in entrypoints(index())}
+        self.assertEqual(set(), reports - found, "a deviation names a folder with no entrypoint")
+
+
 class TheRule(unittest.TestCase):
     def test_the_stem_wins_and_a_lone_script_stands_in(self):
         found = entrypoints({
@@ -86,6 +174,35 @@ class TheRule(unittest.TestCase):
             "local-x/x.sh": "100755", "mezmo-pipeline/pipeline.sh": "100644",
             "plain/plain.sh": "100755", "local-runner/runner.sh": "100644",
         }, found)
+
+
+class TheStatusProbe(unittest.TestCase):
+    SCRIPTS = {
+        "nothing": 'case "$1" in status) echo "SKIP"; exit 3 ;; *) echo "usage: x" >&2; exit 1 ;; esac',
+        "notloaded": 'case "$1" in status) echo "label: x"; exit 2 ;; *) echo "usage: x" >&2; exit 1 ;; esac',
+        "down": 'case "$1" in status) docker ps >/dev/null || echo "not running"; exit 0 ;; '
+                '*) echo "usage: x status" >&2; exit 1 ;; esac',
+        "noverb": 'echo "usage: noverb.sh start|stop (not $1)" >&2; exit 1',
+        "early": 'echo "early: missing config" >&2; exit 1',
+    }
+
+    def test_a_script_without_the_verb_is_not_probed_and_the_rest_report_their_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tree"
+            for name, body in self.SCRIPTS.items():
+                (root / name).mkdir(parents=True)
+                (root / name / f"{name}.sh").write_text("#!/bin/sh\n" + body + "\n")
+            (Path(tmp) / "box").mkdir()
+            codes = Sandbox(Path(tmp) / "box", root).status_codes(
+                [f"{n}/{n}.sh" for n in self.SCRIPTS])
+        self.assertEqual({"nothing/nothing.sh": 3, "notloaded/notloaded.sh": 2,
+                          "down/down.sh": 0}, codes)
+
+    def test_the_deviation_line_is_read_whole_and_only_once(self):
+        text = "- `status` reports: `local-a`, `vendor-b`; `tests/x.sh` and `state/`.\n- Other: `local-c`.\n"
+        self.assertEqual({"local-a", "vendor-b"}, recorded("`status` reports", text))
+        with self.assertRaises(AssertionError):
+            recorded("`status` reports", text + text)
 
 
 if __name__ == "__main__":

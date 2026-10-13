@@ -90,6 +90,7 @@ Deliberate deviations:
 - Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.
 - `local-cswap` reads the tracked `cswap-auto.conf`, which holds defaults only.
 - `local-cron-jobs` uses `local`.
+- `status` reports state and exits 0, so it declares nothing: `local-agent-prompt`, `local-ai-apps`, `local-bin-links`; `tests/test_entrypoint_mode.py` wants 3 from every other `status` on an empty machine.
 
 ## Planned work lives in `docs/work/`
 
