@@ -33,7 +33,7 @@
   }
   // fetch:end
   const GROUPS = [
-    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
+    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],

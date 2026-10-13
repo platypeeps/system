@@ -204,6 +204,19 @@ class TheScript(unittest.TestCase):
         self.assertNotIn("(Recommended)</span>", rows)
         self.assertEqual(out["posts"][0][1]["option"], "Map it to its report (Recommended)")
 
+    def test_review_batch_questions_are_one_line_that_links_to_review(self):
+        # sd:3638: a review batch's questions are counted, not listed; a failed read draws no count.
+        doc = json.dumps({"decisions": [decision_row()], "review": 292})
+        out = self.run_page("R.line = ELS['decisions-review'].html; R.hidden = ELS['decisions-review'].hidden; R.rows = ELS.decisions.html;",
+                            f"(path, body) => [200, {doc}]")
+        self.assertIn('<a href="/review">292 questions wait on Review</a>', out["R"]["line"])
+        self.assertFalse(out["R"]["hidden"])
+        self.assertEqual(out["R"]["rows"].count("<tr data-item="), 1)
+        none = self.run_page("R.hidden = ELS['decisions-review'].hidden;", "(path, body) => [200, { decisions: [] }]")
+        self.assertTrue(none["R"]["hidden"])
+        failed = self.run_page("R.hidden = ELS['decisions-review'].hidden;", "(path, body) => [500, { error: 'locked' }]")
+        self.assertTrue(failed["R"]["hidden"])
+
     def test_no_decisions_says_so_and_a_failed_read_says_why(self):
         empty = self.run_page("R.rows = ELS.decisions.html;", "(path, body) => [200, { decisions: [] }]")
         self.assertIn("No decision waits on you", empty["R"]["rows"])

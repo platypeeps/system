@@ -8,7 +8,8 @@
   const repoName = path => String(path || '').split('/').filter(Boolean).pop() || '';
 
   // LIST is the last read; null when it failed. RULED and REFUSED hold what a click did to a row until the next read.
-  let LIST = [], reads = 0, failed = '';
+  // REVIEW counts the questions on review batches (sd:3638): Review asks them, so Today draws one line that links there.
+  let LIST = [], REVIEW = 0, reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set();
   const REC = /\s*\(recommended\)\s*$/i;
 
@@ -26,7 +27,9 @@
   const tell = n => document.dispatchEvent(new CustomEvent('today:decisions', { detail: n }));
 
   function draw() {
-    const tb = $('decisions');
+    const tb = $('decisions'), line = $('decisions-review'), n = LIST ? REVIEW : 0;
+    put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="/review">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Review</a>` : html``);
+    line.hidden = !n;
     if (!LIST) {
       put(tb, html`<tr class="empty"><td colspan="4">Decisions could not be read: ${failed}. Refresh tries again.</td></tr>`);
       put($('decisions-tally'), html``);
@@ -49,7 +52,7 @@
     try {
       const doc = await window.shell.getJSON('/api/decisions');
       if (n !== reads) return;
-      LIST = doc.decisions; RULED.clear(); REFUSED.clear(); BUSY.clear();
+      LIST = doc.decisions; REVIEW = doc.review || 0; RULED.clear(); REFUSED.clear(); BUSY.clear();
     } catch (e) {
       if (n !== reads) return;
       LIST = null; failed = e.message;
