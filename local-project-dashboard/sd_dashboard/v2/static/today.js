@@ -18,7 +18,7 @@
   const { html, put } = window.markup;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 
-  let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], srcFilter = null, query = '';
+  let DOC = null, ROWS = [], WORK = [], WORK_ERROR = '', SNOOZED = [], ACTIVE = null, srcFilter = null, query = '';
   const $ = id => document.getElementById(id);
 
   function facts(r) {
@@ -93,7 +93,33 @@
     lamps();
     hideRows();
     work();
+    working();
     window.snooze.draw($('snoozed'), SNOOZED);
+  }
+
+  // Working now (sd:3466): the document's `active` (active_sessions.document), one row per open item, its sessions listed in
+  // the row, longest-running first. Started and Elapsed are the item's longest session. A row is not selectable: its title
+  // opens the item on Tasks. A launch herdr could not confirm is ▨, not ●; a source that was not read is said under the
+  // table, never an empty list. Started is this machine's clock; each elapsed is the server's count at the read.
+  const SOURCE = { fleet: 'worktrees and processes', lane: 'lane entries', launch: 'Fix notes', herdr: 'herdr agents' };
+  const clock = iso => new Date(iso).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  function working() {
+    const a = ACTIVE || { rows: [], sources: {}, error: 'the document carried no sessions' }, rows = a.rows || [];
+    const items = [];
+    rows.forEach(r => { const last = items[items.length - 1]; if (last && last.item === r.item) last.rows.push(r); else items.push({ item: r.item, title: r.title, rows: [r] }); });
+    put($('active'), a.error ? html`<tr class="empty"><td colspan="5">Sessions could not be read: ${a.error}. Refresh tries again.</td></tr>`
+      : items.length ? html`${items.map(it => { const sure = it.rows.every(r => r.verified), s = sure ? 'ok' : 'unknown', top = it.rows[0]; return html`<tr data-item="${it.item}">
+        <td class="g g-${s}" title="${sure ? 'live' : 'a launch not confirmed: herdr was not read'}">${GLYPH[s]}</td>
+        <td class="what"><a href="/tasks?row=${it.item}">#${it.item} ${it.title}</a></td>
+        <td class="detail"><ul class="sessions">${it.rows.map(r => html`<li>${r.verified ? '' : html`<span class="g-unknown" title="not confirmed">${GLYPH.unknown} </span>`}${r.session}${r.elapsed ? html` · ${r.elapsed}` : ''}<span class="via">${r.via}</span></li>`)}</ul></td>
+        <td class="when">${top.started ? html`<time datetime="${top.started}" title="${top.started.slice(11, 16)} UTC">${clock(top.started)}</time>` : 'not known'}</td>
+        <td class="num">${top.elapsed || 'not known'}</td></tr>`; })}`
+      : html`<tr class="empty"><td colspan="5">No open item has a live session.</td></tr>`);
+    const dark = Object.entries(a.sources || {}).filter(([, why]) => why);
+    put($('active-tally'), rows.length ? html`<span>${items.length} item${items.length === 1 ? '' : 's'} · ${rows.length} session${rows.length === 1 ? '' : 's'}</span>${dark.length ? html`<span class="g-caution">▲ ${dark.length} not read</span>` : ''}` : html``);
+    const note = $('active-note');
+    note.hidden = !dark.length;
+    note.textContent = dark.map(([k, why]) => `${SOURCE[k] || k} not read: ${why}`).join(' · ');
   }
 
   // Your work (sd:3271): the items due or in progress, as `sd today` lists them. A row is not selectable: its title opens
@@ -149,12 +175,12 @@
   // runs no command, a selection whose row is gone moves to the first row the filter shows, and a failed read clears the page.
   let reading = null, failed = '', reads = 0;
   function adopt(doc) {
-    DOC = doc; ROWS = doc.rows; WORK = doc.work || []; WORK_ERROR = doc.work_error || ''; SNOOZED = doc.snoozed;
+    DOC = doc; ROWS = doc.rows; WORK = doc.work || []; WORK_ERROR = doc.work_error || ''; SNOOZED = doc.snoozed; ACTIVE = doc.active || null;
     document.body.dataset.observed = doc.now;
     return { objects: [...ROWS.map(objectOf), ...WORK.map(objectOf), ...SNOOZED.map(window.snooze.object)],
              state: doc.snooze_error ? window.snooze.unread(doc.snooze_error, '/api/now') : null };
   }
-  function clear(err) { DOC = null; ROWS = []; WORK = []; WORK_ERROR = ''; SNOOZED = []; failed = err.message; delete document.body.dataset.observed; }
+  function clear(err) { DOC = null; ROWS = []; WORK = []; WORK_ERROR = ''; SNOOZED = []; ACTIVE = null; failed = err.message; delete document.body.dataset.observed; }
   function draw() {
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
@@ -165,6 +191,9 @@
     put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
     put($('work'), html`<tr class="empty"><td colspan="4">Work could not be read: ${failed}. Refresh tries again.</td></tr>`);
     put($('work-tally'), html``);
+    put($('active'), html`<tr class="empty"><td colspan="5">Sessions could not be read: ${failed}. Refresh tries again.</td></tr>`);
+    put($('active-tally'), html``);
+    $('active-note').hidden = true;
     window.snooze.draw($('snoozed'), []);
     attend();
     hideRows();

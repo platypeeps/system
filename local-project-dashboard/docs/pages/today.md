@@ -19,3 +19,7 @@ Management does (sd:3386); a job that changed since is refused and Now is read a
 After exit 127, command not found, Retry asks first and names the exit (sd:3392).
 A job row also has Show log, which opens the job on Management > Schedules, and Print, the `launchctl print` line to
 copy; Print is the row's act after exit 127. Both are the declarations Management and Activity use (sd:3449).
+
+Working now lists each open item with a live session, longest-running first, from the same `/api/now` document (sd:3466).
+A session is a worktree, a lane entry, a running `sd-*` command or a herdr agent; each row names what tied it to its item.
+A source that could not be read is said under the table; a Fix launch herdr could not confirm shows as ▨.
