@@ -23,4 +23,6 @@ PAGE = Page(
     html="skills.html",
     item="sd:2123",
     api=(Api("/api/skills", _read),),
+    count="/api/skills",
+    live=True,
 )

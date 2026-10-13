@@ -158,6 +158,17 @@ DOC = {"read": NOW, "stages": list(writing.STAGES), "pieces": [
     piece(13, "Parked Idea", "accepted", parked=True),
     piece(14, "File Owned", "review", owner="file", next=["ready"], gates_ok=True),
 ]}
+DOC["attention"] = writing_screen._attention(DOC["pieces"])
+
+#: One piece per gate lamp the badge counts, beside the stories above (sd:3446).
+LAMPS = [
+    piece(21, "Failed Check", "review", problems=["fact-check verdict is not pass", "fact-check finding F1 is unresolved"]),
+    piece(22, "Open Finding", "review", problems=["adversarial finding A2 is unresolved"]),
+    piece(23, "Stale Research", "drafting", problems=["research.md is unstamped against this draft"]),
+    piece(24, "No Research", "drafting", problems=["research.md is missing"], files={"index.md": {"bytes": 1, "mtime": NOW}}),
+    piece(25, "Other Problem", "review", problems=["adversarial file names another draft"]),
+    piece(26, "Unrecorded", "review", problems=["fact-check has no explicit current gate record; record its verdict and findings"]),
+]
 
 #: The design's piece commands (design source products/system/designs/pages/writing.js): id, label, key, risk, bulk.
 #: Stage is `confirm` here, not the design's `undo`: going back is a correction, which takes a reason.
@@ -260,6 +271,27 @@ class TheScript(unittest.TestCase):
         self.assertIn("vault ideas not read", out["html"]["strip"])
         self.assertEqual(out["page_attention"], {"state": "ok", "n": 0, "what": "pieces need a gate"})
         self.assertEqual(out["text"]["parked-n"], 1)
+
+    def test_the_badge_rule_lights_what_the_cards_lamps_light(self):
+        # sd:3446: the rail's rule is writing_screen's; each card's lamps stay the page's. They must agree, piece by piece.
+        global DOC
+        saved = DOC
+        DOC = {**saved, "pieces": saved["pieces"] + LAMPS}
+        DOC["attention"] = writing_screen._attention(DOC["pieces"])
+        try:
+            out = self.run_page("")
+        finally:
+            DOC = saved
+        board = out["html"]["view-board"]
+        for entry in DOC["pieces"] + LAMPS:
+            if entry["parked"]:
+                continue
+            card = re.search(rf'<article class="card[^"]*"[^>]*data-id="{entry["id"]}".*?</article>', board, re.S).group(0)
+            lit = re.findall(r'data-s="(\w+)"', card)
+            shown = "warning" if "warning" in lit else "caution" if "caution" in lit else ""
+            self.assertEqual(writing_screen._gate_state(entry), shown, entry["title"])
+        self.assertEqual(out["page_attention"], {"state": "warning", "n": 1, "what": "pieces fail a gate"})
+        self.assertEqual([writing_screen._gate_state(entry) for entry in LAMPS], ["warning", "caution", "caution", "", "caution", ""])
 
     def test_the_editor_shows_the_draft_read_only_and_each_files_facts(self):
         out = self.run_page("open('11');", search="?view=editor")

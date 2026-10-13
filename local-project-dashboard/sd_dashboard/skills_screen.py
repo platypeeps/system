@@ -108,4 +108,14 @@ def document(connection, *, now: str) -> dict:
         "surfaces": surfaces,
         "use": {"first": first, "last": latest, "rows": count},
         "other": sorted(([name, n] for name, n in other.items()), key=lambda pair: (-pair[1], pair[0])),
+        "attention": _attention(skills, junk),
     }
+
+
+def _attention(skills, junk) -> dict:
+    """The rail badge (sd:3446): each path skill with no use in the weeks shown, and the use-record fault. Never warning."""
+    from .v2.pages import attention
+
+    unused = [skill for skill in skills if skill["status"] == "path" and not sum(skill["weeks"])]
+    return attention(["caution"] * (len(unused) + (1 if junk else 0)),
+                     {"caution": "unused path skills and use-record faults", "ok": "skill flags"})
