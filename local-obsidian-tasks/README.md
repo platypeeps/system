@@ -139,7 +139,7 @@ script in `OBSIDIAN_TASKS_TODAY`, so a run that crosses midnight cannot count
 
 ## Environment
 
-- `OBSIDIAN_VAULT` — vault path (default `~/Documents/Obsidian Vault`; exported, or set in `<config>/obsidian-tasks/.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `.env.example`)
+- `OBSIDIAN_VAULT` — vault path (default `~/Documents/Obsidian Vault`; exported, or set once in `<config>/shared.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `local-config-check/shared.env.example`)
 - `OBSIDIAN_TASKS_SUBDIR` — task folder (default `TaskNotes/Tasks`)
 - `JEV_OBSIDIAN_TASKS` — `0`, `off`, `false`, `no` or `disabled` switches the
   Jev ordering off; unset means on

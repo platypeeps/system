@@ -40,7 +40,7 @@ PATH_MAX = 1024
 def collectors(environment):
     """A fresh `collectors` module, its `VAULT` derived under `environment`."""
     with patch.dict(os.environ, environment):
-        os.environ.pop("VAULT", None)
+        os.environ.pop("OBSIDIAN_VAULT", None)
         spec = importlib.util.spec_from_file_location("stderr_cap_collectors", HERE / "collectors.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -97,7 +97,7 @@ class ErrorLine(unittest.TestCase):
         # line is written without waiting on TCC. The tab name is the first
         # thing on it, and it is still there.
         vault = segments("/nonexistent-sd-830", 600)
-        with patch.dict(os.environ, {"VAULT": vault}), self.assertRaises(ValueError) as refused:
+        with patch.dict(os.environ, {"OBSIDIAN_VAULT": vault}), self.assertRaises(ValueError) as refused:
             reports_screen.collect("vault")
         told = str(refused.exception)
         self.assertRegex(told, r"^vault: RuntimeError\('vault path does not exist: /nonexistent-sd-830")
@@ -109,7 +109,7 @@ class ErrorLine(unittest.TestCase):
         # PATH_MAX: the vault's, derived from HOME, and the interpreter's.
         # What `Budget.run` returns for a child that writes that line is that
         # line, untouched, with the tab name at its front.
-        home = segments("/home-sd-830", PATH_MAX - len("/Documents/Vault"))
+        home = segments("/home-sd-830", PATH_MAX - len("/Documents/Obsidian Vault"))
         module = collectors({"HOME": home})
         self.assertEqual(len(str(module.VAULT)), PATH_MAX)
         module.run = lambda *_, **__: "denied"

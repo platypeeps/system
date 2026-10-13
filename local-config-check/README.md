@@ -23,7 +23,7 @@ a new folder with a `.env.example` is checked on the next run.
 Each top-level `<folder>/<file>.example` maps to `<config>/<tool>/<file>`.
 `<tool>` is the folder name minus `local-`; other folders keep their name.
 `st_config_file` in `lib/config.sh` resolves the path, the same function the
-tools read through; `privacy-patterns` sits at `<config>/privacy-patterns`.
+tools read through; `privacy-patterns` and `shared.env` sit at the config root.
 
 For `.env.example`:
 

@@ -334,6 +334,60 @@ def load_mask_files():
     return module
 
 
+class GithubSecretState(unittest.TestCase):
+    """`refresh --apply` records each push in the state folder, not beside the script (sd:3990).
+
+    gh is a stub that reads the value and succeeds, so nothing reaches GitHub.
+    """
+
+    NAME = "SOCKET_SECURITY_API_KEY"
+    SLUG = "example/test-repo"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name).resolve()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = self.tmp / "home"
+        (self.home / ".config/shell").mkdir(parents=True)
+        (self.home / ".bash_profile").write_text(f'export {self.NAME}="abcdefghijklmnop0123456789"\n')
+        repo = self.home / "repos/test-repo"
+        (repo / ".github/workflows").mkdir(parents=True)
+        (repo / ".github/workflows/ci.yml").write_text(f"env: ${{{{ secrets.{self.NAME} }}}}\n")
+        (repo / ".env").write_text(f"{self.NAME}=staleoldvalue000000\n")  # a target, so the pass reaches GitHub
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", f"https://github.com/{self.SLUG}.git"], check=True)
+        stubs = self.tmp / "stubs"
+        stubs.mkdir()
+        gh = stubs / "gh"
+        gh.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
+        gh.chmod(0o755)
+        self.state_home = self.tmp / "state-home"
+        self.env = dict(os.environ, HOME=str(self.home), SYSTEM_TOOLS_CONFIG=str(self.tmp / "config"),
+                        XDG_STATE_HOME=str(self.state_home), PATH=f"{stubs}:{os.environ['PATH']}")
+        self.env.pop("S4S_CONF", None)
+        isolate_jev(self.env)
+        self.state = self.state_home / "system/scan-for-secrets/gh-secrets-state"
+        self.addCleanup(lambda: (FOLDER / ".gh-secrets-state").unlink(missing_ok=True))
+
+    def refresh(self, *flags: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(SCRIPT), "refresh", *flags], cwd=self.home, env=self.env,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_a_push_is_recorded_in_the_state_folder(self) -> None:
+        pushed = self.refresh("--apply")
+        self.assertIn(f"{self.NAME}: pushed to {self.SLUG}", pushed.stdout, pushed.stdout + pushed.stderr)
+        self.assertTrue(self.state.is_file(), "no state file in the XDG state folder")
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(self.state.read_text().startswith(f"{self.NAME} {self.SLUG} "))
+        self.assertFalse((FOLDER / ".gh-secrets-state").exists(), "state written beside the script")
+        self.assertFalse(list((self.tmp / "config").rglob("*gh-secrets-state*")), "state written to the config folder")
+
+    def test_the_next_run_reads_that_record(self) -> None:
+        self.refresh("--apply")
+        again = self.refresh()
+        self.assertIn(f"{self.NAME}: current on {self.SLUG}", again.stdout, again.stdout + again.stderr)
+
+
 class MaskRewrite(unittest.TestCase):
     """`mask --apply` masks in place, same length, same inode (sd:3042).
 

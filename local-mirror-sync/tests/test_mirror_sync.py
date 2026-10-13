@@ -36,6 +36,7 @@ import system_tools_config  # noqa: E402
 
 MIRROR_SYNC = FOLDER / "mirror-sync.sh"
 OFFSITE_VERIFY = FOLDER / "offsite-verify.py"
+NAS_FULL_COPY = FOLDER / "nas-full-copy.sh"
 
 
 def _load_verifier():
@@ -2553,6 +2554,159 @@ class BackupRootIdentity(unittest.TestCase):
             "/dev/sda1 on /mnt/backup type ext4 (rw,relatime)\n")
 
         self.assertEqual(entries["/mnt/backup"], ("/dev/sda1", "ext4"))
+
+
+class NasFullCopy(unittest.TestCase):
+    """nas-full-copy.sh: the nightly additive copy of one disk to the NAS (sd:3990).
+
+    The script lived in the config folder, which holds values only; it now
+    ships here and reads its two volumes from the environment or
+    <config>/mirror-sync/.env. rsync, timeout, caffeinate and the notifier are
+    stubs, so no case copies a file or asks the real mount table.
+    """
+
+    def setUp(self) -> None:
+        self.work = Path(tempfile.mkdtemp(prefix="nas-full-copy-test-"))
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.src = self.work / "src"
+        self.dst = self.work / "dst"
+        self.config = self.work / "config"
+        self.state_home = self.work / "state-home"
+        for folder in (self.src, self.dst, self.config / "mirror-sync"):
+            folder.mkdir(parents=True)
+        stubs = self.work / "stubs"
+        stubs.mkdir()
+        self.calls = self.work / "rsync-calls"
+        self.notified = self.work / "notified"
+        self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\nexit "${STUB_RC:-0}"\n')
+        self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\nexec "$@"\n')
+        self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
+        self.stubs = stubs
+        self.log_dir = self.src / "repo-storage/system/nas-full-copy"
+
+    @staticmethod
+    def stub(path: Path, text: str) -> None:
+        path.write_text(text)
+        path.chmod(0o755)
+
+    def run_copy(self, *args: str, rc: int = 0, **extra: str) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": f"{self.stubs}:/usr/bin:/bin",
+            "HOME": str(self.work),
+            "SYSTEM_TOOLS_CONFIG": str(self.config),
+            "XDG_STATE_HOME": str(self.state_home),
+            "NAS_COPY_SRC": str(self.src),
+            "NAS_COPY_DST": str(self.dst),
+            "NAS_COPY_RSYNC": str(self.stubs / "rsync"),
+            "NAS_COPY_TIMEOUT": str(self.stubs / "timeout"),
+            "NAS_COPY_NOTIFY": f"printf '%s\\n' >> '{self.notified}'",
+            "NAS_COPY_SKIP_MOUNT_CHECK": "1",
+            "NAS_COPY_HOUR": "23",
+            "NAS_COPY_SECONDS": "3600",
+            "STUB_CALLS": str(self.calls),
+            "STUB_RC": str(rc),
+            **extra,
+        }
+        env = {key: value for key, value in env.items() if value is not None}
+        return subprocess.run(["sh", str(NAS_FULL_COPY), *(args or ("run",))], env=env,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+    @property
+    def state_dir(self) -> Path:
+        return self.state_home / "system/mirror-sync/nas-full-copy"
+
+    def test_no_argument_prints_usage_and_help_exits_zero(self) -> None:
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.work)}
+        bare = subprocess.run(["sh", str(NAS_FULL_COPY)], env=env, capture_output=True, text=True)
+        self.assertEqual(bare.returncode, 1)
+        self.assertIn("usage: nas-full-copy.sh run|help", bare.stderr)
+        helped = subprocess.run(["sh", str(NAS_FULL_COPY), "--help"], env=env, capture_output=True, text=True)
+        self.assertEqual(helped.returncode, 0)
+        self.assertIn("NAS_COPY_SRC", helped.stdout)
+
+    def test_a_missing_volume_names_the_variable_and_both_remedies(self) -> None:
+        result = self.run_copy(NAS_COPY_DST=None)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("NAS_COPY_DST is not set", result.stderr)
+        self.assertIn("local-mirror-sync/.env.example", result.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_the_volumes_come_from_the_tools_env_file(self) -> None:
+        (self.config / "mirror-sync/.env").write_text(f'NAS_COPY_SRC="{self.src}"\nNAS_COPY_DST="{self.dst}"\n')
+        result = self.run_copy(NAS_COPY_SRC=None, NAS_COPY_DST=None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{self.src}/ {self.dst}/", self.calls.read_text())
+
+    def test_outside_the_window_it_skips_without_copying(self) -> None:
+        result = self.run_copy(NAS_COPY_HOUR="12")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("skipped: 12h is outside", result.stdout)
+        self.assertFalse(self.calls.exists())
+
+    def test_an_unmounted_volume_is_refused(self) -> None:
+        result = self.run_copy(NAS_COPY_SKIP_MOUNT_CHECK=None)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"refused: {self.src} is not mounted", result.stdout)
+        self.assertFalse(self.calls.exists())
+
+    def test_rsync_is_additive_and_keeps_no_owners_or_modes(self) -> None:
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        call = self.calls.read_text().split()
+        self.assertIn("-rlt", call)
+        self.assertEqual([flag for flag in call if flag.startswith("--delete")], [])
+        self.assertIn("--exclude=/repo-storage/system/nas-full-copy/", call)
+        self.assertTrue(self.log_dir.is_dir(), "the per-file logs sit on the source disk")
+
+    def test_a_log_folder_outside_the_source_is_not_excluded(self) -> None:
+        result = self.run_copy(NAS_COPY_LOG_DIR=str(self.work / "logs"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([word for word in self.calls.read_text().split() if word.startswith("--exclude=/repo-storage")], [])
+
+    def test_state_and_lock_sit_in_the_state_folder_not_the_config_folder(self) -> None:
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "synced")
+        self.assertFalse(list((self.config / "mirror-sync").rglob("state")))
+        self.assertFalse((self.state_dir / "lock").exists(), "the lock goes with the run")
+
+    def test_a_completed_run_after_an_incomplete_one_notifies_once(self) -> None:
+        first = self.run_copy()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(len(self.notified.read_text().splitlines()), 1)
+        again = self.run_copy()
+        self.assertEqual(again.returncode, 0)
+        self.assertEqual(len(self.notified.read_text().splitlines()), 1, "a later complete run stays quiet")
+
+    def test_a_window_that_closes_is_incomplete_and_the_next_complete_run_notifies(self) -> None:
+        closed = self.run_copy(rc=124)
+        self.assertEqual(closed.returncode, 0)
+        self.assertIn("continues tomorrow night", closed.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
+        self.assertFalse(self.notified.exists())
+        self.run_copy()
+        self.assertEqual(len(self.notified.read_text().splitlines()), 1)
+
+    def test_an_rsync_error_fails_the_job_and_stays_incomplete(self) -> None:
+        self.run_copy()
+        failed = self.run_copy(rc=23)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("FAILED rc=23", failed.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
+
+    def test_a_live_lock_skips_and_a_stale_one_is_removed(self) -> None:
+        lock = self.state_dir / "lock"
+        lock.mkdir(parents=True)
+        (lock / "pid").write_text(f"{os.getppid()}\n")
+        held = self.run_copy()
+        self.assertEqual(held.returncode, 0)
+        self.assertIn("skipped: run", held.stdout)
+        self.assertFalse(self.calls.exists())
+        (lock / "pid").write_text("999999\n")
+        stale = self.run_copy()
+        self.assertEqual(stale.returncode, 0, stale.stdout + stale.stderr)
+        self.assertIn("removing stale lock", stale.stdout)
+        self.assertTrue(self.calls.exists())
 
 
 if __name__ == "__main__":

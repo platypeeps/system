@@ -196,12 +196,13 @@ class TheDailyNote(Fixture):
         self.assertIn("No daily note for 2026-09-06", note["why"])
         self.assertIn("2026-09-06.md", note["why"])
 
-    def test_the_vault_comes_from_the_obsidian_tools_config_when_none_is_exported(self):
+    def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
+        # sd:3990: kept once in <config>/shared.env, not in the obsidian tools' .env files.
         os.environ.pop("OBSIDIAN_VAULT")
-        (self.config / "obsidian-tasks").mkdir(parents=True)
-        (self.config / "obsidian-tasks" / ".env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
-        self.write("2026-09-06.md", "from the tool's vault")
-        self.assertEqual(self.daily()["text"], "from the tool's vault")
+        self.config.mkdir(parents=True, exist_ok=True)
+        (self.config / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.vault}"\n')
+        self.write("2026-09-06.md", "from the shared vault")
+        self.assertEqual(self.daily()["text"], "from the shared vault")
 
     def test_no_vault_anywhere_is_vault_not_configured(self):
         os.environ.pop("OBSIDIAN_VAULT")

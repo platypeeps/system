@@ -35,8 +35,6 @@ __pycache__/
 # Secrets — real values live only locally; commit *.example instead
 .env
 *.secret
-# Salted hashes of the last gh secret set pushes (scan-for-secrets refresh)
-local-scan-for-secrets/.gh-secrets-state
 
 # Backups / superseded files
 *.bak*

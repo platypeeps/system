@@ -54,14 +54,15 @@ The script reads `.env` on every call, including the runs launchd starts with
 only `PATH` and `HOME`, so put values there rather than only in a login shell.
 An exported value wins over `.env`. All variables are optional.
 Every value in `.env` is exported to the jobs, so a job that calls another tool
-sees the same `SYSTEM_TOOLS_LABEL_PREFIX` as the script.
+sees the same `SYSTEM_TOOLS_LABEL_PREFIX` as the script, also when the prefix
+comes from `<config>/shared.env`.
 
 | Variable | Meaning |
 | --- | --- |
 | `SYSTEM_TOOLS_CONFIG` | The `<config>` root above. Export it (not in `.env`) to move every tool's config at once. |
 | `CRON_JOBS_EXTRA_DIRS` | Colon-separated extra job directories, searched before `<config>/cron-jobs/jobs/`. A job there overrides a same-named job in the config directory. Keep a schedule in another repository this way. |
 | `CRON_JOBS_HOST` | The host folder's name, default `hostname -s`, lower-cased. Set it in `.env` when the machine's name changes with the network. |
-| `SYSTEM_TOOLS_LABEL_PREFIX` | launchd label prefix, default `local.system-tools`. Labels are `<prefix>.cron.<job>`. |
+| `SYSTEM_TOOLS_LABEL_PREFIX` | launchd label prefix, default `local.system-tools`; set it once in `<config>/shared.env`. Labels are `<prefix>.cron.<job>`. |
 
 ## Per-machine jobs
 

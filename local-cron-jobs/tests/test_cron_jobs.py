@@ -845,6 +845,13 @@ class JobDirectoriesAndLabelsTest(unittest.TestCase):
         self.assertEqual(env.get("SYSTEM_TOOLS_LABEL_PREFIX"), "example.test")
         self.assertEqual(env.get("CRON_TEST_FROM_ENV_FILE"), "yes")
 
+    def test_the_shared_prefix_reaches_the_job(self):
+        # sd:3990. The prefix lives once in <config>/shared.env, not in this
+        # tool's .env; the job still sees it, as the pack's tools read it from
+        # the environment.
+        (self.fx.config / "shared.env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n')
+        self.assertEqual(self.job_env().get("SYSTEM_TOOLS_LABEL_PREFIX"), "example.test")
+
     def test_an_exported_prefix_wins_over_env_file_in_the_job(self):
         # PIN. The exported value wins for the script, and the job sees the
         # same value the script used.

@@ -97,6 +97,12 @@ class LabelPrefixTest(unittest.TestCase):
         self.assertIn("launchctl print gui/", self.calls.read_text())
         self.assertIn("/example.test.task-actions", self.calls.read_text())
 
+    def test_status_uses_the_prefix_from_shared_env(self):
+        # sd:3990. The prefix is kept once in <config>/shared.env.
+        (self.config / "shared.env").write_text('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n')
+        result = self.run_script("status")
+        self.assertIn("label:  example.test.task-actions", result.stdout)
+
     def test_help_declares_the_codes_to_the_health_check(self):
         # sd:3552. The sweep runs `status` only for a help text naming it.
         result = self.run_script("help")

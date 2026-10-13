@@ -15,7 +15,7 @@ machine's own time zone, from records the library already keeps:
 
 - **daily**: each day's daily note text (sd:3426), from the Obsidian vault
   `local-obsidian-review` and `local-obsidian-tasks` read: `OBSIDIAN_VAULT`
-  when exported, else from either tool's `<config>/<tool>/.env`, else their
+  when exported, else from `<config>/shared.env`, else their
   default `~/Documents/Obsidian Vault`. The note's name is the one Obsidian's
   daily-notes settings give it (`.obsidian/daily-notes.json`: `folder` and
   the moment `format`, default `YYYY-MM-DD`); a day folder that holds the
@@ -82,9 +82,7 @@ MAIL_SECONDS = 8
 #: workspace-mcp's address when neither the environment nor local-notify's config names one, as local-notify has it.
 MAIL_URL = "http://127.0.0.1:8083/mcp"
 
-#: The tools whose `<config>/<tool>/.env` may name the vault, in the order read; their scripts resolve it the same way.
-VAULT_TOOLS = ("obsidian-review", "obsidian-tasks")
-#: Their default vault when nothing names one.
+#: The default vault when nothing names one, as the obsidian tools have it.
 VAULT_DEFAULT = "~/Documents/Obsidian Vault"
 #: Obsidian's own daily-note format when its settings name none.
 DAILY_FORMAT = "YYYY-MM-DD"
@@ -186,17 +184,13 @@ def _vault(environ) -> Path:
         sys.path.insert(0, lib)
     import system_tools_config
 
-    named, source = environ.get("OBSIDIAN_VAULT", ""), "OBSIDIAN_VAULT"
-    for tool in VAULT_TOOLS:
-        if named:
-            break
-        named = system_tools_config.read_env(tool, environ).get("OBSIDIAN_VAULT", "")
-        source = f"OBSIDIAN_VAULT in {system_tools_config.config_dir(tool, environ) / '.env'}"
+    named = system_tools_config.shared("OBSIDIAN_VAULT", environ)
+    source = "OBSIDIAN_VAULT"
     if not named:
         default = Path(os.path.expanduser(VAULT_DEFAULT))
         if default.is_dir():
             return default
-        problem = ValueError(system_tools_config.missing("OBSIDIAN_VAULT", "obsidian-review", ".env", environ=environ)
+        problem = ValueError(system_tools_config.missing("OBSIDIAN_VAULT", "", "shared.env", "local-config-check", environ=environ)
                              + f" The default vault, {default}, is not a folder either.")
         problem.unconfigured = True
         raise problem
