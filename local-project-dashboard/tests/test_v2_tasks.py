@@ -1859,6 +1859,10 @@ class TheFilterAddress(ScreenCase):
             with self.subTest(row=row):
                 out = self.run_page("R.replaced = OUT.replaced || null;", search=f"?view=list&row={row}")
                 self.assertEqual(out["R"]["replaced"], replaced)
+        # A read that failed lists nothing, which says nothing about the item: the page stays and says the read failed.
+        out = self.run_page("R.replaced = OUT.replaced || null;", prelude="var FAIL_TASKS = 'the store is locked';",
+                            search="?view=list&row=4242")
+        self.assertIsNone(out["R"]["replaced"])
 
 
 class TheOperationsBars(ScreenCase):
