@@ -218,8 +218,9 @@ what the page does not read yet.
 **Skills** is `/skills`, the v2 Skills page (sd:2123): the command pack's skill
 catalog with each skill's use in the last three weeks, read from
 `GET /api/skills` (`skills_screen.document`). Try, Review, Promote and Demote
-post the routes the classic screen posted; Run, Schedule, Adopt and Scan are copy
-only. The classic screen was retired in sd:3402; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
+post the routes the classic screen posted; Re-import and Evaluate run
+`sd skill intake` and install only on an approved revision (sd:3992); Run,
+Schedule, Adopt and Scan are copy only. The classic screen was retired in sd:3402; [`docs/pages/skills.md`](docs/pages/skills.md) has the detail.
 
 **Operations** has five tabs (`operations_screen.AREAS`). Usage is the default;
 the selected tab travels in the URL, for example `/operations?area=services`.
