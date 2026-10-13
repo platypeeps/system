@@ -127,7 +127,7 @@ cmd_run() {
   exec /usr/bin/env PORT="$PORT" VAULT="$VAULT" TASKS_SUBDIR="$TASKS_SUBDIR" \
     SECRET_FILE="$SECRET_FILE" FOLDER="$DIR" \
     DASH_STATIC="$DIR/../local-project-dashboard/sd_dashboard/v2/static" python3 - <<'PY'
-import datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
+import calendar, datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ["PORT"])
@@ -168,6 +168,11 @@ def set_field(fm, name, value):
         return re.sub(pat, f"{name}: {value}", fm, count=1, flags=re.M)
     return fm + f"\n{name}: {value}"
 
+def on_or_before(year, month, day):
+    # The day in that month, or its last day when the month is shorter: a
+    # task on the 31st or on Feb 29 raised here and stayed undone (sd:3559).
+    return datetime.date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
 def next_occurrence(rec, cur):
     # Supports the four shapes TaskNotes uses here: DAILY/WEEKLY/MONTHLY/
     # YEARLY with optional INTERVAL. Falls back to +1 day.
@@ -178,10 +183,12 @@ def next_occurrence(rec, cur):
     if freq == "WEEKLY":
         return cur + datetime.timedelta(weeks=iv)
     if freq == "MONTHLY":
+        # BYMONTHDAY keeps a task on the 31st there after a short month.
         m = cur.month - 1 + iv
-        return cur.replace(year=cur.year + m // 12, month=m % 12 + 1)
+        day = int((re.search(r"BYMONTHDAY=(\d+)(?![\d,])", rec) or [None, cur.day])[1]) or cur.day
+        return on_or_before(cur.year + m // 12, m % 12 + 1, day)
     if freq == "YEARLY":
-        return cur.replace(year=cur.year + iv)
+        return on_or_before(cur.year + iv, cur.month, cur.day)
     return cur + datetime.timedelta(days=1)
 
 def apply(f, action, days):

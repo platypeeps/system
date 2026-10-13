@@ -33,7 +33,7 @@
   }
   // fetch:end
   const GROUPS = [
-    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i']]],
+    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
@@ -494,9 +494,10 @@
   // required field is empty or spaces only, and the close asks again, so no path runs the command without its text. Enter in a
   // field is OK, not the form's first button, which is Keep and would drop what was typed (the design's sd:2369).
   // A field with options ([{ value, label }]) is a choice, not text: a select whose first option is the default (sd:3450).
+  // A text field's value, when given, is typed in already and can be changed (sd:3523).
   const fieldOf = f => html`<label class="label" for="cf-${f.name}">${f.label}</label>${f.options
     ? html`<select class="cap-in" id="cf-${f.name}" name="${f.name}"${f.help ? html` aria-describedby="${`cf-${f.name}-help`}"` : ''}>${f.options.map(x => html`<option value="${x.value}">${x.label}</option>`)}</select>`
-    : html`<input class="cap-in" id="cf-${f.name}" name="${f.name}" autocomplete="off" spellcheck="false"${f.required ? html` required aria-required="true"` : ''} placeholder="${f.placeholder || ''}"${f.help ? html` aria-describedby="${`cf-${f.name}-help`}"` : ''}>`}${f.help ? html`<p id="cf-${f.name}-help">${f.help}</p>` : ''}`;
+    : html`<input class="cap-in" id="cf-${f.name}" name="${f.name}" autocomplete="off" spellcheck="false"${f.required ? html` required aria-required="true"` : ''} value="${f.value || ''}" placeholder="${f.placeholder || ''}"${f.help ? html` aria-describedby="${`cf-${f.name}-help`}"` : ''}>`}${f.help ? html`<p id="cf-${f.name}-help">${f.help}</p>` : ''}`;
   function confirmAction({ title, body: text = '', cli = '', ok = 'Confirm', keep = 'Keep it', danger = true, fields = [] }) {
     let from = null;
     const line = v => typeof cli === 'function' ? cli(v) : cli;

@@ -13,6 +13,8 @@ lists nothing here and gets no buttons, because prose options are not parsed.
 
 - `document` is `/api/decisions`: every unresolved decision on an open item Tasks lists (`reads.backlog_items`,
   `reads.brief_notes`), the item's priority first, then the oldest, each with the revision `workflow.item_state` gives.
+  A question on a review batch (sd:3709, a task under a `review:` ref) is Review's: it is counted in `review`, and
+  Today draws one line that links there in place of its rows.
 - `answer` is `/api/decisions/answer`, posted with the item, the note, the option and that revision: the CLI's two
   verbs in one transaction under the revision.
   `workflow.add_item_note` writes the ruling, a `decision` note `Ruling on note #<note>: <option>`, and
@@ -31,6 +33,9 @@ from sd_db import reads, workflow
 __all__ = ["answer", "document", "parse", "request"]
 
 OPTION = re.compile(r"^[ \t]*Option:[ \t]*(.*?)[ \t]*$")
+#: A review batch's ref, as `sd_db.review` files it (`REF_SOURCE`, `review:<queue>:<batch>`); named here so Today reads
+#: without that module, and a test holds the two equal.
+BATCH_SOURCE, BATCH_PREFIX = "task-ref", "review:"
 
 
 def parse(body: str) -> tuple[str, list[str]]:
@@ -48,19 +53,22 @@ def parse(body: str) -> tuple[str, list[str]]:
 def document(connection, *, now: str | None = None) -> dict:
     open_items = {row["id"]: row for row in reads.backlog_items(connection, include_done_days=0, now=now)
                   if row["status"] != "done"}
-    found, revisions = [], {}
+    found, revisions, batched = [], {}, 0
     for row in reads.brief_notes(connection, list(open_items)):
         question, options = parse(row["body"])
         if row["kind"] != "question" or len(options) < 2:
             continue
+        item = open_items[row["item"]]
+        if item["source"] == BATCH_SOURCE and (item["external_id"] or "").startswith(BATCH_PREFIX):
+            batched += 1
+            continue
         if row["item"] not in revisions:
             revisions[row["item"]] = workflow.item_state(connection, row["item"])["revision"]
-        item = open_items[row["item"]]
         found.append({"note": row["id"], "item": row["item"], "title": item["title"], "repo": item["repo"],
                       "priority": item["priority"], "asked": row["timestamp"], "question": question,
                       "options": options, "revision": revisions[row["item"]]})
     found.sort(key=lambda d: (d["priority"] is None, d["priority"] or 0, d["asked"], d["note"]))
-    return {"decisions": found}
+    return {"decisions": found, "review": batched}
 
 
 def answer(connection, item: int, note: int, option: str, *, expected_revision: str, who: str) -> dict:

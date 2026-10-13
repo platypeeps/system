@@ -438,20 +438,34 @@ R.when = [cmd('document.pin').when(over), cmd('document.hide').when(over)];""", 
     def test_tag_posts_the_list_with_the_typed_tag_and_untag_posts_it_without(self):
         self.rows_of(**{"lab/plan.html": {"tags": ["board"]}})
         out = self.run_page("""const d = C.get('lab/plan.html'), tag = cmd('document.tag');
-R.det = ELS.details.html; document.getElementById('tag-in').value = 'board'; R.dup = tag.when(d);
-document.getElementById('tag-in').value = '  Q4 Plan '; R.when = tag.when(d);
-ELS.details.listeners.keydown.forEach(f => f({ target: { id: 'tag-in', value: document.getElementById('tag-in').value }, key: 'Enter', preventDefault() {} }));
-await flush(); lastToast().undo(); await flush();
+const enter = v => { document.getElementById('tag-in').value = v;
+  ELS.details.listeners.keydown.forEach(f => f({ target: { id: 'tag-in', value: v }, key: 'Enter', preventDefault() {} })); };
+R.det = ELS.details.html; R.when = tag.when(d); enter('board'); await flush();
+enter('  Q4 Plan '); await flush(); lastToast().undo(); await flush();
 C.put({ id: 'tag:b', type: 'document tag', doc: d, tag: 'board', label: 'board on The plan' });
 shellRun(cmd('document.untag'), C.get('tag:b')); await flush(); lastToast().undo(); await flush();""",
                             answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
         self.assertIn('id="tag-in"', out["R"]["det"])
         self.assertIn('data-cmd="document.untag"', out["R"]["det"])
-        self.assertEqual((out["R"]["dup"], out["R"]["when"]), ("already tagged board", True))
+        self.assertIs(out["R"]["when"], True)
         tags = lambda *t: {"root": "lab", "file": "plan.html", "tags": list(t)}
         self.assertEqual(self.view_posts(out), [tags("board", "q4-plan"), tags("board"), tags(), tags("board")])
-        self.assertEqual([t[0] for t in out["toasts"]], ["Tagged q4-plan · The plan", "Tag undone · The plan",
-                                                        "Removed tag board", "Untag undone · board on The plan"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["The plan not changed: already tagged board", "Tagged q4-plan · The plan",
+                                                        "Tag undone · The plan", "Removed tag board", "Untag undone · board on The plan"])
+        self.assertEqual(out["confirms"], [], "Enter in the Tags field tags the shown document without asking")
+
+    def test_tag_asks_with_the_last_tag_filled_in_and_names_the_tag(self):
+        # REGRESSION sd:3523: after one tag, Tag on another row applied the remembered tag with no field and no label.
+        out = self.run_page("""const tag = cmd('document.tag'), other = C.get('lab/overview.html');
+document.getElementById('tag-in').value = 'q4';
+ELS.details.listeners.keydown.forEach(f => f({ target: { id: 'tag-in', value: 'q4' }, key: 'Enter', preventDefault() {} })); await flush();
+document.getElementById('tag-in').value = '';
+R.fields = (tag.fields ? tag.fields(other) : []).map(f => [f.name, f.value, f.required]);
+shellRun(tag, other); await flush();
+FIELD_VALUES.tag = 'Board Q1'; shellRun(tag, other); await flush();""", answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
+        self.assertEqual(out["R"]["fields"], [["tag", "q4", True]])
+        self.assertEqual(out["confirms"], ["document.tag", "document.tag"], "Tag ran on another row without showing its tag")
+        self.assertEqual([t[0] for t in out["toasts"]], ["Tagged q4 · The plan", "Tagged q4 · Overview", "Tagged board-q1 · Overview"])
 
     def test_the_hidden_filter_shows_the_hidden_documents_and_only_them(self):
         self.rows_of(**{"civic/brief.html": {"hidden": True}, "lab/plan.html": {"pinned": True}})

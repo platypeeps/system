@@ -21,5 +21,7 @@ interpreter may need macOS Local Network permission to reach a LAN host, as
 local-ha-mcp's Node does. The design's arm, disarm, lock, unlock and toggle
 commands are registered but off with `home_screen.WRITES_REASON`, so the page
 sends nothing. Read state is copy only: its `curl` line names `$HA_TOKEN` and
-`$HA_URL` and never holds a value. The page reads `/api/home` once, through the
-shell's reader (`read.js`); a failed read draws no tile and says why.
+`$HA_URL` and never holds a value. The page reads `/api/home` through the
+shell's reader (`read.js`) when it opens, on Read again, and each minute while
+it is visible (sd:3522); the minute read draws no loading state, so the tiles
+keep their place, and a failed read draws no tile and says why.

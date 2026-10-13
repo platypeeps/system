@@ -30,15 +30,17 @@ LIB = FOLDER.parent / "lib"
 # set, `brew upgrade` never finishes; with BREW_QUIET, nothing is outdated.
 # BREW_GREEDY_CASK names a cask with `auto_updates true`: brew lists it as
 # outdated only when asked with --greedy. BREW_DEPENDENT names an outdated
-# formula that depends on the pinned one (awscli on python@3.14).
+# formula that depends on the pinned one (awscli on python@3.14). STUB_PINNED
+# names the pinned one; not BREW_PINNED, which the script sets, so an exported
+# value would reach the stub as the script's whole list (sd:3542).
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || echo example-formula
-                                [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED"
+                                [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED"
                                 [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
-  "list --pinned") [ -z "$BREW_PINNED" ] || echo "$BREW_PINNED" ;;
-  "uses --installed --recursive $BREW_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
+  "list --pinned") [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
+  "uses --installed --recursive $STUB_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
@@ -324,7 +326,7 @@ class UpgradeStepTest(unittest.TestCase):
     def test_a_pinned_formula_is_held_not_failed(self):
         """sd:3062: python@3.14 is pinned, so a newer version is held on
         purpose; the report says so, and does not count it as left over."""
-        result = self.run_verb("upgrade-report", BREW_PINNED="python@3.14")
+        result = self.run_verb("upgrade-report", STUB_PINNED="python@3.14")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         mail = self.sends()[0]
@@ -337,7 +339,7 @@ class UpgradeStepTest(unittest.TestCase):
         """sd:3329: brew upgrade refused awscli while python@3.14 was pinned
         and outdated ("You must `brew unpin python@3.14`") and exited 1, so
         the step failed every week. The sweep now upgrades the rest by name."""
-        result = self.run_verb("upgrade", "--apply", BREW_PINNED="python@3.14", BREW_DEPENDENT="awscli")
+        result = self.run_verb("upgrade", "--apply", STUB_PINNED="python@3.14", BREW_DEPENDENT="awscli")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.brew_calls()
@@ -347,7 +349,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("held    awscli python@3.14", result.stdout)
 
     def test_the_report_lists_a_formula_a_pin_holds_back_as_held(self):
-        result = self.run_verb("upgrade-report", BREW_PINNED="python@3.14", BREW_DEPENDENT="awscli")
+        result = self.run_verb("upgrade-report", STUB_PINNED="python@3.14", BREW_DEPENDENT="awscli")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         mail = self.sends()[0]
@@ -358,7 +360,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("upgrade: 0 upgraded, 1 still outdated", mail[1])
 
     def test_a_week_with_only_a_pinned_formula_outdated_is_quiet(self):
-        result = self.run_verb("upgrade-report", BREW_QUIET="1", BREW_PINNED="python@3.14")
+        result = self.run_verb("upgrade-report", BREW_QUIET="1", STUB_PINNED="python@3.14")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("nothing outdated", result.stdout)
