@@ -126,6 +126,24 @@ class RemediationFailure(unittest.TestCase):
         self.assertNotIn("FAILED", result.stdout)
         self.assertNotIn("did not finish", result.stdout)
 
+    def test_a_plist_whose_label_is_not_its_name_is_not_installed(self):
+        # sd:3547: launchd loads a plist under its own Label. One that differs
+        # read UNLOADED every run, and its bootstrap failed on the label
+        # already loaded.
+        labels = [line.strip() for line in (self.profiles / "personal.agent").read_text().splitlines()
+                  if line.strip() and not line.startswith("#")]
+        template = self.config / f"machine-setup/launchagents/{labels[0]}.plist"
+        template.write_text(template.read_text().replace("@LABEL@", "org.example.renamed"))
+        (self.home / "Library/LaunchAgents").mkdir(parents=True)
+        result = self.run_verb("update", "agents", "--apply")
+        out = result.stdout
+        self.assertIn(f"  DIFFERS {labels[0]} — {template} names Label 'org.example.renamed'; "
+                      "launchd would load it under that name", out)
+        self.assertFalse((self.home / f"Library/LaunchAgents/{labels[0]}.plist").exists(), out)
+        bootstraps = [line for line in self.log(self.launchctl_log) if line.startswith("bootstrap ")]
+        self.assertFalse([b for b in bootstraps if b.endswith(f"/{labels[0]}.plist")], bootstraps)
+        self.assertTrue([b for b in bootstraps if b.endswith(f"/{labels[1]}.plist")], out + result.stderr)
+
     def test_a_refused_bootstrap_is_reported_and_the_next_agent_still_loads(self):
         labels = [line.strip() for line in (self.profiles / "personal.agent").read_text().splitlines()
                   if line.strip() and not line.startswith("#")]

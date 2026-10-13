@@ -109,8 +109,9 @@ cp -R local-machine-setup/examples/. ~/.config/system/machine-setup/
 `machine-setup.env` in the config folder.
 
 The config folder can be a git checkout of its own. `capture` then refuses to
-write from a checkout behind its upstream. Without git, it simply writes the
-files. `profile-autocapture.sh` never commits either way.
+write from a checkout behind its upstream. A file it changes that git does not
+hold as it is (no checkout, untracked, or edited) keeps a dated `.bak-<stamp>`
+copy beside it. `profile-autocapture.sh` never commits either way.
 
 LaunchAgent labels start with `$SYSTEM_TOOLS_LABEL_PREFIX` (default
 `local.system-tools`). A template in `launchagents/` may use `@LABEL@`,
@@ -341,9 +342,8 @@ The satellite runs none of the hub's agents and jobs; `SD_HUB_ONLY_AGENTS` in `m
 
 ### Drift alerts
 
-`status` runs every reporting stage — bin, dotfiles, envs, prompts, repos,
-appstore, cron, sd, agents, services, tooling, system, macos, obsidian, iterm2 — and folds
-each one's divergence into a single count. It forces dry-run mode around those
+`status` runs every stage in `STAGES` but `brew`, which has a block of its
+own, and folds each one's divergence into a single count. It forces dry-run mode around those
 stages, so `status --apply` stays read-only no matter what.
 
 It used to run six of them, and the eight it skipped were exactly the ones
@@ -360,10 +360,10 @@ offering to fix it. `tests/test_status_drift.py` fails a `[dry-run]` line with
 no drift word on it or above it. `status` checks taps, formulae, casks and
 pins in a brew block of its own.
 
-`status --fail-on-drift` exits 1 when anything drifted. The
-`machine-setup-update-nightly` job in `local-cron-jobs` runs it as its last
-step, after `update --apply`, so drift the update could not fix files a
-failure report that Today shows. A clean machine stays silent.
+`status --fail-on-drift` exits 1 when anything drifted. A cron job that runs
+it as its last step, after `update --apply`, turns drift the update could not
+fix into a failure report that Today shows; `local-cron-jobs/examples/` ships
+no such job, so write one in the config folder. A clean machine stays silent.
 
 ### Additive capture, unattended
 

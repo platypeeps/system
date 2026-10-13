@@ -28,4 +28,4 @@ paths:
 - A suite that runs a caller end to end switches its stage off; unset reaches the live endpoint.
 - Stub `jev enabled STAGE` in suites by reading that stage's variable, as the real command does; a stub that ignores the argument cannot express "switched off".
 - A suite that can reach the real `jev` pins `JEV_METER=0`, `JEV_CORPUS=0` or a temp `JEV_CORPUS_DIR`, and `JEV_TRACES_URL=0`; unpinned, it writes the operator's ledger and corpus.
-  - Pin the URL to an off word: `jev.sh` refills an unset or empty one from `<config>/jev/.env` (sd:2799).
+  - Pin the URL to an off word: `jev.sh` refills an unset one from `<config>/jev/.env` (sd:2799); an exported empty one wins, as every exported value does (sd:3553).

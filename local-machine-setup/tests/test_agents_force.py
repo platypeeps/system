@@ -105,5 +105,17 @@ class AgentsForceTest(unittest.TestCase):
                          [f"bootout gui/{uid}/{self.label}", f"bootstrap gui/{uid} {self.plist}"])
 
 
+class ForceHelp(unittest.TestCase):
+    def test_help_names_the_stages_force_overwrites(self):
+        # sd:3546: help promised --force for a .env, and the envs stage never
+        # reads it; a live .env holds credentials the template omits.
+        result = subprocess.run([str(SCRIPT), "help"], capture_output=True, text=True,
+                                env={**os.environ, **fixture_config.env()})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("--force overwrites a DIFFERS dotfile or launch agent too, keeping a .bak- copy; "
+                      "a .env is never overwritten", text)
+
+
 if __name__ == "__main__":
     unittest.main()

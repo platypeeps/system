@@ -213,8 +213,8 @@ unconfigured, and `status` says `3`.
 
 A `.env` in `<config>/jev/` works too — copy `.env.example` there;
 `<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system` — but it
-provides defaults only: a value already in the environment wins, so
-`JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one call.
+provides defaults only: a value already in the environment wins, an empty
+one too, so `JEV_MODEL=jev-1.13.0 jev noul ...` pins a model for one call.
 
 `JEV_URL`, `JEV_MODEL`, `JEV_TIMEOUT` and `JEV_RETRIES` override the endpoint,
 the model, the per-attempt timeout and the retry count. Retries cover 429, 529
