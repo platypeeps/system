@@ -150,6 +150,12 @@ class EnvFile(unittest.TestCase):
         done = shell('st_source_env notify; set | grep -c "^_st_" || true', dict(self.envv, A="x"))
         self.assertEqual(done.stdout.strip(), "0")
 
+    def test_a_named_file_in_the_tool_folder_keeps_the_rule(self):
+        # sd:3964: machine-setup reads <config>/machine-setup/machine-setup.env.
+        (self.conf / "notify/other.env").write_text("A=other\nB=other\n")
+        done = shell('st_source_env notify other.env; sh -c \'printf "%s|%s" "$A" "$B"\'', dict(self.envv, B=""))
+        self.assertEqual(done.stdout, "other|")
+
     def test_no_tracked_script_loads_its_env_file_its_own_way(self):
         # sd:3553 class pass. st_source_env is the one loader; a hand-rolled
         # snapshot (ENV_X="${X:-}") let an exported empty value lose, and a
@@ -169,8 +175,6 @@ class EnvFile(unittest.TestCase):
         allowed = {
             # Third-party tools' own files, outside the config root (CLAUDE.md deviations).
             "local-gito/gito.sh", "local-prism/prism.sh",
-            # machine-setup.env lets the file win; filed for the machine-setup lane.
-            "local-machine-setup/machine-setup.sh",
         }
         self.assertLessEqual(sourced, allowed, out)
 
