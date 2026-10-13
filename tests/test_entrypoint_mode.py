@@ -1,4 +1,4 @@
-"""Every folder's entrypoint is executable and keeps convention 6 (sd:2648, sd:3552).
+"""Every folder's entrypoint is executable and keeps conventions 1 and 6 (sd:2648, sd:3552, sd:3554).
 
 Convention 1 gives each runnable folder one entrypoint, and `./<name>.sh`
 only runs when git tracks it as mode 100755. An entrypoint once tracked as
@@ -10,6 +10,11 @@ folder is checked the day it is tracked. A folder's entrypoint is the one
 local-health-check probes: `<stem>.sh`, where the stem is the folder name
 minus `local-` or `mezmo-`, or else the folder's only root `*.sh`. A folder
 with neither (`lib/`, `tests/`) has no entrypoint and is skipped.
+
+Each entrypoint also runs in a sandbox: a bare call exits 1 with usage on
+stderr, and `help`, `-h` and `--help` exit 0 with usage on stdout. A folder
+whose bare call acts, and a folder whose entrypoint is not a shell script,
+are named on CLAUDE.md "Deliberate deviations" lines, which this reads.
 
 Each entrypoint whose `status` answers unlike an unknown verb also runs it
 on an empty machine: a scratch HOME and config folder, stubs first on PATH
@@ -126,6 +131,27 @@ class Sandbox:
 
 
 class TheTree(unittest.TestCase):
+    def test_a_folder_that_runs_another_language_is_recorded(self):
+        entries = index()
+        roots = {}
+        for path in entries:
+            parts = path.split("/")
+            if len(parts) == 2:
+                roots.setdefault(parts[0], set()).add(Path(parts[1]).suffix)
+        programs = {f for f, suffixes in roots.items() if suffixes & {".py", ".js"} and ".sh" not in suffixes}
+        self.assertIn("local-agent-meter", programs, "the enumeration found no program folders")
+        self.assertEqual(set(), programs - recorded("Not a shell entrypoint"),
+                         "a root *.py or *.js with no *.sh beside it: give the folder its <name>.sh, "
+                         "or name it on CLAUDE.md's `Not a shell entrypoint` line")
+
+    def test_each_deviation_names_a_folder_that_exists(self):
+        text = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+        section = text.split("Deliberate deviations:", 1)[1].split("\n## ", 1)[0]
+        named = set(re.findall(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`", section))
+        folders = {path.split("/")[0] for path in index()}
+        self.assertIn("local-cswap", named)
+        self.assertEqual(set(), named - folders, "a deviation names a folder that is gone; drop it")
+
     def test_every_entrypoint_is_tracked_executable(self):
         found = entrypoints(index())
         self.assertIn("local-repo-sync/repo-sync.sh", found, "the enumeration found no entrypoints")
@@ -139,6 +165,32 @@ class TheTree(unittest.TestCase):
             "python3 tests/test_entrypoint_mode.py" in lines,
             "the tests/ci-native.sh preflight no longer runs this file",
         )
+
+
+class UsageOnAnEmptyMachine(unittest.TestCase):
+    def setUp(self):
+        self.paths = sorted(p for p in entrypoints(index()) if not p.startswith(RETIRED + "/"))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sandbox = Sandbox(Path(tmp.name))
+
+    def answers(self, paths, *args):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return dict(zip(paths, pool.map(lambda p: self.sandbox.run(p, *args), paths)))
+
+    def test_a_bare_call_prints_usage_to_stderr_and_exits_1(self):
+        acts = recorded("No-arg runs the action")
+        paths = [p for p in self.paths if p.split("/")[0] not in acts]
+        wrong = {p: (code, err[:80]) for p, (code, _, err) in self.answers(paths).items()
+                 if code != 1 or not err.strip()}
+        self.assertEqual({}, wrong, "convention 1: no-arg prints usage to stderr and exits 1; "
+                         "a bare call that acts goes on CLAUDE.md's `No-arg runs the action` line")
+
+    def test_each_help_form_prints_usage_to_stdout_and_exits_0(self):
+        for form in ("help", "-h", "--help"):
+            wrong = {p: (code, err[:80]) for p, (code, out, err) in self.answers(self.paths, form).items()
+                     if code != 0 or not out.strip()}
+            self.assertEqual({}, wrong, f"convention 1: `{form}` prints usage to stdout and exits 0")
 
 
 class StatusOnAnEmptyMachine(unittest.TestCase):
