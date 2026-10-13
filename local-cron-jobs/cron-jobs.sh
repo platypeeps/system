@@ -550,7 +550,7 @@ stop_tee() {
 
 # Bounded (sd:3292): the job is over and the lock still held, so a hung
 # database call held the next slots off for as long as it hung. A timeout or
-# failure is logged and leaves the job's exit code alone.
+# failure is logged, returns 1 and leaves the job's exit code alone.
 # CRON_JOBS_REPORT_TIMEOUT is the bound in seconds (default 60).
 record_run_report() { # job, run identity, start, end, exit, log offset
   local report_sd
@@ -560,7 +560,26 @@ record_run_report() { # job, run identity, start, end, exit, log offset
       --started "$3" --ended "$4" --exit-code "$5" --offset "$6" \
       --log "$LOG_DIR/$1.log" --json >/dev/null; then
     echo "[$1] report was not recorded in the workflow database; source remains in $LOG_DIR/$1.log (offset $6, run $2)" >&2
+    return 1
   fi
+  rm -f "$LOG_DIR/.$1.unreported"
+}
+
+# A report that did not reach the database carries findings nothing else
+# holds: a producer has already moved its baseline or acted (sd:3537). The
+# next run's report starts at this run's offset, so it carries them, and a
+# push says so meanwhile. The offset is written before the push, so a push
+# that hangs or fails cannot lose it.
+report_unrecorded() { # job, log offset
+  printf '%s\n' "$2" > "$LOG_DIR/.$1.unreported" || true
+  osascript -e "display notification \"Job '$1': report not recorded. See local-cron-jobs/logs/$1.log.\" with title \"cron-jobs report\"" 2>/dev/null || true
+  # Optional phone push via ntfy.sh: set NTFY_TOPIC in <config>/cron-jobs/notify.conf.
+  local NTFY_TOPIC=""
+  # shellcheck source=/dev/null
+  [ ! -f "$CONF_DIR/notify.conf" ] || . "$CONF_DIR/notify.conf"
+  [ -z "$NTFY_TOPIC" ] || curl -s -m 10 -H "Title: cron-jobs: $1 report not recorded" -H "Priority: high" \
+    -d "On $(hostname -s). Log: local-cron-jobs/logs/$1.log from byte $2." \
+    "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || true
 }
 
 # The outcome line every run that started owes its log. cmd_exec writes "done"
@@ -696,7 +715,8 @@ exec_exit() {
   stop_tee
   # The report, once: the normal end clears EXEC_JOB before it files its own.
   [ -z "$owed" ] || record_run_report "$owed" "$EXEC_RUN" "$EXEC_STARTED" \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET"
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$code" "$EXEC_OFFSET" \
+    || report_unrecorded "$owed" "$EXEC_OFFSET"
 }
 
 # launchd's own spawn counter for a job, or "" when launchd does not hold the
@@ -1109,6 +1129,10 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # stdout there.
   local report_offset=0 report_started report_run
   [ ! -f "$LOG_DIR/$job.log" ] || report_offset="$(wc -c < "$LOG_DIR/$job.log" | tr -d ' ')"
+  # A report the last run could not record starts this one (report_unrecorded).
+  local lost
+  lost="$(cat "$LOG_DIR/.$job.unreported" 2>/dev/null || true)"
+  case "$lost" in ''|*[!0-9]*) ;; *) [ "$lost" -gt "$report_offset" ] || report_offset="$lost" ;; esac
   report_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   report_run="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   start_tee "$LOG_DIR/$job.log"
@@ -1226,7 +1250,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
   record_outcome "$job" "$rc"
   EXEC_JOB=""
   stop_tee
-  record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset"
+  record_run_report "$job" "$report_run" "$report_started" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$rc" "$report_offset" \
+    || report_unrecorded "$job" "$report_offset"
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 

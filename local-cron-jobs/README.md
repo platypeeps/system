@@ -47,6 +47,7 @@ directory outside the checkout:
 <config>/cron-jobs/jobs/*.job         shared jobs: every machine runs them
 <config>/cron-jobs/jobs/<host>/*.job  this machine's own jobs
 <config>/cron-jobs/.env           the variables below (copy .env.example)
+<config>/cron-jobs/notify.conf    NTFY_TOPIC for a phone push when a report is lost (copy notify.conf.example)
 ```
 
 The script reads `.env` on every call, including the runs launchd starts with
@@ -197,6 +198,12 @@ that exits non-zero, or prints a line `SD_REPORT_ATTENTION: <reason>`, opens a
 Reports row that needs attention, and Today lists it until it is acknowledged.
 A job with findings prints that line and exits 0; nothing is mailed or pushed
 (sd:3454). On a non-zero exit the wrapper also appends to `logs/failures.log`.
+
+A report that does not reach the database (no `sd`, the hub down, a database
+error) is not lost: the wrapper posts a macOS notification, pushes to
+[ntfy.sh](https://ntfy.sh) when `NTFY_TOPIC` is set in `notify.conf`, and the
+job's next report starts where the lost one did, so it carries the findings a
+producer will not print again (sd:3537).
 
 `status` lists only failures that are still outstanding. A logged failure is
 dropped once the job's own log records a later `[<job>] <ts> done` line, so a

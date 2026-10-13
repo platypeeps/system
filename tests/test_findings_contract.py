@@ -62,7 +62,8 @@ class InventoryTest(unittest.TestCase):
         body = body[:body.index("\n}\n")]
         self.assertNotIn("curl", body)
         self.assertNotIn("osascript", body)
-        self.assertFalse((ROOT / "local-cron-jobs/notify.conf.example").exists())
+        # notify.conf now serves only report_unrecorded, the lost-report push.
+        self.assertIn("report is not recorded", (ROOT / "local-cron-jobs/notify.conf.example").read_text())
 
 
 def _stub(path, body):

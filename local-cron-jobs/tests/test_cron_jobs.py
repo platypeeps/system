@@ -1862,6 +1862,61 @@ class RunReportTest(unittest.TestCase):
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
 
+    def lost_report_case(self, first_job):
+        """One run whose report is not recorded, then two that are: the
+        ingest offsets of the three, the log, and the pushes."""
+        curl_log = self.fx.tmp / "curl-calls.txt"
+        curl = self.fx.quiet / "curl"
+        curl.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{curl_log}'\n")
+        curl.chmod(curl.stat().st_mode | stat.S_IXUSR)
+        (self.fx.conf_dir / "notify.conf").write_text("NTFY_TOPIC=example-topic\n")
+        log = self.fx.folder / "logs" / "demo.log"
+        log.parent.mkdir(exist_ok=True)
+        log.write_text("[demo] an older run\n")
+        self.fx.write_job("demo", first_job)
+        self.exec_job(FAKE_SD_EXIT="3")
+        pushes = (self.fx.notifications(), curl_log.read_text() if curl_log.exists() else "")
+        # A producer that reports a finding once and moves its baseline.
+        flag = self.fx.tmp / "baseline-moved"
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\n'
+                                  f'JOB_COMMAND="[ -f {flag} ] || {{ touch {flag}; echo SD_REPORT_ATTENTION: new agent; }}"\n')
+        self.exec_job()
+        self.exec_job()
+        offsets = [int(re.search(r"--offset (\d+) ", line).group(1)) for line in self.reports()]
+        return offsets, log.read_text().encode(), pushes
+
+    def test_a_lost_report_pushes_and_the_next_report_starts_at_the_lost_run(self):
+        # REGRESSION (sd:3537). A failed ingest returned 0 and nothing kept
+        # the run's findings: the producer had moved its baseline, so the
+        # next run found nothing and the finding was lost.
+        offsets, log, (banners, posts) = self.lost_report_case(
+            'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="echo SD_REPORT_ATTENTION: new agent; touch ' +
+            str(self.fx.tmp / "baseline-moved") + '"\n')
+        self.assertEqual(len(banners), 1, banners)
+        self.assertIn("ntfy.sh/example-topic", posts)
+        self.assertEqual(offsets[1], offsets[0], offsets)
+        self.assertIn(b"SD_REPORT_ATTENTION: new agent", log[offsets[1]:])
+        self.assertGreater(offsets[2], offsets[1], "a recorded report clears the carry")
+
+    def test_a_lost_report_from_the_trap_pushes_and_carries_too(self):
+        # REGRESSION (sd:3537). The EXIT trap's report is the second caller.
+        offsets, _, (banners, posts) = self.lost_report_case(
+            'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="true"\n'
+            f'JOB_DIR="{self.fx.tmp / "no-such-directory"}"\n')
+        self.assertEqual(len(banners), 1, banners)
+        self.assertIn("ntfy.sh/example-topic", posts)
+        self.assertEqual(offsets[1], offsets[0], offsets)
+        self.assertGreater(offsets[2], offsets[1], offsets)
+
+    def test_a_recorded_report_pushes_nothing_and_carries_nothing(self):
+        # PIN. Only a lost report pushes.
+        self.fx.write_job("demo", 'JOB_SCHEDULE="0 3 * * *"\nJOB_COMMAND="echo hi"\n')
+        self.exec_job()
+        self.exec_job()
+        offsets = [int(re.search(r"--offset (\d+) ", line).group(1)) for line in self.reports()]
+        self.assertGreater(offsets[1], offsets[0], offsets)
+        self.assertEqual(self.fx.notifications(), [])
+
 
 class LaunchdLifetimeTest(unittest.TestCase):
     """The recorded count answers only for the launchd lifetime it came from.
