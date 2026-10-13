@@ -121,7 +121,7 @@ class TheTile(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "2026-09-06 - Intel Brief.md").write_text("---\ntitle: x\n---\n\n# Intel\n\nThree   items\nworth reading.\n")
             (folder / "notes.txt").write_text("not a brief")
-            with mock.patch.dict(os.environ, {"VAULT": str(Path(directory) / "Vault")}):
+            with mock.patch.dict(os.environ, {"OBSIDIAN_VAULT": str(Path(directory) / "Vault")}):
                 got = briefs_screen.collect()
         self.assertEqual((got["total"], got["shown"]), (1, 1))
         row = got["briefs"][0]

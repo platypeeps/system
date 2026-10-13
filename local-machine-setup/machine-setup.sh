@@ -2208,9 +2208,9 @@ stage_obsidian() {
     echo "  no Obsidian plugins in this profile"
     return 0
   fi
-  vault="${OBSIDIAN_VAULT:-}"
+  vault="$(st_shared OBSIDIAN_VAULT)"
   if [ -z "$vault" ]; then
-    echo "  SKIP    OBSIDIAN_VAULT not set (machine-setup.env or the environment)"
+    echo "  SKIP    OBSIDIAN_VAULT not set (shared.env or the environment)"
     return 0
   fi
   py="${MACHINE_SETUP_PYTHON:-python3}"
@@ -5342,7 +5342,8 @@ environment:
   SYSTEM_TOOLS_CONFIG     config root (default ${XDG_CONFIG_HOME:-~/.config}/system)
   MACHINE_SETUP_PROFILE_DIR, MACHINE_SETUP_DOTFILE_DIR, MACHINE_SETUP_ENV_DIR,
   MACHINE_SETUP_AGENT_DIR  override one of the four folders above
-  SYSTEM_TOOLS_LABEL_PREFIX  launchd label prefix (default local.system-tools)
+  SYSTEM_TOOLS_LABEL_PREFIX  launchd label prefix (default local.system-tools);
+                          with OBSIDIAN_VAULT, set once in shared.env
   MACHINE_SETUP_PROFILE   override the recorded profile for one run
   MACHINE_SETUP_PROFILES  the profile names, space-separated, when the
                           profile directory should not decide them
@@ -5354,6 +5355,7 @@ environment:
   MACHINE_SETUP_PLACEHOLDER_EXPECTED  doctor: folders whose .env may keep
                           placeholder values (space-separated)
   OBSIDIAN_VAULT          vault path for the obsidian stage; unset skips it
+                          (shared.env or the environment)
   MACHINE_SETUP_PYTHON    the python3 the obsidian stage reads the vault with
   MACHINE_SETUP_STEP_TIMEOUT  upgrade: one bound, in seconds, for every step
   SD_PACK_ROOT            the command pack checkout

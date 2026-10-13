@@ -104,6 +104,16 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(out, GOLDEN_LIST)
         self.assertEqual(html, GOLDEN_HTML)
 
+    def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
+        # sd:3990. Kept once in <config>/shared.env, not in each tool's .env.
+        (self.root / "config").mkdir(exist_ok=True)
+        (self.root / "config" / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.root / "vault"}"\n')
+        home = self.root / "no-home"
+        home.mkdir()
+        out, html, rc = harness.run(self.root, {"OBSIDIAN_VAULT": None, "HOME": str(home)})
+        self.assertEqual(rc, 0)
+        self.assertEqual(harness.templated(out), self.digest()[0])
+
     def test_a_failing_jev_leaves_the_digest_intact(self):
         out, html = self.digest({**ON, "JEV_STUB_ASK_FAIL": "1"})
         self.assertEqual(out, GOLDEN_LIST)

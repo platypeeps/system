@@ -90,7 +90,8 @@ every one of them against 127.0.0.1 (sd:1203).
   Settings > Privacy & Security > Files and Folders / Full Disk Access.
   Until granted, action requests block and return nothing.
 - Environment overrides, exported or in `<config>/task-actions/.env` (`<config>` is
-  `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; see `.env.example`): `TASK_ACTIONS_PORT` (8766), `OBSIDIAN_VAULT` (default
-  `~/Documents/Obsidian Vault`), `OBSIDIAN_TASKS_SUBDIR`,
-  `TASK_ACTIONS_SECRET_FILE`, `SYSTEM_TOOLS_LABEL_PREFIX`.
+  `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; see `.env.example`): `TASK_ACTIONS_PORT` (8766), `OBSIDIAN_TASKS_SUBDIR`,
+  `TASK_ACTIONS_SECRET_FILE`. `OBSIDIAN_VAULT` (default
+  `~/Documents/Obsidian Vault`) and `SYSTEM_TOOLS_LABEL_PREFIX` are kept once in
+  `<config>/shared.env`; an exported value wins.
 - Tests: `task-actions.sh test` runs `tests/`; `launchctl` and `tailscale` are stubs there.

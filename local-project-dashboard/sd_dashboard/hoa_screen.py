@@ -6,16 +6,9 @@ The page is `v2/hoa.html`; it holds no data. It reads one JSON document,
 **Where the data is.** The design reads one HOA checkout: the asset map
 (`water/map/assets.geojson`, `water/map/base.geojson`), the Mission telemetry
 export (`water/metrics/mission/*.csv`) and the checkout's open `followup`
-items. The checkout's path and its contents describe a place, and this
-repository is public, so the path lives in `<config>/project-dashboard/hoa.conf`
-(`hoa.conf.example` is the template), one line per setting:
-
-    repo|<path>        the HOA checkout; its open `followup` items are the obligations
-    mission|<path>     optional: the export folder, default <repo>/water/metrics/mission
-    assets|<path>      optional: the asset layer, default <repo>/water/map/assets.geojson
-    base|<path>        optional: lots, tracts and plats, default <repo>/water/map/base.geojson
-
-A line this module cannot read is named in `config.problems` and skipped.
+items. The checkout is the one repo in the workflow database's repo table
+whose folder is named `hoa` (sd:3985), so no config file holds its path. A
+second repo with that folder name is an error that names both, never a guess.
 
 **Each source is guarded on its own.** A file that is missing or does not
 parse is that part's `error`; the other parts still answer, and the page shows
@@ -32,14 +25,12 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import reads
+from sd_db import reads, repos
 
-from .documents import _config_dir, pipe_lines
+__all__ = ["SOON_DAYS", "STALE_DAYS", "TREND_DAYS", "document"]
 
-__all__ = ["CONFIG", "SOON_DAYS", "STALE_DAYS", "TREND_DAYS", "document", "parse"]
-
-#: In this machine's config directory, never supplied by a request. The checkout ships `hoa.conf.example` only.
-CONFIG = _config_dir() / "hoa.conf"
+#: The folder name that picks the checkout out of the repo table.
+FOLDER = "hoa"
 
 #: Rows the trends carry: the page's widest range (30d).
 TREND_DAYS = 30
@@ -50,7 +41,6 @@ SOON_DAYS = 7
 #: The export is daily and the pump file lags the analog file by one day, so a newest row two days old is on time.
 STALE_DAYS = 2
 
-KEYS = ("repo", "mission", "assets", "base")
 DEFAULTS = {"mission": "water/metrics/mission", "assets": "water/map/assets.geojson", "base": "water/map/base.geojson"}
 
 #: Each Mission file, the column that dates a row, and the columns the page reads.
@@ -65,27 +55,18 @@ ASSET_KEYS = ("id", "type", "name", "status", "accuracy", "source", "notes", "up
 BASE_KEYS = ("kind", "ain", "label", "luc", "acres")
 
 
-def parse(text: str) -> tuple[dict, list[str]]:
-    """The settings, and one problem per line that was not read."""
-    found, problems = {}, []
-    for number, line, _ in pipe_lines(text):
-        key, bar, value = (part.strip() for part in line.partition("|"))
-        if not bar or key not in KEYS or not value:
-            problems.append(f"line {number}: expected <key>|<path>, key one of {', '.join(KEYS)}")
-        elif key in found:
-            problems.append(f"line {number}: {key} is set twice")
-        elif not os.path.isabs(os.path.expanduser(value)):
-            problems.append(f"line {number}: {key} needs an absolute path")
-        else:
-            found[key] = Path(os.path.expanduser(value))
-    if "repo" not in found and not problems:
-        problems.append("no repo line: the HOA checkout is not named")
-    return found, problems
+def checkout(connection) -> tuple[str | None, Path | None, list[str]]:
+    """The registered repo whose folder is named `hoa`: its recorded path, its place on disk, and what stops the read."""
+    found = [row["path"] for row in repos.registered(connection) if Path(row["path"]).name == FOLDER]
+    if len(found) > 1:
+        return None, None, [f"two repos are named {FOLDER}: {', '.join(found)}"]
+    if not found:
+        return None, None, []
+    return found[0], Path(os.path.expanduser(found[0])), []
 
 
-def _paths(found: dict) -> dict:
-    repo = found.get("repo")
-    return {key: found.get(key) or (repo / DEFAULTS[key] if repo else None) for key in DEFAULTS}
+def _paths(repo: Path | None) -> dict:
+    return {key: repo / place if repo else None for key, place in DEFAULTS.items()}
 
 
 def _day(text: str) -> date:
@@ -111,7 +92,7 @@ def _mission(folder: Path | None, today: date) -> dict:
     out = {"dir": str(folder or ""), "error": "", "files": [], "latest": "", "age_days": None, "stale": False,
            "analog": [], "pump": [], "alarms": [], "alarms_today": {"count": None, "reason": ""}}
     if folder is None:
-        out["error"] = "no export folder: hoa.conf names no repo or mission path"
+        out["error"] = "no export folder: no repo named hoa is registered"
         return out
     for key, (name, stamp, columns) in FILES.items():
         try:
@@ -152,7 +133,7 @@ def _mission(folder: Path | None, today: date) -> dict:
 
 def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
     if path is None:
-        return {"error": f"no {kind} file: hoa.conf names no repo or {kind} path", "features": []}
+        return {"error": f"no {kind} file: no repo named hoa is registered", "features": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         features = []
@@ -173,12 +154,12 @@ def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
     return {"error": "", "features": features}
 
 
-def _followups(connection, repo: Path | None, now: str, today: date) -> dict:
+def _followups(connection, repo: str | None, now: str, today: date) -> dict:
     """The checkout's open `followup` items, ranked: overdue, then due within a week, then the rest; priority breaks ties."""
     if repo is None:
-        return {"error": "no checkout: hoa.conf names no repo", "rows": []}
+        return {"error": "no checkout: no repo named hoa is registered", "rows": []}
     rows = []
-    for item in reads.backlog_items(connection, kind="followup", repo=str(repo), now=now):
+    for item in reads.backlog_items(connection, kind="followup", repo=repo, now=now):
         if item["status"] == "done":
             continue
         try:
@@ -195,28 +176,21 @@ def _followups(connection, repo: Path | None, now: str, today: date) -> dict:
     return {"error": "", "rows": rows}
 
 
-def document(connection, *, now: str, config: Path | None = None) -> dict:
+def document(connection, *, now: str) -> dict:
     """The HOA page's document: the map, the Mission export and the checkout's open followups."""
-    config = CONFIG if config is None else config
-    source = f"<config>/project-dashboard/{config.name}"
-    try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        state, found, problems = "missing", {}, []
-    except (OSError, UnicodeDecodeError) as error:
-        state, found, problems = "error", {}, [f"not read: {error.__class__.__name__}"]
-    else:
-        found, problems = parse(text)
-        state = "partial" if problems else "read"
+    recorded, place, problems = checkout(connection)
+    state = "error" if problems else "read" if recorded else "missing"
     today = datetime.fromisoformat(now.replace("Z", "+00:00")).date()
-    paths = _paths(found)
-    mission, followups = _mission(paths["mission"], today), _followups(connection, found.get("repo"), now, today)
+    paths = _paths(place)
+    mission, followups = _mission(paths["mission"], today), _followups(connection, recorded, now, today)
+    if problems:
+        mission["error"], followups["error"] = problems[0], problems[0]
     return {
         "read": now,
-        "config": {"state": state, "source": source, "problems": problems},
+        "config": {"state": state, "source": "the repo table", "problems": problems},
         "mission": mission,
-        "assets": _geojson(paths["assets"], ASSET_KEYS, "assets"),
-        "base": _geojson(paths["base"], BASE_KEYS, "base"),
+        "assets": _geojson(paths["assets"], ASSET_KEYS, "assets") if not problems else {"error": problems[0], "features": []},
+        "base": _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []},
         "followups": followups,
         "attention": _attention(mission, followups),
     }

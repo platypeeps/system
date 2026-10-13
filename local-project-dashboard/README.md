@@ -707,15 +707,16 @@ first two learned the hard way on 2026-08-28 when the page sat on
 | `CRON_JOBS_EXTRA_DIRS` | none — further job directories Toolbox reads, as `cron-jobs.sh` does |
 | `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
 | `SD_DASHBOARD_PYTHON` | command pack `.venv/bin/python`; runs `serve`, `preflight`, `install`, `health` and `grants`, and so the tiles a Resources view renders |
-| `VAULT` | `~/Documents/Vault` — read by `collectors.py` itself; set it in `<config>/project-dashboard/.env` |
-| `REPO_ROOT` | `~/repos` — likewise |
-| `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` — launchd label prefix; the dashboard's LaunchAgent is `<prefix>.sd-dashboard`, and Toolbox reads cron jobs as `<prefix>.cron.<job>` |
+| `OBSIDIAN_VAULT` | `~/Documents/Obsidian Vault` — read by `collectors.py` itself; kept once in `<config>/shared.env` |
+| `REPO_ROOT` | `~/repos` — read by `collectors.py` itself; set it in `<config>/project-dashboard/.env` |
+| `SYSTEM_TOOLS_LABEL_PREFIX` | `local.system-tools` — launchd label prefix, kept once in `<config>/shared.env`; the dashboard's LaunchAgent is `<prefix>.sd-dashboard`, and Toolbox reads cron jobs as `<prefix>.cron.<job>` |
 | `JEV_JOB_TRIAGE` | unset (on) — `0`, `off`, `false`, `no` or `disabled` switches off the failed-job Jev shadow |
 
-`dashboard.sh` exports whichever of `VAULT`, `REPO_ROOT`,
-`SYSTEM_TOOLS_LABEL_PREFIX`, `SYSTEM_TOOLS_CONFIG` and `JEV_JOB_TRIAGE` are set after sourcing
-`<config>/project-dashboard/.env`, and `install` copies them (and
-`CRON_JOBS_EXTRA_DIRS`) into the LaunchAgent, so the server reads the same values. The
+`dashboard.sh` exports whichever of `REPO_ROOT`, `SYSTEM_TOOLS_CONFIG` and
+`JEV_JOB_TRIAGE` are set after sourcing `<config>/project-dashboard/.env`, plus
+`SYSTEM_TOOLS_LABEL_PREFIX` and `OBSIDIAN_VAULT` as `<config>/shared.env` gives
+them, and `install` copies them (and `CRON_JOBS_EXTRA_DIRS`) into the
+LaunchAgent, so the server reads the same values. The
 Vault tile lists the vault's top-level `<Area> Home` folders, found on disk.
 
 The earlier server's knobs went with it: the port, the refresh interval, the
@@ -723,7 +724,8 @@ tailnet bind, the allowed hosts, the ack file and the Jira credentials were all
 about serving that page. Current workflow runtime settings are documented
 above and in [RUNTIME.md](RUNTIME.md). `OBSIDIAN_VAULT` and
 `DASHBOARD_REPO_ROOT` are gone too, and were never read on this path — the
-tile has always taken `VAULT` and `REPO_ROOT` straight from the environment.
+tile has always taken the vault and `REPO_ROOT` straight from the environment.
+The vault's old name `VAULT` is gone (sd:3990): `OBSIDIAN_VAULT` is the one name.
 
 ## What is left behind on disk
 

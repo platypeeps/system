@@ -381,7 +381,7 @@ def _plist(config_path, config, home):
 #: `sd store` writes Notes' quick notes into (sd:2549). `JEV_JOB_TRIAGE`
 #: switches the failed-job Jev shadow off (`job_failures`, sd:2095).
 #: `SD_PACK_ROOT` names the pack whose lib/ install checked (sd:3279).
-PASSED_THROUGH = ("VAULT", "REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX", "SYSTEM_TOOLS_CONFIG",
+PASSED_THROUGH = ("REPO_ROOT", "SYSTEM_TOOLS_LABEL_PREFIX", "SYSTEM_TOOLS_CONFIG",
                   "CRON_JOBS_EXTRA_DIRS", "OBSIDIAN_VAULT", "JEV_JOB_TRIAGE", "SD_PACK_ROOT")
 
 

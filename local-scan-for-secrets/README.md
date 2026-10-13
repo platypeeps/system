@@ -184,8 +184,9 @@ CI (`${{ secrets.SOCKET_SECURITY_API_KEY }}`). Names listed in
 repo is mapped to its GitHub slug via `git remote get-url origin`, and on
 `--apply` the profile value is pushed with `gh secret set` (stdin, never
 argv). GitHub's API never lets a secret value be read back, so the
-stale/current verdict comes from a local stand-in: `.gh-secrets-state` next
-to the script (mode 600, gitignored) records a salted SHA-256 of what each
+stale/current verdict comes from a local stand-in: `gh-secrets-state` in
+`${XDG_STATE_HOME:-~/.local/state}/system/scan-for-secrets/` (mode 600)
+records a salted SHA-256 of what each
 push sent, per name and repo. Hash matches → current, nothing pushed; hash
 differs or no record → push (dry run says which it would do and why). The
 salt is random per push, so the state file cannot be used to confirm a

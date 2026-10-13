@@ -2,11 +2,11 @@
 
 HOA is at `/hoa` (sd:2116): the water system's map, Mission export trends,
 open followups and alarm events. `GET /api/hoa` (`hoa_screen.document`) reads
-the checkout `<config>/project-dashboard/hoa.conf` names, one `<key>|<path>`
-per line: `repo` is the checkout, and `mission`, `assets` and `base` override
-the default places of the export folder and the two map files. The path names
-a place, so the checkout ships only `hoa.conf.example`. Without the file the
-page says "No HOA checkout" and every cell is unknown.
+the checkout the repo table holds under the folder name `hoa` (sd:3985): the
+export is in `water/metrics/mission`, the map in `water/map/assets.geojson` and
+`water/map/base.geojson`. Two repos with that folder name are an error that
+names both. With none, the page says "No HOA checkout" and every cell is
+unknown.
 
 Each source is guarded on its own: a file that is missing or does not parse is
 named, its cells and charts are unknown with that reason, and the other parts

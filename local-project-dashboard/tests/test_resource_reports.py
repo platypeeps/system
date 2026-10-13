@@ -200,7 +200,7 @@ class Resources(unittest.TestCase):
 
     def test_queues_view_renders_rows_from_a_fixture_vault(self):
         # The real tile, reading a fixture vault through the page's own path.
-        with patch.dict(os.environ, {"VAULT": str(self.vault())}):
+        with patch.dict(os.environ, {"OBSIDIAN_VAULT": str(self.vault())}):
             html = str(reports_screen.resources({"resource": ["queues"]}))
         self.assertIn('aria-current="page">Queues</a>', html)
         self.assertNotIn("could not be observed", html)
@@ -215,7 +215,7 @@ class Resources(unittest.TestCase):
         # A vault that is not there is an error the page states, never a calm
         # table of zero queues.
         missing = self.vault() / "moved"
-        with patch.dict(os.environ, {"VAULT": str(missing)}):
+        with patch.dict(os.environ, {"OBSIDIAN_VAULT": str(missing)}):
             html = str(reports_screen.resources({"resource": ["queues"]}))
         self.assertIn('aria-current="page">Queues</a>', html)
         self.assertIn("This resource could not be observed: queues: ", html)

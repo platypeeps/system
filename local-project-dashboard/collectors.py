@@ -79,9 +79,9 @@ declines to become.
 repo, work, PR, issue, Jira and rtk collectors, whose replacements were the
 pack dashboard's own; the ack store; and the markdown renderer, which existed to
 draw pages. Every knob still arrives as an environment variable, and with the
-server went the shell that used to resolve them: `VAULT` and `REPO_ROOT` are
-defaulted here, in the module that reads them, and `dashboard.sh` resolves only
-the interpreter now.
+server went the shell that used to resolve them: the vault (`OBSIDIAN_VAULT`,
+kept once in `<config>/shared.env`) and `REPO_ROOT` are defaulted here, in the
+module that reads them, and `dashboard.sh` resolves only the interpreter now.
 
 **No shebang, and no `main()`.** This file is imported by `sd_tile.py`,
 `sd_dashboard/ports_screen.py` and `sd_dashboard/reports_screen.py`, and run by
@@ -122,7 +122,7 @@ def cron_job_files():
             found.setdefault(path.stem, path)
     return [found[name] for name in sorted(found)]
 
-VAULT = pathlib.Path(os.environ.get("VAULT", os.path.expanduser("~/Documents/Vault")))
+VAULT = system_tools_config.obsidian_vault()
 REPO_ROOT = pathlib.Path(os.environ.get("REPO_ROOT", os.path.expanduser("~/repos")))
 #: launchd label prefix shared by every system job and service.
 LABEL_PREFIX = system_tools_config.label_prefix()
