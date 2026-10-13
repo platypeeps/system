@@ -34,7 +34,7 @@ from pathlib import Path
 
 from sd_db import reads
 
-from .documents import _config_dir
+from .documents import _config_dir, pipe_lines
 
 __all__ = ["CONFIG", "SOON_DAYS", "STALE_DAYS", "TREND_DAYS", "document", "parse"]
 
@@ -68,10 +68,7 @@ BASE_KEYS = ("kind", "ain", "label", "luc", "acres")
 def parse(text: str) -> tuple[dict, list[str]]:
     """The settings, and one problem per line that was not read."""
     found, problems = {}, []
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
+    for number, line, _ in pipe_lines(text):
         key, bar, value = (part.strip() for part in line.partition("|"))
         if not bar or key not in KEYS or not value:
             problems.append(f"line {number}: expected <key>|<path>, key one of {', '.join(KEYS)}")

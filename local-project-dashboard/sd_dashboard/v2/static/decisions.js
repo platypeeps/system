@@ -45,7 +45,7 @@
     }
     put(tb, LIST.length ? html`${sorted(LIST).map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
       <td class="g ${ruled ? 'g-ok' : 'g-caution'}" title="${ruled ? 'ruled' : 'waiting'}">${ruled ? '●' : '▲'}</td>
-      <td class="what"><a href="/tasks?row=${d.item}"><span class="id">#${d.item}</span> ${d.title}</a><span class="repo">${repoName(d.repo)}</span></td>
+      <td class="what"><a href="${window.shell.itemHref(d.item)}"><span class="id">#${d.item}</span> ${d.title}</a><span class="repo">${repoName(d.repo)}</span></td>
       <td class="question">${d.question}<span class="asked-at">note #${d.note} · asked <time class="rel" datetime="${d.asked}"></time></span></td>
       <td class="act">${choices(d)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="4">No decision waits on you. A question note with two Option: lines appears here.</td></tr>`);

@@ -1,5 +1,6 @@
 """Production startup validates a built library and explicit local settings."""
 
+import http.client
 import io
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -117,6 +119,57 @@ class ServerStartup(unittest.TestCase):
                         old.shutdown()
                 self.assertTrue(alive, f"the old server stopped for a checkout whose launcher fails: {ended}")
                 self.assertIn(reason, stderr.getvalue())
+
+    def test_requests_are_served_while_the_restart_probe_runs(self):
+        """sd:3530 (review 2026-10-12, A1 F1): the probe ran on the accept loop, so every request waited for it.
+
+        The probe marks that it started, then takes two seconds. A request made meanwhile must answer at once,
+        and the probe's answer still decides: a refusal keeps the old build serving, a pass stops the server.
+        """
+        loaded = {"library_digest": "a" * 64, "dashboard_digest": "b" * 64}
+        for case, code in (("refused", 1), ("passed", 0)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as folder:
+                started = Path(folder) / "started"
+                with patch.object(runtime, "build_digests", return_value=loaded):
+                    old = server.build(None, port=0)
+                self.addCleanup(old.server_close)
+                old.build_check_seconds = 0
+                old.restart_probe = ["sh", "-c", f': > "$0"; sleep 2; exit {code}', str(started)]
+                ended = []
+
+                def serve():
+                    try:
+                        old.serve_forever(poll_interval=0.01)
+                    except BaseException as error:  # noqa: BLE001 - the test reads what ended it
+                        ended.append(error)
+
+                with patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                        patch.object(runtime, "build_digests", return_value=dict(loaded, dashboard_digest="0" * 64)):
+                    thread = threading.Thread(target=serve, daemon=True)
+                    thread.start()
+                    deadline = time.monotonic() + 5
+                    while not started.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(started.exists(), "the restart probe never started")
+                    host, port = old.server_address[:2]
+                    begun = time.monotonic()
+                    connection = http.client.HTTPConnection(host, port, timeout=5)
+                    connection.request("GET", "/favicon.ico")
+                    status = connection.getresponse().status
+                    connection.close()
+                    waited = time.monotonic() - begun
+                    thread.join(5)
+                    alive = thread.is_alive()
+                    if alive:
+                        old.shutdown()
+                self.assertEqual(status, 204)
+                self.assertLess(waited, 1, "the request waited for the restart probe")
+                if code:
+                    self.assertTrue(alive, f"the old server stopped for a refused probe: {ended}")
+                    self.assertIn("cannot start", stderr.getvalue())
+                else:
+                    self.assertFalse(alive, "the server kept serving after the probe passed")
+                    self.assertIsInstance(ended[0], server.CodeChanged)
 
     def test_check_only_start_refuses_where_a_start_refuses_and_binds_nothing(self):
         """sd:3018: main(serve=False) is the probe's body: each start step, then no bind."""

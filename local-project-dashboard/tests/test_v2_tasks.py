@@ -47,6 +47,8 @@ SETTLE_JS = re.search(r"^  // bulk:start\n(.*?)^  // bulk:end$", SHELL_JS, re.S 
 CONFIRM = re.search(r"^  // confirm:start\n(.*?)^  // confirm:end$", SHELL_JS, re.S | re.M)
 # The page's reads and writes, as shell.js has them (sd:2588): every page posts through shell.post and reads through shell.getJSON.
 FETCH_JS = re.search(r"^  // fetch:start\n(.*?)^  // fetch:end$", SHELL_JS, re.S | re.M).group(1)
+# An item's one address, as shell.js has it (sd:3526): every page links and opens an item through it.
+ITEM_JS = re.search(r"^  // item:start\n(.*?)^  // item:end$", SHELL_JS, re.S | re.M).group(1)
 # The list grammar, as shell.js has it (sd:2527, sd:2528, sd:2529): sort header, pager and filter chips.
 LIST_JS = re.search(r"^  // list:start\n(.*?)^  // list:end$", SHELL_JS, re.S | re.M).group(1)
 
@@ -274,7 +276,7 @@ class ThePage(BrowserSession):
 # between the top level and run(), so run() reads what the whole flow produced.
 STAND_IN = r"""
 var window = globalThis, OUT = { posts: [], gets: [], toasts: [], confirms: [], states: [], attention: [], error: null };
-var innerWidth = 1440, location = { search: '' };
+var innerWidth = 1440, location = { search: '', replace: u => { OUT.replaced = u; } };
 function URLSearchParams(q) { var m = new Map(); (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.set(kv[0], decodeURIComponent(kv[1] || '')); });
   this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v));
   this.toString = () => [...m].map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
@@ -307,7 +309,7 @@ function fetch(path, o) {
   return Promise.resolve(ANSWER(path, body)).then(a => ({ ok: a[0] < 300, status: a[0], json: () => Promise.resolve(a[1]) }));
 }
 """
-SHELL = SETTLE_JS + FETCH_JS + r"""
+SHELL = SETTLE_JS + FETCH_JS + ITEM_JS + r"""
 var REG = [], OBJ = new Map();
 var C = { register: (...cs) => { REG.push(...cs); }, put: o => { OBJ.set(o.id, o); }, get: id => OBJ.get(id), select() {}, pick() {},
   rowActions: () => mk``, bar: () => mk`<div class="bar"></div>` };
@@ -342,7 +344,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, post, getJSON, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
+window.shell = { commands: C, post, getJSON, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -1849,6 +1851,18 @@ class TheFilterAddress(ScreenCase):
         self.doc["rows"] = [self.made(1000 + n, f"row {n}", "planning", "0") for n in range(60)]
         shown, _ = self.listed("?view=list&row=1055")
         self.assertIn(1055, shown)
+
+    def test_a_linked_item_tasks_does_not_list_opens_on_its_item_page(self):
+        """sd:3526: every page opens an item at /tasks?row=<n>; Tasks lists no quiet report and nothing done before the
+        week, so such an item goes on to its item page, never to the first card in its place."""
+        for row, replaced in (("4242", "/item/4242"), ("901", None)):
+            with self.subTest(row=row):
+                out = self.run_page("R.replaced = OUT.replaced || null;", search=f"?view=list&row={row}")
+                self.assertEqual(out["R"]["replaced"], replaced)
+        # A read that failed lists nothing, which says nothing about the item: the page stays and says the read failed.
+        out = self.run_page("R.replaced = OUT.replaced || null;", prelude="var FAIL_TASKS = 'the store is locked';",
+                            search="?view=list&row=4242")
+        self.assertIsNone(out["R"]["replaced"])
 
 
 class TheOperationsBars(ScreenCase):

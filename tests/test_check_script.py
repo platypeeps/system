@@ -22,9 +22,11 @@ preflight's unwired-suite guard fails when `tests/ci-native.sh` stops naming it.
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -41,9 +43,39 @@ ls "$running" | wc -l >> "$CI_SYSTEM_ROOT/counts"
 sleep 0.5
 rm "$running/$$"
 echo "$1 ${2:-} ${SUITE_SHARD:-} ${SUITE_ONLY:-}" >> "$CI_SYSTEM_ROOT/ran"
+# A failing suite may first wait, at most 20 seconds, for the slow ones to start.
+if [ -f "$CI_SYSTEM_ROOT/fail-${2:-}" ] && [ -f "$CI_SYSTEM_ROOT/fail-waits-for" ]; then
+  n=0
+  while [ "$(cat "$CI_SYSTEM_ROOT/pids" 2>/dev/null | wc -l)" -lt "$(cat "$CI_SYSTEM_ROOT/fail-waits-for")" ] && [ "$n" -lt 200 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+fi
 [ ! -f "$CI_SYSTEM_ROOT/fail-${2:-}" ] || exit 3
 # A suite that reached the real launchctl and still exited 0.
 [ ! -f "$CI_SYSTEM_ROOT/leak-${2:-}" ] || launchctl list > /dev/null 2>&1 || :
+# A slow suite and a child of its own hold on until stopped (sd:3749); with
+# ends-ok, the suite ends 0 when the stop reaches it, as one finishing then would.
+# With ignores-term, the suite and its child ignore SIGTERM. With leaves, a
+# suite ends 0 and leaves its child running. With fails-alone, a suite fails
+# once stop exists, though no stop signalled it.
+if [ -f "$CI_SYSTEM_ROOT/leaves-${2:-}" ]; then
+  sleep 30 > /dev/null 2>&1 &
+  echo $! >> "$CI_SYSTEM_ROOT/pids"
+  exit 0
+fi
+if [ -f "$CI_SYSTEM_ROOT/fails-alone-${2:-}" ]; then
+  mkdir "$CI_WORK_ROOT/stop"
+  exit 4
+fi
+if [ -f "$CI_SYSTEM_ROOT/slow-${2:-}" ]; then
+  [ ! -f "$CI_SYSTEM_ROOT/ends-ok-${2:-}" ] || trap 'exit 0' TERM
+  [ ! -f "$CI_SYSTEM_ROOT/ignores-term-${2:-}" ] || trap '' TERM
+  sleep 30 &
+  echo $! >> "$CI_SYSTEM_ROOT/pids"
+  echo $$ >> "$CI_SYSTEM_ROOT/pids"
+  wait
+fi
 # A leg that holds the suite SUITE_ONLY names writes its log, as run_suite does.
 [ -z "${SUITE_ONLY:-}" ] || [ ! -f "$CI_SYSTEM_ROOT/holds-${2:-}-$SUITE_ONLY" ] || echo ran > "$CI_WORK_ROOT/$SUITE_ONLY.log"
 """
@@ -51,7 +83,7 @@ MACOS = """#!/bin/sh
 if [ "$1" = list ]; then echo 'one sh one.sh'; echo 'two sh two.sh'; exit 0; fi
 exec /bin/sh "$(dirname "$0")/ci-native.sh" macos "$1"
 """
-JOBS = 5 + (2 if platform.system() == "Darwin" else 0)
+JOBS = 6 + (2 if platform.system() == "Darwin" else 0)
 
 
 def git(*args, cwd):
@@ -122,8 +154,8 @@ class CheckScript(CheckFixture):
         done = self.check(expect=1, SD_GATE_POOL_SIZE=str(max(2, self.cores // 2)))
         self.assertIn("check.sh: leg-dashboard exited 3", done.stderr)
         self.assertIn("check.sh: failed: leg-dashboard\n", done.stderr)
-        # Every other job still ran.
-        self.assertEqual(len((self.root / "ran").read_text().splitlines()), JOBS)
+        # sd:3749: the jobs queued behind it never ran.
+        self.assertLess(len(self.ran()), JOBS)
 
     def test_a_failing_run_removes_its_work_dir(self):
         """266 failed runs left /tmp/system-check.* behind (893 MB). Every
@@ -153,15 +185,163 @@ class CheckScript(CheckFixture):
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
 
+class FailFast(CheckFixture):
+    """sd:3749: a failed job stops the run. Lanes claim no new job, and each
+    running job's process group is ended, so nothing it started outlives the
+    run. The failed job's log and tail still print, the stopped ones read
+    `stopped`, and the run exits 1."""
+
+    def setUp(self):
+        super().setUp()
+        self.jobs = (["macos-one", "macos-two"] if platform.system() == "Darwin" else []) + [
+            "leg-repo-sync", "leg-dashboard", "tools-1", "tools-2", "tools-3", "leg-shared"]
+
+    def slow(self, *legs, ends_ok=(), ignores_term=()):
+        for leg in legs:
+            (self.root / f"slow-{leg}").touch()
+        for leg in ends_ok:
+            (self.root / f"ends-ok-{leg}").touch()
+        for leg in ignores_term:
+            (self.root / f"ignores-term-{leg}").touch()
+
+    def all_slow_but_a_failing_dashboard(self, ends_ok=(), ignores_term=()):
+        """Every other job holds on; leg-dashboard fails once they all run."""
+        self.slow("repo-sync", "shared", "tools", "one", "two", ends_ok=ends_ok, ignores_term=ignores_term)
+        (self.root / "fail-dashboard").touch()
+        (self.root / "fail-waits-for").write_text(f"{2 * (len(self.jobs) - 1)}\n")
+
+    def pids(self):
+        path = self.root / "pids"
+        return [int(pid) for pid in path.read_text().split()] if path.exists() else []
+
+    def assert_all_ended(self, pids):
+        self.assertTrue(pids)
+        deadline = time.monotonic() + 5
+        alive = pids
+        while alive and time.monotonic() < deadline:
+            alive = [pid for pid in alive if alive_pid(pid)]
+            time.sleep(0.1)
+        self.assertEqual([], alive, "a job's process outlived the run")
+
+    def test_a_failure_stops_the_running_jobs_and_their_children(self):
+        self.all_slow_but_a_failing_dashboard()
+        started = time.monotonic()
+        done = self.check(expect=1)
+        self.assertLess(time.monotonic() - started, 15, "the slow jobs ran out their time")
+        self.assertIn("check.sh: leg-dashboard exited 3", done.stderr)
+        self.assertIn("check.sh: failed: leg-dashboard\n", done.stderr)
+        others = [job for job in self.jobs if job != "leg-dashboard"]
+        for job in others:
+            self.assertRegex(done.stdout, rf"(?m)^== {job} \(\d+s, stopped\)$")
+        self.assertIn("check.sh: stopped: " + " ".join(others) + "\n", done.stderr)
+        self.assertRegex(done.stdout, r"(?m)^== leg-dashboard \(\d+s\)$")
+        self.assertIn("== tail of leg-dashboard", done.stdout)
+        self.assertNotIn("== tail of leg-shared", done.stdout)
+        self.assert_all_ended(self.pids())
+
+    def test_after_a_failure_no_lane_claims_a_job(self):
+        first = self.jobs[0]
+        (self.root / f"fail-{first.split('-', 1)[1]}").touch()
+        done = self.check(expect=1, SD_GATE_POOL_SIZE=str(self.cores))
+        self.assertIn(f"check.sh: {self.jobs.__len__()} jobs, 1 at a time", done.stdout)
+        self.assertEqual(1, len(self.ran()), self.ran())
+        self.assertIn(f"check.sh: failed: {first}\n", done.stderr)
+        self.assertIn("check.sh: stopped: " + " ".join(self.jobs[1:]) + "\n", done.stderr)
+
+    def test_a_job_that_ends_0_as_the_stop_reaches_it_passed(self):
+        """The stop races the job's own finish: the job's status, 0, stands."""
+        self.all_slow_but_a_failing_dashboard(ends_ok=("shared",))
+        done = self.check(expect=1)
+        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s\)$")
+        self.assertNotRegex(done.stderr, r"check.sh: (failed|stopped):.* leg-shared( |$)")
+        self.assert_all_ended(self.pids())
+
+    def test_a_job_that_ignores_sigterm_is_killed(self):
+        """Codex review: TERM alone left the run waiting on such a job."""
+        self.all_slow_but_a_failing_dashboard(ignores_term=("shared",))
+        started = time.monotonic()
+        done = self.check(expect=1)
+        self.assertLess(time.monotonic() - started, 20, "the run waited out the job that ignores SIGTERM")
+        self.assertRegex(done.stdout, r"(?m)^== leg-shared \(\d+s, stopped\)$")
+        self.assert_all_ended(self.pids())
+
+    def test_what_a_passing_job_leaves_running_ends_with_it(self):
+        """Codex review: a job's group no longer hears sd-check's end of make's
+        group, so the lane ends the group when the job ends."""
+        (self.root / "leaves-shared").touch()
+        done = self.check()
+        self.assertIn("check.sh: every suite passed", done.stdout)
+        self.assert_all_ended(self.pids())
+
+    def test_a_job_that_fails_on_its_own_after_the_stop_reads_failed(self):
+        """Codex review: only a job the stop signalled, or kept from starting,
+        reads stopped; another failure keeps its exit code and tail."""
+        (self.root / "fails-alone-repo-sync").touch()
+        done = self.check(expect=1)
+        self.assertIn("check.sh: leg-repo-sync exited 4", done.stderr)
+        self.assertRegex(done.stderr, r"check.sh: failed: leg-repo-sync\n")
+        self.assertIn("== tail of leg-repo-sync", done.stdout)
+
+    def test_a_job_claimed_as_the_stop_lands_does_not_start(self):
+        """A lane checks for a stop, then claims; a stop landing between the two
+        is seen by the job's leader, which then runs nothing."""
+        (self.bin / "mkdir").write_text('#!/bin/sh\n/bin/mkdir "$@" || exit\n'
+                                        'case "$1" in */leg-dashboard.claim) /bin/mkdir "${1%/*}/stop" ;; esac\n')
+        (self.bin / "mkdir").chmod(0o755)
+        done = self.check(expect=1)
+        self.assertNotIn("dashboard", [words[1] for words in self.ran()])
+        self.assertRegex(done.stdout, r"(?m)^== leg-dashboard \(\d+s, stopped\)$")
+        self.assertNotIn("check.sh: failed:", done.stderr)
+
+    def test_a_signal_to_the_run_ends_every_job_and_removes_its_work_dir(self):
+        """sd-check ends the group make leads, and the EXIT trap must end the
+        jobs, which lead groups of their own; a TERM to check.sh alone too."""
+        made = self.base / "made"
+        (self.bin / "mktemp").write_text(f'#!/bin/sh\nd=$(/usr/bin/mktemp "$@") || exit\necho "$d" >> {made}\necho "$d"\n')
+        (self.bin / "mktemp").chmod(0o755)
+        self.slow("shared", "dashboard", "tools")
+        for whom in ("group", "script"):
+            with self.subTest(whom=whom):
+                for name in ("pids", "made"):
+                    (self.base / name if name == "made" else self.root / name).unlink(missing_ok=True)
+                environment = {key: value for key, value in os.environ.items() if key != "SD_GATE_POOL_SIZE"}
+                environment.update({"PATH": f"{self.bin}:{os.environ['PATH']}", "SD_PACK_ROOT": str(self.clone)})
+                process = subprocess.Popen(["sh", str(self.root / "tests/check.sh"), "run"], env=environment,
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, start_new_session=True)
+                try:
+                    deadline = time.monotonic() + 30
+                    while len(self.pids()) < 10 and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                    self.assertEqual(10, len(self.pids()), "the slow jobs did not start")
+                    if whom == "group":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.send_signal(signal.SIGTERM)
+                    self.assertNotEqual(0, process.wait(timeout=20))
+                finally:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                self.assert_all_ended(self.pids())
+                [work] = made.read_text().split()
+                self.assertFalse(Path(work).exists(), work)
+
+
+def alive_pid(pid):
+    """Whether `pid` runs: a zombie, ended but not yet reaped, does not."""
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False)
+    return bool(state.stdout.strip()) and not state.stdout.strip().startswith("Z")
+
 
 class OneSuite(CheckFixture):
     """sd:3534: `check.sh suite <name>`, which `make test SUITE=<name>` runs."""
 
     def test_a_suite_runs_the_preflight_then_only_that_suite_against_the_pin(self):
-        (self.root / "holds-tools-repo-sync").touch()
+        (self.root / "holds-repo-sync-repo-sync").touch()
         done = self.check("suite", "repo-sync")
         self.assertTrue((self.root / "preflight-ran").exists())
-        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("shared", "dashboard", "tools")], self.ran())
+        self.assertEqual([["leg", leg, "repo-sync"] for leg in ("repo-sync", "dashboard", "tools", "shared")], self.ran())
         self.assertIn("check.sh: suite repo-sync passed", done.stdout)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.root / ".ci/pack"), self.pin)
 
@@ -183,8 +363,8 @@ class OneSuite(CheckFixture):
     def test_a_suite_that_reached_launchctl_fails_as_in_the_gate(self):
         """NEW (codex round): the full run fails a leak a suite swallowed;
         one suite must too."""
-        (self.root / "holds-tools-repo-sync").touch()
-        (self.root / "leak-tools").touch()
+        (self.root / "holds-repo-sync-repo-sync").touch()
+        (self.root / "leak-repo-sync").touch()
         done = self.check("suite", "repo-sync", expect=1)
         self.assertIn("== launchctl calls that missed their stub", done.stdout)
         self.assertNotIn("passed", done.stdout)
@@ -241,14 +421,32 @@ class LegWithSuiteOnly(unittest.TestCase):
                               env={**self.environment, "SUITE_ONLY": only})
 
     def test_only_the_named_suite_of_the_leg_runs(self):
+        self.entrypoint("local-bin-links/bin-links.sh")
+        done = self.leg("tools", "bin-links")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual("local-bin-links/bin-links.sh\n", (self.work / "entrypoints").read_text())
+        self.assertTrue((self.work / "bin-links.log").exists())
+
+    def test_repo_sync_runs_in_a_leg_of_its_own(self):
+        """sd:3750: the tools leg dealt its suites round-robin to three jobs,
+        and the one holding repo-sync, the longest suite, took 13 minutes. Its
+        own leg is a job of its own."""
+        legs = subprocess.run(["sh", str(ROOT / "tests/check.sh"), "legs"], capture_output=True, text=True,
+                              check=True).stdout.split()
+        self.assertIn("repo-sync", legs)
         self.entrypoint("local-repo-sync/repo-sync.sh")
-        done = self.leg("tools", "repo-sync")
+        done = subprocess.run(["bash", str(self.root / "tests/ci-native.sh"), "leg", "repo-sync"], cwd=self.root,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+                              env=self.environment)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual("local-repo-sync/repo-sync.sh\n", (self.work / "entrypoints").read_text())
-        self.assertTrue((self.work / "repo-sync.log").exists())
+        (self.work / "entrypoints").unlink()
+        done = self.leg("tools", "repo-sync")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertFalse((self.work / "entrypoints").exists(), "the tools leg still runs repo-sync")
 
     def test_a_leg_without_the_named_suite_runs_nothing(self):
-        for leg in ("shared", "dashboard"):
+        for leg in ("shared", "dashboard", "tools"):
             with self.subTest(leg=leg):
                 done = self.leg(leg, "repo-sync")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)

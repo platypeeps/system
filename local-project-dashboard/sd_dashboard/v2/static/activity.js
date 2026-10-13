@@ -335,7 +335,7 @@ addEventListener('DOMContentLoaded', () => {
   // The command's undo: the shell passes what the run answered.
   const undoOf = (o, r) => r && r.undo ? r.undo() : false;
   // build: "Open item" goes to the item on Tasks, by the shell's section map (no page names another page's address).
-  const openItem = item => { const to = window.shell.pages?.Tasks; if (!to) return 'Tasks is not built yet'; location.href = `${to}?row=${item}`; return `sd:${item} opens in Tasks`; };
+  const openItem = item => window.shell.openItem(item);
   C.register(
     window.commands.openPullRequest({ pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
     { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
