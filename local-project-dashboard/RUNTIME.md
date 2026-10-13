@@ -167,8 +167,8 @@ Skills reads the installed pack receipt and its `skills/`, `contrib/` and
 `skills/paths.json` files at runtime. Trials are database rows; the next pack
 installation renders them. Review, promotion, demotion and accepted proposals
 queue isolated runner work. They never move files or create branches in the
-operator checkout. Review proposals carry the source snapshot and actual
-reviewer identity; all latest author vendors are excluded.
+operator checkout. Review proposals carry the source snapshot and the actual
+reviewer's identity. The reviewer never shares a vendor with any of the latest authors.
 
 The dashboard queues no runs: the runner stopped (sd:3041). A queued
 assignment is cancelled through `/api/assignments/<id>/cancel`, the route
