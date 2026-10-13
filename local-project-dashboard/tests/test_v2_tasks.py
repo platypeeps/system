@@ -769,6 +769,32 @@ change('det-body', 'New words'); await flush(); lastUndo().undo(); await flush()
         self.assertEqual(got["saved"].get("focused"), "fresh det-title")
         self.assertIsNone(got["other"].get("kept"), "another task's Details took the old task's text")
 
+    # ECHO, with the item's body as the server keeps it: a write's readback carries every item field.
+    BODY_ECHO = ECHO.replace("repo: 'repo' in body ? body.repo : row.repo_path };",
+                             "repo: 'repo' in body ? body.repo : row.repo_path, body: 'body' in body ? (window.BODY = body.body) : (window.BODY ?? 'Old words') };")
+
+    def test_a_description_draft_survives_a_write_that_drops_the_details_reading(self):
+        # Review 2026-10-12, lane entry 225: a priority write's absorb() dropped DET.items, so the redraw drew no description
+        # field and the operator's unsaved description went with it. The title survived: it is drawn from the row.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = "Old words"
+        # The browser's getElementById answers null for a field the redraw did not draw.
+        absent = """const gid = document.getElementById.bind(document);
+document.getElementById = x => x === 'det-body' && !String(ELS.details.html).includes('id="det-body"') ? null : gid(x);
+"""
+        cases = {
+            "pending": "DETAIL = () => [500, { error: 'not read yet' }];",
+            "read": "",
+        }
+        got = {}
+        for name, detail in cases.items():
+            got[name] = self.run_page(self.EDITING + self.CHANGE + absent + f"""var SAVED = {{ 'det-body': 'Old words' }};
+open({plan}); await flush(); editing('det-body', 'Typed words'); {detail}
+change('det-p', '1'); await flush(); R.html = ELS.details.html;""", self.BODY_ECHO)["R"]
+        self.assertEqual(got["pending"].get("kept"), "det-body", "a write that dropped the reading dropped the typed description")
+        self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', got["pending"]["html"])
+        self.assertEqual(got["read"].get("kept"), "det-body")
+
     def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
         # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
         plan, port = self.ids["plan"], self.ids["port"]

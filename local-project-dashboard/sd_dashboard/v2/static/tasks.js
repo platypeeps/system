@@ -54,6 +54,7 @@ addEventListener('DOMContentLoaded', () => {
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
     // applies that rule to the new date until the rows are read again.
     if (dueMoved) t.urgent = t.urgentOtherwise || withinWeek(t);
+    if ('body' in state.item) DET.body[t.id] = state.item.body ?? '';
     staleDet(t.id);
     if (selected === key) readDet(t.id); // the open Details read again, so they show the write
   }
@@ -262,7 +263,9 @@ addEventListener('DOMContentLoaded', () => {
   const must = o => { const t = T(o); if (!t) throw new Error('the task is no longer listed'); return t; };
   // Details beyond the row (sd:2180). build: /api/tasks/<id>, read when a task is selected, kept until a write changes it.
   // Each read carries the item's generation; a write bumps it, so an answer sent before the write is dropped, not cached.
-  const DET = { items: {}, reading: {}, failed: {}, gen: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
+  // DET.body keeps the last description read or written back: a write drops the reading, not the description field, so a
+  // redraw before the next read still draws it and keeps the operator's draft (review 2026-10-12, lane entry 225).
+  const DET = { items: {}, reading: {}, failed: {}, gen: {}, body: {} }, detOf = t => (t && t.id && DET.items[t.id]) || null;
   async function readDet(id, force) {
     if (!id || (!force && (DET.items[id] || DET.reading[id] === (DET.gen[id] || 0)))) return;
     const gen = DET.gen[id] || 0;
@@ -271,7 +274,7 @@ addEventListener('DOMContentLoaded', () => {
     try { got = await window.shell.getJSON(`/api/tasks/${id}`); } catch (e) { err = e; }
     if ((DET.gen[id] || 0) !== gen) return; // a write landed meanwhile; the read it started is the one that counts
     delete DET.reading[id];
-    if (err) DET.failed[id] = err.message; else DET.items[id] = got;
+    if (err) DET.failed[id] = err.message; else { DET.items[id] = got; DET.body[id] = got.item.body ?? ''; }
     putAll(); if (byKey(selected)?.id === id) renderDetails();
   }
   const staleDet = id => { DET.gen[id] = (DET.gen[id] || 0) + 1; delete DET.items[id]; delete DET.reading[id]; };
@@ -628,13 +631,14 @@ addEventListener('DOMContentLoaded', () => {
   // The v1 item page's sections (review item 17), each with the read it comes from. A row without a reading says so once.
   function more(t, dis = '') {
     if (!t.id) return '';
-    const d = detOf(t);
-    if (!d) return html`<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
+    const d = detOf(t), body = DET.body[t.id];
+    // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
+    const desc = body === undefined ? '' : html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${body}</textarea>`;
+    if (!d) return html`${desc}<h3>History, notes and assignments</h3><p class="why">${DET.failed[t.id] ? `Not read: ${DET.failed[t.id]}` : `Reading sd task show ${t.id} --json…`}</p>`;
     const it = d.item;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;
     const docs = d.documents || [];
-    // build (sd:3467): the description edits in place, as the classic item page's Details textarea did; it saves on leaving.
-    return html`<h3><label for="det-body">Description</label></h3><textarea id="det-body" class="fld" rows="4"${dis}>${it.body || ''}</textarea>
+    return html`${desc}
       <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
       <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
