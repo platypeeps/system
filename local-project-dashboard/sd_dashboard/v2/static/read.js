@@ -21,6 +21,7 @@
 //   unselect: () => {},             nothing selected: Details shows the page's nothing-selected text
 // });
 // rows.load();     the first read and each refresh
+// rows.load(true); a timed read: no loading state, so the rows on screen keep their place until it answers
 // rows.reread();   after a write landed. A refused write calls load(): only reread() says the change landed.
 (() => {
   const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
@@ -48,9 +49,9 @@
       if (id != null && putIds.has(id)) spec.select(id, first && id === asked);
       else unselect();
     }
-    async function run(after) {
+    async function run(after, quiet) {
       const mine = ++generation;
-      if (!after) state({ kind: 'loading', text: `Reading ${what}. Rows appear when ${source} answers.`, source });
+      if (!after && !quiet) state({ kind: 'loading', text: `Reading ${what}. Rows appear when ${source} answers.`, source });
       let doc;
       try { doc = await get(); } catch (err) {
         if (mine !== generation) return false;
@@ -73,9 +74,9 @@
       settle(!applied++);
       return true;
     }
-    function start(after) {
+    function start(after, quiet) {
       const f = { p: null };
-      f.p = run(after).finally(() => { if (flight === f) flight = null; });
+      f.p = run(after, quiet).finally(() => { if (flight === f) flight = null; });
       flight = f;
       return f.p;
     }
@@ -87,6 +88,6 @@
       const q = queued = flight.p.catch(() => {}).then(() => { queued = null; return start(true); });
       return q;
     }
-    return { load: () => start(false), reread };
+    return { load: quiet => start(false, quiet), reread };
   };
 })();
