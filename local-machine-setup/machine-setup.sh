@@ -1251,6 +1251,12 @@ stage_cron() {
   # ownership test decides; only a plist proven another installer's (exit 1) is
   # skipped, so an unreadable one under a wanted name keeps the reinstall.
   echo "$jobs" | while read -r j; do
+    # The agents stage's guard: skipped, and left to the satellite stage's
+    # EXTRA when one is here, so the sweep below keeps it too.
+    if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite; then
+      echo "  SKIP    $j — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
+      continue
+    fi
     jp="$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$j.plist"
     owner=0
     [ ! -f "$jp" ] || cron_plist_ours "$jp" "$j" 2>/dev/null || owner=$?
@@ -1312,6 +1318,22 @@ agent_render() { # label, tracked plist, rendered plist
       -e "s|@ROOT@|$(sed_value "$ROOT")|g" "$2" > "$3"
 }
 
+# The Label a plist names; exits non-zero when it names none or cannot be
+# read. python3, not plutil: the suite runs on Linux too.
+plist_label() { # plist path
+  python3 - "$1" <<'PY'
+import plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        label = plistlib.load(f).get("Label")
+except Exception:
+    sys.exit(2)
+if not isinstance(label, str) or not label:
+    sys.exit(1)
+print(label)
+PY
+}
+
 # LaunchAgent plists captured into launchagents/. Same never-overwrite rule
 # as dotfiles: a machine-local plist edit wins until capture. A captured plist
 # embeds absolute paths, so it only transplants between machines with the same
@@ -1363,8 +1385,8 @@ stage_agents() {
     # A guard: no satellite profile lists a hub-only agent today, and one
     # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.
-    if [ -e "$SD_HUB_CONFIG" ] && sd_hub_only "$label"; then
-      echo "  SKIP    $label — hub only, and $SD_HUB_CONFIG makes this machine a satellite"
+    if sd_hub_only "$label" && is_satellite; then
+      echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
     src="$AGENT_DIR/$label.plist"
@@ -1372,6 +1394,14 @@ stage_agents() {
     if [ -f "$src" ]; then
       agent_render "$label" "$src" "$rendered/$label.plist"
       src="$rendered/$label.plist"
+      # launchd loads a plist under its own Label, not its file name. One
+      # that differs read UNLOADED every run, and its bootstrap failed on the
+      # label already loaded (sd:3547). Not installed until it matches.
+      src_label=$(plist_label "$src") || src_label=
+      if [ "$src_label" != "$label" ]; then
+        echo "  DIFFERS $label — $AGENT_DIR/$label.plist names Label '${src_label:-none readable}'; launchd would load it under that name; fix the Label, then rerun"
+        continue
+      fi
     fi
     if [ ! -f "$src" ]; then
       echo "  --      $label not captured in the repo yet"
@@ -1662,12 +1692,19 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # satellite never runs (prd R5 of the second-machine plan). The cron jobs
 # are the backups and the nightly shadow sync, whose lock sits beside the
 # database; the cron stage installs them under `<prefix>.cron.`.
-# The satellite stage reports each one present as EXTRA; the agents stage
-# skips each one while hub.json exists.
+# The satellite stage reports each one present as EXTRA; the agents and cron
+# stages skip each one on a satellite.
 SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
+}
+# This machine names an sd hub: its profile's `.satellite` or hub.json does.
+# The one test the agents, cron and satellite stages share (sd:3547): the
+# agents stage once keyed on hub.json alone, the cron stage on nothing, so a
+# satellite installed a hub-only job the satellite stage then reported.
+is_satellite() {
+  [ -n "$(manifest satellite)" ] || [ -e "$SD_HUB_CONFIG" ]
 }
 # The interpreter the satellite stage runs the pack's lib/sd_db under: the
 # pack's.
@@ -1808,7 +1845,7 @@ stage_satellite() {
   # A satellite runs no hub service (prd R5). Detect only: the operator
   # decides which role is wrong. On a hub profile the sd stage's one EXTRA
   # for hub.json names the conflict instead (criterion 7).
-  if ! sd_in_profile && { [ -n "$hubs" ] || [ -e "$SD_HUB_CONFIG" ]; }; then
+  if ! sd_in_profile && is_satellite; then
     for sho in $SD_HUB_ONLY_AGENTS; do
       sho_label="$LABEL_PREFIX.$sho"
       sho_plist="$HOME/Library/LaunchAgents/$sho_label.plist"
