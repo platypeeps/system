@@ -73,7 +73,10 @@ run() {
       printf '\nSubjects rejected in the last 90 days:\n'
       if [ -s "$tmp/rejected" ]; then cat "$tmp/rejected"; else echo "(none)"; fi
     } > "$tmp/prompt"
+    # --allowedTools only adds grants: --restricted drops the inherited settings files and code-running tools,
+    # --strict-mcp-config the MCP servers, and --tools names all the model has (sd:3638 review).
     (cd "$ROOT" && st_step 1200 "${CLAUDE_BIN:-claude}" -p "$(cat "$tmp/prompt")" --model sonnet \
+      --restricted --strict-mcp-config --tools 'Read,Grep,Glob,Bash' --add-dir "$bulk" "$HOME/.claude/projects" \
       --allowedTools "$TOOLS" --disallowedTools 'Write Edit NotebookEdit' < /dev/null > "$tmp/reply")
     source="system@$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
     st_step 60 python3 "$DIR/nightly_review.py" batch "$tmp/reply" "$batch" "$today" "$source"

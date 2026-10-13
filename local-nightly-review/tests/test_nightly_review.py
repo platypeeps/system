@@ -150,6 +150,15 @@ class NightlyReview(unittest.TestCase):
             self.assertNotIn(writer, tools)
         self.assertIn("Write", args[args.index("--disallowedTools") + 1])
 
+    def test_the_model_inherits_no_permission_or_mcp_server(self):
+        # REGRESSION sd:3638 review: --allowedTools only adds grants; inherited Bash or MCP grants still applied.
+        result = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = self.args.read_text().splitlines()
+        self.assertIn("--restricted", args)
+        self.assertIn("--strict-mcp-config", args)
+        self.assertEqual(args[args.index("--tools") + 1], "Read,Grep,Glob,Bash")
+
     def test_a_run_with_no_suggestions_files_nothing_and_passes(self):
         result = self.run_job(reply={"questions": []})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
