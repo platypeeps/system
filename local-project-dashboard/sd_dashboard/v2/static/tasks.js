@@ -340,13 +340,14 @@ addEventListener('DOMContentLoaded', () => {
       return landing(moveTo(t.key, 'done', { sent: r => { from = r.status; }, check: completeOn, wait: true }),
         v => `${label(t)} ${slabel(from)} → Done · ${next(v)} · ${cliMove(t, 'done')}`); } };
   // An edit's Undo sets back the fields it changed (`keep`, the row's names), as they were when the edit was sent, at the
-  // revision the edit answered. `check` asks as the edit leaves whether it still changes anything: a second one queued
+  // revision the edit answered. A field the row does not carry (the description) takes `before(row)`, read then too.
+  // `check` asks as the edit leaves whether it still changes anything: a second one queued
   // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
   const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
   // `before` holds a field the row does not carry (the description, read with the Details).
-  function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = {} } = {}) {
+  function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = () => ({}) } = {}) {
     let was = {};
-    const sent = r => { was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : before[k] ?? null])); };
+    const sent = r => { const b = before(r); was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : b[k] ?? null])); };
     return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
   C.register(
@@ -610,8 +611,8 @@ addEventListener('DOMContentLoaded', () => {
     if (id === 'det-title') { const n = v.trim(); if (n === t.title) return false;
       if (!n) { toast(`${label(t)} not changed: a title is required`); return false; }
       commitEdit(t, { title: n }, `title → ${n}`, { check: r => r.title !== n || 'the title is already that' }); return true; }
-    if (id === 'det-body') { const was = detOf(t)?.item.body ?? ''; if (v === was) return false;
-      commitEdit(t, { body: v }, 'description changed', { before: { body: was } }); return true; }
+    if (id === 'det-body') { if (v === (DET.body[t.id] ?? '')) return false;
+      commitEdit(t, { body: v }, 'description changed', { before: () => ({ body: DET.body[t.id] ?? '' }), check: () => v !== (DET.body[t.id] ?? '') || 'the description is already that' }); return true; }
     if (id === 'det-status') return v !== t.status && move(t.key, v);
     if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
     if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;

@@ -795,6 +795,30 @@ change('det-p', '1'); await flush(); R.html = ELS.details.html;""", self.BODY_EC
         self.assertIn('<textarea id="det-body" class="fld" rows="4">Old words</textarea>', got["pending"]["html"])
         self.assertEqual(got["read"].get("kept"), "det-body")
 
+    def test_each_details_fields_undo_restores_the_value_its_write_replaced(self):
+        # Review 2026-10-12, lane entry 225: the description's Undo read its value when the change was queued. With A saved,
+        # B and then C queued, C's Undo wrote A back. Every Details field's Undo reads the value as its write is sent.
+        plan = self.ids["plan"]
+        self.details[str(plan)]["item"]["body"] = "Old words"
+        cases = {
+            "title": ("det-title", "Plan B", "Plan C", "title", "Plan B"),
+            "description": ("det-body", "Words B", "Words C", "body", "Words B"),
+            "priority": ("det-p", "1", "4", "priority", 1),
+            "due": ("det-due", "2026-09-20", "2026-09-30", "due", "2026-09-20"),
+            "repo": ("det-repo", "", "~/repos/example", "repo", None),
+            "status": ("det-status", "in_progress", "blocked", "status", "in_progress"),
+        }
+        for name, (field, b, c, key, want) in cases.items():
+            with self.subTest(field=name):
+                out = self.run_page(self.CHANGE + f"""open({plan}); await flush();
+change('{field}', {json.dumps(b)}); change('{field}', {json.dumps(c)}); await flush();
+R.undo = !!lastUndo(); if (R.undo) {{ await lastUndo().undo(); await flush(); }}""", self.BODY_ECHO)
+                self.assertIsNone(out.get("error"))
+                bodies = [p[1] for p in out["posts"]]
+                self.assertEqual([x.get(key) for x in bodies[:2]], [b if key != "priority" else int(b), c if key != "priority" else int(c)] if key != "repo" else [None, c])
+                self.assertTrue(out["R"]["undo"], f"{name}: no Undo offered")
+                self.assertEqual(bodies[-1].get(key, "missing"), want, f"{name}: Undo did not restore the value C replaced")
+
     def test_a_cards_priority_and_due_are_dropdowns_that_edit_it(self):
         # sd:3440: the tile sets priority and due through a dropdown for each; Pick a date opens the Edit dialog.
         plan, port = self.ids["plan"], self.ids["port"]
