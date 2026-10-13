@@ -70,19 +70,18 @@ One brief is one `item` row. No table, column or migration is added; `SCHEMA_VER
 | `title` | the stem |
 | `repo` | the system checkout's key, given as `--belongs-to`; its `channels` setting places the vault copy |
 | `status` | `done` when filed: a brief is delivered, not work |
-| `fields` | `{"attention": false, "brief": {"series", "day", "at", "words", "lead", "sha256", "generation"}}` |
+| `fields` | `{"attention": false, "brief": {"series", "day", "at", "words", "lead", "sha256"}}` |
 | `body` | `{"text": <the whole Markdown file, frontmatter included>}`, the shape every report body has |
 
 `series` and `day` come from the stem. `at` is when the row was first filed (UTC); an import uses the note's
 modification time. `words` and `lead` (200 characters, whitespace folded) are counted from the body without its
 frontmatter, at write time, so a page read never parses 2 MB. `sha256` is of `body.text`.
-`generation` is 1 when the row is created and grows by 1 on each change of `body`; it is how a vault copy proves it
-is fresher than its row (below).
-
-**The row is the source of truth.** No file overwrites a row on its own say-so. A file may replace a differing
-row only on evidence that it is newer: a vault copy whose recorded `brief-generation` is greater than the row's,
-or a draft that only appends to the row's text. Every other difference is a conflict: it is listed by stem, the row
-stays, and only the operator takes the file, naming the stem: `add --replace` on that file, or `import --replace <stem>`.
+**The row is the source of truth.** No vault copy or note ever replaces a row that exists and differs: `import`
+lists the difference as a conflict, and only the operator takes the file, naming the stem with `--replace <stem>`.
+No counter or timestamp decides it, because a restore rolls any counter back with the rows, so a counter orders
+events within one history only. The one automatic replace is a routine's own draft that only appends to the row's
+text (`--extend`, below). That rule compares content, not history: after a restore it can only re-append the
+findings to the text the restore brought back, and it loses nothing the restore had not already lost.
 
 Why `report` rows keep briefs off work views with no new filter: `reads._NOT_A_QUIET_REPORT` drops a report whose
 `fields.attention` is not `true` from the backlog, the matrix and the done-this-week window; the 815 run reports on
@@ -108,17 +107,15 @@ One verb group under the existing `sd reports`, so no new top-level command:
   The same stem with other bytes is a conflict, refused (exit 1) and named, unless a flag allows it.
   `--extend` takes the file only when the row's text is a strict prefix of it, the routine's appended findings;
   any other difference is still a conflict. `--replace` takes the file whatever the row holds; it is the operator's
-  flag, and no routine text or recovery step uses it. Either updates `body` and `fields`, adds 1 to `generation`,
+  flag, and no routine text or recovery step uses it. Either updates `body` and `fields`
   and adds one `comment` note, `Brief replaced by <who>: <old> -> <new> words`, in one transaction.
 - `sd reports brief list [--series S] [--since DAY] [--json]` prints day, series, stem and words, newest first.
 - `sd reports brief show <stem>` prints the stored Markdown.
 - `sd reports brief import <folder> --belongs-to <checkout> [--replace <stem>]...` files each `*.md` in a folder,
-  with each note's modification time as `at`, and renders nothing. It strips the `mirror-hash` and
-  `brief-generation` lines before comparing. A stem with no row is added. A note equal to its row is `unchanged`.
-  A differing note replaces its row only when its `mirror-hash` matches its content (a copy the render wrote, not a
-  hand edit) and its `brief-generation` is greater than the row's `generation`; the row then takes that generation.
-  Equal generations with other bytes mean the row changed after a restore, so they conflict too.
-  Every other differing note is a conflict: the import lists the conflicting stems, leaves those rows, and exits 1.
+  with each note's modification time as `at`, and renders nothing. It strips the `mirror-hash` line before
+  comparing. A stem with no row is added. A note equal to its row is `unchanged`. It never replaces a row that
+  differs: each such stem is a conflict, listed with whether its `mirror-hash` matches (a copy the render wrote) or
+  not (a hand edit or an unrendered note); the import leaves those rows and exits 1.
   `--replace <stem>`, repeated per stem, takes the note for that stem only; a bare `--replace` is refused.
   Then it reads every row back and prints `verified <n>` when each imported `sha256` matches. The sitting runs
   `render` once after it.
@@ -168,7 +165,7 @@ search that shows no caller is left.
 ### What happens to the existing vault notes
 
 The sitting imports all 120 notes. Each note then is the vault copy of its row, at the same path.
-The first render adds the `brief-generation` and `mirror-hash` lines to each, its only change. Wikilinks, the `Followup - Briefs` base and
+The first render adds a `mirror-hash` line to each, its only change. Wikilinks, the `Followup - Briefs` base and
 the Blog Ideas `source-brief` links keep resolving, because the stem and the frontmatter stay.
 Nothing deletes a note. A note that is not a brief (no stem shape, no frontmatter) is refused by name and left.
 
@@ -189,8 +186,7 @@ The Briefs page and the item view read the rows, so the vault copy is optional f
 Q1 asks the operator to confirm it stays on; the design works either way.
 
 **The render.** `routine_briefs.render(connection, vault)` writes one file per row, `<folder>/<stem>.md`, holding
-`body.text` with `brief-generation: <generation>` and `mirror-hash: <sha256>` added as the last two frontmatter
-lines; the hash covers the file without the `mirror-hash` line, so it seals the generation too. It writes a file only when its bytes
+`body.text` with `mirror-hash: <sha256>` added as the last frontmatter line. It writes a file only when its bytes
 differ, by temporary file and rename. It overwrites a file only when the file's own `mirror-hash` matches its
 content, or it has none and its content equals the row's. Any other file is a hand edit: it stays and is reported.
 A `.md` file in the folder with no row is reported and kept. This is the five-bases mirror rule (sd:3976): whichever
@@ -244,30 +240,30 @@ Filing moves state in steps: draft, row, vault copy, heartbeat. The sitting move
 | add: commit | the row, maybe | the commit's answer is lost (`TransactionLost`, `UnknownOutcome`) | exit 1; a rerun finds the row and prints `unchanged`, or creates it; never two rows for one stem | `test_routine_briefs`: stop after commit, rerun prints `unchanged`, one row and one opening note |
 | add: same stem | nothing | other bytes and no flag | a conflict: refused, exit 1, the stem named, the row unchanged | `test_routine_briefs`, fail-first |
 | add --extend | nothing | the row's text is not a prefix of the file | a conflict: refused, exit 1, the row unchanged | `test_routine_briefs`: a draft that edits, not appends, is refused, fail-first |
-| add --extend or --replace | `body`, `fields`, `generation`, one note | an error between the update and the note | one transaction: the row stays as it was | `test_routine_briefs`: a forced error after the update leaves the old `sha256`, the old generation and no note |
+| add --extend or --replace | `body`, `fields`, one note | an error between the update and the note | one transaction: the row stays as it was | `test_routine_briefs`: a forced error after the update leaves the old `sha256` and no note |
 | routine: between `add` and `add --extend` | the row holds the draft without findings; the draft has them | the run stops after appending the findings | the next run re-files the last 7 days of drafts with `--extend`; the draft appends to the row, so it replaces it | `test_routine_briefs`: an appending draft is taken by `--extend` and an equal one prints `unchanged`; the routine text is checked by the next-day step |
-| routine: draft recovery | nothing | a 7-day-old draft differs from a row the operator replaced since | `--extend` finds no prefix: a conflict, named in the run's report; the row stays | `test_routine_briefs`: a stale draft against a replaced row is refused and the row keeps its generation, fail-first |
+| routine: draft recovery | nothing | a 7-day-old draft differs from a row the operator replaced since | `--extend` finds no prefix: a conflict, named in the run's report; the row stays | `test_routine_briefs`: a stale draft against a replaced row is refused and the row keeps its `sha256`, fail-first |
 | add, hub: render after commit | some vault copies | vault blocked by macOS, a write error, the lock wait runs out | the row stands; `vault copy not written: <reason>`; exit 0; heartbeat `failed`; Health shows it; the next `add` or `render` catches up | `test_routine_briefs_render`: a forced write error leaves the row and a failed heartbeat; `test_health`: a failed and a missing heartbeat each show, fail-first |
 | render, twice at once | files | a hub `add` and a hand `render` overlap; one read rows before the other's replace | the lock serializes them and each reads rows after taking it, so the last writer read the newest rows | `test_routine_briefs_render`: a render holding the lock while a replace commits; the second render writes the new bytes, fail-first |
 | render | some files written | stopped midway | each file is a rename, so none is half written; rerun writes the rest | `test_routine_briefs_render`: error after N files, rerun completes |
 | render | nothing for that file | a hand edit to a vault copy | the file stays and is reported; refused count; `render` exits 1 | `test_routine_briefs_render`: a `mirror-hash` mismatch is kept, fail-first |
 | render | nothing | it runs on a satellite | skipped with `HubOnly`; the hub's next `add` or `render` writes the copy | `test_routine_briefs_render`: the hub-only skip |
 | render | nothing | a restore is unresolved | refused with the reason in the heartbeat | `test_routine_briefs_render`: an open restore refuses |
-| restore: rows older than copies | rows: a stem missing, or a lower generation than its copy | a resumed render would write older bodies over newer copies | before `sd restore resume`: `import <folder>` adds missing stems and replaces a row only from a sealed copy with a greater `brief-generation`; hand-edited copies and every other difference are listed as conflicts; then resume, and `render` writes 0 files | `test_routine_briefs`: a snapshot holding generation 1 of a stem whose copy is generation 2, and lacking another stem; the import levels both; the render then writes nothing, fail-first |
-| restore: copy older than row | nothing | a replace committed (generation 2), its render failed, so the copy is generation 1; a later restore or rollback runs `import` | the copy's generation is not greater, so the import lists the stem as a conflict and leaves the newer row; the operator may still take the copy with `--replace <stem>` | `test_routine_briefs`: a sealed generation-1 copy against a generation-2 row is a conflict and the row keeps its `sha256`, fail-first |
-| restore: same generation, other bytes | nothing | a restore took a row to generation 1, a new replace made a different generation 2, and an older generation-2 copy is still in the vault | equal generations are a conflict, listed; the row stays | `test_routine_briefs`: equal generations with different bytes are a conflict, fail-first |
+| restore: a stem missing | the rows lack a brief its copy holds | a resumed render writes nothing for it, and the page lacks it | before `sd restore resume`: `import <folder>` adds every missing stem | `test_routine_briefs`: a snapshot lacking one stem; the import adds it and verifies, fail-first |
+| restore: a row differs from its copy | nothing | the copy may be newer (the restore took the row back) or older (a replace whose render failed, then any restore or rollback) | `import` never decides: it lists the stem as a conflict, says whether the copy's `mirror-hash` matches, leaves the row and exits 1; the operator reads both (`sd reports brief show <stem>` and the copy) and takes the copy with `--replace <stem>` or leaves the row; then resume, and `render` writes the row over the copy | `test_routine_briefs`: a rendered copy newer than its restored row, and one older than its replaced row, are each a conflict and each row keeps its `sha256`, fail-first |
+| restore: replaced again after a restore | nothing | publish, restore to an older row, replace the row, then `import` finds the pre-restore copy | a conflict like any other difference; the row stays | `test_routine_briefs`: the publish, restore, replace, import sequence leaves the replaced row, fail-first |
 | render: read the setting | nothing | hub unreachable, build mismatch, a refused value | no copy written, the cause named; never the default folder | `test_routine_briefs_render`: each cause writes nothing, fail-first |
 | render: setting omits `obsidian` | nothing | the operator turned the channel off | no copy; existing copies stay; heartbeat says `off` | `test_routine_briefs_render` |
 | render: folder changed | copies in the new folder | old copies look current | the render names copies left in the previous folder, which the heartbeat recorded; it deletes none | `test_routine_briefs_render`: a folder change reports the old copies |
 | import | some rows | stopped midway | rerun: filed stems print `unchanged`, the rest are filed; `verified` only when every row matches | `test_routine_briefs`: stop after N files, rerun, `verified` |
-| import: sitting | nothing for that note | a note changed between two imports (it has no seal) | a conflict, listed by stem; before the cutover the routines write the vault, so the sitting reruns with `--replace <stem>` for each listed stem, read first | `test_routine_briefs`: a changed unsealed note is a conflict; `--replace <stem>` takes that stem only and leaves another listed conflict |
+| import: sitting | nothing for that note | a note changed between two imports | a conflict, listed by stem; before the cutover the routines write the vault, so the sitting reruns with `--replace <stem>` for each listed stem, read first | `test_routine_briefs`: a changed note is a conflict; `--replace <stem>` takes that stem only and leaves another listed conflict |
 | import | nothing | `--replace` with no stem | refused before any write: the operator names each stem | `test_routine_briefs`: a bare `--replace` exits 2, fail-first |
-| import over copies | nothing | a later import reads rendered copies (rollback, restore) | the importer strips the seal lines, so a level copy is `unchanged` | `test_routine_briefs`: render, then import, files nothing, fail-first |
+| import over copies | nothing | a later import reads rendered copies (rollback, restore) | the importer strips the `mirror-hash` line, so a level copy is `unchanged` | `test_routine_briefs`: render, then import, files nothing, fail-first |
 | sitting: routines edited | the routine text | an old routine still writes a vault note | the render reports a file with no row; the operator runs `add` on it | `test_routine_briefs_render`: a file with no row is reported and kept |
 | sitting: older pack on a machine | nothing | a satellite on a pack before B1 runs a routine | `sd reports brief` is unknown and the remote refuses a build mismatch; the run reports it; the sitting pulls the pack on every machine before the routine edits | none: the build handshake test covers it |
 | page: read rows | nothing | the database read fails | `state: error` with the cause; no rows shown as zero | `test_v2_briefs`: a raising reader gives `error`, fail-first |
 | Reports list and verbs | a brief's status | a brief shows as a run report; `sd reports reopen` moves it to `planning` | the list skips it; `acknowledge` and `reopen` refuse it; the dashboard draws no control and no debug session | `test_reporting`: list, acknowledge and reopen on a brief, each fail-first; the reports screen and fix-session tests |
-| rollback: routines or B3 | nothing yet | a render failed or refused, or the channel is off, so copies lag the rows | stop until the copies are current: set the `obsidian` folder if it was off, run `render` until exit 0 and `refused 0`, then check `render` writes 0 files; only then revert. After reverting the routines, `import` the folder: their new stems are added, and a note they changed is a conflict, never a replace | `test_routine_briefs_render`: a refused file exits 1; the import-over-copies test; `test_routine_briefs`: an unsealed changed note is a conflict |
+| rollback: routines or B3 | nothing yet | a render failed or refused, or the channel is off, so copies lag the rows | stop until the copies are current: set the `obsidian` folder if it was off, run `render` until exit 0 and `refused 0`, then check `render` writes 0 files; only then revert. After reverting the routines, `import` the folder: their new stems are added, and a note they changed is a conflict, never a replace | `test_routine_briefs_render`: a refused file exits 1; the import-over-copies test; `test_routine_briefs`: a changed note is a conflict |
 | rollback: B3 | nothing | the old page reads the folder again | the copies are current by the row above; the old reader reads them, `mirror-hash` line and all | none: the old reader reads any `.md` |
 | restore to before the import | rows gone | the vault copies remain | `import` again; copies read as level | the import-over-copies test |
 
@@ -315,13 +311,13 @@ routines' text and run one `import`. If the render cannot get there, stop: the r
       passes with 0 failures.
 - [ ] Step 4 prints `verified 120` on the first import and `0 filed` on the second.
 - [ ] `SELECT count(*) FROM item WHERE source = 'brief'` equals `ls <folder>/*.md | wc -l` of the same sitting.
-- [ ] After step 5, `git -C "$OBSIDIAN_VAULT" diff --stat -- "System/AI Generated/Briefs"` shows two added lines
+- [ ] After step 5, `git -C "$OBSIDIAN_VAULT" diff --stat -- "System/AI Generated/Briefs"` shows one added line
       per note and no other change.
 - [ ] `reads.backlog_items` and `reads.today_items` return the same ids before and after the import.
 - [ ] `sd reports list` shows no row with `source = 'brief'`.
 - [ ] `sd reports brief add` of a draft whose stem has a row with other bytes exits 1 and changes nothing.
-- [ ] `import` against a generation-2 row and its sealed generation-1 copy lists the stem as a conflict, exits 1,
-      and the row keeps its `sha256`.
+- [ ] After a publish, a restore to an older row and a replace, `import` lists the stem as a conflict, exits 1,
+      and the row keeps its `sha256`; `import --replace <stem>` then takes the copy for that stem only.
 - [ ] `dashboard.sh test` passes with 0 failures, and `GET /api/briefs` lists 120 rows with `reader.source`
       `workflow database`.
 - [ ] The day after step 8, the day's brief is a row and its vault copy has a matching `mirror-hash`.
