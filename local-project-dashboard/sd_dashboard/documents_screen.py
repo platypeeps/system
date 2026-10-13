@@ -58,6 +58,9 @@ VIEW_FIELDS = ("pinned", "hidden", "tags")
 #: The folders under a research checkout that never hold a source Markdown; dot folders are skipped too.
 SKIP_FOLDERS = ("build", "node_modules", "dist", "storage")
 
+#: Each checkout's last walk (sd:3530): the mtime of every folder it listed, and the `.md` files by lower-case stem.
+_walks: dict[Path, tuple[dict[Path, int], dict[str, list[Path]]]] = {}
+
 #: Classes that mark a page's stand line, in the order the generators use them.
 STAND = ("standfirst", "lede", "stand", "dek")
 
@@ -161,19 +164,58 @@ def _sources(checkout: Path, names: list[str]) -> dict[str, Path]:
         # Only a source file that exists: a missing or folder `src` leaves the name match, else an unknown render state.
         if name in names and source.is_file() and source.resolve().is_relative_to(base):
             found.setdefault(name, source)
-    stems: dict[str, list[Path]] = {}
-    for directory, folders, files in os.walk(checkout):
-        here = Path(directory)
-        folders[:] = sorted(f for f in folders if not f.startswith(".") and f not in SKIP_FOLDERS
-                            and (here / f).relative_to(checkout).as_posix() != documents.PUBLISHED)
-        for file in files:
-            if file.endswith(".md"):
-                stems.setdefault(file[:-3].lower(), []).append(here / file)
+    stems = _stems(checkout)
     for name in names:
         matches = stems.get(name[:-5].lower(), [])
         if name not in found and len(matches) == 1 and matches[0].resolve().is_relative_to(base):
             found[name] = matches[0]
     return found
+
+
+def _stems(checkout: Path) -> dict[str, list[Path]]:
+    """The checkout's `.md` files by lower-case stem, walked again only when a folder it listed changed (sd:3530).
+
+    A file added, removed or renamed changes its folder's mtime, and a new folder its parent's, so one `stat` per
+    folder answers whether the last walk still holds. Each folder is stat'ed before it is listed: a change during the
+    walk leaves a newer mtime than the one kept, and the next read walks again. A walk that could not read a folder
+    is not kept, so a folder that becomes readable is not missed.
+    """
+    kept = _walks.get(checkout)
+    if kept is not None:
+        try:
+            if all(folder.stat().st_mtime_ns == mtime for folder, mtime in kept[0].items()):
+                return kept[1]
+        except OSError:
+            pass
+    seen: dict[Path, int] = {}
+    stems: dict[str, list[Path]] = {}
+    complete = True
+    pending = [checkout]
+    while pending:
+        here = pending.pop()
+        try:
+            seen[here] = here.stat().st_mtime_ns
+            with os.scandir(here) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except OSError:
+            complete = False
+            continue
+        for entry in entries:
+            path = here / entry.name
+            try:
+                folder = entry.is_dir()
+            except OSError:
+                complete = False
+                continue
+            if not folder:
+                if entry.name.endswith(".md"):
+                    stems.setdefault(entry.name[:-3].lower(), []).append(path)
+            elif (not entry.name.startswith(".") and entry.name not in SKIP_FOLDERS and not entry.is_symlink()
+                  and path.relative_to(checkout).as_posix() != documents.PUBLISHED):
+                pending.append(path)
+    if complete:
+        _walks[checkout] = (seen, stems)
+    return stems
 
 
 def _tilde(path: Path) -> str:

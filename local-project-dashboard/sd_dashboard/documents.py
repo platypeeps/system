@@ -65,6 +65,19 @@ def _config_dir() -> Path:
     return system_tools_config.config_dir("project-dashboard")
 
 
+def pipe_lines(text: str):
+    """Each line of a `key|value|...` config that says something: its number, the stripped line, its stripped fields.
+
+    The five pipe configs (`documents.conf`, `disk.conf`, `hoa.conf`, `home-tiles.conf`, `report-families.conf`) read
+    their lines here (sd:3532), so a blank line and a `#` comment say nothing in every one. What a line must hold, and
+    how a refusal reads, stays each file's own.
+    """
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            yield number, line, [field.strip() for field in line.split("|")]
+
+
 #: In this machine's config directory (`$SYSTEM_TOOLS_CONFIG`, default
 #: `~/.config/system`), never supplied by a request. The checkout ships
 #: `documents.conf.example` only.
@@ -270,11 +283,7 @@ def _configured(config_path: Path | None = None) -> Config:
     labels: dict[str, str] = {}
     files: dict[str, set[str]] = {}
     images: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = [p.strip() for p in line.split("|")]
+    for _, _, parts in pipe_lines(text):
         if len(parts) == 2 and parts[0] == "skip" and parts[1]:
             skipped.add(parts[1])
             continue

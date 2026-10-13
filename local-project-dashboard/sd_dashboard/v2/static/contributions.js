@@ -227,7 +227,7 @@ addEventListener('DOMContentLoaded', () => {
   const notRead = s => html`<p class="note">${glyph('unknown')} Not read: ${s.reason}</p>`;
   const ext = u => github(u) ? html`<a class="ext" href="${u}" target="_blank" rel="noopener noreferrer">${String(u).replace('https://github.com/', '')}</a>` : u;
   function dependency(d) {
-    if (d.kind === 'item') return html`<a href="/tasks?row=${d.item}">Complete local item #${d.item}</a>`;
+    if (d.kind === 'item') return html`<a href="${window.shell.itemHref(d.item)}">Complete local item #${d.item}</a>`;
     if (d.kind === 'merge') return html`Merge ${ext(d.url)}`;
     if (d.kind === 'issue') return html`Resolve issue ${ext(d.url)}`;
     if (d.kind === 'release') return html`Publish ${d.repo} release <code>${d.tag || 'tag not selected'}</code> containing ${ext(d.contains_pull)}${d.package ? `; package ${d.package.name}, version ${d.package.version || 'not selected'}` : ''}`;

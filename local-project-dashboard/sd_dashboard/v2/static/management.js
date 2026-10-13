@@ -526,7 +526,7 @@ function registerCommands() {
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
     { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
-      run: o => { location.href = `/tasks?row=${o.item}`; return `#${o.item} opens in Tasks`; } },
+      run: o => window.shell.openItem(o.item) },
     { id: 'wt.prune', on: 'worktrees', label: 'Prune', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.

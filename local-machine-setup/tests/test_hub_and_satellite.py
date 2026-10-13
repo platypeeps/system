@@ -1,4 +1,4 @@
-"""Steps 8 and 9 of docs/work/2026-09-22-run-the-framework-from-a-second-machine.
+"""Steps 8 and 9 of the second-machine plan (sd:1335).
 
 Step 8: the hub runs `<prefix>.sd-serve`, and the `sd` stage says when the
 profile or the config folder lacks it and when a `hub.json` sits on the hub.
@@ -293,10 +293,24 @@ class TheSatellite(Case):
                 out = self.run_stage("agents", "--apply")
                 self.assertEqual(markers(out), [])
                 for label in listed:
-                    self.assertIn(f"  SKIP    {label} — hub only, and {self.hub_json} makes this machine a "
-                                  "satellite", out)
+                    self.assertIn(f"  SKIP    {label} — hub only, and this machine is a satellite "
+                                  f"({profile}.satellite or {self.hub_json})", out)
                 self.assertEqual(list(self.agents.iterdir()), [])
                 self.assertNotIn("bootstrap", self.launchctl_verbs())
+
+    def test_the_agents_stage_skips_hub_only_agents_on_a_profile_that_names_a_hub(self):
+        # sd:3547: the guard keyed on hub.json alone, which the satellite
+        # stage writes; a satellite profile without it yet installed them.
+        (self.profiles / "work.satellite").write_text("hub.example.test\n")
+        self.agents.mkdir(parents=True)
+        listed = [label for label in HUB_ONLY if ".cron." not in label]
+        (self.profiles / "work.agent").write_text("".join(f"{label}\n" for label in listed))
+        out = self.run_stage("agents", "--apply")
+        self.assertFalse(self.hub_json.exists())
+        for label in listed:
+            self.assertIn(f"  SKIP    {label} — hub only, and this machine is a satellite", out)
+        self.assertEqual(list(self.agents.iterdir()), [])
+        self.assertNotIn("bootstrap", self.launchctl_verbs())
 
     def name_hub_by_hand(self):
         """A hub.json and no `.satellite`: the stage has no hub to ask."""
@@ -447,10 +461,10 @@ class TheSatellite(Case):
     def test_status_runs_the_stage_beside_sd_and_before_agents(self):
         text = SCRIPT.read_text()
         stages = re.search(r'^STAGES="([^"]*)"', text, re.M).group(1).split()
-        status = re.search(r"^  for st in ([^;]*); do$", text, re.M).group(1).split()
-        for order in (stages, status):
-            self.assertEqual(order.index("satellite"), order.index("sd") + 1, order)
-            self.assertLess(order.index("satellite"), order.index("agents"), order)
+        self.assertEqual(stages.index("satellite"), stages.index("sd") + 1, stages)
+        self.assertLess(stages.index("satellite"), stages.index("agents"), stages)
+        # status walks STAGES itself (sd:3548).
+        self.assertRegex(text, r"(?m)^  for st in \$STAGES; do$")
 
 
 if __name__ == "__main__":

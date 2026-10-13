@@ -32,6 +32,14 @@
     return out;
   }
   // fetch:end
+  // item:start
+  // build (sd:3526): an item's one address, its row on Tasks, whose Details read it, from every page; the classic /item/<n>
+  // page is retiring (sd:3402). A page links with itemHref(n); an Open item command runs openItem(n), whose answer is its toast.
+  // Tasks lists no quiet report and nothing done before the week; it hands such an item on to itemPage(n), its classic page.
+  const itemHref = n => `/tasks?row=${encodeURIComponent(n)}`;
+  const itemPage = n => `/item/${encodeURIComponent(n)}`;
+  const openItem = n => { location.href = itemHref(n); return `#${n} opens in Tasks`; };
+  // item:end
   const GROUPS = [
     ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
@@ -1181,7 +1189,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

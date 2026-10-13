@@ -21,7 +21,7 @@ touches. Each span is read again just before its write. A span that changed,
 or a failed or short write, stops the file, and mask prints the offset and
 length of every match not yet fully written, because a half-masked value no
 longer matches and the next run cannot find it. A failed fsync lists them
-all. docs/work/2026-10-08-mask-rewrite/design.md has the failure table.
+all. `git show 8aef46ba:docs/work/2026-10-08-mask-rewrite/design.md` has the failure table.
 """
 
 from __future__ import annotations

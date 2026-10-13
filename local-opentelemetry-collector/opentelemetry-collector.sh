@@ -6,7 +6,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 4317/4318 are the standard OTLP pair and stay here: receiving OTLP is this
-# service's whole purpose. local-jaeger moved to 4327/4328 so both can run.
+# service's whole purpose.
 GRPC_PORT="${OTELCOL_GRPC_PORT:-4317}"
 HTTP_PORT="${OTELCOL_HTTP_PORT:-4318}"
 ZPAGES_PORT="${OTELCOL_ZPAGES_PORT:-55679}"

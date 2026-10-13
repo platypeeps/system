@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
@@ -438,6 +439,8 @@ class Dashboard(BaseHTTPRequestHandler):
     served_commit = None
     #: Each page's rail badge (sd:3446); `build` gives each server its own.
     badges = None
+    #: Set once `_send` begins an answer: a failure after it cannot answer again (sd:3529).
+    _started = False
 
     # `_policy` lets one response replace the shared Content-Security-Policy,
     # and only that header. A served document carries its stylesheet in its own
@@ -475,13 +478,46 @@ class Dashboard(BaseHTTPRequestHandler):
         probe: the write into the closed socket is ordinary, and the stdlib's
         traceback for it was 109 blocks of the err log on one day (sd:970).
         The handler is shared by both listeners, so the direct IP socket is
-        covered too; every other exception keeps the stdlib's traceback.
+        covered too. A route's own failure never reaches here: `_answer`
+        answers it (sd:3529).
         """
         try:
             super().handle()
-        except (BrokenPipeError, ConnectionResetError):
-            host, port = self.client_address[:2]
-            print(f"client {host}:{port} left before the response", file=sys.stderr)
+        except ConnectionError:
+            self._left()
+
+    def _left(self) -> None:
+        host, port = self.client_address[:2]
+        print(f"client {host}:{port} left before the response", file=sys.stderr)
+
+    def _answer(self, method) -> None:
+        """The last-resort handler (sd:3529): a failure no route's catch list names still answers.
+
+        An `OSError` is 503 and anything else 500, each naming the method and route: JSON on `/api/`, the error
+        page elsewhere, so the browser never gets a closed socket with no body. Only the 500 keeps its traceback
+        in the service log. Once an answer has started a second one would corrupt it: a socket error there is
+        the client leaving, one line as in `handle`, and anything else closes the connection after its traceback.
+        """
+        self._started = False
+        try:
+            method()
+        except Exception as error:
+            path = urlsplit(self.path).path
+            self.close_connection = True
+            if self._started and isinstance(error, OSError):
+                return self._left()
+            problem = f"{self.command} {path} failed: {type(error).__name__}: {error}"
+            print(f"sd-dashboard: {problem}", file=sys.stderr, flush=True)
+            if not isinstance(error, OSError):
+                traceback.print_exc()
+            if not self._started:
+                self._error(503 if isinstance(error, OSError) else 500, problem, path)
+
+    def _error(self, status: int, message: str, path: str) -> None:
+        """An error answer in the shape its caller reads: JSON for a script on `/api/`, the error page for a browser."""
+        if path.startswith("/api/"):
+            return self._json(status, {"error": message})
+        self._send(status, error_page(status, message).encode("utf-8"), "text/html; charset=utf-8")
 
     def _send(self, status: int, body: bytes, content_type: str, *, cookie=None,
               policy: str | None = None, overrides: dict | None = None,
@@ -489,6 +525,7 @@ class Dashboard(BaseHTTPRequestHandler):
         # Assigned unconditionally: the handler instance is reused for every
         # request on a kept-alive connection, and a policy left behind would
         # apply to the next page served down the same socket.
+        self._started = True
         self._policy = policy
         self._overrides = overrides
         # `compress` is a static file's: `caching` says why nothing else is (sd:2141).
@@ -514,6 +551,9 @@ class Dashboard(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self) -> None:  # noqa: N802 - the base class names it
+        self._answer(self._get)
+
+    def _get(self) -> None:
         context = self._context()
         if context is None:
             return self._json(403, {"error": "Untrusted dashboard host."})
@@ -542,7 +582,7 @@ class Dashboard(BaseHTTPRequestHandler):
         parameters = parse_qs(split.query, keep_blank_values=True)
         try:
             connection = sd_db.connect(self.database, write=False)
-        except (FileNotFoundError, SdDbError, sqlite3.Error) as problem:
+        except (OSError, SdDbError, sqlite3.Error) as problem:
             if self._session(context):
                 self.badges.remember(path, None, self.clock())  # a counted read that could not run is unknown (sd:3446)
             return self._send(
@@ -643,7 +683,7 @@ class Dashboard(BaseHTTPRequestHandler):
                 return self._send(301, b"", "text/plain; charset=utf-8", overrides={"Location": location})
             body = route(connection, path, parameters, now=self.clock(), services_backend=self.services_backend)
         except workflow.MissingItem:
-            return self._json(404, {"error": "The related item no longer exists. Choose another item."})
+            return self._error(404, "The related item no longer exists. Choose another item.", path)
         except NotFound as missing:
             return self._send(
                 404, error_page(404, f"Nothing at {missing}.").encode("utf-8"),
@@ -794,6 +834,9 @@ class Dashboard(BaseHTTPRequestHandler):
                    "application/json; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802 - the base class names it
+        self._answer(self._post)
+
+    def _post(self) -> None:
         # Failed preflight must not leave unread bytes as another keep-alive request.
         self.close_connection = True
         context = self._context()
@@ -842,7 +885,7 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._json(409, {"error": str(problem), "reload": True})
         except (workflow.WorkflowError, SdDbError, ValueError) as problem:
             return self._json(400, {"error": str(problem)})
-        except (FileNotFoundError, sqlite3.Error) as problem:
+        except (OSError, sqlite3.Error) as problem:
             return self._json(503, {"error": str(problem)})
         # A write that answers its own status (sd:2207: 202 started, 409 refused) returns `(status, document)`, as a read can.
         status, result = result if isinstance(result, tuple) else (201 if path.path == "/api/items" else 200, result)
@@ -967,12 +1010,29 @@ class DashboardServer(Listener):
     # The new build's start check as a command; `main` sets it for a --config start. None never restarts.
     restart_probe = None
     refused_build = None
+    # The probe in flight: a thread that leaves `(build, reason)` in `probed` when it ends (sd:3530).
+    probing = None
+    probed = None
     # A check hashes the library and the package, about 30 ms.
     build_check_seconds = 30
+    # The probe's own bound; it runs beside the accept loop, so no request waits on it.
+    probe_seconds = 60
 
     def service_actions(self):
         super().service_actions()
-        if self.restart_probe is None or time.monotonic() - self.build_checked < self.build_check_seconds:
+        if self.restart_probe is None:
+            return
+        if self.probing is not None:
+            if self.probing.is_alive():
+                return
+            (build, reason), self.probing, self.probed = self.probed, None, None
+            if not reason:
+                raise CodeChanged("the dashboard build changed on disk")
+            self.refused_build = build
+            print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
+                  file=sys.stderr, flush=True)
+            return
+        if time.monotonic() - self.build_checked < self.build_check_seconds:
             return
         self.build_checked = time.monotonic()
         try:
@@ -981,19 +1041,23 @@ class DashboardServer(Listener):
             return  # A checkout mid-update can lack a file; the next check sees it settled.
         if current in (self.RequestHandlerClass.loaded_build, self.refused_build):
             return
-        # ponytail: the probe holds new connections for its run (about a second), once per change.
+        # The probe takes a second or, with a slow git or Tailscale, up to its bound: on the accept loop every
+        # request waited that long (sd:3530). A thread runs it; the next tick after it ends acts on its answer.
+        self.probing = threading.Thread(target=self._probe, args=(current,), daemon=True,
+                                        name="sd-dashboard-restart-probe")
+        self.probing.start()
+
+    def _probe(self, build):
         try:
             probe = subprocess.run(self.restart_probe, stdin=subprocess.DEVNULL, capture_output=True,
-                                   text=True, timeout=60, check=False)
+                                   text=True, timeout=self.probe_seconds, check=False)
             reason = "" if probe.returncode == 0 else (
                 probe.stderr.strip().splitlines() or [f"exit {probe.returncode}"])[-1]
         except (OSError, subprocess.SubprocessError) as error:
             reason = str(error) or type(error).__name__
-        if not reason:
-            raise CodeChanged("the dashboard build changed on disk")
-        self.refused_build = current
-        print(f"sd-dashboard: the build changed on disk but cannot start; serving the old build: {reason}",
-              file=sys.stderr, flush=True)
+        except BaseException as error:  # noqa: BLE001 - an answer is owed, or the probe never ends
+            reason = f"the probe failed: {type(error).__name__}: {error}"
+        self.probed = (build, reason)
 
     def direct_listener_healthy(self):
         return self.direct_server is None or (

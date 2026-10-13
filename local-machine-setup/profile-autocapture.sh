@@ -20,12 +20,18 @@
 # It takes no arguments.
 set -eu
 
+# An argument it does not know is refused, not run: a mistyped `--help` used
+# to write the profiles (sd:3546).
 case "${1:-}" in
   -h|--help|help)
     echo "usage: profile-autocapture.sh   (takes no arguments)"
     echo "Record additive profile-roster changes: machine-setup.sh capture --apply --additive."
     echo "Exit 0 when it wrote or had nothing to do, 3 when a removal was held."
     exit 0 ;;
+  "") ;;
+  *)
+    echo "usage: profile-autocapture.sh   (takes no arguments; help prints what it does)" >&2
+    exit 1 ;;
 esac
 
 # Same idiom as machine-setup.sh, deliberately, so the two agree.

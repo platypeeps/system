@@ -89,8 +89,9 @@ never posts to GitHub. The full detail lives in
 
 **`make check`** is the merge gate. `sd-ship merge` runs it through `sd-check`
 and posts `sd/local-gate`, the one required check; GitHub Actions CI is off.
-It runs `tests/check.sh`: one preflight, then four legs in parallel, plus the
-macOS-only suites on a Mac. The preflight runs once, before any leg:
+It runs `tests/check.sh`: one preflight, then the legs in parallel, plus the
+macOS-only suites on a Mac; the first failed job stops the others. The
+preflight runs once, before any leg:
 
 1. `sd-docs-lint`, from the repository root with no `--work-dir`
 2. `tests/test_jev_contract.py`

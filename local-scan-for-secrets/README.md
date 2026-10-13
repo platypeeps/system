@@ -367,7 +367,7 @@ legible rather than re-argued each Monday.
   picks a quiet time. Sessions keep echoing the exported values into new log
   lines, so `critical` exits 2 again after a mask until those keys leave the
   shell environment. Design record:
-  `docs/work/2026-10-07-secret-scan-mask-durable/`.
+  sd:1254.
 - **`~/.bash_history` stays in scope.** The 2026-09-21 run flagged four lines
   carrying `sts_` ingestion keys. It is not excluded, because the
   finding is actionable without deleting anything: `sts_[0-9a-f]{20,}` is in

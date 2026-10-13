@@ -29,7 +29,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 ## Tests and CI
 
 - Merges gate on `make check` through the local gate (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` and posts `sd/local-gate`, the one required check.
-- `make check` runs `tests/check.sh`: the preflight and all three legs of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
+- `make check` runs `tests/check.sh`: the preflight and every leg of `tests/ci-native.sh`, plus `tests/run-macos-only.sh` suites on a Mac.
 - Run one suite as `make test SUITE=<name>`, never against the live pack: it uses the gate's pin; hand runs passed what the gate failed (sd:3534).
 - Actions CI is off on purpose; add no workflow. Who, when, revert: `docs/local-ci-rollout.md`.
 - A test that needs macOS goes in a suite named in `tests/macos-only-suites.txt`, never behind a skip; Linux cannot run it.
@@ -84,7 +84,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 
 Deliberate deviations:
 
-- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-opentelemetry-traces` runs the generator; `local-agent-meter` appends a reading.
+- No-arg runs the action, for cron and launchd: `local-scan-for-secrets` scans the cwd; `local-ha-mcp` serves; `local-agent-meter` appends a reading.
 - Bash, not POSIX sh: `local-cswap` and `tests/ci-native.sh`.
 - Compose, not `--rm` and `docker run`: `local-genai-traces` (`restart: unless-stopped`, to stay always on), `local-graphiti-mcp` and `mezmo-aura`.
 - Config outside `<root>/<tool>/`: `local-gito` sources `~/.gito/.env`; `local-prism` reads `~/.prism/.env`; `local-task-actions` keeps its secret in `~/.config/task-actions/`.

@@ -54,6 +54,8 @@ from pathlib import Path
 
 from sd_db import paths, reads, repos
 
+from . import documents
+
 __all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "DOCTOR_SECONDS", "branch_scan", "disk_scan", "doctor_scan", "parse_doctor",
            "revision", "storage_roots"]
 
@@ -198,10 +200,10 @@ def storage_roots(config: Path | None = None) -> tuple[list[Path], list[str], Pa
         text = config.read_text(encoding="utf-8")
     except FileNotFoundError:
         return roots, refused, config
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
+    except (OSError, UnicodeDecodeError) as error:
+        # A file that is there but cannot be read is a named line, as on Now and Home, not the whole area's error.
+        return roots, [f"{config} could not be read: {error.__class__.__name__}: {error}"], config
+    for number, line, _ in documents.pipe_lines(text):
         kind, _, value = line.partition("|")
         value = value.strip().replace("$HOME", "~", 1) if value.strip().startswith("$HOME") else value.strip()
         if kind.strip() != "storage" or not value:

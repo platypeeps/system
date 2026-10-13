@@ -57,7 +57,7 @@ from sd_db.errors import SdDbError
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["assistant_merge", "document", "job_log", "last_run", "set_repo"]
+__all__ = ["assistant_merge", "document", "job_log", "last_run", "log_tail", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -364,31 +364,53 @@ def job_log(cron_root, name: str) -> dict:
     if not isinstance(name, str) or not operations.JOB_NAME.fullmatch(name):
         return out | {"reason": "the job name is not one a log file can have"}
     try:
-        fd = os.open(Path(cron_root) / "logs" / f"{name}.log", os.O_RDONLY | os.O_NONBLOCK)
+        _, raw, start = log_tail(Path(cron_root) / "logs" / f"{name}.log", LOG_BYTES)
     except FileNotFoundError:
         return out | {"state": "none", "reason": "no log: the job has not run through the cron-jobs wrapper"}
     except OSError as error:
-        return out | {"reason": f"the log is unreadable: {error.strerror or error}"}
+        return out | {"reason": unreadable(error)}
+    return out | {"state": "read", "text": raw.decode("utf-8", "replace"), "cut": bool(start)}
+
+
+class NotRegular(OSError):
+    """A log path that holds something other than a regular file, such as a FIFO or a folder."""
+
+
+def unreadable(error: OSError) -> str:
+    """Why a log was not read, in the words Management and Reports both show."""
+    if isinstance(error, NotRegular):
+        return "the log is not a regular file"
+    return f"the log is unreadable: {error.strerror or error}"
+
+
+def log_tail(path: Path, limit: int) -> tuple[bytes, bytes, int]:
+    """A job log's first line, its last `limit` bytes from the first whole line in them, and the offset read from.
+
+    Management's log and Reports' cadence read through it (sd:3532). The file is opened without blocking and checked
+    to be a regular file before any read, as a pin file is (sd:2911): a FIFO in its place would hang the page. A log
+    that is not there raises `FileNotFoundError`; one that is not a regular file, `NotRegular`; any other failed read,
+    its `OSError`.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     try:
         found = os.fstat(fd)
         if not stat.S_ISREG(found.st_mode):
-            return out | {"reason": "the log is not a regular file"}
-        start = max(0, found.st_size - LOG_BYTES)
+            raise NotRegular(f"{path} is not a regular file")
+        first = os.pread(fd, 4096, 0).partition(b"\n")[0]
+        start = max(0, found.st_size - limit)
         os.lseek(fd, start, os.SEEK_SET)
         raw = b""
-        while len(raw) < LOG_BYTES:
-            part = os.read(fd, LOG_BYTES - len(raw))
+        while len(raw) < limit:
+            part = os.read(fd, limit - len(raw))
             if not part:
                 break
             raw += part
-    except OSError as error:
-        return out | {"reason": f"the log is unreadable: {error.strerror or error}"}
     finally:
         os.close(fd)
     if start:
-        # The read began part way through a line: show whole lines only.
+        # The read began part way through a line: whole lines only.
         raw = raw.partition(b"\n")[2]
-    return out | {"state": "read", "text": raw.decode("utf-8", "replace"), "cut": bool(start)}
+    return first, raw, start
 
 
 def _jobs(connection, backend) -> list[dict]:

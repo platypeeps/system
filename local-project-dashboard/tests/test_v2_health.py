@@ -811,6 +811,15 @@ class TheDocument(Collectors, ScreenCase):
         roots, refused, read = health_collectors.storage_roots(example)
         self.assertEqual((roots, refused, read), ([Path("/Volumes/change-me/repo-storage")], [], example))
 
+    def test_a_config_that_cannot_be_read_is_a_named_refusal_not_an_error(self):
+        """sd:3532 (review 2026-10-12, A1 F7): only a missing disk.conf was caught; a folder in its place raised."""
+        config = Path(self.tmp.name) / "disk.conf"
+        config.mkdir()
+        roots, refused, read = health_collectors.storage_roots(config)
+        self.assertEqual((roots, read), ([], config))
+        self.assertEqual(len(refused), 1, refused)
+        self.assertTrue(refused[0].startswith(f"{config} could not be read: "), refused)
+
     def test_a_du_that_does_not_finish_is_a_row_not_a_refusal_of_the_area(self):
         store = Path(self.tmp.name) / "store"
         store.mkdir()

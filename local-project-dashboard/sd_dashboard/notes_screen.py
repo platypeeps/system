@@ -49,6 +49,7 @@ the vault, and the next try adds ` 2`, ` 3` and so on.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -257,9 +258,12 @@ def daily_notes(days, environ=None) -> dict:
     return out
 
 
+@functools.lru_cache(maxsize=1)
 def _mail_intake():
     # `local-mail-intake`'s workspace-mcp client and parsers, loaded by path: the file sits beside this folder in the
-    # checkout, as `collectors.py` does for the screens that load it.
+    # checkout, as `collectors.py` does for the screens that load it. Once per process (sd:3532): a load per read
+    # recompiled it and rebound `sys.modules` under a read in another tab. A change to the file is a build change,
+    # which restarts the server.
     path = Path(__file__).resolve().parents[2] / "local-mail-intake" / "mail_intake.py"
     spec = importlib.util.spec_from_file_location("sd_dashboard_mail_intake", path)
     if spec is None or spec.loader is None:

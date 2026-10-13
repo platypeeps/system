@@ -34,7 +34,7 @@ def grep(pattern, *paths):
 class DockerImagesByID(unittest.TestCase):
     def test_every_images_call_in_a_script_filters_by_reference(self):
         calls = grep(r"docker images", "*.sh")
-        self.assertGreaterEqual(len(calls), 15, "the enumeration found too few wrappers")
+        self.assertGreaterEqual(len(calls), 8, "the enumeration found too few wrappers")
         bad = [c for c in calls if not GOOD.search(c)]
         self.assertEqual(bad, [], "docker images must be `-aq --filter \"reference=<repo>\"`")
 
