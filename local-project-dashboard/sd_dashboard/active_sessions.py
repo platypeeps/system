@@ -61,9 +61,10 @@ def _when(stamp) -> datetime | None:
         return None
     try:
         value = datetime.fromisoformat(stamp)
-    except ValueError:
+        # In UTC here, so a time at the edge of the calendar (`0001-01-01T00:00+05:00`) is no time, not a later raise.
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _iso(value: datetime | None) -> str:
@@ -85,7 +86,8 @@ def elapsed(seconds: int) -> str:
 
 def _etime(text: str) -> int | None:
     """`ps`'s `etime`, `[[dd-]hh:]mm:ss`, in seconds; None when it is not one."""
-    found = re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", text.strip())
+    # Bounded: five digits of days is 273 years, and `now` minus a longer time leaves the calendar.
+    found = re.fullmatch(r"(?:(?:(\d{1,5})-)?(\d{1,2}):)?(\d{1,2}):(\d{1,2})", text.strip(), re.ASCII)
     if not found:
         return None
     days, hours, minutes, seconds = (int(part or 0) for part in found.groups())
@@ -96,10 +98,25 @@ def _real(path) -> str:
     return os.path.realpath(os.path.expanduser(path)) if isinstance(path, str) and path else ""
 
 
+class Unread(ValueError):
+    """A source that could not be read, or answered in the wrong shape; its text is the reason `sources` shows."""
+
+
+#: What a source's read may raise: each marks that source unread, and the rest of `/api/now` still answers.
+UNREAD = (ValueError, OverflowError, TypeError, KeyError, IndexError, AttributeError, OSError, sqlite3.Error, SdDbError)
+
+
+def _reason(failure: Exception) -> str:
+    """`Unread`'s own text; any other failure is unexpected, so its class leads."""
+    if isinstance(failure, Unread):
+        return str(failure) or "it could not be read"
+    return f"{type(failure).__name__}: {failure}"
+
+
 def _expect(holds: bool, problem: str) -> None:
     """A source's answer of the wrong shape is that source unread, as a failed read is: never fewer rows."""
     if not holds:
-        raise ValueError(problem)
+        raise Unread(problem)
 
 
 def _is_text(value) -> bool:
@@ -112,14 +129,23 @@ def _text(row: dict, *fields: str) -> bool:
     return all(row.get(field) is None or _is_text(row.get(field)) for field in fields)
 
 
-def _number(word: str) -> int | None:
-    """An item number in ASCII digits: `str.isdigit` also takes `²`, which `int` refuses, and `١`, which it reads."""
-    return int(word) if word.isascii() and word.isdigit() else None
+def _item_id(value) -> int | None:
+    """An item id: 1 to 9 ASCII digits, as text or an int; anything else is None.
+
+    `str.isdigit` also takes `²`, which `int` refuses, and `١`, which it reads; `int` refuses 4301 digits; SQLite
+    overflows past 2**63. Every text or number that becomes an item id here goes through this one check.
+    """
+    if type(value) is int:
+        return value if 0 <= value < 10**9 else None
+    if isinstance(value, str) and 1 <= len(value) <= 9 and value.isascii() and value.isdigit():
+        return int(value)
+    return None
 
 
-def _inside(path: str, joined: dict[str, int]) -> str | None:
-    """The joined worktree `path` is in, or None."""
-    real = _real(path)
+def _inside(real: str, joined: dict[str, int]) -> str | None:
+    """The joined worktree the resolved path `real` is in, or None."""
+    if not real:
+        return None
     return next((tree for tree in joined if real == tree or real.startswith(tree + os.sep)), None)
 
 
@@ -133,10 +159,14 @@ def _lane(connection) -> list[dict]:
             entry = json.loads(body)
         except (TypeError, ValueError):
             entry = None
-        _expect(isinstance(entry, dict) and type(entry.get("item")) is int
+        _expect(isinstance(entry, dict) and type(entry.get("item")) is int and _item_id(entry["item"]) is not None
                 and _text(entry, "worktree", "status", "step", "started_at", "enqueued_at")
                 and isinstance(entry.get("holder"), (dict, type(None))), f"lane entry {key} is not a lane entry")
-        entries.append(entry)
+        holder = entry.get("holder") or {}
+        entries.append({"id": entry.get("id"), "item": entry["item"], "status": entry.get("status"),
+                        "real": _real(entry.get("worktree")), "enqueued": str(entry.get("enqueued_at") or ""),
+                        "session": f"Lane {entry.get('step') or 'run'} on {holder.get('host') or 'an unnamed host'}",
+                        "started": _when(entry.get("started_at")), "queued": _when(entry.get("enqueued_at"))})
     return entries
 
 
@@ -145,6 +175,7 @@ def _launches(connection) -> dict[str, dict]:
     prefix = fix_session.NOTE.split("{", 1)[0]
     out = {}
     for _, item, stamp, body in reads.launch_notes(connection, prefix):
+        _expect(_item_id(item) is not None and _is_text(body), f"a Fix note on item {item} is not a note")
         found = LAUNCH.match(body)
         if found and found["pane"] != "unknown":
             out[found["pane"]] = {"item": item, "at": _when(stamp), "session": found["session"]}
@@ -155,7 +186,7 @@ def _wrap():
     """`local-herdr/herdr_wrap.py`, loaded by path as `fleet` loads `collectors.py`: its session rule is the one Fix uses."""
     spec = importlib.util.spec_from_file_location("sd_dashboard_herdr_wrap", fix_session.CHECKOUT / "local-herdr" / "herdr_wrap.py")
     if spec is None or spec.loader is None:
-        raise ValueError("local-herdr/herdr_wrap.py could not be loaded")
+        raise Unread("local-herdr/herdr_wrap.py could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -167,9 +198,9 @@ def _herdr(args: list[str], environment: dict) -> dict:
         done = subprocess.run(["herdr", *args], env=environment, capture_output=True, text=True,
                               timeout=HERDR_SECONDS, check=False)
     except subprocess.TimeoutExpired:
-        raise ValueError(f"{said} gave no answer in {HERDR_SECONDS} s") from None
+        raise Unread(f"{said} gave no answer in {HERDR_SECONDS} s") from None
     except OSError as error:
-        raise ValueError(f"{said} did not run: {error}") from None
+        raise Unread(f"{said} did not run: {error}") from None
     for stream in (done.stdout, done.stderr):
         try:
             answer = json.loads(stream)
@@ -177,9 +208,9 @@ def _herdr(args: list[str], environment: dict) -> dict:
             continue
         if isinstance(answer, dict):
             if answer.get("error"):
-                raise ValueError(f"{said}: {answer['error']}")
+                raise Unread(f"{said}: {answer['error']}")
             return answer
-    raise ValueError(f"{said}: exit {done.returncode}, no JSON answer")
+    raise Unread(f"{said}: exit {done.returncode}, no JSON answer")
 
 
 def herdr_agents() -> list[dict]:
@@ -210,8 +241,11 @@ def herdr_agents() -> list[dict]:
     return agents
 
 
-def _fleet(sessions: dict) -> tuple[list[dict], list[dict], str]:
-    """Live worktrees, `sd-*` processes and the process table's reason; a process row of the wrong shape is that reason."""
+def _fleet(sessions: dict, now: datetime) -> tuple[list[dict], list[dict], str]:
+    """Live worktrees and `sd-*` processes, each parsed for the join, and the process table's reason.
+
+    A process the table cannot parse is that reason, and the worktrees still join.
+    """
     _expect(isinstance(sessions, dict), "fleet collector returned no sessions document")
     trees, procs = sessions.get("worktrees"), sessions.get("processes")
     _expect(isinstance(trees, list) and isinstance(procs, list), "fleet collector returned an incomplete sessions document")
@@ -219,14 +253,37 @@ def _fleet(sessions: dict) -> tuple[list[dict], list[dict], str]:
     _expect(all(isinstance(tree, dict) and isinstance(tree.get("live"), bool) and _is_text(tree.get("path"))
                 and _is_text(tree.get("branch")) and _text(tree, "created") for tree in trees),
             "fleet collector returned a worktree of the wrong shape")
+    parsed = []
+    for tree in trees:
+        if tree["live"]:
+            number = BRANCH_ITEM.search(tree["branch"])
+            parsed.append({"real": _real(tree["path"]), "name": Path(tree["path"]).name, "branch": tree["branch"],
+                           "item": _item_id(number[1]) if number else None, "at": _when(tree.get("created"))})
     error = sessions.get("processes_error")
     if not isinstance(error, (str, type(None))):
         error = "it answered a reason that is not text"
     elif not all(isinstance(proc, dict) and all(_is_text(proc.get(field)) for field in ("pid", "elapsed", "command"))
                  and proc["command"].split() for proc in procs):
         error = "it answered a process of the wrong shape"
-    return ([tree for tree in trees if tree["live"]], [] if error else procs,
-            f"the process table: {error}" if error else "")
+    rows = []
+    if not error:
+        try:
+            for proc in procs:
+                item, directory, name = _command(proc["command"].split())
+                seconds = _etime(proc["elapsed"])
+                rows.append({"item": item, "real": _real(directory), "key": paths.key(directory) if directory else "",
+                             "session": f"{name} (pid {proc['pid']})",
+                             "at": now - timedelta(seconds=seconds) if seconds is not None else None})
+        except UNREAD as failure:
+            rows, error = [], _reason(failure)
+    return parsed, rows, f"the process table: {error}" if error else ""
+
+
+def _agents(agents: list[dict]) -> list[dict]:
+    """herdr's agents, each parsed for the join: its pane, a label and the resolved cwds."""
+    return [{"pane": agent.get("pane_id"),
+             "session": f"herdr pane {agent.get('pane_id')}, {agent.get('agent') or 'agent'} {agent.get('agent_status') or ''}".rstrip(),
+             "reals": [_real(agent.get(key)) for key in ("foreground_cwd", "cwd") if agent.get(key)]} for agent in agents]
 
 
 # -- the join ---------------------------------------------------------------------------------------------------------
@@ -242,73 +299,62 @@ def _command(argv: list[str]) -> tuple[int | None, str | None, str]:
             skip = False
         elif word in ("--item", "-C"):
             skip = True
-            if word == "--item" and _number(follows) is not None:
-                item = _number(follows)
-            elif word == "-C":
+            if word == "--item":
+                item = _item_id(follows)
+            else:
                 directory = follows
-        elif word.startswith("--item=") and _number(word[7:]) is not None:
-            item = _number(word[7:])
+        elif word.startswith("--item="):
+            item = _item_id(word[7:])
         elif not word.startswith("-"):
             words.append(word)
     return item, directory, " ".join([Path(argv[0]).name, *words[:1]])
 
 
 def _sessions(entries, launches, trees, procs, agents, now: datetime) -> list[dict]:
-    """Every session the sources tie to an item, done items included; `agents` None is herdr unread."""
+    """Every session the parsed sources tie to an item, done items included; `agents` None is herdr unread.
+
+    Each source was parsed at its own boundary in `document`, so this only looks values up.
+    """
     found: list[dict] = []
 
     def add(item, kind, session, started, via, verified=True):
         found.append({"item": item, "kind": kind, "session": session, "at": started, "via": via, "verified": verified})
 
-    by_worktree = {}
-    for entry in sorted(entries, key=lambda row: str(row.get("enqueued_at") or "")):
-        if _real(entry.get("worktree")):
-            by_worktree[_real(entry["worktree"])] = entry
+    by_worktree = {entry["real"]: entry for entry in sorted(entries, key=lambda row: row["enqueued"]) if entry["real"]}
     joined: dict[str, int] = {}
     for tree in trees:
-        real = _real(tree["path"])
-        entry = by_worktree.get(real)
-        number = BRANCH_ITEM.search(tree["branch"])
+        entry = by_worktree.get(tree["real"])
         if entry:
-            item, via = entry["item"], f"lane entry {entry.get('id')}"
-        elif number:
-            item, via = int(number[1]), f"branch {tree['branch']}"
+            item, via = entry["item"], f"lane entry {entry['id']}"
+        elif tree["item"] is not None:
+            item, via = tree["item"], f"branch {tree['branch']}"
         else:
             continue
-        joined[real] = item
-        add(item, "worktree", f"Worktree {Path(tree['path']).name}", _when(tree.get("created")), via)
+        joined[tree["real"]] = item
+        add(item, "worktree", f"Worktree {tree['name']}", tree["at"], via)
     for entry in entries:
-        if entry.get("status") == "running":
-            holder = entry.get("holder") if isinstance(entry.get("holder"), dict) else {}
-            add(entry["item"], "lane", f"Lane {entry.get('step') or 'run'} on {holder.get('host') or 'an unnamed host'}",
-                _when(entry.get("started_at")), f"lane entry {entry.get('id')}")
-        elif entry.get("status") == "pending":
-            add(entry["item"], "lane", "Lane queue (pending)", _when(entry.get("enqueued_at")), f"lane entry {entry.get('id')}")
+        if entry["status"] == "running":
+            add(entry["item"], "lane", entry["session"], entry["started"], f"lane entry {entry['id']}")
+        elif entry["status"] == "pending":
+            add(entry["item"], "lane", "Lane queue (pending)", entry["queued"], f"lane entry {entry['id']}")
     for proc in procs:
-        argv = proc["command"].split()
-        item, directory, name = _command(argv)
-        tree = _inside(directory, joined) if directory else None
-        if item is not None:
-            via = f"--item {item}"
+        tree = _inside(proc["real"], joined)
+        if proc["item"] is not None:
+            add(proc["item"], "process", proc["session"], proc["at"], f"--item {proc['item']}")
         elif tree:
-            item, via = joined[tree], f"-C {paths.key(directory)}"
-        else:
-            continue
-        seconds = _etime(proc["elapsed"])
-        add(item, "process", f"{name} (pid {proc['pid']})", now - timedelta(seconds=seconds) if seconds is not None else None, via)
+            add(joined[tree], "process", proc["session"], proc["at"], f"-C {proc['key']}")
     if agents is None:
         for pane, launch in launches.items():
             add(launch["item"], "agent", f"herdr pane {pane}, {launch['session']} session", launch["at"],
                 f"Fix note {_iso(launch['at'])}; herdr not read", verified=False)
         return found
     for agent in agents:
-        pane, launch = agent.get("pane_id"), launches.get(agent.get("pane_id"))
-        session = f"herdr pane {pane}, {agent.get('agent') or 'agent'} {agent.get('agent_status') or ''}".rstrip()
-        trees_in = [tree for tree in (_inside(agent.get(key), joined) for key in ("foreground_cwd", "cwd") if agent.get(key)) if tree]
+        launch = launches.get(agent["pane"])
+        trees_in = [tree for tree in (_inside(real, joined) for real in agent["reals"]) if tree]
         if launch:
-            add(launch["item"], "agent", session, launch["at"], f"Fix note {_iso(launch['at'])}")
+            add(launch["item"], "agent", agent["session"], launch["at"], f"Fix note {_iso(launch['at'])}")
         elif trees_in:
-            add(joined[trees_in[0]], "agent", session, None, f"cwd in worktree {Path(trees_in[0]).name}")
+            add(joined[trees_in[0]], "agent", agent["session"], None, f"cwd in worktree {Path(trees_in[0]).name}")
     return found
 
 
@@ -318,39 +364,45 @@ def document(connection, *, now: str, sessions: dict, sessions_error: str = "", 
     `sessions` is the fleet's sessions document Now already read, and `sessions_error` the reason it could not be.
     `herdr` returns the live agents, `herdr_agents` by default, and is the seam a test fills. `error` says why no
     item could be read, so no row could be kept.
+
+    Each source is read and parsed inside its own guard: whatever it raises (`UNREAD`) marks that source unread with
+    the reason, and the others still answer. The join after them only looks values up; a failure there is `error`.
     """
     sources = {"fleet": sessions_error, "lane": "", "launch": "", "herdr": ""}
-    trees, procs = [], []
-    if not sessions_error:
-        try:
-            trees, procs, sources["fleet"] = _fleet(sessions)
-        except ValueError as failure:
-            sources["fleet"] = str(failure)
-    try:
-        entries = _lane(connection)
-    except (SdDbError, sqlite3.Error, ValueError) as failure:
-        entries, sources["lane"] = [], str(failure) or "the lane entries could not be read"
-    try:
-        launches = _launches(connection)
-    except (SdDbError, sqlite3.Error) as failure:
-        launches, sources["launch"] = {}, str(failure) or "the Fix notes could not be read"
     clock = _when(now) or datetime.now(timezone.utc)
-    # Every item a row can name is in this first pass or a launch note: herdr only ties agents to those.
-    probe = _sessions(entries, launches, trees, procs, [], clock)
+
+    def read(source, reader, empty):
+        try:
+            return reader()
+        except UNREAD as failure:
+            sources[source] = _reason(failure)
+            return empty
+
+    trees, procs = [], []
+    fleet = None if sessions_error else read("fleet", lambda: _fleet(sessions, clock), None)
+    if fleet:
+        trees, procs, sources["fleet"] = fleet
+    entries = read("lane", lambda: _lane(connection), [])
+    launches = read("launch", lambda: _launches(connection), {})
+    try:
+        # Every item a row can name is in this first pass or a launch note: herdr only ties agents to those.
+        probe = _sessions(entries, launches, trees, procs, [], clock)
+    except UNREAD as failure:
+        return {"rows": [], "sources": sources, "error": f"the join failed: {_reason(failure)}"}
     try:
         items = {number: reads.item_by_id(connection, number)
                  for number in {row["item"] for row in probe} | {launch["item"] for launch in launches.values()}}
-    except (SdDbError, sqlite3.Error) as failure:
-        return {"rows": [], "sources": sources, "error": str(failure) or "the items could not be read"}
+    except UNREAD as failure:
+        return {"rows": [], "sources": sources, "error": f"the items could not be read: {_reason(failure)}"}
     open_items = {number for number, item in items.items() if item is not None and item["status"] != "done"}
     # herdr is asked only when an agent could be tied to an open item: a launch note, or a worktree that names one.
     agents = []
     if launches or any(row["kind"] == "worktree" and row["item"] in open_items for row in probe):
-        try:
-            agents = (herdr or herdr_agents)()
-        except (ValueError, OSError) as failure:
-            agents, sources["herdr"] = None, str(failure) or "herdr could not be read"
-    found = _sessions(entries, launches, trees, procs, agents, clock)
+        agents = read("herdr", lambda: _agents((herdr or herdr_agents)()), None)
+    try:
+        found = _sessions(entries, launches, trees, procs, agents, clock)
+    except UNREAD as failure:
+        return {"rows": [], "sources": sources, "error": f"the join failed: {_reason(failure)}"}
     rows = []
     for row in found:
         if row["item"] not in open_items:

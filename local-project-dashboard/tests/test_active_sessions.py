@@ -6,6 +6,7 @@ the fleet's worktrees and `sd-*` processes. Every source is a seam here; nothing
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,7 +110,7 @@ class Join(ScreenCase):
         self.launch(item, "w9:p1", "2026-09-06T11:30:00+00:00")
 
         def broken():
-            raise ValueError("herdr agent list gave no answer in 5 s")
+            raise active_sessions.Unread("herdr agent list gave no answer in 5 s")
         found = self.read(herdr=broken)
         self.assertEqual("herdr agent list gave no answer in 5 s", found["sources"]["herdr"])
         self.assertEqual([(item, False)], [(row["item"], row["verified"]) for row in found["rows"]])
@@ -219,6 +220,58 @@ class Join(ScreenCase):
         found = self.read()
         self.assertIn("lane entry", found["sources"]["lane"])
         self.assertEqual([], found["rows"])
+
+    def test_an_item_flag_past_nine_ascii_digits_names_no_item(self):
+        self.item("one item")
+        for command in (f"sd-ship --item {'9' * 4301} prepare", "sd-ship --item=9999999999999999999 prepare",
+                        "sd-ship --item 1234567890 prepare"):
+            with self.subTest(command=command[:40]):
+                found = self.read(fleet_doc=sessions(procs=[{"pid": "5", "elapsed": "01:00", "command": command}]))
+                self.assertEqual("", found["sources"]["fleet"])
+                self.assertEqual([], found["rows"])
+
+    def test_a_branch_number_past_nine_digits_names_no_item(self):
+        self.item("one item")
+        found = self.read(fleet_doc=sessions([tree(f"{self.wt}/s", "sd9999999999999999999-thing")]))
+        self.assertEqual({key: "" for key in ("fleet", "lane", "launch", "herdr")}, found["sources"])
+        self.assertEqual([], found["rows"])
+
+    def test_a_lane_item_past_nine_digits_marks_the_lane_unread(self):
+        lane(self.connection, 9999999999999999999, worktree=f"{self.wt}/t", status="pending")
+        found = self.read()
+        self.assertIn("lane entry", found["sources"]["lane"])
+        self.assertEqual([], found["rows"])
+
+    def test_a_source_that_raises_anything_is_unread_by_its_class_and_now_still_answers(self):
+        item = self.item("guarded")
+        self.launch(item, "w9:p1", "2026-09-06T11:30:00+00:00")
+        fleet_doc = sessions([tree(f"{self.wt}/u", f"sd{item}-u")])
+        failures = (ValueError("v"), OverflowError("o"), TypeError("t"), KeyError("k"), IndexError("i"),
+                    sqlite3.OperationalError("database is locked"))
+
+        def now(herdr=list):
+            return now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name), herdr=herdr,
+                                       fleet=lambda area: fleet_doc if area == "sessions" else {"repos": []})
+
+        for source, target in (("fleet", "_fleet"), ("lane", "_lane"), ("launch", "_launches"), ("herdr", None)):
+            for failure in failures:
+                with self.subTest(source=source, failure=type(failure).__name__):
+                    def boom(*_, failure=failure):
+                        raise failure
+                    if target:
+                        with patch.object(active_sessions, target, boom):
+                            doc = now()
+                    else:
+                        doc = now(herdr=boom)
+                    self.assertTrue(doc["active"]["sources"][source].startswith(type(failure).__name__),
+                                    doc["active"]["sources"])
+                    self.assertEqual({other: "" for other in ("fleet", "lane", "launch", "herdr") if other != source},
+                                     {other: reason for other, reason in doc["active"]["sources"].items() if other != source})
+                    self.assertIn("rows", doc)
+        with patch.object(active_sessions, "_sessions", lambda *_: [][1]):
+            doc = now()
+        self.assertTrue(doc["active"]["error"].startswith("the join failed: IndexError"), doc["active"])
+        self.assertEqual([], doc["active"]["rows"])
 
     def test_now_carries_the_sessions(self):
         item = self.item("on today")
