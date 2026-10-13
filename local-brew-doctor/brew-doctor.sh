@@ -7,6 +7,7 @@
 # Usage: brew-doctor.sh run
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$DIR/../lib/bounded.sh"
 
 case "${1:-}" in
   run)
@@ -37,15 +38,30 @@ esac
 
 command -v brew >/dev/null 2>&1 || { echo "brew missing" >&2; exit 1; }
 
+# Each brew call runs under a bound: on a night macOS stops answering
+# permission checks, brew hangs (sd:2660, sd:3536). Its step line goes to fd 3,
+# the job log, and not into the output this reads.
+exec 3>&2
+# shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+ST_STEP_FD3=1
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# brew doctor exits 1 on a warning; a failure with none is no clean bill.
+# brew doctor exits 1 on a warning. Any other failure, a timeout (124) or a
+# signal among them, is no answer even after a partial warning, and a failure
+# with no warning is no clean bill: neither may drive a fix (sd:3536).
+doctor_answered() { # rc, output
+  [ "$1" -eq 0 ] || { [ "$1" -eq 1 ] && grep -q '^Warning:' "$2"; }
+}
+
 d_rc=0
-brew doctor > "$tmp/doctor1" 2>&1 || d_rc=$?
-if [ "$d_rc" -ne 0 ] && ! grep -q '^Warning:' "$tmp/doctor1"; then
+st_step 600 brew doctor < /dev/null > "$tmp/raw" 2>&1 || d_rc=$?
+# A failed step names itself on stderr too, so in this capture; it is not brew's.
+grep -v '^\[step ' "$tmp/raw" > "$tmp/doctor1" || :
+if ! doctor_answered "$d_rc" "$tmp/doctor1"; then
   cat "$tmp/doctor1"
-  echo "brew doctor FAILED (exit $d_rc) with no warning" >&2
+  echo "brew doctor FAILED (exit $d_rc)" >&2
   exit 1
 fi
 if ! grep -q '^Warning:' "$tmp/doctor1"; then
@@ -59,7 +75,7 @@ fixed=""
 
 if grep -q 'Broken symlinks were found\|stale' "$tmp/doctor1"; then
   echo "autofix: brew cleanup --prune=all"
-  brew cleanup --prune=all >/dev/null 2>&1 || true
+  st_step 1800 brew cleanup --prune=all < /dev/null >/dev/null 2>&1 || true
   fixed="$fixed- brew cleanup --prune=all (broken symlinks / stale files)
 "
 fi
@@ -71,8 +87,13 @@ if grep -q 'You have unlinked kegs' "$tmp/doctor1"; then
     | grep '^  [a-z0-9]' | tr -d ' ' > "$tmp/unlinked" || true
   while IFS= read -r keg; do
     [ -n "$keg" ] || continue
-    if brew info --formula "$keg" >/dev/null 2>&1; then
-      if brew link "$keg" >/dev/null 2>&1; then
+    # 1 is no formula; a timeout or a signal is no answer, not an orphan.
+    i_rc=0
+    st_step 120 brew info --formula "$keg" < /dev/null >/dev/null 2>&1 || i_rc=$?
+    if [ "$i_rc" -eq 124 ] || [ "$i_rc" -gt 128 ]; then
+      echo "skip: brew info $keg did not answer (exit $i_rc)"
+    elif [ "$i_rc" -eq 0 ]; then
+      if st_step 300 brew link "$keg" < /dev/null >/dev/null 2>&1; then
         echo "autofix: brew link $keg"
         fixed="$fixed- brew link $keg
 "
@@ -87,7 +108,14 @@ fi
 
 # --- re-check and report ---------------------------------------------------
 
-brew doctor > "$tmp/doctor2" 2>&1 || true
+d_rc=0
+st_step 600 brew doctor < /dev/null > "$tmp/raw" 2>&1 || d_rc=$?
+grep -v '^\[step ' "$tmp/raw" > "$tmp/doctor2" || :
+if ! doctor_answered "$d_rc" "$tmp/doctor2"; then
+  cat "$tmp/doctor2"
+  echo "brew doctor re-check FAILED (exit $d_rc)" >&2
+  exit 1
+fi
 if ! grep -q '^Warning:' "$tmp/doctor2"; then
   echo "brew doctor: clean after auto-fixes"
   exit 0

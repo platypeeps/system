@@ -8,6 +8,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
+. "$DIR/../lib/bounded.sh"
 
 CONF_DIR="$(st_config_dir maintenance)"
 CONF="$CONF_DIR/maintenance.conf"
@@ -339,21 +340,32 @@ fi
 
 # --- built-in checks ---------------------------------------------------
 
+# softwareupdate and mas can hang on a night macOS stops answering permission
+# checks (sd:2660), so each runs under a bound. Its step line goes to fd 3, the
+# job log, and not into the output captured below (sd:3536).
+exec 3>&2
+# shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+ST_STEP_FD3=1
+
 # Pending macOS updates. softwareupdate needs the network and ~10-60s.
 SU="$TMPD/su"
-if softwareupdate -l > "$SU" 2>&1; then :; fi
+if st_step 300 softwareupdate -l > "$SU" 2>&1; then :; fi
 if grep -q '^\* Label' "$SU"; then
   finding "macOS updates pending:"
   grep '^\* Label' "$SU" | sed 's/^\* Label: /    /' >> "$FINDINGS"
 elif ! grep -q 'No new software available' "$SU"; then
-  finding "softwareupdate check failed: $(tail -1 "$SU")"
+  finding "softwareupdate check failed: $(grep -v '^\[step ' "$SU" | tail -1)"
 fi
 
-# Pending App Store updates.
+# Pending App Store updates. A check that failed or timed out found nothing,
+# which is not the same as nothing pending.
 if command -v mas >/dev/null 2>&1; then
   MAS="$TMPD/mas"
-  mas outdated > "$MAS" 2>/dev/null || true
-  if [ -s "$MAS" ]; then
+  mas_rc=0
+  st_step 120 mas outdated > "$MAS" 2>/dev/null || mas_rc=$?
+  if [ "$mas_rc" -ne 0 ]; then
+    finding "App Store update check failed (mas outdated exit $mas_rc)"
+  elif [ -s "$MAS" ]; then
     finding "App Store updates pending:"
     sed 's/^/    /' "$MAS" >> "$FINDINGS"
   fi
