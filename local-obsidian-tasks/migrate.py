@@ -16,9 +16,11 @@ What maps to what:
 - `scheduled`, else `due`, is the item's due date. A recurring task needs
   one; with neither, its `DTSTART` date is used.
 - `recurrence`: the vault's rules start with `DTSTART:YYYYMMDD;`, which
-  sd_db's parser refuses. That part is dropped and the rest goes through the
-  pack's `sd_db.recurrence`, so `INTERVAL` counts from the due date: the
-  `scheduled` occurrence TaskNotes already advanced to. A rule the library
+  sd_db's parser refuses, and sd keeps no series start: `INTERVAL` and the
+  implied day count from the due date. So that part is dropped and the rest
+  goes through the pack's `sd_db.recurrence`, but only when the due date is
+  an occurrence of the DTSTART series and sd's chain from it lands on the
+  same dates; a task postponed off its series is refused. A rule the library
   refuses is a refused task, never an item that silently stops recurring.
 - `recurrence_anchor`: scheduled is `schedule`, completion `completion`.
 - History: `complete_instances` and `skipped_instances` go into one note on
@@ -171,6 +173,33 @@ def _dates(key: str, value) -> list[str]:
     return sorted({_date(key, v) for v in value if v != ""} - {None})
 
 
+#: How many occurrences `_drifts` compares past the due date.
+DRIFT_STEPS = 200
+
+
+def _drifts(recurrence, rule, start: str, due: str) -> bool:
+    """Whether sd's chain from `due` leaves the vault's series from `DTSTART`.
+
+    The pinned pack keeps no `DTSTART`: each completion searches from the due
+    date it closed (`workflow._series_start`). The vault's series survives
+    only when `due` is one of its occurrences and every later step lands on
+    the same date. A search that runs out of occurrences counts as drift.
+    """
+    first, ours = datetime.date.fromisoformat(start), datetime.date.fromisoformat(due)
+    try:
+        if ours < first or (ours != first and recurrence.next_after(
+                rule, first, ours - datetime.timedelta(days=1)) != ours):
+            return True
+        theirs = ours
+        for _ in range(DRIFT_STEPS):
+            ours, theirs = recurrence.next_after(rule, ours), recurrence.next_after(rule, first, theirs)
+            if ours != theirs:
+                return True
+    except recurrence.RecurrenceError:
+        return True
+    return False
+
+
 @dataclass
 class Plan:
     ref: str
@@ -267,6 +296,9 @@ def plan(vault: Path, path: Path) -> Plan:
                 recurrence.next_after(parsed, datetime.date.fromisoformat(due))
             except recurrence.RecurrenceError as error:
                 raise Refused(f"rule refused: {error}") from None
+            if anchor == "schedule" and start and _drifts(recurrence, parsed, start, due):
+                raise Refused(f"recurrence: due date {due} is off the series DTSTART {start} starts, "
+                              "and sd keeps no DTSTART, so it would restart the series there")
     completed = _date("completedDate", fm.get("completedDate"))
     if status == "done" and completed:
         lines.append(f"Completed in the vault on {completed}.")

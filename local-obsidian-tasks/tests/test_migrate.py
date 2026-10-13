@@ -57,13 +57,13 @@ completedDate: 2026-09-30
 title: Example fortnightly delta
 status: open
 priority: normal
-scheduled: 2026-10-16
+scheduled: 2026-10-23
 recurrence: DTSTART:20250103;FREQ=WEEKLY;INTERVAL=2;BYDAY=FR
 recurrence_anchor: scheduled
 complete_instances:
-  - "2026-10-02"
-  - 2026-09-18
-skipped_instances: ['2026-09-04']
+  - "2026-10-09"
+  - 2026-09-25
+skipped_instances: ['2026-09-11']
 ---
 """,
     "echo": """---
@@ -191,10 +191,10 @@ class Migrate(unittest.TestCase):
         delta = self.item("delta")
         self.assertEqual((delta["item"]["recurrence"], delta["item"]["recurrence_anchor"], delta["item"]["due"],
                           delta["item"]["priority"]),
-                         ("FREQ=WEEKLY;INTERVAL=2;BYDAY=FR", "schedule", "2026-10-16", 2))
+                         ("FREQ=WEEKLY;INTERVAL=2;BYDAY=FR", "schedule", "2026-10-23", 2))
         history = next(n["body"] for n in delta["notes"] if n["body"].startswith("Imported from Obsidian"))
-        self.assertIn("Completed occurrences (2): 2026-09-18, 2026-10-02.", history)
-        self.assertIn("Skipped occurrences (1): 2026-09-04.", history)
+        self.assertIn("Completed occurrences (2): 2026-09-25, 2026-10-09.", history)
+        self.assertIn("Skipped occurrences (1): 2026-09-11.", history)
         echo = self.item("echo")["item"]
         self.assertEqual((echo["recurrence"], echo["recurrence_anchor"], echo["due"]),
                          ("FREQ=MONTHLY", "completion", "2026-10-31"))
@@ -214,7 +214,7 @@ class Migrate(unittest.TestCase):
         item = self.item("delta")["item"]["id"]
         done = workflow.change_status(self.connection(), item, "done", who="test")
         nxt = workflow.item_state(self.connection(), done["next_occurrence"])["item"]
-        self.assertEqual((nxt["due"], nxt["recurrence"]), ("2026-10-30", "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"))
+        self.assertEqual((nxt["due"], nxt["recurrence"]), ("2026-11-06", "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"))
 
     def test_a_second_run_creates_nothing_even_after_a_completion(self):
         self.migrate("--apply")
@@ -293,6 +293,35 @@ class Migrate(unittest.TestCase):
                 self.assertIsNone(self.item(stem))
         self.assertEqual(self.item("control")["item"]["title"], "Example: a quoted colon")
         self.assertIn("created: 1", lines)
+
+    def test_a_series_moved_off_its_dtstart_is_refused(self):
+        # Review of sd:3460: sd keeps no DTSTART, so the due date becomes the series start. A task postponed off its
+        # series would restart there: DTSTART 2026-01-31 monthly, postponed to 02-03, would recur on March 3, not 31.
+        rule = "---\ntitle: Example series\nstatus: open\nscheduled: {due}\nrecurrence: DTSTART:{start};{rrule}\n---\n"
+        refused = {
+            "month-end-postponed": rule.format(due="2026-02-03", start="20260131", rrule="FREQ=MONTHLY"),
+            "off-phase-fortnight": rule.format(due="2026-10-16", start="20250103", rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"),
+            "before-dtstart": rule.format(due="2026-01-01", start="20260115", rrule="FREQ=MONTHLY;BYMONTHDAY=15"),
+        }
+        kept = {
+            "month-end-on-series": rule.format(due="2026-03-31", start="20260131", rrule="FREQ=MONTHLY"),
+            "fortnight-on-phase": rule.format(due="2026-10-23", start="20250103", rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"),
+        }
+        for path in self.tasks.iterdir():
+            path.unlink()
+        for stem, text in {**refused, **kept}.items():
+            (self.tasks / f"{stem}.md").write_text(text)
+        out = self.migrate("--apply")
+        lines = out.stdout.splitlines()
+        for stem in refused:
+            with self.subTest(stem):
+                self.assertTrue(any(line.startswith(f"  refused TaskNotes/Tasks/{stem}.md: recurrence: due date ")
+                                    and "is off the series DTSTART" in line for line in lines), lines)
+                self.assertIsNone(self.item(stem))
+        self.assertEqual(self.item("month-end-on-series")["item"]["due"], "2026-03-31")
+        nxt = workflow.change_status(self.connection(), self.item("month-end-on-series")["item"]["id"], "done", who="test")
+        self.assertEqual(workflow.item_state(self.connection(), nxt["next_occurrence"])["item"]["due"], "2026-05-31")
+        self.assertIsNotNone(self.item("fortnight-on-phase"))
 
     def test_the_vault_is_only_read(self):
         def files():
