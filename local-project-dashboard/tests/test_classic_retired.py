@@ -75,7 +75,8 @@ class TheRetiredScreens(ScreenCase):
         self.addCleanup(patcher.stop)
         for area in KEPT_AREAS:
             with self.subTest(area=area):
-                self.assertIn("<title>Operations — sd</title>", self.render("/operations", {"area": [area]}))
+                # Trackers draws inside the v2 shell (sd:3586), whose titles end "· system".
+                self.assertRegex(self.render("/operations", {"area": [area]}), r"<title>Operations (— sd|· system)</title>")
         self.assertIn("<title>Operations — sd</title>", self.render("/operations"))
 
 

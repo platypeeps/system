@@ -104,7 +104,8 @@ class TheDefault(BrowserSession):
             status, headers, body = self.raw(path)
             self.assertEqual(status, 200, path)
             self.assertEqual(headers["Content-Security-Policy"], server.CSP, path)
-            self.assertIn("— sd</title>", body, path)
+            # A classic screen keeps its "— sd" title; one moved into the v2 shell (sd:3586) reads "· system".
+            self.assertRegex(body, r"(— sd| · system)</title>", path)
 
     def test_every_rail_and_palette_target_answers(self):
         targets = {**v2.SECTIONS, **v2.CLASSIC, **v2.SCREENS}
