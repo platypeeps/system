@@ -19,6 +19,11 @@ from test_now_screen import JobsBackend, fleet_document
 import test_v2_today_reader
 
 
+def ARABIC(number):
+    """`number` in Arabic-Indic digits: `str.isdigit` and `int` take them, an item number does not."""
+    return str(number).translate(str.maketrans("0123456789", "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669"))
+
+
 def lane(connection, item, *, worktree, status="running", started="2026-09-06T11:00:00Z",
          enqueued="2026-09-06T10:30:00Z", step="prepare", host="hub", entry=None):
     body = {"id": entry or f"e{item}", "item": item, "worktree": worktree, "branch": f"b{item}", "status": status,
@@ -177,6 +182,44 @@ class Join(ScreenCase):
         found = self.read(fleet_doc={**sessions(), "processes_error": 7})
         self.assertIn("the process table", found["sources"]["fleet"])
 
+    def test_a_process_with_no_command_word_is_the_process_tables_reason_not_a_crash(self):
+        item = self.item("empty command")
+        good = {"pid": "5", "elapsed": "01:00", "command": f"sd-ship merge --item {item}"}
+        for command in ("", "   ", f"sd-ship -C {self.wt}/n\x00x prepare"):
+            with self.subTest(command=command):
+                found = self.read(fleet_doc=sessions([tree(f"{self.wt}/n", f"sd{item}-n")],
+                                                     [good, {**good, "command": command}]))
+                self.assertIn("the process table", found["sources"]["fleet"])
+                self.assertEqual([(item, "worktree")], [(row["item"], row["kind"]) for row in found["rows"]])
+
+    def test_an_item_flag_of_digits_that_are_not_ascii_names_no_item(self):
+        item = self.item("superscript")
+        for command in ("sd-ship --item \u00b2 prepare", "sd-ship --item=\u00b2 prepare",
+                        f"sd-ship --item {ARABIC(item)} prepare", f"sd-ship --item={ARABIC(item)} prepare"):
+            with self.subTest(command=command):
+                found = self.read(fleet_doc=sessions(procs=[{"pid": "5", "elapsed": "01:00", "command": command}]))
+                self.assertEqual("", found["sources"]["fleet"])
+                self.assertEqual([], found["rows"])
+
+    def test_a_branch_number_of_digits_that_are_not_ascii_names_no_item(self):
+        item = self.item("arabic branch")
+        found = self.read(fleet_doc=sessions([tree(f"{self.wt}/o", f"sd{ARABIC(item)}-thing")]))
+        self.assertEqual([], found["rows"])
+
+    def test_a_worktree_path_with_a_nul_marks_the_fleet_unread_not_a_crash(self):
+        item = self.item("nul path")
+        lane(self.connection, item, worktree=f"{self.wt}/p", status="pending")
+        found = self.read(fleet_doc=sessions([tree(f"{self.wt}/p\x00x", f"sd{item}-p")]))
+        self.assertIn("worktree", found["sources"]["fleet"])
+        self.assertEqual([(item, "lane")], [(row["item"], row["kind"]) for row in found["rows"]])
+
+    def test_a_lane_worktree_with_a_nul_marks_the_lane_unread_not_a_crash(self):
+        item = self.item("nul lane")
+        lane(self.connection, item, worktree=f"{self.wt}/q\x00x", status="pending")
+        found = self.read()
+        self.assertIn("lane entry", found["sources"]["lane"])
+        self.assertEqual([], found["rows"])
+
     def test_now_carries_the_sessions(self):
         item = self.item("on today")
         doc = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
@@ -260,6 +303,16 @@ class HerdrReader(ScreenCase):
                 found = active_sessions.document(self.connection, now=NOW, sessions=sessions())
                 self.assertTrue(found["sources"]["herdr"].startswith("herdr "), found["sources"])
                 self.assertEqual([(item, False)], [(row["item"], row["verified"]) for row in found["rows"]])
+
+    def test_an_agent_cwd_with_a_nul_marks_herdr_unread_not_a_crash(self):
+        item = self.item("nul cwd")
+        (self.fixture / "session-list.json").write_text(json.dumps({"sessions": [{"name": "sd", "running": True}]}))
+        (self.fixture / "agent-list.json").write_text(json.dumps({"result": {"agents": [agent("w1:p1", "/x\x00y")]}}))
+        found = active_sessions.document(self.connection, now=NOW,
+                                         sessions=sessions([tree(os.path.realpath(self.tmp.name), f"sd{item}-r")]))
+        self.assertTrue(found["sources"]["herdr"].startswith("herdr "), found["sources"])
+        self.assertEqual([(item, "worktree")], [(row["item"], row["kind"]) for row in found["rows"]])
+
 
 class TodayDraws(ScreenCase):
     """today.js draws Working now from the document, under JavaScriptCore with the Today stand-in (`test_v2_today_reader`)."""

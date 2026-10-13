@@ -49,7 +49,7 @@ HERDR_SECONDS = 5
 #: The lane's key prefix, the pack's `sd_lane.KEY_PREFIX`.
 LANE_PREFIX = "lane:v1:"
 #: An item number in a branch name: digits after the start, `sd`, `-`, `_` or `/`, and before the end or a separator.
-BRANCH_ITEM = re.compile(r"(?:^|[-_/]|sd)(\d+)(?=$|[-_/])")
+BRANCH_ITEM = re.compile(r"(?:^|[-_/]|sd)(\d+)(?=$|[-_/])", re.ASCII)
 #: Fix's note, read back: the pattern is `fix_session.NOTE` with its four fields as groups.
 LAUNCH = re.compile("^" + re.escape(fix_session.NOTE)
                     .replace(r"\{session\}", r"(?P<session>\S+)").replace(r"\{item\}", r"(?P<item>\d+)")
@@ -104,9 +104,19 @@ def _expect(holds: bool, problem: str) -> None:
         raise ValueError(problem)
 
 
+def _is_text(value) -> bool:
+    """Text with no NUL: a NUL is no path, and `os.path.realpath` raises on one."""
+    return isinstance(value, str) and "\x00" not in value
+
+
 def _text(row: dict, *fields: str) -> bool:
     """Each of `fields` is absent, null or text: the optional fields a source may leave out."""
-    return all(isinstance(row.get(field), (str, type(None))) for field in fields)
+    return all(row.get(field) is None or _is_text(row.get(field)) for field in fields)
+
+
+def _number(word: str) -> int | None:
+    """An item number in ASCII digits: `str.isdigit` also takes `²`, which `int` refuses, and `١`, which it reads."""
+    return int(word) if word.isascii() and word.isdigit() else None
 
 
 def _inside(path: str, joined: dict[str, int]) -> str | None:
@@ -203,7 +213,7 @@ def herdr_agents() -> list[dict]:
     result = _herdr(["agent", "list"], environment).get("result")
     agents = result.get("agents") if isinstance(result, dict) else None
     _expect(isinstance(agents, list), "herdr agent list answered no agent list")
-    _expect(all(isinstance(agent, dict) and isinstance(agent.get("pane_id"), str)
+    _expect(all(isinstance(agent, dict) and _is_text(agent.get("pane_id"))
                 and _text(agent, "cwd", "foreground_cwd", "agent", "agent_status") for agent in agents),
             "herdr agent list answered an agent of the wrong shape")
     return agents
@@ -215,14 +225,14 @@ def _fleet(sessions: dict) -> tuple[list[dict], list[dict], str]:
     trees, procs = sessions.get("worktrees"), sessions.get("processes")
     _expect(isinstance(trees, list) and isinstance(procs, list), "fleet collector returned an incomplete sessions document")
     # `created` is absent from a fleet child older than sd:3466; that is no start, not a wrong shape.
-    _expect(all(isinstance(tree, dict) and isinstance(tree.get("live"), bool) and isinstance(tree.get("path"), str)
-                and isinstance(tree.get("branch"), str) and _text(tree, "created") for tree in trees),
+    _expect(all(isinstance(tree, dict) and isinstance(tree.get("live"), bool) and _is_text(tree.get("path"))
+                and _is_text(tree.get("branch")) and _text(tree, "created") for tree in trees),
             "fleet collector returned a worktree of the wrong shape")
     error = sessions.get("processes_error")
     if not isinstance(error, (str, type(None))):
         error = "it answered a reason that is not text"
-    elif not all(isinstance(proc, dict) and all(isinstance(proc.get(field), str) for field in ("pid", "elapsed", "command"))
-                 for proc in procs):
+    elif not all(isinstance(proc, dict) and all(_is_text(proc.get(field)) for field in ("pid", "elapsed", "command"))
+                 and proc["command"].split() for proc in procs):
         error = "it answered a process of the wrong shape"
     return ([tree for tree in trees if tree["live"]], [] if error else procs,
             f"the process table: {error}" if error else "")
@@ -241,12 +251,12 @@ def _command(argv: list[str]) -> tuple[int | None, str | None, str]:
             skip = False
         elif word in ("--item", "-C"):
             skip = True
-            if word == "--item" and follows.isdigit():
-                item = int(follows)
+            if word == "--item" and _number(follows) is not None:
+                item = _number(follows)
             elif word == "-C":
                 directory = follows
-        elif word.startswith("--item=") and word[7:].isdigit():
-            item = int(word[7:])
+        elif word.startswith("--item=") and _number(word[7:]) is not None:
+            item = _number(word[7:])
         elif not word.startswith("-"):
             words.append(word)
     return item, directory, " ".join([Path(argv[0]).name, *words[:1]])
