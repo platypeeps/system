@@ -9,7 +9,9 @@ nothing; with it, each task becomes one sd `task` with no checkout.
 What maps to what:
 
 - `status`: none and open are `planning`, in-progress is `in_progress`, done
-  is `done`. Any other status, and an archived task, is refused and counted.
+  is `done`. An archived task (status, flag or tag) lands `done` with the
+  cancelled receipt `sd task cancel` writes (operator ruling on sd:3460).
+  Any other status is refused and counted.
 - `priority`: high is 1, normal 2, low 3; none or missing leaves it unset.
 - `scheduled`, else `due`, is the item's due date. A recurring task needs
   one; with neither, its `DTSTART` date is used.
@@ -23,7 +25,8 @@ What maps to what:
   the item, with the vault path, the series start and a `due` deadline that
   differs from `scheduled`. The chain of done rows sd keeps starts here; past
   occurrences are not replayed as rows, which would flood the done view.
-  A done recurring task imports done and without its rule: its series ended.
+  A done or archived recurring task imports closed and without its rule:
+  its series ended.
 
 Each task is one transaction through the pack library, as `sd task add`
 writes it, so a run stopped at any point leaves every task either imported
@@ -56,7 +59,10 @@ sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT")
 REF_SOURCE = "task-ref"
 REF_PREFIX = "obsidian:"
 
-STATUS = {"none": "planning", "open": "planning", "in-progress": "in_progress", "done": "done"}
+#: `cancelled` is no sd status: `write` closes such a task through `cancel_work`.
+STATUS = {"none": "planning", "open": "planning", "in-progress": "in_progress", "done": "done",
+          "archived": "cancelled"}
+CANCEL_REASON = "archived in the Obsidian vault"
 PRIORITY = {"high": 1, "normal": 2, "low": 3, "none": None, "": None}
 ANCHOR = {"scheduled": "schedule", "completion": "completion", "": "schedule"}
 
@@ -146,9 +152,9 @@ def plan(vault: Path, path: Path) -> Plan:
     if raw_status not in STATUS:
         raise Refused(f"status {raw_status!r} has no sd status")
     tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
-    if str(fm.get("archived", "")).lower() == "true" or "archived" in tags:
-        raise Refused("archived")
     status = STATUS[raw_status]
+    if str(fm.get("archived", "")).lower() == "true" or "archived" in tags:
+        status = "cancelled"
     raw_priority = str(fm.get("priority") or "").strip().lower()
     if raw_priority not in PRIORITY:
         raise Refused(f"priority {raw_priority!r} has no sd priority")
@@ -184,6 +190,8 @@ def plan(vault: Path, path: Path) -> Plan:
             lines.append(f"Skipped occurrences ({len(skipped)}): {', '.join(skipped)}.")
         if status == "done":
             lines.append("Done in the vault, so its series ended and the item does not recur.")
+        elif status == "cancelled":
+            lines.append("Archived in the vault, so its series ended and the item does not recur.")
         else:
             due = due or start
             if due is None:
@@ -200,6 +208,8 @@ def plan(vault: Path, path: Path) -> Plan:
     completed = _date(fm.get("completedDate"))
     if status == "done" and completed:
         lines.append(f"Completed in the vault on {completed}.")
+    if status == "cancelled" and not raw_rule:
+        lines.append("Archived in the vault, so the item is closed with a cancelled receipt.")
 
     if rule:
         freq = re.search(r"FREQ=(\w+)", rule).group(1)
@@ -220,7 +230,7 @@ def _block(text: str) -> str:
 
 def write(connection, task: Plan, who: str) -> int:
     """Create one item for `task` in one transaction, as `sd task add` would."""
-    from sd_db import workflow, writes
+    from sd_db import progress, workflow, writes
 
     with workflow.transaction(connection):
         state = workflow.capture_task(
@@ -228,7 +238,9 @@ def write(connection, task: Plan, who: str) -> int:
             repo=None, recurrence=task.rule, recurrence_anchor=task.anchor, who=who)
         item = state["item"]["id"]
         writes.set_item_fields(connection, item, source=REF_SOURCE, external_id=task.ref)
-        if task.status != "planning":
+        if task.status == "cancelled":
+            progress.cancel_work(connection, item, reason=CANCEL_REASON, who=who, guard=progress.task_guard)
+        elif task.status != "planning":
             workflow.change_status(connection, item, task.status, who=who)
         workflow.add_item_note(connection, item, body=task.note, who=who)
         return item

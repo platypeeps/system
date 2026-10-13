@@ -26,7 +26,8 @@ checkout:
 ```
 
 - Status none/open is `planning`, in-progress `in_progress`, done `done`;
-  priority high/normal/low is 1/2/3, none leaves it unset.
+  an archived task lands `done` with the cancelled receipt `sd task cancel`
+  writes. Priority high/normal/low is 1/2/3, none leaves it unset.
 - `scheduled`, else `due`, becomes the item's due date. A different `due`
   is kept in the item's import note.
 - A rule loses its `DTSTART:YYYYMMDD;` prefix and goes through the pack's

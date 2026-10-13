@@ -96,6 +96,15 @@ recurrence: DTSTART:20250801;FREQ=YEARLY
 complete_instances: [2025-08-01]
 ---
 """,
+    "juliet": """---
+title: Example archived juliet
+status: archived
+scheduled: 2026-05-01
+recurrence: DTSTART:20250501;FREQ=MONTHLY;BYMONTHDAY=1
+complete_instances:
+  - 2026-04-01
+---
+""",
 }
 TITLES = [line.split(":", 1)[1].strip().strip('"') for text in TASKS.values()
           for line in text.splitlines() if line.startswith("title:")]
@@ -142,12 +151,12 @@ class Migrate(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(self.count(), 0)
         lines = out.stdout.splitlines()
-        for line in ("task files: 9", "already imported: 0", "would create: 6",
+        for line in ("task files: 10", "already imported: 0", "would create: 7",
                      "  planning one-off: 1", "  in_progress one-off: 1", "  done one-off: 1",
-                     "  done one-off (series ended): 1",
+                     "  done one-off (series ended): 1", "  cancelled one-off (series ended): 1",
                      "  planning recurring WEEKLY+BYDAY schedule: 1",
                      "  planning recurring MONTHLY completion: 1",
-                     "  history entries kept in notes: 4", "refused: 3", "  no frontmatter: 1",
+                     "  history entries kept in notes: 5", "refused: 3", "  no frontmatter: 1",
                      "  status 'waiting' has no sd status: 1"):
             self.assertIn(line, lines)
         self.assertTrue(any(line.startswith("  rule refused: recurrence part COUNT") for line in lines), lines)
@@ -160,7 +169,7 @@ class Migrate(unittest.TestCase):
         out = self.migrate("--apply")
         # Three tasks are refused, so the run says the migration is not whole.
         self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
-        self.assertIn("created: 6", out.stdout.splitlines())
+        self.assertIn("created: 7", out.stdout.splitlines())
         self.assertIn("failed: 0", out.stdout.splitlines())
 
         alpha = self.item("alpha")
@@ -188,6 +197,11 @@ class Migrate(unittest.TestCase):
         india = self.item("india")
         self.assertEqual((india["item"]["status"], india["item"]["recurrence"]), ("done", None))
         self.assertTrue(any("its series ended" in n["body"] for n in india["notes"]))
+        juliet = self.item("juliet")
+        self.assertEqual((juliet["item"]["status"], juliet["item"]["recurrence"]), ("done", None))
+        receipt = json.loads(juliet["item"]["fields"])["completion"]
+        self.assertEqual((receipt["outcome"], receipt["reason"]), ("cancelled", "archived in the Obsidian vault"))
+        self.assertTrue(any("Archived in the vault" in n["body"] for n in juliet["notes"]))
         for stem in ("foxtrot", "golf", "hotel"):
             self.assertIsNone(self.item(stem), stem)
 
@@ -203,7 +217,7 @@ class Migrate(unittest.TestCase):
         workflow.change_status(self.connection(), self.item("delta")["item"]["id"], "done", who="test")
         before = self.count()
         out = self.migrate("--apply")
-        self.assertIn("already imported: 6", out.stdout.splitlines())
+        self.assertIn("already imported: 7", out.stdout.splitlines())
         self.assertIn("created: 0", out.stdout.splitlines())
         self.assertEqual(self.count(), before)
         self.assertIn("would create: 0", self.migrate().stdout.splitlines())
@@ -216,7 +230,20 @@ class Migrate(unittest.TestCase):
         self.assertIsNotNone(writes.item_by_external(self.connection(), "task-ref", "obsidian:TaskNotes/Tasks/alpha.md.old"))
         out = self.migrate()
         self.assertIn("already imported: 0", out.stdout.splitlines())
-        self.assertIn("would create: 6", out.stdout.splitlines())
+        self.assertIn("would create: 7", out.stdout.splitlines())
+
+    def test_archived_tasks_alone_let_apply_exit_zero(self):
+        # sd:3460 ruling: archived tasks land closed with a cancelled receipt, so they are no refusal.
+        for path in self.tasks.iterdir():
+            if path.stem not in ("alpha", "juliet"):
+                path.unlink()
+        (self.tasks / "kilo.md").write_text("---\ntitle: Example tagged kilo\nstatus: open\ntags: [task, archived]\n---\n")
+        out = self.migrate("--apply")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn("refused: 0", out.stdout.splitlines())
+        self.assertIn("  cancelled one-off (series ended): 1", out.stdout.splitlines())
+        self.assertIn("  cancelled one-off: 1", out.stdout.splitlines())
+        self.assertEqual(json.loads(self.item("kilo")["item"]["fields"])["completion"]["outcome"], "cancelled")
 
     def test_the_vault_is_only_read(self):
         def files():
@@ -244,7 +271,7 @@ class Migrate(unittest.TestCase):
             self.assertEqual(migrate.run(["--apply"]), 1)
         self.assertIn("  RuntimeError: stopped: 1", printed.getvalue().splitlines())
         self.assertIsNone(self.item("alpha"))
-        self.assertEqual(self.count(), 5)
+        self.assertEqual(self.count(), 6)
         out = self.migrate("--apply")
         self.assertIn("created: 1", out.stdout.splitlines())
         notes = [n["body"] for n in self.item("alpha")["notes"]]
