@@ -295,6 +295,18 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertRegex(reason, r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
         self.assertEqual(self.attention(next_night), [reason])
 
+    def test_another_grant_to_redo_gives_another_reason(self):
+        """sd:4182 review round 1, class pass: each producer's checksum must
+        read inputs that exist and move with their content at the same
+        count. One grant to redo for another binary is another finding."""
+        python = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        node = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_RC="1",
+                             GRANTS_OUT=REFUSED.replace("/opt/homebrew/bin/python3", "/opt/homebrew/bin/node"))
+        for run in (python, node):
+            self.assertNotIn("No such file", run.stderr)
+            self.assertRegex(" ".join(self.attention(run)), r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
+        self.assertNotEqual(self.attention(node), self.attention(python))
+
     def test_a_failed_sweep_step_needs_attention_with_nothing_left(self):
         """Review of sd:3537: a failed `brew cleanup` with every package
         upgraded exited 0 and asked nothing."""
