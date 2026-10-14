@@ -51,7 +51,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sd_db import database, operations, protection, reads, repos, workflow
+from sd_db import channels, database, operations, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
 from . import fleet as fleet_module
@@ -242,10 +242,24 @@ def _repos(connection) -> list[dict]:
             # sd:3075: NULL is the hub; a database before migration 24 has no column and reads as the hub.
             "lane_host": (row["lane_host"] if "lane_host" in row.keys() else None) or repos.LANE_HUB,
             "pieces_source": row["pieces_source"],
+            # sd:3465: the canonical text the form posts back as `before`, `none` for no setting, and why a stored value
+            # cannot be used, which the form shows beside a Clear.
+            "channels": channels.canonical(row["channels"]), "channels_problem": _channels_problem(row["channels"]),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
     return out
+
+
+def _channels_problem(text: str | None) -> str | None:
+    """Why a stored channels value is not a setting `channels.validate` accepts; None for NULL or a good one."""
+    if text is None:
+        return None
+    try:
+        channels.validate(json.loads(text))
+    except (ValueError, SdDbError) as error:
+        return str(error)
+    return None
 
 
 def _git(read, now: str) -> dict:
@@ -488,14 +502,14 @@ def _attention(jobs) -> dict:
 
 #: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
 SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed"),
-           "lane-host": (repos.set_lane_host, "lane_host")}
+           "lane-host": (repos.set_lane_host, "lane_host"), "channels": (repos.set_channels, "channels")}
 
 
 class StaleSetting(workflow.StaleItem):
     """The row no longer holds the value the page showed."""
 
 
-def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, before: str) -> dict:
+def set_repo(connection: sqlite3.Connection, field: str, path: str, value, before: str) -> dict:
     """One sd-db repo verb, refused when the row moved since the page read it; returns the new setting.
 
     The read, the check and the write hold one `BEGIN IMMEDIATE`: the server
@@ -509,6 +523,11 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, 
         # sd:3075: the move commits under the ship lock, so it holds its own transaction and checks `before` in it.
         path, was = setter(connection, path, value, before=before)
         return {"path": path, "field": column, "value": value, "before": was}
+    if field == "channels":
+        # sd:3465: `set_channels` validates the object and checks `before` inside its own write transaction.
+        path, was = setter(connection, path, value, before=before)
+        return {"path": path, "field": column, "value": channels.dumps(None if value is None else channels.validate(value)),
+                "before": was, "remedy": f"Run `sd-research-kit render` in {path} to publish under it, or wait for the next commit."}
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)
         if row is None:
