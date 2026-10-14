@@ -195,6 +195,8 @@ cat "$BODY"
 
 # The date keeps each week its own report: an open report with the same
 # reason would absorb the next week's run and keep the first week's body.
+# The finding jobs end theirs in a checksum of their findings instead
+# (sd:4182); a summary is new every week, so it has nothing to fold.
 if [ "$REPORT" -eq 1 ]; then
   echo "SD_REPORT_ATTENTION: weekly digest: automation summary for $(hostname -s), $(date '+%Y-%m-%d')"
 fi

@@ -1241,6 +1241,33 @@ class NightlyHygieneTest(unittest.TestCase):
         self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+/a/proj pull --ff-only \(bound 600s\)")
         self.assertRegex(result.stderr, r"\[step [\d:]+\] git -C \S+ submodule update --init --recursive \(bound 1800s\)")
 
+    def test_the_reason_leaves_out_hygiene_notes(self):
+        """sd:4182: the reason names the findings, so the same ones on two
+        nights fold into one open report. A note prints but does not count,
+        and its text moves (a fresh branch's age), so the reason leaves it
+        out, with the header of a section that holds only notes. A new
+        listed line changes the reason."""
+        f = self.fixture()
+        repo = f.repo()
+        env = {"REPO_SYNC_HYGIENE_MIN_AGE": None}
+        f.git(repo, "checkout", "-q", "-b", "wip")
+        f.commit(repo, "wip", "x\n", "unpushed")
+        f.git(repo, "checkout", "-q", "main")
+        first = attention(f.run("nightly", expect=0, extra_env=env))
+        f.git(repo, "branch", "fresh")
+        other = f.repo("a/other")
+        f.git(other, "branch", "fresh-too")
+        noted = f.run("nightly", expect=0, extra_env=env)
+        f.git(repo, "checkout", "-q", "-b", "wip2")
+        f.commit(repo, "wip2", "y\n", "unpushed too")
+        f.git(repo, "checkout", "-q", "main")
+        listed = attention(f.run("nightly", expect=0, extra_env=env))
+        self.assertIn("note: kept branch fresh ", noted.stdout)
+        self.assertIn("note: kept branch fresh-too ", noted.stdout)
+        self.assertRegex(" ".join(first), r"^repo-sync: hygiene report on \S+ \[\d+\]$")
+        self.assertEqual(attention(noted), first)
+        self.assertNotEqual(listed, first)
+
     def test_nightly_is_silent_when_hygiene_finds_nothing(self):
         """NEW. Criterion 8, second half: a clean fleet reports nothing."""
         f = self.fixture()

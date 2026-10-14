@@ -172,14 +172,14 @@ esac
         _stub(cls.bin, "dscacheutil", "exit 0\n")
         _stub(cls.bin, "uptime", 'echo "up 1 day, 0 users, load averages: 1 1 1"\n')
         _stub(cls.bin, "hostname", 'echo "%s"\n' % HOSTNAME)
-        # FAKE_DAY stands for the run's date in the report's reason.
+        # FAKE_DAY stands for the run's date, which the reason must not carry.
         _stub(cls.bin, "date", 'if [ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ]; then echo "$FAKE_DAY"; '
                                'else echo "2026-01-01 00:00"; fi\n')
         _stub(cls.bin, "sysctl", """\
 case "$2" in
   kern.memorystatus_vm_pressure_level) echo 1 ;;
   hw.ncpu) echo 8 ;;
-  vm.loadavg) echo "{ 1.00 1.00 1.00 }" ;;
+  vm.loadavg) echo "{ 1.00 ${LOAD_STUB:-1.00} 1.00 }" ;;
   vm.swapusage) echo "total = 0.00M  used = 0.00M  free = 0.00M" ;;
   *) exit 1 ;;
 esac
@@ -423,17 +423,53 @@ esac
 
     # -- cases -------------------------------------------------------------
 
-    def test_each_day_files_its_own_report(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body.
-        A checksum with digits erased made worker1 and worker2 one report."""
-        def reason(name, smart, day):
-            run = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "SMART_STUB": smart, "FAKE_DAY": day},
-                                 verb="run")
+    def test_the_reason_follows_the_findings_not_the_day(self):
+        """sd:4182: the ingest folds an open reason and keeps its first body.
+        The same findings on two nights give one reason, so one open report;
+        a changed finding gives another (sd:3537: a checksum with digits
+        erased made worker1 and worker2 one report)."""
+        def reason(name, smart, day, jev="0"):
+            run = self.run_check(name, {"JEV_HEALTH_CHECK": jev, "JEV_STUB_MODE": "answer",
+                                        "SMART_STUB": smart, "FAKE_DAY": day}, verb="run")
+            # Only the Jev run tags its findings: the order really moved.
+            self.assertEqual("[jev: needs a human tonight" in run["out"], jev == "1", run["out"])
             return [l for l in run["out"].splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
         first = reason("day-1", "Failing on worker1", "2026-10-12")
-        second = reason("day-2", "Failing on worker2", "2026-10-13")
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+, 2026-10-12$")
-        self.assertRegex(" ".join(second), r", 2026-10-13$")
+        again = reason("day-2", "Failing on worker1", "2026-10-13")
+        other = reason("day-2-other", "Failing on worker2", "2026-10-13")
+        # Jev reorders the printed findings and tags each one; the reason
+        # names the findings, so it does not move with that order.
+        ordered = reason("day-2-ordered", "Failing on worker1", "2026-10-13", jev="1")
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        self.assertEqual(again, first)
+        self.assertNotEqual(other, first)
+        self.assertEqual(ordered, first)
+
+    def test_a_moving_measure_keeps_the_reason(self):
+        """sd:4182: a load average of 30 one night and 40 the next, or an app
+        that crashed once and then twice, is the same finding, so the same
+        reason; the report still prints each measure."""
+        def run(name, load="1.00", reports=None):
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "LOAD_STUB": load,
+                                        "HEALTH_CHECK_SYSTEM_REPORTS": str(reports or self.system_reports)},
+                                 verb="run")["out"]
+            return out, [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        more = self.tmp / "more-reports"
+        more.mkdir()
+        (more / (CRASHED_APP + "-2026-01-02-000000.ips")).write_text("{}\n")
+        once, quiet = run("crash-once")
+        twice, crashed = run("crash-twice", reports=more)
+        thirty, busy = run("load-30", "30.00")
+        forty, busier = run("load-40", "40.00")
+        self.assertIn(CRASHED_APP + "(1)", once)
+        self.assertIn(CRASHED_APP + "(2)", twice)
+        self.assertIn("- 5-minute load average 30 on 8 cores", thirty)
+        self.assertIn("- 5-minute load average 40 on 8 cores", forty)
+        self.assertEqual(len(quiet), 1, once)
+        self.assertRegex(quiet[0], r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        self.assertEqual(crashed, quiet)
+        self.assertEqual(busier, busy)
+        self.assertNotEqual(busy, quiet)
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

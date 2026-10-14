@@ -270,7 +270,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", result.stdout)
         self.assertIn("TCC grants (dashboard.sh grants, exit 1)", result.stdout)
         [reason] = self.attention(result)
-        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+, \d{4}-\d\d-\d\d$")
+        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+ \[\d+\]$")
 
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """`claude update` runs in a quiet week too, and can drop a grant."""
@@ -282,6 +282,30 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.sends(), [])
         self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", result.stdout)
         self.assertEqual(len(self.attention(result)), 1, result.stdout)
+
+    def test_a_grant_still_to_redo_after_the_update_night_keeps_the_reason(self):
+        """sd:4182: the update that dropped the grant shows only on its own
+        night; the grant still to redo the next night is the same finding."""
+        versions = self.claude_moves_to("1.0.0", "1.0.1")
+        update_night = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        next_night = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", update_night.stdout)
+        self.assertNotIn(f"-> {versions / '1.0.1'}", next_night.stdout)
+        [reason] = self.attention(update_night)
+        self.assertRegex(reason, r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
+        self.assertEqual(self.attention(next_night), [reason])
+
+    def test_another_grant_to_redo_gives_another_reason(self):
+        """sd:4182 review round 1, class pass: each producer's checksum must
+        read inputs that exist and move with their content at the same
+        count. One grant to redo for another binary is another finding."""
+        python = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        node = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_RC="1",
+                             GRANTS_OUT=REFUSED.replace("/opt/homebrew/bin/python3", "/opt/homebrew/bin/node"))
+        for run in (python, node):
+            self.assertNotIn("No such file", run.stderr)
+            self.assertRegex(" ".join(self.attention(run)), r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
+        self.assertNotEqual(self.attention(node), self.attention(python))
 
     def test_a_failed_sweep_step_needs_attention_with_nothing_left(self):
         """Review of sd:3537: a failed `brew cleanup` with every package
@@ -299,19 +323,36 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.attention(result), [])
 
-    def test_each_day_files_its_own_report(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body.
-        A checksum of "upgrade sweep failed" made a failed cleanup and a
-        failed claude update one report."""
+    def test_the_reason_follows_the_findings_not_the_day(self):
+        """sd:4182: the ingest folds an open reason and keeps its first body.
+        The same failed step on two nights gives one reason, so one open
+        report; another failed step gives another (sd:3537: a checksum of
+        "upgrade sweep failed" made a failed cleanup and a failed claude
+        update one report)."""
         write_exec(self.stubs / "date", '#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && '
                                         '{ echo "$FAKE_DAY"; exit 0; }\nexec /bin/date "$@"\n')
+        upgraded = self.brew_log.with_name(self.brew_log.name + ".upgraded")
         first = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1",
                                              FAKE_DAY="2026-10-12"))
-        self.brew_log.with_name(self.brew_log.name + ".upgraded").unlink()
+        upgraded.unlink()
+        again = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1",
+                                             FAKE_DAY="2026-10-13"))
+        upgraded.unlink()
         write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
-        second = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", FAKE_DAY="2026-10-13"))
-        self.assertRegex(" ".join(first), r"^upgrade: upgrade sweep failed on \S+, 2026-10-12$")
-        self.assertRegex(" ".join(second), r"^upgrade: upgrade sweep failed on \S+, 2026-10-13$")
+        other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", FAKE_DAY="2026-10-13"))
+        self.assertRegex(" ".join(first), r"^upgrade: upgrade sweep failed on \S+ \[\d+\]$")
+        self.assertEqual(again, first)
+        self.assertRegex(" ".join(other), r"^upgrade: upgrade sweep failed on \S+ \[\d+\]$")
+        self.assertNotEqual(other, first)
+
+    def test_a_formula_and_a_cask_of_one_name_are_two_findings(self):
+        """sd:4182 review: the lists went into the checksum unlabelled, so a
+        formula and a cask of one name gave one reason."""
+        formula = self.attention(self.run_verb("upgrade-report", BREW_OUTDATED="example-tool"))
+        cask = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", BREW_GREEDY_CASK="example-tool"))
+        self.assertRegex(" ".join(formula), r"^upgrade: 1 still outdated on \S+ \[\d+\]$")
+        self.assertRegex(" ".join(cask), r"^upgrade: 1 still outdated on \S+ \[\d+\]$")
+        self.assertNotEqual(formula, cask)
 
     def test_an_inconclusive_probe_is_reported_and_needs_no_attention(self):
         """Exit 3 is not a missing grant: the report says so and asks nothing."""

@@ -18,7 +18,9 @@ exists), pending brew/mas updates, root disk usage.
 
 Unlike the other jobs this one **always needs attention**: `run` prints an
 `SD_REPORT_ATTENTION:` line with the date, so each week's digest is its own
-report on Reports and Today until it is acknowledged. Nothing is mailed
+report on Reports and Today until it is acknowledged. The finding jobs end
+their line in a checksum of their findings instead; a summary is new each
+week, so it has nothing to fold into. Nothing is mailed
 (sd:3454).
 The example cron job `local-cron-jobs/examples/weekly-digest.job` runs it
 Sundays 07:00; copy it into `<config>/cron-jobs/jobs/` to schedule it.

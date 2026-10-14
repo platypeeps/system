@@ -217,9 +217,13 @@ TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 FINDINGS="$TMPD/findings"   # needs a human — the report needs attention
 ACTIONS="$TMPD/actions"     # fixed automatically — listed in the report
-: > "$FINDINGS"; : > "$ACTIONS"
+KEYS="$TMPD/keys"           # what each finding is, for the report's reason
+: > "$FINDINGS"; : > "$ACTIONS"; : > "$KEYS"
 
-finding() { echo "- $1" >> "$FINDINGS"; }
+# finding TEXT [KEY]: KEY is TEXT without a measure that moves while the
+# finding stays the same (a free-space percentage), so the reason's checksum
+# does not move with it (sd:4182). Omitted, it is TEXT.
+finding() { echo "- $1" >> "$FINDINGS"; echo "${2:-$1}" >> "$KEYS"; }
 action()  { echo "- $1" >> "$ACTIONS"; }
 
 expand() {
@@ -240,7 +244,7 @@ check_disk() { # path min-free-percent
   fi
   free=$((100 - used))
   if [ "$free" -lt "$2" ]; then
-    finding "disk: only ${free}% free on $1 (threshold ${2}%)"
+    finding "disk: only ${free}% free on $1 (threshold ${2}%)" "disk: under ${2}% free on $1"
   fi
 }
 
@@ -300,7 +304,7 @@ check_logs() { # dir-or-file max-mb
       if tail -n 2000 "$f" > "$f.1" 2>/dev/null && : > "$f"; then
         action "rotated $f (${mb}MB > ${2}MB cap; tail kept in $(basename "$f").1)"
       else
-        finding "logs: failed to rotate $f (${mb}MB)"
+        finding "logs: failed to rotate $f (${mb}MB)" "logs: failed to rotate $f"
       fi
     else
       action "[dry-run] would rotate $f (${mb}MB > ${2}MB cap)"
@@ -352,7 +356,7 @@ SU="$TMPD/su"
 if st_step 300 softwareupdate -l > "$SU" 2>&1; then :; fi
 if grep -q '^\* Label' "$SU"; then
   finding "macOS updates pending:"
-  grep '^\* Label' "$SU" | sed 's/^\* Label: /    /' >> "$FINDINGS"
+  grep '^\* Label' "$SU" | sed 's/^\* Label: /    /' | tee -a "$KEYS" >> "$FINDINGS"
 elif ! grep -q 'No new software available' "$SU"; then
   finding "softwareupdate check failed: $(grep -v '^\[step ' "$SU" | tail -1)"
 fi
@@ -367,7 +371,7 @@ if command -v mas >/dev/null 2>&1; then
     finding "App Store update check failed (mas outdated exit $mas_rc)"
   elif [ -s "$MAS" ]; then
     finding "App Store updates pending:"
-    sed 's/^/    /' "$MAS" >> "$FINDINGS"
+    sed 's/^/    /' "$MAS" | tee -a "$KEYS" >> "$FINDINGS"
   fi
 fi
 
@@ -427,9 +431,11 @@ fi
 
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
-# The ingest folds a reason it already holds open into that report and keeps
-# its first body. The reason ends in the date, as weekly-digest's does, so each
-# day's run files its own report and no fold hides another failure (sd:3537).
+# The ingest folds a run into the open report with the same job and reason
+# and keeps that report's first body. So the reason ends in a checksum of the
+# findings' keys, not the date: the same findings fold into one open report,
+# and a new or changed one opens its own (sd:4182). The host stays in it, as
+# every host files under the one job name.
 if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s), $(date '+%Y-%m-%d')"
+  echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(cksum < "$KEYS" | cut -d' ' -f1)]"
 fi
