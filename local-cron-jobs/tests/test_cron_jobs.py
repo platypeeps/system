@@ -2583,17 +2583,19 @@ class WatchdogTest(unittest.TestCase):
         then = time.time() - installed_ago
         os.utime(plist, (then, then))
 
-    def watchdog(self, day=""):
-        # FAKE_DAY stands for the run's date in the report's reason.
+    def watchdog(self, day="", now=""):
+        # FAKE_DAY stands for the run's date, which the reason must not carry;
+        # FAKE_NOW for the clock the ages are measured from.
         stub = self.fx.tmp / "day-bin" / "date"
         stub.parent.mkdir(exist_ok=True)
         stub.write_text('#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                        '[ -n "$FAKE_NOW" ] && [ "$1" = "+%s" ] && { echo "$FAKE_NOW"; exit 0; }\n'
                         'exec /bin/date "$@"\n')
         stub.chmod(0o755)
         return subprocess.run(
             ["sh", str(self.fx.folder / "cron-jobs.sh"), "watchdog"],
             env={"PATH": self.fx.path(stub.parent), "HOME": str(self.fx.home),
-                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "FAKE_DAY": day},
+                 "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "FAKE_DAY": day, "FAKE_NOW": now},
             capture_output=True, text=True, timeout=60)
 
     def test_a_stale_job_needs_attention_and_mails_nothing(self):
@@ -2638,16 +2640,31 @@ class WatchdogTest(unittest.TestCase):
         run = self.watchdog()
         self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
 
-    def test_each_day_files_its_own_report(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body.
-        A checksum of job names alone made "never finished" and "cannot read
-        its time" for one job one report."""
+    def test_the_reason_follows_the_stale_runs_not_the_day(self):
+        """sd:4182: the ingest folds an open reason and keeps its first body.
+        A job still stale a night later gives the same reason though its age
+        grew; a new stale state gives another (sd:3537: a checksum of job
+        names alone made "never finished" and "cannot read its time" for one
+        job one report)."""
+        def reason(day, now=""):
+            run = self.watchdog(day, now)
+            return run.stdout, [l for l in run.stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
         self.install("demo", 3 * 86400)
-        first = [l for l in self.watchdog("2026-10-12").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
-        second = [l for l in self.watchdog("2026-10-13").stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on \S+, 2026-10-12$")
-        self.assertRegex(" ".join(second), r", 2026-10-13$")
+        out, first = reason("2026-10-12")
+        later_out, later = reason("2026-10-13", str(int(time.time()) + 86400))
+        self.assertIn("STALE   demo (never finished a run, installed 72h ago)", out)
+        self.assertIn("STALE   demo (never finished a run, installed 96h ago)", later_out)
+        log = self.fx.folder / "logs" / "demo.log"
+        log.write_text("[demo] 12 done\n")
+        _, unreadable = reason("2026-10-13")
+        log.write_text(f"[demo] {self.stamp(3 * 86400)} done\n")
+        _, finished = reason("2026-10-13")
+        log.write_text(f"[demo] {self.stamp(2 * 86400)} done\n")
+        _, finished_again = reason("2026-10-13")
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on \S+ \[\d+\]$")
+        self.assertEqual(later, first)
+        self.assertEqual(len({" ".join(r) for r in (first, unreadable, finished, finished_again)}), 4,
+                         (first, unreadable, finished, finished_again))
 
     def test_an_unreadable_run_time_is_stale_not_fresh(self):
         self.install("demo", 3600)

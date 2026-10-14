@@ -72,6 +72,15 @@ esac
 """
 
 
+# A stand-in for ssh to git@github.com (GIT_SSH_COMMAND): it serves each
+# repository from the bare ones under $LOCAL_GITHUB_ROOT, and answers the
+# nightly SSH preflight as GitHub does, so a case can clone and fetch.
+LOCAL_GITHUB = """#!/bin/sh
+for last; do :; done
+[ "$last" = git@github.com ] && { echo "Hi owner! You've successfully authenticated"; exit 1; }
+cd "$LOCAL_GITHUB_ROOT" && exec sh -c "$last"
+"""
+
 SD_DB_STUB = """#!/bin/sh
 # Test stub for the pack's bin/sd-db (SD_PACK_ROOT): a workflow database in
 # files under $SD_DB_STUB, so no case reads the machine's own. It logs each
@@ -541,23 +550,78 @@ class RepoSyncTest(unittest.TestCase):
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
-    def test_each_day_files_its_own_report(self):
-        """REGRESSION (sd:3537). The ingest folds a reason it holds open and
-        keeps the first body. A checksum with digits erased made worker1 and
-        worker2 failing one report."""
-        reasons = []
-        for bad, day in (("worker1", "2026-10-12"), ("worker2", "2026-10-13")):
+    def test_the_reason_follows_the_findings_not_the_day(self):
+        """REGRESSION (sd:4182). The ingest folds a reason it holds open and
+        keeps the first body. The same failure on two nights gives one
+        reason, so one open report; another failure gives another (sd:3537:
+        a checksum with digits erased made worker1 and worker2 one report),
+        and so does the same repo failing for another cause."""
+        f = self.fixture()
+        (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                                    'exec /bin/date "$@"\n')
+        (f.bin / "date").chmod(0o755)
+        f.write_conf("a owner/worker1\na owner/good1\na owner/good2\n")
+        f.checkout("a/worker1", "owner/worker1")
+        for name in ("good1", "good2"):
+            f.local_clone(f"a/{name}")
+        first = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-12"}))
+        again = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        cause = attention(f.run("nightly", expect=0, extra_env={
+            "FAKE_DAY": "2026-10-13", "GIT_SSH_COMMAND": "sh -c 'echo Permission denied >&2; exit 255' --"}))
+        shutil.rmtree(f.root / "a" / "worker1")
+        f.checkout("a/worker2", "owner/worker2")
+        f.write_conf("a owner/worker2\na owner/good1\na owner/good2\n")
+        other = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        self.assertRegex(" ".join(first), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertEqual(again, first)
+        self.assertRegex(" ".join(cause), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertNotEqual(cause, first)
+        self.assertRegex(" ".join(other), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertNotEqual(other, first)
+
+    def test_each_reconcile_list_changes_the_reason_at_the_same_count(self):
+        """REGRESSION (sd:4182 review round 1). The checksum read $ADDED and
+        $REMOVED, which reconcile no longer writes (sd:3983), so one joined,
+        unjoined, unlisted or absent checkout swapped for another gave the
+        same reason, and the ingest folded the new finding into the old
+        report. Sync reaches git@github.com through LOCAL_GITHUB, so a joined
+        or absent repo syncs and the list change stays the reason."""
+        def reason(name, rel):
             f = self.fixture()
-            (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
-                                        'exec /bin/date "$@"\n')
-            (f.bin / "date").chmod(0o755)
-            f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
-            f.checkout(f"a/{bad}", f"owner/{bad}")
-            for name in ("good1", "good2"):
-                f.local_clone(f"a/{name}")
-            reasons.append(attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": day})))
-        self.assertRegex(" ".join(reasons[0]), r"^repo-sync: 1 repo\(s\) failed on \S+, 2026-10-12$")
-        self.assertRegex(" ".join(reasons[1]), r", 2026-10-13$")
+            f.quiet_fleet()
+            github = f.tmp / "github"
+            ssh = f.bin / "local-github"
+            ssh.write_text(LOCAL_GITHUB)
+            ssh.chmod(0o755)
+            repo = rel.split("/")[-1]
+            bare = github / "owner" / f"{repo}.git"
+            seed = f.tmp / "seed-gh" / repo
+            for args, cwd in ((["init", "-q", "--bare", str(bare)], f.tmp), (["init", "-q", str(seed)], f.tmp),
+                              (["-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                                "commit", "-q", "--allow-empty", "-m", "seed"], seed),
+                              (["push", "-q", str(bare), "HEAD:refs/heads/main"], seed),
+                              (["symbolic-ref", "HEAD", "refs/heads/main"], bare)):
+                f._git(args, cwd)
+            env = {"GIT_SSH_COMMAND": str(ssh), "LOCAL_GITHUB_ROOT": str(github)}
+            if name == "absent":
+                f.rows("a/good")
+                f.clones(f"a owner/good\na owner/{repo}\n")
+            else:
+                f.checkout(rel, f"owner/{repo}")
+                f.rows("a/good", *((rel,) if name == "unlisted" else ()))
+                if name == "unjoined":
+                    env["ADD_RC"] = "1"
+            result = f.run("nightly", expect=0, extra_env=env)
+            self.assertNotIn("No such file", result.stderr)
+            return " ".join(attention(result))
+
+        shapes = {"joined": r"repo list changed", "absent": r"repo list changed",
+                  "unjoined": r"1 checkout\(s\) not joined", "unlisted": r"1 checkout\(s\) present, not listed"}
+        for name, shape in shapes.items():
+            with self.subTest(name):
+                first, other = reason(name, "a/x"), reason(name, "a/y")
+                self.assertRegex(first, f"^repo-sync: {shape}" + r" .*\[\d+\]$")
+                self.assertNotEqual(first, other)
 
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
         """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission

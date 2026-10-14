@@ -1528,8 +1528,15 @@ cmd_logs() {
 # The age is the last "done" or "FAILED rc=N" line, not the log's mtime: a
 # run skipped on the lock still writes a line, and kept a wedged job green
 # (sd:3538). With no such line, the age is the install time (plist mtime).
+#
+# The ingest folds a run into the open report with the same job and reason
+# and keeps that report's first body. So the reason ends in a checksum of
+# each stale job's name and the run or install it is stale since, not of its
+# age and not the date: a job still stale a night later folds into the open
+# report, and a new stale job, or one that ran and stopped again, opens its
+# own (sd:4182). The host stays in it, as every host files under one job name.
 cmd_watchdog() {
-  local job dom dow max log age ref now stale last at
+  local job dom dow max log age ref now stale last at since=""
   now=$(date +%s)
   stale="$LOG_DIR/.watchdog-stale"
   : > "$stale"
@@ -1549,19 +1556,23 @@ cmd_watchdog() {
     last=$(grep -oE "^\[$job\] [0-9T:+-]+ (done|FAILED rc=[0-9]+)" "$log" 2>/dev/null \
       | tail -1 | awk '{print $2}')
     if [ -z "$last" ]; then
-      age=$(( now - $(stat -f %m "$(plist_for "$job")") ))
+      at=$(stat -f %m "$(plist_for "$job")")
       ref="never finished a run, installed"
     elif at=$(date -j -f '%Y-%m-%dT%H:%M:%S%z' "$last" +%s 2>/dev/null); then
-      age=$(( now - at ))
       ref="last finished run"
     else
       # An unreadable time is unknown, not fresh: name it.
       echo "- $job: cannot read the time of its last run ($last)" >> "$stale"
       echo "STALE   $job (cannot read the time of its last run: $last)"
+      since="$since$job: cannot read $last
+"
       continue
     fi
+    age=$(( now - at ))
     if [ "$age" -gt "$max" ]; then
       echo "- $job: $ref $(( age / 3600 ))h ago (cadence allows $(( max / 3600 ))h)" >> "$stale"
+      since="$since$job: $ref $at
+"
       echo "STALE   $job ($ref $(( age / 3600 ))h ago)"
     else
       echo "ok      $job"
@@ -1572,10 +1583,7 @@ cmd_watchdog() {
     return 0
   fi
   echo "fix: cron-jobs.sh status <job>; if the plist is stale, cron-jobs.sh install <job>. If the machine was off/asleep at the slot, launchd coalesces on wake — a still-stale job here means it did not."
-  # The ingest folds a reason it already holds open into that report and keeps
-  # its first body. The reason ends in the date, as weekly-digest's does, so
-  # each day's run files its own report and no fold hides another (sd:3537).
-  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s), $(date '+%Y-%m-%d')"
+  echo "SD_REPORT_ATTENTION: watchdog: $(wc -l < "$stale" | tr -d ' ') cron job(s) not running on $(hostname -s) [$(printf '%s' "$since" | cksum | cut -d' ' -f1)]"
 }
 
 # Has machine-setup recorded a profile here? Its cron stage then owns the set

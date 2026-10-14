@@ -2403,11 +2403,28 @@ case "$1" in
     if [ -z "$ATTENTION" ] && { [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; }; then
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
-    # The ingest folds a reason it already holds open into that report and
-    # keeps its first body. The reason ends in the date, as weekly-digest's
-    # does, so each day's run files its own report and no fold hides another
-    # failure (sd:3537).
-    [ -z "$ATTENTION" ] || echo "SD_REPORT_ATTENTION: $ATTENTION, $(date '+%Y-%m-%d')"
+    # The ingest folds a run into the open report with the same job and
+    # reason and keeps that report's first body. So the reason ends in a
+    # checksum of what the report names, not the date: where the list came
+    # from and why, and reconcile's lists (sd:3983), each line under the name
+    # of its list, a failed join with its error; each failed repo's section
+    # of the sync output, its step lines left out; and hygiene's lines, its
+    # notes left out with the header of a section that holds only notes. The
+    # same findings fold into one open report, and a new or changed one opens
+    # its own (sd:4182). The host stays in it, as every host files under one
+    # job name. No 2>/dev/null: an input missing here is a bug to see in the
+    # log, not an empty list (review round 1).
+    if [ -n "$ATTENTION" ]; then
+      sum=$({ printf 'source: %s %s\nrows: %s\n' "$LIST_SOURCE" "$LIST_WHY" "$r_why"
+              sed 's/^/joined: /' "$JOINED"; sed 's/^/unjoined: /' "$UNJOINED"
+              sed 's/^/unlisted: /' "$UNLISTED"; sed 's/^/absent: /' "$ABSENT"
+              sed 's/^/rename: /' "$MISMATCHED"
+              awk '/^=== |^---/{if (f) printf "%s", b; b=""; f=0} /^\[step /{next}
+                   /^!!! failed: /{f=1} {b = b $0 "\n"} END{if (f) printf "%s", b}' "$OUT"
+              awk '/^=== /{h=$0; next} /^  note: /||/^$/{next} /^---/{h=""}
+                   {if (h != "") {print h; h=""} print}' "$HYG_OUT"; } | cksum | cut -d' ' -f1)
+      echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
+    fi
     # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true
 

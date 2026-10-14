@@ -22,7 +22,9 @@ into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightl
   anything else `brew doctor` raises.
 
 The summary goes to the job log with a line `SD_REPORT_ATTENTION: brew doctor:
-<n> warning(s) on <host>`. The run's ingest maps that line to a report that
+<n> warning(s) on <host> [<checksum>]`. The checksum covers what brew doctor
+still says, so the same warnings each night stay one open report. The run's
+ingest maps that line to a report that
 needs attention, so Reports and Today carry it until it is acknowledged;
 nothing is mailed (sd:3454).
 

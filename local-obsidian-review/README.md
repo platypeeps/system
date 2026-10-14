@@ -1,9 +1,8 @@
 # local-obsidian-review
 
 Daily digest of the vault's decision queues, emailed as HTML with signed
-one-tap decision buttons. Where `local-obsidian-tasks` covers due TaskNotes
-tasks, this covers the five `System/Databases/*` folders whose notes wait on
-a status call from the operator; the nightly accept routines (blog-idea-accept,
+one-tap decision buttons. It covers the five `System/Databases/*` folders whose
+notes wait on a status call from the operator; the nightly accept routines (blog-idea-accept,
 tips-accept) then act on whatever the buttons set. Skill Proposals keeps its
 Accept/Decline buttons and no routine behind them: since 2026-08-31 the
 decision is the whole record, and adoption happens through `sd-skill-adopt`.
