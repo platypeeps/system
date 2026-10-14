@@ -51,7 +51,7 @@ It was rehearsed in September and never run for real: the live database holds no
 | `stage`, `status` | the ladder word verbatim; the plugin's `workflow` map applied to it |
 | `created_at` | `dateCreated` |
 | `fields` | the frontmatter as JSON, plus `kind`, minus `status` (it is `stage`) and `mirror-hash` |
-| `body` | `{"markdown": ...}` with the Meta Bind lines removed |
+| `body` | `{"markdown": ...}`, the note's text after the frontmatter, verbatim |
 
 `kind = 'idea'` with `piece IS NULL` stays out of the writing pipeline, which selects `piece IS NOT NULL`.
 A Blog Idea promoted to a piece keeps the `promoted_rows` contract (sd:1994). Nothing deletes a row; `declined` is a stage.
@@ -77,15 +77,16 @@ The nightly prune parks only priority-4 rows, so it never parks a base row.
 
 **Kinds.** The writing plugin's manifest owns every kind (sd:1098). It declares `blog-idea`, `topic`, `tip` and `quick-note`, with maps for the first two.
 It gains `market` (candidate `planning`, active `ready`, paused `blocked`, declined `done`; `slug` unique; human-only active, paused, declined)
-and `skill-proposal` (filed and declined `done`, no transitions: an archive).
+and `skill-proposal` (initial `proposed`, one transition, proposed to filed or declined; filed and declined `done`;
+every held row is terminal: an archive; W1 decision, note 18044 on sd:3974).
 It gains maps for `tip` (inbox `planning`, accepted and ready `ready`, approved `ready_to_send`, published and declined `done`) and `quick-note` (new `planning`).
 The `topic` map changes `active` from `in_progress` to `ready`, the standing-state rule above; `blog-idea` keeps its map.
-The `blog-idea`, `tip` and `topic` templates lose their Meta Bind lines.
+The `blog-idea`, `tip` and `topic` templates lose their Meta Bind lines; an imported body keeps its own, verbatim.
 
 **Import.** `sd-db.sh import vault` keeps freeze, land and verify, with four changes.
 It imports every kind with a `workflow` map, so all five bases come in with no importer table.
-`freeze` and `rows` share one normalization (no Meta Bind lines, no `fields.status`, no `mirror-hash`), so the verify stays exact.
-It reports per-kind note counts and the Meta Bind lines it dropped.
+`freeze` and `rows` share one normalization (no `fields.status`, no `mirror-hash`), so the verify stays exact.
+It reports per-kind note counts and `bodies changed <n>`, 0 when every body lands verbatim.
 It refuses when the plugin's `store.driver` is `db`: the flip of that one value is the cutover, so no state row can disagree with it.
 
 **Writes: `sd_db/records.py`.** `list_rows`, `get_row`, `add_row`, `edit_row` for rows whose `source` is `vault`.
@@ -136,7 +137,7 @@ the pack's `db` driver and `rules` replace the vault driver for the writing plug
 `sd-db.sh records render` and `POST /api/records/render` are the catch-up after a failed render, with no prior equivalent;
 `mirror-hash` is the hand-edit check, kept in the file it guards; `market` and `skill-proposal` declare notes that had no kind.
 Reused: `item`, the `vault` source, the `heartbeat` state kind, the item routes, `md_to_html`, the `root|vault` line.
-No migration, config key or scheduled job is added. Retired: the 547 Meta Bind lines and the routines' hand edits of notes.
+No migration, config key or scheduled job is added. Retired: the routines' hand edits of notes.
 
 ## Non-goals
 
@@ -150,7 +151,7 @@ No migration, config key or scheduled job is added. Retired: the 547 Meta Bind l
 - [ ] `sd-db.sh import vault` prints, per base, `<n> <kind> note(s)` equal to `find <base folder> -name '*.md' | wc -l`, and `verified`.
 - [ ] A second import before the flip reports `0 inserted, 0 updated`.
 - [ ] `SELECT json_extract(fields, '$.kind'), count(*) FROM item WHERE source = 'vault' GROUP BY 1` equals the per-base file counts of the same sitting.
-- [ ] The dropped Meta Bind count equals `grep -c 'INPUT\['` summed over the bases; `SELECT count(*) FROM item WHERE source = 'vault' AND body LIKE '%INPUT[%'` is 0.
+- [ ] The import stores every body verbatim: each row's `body.markdown` equals its note's text after the frontmatter, and the sitting reports `bodies changed 0`.
 - [ ] After the flip, `sd-db.sh import vault` exits non-zero and names the `db` driver; `sd store list sdw.market --status active` lists the active count of the sitting.
 - [ ] `sd-db.sh records render` exits 0 with 0 refused; a second run writes 0 files.
 - [ ] A dashboard stage move writes a `comment` note, and a `status_change` note when the status changes.
@@ -203,6 +204,7 @@ Each slice writes its tests first; each test fails on the base branch. Each leav
 4. **P1 `db` driver** (command pack). The `db` branch for every `sd store` verb, and `rules` in `sd plugin list --json`. Needs S2 installed.
    Leaves working: every plugin still on `vault` behaves as before.
 5. **S3 mirror renderer** (system). The Markdown and HTML mirror, the overwrite rule, the hub and restore refusals, the heartbeat, `sd-db.sh records render`, the render after each write.
+   The HTML mirror hides each Meta Bind status control, since the stage column shows it. It draws each `my-rating` control as read-only text holding the field's value. The Markdown mirror keeps the body verbatim.
    Invoke `hallmark` and apply the UI foundation before the HTML design. Leaves working: no row exists yet, so nothing renders on the live vault.
 6. **S4 dashboard** (system). The `/api/tasks` fields, the Tasks Base filter and stage column, the item panel, the route dispatch, the Health heartbeat and `POST /api/records/render`.
    Invoke `hallmark` first. Leaves working: Tasks is unchanged until the sitting adds rows; pieces and tasks use their current handlers.
@@ -212,25 +214,26 @@ Each slice writes its tests first; each test fails on the base branch. Each leav
 
 1. Uninstall the six routine jobs on each machine that runs them (`cron-jobs.sh uninstall <job>`), in a window with none due (they start at 03:00, 06:12 and 12:00). Quit Obsidian on the hub.
 2. `sd-db.sh backup`; it reports the restore proof.
-3. `git -C "$OBSIDIAN_VAULT" status --porcelain -- System/Databases` prints nothing; note `HEAD`.
-4. `sd-db.sh import vault` twice; check the import criteria.
-5. Merge W2 through the lane; pull the writing plugin on the hub and the satellite.
-6. `sd-db.sh import vault` refuses; `sd store list sdw.market --status active` lists rows.
-7. `sd-db.sh records render`: exit 0, refused 0.
-8. Edit the vault routines to the After column. The `.base` files stay.
-9. Install the six jobs again (`cron-jobs.sh install <job>`).
-10. Next day: `cron-jobs.sh status <job>` exits 0 for each; the heartbeat is `ok`.
+3. Add `status: new` to the one quick note without a status (2026-10-05 102247), and commit it in the vault.
+4. `git -C "$OBSIDIAN_VAULT" status --porcelain -- System/Databases` prints nothing; note `HEAD`.
+5. `sd-db.sh import vault` twice; check the import criteria.
+6. Merge W2 through the lane; pull the writing plugin on the hub and the satellite.
+7. `sd-db.sh import vault` refuses; `sd store list sdw.market --status active` lists rows.
+8. `sd-db.sh records render`: exit 0, refused 0.
+9. Edit the vault routines to the After column. The `.base` files stay.
+10. Install the six jobs again (`cron-jobs.sh install <job>`).
+11. Next day: `cron-jobs.sh status <job>` exits 0 for each; the heartbeat is `ok`.
 
-Before step 5 only rows changed: rerun, or restore the step 2 backup.
-From step 5 on, roll back only after `sd-db.sh records render` exits 0 with 0 refused and every mirror file reads back as its row's payload; then revert W2, pull it, and `sd-db.sh import vault` finds the notes level with the rows.
+Before step 6 only rows and one quick note's status changed: rerun, or restore the step 2 backup; the note keeps `status: new`.
+From step 6 on, roll back only after `sd-db.sh records render` exits 0 with 0 refused and every mirror file reads back as its row's payload; then revert W2, pull it, and `sd-db.sh import vault` finds the notes level with the rows.
 If that render fails or refuses any file, stop: the database stays the source, W2 stays, and the import stays refused, because importing stale notes would overwrite newer rows. Fix the render first.
 After the sitting, file one pack item to remove the `vault` driver once no plugin names it.
 
 ## Risks
 
-- The import proof ties its pass to the source by the `verified` row's source hash, and to the vault by the `HEAD` noted in step 3. A count alone proves nothing; the verify compares identity and content.
+- The import proof ties its pass to the source by the `verified` row's source hash, and to the vault by the `HEAD` noted in step 4. A count alone proves nothing; the verify compares identity and content.
 - The render check ties a pass to each file by its own `mirror-hash`. A hand edit that also rewrites the hash passes; that needs intent, and the threat model accepts it.
-- The flip and the routine edits are separate steps. A routine that runs between them writes a vault note; the render reports it, and the jobs stay uninstalled until step 9.
+- The flip and the routine edits are separate steps. A routine that runs between them writes a vault note; the render reports it, and the jobs stay uninstalled until step 10.
 - Obsidian Sync can carry a phone edit into a mirror file at any time. The render refuses it rather than losing it; the operator still has to act on the report.
 - Rendering a whole kind per write reads about 2 MB of Markdown for Market Watch. Accepted; if a write gets slow, the render narrows to the row and its page.
 - Tasks grows from 395 to 671 open rows, about 70 percent. Accepted by D6; the Base filter narrows it.
