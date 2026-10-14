@@ -680,6 +680,7 @@ addEventListener('DOMContentLoaded', () => {
     return html`${desc}${baseOf(t, d)}
       <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
+      ${published(t, d.published || [])}
       <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
       <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src('Notes', `sd task show ${t.id} --json · every other note kind`)}</h3>
@@ -691,6 +692,13 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
       <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
+  }
+  // sd:3465: where the item's work was published, each URL under its document's title; tasks_screen._published sets
+  // `href` only for an address the page may open, so any other shows as text. Nothing published shows no section.
+  function published(t, list) {
+    if (!list.length) return '';
+    return html`<h3>Published ${src('Published', `/api/tasks/${t.id} · fields.published, fields.writing.published_urls, publication claims`)}</h3>
+      <ol class="rec">${list.map(p => html`<li><span><b>${p.title}</b> <small>${p.where}</small>${p.links.map(l => html`<br>${l.channel} ${l.href ? html`<a class="ext" href="${l.href}" target="_blank" rel="noopener noreferrer">${l.url}</a>` : html`<code>${l.url}</code>`}`)}</span></li>`)}</ol>`;
   }
   // build (sd:3977): a vault base row's stage, declared fields, body and its section of the vault mirror page.
   // The stage select is the row's own write: edit_item's refusal of an idea's other fields does not turn it off.
