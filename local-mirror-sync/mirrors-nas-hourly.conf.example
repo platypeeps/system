@@ -1,7 +1,9 @@
 # Off-machine pair for the hourly snapshots: the USB disk's hourly sd-db root
 # to its own folder on the NAS, after every hourly snapshot (sd:4009).
 # Copy to ~/.config/system/mirror-sync/mirrors-nas-hourly.conf ($SYSTEM_TOOLS_CONFIG/mirror-sync) and set your own paths.
-# /Volumes/Offsite is a NAS share mounted over SMB, as in mirrors-nas.conf.
+# The destination is a placeholder: replace /Volumes/change-me-nas-share with
+# the NAS share's mount point, the same path as SD_DB_BACKUP_HOURLY_NAS_FOLDER
+# in the sd-db-backup-hourly job.
 #
 # Format matches mirrors.conf. Run this list ADDITIVE (MIRROR_SYNC_ADDITIVE=1):
 # the local root keeps 24 snapshots, and the NAS folder keeps 7 days by checkpoint age.
@@ -11,4 +13,4 @@
 # The sd-db-backup-hourly job runs this list right after its snapshot, and only
 # if the snapshot succeeded. offsite-verify restores the newest snapshot in
 # sd-backups-hourly and fails when it is more than 3 hours old.
-/Volumes/local/Backup Local/sd-backups|/Volumes/Offsite/Backup/sd-backups-hourly
+/Volumes/local/Backup Local/sd-backups|/Volumes/change-me-nas-share/Backup/sd-backups-hourly

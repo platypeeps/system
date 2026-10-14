@@ -26,9 +26,11 @@
 # The NAS copy runs only if the snapshot succeeded, so it never reads a
 # half-written snapshot directory, and only after offsite-verify's preflight
 # shows the NAS folder is on the expected share. It is additive, with its own
-# pair list, `mirrors-nas-hourly.conf` (local-mirror-sync has the example);
-# set the NAS path there and in both `--destination`s below. offsite-verify
-# fails when the newest copy there is more than 3 hours old.
+# pair list, `mirrors-nas-hourly.conf` (local-mirror-sync has the example).
+# The NAS folder is a placeholder: set SD_DB_BACKUP_HOURLY_NAS_FOLDER below
+# and the pair list's destination to the same path, the `sd-backups-hourly`
+# folder under offsite-verify's OFFSITE_VERIFY_ROOT. offsite-verify fails
+# when the newest copy there is more than 3 hours old.
 #
 # After the copy, `sd-db backup --prune-only` deletes NAS copies whose
 # checkpoint is more than 7 days old (sd:4011). It takes no snapshot, and it
@@ -45,7 +47,8 @@ JOB_TIMEOUT="20m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
-SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination /Volumes/Offsite/Backup/sd-backups-hourly && MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination /Volumes/Offsite/Backup/sd-backups-hourly --keep-days 7"
+SD_DB_BACKUP_HOURLY_NAS_FOLDER="/Volumes/change-me-nas-share/Backup/sd-backups-hourly"
+SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" && MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" --keep-days 7"
 JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT && $SD_DB_BACKUP_HOURLY_NAS"
 [ -z "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT"
-unset SD_DB_BACKUP_HOURLY_MOUNT SD_DB_BACKUP_HOURLY_SNAPSHOT SD_DB_BACKUP_HOURLY_NAS
+unset SD_DB_BACKUP_HOURLY_MOUNT SD_DB_BACKUP_HOURLY_SNAPSHOT SD_DB_BACKUP_HOURLY_NAS SD_DB_BACKUP_HOURLY_NAS_FOLDER

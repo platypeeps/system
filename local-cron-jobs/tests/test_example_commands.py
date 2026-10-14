@@ -144,7 +144,8 @@ class HourlyBackupJobTest(unittest.TestCase):
     """
 
     JOB = EXAMPLES / "sd-db-backup-hourly.job"
-    NAS = "/Volumes/Offsite/Backup/sd-backups-hourly"
+    #: A placeholder the operator replaces, in this job and in the pair list alike.
+    NAS = "/Volumes/change-me-nas-share/Backup/sd-backups-hourly"
 
     def run_job(self, **codes):
         fx = Fixture()
@@ -179,6 +180,11 @@ class HourlyBackupJobTest(unittest.TestCase):
         result, calls = self.run_job(MIRROR_RC="1")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror"])
+
+    def test_the_pair_list_example_copies_to_the_same_placeholder(self):
+        conf = EXAMPLES.parent.parent / "local-mirror-sync/mirrors-nas-hourly.conf.example"
+        pairs = [line for line in conf.read_text().splitlines() if line and not line.startswith("#")]
+        self.assertEqual([pair.split("|")[1] for pair in pairs], [self.NAS])
 
     def test_a_failed_snapshot_copies_nothing(self):
         result, calls = self.run_job(SNAPSHOT_RC="1")
