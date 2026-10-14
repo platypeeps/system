@@ -128,8 +128,8 @@ python3 tests/test_entrypoint_mode.py
 python3 tests/test_one_store.py
 python3 tests/test_one_double.py
 
-# No tracked file outside docs/work names the retired local-sd-db folder
-# (sd:3281). Git and stdlib only, so it runs here before the venv.
+# The retired local-sd-db folder is gone and no tracked file outside docs/work
+# names it (sd:3281, sd:3371). Git and stdlib only, so it runs here before the venv.
 python3 tests/test_retired_folder.py
 
 # Every docker `update` lists images by `-aq --filter reference=` and not by

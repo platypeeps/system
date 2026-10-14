@@ -84,6 +84,17 @@ class TheDocument(Pieces):
         # A parked piece is listed, and it has no moves until it is revived.
         self.assertEqual((by[self.ids["parked"]]["parked"], by[self.ids["parked"]]["next"]), (True, []))
 
+    def test_a_published_piece_carries_its_claims_url_and_a_link_only_for_http(self):
+        # sd:3465: the writing claim URL becomes a link; an address in another scheme stays text.
+        claim = "INSERT INTO publication_claim (id, item, payload, state, created_at, updated_at) VALUES (?, ?, '{}', ?, ?, ?)"
+        self.connection.execute(claim, ("c1aim0000000", self.ids["fixture"], json.dumps({"phase": "published", "url": "https://example.test/p"}), NOW, NOW))
+        self.connection.execute(claim, ("c2aim0000000", self.ids["parked"], json.dumps({"phase": "published", "url": "javascript:alert(1)"}), NOW, NOW))
+        self.connection.commit()
+        by = {p["id"]: p for p in writing_screen.document(self.connection, now=NOW)["pieces"]}
+        self.assertEqual(by[self.ids["fixture"]]["publication"],
+                         {"claim": "c1aim0000000", "url": "https://example.test/p", "phase": "published", "href": "https://example.test/p"})
+        self.assertIsNone(by[self.ids["parked"]]["publication"]["href"])
+
     def test_no_field_holds_a_local_path(self):
         text = json.dumps(writing_screen.document(self.connection, now=NOW))
         self.assertNotIn(self.tmp.name, text)
@@ -301,6 +312,19 @@ class TheScript(unittest.TestCase):
         self.assertNotIn("contenteditable", editor)
         self.assertIn("writing-pack/content/2026/three-budgets/index.md", editor)
         self.assertIn("Read only", editor)
+
+    def test_the_details_link_the_claims_url(self):
+        # sd:3465: "Already published" named the claim only; the Details now link where it went, http and https only.
+        claim = {"claim": "c1aim0000000", "url": "https://example.test/p", "phase": "published", "href": "https://example.test/p"}
+        bare = dict(claim, url="javascript:alert(1)", href=None)
+        answer = ("(path) => path === '/api/writing' ? [200, Object.assign({}, DOC, { pieces: DOC.pieces.map(p => p.id === 12 ? Object.assign({}, p, { publication: "
+                  + json.dumps(claim) + " }) : p.id === 14 ? Object.assign({}, p, { publication: " + json.dumps(bare) + " }) : p) })] : [200, {}]")
+        out = self.run_page("const open = k => document.dispatchEvent(new CustomEvent('shell:open', { detail: k }));"
+                            " open('12'); await flush(); R.linked = ELS.details.html; open('14'); await flush(); R.bare = ELS.details.html;", answer=answer)
+        self.assertIn('<dt>Published</dt><dd><a class="ext" href="https://example.test/p" target="_blank" rel="noopener noreferrer">https://example.test/p</a></dd>',
+                      out["R"]["linked"])
+        self.assertIn("<dt>Published</dt><dd><code>javascript:alert(1)</code></dd>", out["R"]["bare"])
+        self.assertNotIn('href="javascript', out["R"]["bare"])
 
     def test_a_failed_read_clears_the_page_and_says_so(self):
         out = self.run_page("", answer="() => [500, { error: 'database is locked' }]")

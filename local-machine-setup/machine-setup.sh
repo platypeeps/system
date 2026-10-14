@@ -4089,10 +4089,11 @@ doctor_sd_versions() {
   done
 }
 
-# Config that still names the retired local-sd-db folder (sd:3281): installed
-# LaunchAgents, the plist templates and the cron job files. Each runs the
-# forwarder, which warns and runs the pack's bin/sd-db until it is deleted. A machine whose config names none passes; a folder that cannot
-# be searched fails, because an unread folder says nothing.
+# Config that still names the deleted local-sd-db folder (sd:3281, sd:3371):
+# installed LaunchAgents, the plist templates and the cron job files. Each
+# fails when it runs, since the folder is gone. A machine whose config names
+# none passes; a folder that cannot be searched fails, because an unread
+# folder says nothing.
 doctor_retired_sd_db() {
   retired=""
   unknown=0
@@ -4102,7 +4103,7 @@ doctor_retired_sd_db() {
       retired="$retired
 $hits"
     elif [ $? -ne 1 ]; then
-      doctor_fail "cannot search $place for config that names the retired local-sd-db"
+      doctor_fail "cannot search $place for config that names the deleted local-sd-db"
       unknown=1
     fi
   done
@@ -4117,12 +4118,12 @@ $plist"
     fi
   done
   if [ -z "$retired" ]; then
-    [ "$unknown" -eq 0 ] && echo "  ok      no config names the retired local-sd-db"
+    [ "$unknown" -eq 0 ] && echo "  ok      no config names the deleted local-sd-db"
     return 0
   fi
   while IFS= read -r named; do
     [ -n "$named" ] || continue
-    doctor_fail "$named names the retired local-sd-db, now only a forwarder to be deleted — point it at $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
+    doctor_fail "$named names the deleted local-sd-db — repoint it to $SD_PACK_ROOT/bin/sd-db, then reinstall it ($(basename "$SELF") update agents --apply for a plist, cron-jobs.sh install <job> for a job)"
   done <<EOF
 $retired
 EOF
