@@ -530,7 +530,8 @@ class ItemKind(BrowserSession):
         item = self.item("Errand", kind="task")
         narrower = connect(self.path)
         current = narrower.execute("SELECT sql FROM sqlite_master WHERE name = 'item'").fetchone()[0]
-        narrow = re.sub(r"'dep',\s*'personal', 'followup',\s*'work-idea', 'personal-idea'\)\)", "'dep'))", current)
+        # Anchored on the four kinds alone: pack migration 032 dropped `dep`, the kind before them.
+        narrow = re.sub(r",\s*'personal', 'followup',\s*'work-idea', 'personal-idea'\)\)", "))", current)
         self.assertNotEqual(narrow, current, "the CHECK did not carry the four kinds, so this proves nothing")
         cookie = narrower.execute("PRAGMA schema_version").fetchone()[0]
         narrower.execute("PRAGMA writable_schema = ON")

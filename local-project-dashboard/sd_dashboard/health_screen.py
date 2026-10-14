@@ -86,7 +86,8 @@ AREAS = (
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
     ("svc", "Services", "sd services list · launchctl print per user LaunchAgent · the dashboard's /health commit", ()),
-    ("mir", "Vault mirror", "sd-db records render → state heartbeat records-mirror", ()),
+    ("mir", "Vault mirror", "sd-db records render → state heartbeat records-mirror · "
+     "sd reports brief render → state heartbeat brief-copies", ()),
     ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
 )
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
@@ -660,6 +661,11 @@ def read_mirror(connection: sqlite3.Connection) -> tuple[str, dict] | None:
         raise ValueError("the installed sd_db has no records.mirror_state; install a pack with it") from missing
 
 
+def _with_row(found: tuple[list[dict], dict], row: dict) -> tuple[list[dict], dict]:
+    rows, extra = found
+    return [*rows, row], extra
+
+
 def _mirror_rows(found: tuple[str, dict] | None) -> tuple[list[dict], dict]:
     """One row: the last render of the vault mirror, ok only when its heartbeat says so; Render mirror runs it again."""
     row = {"id": "mir", "type": "vault mirror", "kind": "Vault mirror", "cli": MIRROR_CLI}
@@ -674,6 +680,50 @@ def _mirror_rows(found: tuple[str, dict] | None) -> tuple[list[dict], dict]:
     why = body.get("reason") or (f"{len(refused)} file(s) refused" if refused else "the heartbeat says not ok")
     return [{**row, "state": "warning", "what": "Vault mirror not updated", "detail": why, "facts": facts,
              "list": refused, "problem": [why, *refused]}], {"at": stamp}
+
+
+BRIEF_COPIES_CLI = "sd reports brief render"
+#: A brief render older than this is caution: the routines file briefs daily, and each add renders (sd:3459).
+BRIEF_COPIES_STALE_HOURS = 48
+
+
+def read_brief_copies(connection: sqlite3.Connection) -> tuple[str, dict] | None:
+    """`sd_db.routine_briefs.copies_state` (sd:3459), looked up here so a library without it is the row's unknown."""
+    try:
+        return importlib.import_module("sd_db.routine_briefs").copies_state(connection)
+    except (ImportError, AttributeError) as missing:
+        raise ValueError("the installed sd_db has no routine_briefs.copies_state; install a pack with it") from missing
+
+
+def _brief_copies_row(read, *, now: str) -> dict:
+    """One row: the last brief render's vault copies. Failed, unread or stale is a finding; off is quiet."""
+    row = {"id": "mir:briefs", "type": "check", "kind": "Brief copies", "cli": BRIEF_COPIES_CLI,
+           "facts": {"Heartbeat": "brief-copies"}}
+    try:
+        found = read()
+    except Exception as error:  # noqa: BLE001 - a failed read is unknown, never clean
+        return {**row, "state": "unknown", "what": "Brief copies not read", "detail": str(error) or type(error).__name__}
+    if found is None:
+        return {**row, "state": "unknown", "what": "Brief copies not yet rendered",
+                "detail": "sd reports brief add or render records the heartbeat"}
+    stamp, body = found
+    body = body if isinstance(body, dict) else {}
+    facts = {**row["facts"], "Observed": stamp, "Written": str(body.get("written", "—"))}
+    state = body.get("state")
+    if state == "failed" or state not in ("ok", "off"):
+        refused = [str(stem) for stem in body.get("refused") or []]
+        why = body.get("reason") or (f"{len(refused)} copies refused" if refused else f"the heartbeat says {state!r}")
+        return {**row, "state": "warning", "what": "Brief copies not written", "detail": why, "facts": facts,
+                "list": refused, "problem": [why, *refused]}
+    age = (_when(now) - _when(stamp)).total_seconds() / 3600
+    if age > BRIEF_COPIES_STALE_HOURS:
+        return {**row, "state": "caution", "what": f"Brief copies last rendered {round(age / 24)} days ago",
+                "detail": f"no brief render has recorded since {stamp}", "facts": facts,
+                "problem": [stamp]}  # the age drifts each day; a later stamp is a new stall (sd:1896)
+    if state == "off":
+        return {**row, "state": "ok", "what": "Brief copies off", "detail": "no repository's obsidian channel is on",
+                "facts": facts}
+    return {**row, "state": "ok", "what": "Brief copies rendered", "detail": f"recorded {stamp}", "facts": facts}
 
 
 DOCTOR_CLI = "local-machine-setup/machine-setup.sh doctor"
@@ -898,7 +948,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
         "svc": lambda: _service_rows(read_services(connection, services), served_commit=served_commit),
-        "mir": lambda: _mirror_rows(read_mirror(connection)),
+        "mir": lambda: _with_row(_mirror_rows(read_mirror(connection)),
+                                 _brief_copies_row(lambda: read_brief_copies(connection), now=now)),
         "doc": lambda: _doctor_rows(read_doctor()),
     }
     snoozes, snooze_error = snooze.held(connection, now=now)

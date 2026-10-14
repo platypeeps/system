@@ -63,6 +63,10 @@ def _history_text(body):
 # --------------------------------------------------------------------------
 
 
+def _without_frontmatter(text: str) -> str:
+    return re.sub(r"\A---\r?\n.*?\r?\n---(?:\r?\n|$)", "", text, count=1, flags=re.S)
+
+
 def artifact(row, *, document=None) -> Markup:
     """The item's artifact, read from git and rendered through the subset.
 
@@ -74,7 +78,7 @@ def artifact(row, *, document=None) -> Markup:
     repo, path = row["repo"], row["path"]
     if row["kind"] == "idea" and row["piece"]:
         if document is not None:
-            document = re.sub(r"\A---\r?\n.*?\r?\n---(?:\r?\n|$)", "", document, count=1, flags=re.S)
+            document = _without_frontmatter(document)
         return (markdown(document) if document is not None else
                 tag("p", "The current draft could not be read. See the review checks above.", class_="artifact-missing"))
     if row["kind"] in (*workflow.HAND_KINDS, "report", "skill-review"):
@@ -105,7 +109,9 @@ def artifact(row, *, document=None) -> Markup:
             return tag("p", "This item's stored body is not valid JSON, so its text cannot be "
                             "shown here. Read what is stored with ",
                        tag("code", f"sd store item {row['id']}"), ".", class_="artifact-missing")
-        return markdown(body.get("text", "") if isinstance(body, dict) else "")
+        text = body.get("text", "") if isinstance(body, dict) else ""
+        # A routine brief (sd:3459) is a note with frontmatter: its text renders as a piece's draft does.
+        return markdown(_without_frontmatter(text) if row["source"] == "brief" and isinstance(text, str) else text)
     if not repo or not path:
         return markdown(row["body"])
     commit = row["source_commit"] or "HEAD"
