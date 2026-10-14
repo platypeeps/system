@@ -5455,6 +5455,10 @@ cmd_promote() {
     # shellcheck disable=SC2031 # ROOT moved only in hourly_destination's subshell
     exec python3 "$ROOT/local-repo-sync/refresh_drain.py" "$SELF" promote "$@"
   fi
+  if [ -z "$step" ] && [ -f "$PROMOTE_MARKER" ]; then
+    # A marker with no step was cut short before step 3 ended: nothing moved.
+    rm -f "$PROMOTE_MARKER"
+  fi
   if [ -z "$step" ]; then
     # Step 1: nothing moves until every check passes.
     [ -e "$SD_HUB_CONFIG" ] || promote_refuse "no $SD_HUB_CONFIG: this machine is not a satellite. An old hub becomes one first: README, 'Hub failover'"
@@ -5470,10 +5474,10 @@ cmd_promote() {
     if printf '%s\n' "$ready" | grep -q 'NOT-READY'; then
       promote_refuse "a hub-ready line is not ok; nothing moved"
     fi
-    # Step 3.
-    marker_set hub "$1"
-    marker_set port "$2"
-    marker_set step 4
+    # Step 3: one write, so a marker always names its step.
+    mkdir -p "$(dirname "$PROMOTE_MARKER")"
+    printf 'hub=%s\nport=%s\nstep=4\n' "$1" "$2" > "$PROMOTE_MARKER.new"
+    mv "$PROMOTE_MARKER.new" "$PROMOTE_MARKER"
     step=4
   fi
   hub=$(marker_get hub)
@@ -5536,14 +5540,18 @@ cmd_promote() {
     step=7
   fi
   if [ "$step" = 7 ]; then
-    fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || :
+    # The words count only with exit 0: a probe that fails is no answer.
+    fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || fence="exit $?: $fence"
+    holder=0
     case "$fence" in
+      "exit "*) ;;
       *"fence: off:"*)
         promote_refuse "sd.hub_name is unset in the restored database, so no machine can hold the role: sd config set sd.hub_name $hub, then rerun" ;;
-      *"fence: holder:"*) ;;
-      *)
-        short=${hub%%.*}
-        held=$(bound_step 60 tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+      *"fence: holder:"*) holder=1 ;;
+    esac
+    if [ "$holder" != 1 ]; then
+      short=${hub%%.*}
+      held=$(bound_step 60 tailscale status --json 2>/dev/null | python3 -c 'import json, sys
 want = sys.argv[1].lower()
 try:
     status = json.load(sys.stdin)
@@ -5555,20 +5563,21 @@ for peer in (status.get("Peer") or {}).values():
     if want in (n.lower() for n in names):
         print(peer.get("DNSName") or peer.get("HostName"))
         break' "$short")
-        if [ "$held" = "?" ]; then
-          promote_refuse "tailscale status did not answer; rerun once Tailscale is up"
-        elif [ -n "$held" ]; then
-          echo "promote: the tailnet node $held still holds the name $short." >&2
-          echo "  In the Tailscale admin console, rename or remove that machine, then rerun: $(basename "$SELF") promote --apply" >&2
-          exit 1
-        fi
-        bound_step 60 tailscale set "--hostname=$short" || promote_refuse "tailscale set --hostname=$short failed; rerun"
-        fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || :
-        case "$fence" in
-          *"fence: holder:"*) ;;
-          *) promote_refuse "the fence does not read holder after the rename: $fence; rerun" ;;
-        esac ;;
-    esac
+      if [ "$held" = "?" ]; then
+        promote_refuse "tailscale status did not answer; rerun once Tailscale is up"
+      elif [ -n "$held" ]; then
+        echo "promote: the tailnet node $held still holds the name $short." >&2
+        echo "  In the Tailscale admin console, rename or remove that machine, then rerun: $(basename "$SELF") promote --apply" >&2
+        exit 1
+      fi
+      bound_step 60 tailscale set "--hostname=$short" || promote_refuse "tailscale set --hostname=$short failed; rerun"
+      fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || fence="exit $?: $fence"
+      case "$fence" in
+        "exit "*) promote_refuse "the fence does not read holder after the rename: $fence; rerun" ;;
+        *"fence: holder:"*) ;;
+        *) promote_refuse "the fence does not read holder after the rename: $fence; rerun" ;;
+      esac
+    fi
     echo "step 7  : $fence"
     marker_set step 8
     step=8
@@ -5577,6 +5586,14 @@ for peer in (status.get("Peer") or {}).values():
     # The stages read the fence themselves, so they add the role only now.
     for st in sd cron agents; do
       sh "$SELF" update "$st" --apply || promote_refuse "the $st stage did not finish; rerun"
+    done
+    # A stage that cannot read the fence skips the role and still exits 0,
+    # so the role is checked here, by a fresh probe and by its plists.
+    HUB_ROLE=""
+    hub_role || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
+    for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
+      [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ] ||
+        promote_refuse "the hub role is not installed: no $hr_label plist; rerun"
     done
     marker_set step 9
     step=9

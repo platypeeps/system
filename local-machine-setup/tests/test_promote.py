@@ -29,8 +29,12 @@ SD_DB_STUB = r'''
 echo "$*" >> "$STUB_LOG"
 case "$1" in
   fence)
+    # STUB_FENCE_FAIL_FROM: from that call on, the probe fails with no answer.
+    n=$(( $(cat "$STUB_LOG.fences" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_LOG.fences"
+    if [ -n "$STUB_FENCE_FAIL_FROM" ] && [ "$n" -ge "$STUB_FENCE_FAIL_FROM" ]; then exit 3; fi
     state=$(cat "$STUB_FENCE")
     echo "sd-db: fence: $state: fixture"
+    [ -z "$STUB_FENCE_RC" ] || exit "$STUB_FENCE_RC"
     case "$state" in holder|off) exit 0 ;; esac
     exit 1 ;;
   restore)
@@ -280,7 +284,22 @@ class Promote(unittest.TestCase):
         self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists())
         self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
 
+    def test_killed_inside_step_3_a_marker_with_no_step_starts_again(self):
+        """codex: a marker cut short before its step names nothing moved."""
+        self.marker.parent.mkdir(parents=True)
+        self.marker.write_text(f"hub={HUB}\n")
+        self.run_promote("--apply")
+        self.assertFalse(self.hub_json.exists())
+        self.assertIsNone(self.marker_step())
+
     # Step 7.
+
+    def test_a_fence_that_says_holder_but_fails_is_no_holder(self):
+        """codex: the exit status counts, not only the words."""
+        self.fence.write_text("holder\n")
+        result = self.run_promote("--apply", expect=1, STUB_FENCE_RC="1")
+        self.assertEqual("7", self.marker_step(), result.stdout + result.stderr)
+        self.assertEqual([], self.installed())
 
     def test_a_peer_holding_the_name_stops_at_step_7_with_the_console_step(self):
         result = self.run_promote("--apply", expect=1, STUB_PEER="hub")
@@ -309,6 +328,17 @@ class Promote(unittest.TestCase):
         result = self.run_promote("--apply", expect=1, STUB_BOOTSTRAP_RC="5")
         self.assertIn("stage did not finish; rerun", result.stderr)
         self.assertEqual("8", self.marker_step())
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+
+    def test_a_fence_that_fails_during_the_stages_stops_at_step_8(self):
+        """codex: the stages skip the role on an unread fence and exit 0;
+        step 8 checks the role is installed before it moves on."""
+        result = self.run_promote("--apply", expect=1, STUB_FENCE_FAIL_FROM="3")
+        self.assertEqual("8", self.marker_step(), result.stdout + result.stderr)
+        self.assertIn("the hub role is not installed", result.stderr)
+        (self.log.parent / "stub.log.fences").unlink()
         self.run_promote("--apply")
         self.assertIsNone(self.marker_step())
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
