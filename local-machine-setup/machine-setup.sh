@@ -5798,7 +5798,17 @@ promote_undo() { # marker step
   hub=$(marker_get hub)
   port=$(marker_get port)
   moved=$(marker_get moved)
-  if [ "$step" = 1 ]; then
+  # hub.json aside before the deletion: sd writes here may have landed after
+  # the snapshot, so it no longer holds every record. Take a new one.
+  if { [ "$step" = 2 ] || [ "$step" = 3 ]; } && [ -e "$moved" ]; then
+    echo "step $step  : $moved is aside, so writes may follow the snapshot; a new one is taken"
+    marker_set step 1
+    step=1
+  fi
+  if [ "$step" = 1 ] && [ ! -e "$moved" ]; then
+    # Killed after hub.json went back: no write followed the snapshot.
+    [ -n "$(marker_get snapshot)" ] || promote_refuse "$moved is gone and no snapshot is recorded; put it back, then rerun"
+  elif [ "$step" = 1 ]; then
     # Step 1: no hub-role job or agent runs after the hand-back snapshot. A
     # job that is running holds its lock, and its uninstall refuses.
     for uj in $(hub_role_labels cron); do
@@ -5818,17 +5828,20 @@ promote_undo() { # marker step
     snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db backup: \(.*\) — .*/\1/p' | tail -1)
     [ -f "$snapshot/backup-manifest.json" ] || undo_restart "the backup named no snapshot with a manifest: $out"
     marker_set snapshot "$snapshot"
+    # hub.json beside the database makes every sd command here refuse
+    # (HubConflict) until step 4 deletes it, so no write follows the snapshot.
+    mv "$moved" "$SD_HUB_CONFIG"
+    echo "step 1  : $SD_HUB_CONFIG is back"
+  fi
+  if [ "$step" = 1 ]; then
     marker_set step 2
     step=2
   fi
   snapshot=$(marker_get snapshot)
   if [ "$step" = 2 ]; then
-    # Step 2: hub.json beside the database makes every sd command here refuse
-    # (HubConflict) until step 4 deletes it, so no write lands in the records
-    # step 4 deletes. Then the tailnet name goes back to this machine's own.
-    if [ -e "$moved" ]; then mv "$moved" "$SD_HUB_CONFIG"; fi
+    # Step 2: the tailnet name goes back to this machine's own.
     bound_step 60 tailscale set --hostname= || promote_refuse "tailscale set --hostname= failed; rerun"
-    echo "step 2  : $SD_HUB_CONFIG is back; the tailnet name ${hub%%.*} is given up"
+    echo "step 2  : the tailnet name ${hub%%.*} is given up"
     marker_set step 3
     step=3
   fi

@@ -189,6 +189,34 @@ class Undo(PromoteCase):
         self.assertEqual(1, len(self.calls("backup --destination")))
         self.assertTrue(self.hub_json.exists())
 
+    def test_killed_before_hub_json_went_back_a_rerun_writes_a_new_snapshot(self):
+        """Past the snapshot with hub.json still aside, sd writes here still land: the old snapshot misses them."""
+        old = self.nas / "sd-backups-hourly" / "2026-10-13.1"
+        old.mkdir()
+        (old / "backup-manifest.json").write_text('{"run_id": "run-older"}\n')
+        for step in ("2", "3"):
+            with self.subTest(step=step):
+                self.write_marker(step=step, snapshot=old)
+                self.role_stopped()
+                self.run_undo("--apply", expect=1)
+                self.assertEqual(1, len(self.calls("backup --destination")))
+                self.assertIn(f"snapshot={self.nas}/sd-backups-hourly/{HANDBACK}", self.marker.read_text())
+                self.assertTrue(self.hub_json.exists())
+                self.assertTrue(self.fixture.db.exists())
+                self.hub_json.rename(self.aside)
+                self.log.write_text("")
+
+    def test_killed_after_hub_json_went_back_in_step_1_a_rerun_keeps_the_snapshot(self):
+        snapshot = self.nas / "sd-backups-hourly" / HANDBACK
+        snapshot.mkdir()
+        (snapshot / "backup-manifest.json").write_text('{"run_id": "run-handback"}\n')
+        self.write_marker(step=1, snapshot=snapshot)
+        self.role_stopped()
+        self.aside.rename(self.hub_json)
+        self.run_undo("--apply", expect=1)
+        self.assertEqual([], self.calls("backup --destination"))
+        self.assertEqual("3", self.marker_step())
+
     # Step 2: hub.json back, the tailnet name given up.
 
     def test_killed_after_hub_json_went_back_a_rerun_gives_up_the_name(self):
