@@ -1,4 +1,5 @@
-"""Home (sd:2117): the design's Home Assistant tiles, from the config folder, with live state (sd:3427)."""
+"""Home (sd:2117): the design's Home Assistant tiles, from the setting row or the config folder (sd:3987), with live
+state (sd:3427). Edit tiles posts /api/home/tiles."""
 
 from __future__ import annotations
 
@@ -8,7 +9,13 @@ from . import Api, Page
 def _read(read):
     from ... import home_screen
 
-    return home_screen.document(now=read.now)
+    return home_screen.document(read.connection, now=read.now)
+
+
+def _save(payload, principal):
+    from ... import home_screen
+
+    return home_screen.save(payload)
 
 
 PAGE = Page(
@@ -16,5 +23,5 @@ PAGE = Page(
     routes=("/home",),
     html="home.html",
     item="sd:2117",
-    api=(Api("/api/home", _read),),
+    api=(Api("/api/home", _read), Api("/api/home/tiles", write=_save)),
 )

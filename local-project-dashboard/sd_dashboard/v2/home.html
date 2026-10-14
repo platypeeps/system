@@ -1,9 +1,10 @@
 <!doctype html>
 <!--
   Home (sd:2117), at /home. Built from the design source's products/system/designs/v2/home.html, home.js, home-kiosk.js and home.css at d82daa1, with design.md and commands.md.
-  Data: /api/home (home_screen.document: the tiles <config>/project-dashboard/home-tiles.conf names, each with its live Home
-  Assistant state and last change or a named error, sd:3427), read when the page opens and each minute after (sd:3522). The design's tile states are sample
-  data; nothing here is. Every command is off with the document's write reason: nothing here writes.
+  Data: /api/home (home_screen.document: the tiles the setting row dashboard.home_tiles names, else <config>/project-dashboard/home-tiles.conf
+  (sd:3987), each with its live Home Assistant state and last change or a named error, sd:3427), read when the page opens and each minute after
+  (sd:3522). The design's tile states are sample data; nothing here is. Every Home Assistant command is off with the document's write reason.
+  Edit tiles (sd:3987) posts /api/home/tiles: it writes the tile row, never Home Assistant.
 -->
 <html lang="en">
 <head>
@@ -29,11 +30,23 @@
     <div class="tools">
       <time class="clock" id="clock" aria-live="off"></time>
       <button class="btn quiet" type="button" id="refresh"><svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>Read again</button>
+      <button class="btn quiet enter" type="button" id="edit-tiles" aria-controls="editor" disabled><svg class="i" aria-hidden="true"><use href="#i-pen-line"/></svg>Edit tiles</button>
       <button class="btn quiet enter" type="button" id="kiosk-on"><svg class="i" aria-hidden="true"><use href="#i-maximize-2"/></svg>Wall display</button>
       <button class="btn quiet exit" type="button" id="kiosk-off"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg>Exit wall display</button>
     </div>
   </header>
   <div id="state" hidden></div>
+  <form class="tiles-edit" id="editor" hidden aria-labelledby="editor-h">
+    <h2 id="editor-h">Tile list</h2>
+    <p class="why" id="editor-from"></p>
+    <textarea id="editor-text" rows="14" spellcheck="false" autocapitalize="off" autocomplete="off" aria-labelledby="editor-h" aria-describedby="editor-help editor-out"></textarea>
+    <p class="why" id="editor-help">One line each: <code>headline|entity_id|name</code> once, then <code>tile|group|entity_id|name</code>, in reading order. An optional last field types a tile: alarm, lock, toggle or sensor. A line that starts with # is a comment.</p>
+    <div class="ed-act">
+      <button class="btn" type="submit" id="editor-save">Save</button>
+      <button class="btn quiet" type="button" id="editor-cancel">Cancel</button>
+      <span class="ed-out" id="editor-out" role="status"></span>
+    </div>
+  </form>
 
   <button class="headline" type="button" id="headline" hidden></button>
   <div id="groups"></div>
