@@ -200,6 +200,14 @@ Reports row that needs attention, and Today lists it until it is acknowledged.
 A job with findings prints that line and exits 0; nothing is mailed or pushed
 (sd:3454). On a non-zero exit the wrapper also appends to `logs/failures.log`.
 
+The ingest folds a run into the open report with the same job and reason, and
+keeps that report's first body. So a finding job ends its reason in its host
+and a checksum of its findings, not the date: the same findings each night
+stay one open report that counts the nights, and a new or changed finding
+opens its own (sd:4182). The host stays in the reason because every host files
+under the one job name. An acknowledged report is never folded into, so
+findings that outlast an acknowledgement open a new report the next night.
+
 A report that does not reach the database (no `sd`, the hub down, a database
 error) is not lost: the wrapper posts a macOS notification, pushes to
 [ntfy.sh](https://ntfy.sh) when `NTFY_TOPIC` is set in `notify.conf`, and the

@@ -4791,15 +4791,20 @@ grants_push() {
 }
 
 # One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
-# every reason this run needs attention and ends in the date, as
-# weekly-digest's does: the ingest folds a reason it already holds open into
-# that report and keeps its first body, so each day's run files its own
-# report and no fold hides another failure (sd:3537).
+# every reason this run needs attention. The ingest folds a run into the open
+# report with the same job and reason and keeps that report's first body, so
+# the line ends in a checksum of the findings, not the date: $tmp/findings
+# (what is left, and the output of a failed step) and the grants to redo. It
+# leaves out $tmp/changed, the update that dropped a grant: it names only the
+# night of the update, and the grant stays to redo after it. The same
+# findings fold into one open report, and a new or changed one opens its own
+# (sd:4182). The host stays in it, as every host files under one job name.
 upgrade_attention() { # reason...
   [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
   [ "$#" -gt 0 ] || return 0
   why=$(printf '%s, ' "$@"); why=${why%, }
-  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s), $(date '+%Y-%m-%d')"
+  sum=$({ cat "$tmp/findings"; sed 's/^/regrant: /' "$tmp/regrant"; } | cksum | cut -d' ' -f1)
+  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s) [$sum]"
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
@@ -4841,6 +4846,7 @@ cmd_upgrade_report() {
     grants_report
     cat "$tmp/grants"
     grants_push
+    : > "$tmp/findings"
     upgrade_attention
     return "$rc"
   fi
@@ -4893,6 +4899,13 @@ cmd_upgrade_report() {
   [ "$inv_rc" -eq 0 ] || set -- "$@" "inventory capture failed"
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
   [ -z "$unknown" ] || set -- "$@" "outdated list failed ($unknown)"
+  # Each list under its own name, and a failed step's output without its
+  # step lines, which carry the time of day.
+  {
+    for kind in formula cask mas; do sed "s/^/$kind: /" "$tmp/$kind.after"; done
+    if [ "$rc" -ne 0 ]; then tail -30 "$tmp/out" | grep -v '^\[step ' || :; fi
+    if [ "$inv_rc" -ne 0 ]; then grep -v '^\[step ' "$tmp/inventory.out" || :; fi
+  } > "$tmp/findings"
   upgrade_attention "$@"
 }
 

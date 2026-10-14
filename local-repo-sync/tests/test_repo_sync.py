@@ -433,23 +433,34 @@ class RepoSyncTest(unittest.TestCase):
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
-    def test_each_day_files_its_own_report(self):
-        """REGRESSION (sd:3537). The ingest folds a reason it holds open and
-        keeps the first body. A checksum with digits erased made worker1 and
-        worker2 failing one report."""
-        reasons = []
-        for bad, day in (("worker1", "2026-10-12"), ("worker2", "2026-10-13")):
-            f = self.fixture()
-            (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
-                                        'exec /bin/date "$@"\n')
-            (f.bin / "date").chmod(0o755)
-            f.write_conf(f"a owner/{bad}\na owner/good1\na owner/good2\n")
-            f.checkout(f"a/{bad}", f"owner/{bad}")
-            for name in ("good1", "good2"):
-                f.local_clone(f"a/{name}")
-            reasons.append(attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": day})))
-        self.assertRegex(" ".join(reasons[0]), r"^repo-sync: 1 repo\(s\) failed on \S+, 2026-10-12$")
-        self.assertRegex(" ".join(reasons[1]), r", 2026-10-13$")
+    def test_the_reason_follows_the_findings_not_the_day(self):
+        """REGRESSION (sd:4182). The ingest folds a reason it holds open and
+        keeps the first body. The same failure on two nights gives one
+        reason, so one open report; another failure gives another (sd:3537:
+        a checksum with digits erased made worker1 and worker2 one report),
+        and so does the same repo failing for another cause."""
+        f = self.fixture()
+        (f.bin / "date").write_text('#!/bin/sh\n[ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }\n'
+                                    'exec /bin/date "$@"\n')
+        (f.bin / "date").chmod(0o755)
+        f.write_conf("a owner/worker1\na owner/good1\na owner/good2\n")
+        f.checkout("a/worker1", "owner/worker1")
+        for name in ("good1", "good2"):
+            f.local_clone(f"a/{name}")
+        first = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-12"}))
+        again = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        cause = attention(f.run("nightly", expect=0, extra_env={
+            "FAKE_DAY": "2026-10-13", "GIT_SSH_COMMAND": "sh -c 'echo Permission denied >&2; exit 255' --"}))
+        shutil.rmtree(f.root / "a" / "worker1")
+        f.checkout("a/worker2", "owner/worker2")
+        f.write_conf("a owner/worker2\na owner/good1\na owner/good2\n")
+        other = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
+        self.assertRegex(" ".join(first), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertEqual(again, first)
+        self.assertRegex(" ".join(cause), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertNotEqual(cause, first)
+        self.assertRegex(" ".join(other), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        self.assertNotEqual(other, first)
 
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
         """REGRESSION (sd:2160). On 2026-09-29, 63 of 65 failures were "Permission
