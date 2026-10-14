@@ -43,6 +43,30 @@ WRITE = CAPTURE + """; [ -e "$WROTE" ] || { sqlite3 "$REPO_SYNC_SD_DB" "INSERT I
 
 # Logs each bootstrap with the database's schema and whether the record is
 # there, then runs LAUNCHCTL_HOOK and the stub of test_pinned.py.
+# Holds the database locked through the sqlite3 CLI, as a writer or an sd
+# call's checkpoint at close does, from "locked" on stdout until 2 s after the
+# dashboard's bootout is in MAKE_LOG: refresh's first read of the database
+# comes right after it.
+LOCK_HOLDER = """
+import pathlib, subprocess, sys, time
+database, log, line = sys.argv[1:]
+cli = subprocess.Popen(["sqlite3", database], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+cli.stdin.write("PRAGMA locking_mode=EXCLUSIVE;\\nBEGIN EXCLUSIVE;\\nSELECT 'locked';\\n")
+cli.stdin.flush()
+while cli.stdout.readline().strip() not in ("locked", ""):
+    pass
+print("locked", flush=True)
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    path = pathlib.Path(log)
+    if path.exists() and line in path.read_text().splitlines():
+        break
+    time.sleep(0.05)
+time.sleep(2)
+cli.stdin.close()
+cli.wait()
+"""
+
 LAUNCHCTL_SEEN = """#!/bin/sh
 if [ "$1" = bootstrap ]; then
   record=no
@@ -334,6 +358,33 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertEqual([], f.backup_dirs())
         self.assertFalse(f.record.exists())
         self.assertEqual([], f.loaded())
+
+    def test_a_refusal_names_its_reason_on_stderr(self):
+        # The lane's post-merge report keeps stderr alone when there is any,
+        # and a step line always is: a reason on stdout alone was lost (sd:4045).
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        f.database.write_bytes(b"not a database")
+        for suffix in ("-wal", "-shm"):
+            pathlib.Path(f"{f.database}{suffix}").unlink(missing_ok=True)
+        result = f.run("refresh", expect=1)
+        self.assertIn(f"!!! refused: cannot read the schema version of {f.database}", result.stderr)
+        self.assertIn("refresh : 2 step(s) failed", result.stderr)
+
+    def test_a_locked_database_is_waited_for(self):
+        # sqlite3 fails at once on a lock; refresh read that as no answer and
+        # refused, nothing moved (sd:4045).
+        f = self.f
+        target = f.upstream_migrations(f.good("one"))
+        holder = subprocess.Popen([sys.executable, "-c", LOCK_HOLDER, str(f.database), str(f.make_log),
+                                   f"launchctl bootout {DASHBOARD}"], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        self.assertEqual("locked", holder.stdout.readline().strip())
+        holder.stdout.close()
+        f.run("refresh", expect=0)
+        self.assertEqual(target, f.head(f.pack))
+        self.assertEqual(f.n + 1, f.version())
 
     def test_a_failed_backup_moves_nothing_and_starts_the_services(self):
         f = self.f
