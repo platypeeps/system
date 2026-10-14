@@ -340,6 +340,20 @@ class TheDocument(ScreenCase):
         got = management_screen.set_repo(self.connection, "channels", checkout, {"obsidian": {}}, kept)
         self.assertEqual(got["value"], kept, "a set that changes nothing answers the row, still")
 
+    def test_the_channels_answer_is_read_in_the_transaction_that_wrote_it(self):
+        """sd:4632: a writer between the write and the read-back would put its setting into this form's Undo as `before`."""
+        checkout = self.ids["checkout"]
+        seen = []
+        real = repos.row_for
+
+        def probe(connection, path):
+            seen.append(connection.in_transaction)
+            return real(connection, path)
+
+        with patch.object(management_screen.repos, "row_for", probe):
+            management_screen.set_repo(self.connection, "channels", checkout, {"drive": {}}, "none")
+        self.assertEqual(seen, [True])
+
     def test_a_stored_channels_value_the_library_refuses_is_named_not_read_as_the_defaults(self):
         # sd:3465: `repo_channels` raises on such a value rather than publish to the defaults; the form says why and offers Clear.
         self.connection.execute("UPDATE repo SET channels = ? WHERE path = ?", ('{"site": {}}', self.ids["checkout"]))
