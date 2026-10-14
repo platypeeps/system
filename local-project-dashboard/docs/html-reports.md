@@ -67,8 +67,8 @@ folder must resolve inside that checkout. A symlink out of it is refused.
 
 `<config>/project-dashboard/documents.conf` still says what a directory cannot
 (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`).
-A `label|<key>|<label>` line names a found root better than its directory
-name does, for example `label|mcp-research|MCP`. A
+Rename root on the Documents page names a found root better than its
+directory name does, for example `MCP` for `mcp-research` (sd:3986). A
 `root|<key>|<label>|<directory>` line is for a root that lives outside any
 checkout's `docs/dashboard`. A report built to this convention never needs
 one. The vault is the one such root today, because it is not a checkout under
@@ -143,8 +143,8 @@ repository's builder. Extracting a callable chart library is a separate item.
    a 404.
 2. `docs/dashboard/` is in the repository's `.gitignore`. Commit nothing the
    build wrote.
-3. Optionally, add a `label|` line to `<config>/project-dashboard/documents.conf`,
-   once per repository, when the directory name reads badly.
+3. Optionally, use Rename root on the Documents page, once per repository,
+   when the directory name reads badly.
 4. Open the dashboard's Documents screen. The page is listed under the
    checkout's name or its label and served at `/documents/<key>/<name>.html`,
    unchanged. Only regular `.html` files are served; the markdown twin is not.
@@ -187,7 +187,7 @@ Documents screen hands the finished page over instead.
    that instant.
 5. Charts as inline SVG; no script, no external resource.
 6. The builder run on demand or by a scheduled job.
-7. A `label|` line in `documents.conf` only if the directory name reads badly.
+7. Rename root on the Documents page only if the directory name reads badly.
 8. Mailed HTML computed on the send day and inline-styled.
 
 ## The reference instance

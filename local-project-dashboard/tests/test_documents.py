@@ -140,18 +140,19 @@ class Enumerated(unittest.TestCase):
         found = documents.roots(conf, self.repos)
         self.assertEqual([(r.key, r.label) for r in found], [("mcp-research", "MCP")])
 
-    def test_a_label_line_renames_a_found_root(self):
-        """The line most of them wanted: a better name, and no second path."""
+    def test_a_label_line_is_no_longer_read_and_is_kept_for_the_page_to_name(self):
+        """sd:3986: a root's name is its view row, set on the Documents page; the file's line renames nothing."""
         self.publish("research/mcp-research")
         conf = self.dir / "documents.conf"
         conf.write_text("label|mcp-research|MCP\n", encoding="utf-8")
         found = documents.roots(conf, self.repos)
-        self.assertEqual([(r.key, r.label) for r in found], [("mcp-research", "MCP")])
+        self.assertEqual([(r.key, r.label) for r in found], [("mcp-research", "Mcp Research")])
         self.assertEqual(found[0].path,
                          self.repos / "research" / "mcp-research" / "docs" / "dashboard")
+        self.assertEqual(documents.file_labels(conf), {"mcp-research": "MCP"})
 
     def test_a_label_line_for_nothing_found_is_inert(self):
-        """It renames a root. It never invents one, least of all a pathless one."""
+        """It never invents a root, least of all a pathless one."""
         conf = self.dir / "documents.conf"
         conf.write_text("label|delta-tool|Delta Tool\n", encoding="utf-8")
         self.assertEqual(documents.roots(conf, self.repos), [])

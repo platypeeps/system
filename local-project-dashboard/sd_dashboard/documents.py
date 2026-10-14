@@ -21,11 +21,11 @@ later.
 **It finds the roots rather than reciting them.** Any checkout under
 `REPO_ROOT` holding `docs/dashboard` is a document root. A hand-kept list of
 repositories drifts the moment somebody adds one, and the directory is the
-fact the list was trying to describe. `documents.conf` stays for the two
-things a directory cannot say: a root that lives somewhere else, a root that
-is found but unwanted, and a root whose directory name is not what to call it.
-That last line form carries no path on purpose. A rename that repeats the
-default location puts the drift back one line lower down.
+fact the list was trying to describe. `documents.conf` stays for the things
+a directory cannot say: a root that lives somewhere else, and a root or a file
+that is found but unwanted. A root's name and whether the page hides it are
+the workflow database's `view` rows, set on the Documents page (sd:3986); a
+`label|` line is no longer read, and the page names one still in the file.
 
 **A key with two owners has no owner.** Two groups may hold a checkout of the
 same name, and the key is the checkout's name. Serving one of them under that
@@ -164,8 +164,8 @@ def _label(key: str) -> str:
     """A readable name out of a directory name, which is all a found root has.
 
     It cannot recover an abbreviation somebody had in mind: `mcp-research`
-    becomes `Mcp Research` and not `MCP`. That is what a `root|` line in the
-    config is for, and wanting a better label is the one reason to write one.
+    becomes `Mcp Research` and not `MCP`. Rename on the Documents page sets
+    the name (sd:3986).
     """
     words = [w for w in re.split(r"[-_]+", key) if w]
     return " ".join(w[:1].upper() + w[1:] for w in words) or key
@@ -265,6 +265,7 @@ class Config:
 
     roots: list[Root]
     skipped: set[str]
+    #: `label|` lines, no longer read (sd:3986): the page names each one, and Rename replaces it.
     labels: dict[str, str]
     files: dict[str, set[str]]
     images: dict[str, list[str]]
@@ -314,9 +315,9 @@ def roots(config_path: Path | None = None, repo_root: Path | None = None) -> lis
     A `root|` line wins over a found root of the same key, and is for a root
     that genuinely lives somewhere else, outside any checkout's
     `docs/dashboard`. A `skip|<key>` line drops a found root without hiding
-    the directory, and a `skip|<key>|<file>` line drops one file of a root. A
-    `label|<key>` line renames one and says nothing about where it is, which
-    is the whole of what most of them ever wanted to say.
+    the directory, and a `skip|<key>|<file>` line drops one file of a root.
+    A found root's label is its derived name: the page applies the name its
+    `view` row sets, so serving reads no database (sd:3986).
     """
     config = _configured(config_path)
     found = list(config.roots)
@@ -325,9 +326,14 @@ def roots(config_path: Path | None = None, repo_root: Path | None = None) -> lis
         if root.key in keys or root.key in config.skipped:
             continue
         keys.add(root.key)
-        found.append(Root(root.key, config.labels.get(root.key) or root.label, root.path))
+        found.append(root)
     return [Root(root.key, root.label, root.path, frozenset(config.files.get(root.key, ())),
                  tuple(config.images.get(root.key, ()))) for root in found]
+
+
+def file_labels(config_path: Path | None = None) -> dict[str, str]:
+    """The `label|` lines still in the file, by key: not read since sd:3986, named on the page so Rename replaces them."""
+    return _configured(config_path).labels
 
 
 def unresolved(config_path: Path | None = None,

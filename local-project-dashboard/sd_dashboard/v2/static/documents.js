@@ -2,19 +2,22 @@
 // reference is marked "build:". The rows are /api/documents (documents_screen.py): the files /documents/<key>/<file> serves,
 // never sample data. Pin, Hide and Tag are the workflow database's view state (sd:3428): each posts /api/documents/view,
 // offers Undo, and the reader reads the list again. When the store was not read, those commands are off with its reason.
+// A root's name and Hide root are its own view row (sd:3986): Rename root and Hide root post { root, label | hidden }.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
 // build: the page claims nothing for the rail until /api/documents answers; load() sets it from the rows.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'documents not read' };
 // build: the reading arrives by fetch, not as data/documents-data.js globals. OBSERVED is its time; ROOTS and DOCS its rows.
-let OBSERVED = Date.now(), ROOTS = [], LABEL = {}, DOCS = [], STORE = '', DOC = null;
+let OBSERVED = Date.now(), ROOTS = [], LABEL = {}, DOCS = [], STORE = '', DOC = null, FOLD = false;
 const KINDS = ['report', 'research', 'design', 'dashboard'];
 const FRESH = { today: 'modified today', week: '1–7 days', older: 'older than 7 days', stale: 'render-stale' };
 function days(iso) { return Math.floor((Date.parse(new Date(OBSERVED).toISOString().slice(0, 10)) - Date.parse(iso.slice(0, 10))) / 864e5); }
 function fresh(d) { const n = days(d.mod); return n <= 0 ? 'today' : n <= 7 ? 'week' : 'older'; }
 const kb = b => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024).toLocaleString()} KB`;
 const rootOf = d => ROOTS.find(x => x.key === d.key);
+// A hidden root leaves the Repo chips for the Hidden roots fold; the server sends no rows for it.
+const shownRoots = () => ROOTS.filter(r => !r.hidden);
 // build: a root is a checkout's docs/dashboard; the checkout is where its render runs.
 const checkoutOf = d => rootOf(d).path.replace(/\/docs\/dashboard$/, '');
 
@@ -62,15 +65,22 @@ function renderFacets() {
     return off ? html`${chipEl}<span class="offwhy" id="${id}">${off}</span>` : chipEl;
   };
   put(facets, html`
-    <div class="facet"><span class="label">Repo</span><div class="chips">${ROOTS.map(r => chip('repo', r.key, LABEL[r.key] || r.key))}</div></div>
+    <div class="facet"><span class="label">Repo</span><div class="chips">${shownRoots().map(r => chip('repo', r.key, LABEL[r.key] || r.key))}</div>${hiddenRoots()}</div>
     <div class="facet"><span class="label">Kind <button class="help" type="button" aria-label="Help: Kind" data-help="<b>Derived until the index exists.</b> A checkout with research.conf.py makes research; the rest are reports. The document index (backend work) stores kind per file.">${I('circle-help')}</button></span><div class="chips">${KINDS.map(k => chip('kind', k, k))}</div></div>
     <div class="facet"><span class="label">Freshness</span><div class="chips">${Object.entries(FRESH).map(([k, l]) => chip('fresh', k, l, k === 'stale' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : ''))}</div></div>
     <div class="facet"><span class="label">Show</span><div class="chips">
       <button class="chip" type="button" id="f-pinned" aria-pressed="${String(F.pinned)}">${I('pin')}Pinned only <span class="n">${DOCS.filter(d => d.pinned && !d.hidden).length}</span></button>
       <button class="chip" type="button" id="f-hidden" aria-pressed="${String(F.hidden)}">${I('eye-off')}Hidden <span class="n">${DOCS.filter(d => d.hidden).length}</span></button></div></div>`);
 }
+// The fold of hidden roots, each with Unhide root; it stays open across a reread while the operator has it open.
+function hiddenRoots() {
+  const hid = ROOTS.filter(r => r.hidden); if (!hid.length) return '';
+  return html`<details class="rootfold"${FOLD ? ' open' : ''}><summary>Hidden roots <span class="n">${hid.length}</span></summary><ul>${hid.map(r => html`<li><span>${r.label}</span>${shell.commands.rowActions(`root:${r.key}`)}</li>`)}</ul></details>`;
+}
 facets.addEventListener('click', e => {
-  const c = e.target.closest('.chip'); if (!c || c.getAttribute('aria-disabled') === 'true') return;
+  const c = e.target.closest('.chip');
+  if (!c && e.target.closest('.rootfold summary')) { FOLD = !FOLD; return; }
+  if (!c || c.getAttribute('aria-disabled') === 'true') return;
   if (c.id === 'f-pinned') F.pinned = !F.pinned;
   else if (c.id === 'f-hidden') F.hidden = !F.hidden;
   else { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); }
@@ -124,7 +134,7 @@ function render() {
   const nosrc = DOCS.filter(d => !d.src && !d.hidden).length;
   put(document.getElementById('tally'), html`<span class="g-caution">▲ ${stale} render-stale</span><span class="g-unknown">▨ ${nosrc} no source</span><span>${DOCS.filter(d => d.pinned).length} pinned</span>`);
   // build: the subhead names the reading's time from /api/documents, not a fixed observation.
-  put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(ROOTS.length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
+  put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(shownRoots().length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
 }
 document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, render); });
 document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, render); });
@@ -176,6 +186,24 @@ const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 
     lastTag = t; return view(o, { tags: [...was, t] }).then(() => ({ text: `Tagged ${t} · ${o.title}`, was }));
   },
   undo: (o, v) => view(o, { tags: v.was }) };
+// A root's own view row: its name (empty goes back to the derived one) and Hide root (sd:3986).
+const rootView = (o, change) => window.shell.post('/api/documents/view', { root: o.key, ...change }).then(v => reading.reread().then(() => v));
+const ROOT_CLI = 'no CLI: the root\'s view row; the dashboard writes it (POST /api/documents/view)';
+const ROOT_CMDS = [
+  { id: 'root.rename', on: 'document root', label: 'Rename root', icon: 'pen-line', risk: 'undo', when: storeOff, cli: () => ROOT_CLI,
+    fields: o => [{ name: 'label', label: 'Name', value: o.set || '', placeholder: o.derived, help: `Up to 60 characters; empty goes back to ${o.derived}.` }],
+    run: (o, v) => {
+      const label = String(v?.label ?? '').trim(), was = o.set || '';
+      if (label === was) return Promise.reject(new Error(label ? `already named ${label}` : `already ${o.derived}`));
+      return rootView(o, { label }).then(() => ({ text: label ? `Renamed ${o.label} to ${label}` : `${o.label} is ${o.derived} again`, was }));
+    },
+    undo: (o, v) => rootView(o, { label: v.was }) },
+  { id: 'root.hide', on: 'document root', label: 'Hide root', icon: 'eye-off', risk: 'undo', when: o => o.hidden ? 'already hidden' : storeOff(),
+    cli: () => ROOT_CLI, run: o => rootView(o, { hidden: true }).then(() => `Hidden: ${o.label}. Hidden roots, under Repo, lists it.`),
+    undo: o => rootView(o, { hidden: false }) },
+  { id: 'root.unhide', on: 'document root', label: 'Unhide root', icon: 'eye', risk: 'undo', primary: () => true, when: o => !o.hidden ? 'not hidden' : storeOff(),
+    cli: () => ROOT_CLI, run: o => rootView(o, { hidden: false }).then(() => `Unhidden: ${o.label}`), undo: o => rootView(o, { hidden: true }) },
+];
 function registerCommands() {
   const C = shell.commands;
   C.register(
@@ -206,6 +234,7 @@ function registerCommands() {
       when: () => `${NO_SWITCH}, and skip|<key> in documents.conf hides a root from this list without stopping its render`,
       cli: o => `no CLI: proposes skip|${o.key} in documents.conf` },
     REQUEST,
+    ...ROOT_CMDS,
   );
 }
 document.addEventListener('shell:open', e => { if (DOCS.some(d => d.id === e.detail)) select(e.detail, true); });
@@ -232,6 +261,8 @@ function show(id) {
       <dt>Modified</dt><dd><time class="rel" datetime="${d.mod}"></time></dd><dt>Source</dt><dd>${d.src ? d.src : '— none matched'}</dd>
       <dt>Render</dt><dd>${d.stale ? html`<span class="g-caution">▲</span> source newer than page` : d.src ? html`<span class="g-ok">●</span> rendered after source` : html`<span class="g-unknown">▨</span> unknown: no source Markdown to compare`}</dd>
       <dt>Label</dt><dd>${LABEL[d.key] || d.key}${root.research ? ' · research repo' : ''}</dd></dl>
+    <h3>Root</h3><div>${shell.commands.bar(`root:${d.key}`)}</div>
+    ${root.file_label ? html`<p class="why">documents.conf still holds <code>label|${d.key}|${root.file_label}</code>, which is not read (sd:3986): Rename root sets the name here.</p>` : ''}
     <h3>Tags</h3>
     <div class="tagedit" id="tagedit">${d.tags.map(t => { const tid = `tag:${d.id}:${t}`; shell.commands.put({ id: tid, type: 'document tag', label: `${t} on ${d.title}`, doc: d, tag: t });
       return html`<button class="chip" type="button" data-cmd="document.untag" data-obj="${tid}" aria-label="Untag ${t}">${t}${I('x')}</button>`; })}
@@ -422,7 +453,9 @@ function adopt(doc) {
     // build: an unread view store pins and hides nothing, so every document shows; the slot says so (sd:3428).
     : STORE ? { kind: 'partial', text: `Pins, hidden documents and tags were not read: ${STORE}. Every document shows.`, source: '/api/documents' }
     : null;
-  return { objects: [...DOCS, DRAFT], state };
+  const roots = ROOTS.map(r => ({ id: `root:${r.key}`, type: 'document root', label: r.label, key: r.key, hidden: !!r.hidden,
+    derived: r.derived || r.label, set: r.set || null }));
+  return { objects: [...DOCS, ...roots, DRAFT], state };
 }
 function unselect() {
   selected = null;
