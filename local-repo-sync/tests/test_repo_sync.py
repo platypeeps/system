@@ -305,6 +305,14 @@ class Fixture:
     def snapshot(self):
         return self.state_home / "system" / "repo-sync" / f"clones.{self.profile}"
 
+    def snapshot_text(self, text, root=None):
+        """A snapshot as a run under `root` (default the fixture's) writes it."""
+        return f"# root {root or self.root}\n{text}"
+
+    def write_snapshot(self, text, root=None):
+        self.snapshot().parent.mkdir(parents=True, exist_ok=True)
+        self.snapshot().write_text(self.snapshot_text(text, root))
+
     def quiet_fleet(self):
         """One listed checkout that pulls from a local bare repository, so
         the list is a database answer and a nightly has nothing to report."""
@@ -620,14 +628,13 @@ class DatabaseListTest(unittest.TestCase):
         a killed run left is overwritten, not read."""
         f = self.fixture()
         f.clones("a owner/one\n. owner/two\n")
-        f.snapshot().parent.mkdir(parents=True)
-        f.snapshot().write_text("a owner/old\n")
+        f.write_snapshot("a owner/old\n")
         left = f.snapshot().with_name(f.snapshot().name + ".tmp")
         left.write_text("half a lin")
 
         f.run("list")
 
-        self.assertEqual("a owner/one\n. owner/two\n", f.snapshot().read_text())
+        self.assertEqual(f.snapshot_text("a owner/one\n. owner/two\n"), f.snapshot().read_text())
         self.assertFalse(left.exists())
 
     def test_a_failed_read_falls_back_to_the_snapshot(self):
@@ -635,8 +642,7 @@ class DatabaseListTest(unittest.TestCase):
         last answer stands, and stderr names the failure and the source."""
         f = self.fixture()
         f.write_conf("a owner/from-conf\n")
-        f.snapshot().parent.mkdir(parents=True)
-        f.snapshot().write_text("a owner/from-snapshot\n")
+        f.write_snapshot("a owner/from-snapshot\n")
 
         result = f.run("list", extra_env={"CLONES_RC": "1"})
 
@@ -645,7 +651,23 @@ class DatabaseListTest(unittest.TestCase):
         self.assertIn("source  : snapshot", result.stdout)
         self.assertIn("the hub refused this build", result.stderr)
         self.assertIn(str(f.snapshot()), result.stderr)
-        self.assertEqual("a owner/from-snapshot\n", f.snapshot().read_text())
+        self.assertEqual(f.snapshot_text("a owner/from-snapshot\n"), f.snapshot().read_text())
+
+    def test_a_snapshot_from_another_root_is_not_read(self):
+        """REGRESSION. The snapshot's lines are relative to the root of the
+        run that wrote it. After REPO_SYNC_ROOT moves, the pack refuses rows
+        outside the new root; the old snapshot must not stand in for them, so
+        the run reads the confs and says why."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+        f.write_snapshot("a owner/old-root\n", root=f.tmp / "old-root")
+
+        result = f.run("list", extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("owner/from-conf", result.stdout)
+        self.assertNotIn("owner/old-root", result.stdout)
+        self.assertIn("source  : conf", result.stdout)
+        self.assertIn(f"no snapshot for {f.root}", result.stderr)
 
     def test_an_empty_answer_is_unknown_and_keeps_the_snapshot(self):
         """REGRESSION. Every profile lists at least `system`, so no line is a
@@ -654,12 +676,11 @@ class DatabaseListTest(unittest.TestCase):
         f = self.fixture()
         f.local_clone("a/good")
         f.clones("")
-        f.snapshot().parent.mkdir(parents=True)
-        f.snapshot().write_text("a owner/good\n")
+        f.write_snapshot("a owner/good\n")
 
         result = f.run("nightly")
 
-        self.assertEqual("a owner/good\n", f.snapshot().read_text())
+        self.assertEqual(f.snapshot_text("a owner/good\n"), f.snapshot().read_text())
         self.assertIn("lists nothing for terra", result.stderr)
         [reason] = attention(result)
         self.assertRegex(reason, r"^repo-sync: the database did not answer; the list came from the snapshot on ")
@@ -670,15 +691,14 @@ class DatabaseListTest(unittest.TestCase):
         not `<subdir> <owner/repo>` makes it unknown, and the snapshot stays."""
         f = self.fixture()
         f.clones("a owner/one\nsd-db: ~/repos/a/two  git@github.com:owner/two.git  no\n")
-        f.snapshot().parent.mkdir(parents=True)
-        f.snapshot().write_text("a owner/kept\n")
+        f.write_snapshot("a owner/kept\n")
 
         result = f.run("list")
 
         self.assertIn("owner/kept", result.stdout)
         self.assertNotIn("owner/one", result.stdout)
         self.assertIn("not a <subdir> <owner/repo> line", result.stderr)
-        self.assertEqual("a owner/kept\n", f.snapshot().read_text())
+        self.assertEqual(f.snapshot_text("a owner/kept\n"), f.snapshot().read_text())
 
     def test_no_answer_and_no_snapshot_reads_the_confs(self):
         """REGRESSION. The fresh-machine bootstrap: a machine that never
@@ -840,7 +860,7 @@ class DatabaseListTest(unittest.TestCase):
         f.write_conf("a owner/from-conf\n")
         other = f.snapshot().with_name("clones.personal")
         other.parent.mkdir(parents=True)
-        other.write_text("a owner/personal-only\n")
+        other.write_text(f.snapshot_text("a owner/personal-only\n"))
 
         result = f.run("list", extra_env={"CLONES_RC": "1"})
 

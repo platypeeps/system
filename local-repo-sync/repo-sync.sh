@@ -104,7 +104,10 @@ sd_db() {
 }
 
 # The last list the database gave for this profile. Its name carries the
-# profile, so another profile's answer is never read as this one's.
+# profile, so another profile's answer is never read as this one's. Its first
+# line, `# root <ROOT>`, names the root its lines are relative to: after the
+# root moves, the pack refuses rows outside it, and an old snapshot must not
+# stand in for them. A comment, so the README's revert reads it as a conf.
 SNAPSHOT="$(st_state_dir repo-sync)/clones.$PROFILE"
 
 # Comments and blanks stripped, separators collapsed to one space, and each
@@ -123,7 +126,7 @@ normalise() {
 #   1. `sd-db repo list --clones PROFILE`, when it exits 0 and every line is
 #      `<subdir> <owner/repo>`. It then replaces the snapshot (temp file, then
 #      mv: a temp file a killed run left is overwritten, never read).
-#   2. Else the snapshot, the database's last answer.
+#   2. Else the snapshot, the database's last answer, when it names this root.
 #   3. Else the conf files: the bootstrap of a machine that never reached it.
 #   4. Else refuse, naming both remedies.
 # A failed or empty answer is unknown, never an empty list: every profile
@@ -145,12 +148,13 @@ load_list() {
   if [ -z "$LIST_WHY" ]; then
     normalise < "$TMPD/list.db" > "$LIST_FILE"
     LIST_SOURCE=database
-    if ! { mkdir -p "${SNAPSHOT%/*}" && cp "$LIST_FILE" "$SNAPSHOT.tmp" && mv -f "$SNAPSHOT.tmp" "$SNAPSHOT"; }; then
+    if ! { mkdir -p "${SNAPSHOT%/*}" && { printf '# root %s\n' "$ROOT" && cat "$LIST_FILE"; } > "$SNAPSHOT.tmp" \
+        && mv -f "$SNAPSHOT.tmp" "$SNAPSHOT"; }; then
       echo "repo-sync.sh: cannot write $SNAPSHOT; without the database, the next run reads an older answer or the confs" >&2
     fi
     return 0
   fi
-  if [ -s "$SNAPSHOT" ]; then
+  if [ -s "$SNAPSHOT" ] && [ "$(head -1 "$SNAPSHOT")" = "# root $ROOT" ]; then
     normalise < "$SNAPSHOT" > "$LIST_FILE"
     LIST_SOURCE=snapshot
     echo "repo-sync.sh: the database did not answer ($LIST_WHY); the list is its last answer, $SNAPSHOT" >&2
@@ -168,10 +172,10 @@ load_list() {
       && ( IFS=$NL; for f in $CONF_FILES; do cat "$f" || exit 1; done ) > "$TMPD/list.conf"; then
     normalise < "$TMPD/list.conf" > "$LIST_FILE"
     LIST_SOURCE=conf
-    echo "repo-sync.sh: the database did not answer ($LIST_WHY) and there is no snapshot ($SNAPSHOT); the list is the conf files" >&2
+    echo "repo-sync.sh: the database did not answer ($LIST_WHY) and there is no snapshot for $ROOT ($SNAPSHOT); the list is the conf files" >&2
     return 0
   fi
-  echo "repo-sync.sh: no repo list: the database did not answer ($LIST_WHY), there is no snapshot ($SNAPSHOT), and the config ${l_missing:-files} is missing or unreadable" >&2
+  echo "repo-sync.sh: no repo list: the database did not answer ($LIST_WHY), there is no snapshot for $ROOT ($SNAPSHOT), and the config ${l_missing:-files} is missing or unreadable" >&2
   echo "  list the profile in the database: SD_REPO_ROOT='$ROOT' sd-db repo seed --clones $PROFILE, or sd-db repo clones PATH +$PROFILE" >&2
   l_missing=${l_missing:-$PROFILE_CONF}
   echo "  or copy local-repo-sync/$(basename "$l_missing").example to $l_missing and list your repos" >&2
