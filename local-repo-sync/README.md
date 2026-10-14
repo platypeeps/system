@@ -96,8 +96,9 @@ Refresh also migrates the database (D2, sd:3345). It reads the database's
 the pack moves to at every refresh, never the checkout movement. When the
 database is below, and before anything moves, it runs the pack's
 `bin/sd-db backup --no-row-prune` into a fresh folder under
-`~/.local/state/repo-sync/refresh-backups/`. No retention prunes that folder,
-so its backups stay until you remove them. Then it writes the rollback point,
+`~/.local/state/repo-sync/refresh-backups/`, where a finished refresh keeps
+the newest three folders and removes the rest (sd:4022). Then it writes the
+rollback point,
 `~/.local/state/repo-sync/refresh-intent`: the system and pack shas, the
 version and the backup. A failed backup or record write moves nothing and
 starts the services again. A database above that `SCHEMA_VERSION`, such as one

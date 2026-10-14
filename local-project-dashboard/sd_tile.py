@@ -1,22 +1,22 @@
 """The system dashboard's legacy views, one tab per invocation.
 
 The framework dashboard replaced this one, and six of these views did not go
-with it: Toolbox, Briefs, Vault, Research, Ports and Queues read the vault, the
-launchd job table and this machine's service map, and all six stay
+with it: Toolbox, Vault, Research, Ports and Queues read the vault, the
+launchd job table and this machine's service map, and all of them stay
 system-owned. So they reached that dashboard through the plugin contract
 instead of being ported into it -- the collectors below are `collectors.py`'s
 own, imported rather than copied, and this file is only the part that turns
 them into a tab. The pack dashboard is no longer served and its plugin loader
 is gone (sd:719). The workflow dashboard in `sd_dashboard/` renders the views
 now: under Operations, Resources, `reports_screen.collect` runs this file as a
-child for Toolbox, Briefs, Vault, Research and Queues, and the Ports area
+child for Toolbox, Vault, Research and Queues, and the Ports area
 calls `collect_ports` in-process (`ports_screen.py`).
 
 Five when this file was written; Queues joined at 6b-6, and the count is now
 `TABS` rather than a number in a sentence. A new view is a builder and its
 line in that dict, plus its name and ceiling in `reports_screen.py` (`VIEWS`,
-`VIEW_SECONDS`). `briefs-rows` is a tab and not a view: the Briefs page
-(`sd_dashboard/briefs_screen.py`) runs it for its rows as data (sd:2112).
+`VIEW_SECONDS`). Briefs left at sd:3459: the Briefs page reads the workflow
+database, not the vault.
 
 **One invocation per tab.** A Resources view runs `sd_tile.py <name> <since>` once per
 view (`<since>` is the view's start on `CLOCK_MONOTONIC`; `main` takes the time
@@ -238,11 +238,8 @@ def listing(lines: list[str]) -> str:
     return "<ul>" + "".join(f"<li>{esc(line)}</li>" for line in lines) + "</ul>"
 
 
-# Two caps, both for the 64KB tile budget rather than for taste. Briefs is the
-# tab that needs them: the folder grows by several notes a day and never
-# shrinks, so an uncapped table is a tab that works until the year it does not.
-# Whatever a cap hides, the markup says it is hiding.
-BRIEF_ROWS = 200
+# A cap for the 64KB tile budget rather than for taste. Whatever it hides, the
+# markup says it is hiding.
 LIST_ROWS = 25
 
 # The per-tile time ceiling: the plugin contract's (the pack's `TILE_SECONDS`)
@@ -500,68 +497,6 @@ def tab_toolbox(collectors) -> dict:
             "detail": got["drift_unknown"],
         })
     return {"title": "Toolbox", "html": "".join(parts), "rows": rows}
-
-
-def tab_briefs(collectors) -> dict:
-    """What the scheduled routines wrote, newest first."""
-    got = collectors.collect_briefs()
-    briefs = got["briefs"]
-    kinds: dict[str, int] = {}
-    for brief in briefs:
-        kinds[brief["kind"]] = kinds.get(brief["kind"], 0) + 1
-    shown = briefs[:BRIEF_ROWS]
-    parts = [
-        figures([("briefs", got["total"]), ("kinds", len(kinds)), ("shown", len(shown))]),
-        table(
-            [("When", "text"), ("Kind", "text"), ("Brief", "text"), ("Words", "num"), ("Age d", "num")],
-            [
-                [
-                    brief["when"],
-                    brief["kind"],
-                    # `obsidian://` is not a scheme the view's filter keeps,
-                    # so the vault path is text here rather than a dead link.
-                    {"text": brief["stem"], "title": brief["rel"]},
-                    num(brief["words"]),
-                    num(brief["age_d"]),
-                ]
-                for brief in shown
-            ],
-            search="filter briefs",
-        ),
-    ]
-    if len(briefs) > len(shown):
-        # Said rather than silently truncated: a table that stops at 200 rows
-        # and does not say so reads as a machine with 200 briefs.
-        parts.append(
-            f"<p>Showing the newest {len(shown)} of {got['total']}"
-            f" \u2014 the rest are in {esc(got['root'])}.</p>"
-        )
-    return {"title": "Briefs", "html": "".join(parts), "rows": []}
-
-
-# The Briefs page's rows (`sd_dashboard/briefs_screen.py`), as data rather than
-# a table: the same reader, the same five seconds, and its own cap on bytes.
-# A row carries its lead, so the 200-row cap alone could pass the 64KB budget;
-# rows stop at whichever cap comes first, and `shown` says where they stopped.
-BRIEF_JSON_BYTES = 48 * 1024
-#: The fields a row carries to the page; the vault's absolute path is not one.
-BRIEF_FIELDS = ("stem", "rel", "kind", "day", "at", "words", "lead", "obsidian")
-
-
-def tab_brief_rows(collectors) -> dict:
-    """The newest briefs as rows, within `BRIEF_ROWS` and `BRIEF_JSON_BYTES`."""
-    got = collectors.collect_briefs()
-    # The list as `json.dumps` writes it: "[]", then each row, with ", " before every row but the first.
-    rows, spent = [], len("[]")
-    for brief in got["briefs"][:BRIEF_ROWS]:
-        row = {key: brief.get(key) for key in BRIEF_FIELDS}
-        size = len(json.dumps(row)) + (len(", ") if rows else 0)
-        if spent + size > BRIEF_JSON_BYTES:
-            break
-        rows.append(row)
-        spent += size
-    return {"title": "Briefs", "briefs": rows, "total": got["total"], "shown": len(rows),
-            "folder": "System/AI Generated/Briefs"}
 
 
 def tab_vault(collectors) -> dict:
@@ -876,8 +811,6 @@ def tab_queues(collectors) -> dict:
 
 TABS = {
     "toolbox": tab_toolbox,
-    "briefs": tab_briefs,
-    "briefs-rows": tab_brief_rows,
     "vault": tab_vault,
     "research": tab_research,
     "ports": tab_ports,
