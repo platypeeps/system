@@ -1,0 +1,403 @@
+"""`machine-setup.sh promote` and the hub role as a state (hub failover slice 4, sd:4012).
+
+docs/work/2026-10-10-hub-failover/design.md, "The verb and its steps" and its
+failure table. Every case runs the script against a fixture home with stubs:
+`sd-db` (fence and restore --newest), `sd`, `tailscale`, `launchctl` and the
+step-9 session never reach this Mac, its Tailscale node or a hub. Each step's
+case stops the run there and checks the next run finishes it or undoes it.
+"""
+
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import unittest
+
+from tests import fixture_config
+from tests.test_backbone import ROOT, ROUTE_PRESENT, Fixture, write_stub
+
+PREFIX = fixture_config.LABEL_PREFIX
+HUB = "hub.example.test"
+ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.task-actions"]
+ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly"]
+
+# The pack's bin/sd-db: `fence` prints the state in $STUB_FENCE (a file, so
+# `tailscale set` can move it), `restore --newest` installs a database named
+# after the first root's newest folder, or fails with STUB_RESTORE_RC.
+SD_DB_STUB = r'''
+echo "$*" >> "$STUB_LOG"
+case "$1" in
+  fence)
+    state=$(cat "$STUB_FENCE")
+    echo "sd-db: fence: $state: fixture"
+    case "$state" in holder|off) exit 0 ;; esac
+    exit 1 ;;
+  restore)
+    if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
+    newest=$(ls "$3" | sort | tail -1)
+    mkdir -p "$HOME/.local/share/sd"
+    : > "$HOME/.local/share/sd/sd.db"
+    echo "sd-db: restored $3/$newest (checkpoint 2026-10-14T08:50:00+00:00) to $HOME/.local/share/sd"
+    echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
+    exit 0 ;;
+esac
+exit 2
+'''
+
+# tailscale: `status --json` lists $STUB_PEER as a peer when set; `set
+# --hostname=` logs and makes the fence read holder; `serve status` as the
+# backbone's stub.
+TAILSCALE_STUB = r'''
+echo "tailscale $*" >> "$STUB_LOG"
+case "$1 $2" in
+  "serve status") cat "$STUB_SERVE_STATUS"; exit 0 ;;
+  "status --json")
+    if [ -n "$STUB_PEER" ]; then
+      printf '{"Peer": {"k": {"HostName": "%s", "DNSName": "%s.tailnet.example.test."}}}\n' "$STUB_PEER" "$STUB_PEER"
+    else
+      echo '{"Peer": {}}'
+    fi
+    exit 0 ;;
+esac
+case "$1" in set) echo holder > "$STUB_FENCE" ;; esac
+exit 0
+'''
+
+# sd: the satellite's own `config get sd.hub_name` and the drain's gate read.
+SD_STUB = r'''
+case "$*" in
+  "config get sd.hub_name") [ -n "$STUB_HUB_NAME" ] || exit 1; echo "$STUB_HUB_NAME" ;;
+  "config get sd.lane_root") echo "sd.lane_root is not set" >&2; exit 1 ;;
+  "gate status --json") echo '{"holders": [], "waiters": []}' ;;
+  *) exit 2 ;;
+esac
+'''
+
+# The step-9 session: the pack's interpreter, asked to connect.
+PROVE_STUB = 'shift 3\necho "prove $*" >> "$STUB_LOG"\nexit "${STUB_PROVE_RC:-0}"\n'
+
+LAUNCHCTL_STUB = ('echo "launchctl $*" >> "$STUB_LOG"\n'
+                  'case "$1" in print) exit 113 ;; bootstrap) exit "${STUB_BOOTSTRAP_RC:-0}" ;; esac\nexit 0\n')
+
+
+class Promote(unittest.TestCase):
+    def setUp(self):
+        self.fixture = Fixture()
+        self.addCleanup(self.fixture.destroy)
+        f = self.fixture
+        self.tmp = pathlib.Path(f.tmp.name)
+        (f.state / "profile").write_text("work\n")
+        self.config = fixture_config.copy_config(self.tmp)
+        self.log = self.tmp / "stub.log"
+        self.fence = self.tmp / "fence"
+        self.fence.write_text("elsewhere\n")
+        write_stub(f.stubs, "tailscale", TAILSCALE_STUB)
+        write_stub(f.stubs, "sd", SD_STUB)
+        write_stub(f.stubs, "launchctl", LAUNCHCTL_STUB)
+        self.prove = write_stub(f.stubs, "prove-python", PROVE_STUB)
+        fixture_config.seal(self, f.stubs)
+        (f.pack / "bin").mkdir()
+        write_stub(f.pack / "bin", "sd-db", SD_DB_STUB)
+        # The NAS: two roots, each with dated snapshot folders.
+        self.nas = self.tmp / "nas"
+        for folder, names in (("sd-backups-hourly", ("2026-10-14.4", "2026-10-14.5")),
+                              ("sd-backups", ("2026-10-13.1",))):
+            for name in names:
+                (self.nas / folder / name).mkdir(parents=True)
+                (self.nas / folder / name / "manifest.json").write_text("{}\n")
+        # This satellite's own hub-role job files; the hourly one names a local root.
+        self.hourly = self.tmp / "local-backups" / "sd-backups-hourly"
+        self.hourly.parent.mkdir()
+        jobs = self.config / "cron-jobs" / "jobs"
+        jobs.mkdir(parents=True)
+        for job in ROLE_JOBS + ["mirror-sync-nightly"]:
+            body = 'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n'
+            if job == "sd-db-backup-hourly":
+                body = f'SD_DB_BACKUP_HOURLY_DESTINATION="{self.hourly}"\n' + body
+            (jobs / f"{job}.job").write_text(body)
+        # task-actions from the config folder, so its own installer stays out of the run.
+        agents = self.config / "machine-setup" / "launchagents"
+        (agents / f"{PREFIX}.task-actions.plist").write_text(
+            (agents / f"{PREFIX}.sd-serve.plist").read_text())
+        self.hub_json = f.home / ".config/sd/hub.json"
+        self.hub_json.parent.mkdir(parents=True)
+        self.port = self.closed_port()
+        self.hub_json.write_text(json.dumps({"hub": HUB, "port": self.port}) + "\n")
+        self.marker = f.home / ".local/state/sd/promote-intent"
+        self.lanes = self.tmp / "lanes"
+        self.lanes.mkdir()
+
+    @staticmethod
+    def closed_port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def run_promote(self, *args, expect=0, **extra):
+        env = {**fixture_config.env(self.config), "STUB_LOG": self.log, "STUB_FENCE": self.fence,
+               "OFFSITE_VERIFY_ROOT": self.nas, "SD_DB_PYTHON": self.prove,
+               "XDG_STATE_HOME": self.fixture.home / ".local/state", "SD_LANE_ROOT": self.lanes,
+               "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, **extra}
+        result = self.fixture.run("promote", *args, **env)
+        self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
+        return result
+
+    def marker_step(self):
+        if not self.marker.exists():
+            return None
+        return dict(line.split("=", 1) for line in self.marker.read_text().splitlines())["step"]
+
+    def calls(self, word):
+        return [line for line in self.log.read_text().splitlines() if word in line] if self.log.exists() else []
+
+    def installed(self):
+        folder = self.fixture.home / "Library/LaunchAgents"
+        return sorted(p.stem for p in folder.glob("*.plist")) if folder.exists() else []
+
+    def moved(self):
+        return sorted(self.hub_json.parent.glob("hub.json.promoted-*"))
+
+    # Dry run and step 1.
+
+    def test_a_dry_run_prints_hub_ready_and_moves_nothing(self):
+        out = self.run_promote().stdout
+        self.assertIn("== hub-ready", out)
+        self.assertIn(f"  ok      sd.hub_name is {HUB}", out)
+        self.assertNotIn("NOT-READY", out)
+        self.assertTrue(self.hub_json.exists())
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.calls("restore"))
+
+    def test_step_1_refuses_while_the_hub_answers(self):
+        with socket.socket() as hub:
+            hub.bind(("127.0.0.1", 0))
+            hub.listen()
+            self.hub_json.write_text(json.dumps({"hub": "127.0.0.1", "port": hub.getsockname()[1]}))
+            result = self.run_promote("--apply", expect=1)
+        self.assertIn("answers; promote only a dead hub's satellite", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_step_1_refuses_an_old_hub_with_no_hub_json(self):
+        """The hand-back entry: an old hub that skipped the copy of hub.json."""
+        self.hub_json.unlink()
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("this machine is not a satellite", result.stderr)
+        self.assertIsNone(self.marker_step())
+
+    def test_step_1_refuses_a_hub_ready_line_that_is_not_ok(self):
+        (self.config / "cron-jobs/jobs/offsite-verify.job").unlink()
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("NOT-READY no job file offsite-verify.job", result.stdout)
+        self.assertIn("a hub-ready line is not ok; nothing moved", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.calls("restore"))
+
+    def test_step_1_refuses_with_no_backup_root(self):
+        result = self.run_promote("--apply", expect=1, OFFSITE_VERIFY_ROOT="")
+        self.assertIn("NOT-READY no backup root", result.stdout)
+        self.assertTrue(self.hub_json.exists())
+
+    # The whole run.
+
+    def test_a_promotion_restores_seeds_takes_the_name_and_installs_the_role(self):
+        result = self.run_promote("--apply")
+
+        self.assertFalse(self.hub_json.exists())
+        self.assertEqual(1, len(self.moved()))
+        self.assertTrue(self.fixture.db.exists())
+        self.assertIn(f"restore --newest {self.nas}/sd-backups-hourly {self.nas}/sd-backups", self.calls("restore")[0])
+        self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists(), "the hourly root was not seeded")
+        self.assertEqual(["tailscale set --hostname=hub"], self.calls("tailscale set"))
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+        self.assertEqual([f"prove {self.fixture.pack}/lib {HUB} {self.port}"], self.calls("prove"))
+        self.assertIn("writes after this time are lost", result.stdout)
+        self.assertIn("leases released: run-7", result.stdout)
+        self.assertIsNone(self.marker_step())
+
+    def test_an_apply_holds_the_lanes_first(self):
+        """Step 2: the run goes through refresh_drain.py, which holds each lane's lock."""
+        (self.lanes / "some-repo").mkdir()
+        result = self.run_promote("--apply")
+        self.assertIn("lanes held:", result.stdout + result.stderr)
+
+    # Step 5.
+
+    def test_a_restore_that_restores_nothing_puts_hub_json_back(self):
+        result = self.run_promote("--apply", expect=1, STUB_RESTORE_RC="1")
+        self.assertIn("nothing restored", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.moved())
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.installed())
+
+    # Kills between steps: the marker is where a killed run left it.
+
+    def write_marker(self, **fields):
+        self.marker.parent.mkdir(parents=True, exist_ok=True)
+        base = {"hub": HUB, "port": self.port}
+        self.marker.write_text("".join(f"{k}={v}\n" for k, v in {**base, **fields}.items()))
+
+    def test_killed_after_the_marker_a_rerun_moves_hub_json_and_goes_on(self):
+        """Between 3 and 4: the marker names step 4, hub.json is still there."""
+        self.write_marker(step=4)
+        self.run_promote("--apply")
+        self.assertFalse(self.hub_json.exists())
+        self.assertTrue(self.fixture.db.exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_killed_after_the_move_a_rerun_restores(self):
+        """Between 4 and 5: hub.json aside under the name the marker holds."""
+        moved = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.write_marker(step=4, moved=moved)
+        self.hub_json.rename(moved)
+        self.run_promote("--apply")
+        self.assertEqual([moved], self.moved())
+        self.assertTrue(self.fixture.db.exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_killed_after_the_restore_a_rerun_seeds_without_a_second_restore(self):
+        moved = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.hub_json.rename(moved)
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        self.write_marker(step=6, moved=moved, snapshot=self.nas / "sd-backups-hourly/2026-10-14.5")
+        self.run_promote("--apply")
+        self.assertEqual([], self.calls("restore"))
+        self.assertTrue((self.hourly / "2026-10-14.5").is_dir())
+
+    def test_a_seed_cut_short_is_copied_again(self):
+        moved = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.hub_json.rename(moved)
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        (self.hourly / "2026-10-14.5.seeding").mkdir(parents=True)
+        self.write_marker(step=6, moved=moved, snapshot=self.nas / "sd-backups-hourly/2026-10-14.5")
+        self.run_promote("--apply")
+        self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists())
+        self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
+
+    # Step 7.
+
+    def test_a_peer_holding_the_name_stops_at_step_7_with_the_console_step(self):
+        result = self.run_promote("--apply", expect=1, STUB_PEER="hub")
+        self.assertIn("In the Tailscale admin console, rename or remove that machine", result.stderr)
+        self.assertEqual("7", self.marker_step())
+        self.assertEqual([], self.calls("tailscale set"))
+        self.assertEqual([], self.installed(), "a hub-role service went in before the name")
+
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+        self.assertIn(f"{PREFIX}.sd-serve", self.installed())
+
+    def test_an_unset_hub_name_in_the_restored_database_refuses_before_the_name(self):
+        """The A decision on sd:4044: promote refuses while sd.hub_name is unset."""
+        self.fence.write_text("off\n")
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn(f"sd.hub_name is unset in the restored database", result.stderr)
+        self.assertIn(f"sd config set sd.hub_name {HUB}", result.stderr)
+        self.assertEqual("7", self.marker_step())
+        self.assertEqual([], self.calls("tailscale set"))
+        self.assertEqual([], self.installed())
+
+    # Step 8.
+
+    def test_a_stage_that_fails_part_way_stops_at_step_8_and_a_rerun_installs_the_rest(self):
+        result = self.run_promote("--apply", expect=1, STUB_BOOTSTRAP_RC="5")
+        self.assertIn("stage did not finish; rerun", result.stderr)
+        self.assertEqual("8", self.marker_step())
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+
+    # Step 9.
+
+    def test_a_failed_session_keeps_the_marker_and_a_rerun_proves_again(self):
+        result = self.run_promote("--apply", expect=1, STUB_PROVE_RC="1")
+        self.assertIn("no session on", result.stderr)
+        self.assertEqual("9", self.marker_step())
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+
+    def test_hub_ready_names_a_marker_left_behind(self):
+        self.write_marker(step=7)
+        out = self.run_promote().stdout
+        self.assertIn("NOT-READY promote stopped before its end", out)
+        self.assertIn("names step 7", out)
+
+
+class HubRole(unittest.TestCase):
+    """The agents and cron stages add the hub-role labels only for the holder."""
+
+    def setUp(self):
+        self.fixture = Fixture()
+        self.addCleanup(self.fixture.destroy)
+        f = self.fixture
+        self.tmp = pathlib.Path(f.tmp.name)
+        (f.state / "profile").write_text("work\n")
+        self.config = fixture_config.copy_config(self.tmp)
+        self.log = self.tmp / "stub.log"
+        self.fence = self.tmp / "fence"
+        write_stub(f.stubs, "tailscale", TAILSCALE_STUB)
+        write_stub(f.stubs, "launchctl", LAUNCHCTL_STUB)
+        fixture_config.seal(self, f.stubs)
+        (f.pack / "bin").mkdir()
+        write_stub(f.pack / "bin", "sd-db", SD_DB_STUB)
+        f.db.parent.mkdir(parents=True)
+        f.db.write_text("")
+        (f.home / "Library/LaunchAgents").mkdir(parents=True)
+        jobs = self.config / "cron-jobs" / "jobs"
+        jobs.mkdir(parents=True)
+        for job in ROLE_JOBS + ["mirror-sync-nightly"]:
+            (jobs / f"{job}.job").write_text('JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+        agents = self.config / "machine-setup" / "launchagents"
+        (agents / f"{PREFIX}.task-actions.plist").write_text(
+            (agents / f"{PREFIX}.sd-serve.plist").read_text())
+
+    def update(self, stage, fence):
+        self.fence.write_text(fence + "\n")
+        result = self.fixture.run("update", stage, "--apply", **fixture_config.env(self.config),
+                                  STUB_LOG=self.log, STUB_FENCE=self.fence)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def installed(self):
+        folder = self.fixture.home / "Library/LaunchAgents"
+        return sorted(p.stem for p in folder.glob("*.plist")) if folder.exists() else []
+
+    def test_no_hub_role_label_goes_in_before_the_fence_reads_holder(self):
+        """The 7 to 8 order: elsewhere, unknown and off all install nothing."""
+        for fence in ("elsewhere", "unknown", "off"):
+            with self.subTest(fence=fence):
+                self.update("agents", fence)
+                self.update("cron", fence)
+                self.assertEqual([], self.installed())
+
+    def test_the_holder_gets_the_role_but_the_icloud_mirror(self):
+        self.update("agents", "holder")
+        self.update("cron", "holder")
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+
+    def test_a_satellite_profile_still_holds_the_role_once_promoted(self):
+        """A `<profile>.satellite` file keeps is_satellite true after hub.json moved."""
+        (self.config / "machine-setup/profiles/work.satellite").write_text(f"{HUB}:8769\n")
+        out = self.update("agents", "holder")
+        self.assertNotIn("SKIP", out)
+        self.assertIn(f"{PREFIX}.sd-serve", self.installed())
+        sat = self.update("satellite", "holder")
+        self.assertIn("this machine holds the hub role", sat)
+
+    def test_the_role_stays_off_while_hub_json_is_here(self):
+        hub_json = self.fixture.home / ".config/sd/hub.json"
+        hub_json.parent.mkdir(parents=True)
+        hub_json.write_text(json.dumps({"hub": HUB, "port": 8769}))
+        self.update("agents", "holder")
+        self.assertEqual([], self.installed())
+        self.assertNotIn("fence", self.log.read_text() if self.log.exists() else "")
+
+
+if __name__ == "__main__":
+    unittest.main()

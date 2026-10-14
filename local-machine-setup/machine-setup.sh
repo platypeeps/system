@@ -70,7 +70,7 @@ STATE_FILE="$STATE_DIR/profile"
 STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
-VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt"
+VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
 KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node mailto"
 
 # Directories that hold credentials in the clear and are created world-readable
@@ -1242,7 +1242,8 @@ stage_cron() {
     host_jobs=
     sweep=0
   fi
-  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; } | awk 'NF && !seen[$0]++')
+  hub_role || :
+  jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
   # the sweep below left those running, and verify read them ok (sd:3155).
@@ -1283,7 +1284,7 @@ stage_cron() {
   echo "$jobs" | while read -r j; do
     # The agents stage's guard: skipped, and left to the satellite stage's
     # EXTRA when one is here, so the sweep below keeps it too.
-    if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite; then
+    if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite && ! hub_role; then
       echo "  SKIP    $j — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
@@ -1405,7 +1406,8 @@ agent_replace() { # label, src, dst
 
 stage_agents() {
   echo "== agents"
-  agents=$(manifest agent)
+  hub_role || :
+  agents=$(role_agents)
   if [ -z "$agents" ]; then
     echo "  no launch agents in this profile"
     return 0
@@ -1415,11 +1417,23 @@ stage_agents() {
     # A guard: no satellite profile lists a hub-only agent today, and one
     # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.
-    if sd_hub_only "$label" && is_satellite; then
+    if sd_hub_only "$label" && is_satellite && ! hub_role; then
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
-    src="$AGENT_DIR/$label.plist"
+    # task-actions has an installer of its own, which writes its plist from
+    # its template; the hub role runs it rather than a second copy.
+    if [ "$label" = "$LABEL_PREFIX.task-actions" ] && hub_role && [ ! -f "$AGENT_DIR/$label.plist" ]; then
+      if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+        echo "  ok      $label (hub role, task-actions.sh)"
+      else
+        echo "  MISSING $label — the hub role runs task-actions; its installer writes the plist"
+        run "$ROOT/local-task-actions/task-actions.sh" start
+      fi
+      continue
+    fi
+    src=$(agent_source "$label")
+    [ -n "$src" ] || src="$AGENT_DIR/$label.plist"
     dst="$HOME/Library/LaunchAgents/$label.plist"
     if [ -f "$src" ]; then
       agent_render "$label" "$src" "$rendered/$label.plist"
@@ -1738,6 +1752,53 @@ sd_hub_only() { # label
 is_satellite() {
   [ -n "$(manifest satellite)" ] || [ -e "$SD_HUB_CONFIG" ]
 }
+# The hub role as a state, not a profile (hub failover, sd:4012): a satellite
+# that `promote` made the hub runs the hub's sd agents and jobs on top of its
+# own profile. It holds the role while hub.json is gone, the database is here
+# and `sd-db fence` reads holder; `off`, an unset sd.hub_name, is not enough,
+# since promote takes the name before it installs the role. A hub profile
+# lists the labels itself and asks nothing. Asked once per run: call it in
+# the main shell before any pipeline, where a subshell would ask again.
+hub_role() {
+  if [ -z "${HUB_ROLE:-}" ]; then
+    HUB_ROLE=no
+    if ! sd_in_profile && [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ] &&
+       hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
+      case "$hr_fence" in *"fence: holder:"*) HUB_ROLE=yes ;; esac
+    fi
+  fi
+  [ "$HUB_ROLE" = yes ]
+}
+# The hub-role labels: the hub-only list but the iCloud mirror, which copies
+# the hub's own folders, which a satellite lacks. `agent` prints labels,
+# `cron` job names.
+SD_HUB_ROLE_EXCEPT="cron.mirror-sync-nightly"
+hub_role_labels() { # agent|cron
+  for hr in $SD_HUB_ONLY_AGENTS; do
+    [ "$hr" != "$SD_HUB_ROLE_EXCEPT" ] || continue
+    case "$1:$hr" in
+      cron:cron.*) echo "${hr#cron.}" ;;
+      agent:cron.*) ;;
+      agent:*) echo "$LABEL_PREFIX.$hr" ;;
+    esac
+  done
+}
+# The agents this machine runs: its profile's, plus the hub role's while it
+# holds it.
+role_agents() {
+  { manifest agent; if hub_role; then hub_role_labels agent; fi; } | awk 'NF && !seen[$0]++'
+}
+# The plist a label installs from: the config folder's, else, for a label
+# the hub role adds, the tracked example. A hub profile's own label keeps the
+# config folder's alone, so a missing one stays the sd stage's MISSING.
+# Prints nothing when there is neither.
+agent_source() { # label
+  as_src="$AGENT_DIR/$1.plist"
+  if [ ! -f "$as_src" ] && sd_hub_only "$1" && hub_role; then
+    as_src="$DIR/examples/launchagents/local.system-tools.${1#"$LABEL_PREFIX".}.plist"
+  fi
+  [ ! -f "$as_src" ] || printf '%s\n' "$as_src"
+}
 # The interpreter the satellite stage runs the pack's lib/sd_db under: the
 # pack's.
 SD_DB_PYTHON="${SD_DB_PYTHON:-$SD_PACK_ROOT/.venv/bin/python}"
@@ -1791,7 +1852,8 @@ sd_database_elsewhere() {
 
 stage_sd() {
   echo "== sd"
-  if ! sd_in_profile; then
+  hub_role || :
+  if ! sd_in_profile && ! hub_role; then
     echo "  SKIP    no sd agent in this profile ($LABEL_PREFIX.sd-dashboard)"
     return 0
   fi
@@ -1811,7 +1873,9 @@ stage_sd() {
   # the profile or the config folder lacks it, a gap the agents stage
   # reports with no drift word. A removed installed plist is the agents
   # stage's MISSING, counted once.
-  if ! manifest agent | grep -qxF "$LABEL_PREFIX.sd-serve"; then
+  if hub_role; then
+    echo "  ok      $LABEL_PREFIX.sd-serve from the hub role (promoted)"
+  elif ! manifest agent | grep -qxF "$LABEL_PREFIX.sd-serve"; then
     echo "  MISSING $LABEL_PREFIX.sd-serve in $PROFILE.agent — the hub serves no satellite; add the label, then: $(basename "$SELF") update agents --apply"
   elif [ ! -f "$AGENT_DIR/$LABEL_PREFIX.sd-serve.plist" ]; then
     echo "  MISSING $AGENT_DIR/$LABEL_PREFIX.sd-serve.plist — copy it from $DIR/examples/launchagents/"
@@ -1823,7 +1887,7 @@ stage_sd() {
   if [ -e "$SD_HUB_CONFIG" ]; then
     echo "  EXTRA   $SD_HUB_CONFIG — this machine is the sd hub, and that file makes it a satellite too; remove it"
   fi
-  if manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
+  if role_agents | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1; then
       echo "  SKIP    tailscale not installed (brew stage provides it) — no private route to the dashboard"
     elif ! tailscale status >/dev/null 2>&1; then
@@ -1877,6 +1941,10 @@ stage_satellite() {
   # A satellite runs no hub service (prd R5). Detect only: the operator
   # decides which role is wrong. On a hub profile the sd stage's one EXTRA
   # for hub.json names the conflict instead (criterion 7).
+  if hub_role; then
+    echo "  SKIP    this machine holds the hub role (promoted): no hub.json, the database is here, and sd-db fence reads holder"
+    return 0
+  fi
   if ! sd_in_profile && is_satellite; then
     for sho in $SD_HUB_ONLY_AGENTS; do
       sho_label="$LABEL_PREFIX.$sho"
@@ -5168,6 +5236,11 @@ cmd_status() {
     status_stage "$st"
     echo
   done
+  # Read-only and outside the drift count: see hub_ready.
+  if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || hub_role; then
+    hub_ready
+    echo
+  fi
   # A 02:xx cron job runs only on a repeating wake (.claude/rules/cron-wake.md).
   # pmset lists it as "wakepoweron at"; a failed read is unknown, not clean.
   if ! sched=$(pmset -g sched 2>/dev/null); then
@@ -5184,14 +5257,367 @@ cmd_status() {
   fi
 }
 
+# ------------------------------------------------------------ promote ----
+# Hub failover slice 4 (sd:4012; docs/work/2026-10-10-hub-failover/design.md,
+# "The verb and its steps"): a satellite takes the hub role from the newest
+# verified snapshot it can reach. Each step moves state once, and the intent
+# marker names the next step, so a rerun after a kill or a refusal goes on
+# from there; the failure table in the design names each step's recovery.
+PROMOTE_MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-intent"
+PROMOTE_FROM=""
+
+marker_get() { # key
+  [ ! -f "$PROMOTE_MARKER" ] || sed -n "s/^$1=//p" "$PROMOTE_MARKER" | tail -1
+}
+# Written whole and renamed, as follow-intent is: a kill leaves the old marker
+# or the new one, never half of one.
+marker_set() { # key value
+  mkdir -p "$(dirname "$PROMOTE_MARKER")"
+  { [ ! -f "$PROMOTE_MARKER" ] || grep -v "^$1=" "$PROMOTE_MARKER" || :; printf '%s=%s\n' "$1" "$2"; } \
+    > "$PROMOTE_MARKER.new" && mv "$PROMOTE_MARKER.new" "$PROMOTE_MARKER"
+}
+
+# The roots promote restores from: each --from, then the NAS folders the
+# nightly and hourly copies write, under OFFSITE_VERIFY_ROOT
+# (<config>/mirror-sync/.env, offsite-verify's own setting). One per line.
+promote_roots() {
+  printf '%s' "$PROMOTE_FROM"
+  PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+root = os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT")
+if root:
+    print(os.path.join(root, "sd-backups-hourly"))
+    print(os.path.join(root, "sd-backups"))'
+}
+
+# The local root the hub role's hourly job writes, from that job's own file:
+# the job is sourced as cron-jobs.sh sources it, in a subshell. Prints
+# nothing when no file defines the job or the file names no destination.
+hourly_destination() {
+  hd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
+for d in stc.cron_job_dirs():
+    f = d / "sd-db-backup-hourly.job"
+    if f.is_file():
+        print(f)
+        break')
+  [ -n "$hd_file" ] || return 0
+  # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
+  # shellcheck disable=SC1090,SC2030
+  (ROOT="$ROOT/local-cron-jobs"; SD_DB_BACKUP_HOURLY_DESTINATION=""; . "$hd_file" >/dev/null 2>&1;
+   printf '%s\n' "$SD_DB_BACKUP_HOURLY_DESTINATION")
+}
+
+# hub.json's hub and port, as `<host> <port>`; nothing when it cannot be read.
+hub_named() {
+  python3 -c 'import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    print(data["hub"], data.get("port", 8769))
+except Exception:
+    pass' "$1"
+}
+
+# Exits 0 when host:port takes a TCP connection within the bound. The name
+# lookup counts too: a name no server answers for took 30 s whatever the
+# connect timeout, so the probe runs in a thread the bound outlives.
+hub_answers() { # host port seconds
+  python3 -c 'import os, socket, sys, threading, time
+def probe():
+    try:
+        socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=float(sys.argv[3])).close()
+        os._exit(0)
+    except OSError:
+        os._exit(1)
+threading.Thread(target=probe, daemon=True).start()
+time.sleep(float(sys.argv[3]))
+os._exit(1)' "$1" "$2" "$3"
+}
+
+# The hub-ready block (design, "Satellite readiness"): read-only, one line per
+# check, `ok`, `--` when it cannot be read now, or NOT-READY. Not a drift word:
+# a satellite that is no standby is not drifted, so the nightly drift count
+# leaves it out, and promote's preflight refuses on any NOT-READY line.
+hub_ready() {
+  echo "== hub-ready"
+  if [ -f "$PROMOTE_MARKER" ]; then
+    echo "  NOT-READY promote stopped before its end: $PROMOTE_MARKER names step $(marker_get step); rerun: $(basename "$SELF") promote --apply"
+  fi
+  if hub_role; then
+    echo "  ok      this machine holds the hub role (promoted)"
+    return 0
+  fi
+  if [ ! -e "$SD_HUB_CONFIG" ]; then
+    echo "  NOT-READY no $SD_HUB_CONFIG: this machine is not a satellite"
+    return 0
+  fi
+  # shellcheck disable=SC2046 # two words, host and port
+  set -- $(hub_named "$SD_HUB_CONFIG")
+  if [ -z "${1:-}" ]; then
+    echo "  NOT-READY $SD_HUB_CONFIG names no hub"
+    return 0
+  fi
+  echo "  ok      $SD_HUB_CONFIG names $1:$2"
+  # The hub holds the setting; a dead hub cannot say, and promote checks it
+  # again in the restored database before it takes the name.
+  if hr_name=$(bound_step 30 sd config get sd.hub_name 2>/dev/null); then
+    if [ "$hr_name" = "$1" ]; then
+      echo "  ok      sd.hub_name is $hr_name"
+    elif [ -z "$hr_name" ]; then
+      echo "  NOT-READY sd.hub_name is unset: on the hub, sd config set sd.hub_name $1"
+    else
+      echo "  NOT-READY sd.hub_name is $hr_name, and $SD_HUB_CONFIG names $1; satellites would not find the promoted hub"
+    fi
+  else
+    echo "  --      sd.hub_name not read from the hub; promote reads it from the restored database"
+  fi
+  hr_roots=$(promote_roots)
+  if [ -z "$hr_roots" ]; then
+    echo "  NOT-READY no backup root: set OFFSITE_VERIFY_ROOT in $(st_config_dir mirror-sync)/.env, or pass --from DIR"
+  fi
+  hr_newest=""
+  for hr_root in $(printf '%s\n' "$hr_roots" | tr ' ' '\001'); do
+    hr_root=$(printf '%s' "$hr_root" | tr '\001' ' ')
+    if ls "$hr_root" >/dev/null 2>&1; then
+      echo "  ok      backup root readable: $hr_root"
+      # shellcheck disable=SC2010 # dated names only, as the backup writes them
+      hr_last=$(ls "$hr_root" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' | sort -t. -k1,1 -k2,2n | tail -1)
+      [ -z "$hr_last" ] || [ -n "$hr_newest" ] || hr_newest="$hr_root/$hr_last"
+    else
+      echo "  NOT-READY backup root not readable: $hr_root"
+    fi
+  done
+  for hr_label in $(hub_role_labels agent); do
+    [ "$hr_label" != "$LABEL_PREFIX.task-actions" ] || continue
+    # As agent_source will once the role is held.
+    hr_src="$AGENT_DIR/$hr_label.plist"
+    [ -f "$hr_src" ] || hr_src="$DIR/examples/launchagents/local.system-tools.${hr_label#"$LABEL_PREFIX".}.plist"
+    if [ ! -f "$hr_src" ]; then
+      echo "  NOT-READY no plist for $hr_label in $AGENT_DIR or $DIR/examples/launchagents"
+    else
+      echo "  ok      $hr_label plist: $hr_src"
+    fi
+  done
+  if hr_jobs=$(defined_cron_jobs); then
+    for hr_job in $(hub_role_labels cron); do
+      if printf '%s\n' "$hr_jobs" | grep -qxF "$hr_job"; then
+        echo "  ok      job file $hr_job"
+      else
+        echo "  NOT-READY no job file $hr_job.job in $(st_config_dir cron-jobs)/jobs"
+      fi
+    done
+  else
+    echo "  NOT-READY the cron-jobs folders could not be read"
+  fi
+  hr_dest=$(hourly_destination)
+  if [ -z "$hr_dest" ]; then
+    echo "  NOT-READY the hourly job file names no SD_DB_BACKUP_HOURLY_DESTINATION; on a satellite it names a local root"
+  elif [ ! -d "$(dirname "$hr_dest")" ]; then
+    echo "  NOT-READY the hourly backup root's parent is missing: $hr_dest"
+  else
+    echo "  ok      hourly backup root: $hr_dest"
+  fi
+  if [ -z "$hr_newest" ]; then
+    echo "  NOT-READY no dated snapshot under the backup roots"
+  else
+    hr_need=$(( $(du -sk "$hr_newest" | awk '{print $1}') * 2 ))
+    hr_free=$(df -k "$HOME" | awk 'NR == 2 {print $4}')
+    if [ "${hr_free:-0}" -gt "$hr_need" ]; then
+      echo "  ok      free disk ${hr_free} KiB, over twice $hr_newest"
+    else
+      echo "  NOT-READY free disk ${hr_free:-unknown} KiB, under twice $hr_newest ($hr_need KiB)"
+    fi
+  fi
+}
+
+promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
+
+# Step 4, 5 and the seed are the ones that move files; each first records what
+# it will move, so a rerun finds it.
+cmd_promote() {
+  load_profile
+  echo "profile : $PROFILE"
+  step=$(marker_get step)
+  if [ "$APPLY" -ne 1 ]; then
+    echo "mode    : DRY RUN — nothing will change; re-run with --apply"
+    if [ -n "$step" ]; then echo "marker  : $PROMOTE_MARKER, at step $step"; fi
+    echo
+    hub_ready
+    echo
+    echo "steps   : 1 preflight, 2 drain the lanes, 3 marker, 4 hub.json aside, 5 restore --newest,"
+    echo "          seed the hourly root, 7 take the hub's tailnet name, 8 install the hub role, 9 prove and report"
+    return 0
+  fi
+  # Step 2: the lanes are held through refresh_drain.py, which runs this verb
+  # again as its child, as follow does (sd:3100). Every apply holds them.
+  if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
+    # The drain wants the verb first: `promote --apply`, however it was typed.
+    for a in "$@"; do shift; [ "$a" = promote ] || set -- "$@" "$a"; done
+    # shellcheck disable=SC2031 # ROOT moved only in hourly_destination's subshell
+    exec python3 "$ROOT/local-repo-sync/refresh_drain.py" "$SELF" promote "$@"
+  fi
+  if [ -z "$step" ]; then
+    # Step 1: nothing moves until every check passes.
+    [ -e "$SD_HUB_CONFIG" ] || promote_refuse "no $SD_HUB_CONFIG: this machine is not a satellite. An old hub becomes one first: README, 'Hub failover'"
+    [ ! -e "$SD_DB" ] || promote_refuse "a database is here already, $SD_DB, beside $SD_HUB_CONFIG; move one aside by hand"
+    # shellcheck disable=SC2046 # two words, host and port
+    set -- $(hub_named "$SD_HUB_CONFIG")
+    [ -n "${1:-}" ] || promote_refuse "$SD_HUB_CONFIG names no hub"
+    if hub_answers "$1" "$2" "${PROMOTE_PROBE_SECONDS:-30}"; then
+      promote_refuse "the hub $1:$2 answers; promote only a dead hub's satellite"
+    fi
+    ready=$(hub_ready)
+    printf '%s\n' "$ready"
+    if printf '%s\n' "$ready" | grep -q 'NOT-READY'; then
+      promote_refuse "a hub-ready line is not ok; nothing moved"
+    fi
+    # Step 3.
+    marker_set hub "$1"
+    marker_set port "$2"
+    marker_set step 4
+    step=4
+  fi
+  hub=$(marker_get hub)
+  if [ "$step" = 4 ]; then
+    moved=$(marker_get moved)
+    if [ -z "$moved" ]; then
+      moved="$SD_HUB_CONFIG.promoted-$(date -u +%Y%m%dT%H%M%SZ)"
+      marker_set moved "$moved"
+    fi
+    # A kill after the move and before the marker: the file is already aside.
+    if [ -e "$SD_HUB_CONFIG" ]; then mv "$SD_HUB_CONFIG" "$moved"; fi
+    echo "step 4  : $SD_HUB_CONFIG moved to $moved"
+    marker_set step 5
+    step=5
+  fi
+  if [ "$step" = 5 ]; then
+    set --
+    for pr in $(promote_roots | tr ' ' '\001'); do set -- "$@" "$(printf '%s' "$pr" | tr '\001' ' ')"; done
+    rc=0
+    out=$("$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1 </dev/null) || rc=$?
+    printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ]; then
+      if [ ! -e "$SD_DB" ]; then
+        # Nothing restored: back to the satellite this machine was.
+        mv "$(marker_get moved)" "$SD_HUB_CONFIG"
+        rm -f "$PROMOTE_MARKER"
+        echo "promote: restore --newest failed (exit $rc); nothing restored, $SD_HUB_CONFIG is back" >&2
+      else
+        echo "promote: restore --newest failed (exit $rc) after it wrote $SD_DB; rerun promote --apply to restore again" >&2
+      fi
+      exit 1
+    fi
+    snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db: restored \(.*\) (checkpoint \(.*\)) to .*/\1/p' | tail -1)
+    taken=$(printf '%s\n' "$out" | sed -n 's/^sd-db: restored .* (checkpoint \(.*\)) to .*/\1/p' | tail -1)
+    marker_set snapshot "$snapshot"
+    marker_set taken "$taken"
+    marker_set released "$(printf '%s\n' "$out" | sed -n 's/^sd-db: released .*: //p' | tail -1)"
+    marker_set step 6
+    step=6
+  fi
+  if [ "$step" = 6 ]; then
+    # The seed (sd:4012 note 18111): the hourly job names each snapshot after
+    # the newest in its local root. An empty root restarts the day's numbers,
+    # and the additive NAS copy then writes into the NAS directories of the
+    # same names. The restored snapshot in the local root continues them.
+    snapshot=$(marker_get snapshot)
+    dest=$(hourly_destination)
+    [ -n "$dest" ] && [ -d "$(dirname "$dest")" ] ||
+      promote_refuse "the hourly job file names no local root to seed; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
+    seeded="$dest/$(basename "$snapshot")"
+    if [ ! -d "$seeded" ]; then
+      mkdir -p "$dest"
+      rm -rf "$seeded.seeding"
+      if ! cp -R "$snapshot" "$seeded.seeding" || ! mv "$seeded.seeding" "$seeded"; then
+        promote_refuse "could not copy $snapshot into $dest; rerun"
+      fi
+    fi
+    echo "seed    : $seeded"
+    marker_set step 7
+    step=7
+  fi
+  if [ "$step" = 7 ]; then
+    fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || :
+    case "$fence" in
+      *"fence: off:"*)
+        promote_refuse "sd.hub_name is unset in the restored database, so no machine can hold the role: sd config set sd.hub_name $hub, then rerun" ;;
+      *"fence: holder:"*) ;;
+      *)
+        short=${hub%%.*}
+        held=$(bound_step 60 tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+want = sys.argv[1].lower()
+try:
+    status = json.load(sys.stdin)
+except ValueError:
+    print("?")
+    sys.exit()
+for peer in (status.get("Peer") or {}).values():
+    names = [peer.get("HostName") or "", (peer.get("DNSName") or "").split(".")[0]]
+    if want in (n.lower() for n in names):
+        print(peer.get("DNSName") or peer.get("HostName"))
+        break' "$short")
+        if [ "$held" = "?" ]; then
+          promote_refuse "tailscale status did not answer; rerun once Tailscale is up"
+        elif [ -n "$held" ]; then
+          echo "promote: the tailnet node $held still holds the name $short." >&2
+          echo "  In the Tailscale admin console, rename or remove that machine, then rerun: $(basename "$SELF") promote --apply" >&2
+          exit 1
+        fi
+        bound_step 60 tailscale set "--hostname=$short" || promote_refuse "tailscale set --hostname=$short failed; rerun"
+        fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>&1) || :
+        case "$fence" in
+          *"fence: holder:"*) ;;
+          *) promote_refuse "the fence does not read holder after the rename: $fence; rerun" ;;
+        esac ;;
+    esac
+    echo "step 7  : $fence"
+    marker_set step 8
+    step=8
+  fi
+  if [ "$step" = 8 ]; then
+    # The stages read the fence themselves, so they add the role only now.
+    for st in sd cron agents; do
+      sh "$SELF" update "$st" --apply || promote_refuse "the $st stage did not finish; rerun"
+    done
+    marker_set step 9
+    step=9
+  fi
+  # Step 9: one session on this machine's sd-serve, by the hub's name.
+  port=$(marker_get port)
+  if ! "$SD_DB_PYTHON" -I -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from sd_db import hub, remote
+session = remote.connect(sys.argv[2], int(sys.argv[3]), None, token="", write=False,
+                         timeout=hub.CONNECT_TIMEOUT, answer_timeout=hub.ANSWER_TIMEOUT)
+try:
+    session.execute("SELECT count(*) FROM sqlite_master").fetchone()
+finally:
+    session.close()' "$SD_PACK_ROOT/lib" "$hub" "$port" </dev/null; then
+    promote_refuse "no session on $hub:$port; check sd-serve (launchctl print gui/$(id -u)/$LABEL_PREFIX.sd-serve), then rerun"
+  fi
+  echo
+  echo "hub failover report"
+  echo "  snapshot    : $(marker_get snapshot)"
+  echo "  checkpoint  : $(marker_get taken); writes after this time are lost"
+  echo "  not backed up, so lost: evidence/ jev-corpus/ jev-snapshots/ runner-ending/ runtime-backups/ runtimes/ ship-locks/ and the lane queues"
+  echo "  leases released: $(marker_get released)"
+  echo "  hub.json    : $(marker_get moved)"
+  echo "  lanes       : enqueue each NULL-host repository's open pull requests again (sd-ship lane enqueue)"
+  echo "  dispatch stays paused: read this, then run sd restore resume"
+  rm -f "$PROMOTE_MARKER"
+}
+
 # ------------------------------------------------------------------ main ----
 
 VERB=""
 ARG=""
 ARG2=""
+FROM_NEXT=0
 for a in "$@"; do
+  if [ "$FROM_NEXT" = 1 ]; then PROMOTE_FROM="$PROMOTE_FROM$a
+"; FROM_NEXT=0; continue; fi
   case "$a" in
     --apply) APPLY=1 ;;
+    --from) [ "$VERB" = promote ] || die "--from belongs to promote"; FROM_NEXT=1 ;;
     --additive) ADDITIVE=1 ;;
     --fail-on-drift) FAIL_ON_DRIFT=1 ;;
     --stale-ok) STALE_OK=1 ;;
@@ -5233,6 +5659,14 @@ for a in "$@"; do
                    a drift report, not a convention-6 health status: it runs
                    every stage, so the health sweep leaves it out; exit 3
                    when there is no profile directory or no recorded profile
+  promote          make this satellite the sd hub once the hub is dead
+                   (sd:4012): refuses while the hub answers or a hub-ready
+                   line is not ok; then holds the lanes, moves hub.json
+                   aside, restores the newest verified snapshot under the
+                   NAS roots and each --from DIR, seeds the hourly backup
+                   root, takes the hub's tailnet name and installs the hub
+                   role; a rerun goes on at the step the promote-intent
+                   marker names; without --apply prints the hub-ready lines
   doctor           read-only sanity check: CLT, brew, docker, fnm, key
                    material, launchd agents, and which .env files still
                    need filling in on this machine; on a profile with an sd
@@ -5393,6 +5827,7 @@ case "$VERB" in
   update)  cmd_update "$ARG" ;;
   capture) cmd_capture ;;
   status)  cmd_status ;;
+  promote) cmd_promote "$@" ;;
   compare)
     [ -n "$ARG" ] && [ -n "$ARG2" ] || die "compare needs two profiles, e.g. compare <a> <b> (see: $(basename "$0") profiles)"
     cmd_compare "$ARG" "$ARG2"

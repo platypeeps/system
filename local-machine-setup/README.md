@@ -52,6 +52,8 @@ change I made on this machine back into its profile*.
 ./machine-setup.sh decommission        # retire machine: dirty-repo scan, job/agent
                                        # removal with --apply (asks you to type
                                        # "decommission" first), manual sign-off list
+./machine-setup.sh promote --apply     # make this satellite the sd hub once the
+                                       # hub is dead: see "Hub failover"
 ```
 
 **Everything is a dry run without `--apply`.** That is the default on purpose:
@@ -165,7 +167,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `repos` | clone/pull the repo fleet; write the shared `CLAUDE.local.md` keys (`SHARED_LOCAL_KEYS` in `claude_settings.py`) into each auto repo's `SD-AI-COMMAND-PACK:LOCAL` block, keeping the repo's own keys (a file git does not ignore is reported, not written); install `local-leak-guard`'s pre-push hook in each public managed repo checked out here (a hook another tool wrote is reported, not replaced) | `local-repo-sync`, the pack's `bin/sd-db`, `local-leak-guard` |
 | `cron` | install launch agents: the profile's `.cron` jobs plus every job in this host's own folder (`cron-jobs/jobs/<host>/`). A `CRON_JOBS_EXTRA_DIRS` job runs only when the profile names it. Any other job that `local-cron-jobs` installed is `EXTRA` and is uninstalled. An agent under `<prefix>.cron.` that `local-cron-jobs` did not install is `FOREIGN` and stays in place, even when the profile names it; one whose plist cannot be read is `UNKNOWN` and stays too. The stage knows its own plists by their label and their `cron-jobs.sh exec <job>` command, which every installed job carries. A job in `local-cron-jobs/retired-jobs.txt` is never installed; one that `local-cron-jobs` installed is `EXTRA` and is uninstalled, and a `note` line names a profile or host folder that still lists it. When the host folder cannot be read, the stage prints `MISSING host job list` and uninstalls only retired jobs | `local-cron-jobs` |
 | `sd` | the workflow database (`bin/sd-db init`) and the dashboard's private `tailscale serve` route on 8443 to 127.0.0.1:8767, on a profile whose `.agent` lists `<prefix>.sd-dashboard`. Runs before `agents`, because the dashboard opens the database at startup. A :8443 that already serves something else is `DIFFERS` and left alone, and so is a `~/.config/sd/dashboard.json` naming a `database` other than `~/.local/share/sd/sd.db`. On the hub, a profile without `<prefix>.sd-serve` or a config folder without its template is `MISSING`, and a `~/.config/sd/hub.json` is `EXTRA` and stays | the pack's `bin/sd-db`, `tailscale` |
-| `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's `lib/sd_db`, which every caller runs, is the hub's build (`DIFFERS` names both values; `local-repo-sync/repo-sync.sh follow` moves the pack to the hub's pin, sd:3279), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` from `$SD_PACK_ROOT/lib` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
+| `satellite` | on a profile with a `.satellite`: writes `~/.config/sd/hub.json`, checks that the pack's `lib/sd_db`, which every caller runs, is the hub's build (`DIFFERS` names both values; `local-repo-sync/repo-sync.sh follow` moves the pack to the hub's pin, sd:3279), and installs the hub's `providers.yaml`. A local `sd.db` is `EXTRA` and stops the stage; a hub that does not answer is `SKIP`. On a satellite (a `.satellite` or a `hub.json`, and no hub agent in the profile), each hub-only job in `SD_HUB_ONLY_AGENTS` that is installed or loaded is `EXTRA` and stays. A satellite that holds the hub role (see "Hub failover") is `SKIP`. Where `jev` is on `PATH`, a missing jev shadow file is `MISSING`, and `--apply` runs `jev shadow on` (sd:2838). Installs no LaunchAgent | `sd_db.satellite` from `$SD_PACK_ROOT/lib` under `SD_DB_PYTHON` (default: the pack's virtualenv) |
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | turn self-update off in installed apps that hold a TCC grant, set the screen saver idle time to 0 on every profile (`defaults -currentHost`, no manifest line), then apply `defaults` settings | `python3` |
@@ -345,6 +347,55 @@ It admits only the untagged nodes of the node's owner, by `tailscale whois`, and
 On a satellite, put the hub's name in `<profile>.satellite`, then run `machine-setup.sh update satellite --apply`.
 The stage writes `~/.config/sd/hub.json`, checks the pack's `sd_db` build against the hub's, and installs the hub's `providers.yaml`.
 The satellite runs none of the hub's agents and jobs; `SD_HUB_ONLY_AGENTS` in `machine-setup.sh` lists them.
+
+### Hub failover
+
+When the hub dies, `machine-setup.sh promote` makes a satellite the hub (sd:4012).
+Design and failure table: `docs/work/2026-10-10-hub-failover/design.md`.
+
+The hub role is a state, not a profile.
+A satellite holds it while it has no `hub.json`, has a local `sd.db`, and the pack's `sd-db fence` reads `holder`.
+While it holds the role, the `sd`, `cron` and `agents` stages add the hub's agents and jobs (`SD_HUB_ONLY_AGENTS`, less the iCloud mirror) on top of its own profile.
+A plist comes from the config folder's `launchagents/`, else from `examples/launchagents/`; job files come from the satellite's own `cron-jobs/jobs/`.
+
+Get the standby ready, once:
+
+1. On the hub, run `sd config set sd.hub_name <hub MagicDNS name>`: the name in every satellite's `hub.json`.
+2. On the standby, write its own hub-role job files: `sd-db-backup`, `sd-db-backup-hourly`, `offsite-verify` and `shadow-sync-nightly`.
+   The hourly job sets `SD_DB_BACKUP_HOURLY_DESTINATION` to a folder on this machine; the nightly job sets `SD_DB_BACKUP_DESTINATION` the same way.
+3. Set `OFFSITE_VERIFY_ROOT` in `<config>/mirror-sync/.env`: promote restores from its `sd-backups-hourly` and `sd-backups` folders.
+4. Run `machine-setup.sh promote` (a dry run) or `status`, and read the `hub-ready` block.
+   Each line reads `ok`, `--` (cannot be read now) or `NOT-READY`; it is not counted as drift.
+
+Promote, once the hub is dead:
+
+1. Run `machine-setup.sh promote --apply` on the standby. Add `--from DIR` for another root, such as the hub's USB disk.
+   It refuses while the hub answers, or while a `hub-ready` line reads `NOT-READY`.
+2. It holds the lanes, moves `hub.json` to `hub.json.promoted-<UTC stamp>`, and runs `sd-db restore --newest` over the roots.
+   It copies the restored snapshot into the hourly root, so the next hourly run does not reuse a name the NAS already holds.
+3. It refuses while the restored database has no `sd.hub_name`: run `sd config set sd.hub_name <name>`, then run promote again.
+4. If the dead node still holds the hub's tailnet name, it stops and prints the one console step.
+   Rename or remove that machine in the Tailscale admin console, then run promote again.
+5. It renames this node, installs the hub role, opens one session on its own `sd-serve` by the hub's name, and prints the loss report.
+6. Read the report. Enqueue each NULL-host repository's open pull requests again, then run `sd restore resume`.
+
+A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next step; `promote --apply` goes on from there.
+`status` names the marker in its `hub-ready` block.
+
+Hand the role back to a personal machine (`promote --undo`, sd:4048, is not built yet; these are its steps):
+
+1. On the standby, boot out the hub-role agents and jobs, then run the hourly backup once: its snapshot is the hand-back point.
+2. On the repaired or new hub, make it a satellite (below), then run `promote --apply` from that snapshot. The console step moves the name back.
+3. On the standby, check that `sd-db fence` reads `elsewhere` and that the new hub answers a session.
+4. On the standby, delete `~/.local/share/sd/` and the local backup roots the hub-role jobs wrote.
+5. Move `hub.json.promoted-<stamp>` back to `~/.config/sd/hub.json`, then run `machine-setup.sh update satellite --apply`.
+
+Make an old hub a satellite, so it can take the role back or rejoin:
+
+1. Move its `~/.local/share/sd/sd.db` to `sd.db.demoted-<date>`. It holds the writes after the last snapshot; copy any item or note back by hand.
+2. Copy `~/.config/sd/hub.json` from any satellite. To rejoin for good, also add `<profile>.satellite` and run `machine-setup.sh update satellite --apply`.
+
+Until then, the fence keeps a returning old hub from writing off the machine: its NAS copies and its `hub-pin` push refuse.
 
 ### Drift alerts
 

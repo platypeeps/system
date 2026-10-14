@@ -40,7 +40,7 @@ locks and the gate together (operator ruling), or REPO_SYNC_DRAIN_WAIT
 seconds. Past it, refresh refuses with nothing moved and names what was
 busy.
 
-Usage: refresh_drain.py <repo-sync.sh> refresh|follow [path ...]
+Usage: refresh_drain.py <repo-sync.sh> refresh|follow [path ...], or <machine-setup.sh> promote [args ...]
 """
 
 import fcntl
@@ -244,7 +244,9 @@ def drain(env, names=()):
 
 
 def main(argv):
-    if len(argv) < 3 or argv[2] not in ("refresh", "follow"):
+    # promote is machine-setup.sh's (hub failover, sd:4012): no ship may run
+    # while the database moves onto this machine.
+    if len(argv) < 3 or argv[2] not in ("refresh", "follow", "promote"):
         print(__doc__.strip().splitlines()[-1], file=sys.stderr)
         return 2
     script, verb, args = argv[1], argv[2], argv[3:]
