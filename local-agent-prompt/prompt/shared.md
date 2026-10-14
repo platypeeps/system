@@ -65,6 +65,7 @@ Also ask, and probe until clear, when a requirement, scope or approach is uncert
 Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
 In an unattended run (builder, lane, scheduled job), file the question with `sd task note --kind question` for the dashboard and continue with work that does not depend on it.
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
+Write a park trigger as an sd item that must reach done, or a named measurement with an owner and a date: two free-text triggers fired unnoticed (sd:2453, sd:3355).
 When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time; show up to five per section, the rest stay in the database for `sd today` and the dashboard.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
@@ -120,6 +121,8 @@ Builders run only foreground test runs of 10 minutes or less, never `run_in_back
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
 Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.
+Enqueue an item only after its builder's final report and `ListAgents` shows it idle; a builder never pushes to a branch handed to the lane: two shared-worktree writes lost commits (sd:3399, sd:2695).
+A PR that raises a measured budget constant cites a fresh measurement in its body, or the lane review blocks it: 10916c3 raised `MAX_IR_MSGPACK_BYTES` unmeasured (sd:3678).
 Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
 Run a suite the way the gate runs it, against the pinned pack in `.ci/pack`, not the live one: three gate failures passed locally (sd:3534 adds `make test SUITE=`).
 After a hub refresh, run `dashboard.sh health` and kickstart a service still on the old build: three stale-service incidents in three days (until sd:3528).
@@ -128,6 +131,7 @@ After a hub refresh, run `dashboard.sh health` and kickstart a service still on 
 
 A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
 Before such a design enters the lane, its builder runs one read-only adversarial `codex exec` review and fixes what it finds: 4 such designs took 2 to 6 lane rounds (sd:2997).
+New proof or validation code carries a property test over extreme magnitudes (overflow, inf, subnormal, zero, nested input) before round 1: that class cost 6 rounds on sd:2406 alone.
 Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
 After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
 Then stop single-finding fixes and do one class pass: name the class and enumerate every instance from the code, not the findings.

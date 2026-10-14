@@ -528,23 +528,6 @@ def field(fm, name):
     return m.group(1).strip() if m else ""
 
 
-def list_field(fm, name):
-    """A YAML block list (`contexts:` + `  - value` lines), or a comma scalar."""
-    m = re.search(rf"(?m)^{re.escape(name)}:[ \t]*(.*)$", fm or "")
-    if not m:
-        return []
-    inline = m.group(1).strip().strip("[]")
-    if inline:
-        return [v.strip().strip("\"'") for v in inline.split(",") if v.strip()]
-    out = []
-    for line in (fm or "").split("\n")[fm[:m.start()].count("\n") + 1:]:
-        item = re.match(r"^[ \t]+-[ \t]+(.*)$", line)
-        if not item:
-            break
-        out.append(item.group(1).strip().strip("\"'"))
-    return out
-
-
 def age_days(iso):
     try:
         return (TODAY() - datetime.date.fromisoformat(iso[:10])).days
@@ -946,29 +929,11 @@ def collect_research():
 
 
 def collect_areas():
-    """Vault areas, with the task and inbox pressure that actually says
-    whether an area is moving."""
+    """Vault areas, with the inbox pressure that says whether an area is moving."""
     blocked = vault_blocked()
     if blocked:
-        return {"error": blocked, "areas": [], "open_tasks": 0, "overdue": 0,
-                "due_today": 0, "inbox": 0, "stale_inbox": [], "followups": {},
-                "vault": str(VAULT)}
-
-    tasks_dir = VAULT / "TaskNotes" / "Tasks"
-    by_area, overdue, due_today, open_total = {}, 0, 0, 0
-    today = TODAY().isoformat()
-    for f in sorted(tasks_dir.glob("*.md")):
-        fm, _ = frontmatter(f)
-        if fm is None or field(fm, "status") == "done":
-            continue
-        open_total += 1
-        for c in (list_field(fm, "contexts") or ["(none)"]):
-            by_area[c] = by_area.get(c, 0) + 1
-        due = field(fm, "due")[:10] or field(fm, "scheduled")[:10]
-        if due and due < today:
-            overdue += 1
-        elif due == today:
-            due_today += 1
+        return {"error": blocked, "areas": [], "inbox": 0, "stale_inbox": [],
+                "followups": {}, "vault": str(VAULT)}
 
     areas = []
     for name in vault_areas():
@@ -981,7 +946,6 @@ def collect_areas():
         areas.append({
             "name": name, "key": key, "notes": len(notes),
             "subfolders": sorted(p.name for p in d.glob("*") if p.is_dir() and p.name != "space"),
-            "tasks": by_area.get(key, 0),
             "latest": latest.stem if latest else "",
             "latest_when": datetime.date.fromtimestamp(latest.stat().st_mtime).isoformat()
             if latest else "",
@@ -999,7 +963,7 @@ def collect_areas():
             label = b.stem.replace("Followup - ", "")
             followups[label] = len(list((fdir / label).glob("*.md"))) if (fdir / label).is_dir() else 0
     return {
-        "areas": areas, "open_tasks": open_total, "overdue": overdue, "due_today": due_today,
+        "areas": areas,
         "inbox": len(inbox), "stale_inbox": sorted(stale_inbox, key=lambda n: n["name"]),
         "followups": followups, "vault": str(VAULT),
     }

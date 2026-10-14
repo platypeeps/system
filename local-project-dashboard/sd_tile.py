@@ -500,7 +500,7 @@ def tab_toolbox(collectors) -> dict:
 
 
 def tab_vault(collectors) -> dict:
-    """Vault areas, and the task and inbox pressure behind them."""
+    """Vault areas, and the inbox pressure behind them."""
     got = collectors.collect_areas()
     if got.get("error"):
         # The collector reports a blocked vault as a field rather than an
@@ -513,9 +513,6 @@ def tab_vault(collectors) -> dict:
     parts = [
         figures(
             [
-                ("open tasks", got["open_tasks"]),
-                ("overdue", got["overdue"]),
-                ("due today", got["due_today"]),
                 ("inbox", got["inbox"]),
                 ("stale inbox", len(got["stale_inbox"])),
             ]
@@ -524,7 +521,6 @@ def tab_vault(collectors) -> dict:
             [
                 ("Area", "text"),
                 ("Notes", "num"),
-                ("Tasks", "num"),
                 ("Latest note", "text"),
                 ("When", "text"),
             ],
@@ -532,7 +528,6 @@ def tab_vault(collectors) -> dict:
                 [
                     {"text": area["name"], "title": ", ".join(area["subfolders"])},
                     num(area["notes"]),
-                    num(area["tasks"]),
                     area["latest"],
                     area["latest_when"],
                 ]
@@ -555,18 +550,7 @@ def tab_vault(collectors) -> dict:
             listing([note["name"] for note in got["stale_inbox"][:LIST_ROWS]]),
         ]
 
-    rows = []
-    if got["overdue"]:
-        rows.append(
-            {
-                "rank": 1,
-                "kind": "tasks",
-                "id": f"overdue:{got['overdue']}",
-                "what": f"{got['overdue']} task{'s' if got['overdue'] > 1 else ''} overdue",
-                "detail": f"{got['due_today']} due today \u00b7 {got['open_tasks']} open",
-            }
-        )
-    rows += [
+    rows = [
         {"rank": 3, "kind": "inbox", "id": f"inbox:{note['name']}",
          "what": note["name"], "detail": "inbox note untouched for a week"}
         for note in got["stale_inbox"]
