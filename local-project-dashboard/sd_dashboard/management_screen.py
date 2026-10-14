@@ -561,7 +561,12 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value, befor
     if field == "channels":
         # sd:3465: `set_channels` validates the object and checks `before` inside its own write transaction.
         path, was = setter(connection, path, value, before=before)
-        return {"path": path, "field": column, "value": channels.dumps(None if value is None else channels.validate(value)),
+        # sd:4632: the library keeps the inbound keys a set omits, so the row, not the posted object, is the new setting
+        # that the form's Undo compares against. A row that cannot be read back is unknown, not the posted value.
+        row = repos.row_for(connection, path)
+        if row is None:
+            raise repos.RepoRefusal(f"{path} was written but cannot be read back; read the page again")
+        return {"path": path, "field": column, "value": channels.canonical(row[column]),
                 "before": was, "remedy": f"Run `sd-research-kit render` in {path} to publish under it, or wait for the next commit."}
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)

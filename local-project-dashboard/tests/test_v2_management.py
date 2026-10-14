@@ -325,6 +325,21 @@ class TheDocument(ScreenCase):
         got = management_screen.set_repo(self.connection, "channels", checkout, None, written)
         self.assertEqual((got["value"], got["before"], row()["channels"]), ("none", written, "none"))
 
+    def test_a_channels_write_answers_the_stored_value_when_the_library_keeps_a_feed(self):
+        """sd:4632: a set that omits `feed` keeps the stored one, so the answer is the row read back, not the posted object:
+        the form's Undo then compares against what the row holds."""
+        checkout = self.ids["checkout"]
+        feed = '{"feed":{"url":"https://example.test/feed.xml"}}'
+        self.connection.execute("UPDATE repo SET channels = ? WHERE path = ?", (feed, checkout))
+        self.connection.commit()
+        stored = lambda: self.connection.execute("SELECT channels FROM repo WHERE path = ?", (checkout,)).fetchone()[0]  # noqa: E731
+        got = management_screen.set_repo(self.connection, "channels", checkout, {"obsidian": {}}, feed)
+        kept = '{"feed":{"url":"https://example.test/feed.xml"},"obsidian":{}}'
+        self.assertEqual(stored(), kept)
+        self.assertEqual((got["value"], got["before"]), (kept, feed))
+        got = management_screen.set_repo(self.connection, "channels", checkout, {"obsidian": {}}, kept)
+        self.assertEqual(got["value"], kept, "a set that changes nothing answers the row, still")
+
     def test_a_stored_channels_value_the_library_refuses_is_named_not_read_as_the_defaults(self):
         # sd:3465: `repo_channels` raises on such a value rather than publish to the defaults; the form says why and offers Clear.
         self.connection.execute("UPDATE repo SET channels = ? WHERE path = ?", ('{"site": {}}', self.ids["checkout"]))
@@ -879,7 +894,7 @@ fill('obsidian', true, ' Briefs/x '); fill('notion', false, 'Ignored'); fill('dr
 propose('channels', 'on'); R.cmd = pending[0].cmd; R.title = pending[0].title; R.note = pending[0].note;
 C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();
 fill('obsidian', false, ''); fill('drive', false, ''); propose('channels', 'on'); R.left = pending.length;""",
-                            search=f"?repo={path}", answer="(p, b) => [200, { remedy: " + json.dumps(remedy) + " }]")
+                            search=f"?repo={path}", answer="(p, b) => [200, { value: '{\"drive\":{},\"obsidian\":{\"folder\":\"Briefs/x\"}}', remedy: " + json.dumps(remedy) + " }]")
         page = out["R"]["page"]
         self.assertIn('data-key="channels"', page)
         self.assertIn('<span class="no">none · defaults</span>', page)
@@ -896,6 +911,42 @@ fill('obsidian', false, ''); fill('drive', false, ''); propose('channels', 'on')
         self.assertEqual(out["R"]["toast"], f"Ran locally · channels none → obsidian=Briefs/x drive= · {remedy}")
         self.assertEqual(out["R"]["left"], 0)
         self.assertEqual(out["toasts"][-1], ["Not proposed: no channel is checked. Clear setting removes the setting.", False])
+
+    FEED = '{"url":"https://example.test/feed.xml"}'
+
+    def stored_doc(self, text):
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])["channels"] = text
+        return doc
+
+    def test_the_channels_form_undoes_against_the_value_the_write_answered_when_a_feed_was_kept(self):
+        """sd:4632: the library keeps the stored feed, so the row after the write is not the posted object. Undo posts the
+        answered value as its `before` and writes back the whole old setting, feed included."""
+        path = self.ids["checkout"]
+        old = '{"drive":{},"feed":' + self.FEED + '}'
+        kept = '{"feed":' + self.FEED + ',"obsidian":{}}'
+        out = self.run_page(self.FORM + """fill('obsidian', true, ''); fill('notion', false, ''); fill('drive', false, '');
+propose('channels', 'on'); C.run(cmd('sddb.run'), pending[0]); await flush(); await lastToast().undo(); await flush();""",
+                            doc=self.stored_doc(old), search=f"?repo={path}",
+                            answer="(p, b) => [200, { value: " + json.dumps(kept) + " }]")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/channels", {"path": path, "value": {"obsidian": {}}, "before": old}),
+                          ("/api/repos/channels", {"path": path, "value": {"drive": {}, "feed": json.loads(self.FEED)}, "before": kept})])
+
+    def test_a_form_that_matches_the_stored_channels_proposes_nothing_and_a_feed_only_row_has_no_undo(self):
+        """sd:4632: the stored feed is not part of the form's value, so an unchanged form is no change; a row that held
+        only a feed cannot be put back by a set, so that write offers no Undo rather than one that drops the feed."""
+        path = self.ids["checkout"]
+        out = self.run_page(self.FORM + """fill('obsidian', false, ''); fill('notion', false, ''); fill('drive', true, '');
+propose('channels', 'on'); R.same = pending.length;""",
+                            doc=self.stored_doc('{"drive":{},"feed":' + self.FEED + '}'), search=f"?repo={path}")
+        self.assertEqual(out["R"]["same"], 0)
+        out = self.run_page(self.FORM + """fill('obsidian', true, ''); fill('notion', false, ''); fill('drive', false, '');
+propose('channels', 'on'); C.run(cmd('sddb.run'), pending[0]); await flush(); await lastToast().undo(); await flush();""",
+                            doc=self.stored_doc('{"feed":' + self.FEED + '}'), search=f"?repo={path}",
+                            answer="(p, b) => [200, { value: '{}' }]")
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertIn("nothing to reverse", out["toasts"][-1][0])
 
     def test_a_channels_value_the_library_refuses_shows_why_and_clear_writes_none_without_an_undo(self):
         # sd:3465: such a value is not read as the defaults; it cannot be written back, so the clear has no Undo.
