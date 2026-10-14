@@ -204,6 +204,8 @@
   }
   function clear(err) { DOC = null; ROWS = []; WORK = []; WORK_ERROR = ''; SNOOZED = []; ACTIVE = null; failed = err.message; delete document.body.dataset.observed; }
   function draw() {
+    // Your issues (sd:4628) are this document's too; issues.js draws them, or the failure that left none.
+    document.dispatchEvent(new CustomEvent('issues:read', { detail: DOC ? { issues: DOC.issues || [], error: DOC.issues_error || '' } : { error: failed } }));
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
     $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;
