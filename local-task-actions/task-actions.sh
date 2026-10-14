@@ -1,9 +1,9 @@
 #!/bin/sh
-# task-actions — tiny localhost HTTP service that lets the Obsidian task
-# digest email carry "mark done" / "postpone" buttons. Links are HMAC-signed
-# and expire; the server binds 127.0.0.1 only and edits TaskNote frontmatter
-# in the vault. LaunchAgent pattern as in local-cswap.
-# Usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <action> [days]|test
+# task-actions — tiny localhost HTTP service that lets the Obsidian review
+# digest email carry decision buttons. Links are HMAC-signed and expire; the
+# server binds 127.0.0.1 only and flips one frontmatter status in the vault.
+# LaunchAgent pattern as in local-cswap.
+# Usage: task-actions.sh run|start|stop|status|base-url|url -b <db> <file-stem> <action>|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
@@ -26,7 +26,6 @@ OUT_LOG="$DIR/logs/task-actions.log"
 
 PORT="${TASK_ACTIONS_PORT:-8766}"
 VAULT="$(st_obsidian_vault)"
-TASKS_SUBDIR="${OBSIDIAN_TASKS_SUBDIR:-TaskNotes/Tasks}"
 SECRET_FILE="${TASK_ACTIONS_SECRET_FILE:-$HOME/.config/task-actions/secret}"
 
 ensure_secret() {
@@ -125,15 +124,14 @@ wait_until_unloaded() {
 
 cmd_run() {
   ensure_secret
-  exec /usr/bin/env PORT="$PORT" VAULT="$VAULT" TASKS_SUBDIR="$TASKS_SUBDIR" \
+  exec /usr/bin/env PORT="$PORT" VAULT="$VAULT" \
     SECRET_FILE="$SECRET_FILE" FOLDER="$DIR" \
     DASH_STATIC="$DIR/../local-project-dashboard/sd_dashboard/v2/static" python3 - <<'PY'
-import calendar, datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
+import datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ["PORT"])
 VAULT = pathlib.Path(os.environ["VAULT"])
-TASKS = VAULT / os.environ["TASKS_SUBDIR"]
 SECRET = open(os.environ["SECRET_FILE"]).read().strip().encode()
 
 # Decision databases (local-obsidian-review digest): key -> (folder,
@@ -156,10 +154,10 @@ DBS = {
     "topic": ("System/Databases/Topics",          {"adopt": "active", "park": "parked"}),
 }
 
-def sign(f, a, d, exp, db=""):
-    # db joined the payload later; db-less links keep the original format
-    # so task URLs already in mailboxes stay valid.
-    msg = (f"{db}|{f}|{a}|{d}|{exp}" if db else f"{f}|{a}|{d}|{exp}").encode()
+def sign(f, a, d, exp, db):
+    # d is a day count nothing reads any more; it stays in the payload so
+    # links already in mailboxes stay valid.
+    msg = f"{db}|{f}|{a}|{d}|{exp}".encode()
     return hmac.new(SECRET, msg, hashlib.sha256).hexdigest()
 
 def set_field(fm, name, value):
@@ -168,75 +166,6 @@ def set_field(fm, name, value):
     if re.search(pat, fm, re.M):
         return re.sub(pat, f"{name}: {value}", fm, count=1, flags=re.M)
     return fm + f"\n{name}: {value}"
-
-def on_or_before(year, month, day):
-    # The day in that month, or its last day when the month is shorter: a
-    # task on the 31st or on Feb 29 raised here and stayed undone (sd:3559).
-    return datetime.date(year, month, min(day, calendar.monthrange(year, month)[1]))
-
-def next_occurrence(rec, cur):
-    # Supports the four shapes TaskNotes uses here: DAILY/WEEKLY/MONTHLY/
-    # YEARLY with optional INTERVAL. Falls back to +1 day.
-    freq = (re.search(r"FREQ=(\w+)", rec) or [None, "DAILY"])[1]
-    iv = int((re.search(r"INTERVAL=(\d+)", rec) or [None, "1"])[1])
-    if freq == "DAILY":
-        return cur + datetime.timedelta(days=iv)
-    if freq == "WEEKLY":
-        return cur + datetime.timedelta(weeks=iv)
-    if freq == "MONTHLY":
-        # BYMONTHDAY keeps a task on the 31st there after a short month.
-        m = cur.month - 1 + iv
-        day = int((re.search(r"BYMONTHDAY=(\d+)(?![\d,])", rec) or [None, cur.day])[1]) or cur.day
-        return on_or_before(cur.year + m // 12, m % 12 + 1, day)
-    if freq == "YEARLY":
-        return on_or_before(cur.year + iv, cur.month, cur.day)
-    return cur + datetime.timedelta(days=1)
-
-def apply(f, action, days):
-    path = TASKS / f"{f}.md"
-    if not path.is_file() or ".." in f or "/" in f:
-        return None, "task file not found"
-    text = path.read_text()
-    m = re.match(r"(?s)^---\n(.*?)\n---(.*)$", text)
-    if not m:
-        return None, "no frontmatter"
-    fm, rest = m.group(1), m.group(2)
-    now = datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S.000%z")
-    now = now[:-2] + ":" + now[-2:]
-    sched = (re.search(r"^scheduled:\s*(\S+)", fm, re.M) or [None, ""])[1][:10]
-    rec = (re.search(r"^recurrence:\s*(\S+)", fm, re.M) or [None, ""])[1]
-
-    if action == "postpone":
-        base = datetime.date.fromisoformat(sched) if sched else datetime.date.today()
-        target = max(base, datetime.date.today()) + datetime.timedelta(days=days)
-        fm = set_field(fm, "scheduled", target.isoformat())
-        outcome = f"postponed to {target.isoformat()}"
-    elif action == "done":
-        if rec:
-            # Recurring: record this occurrence and advance the schedule.
-            cur = datetime.date.fromisoformat(sched) if sched else datetime.date.today()
-            if re.search(r"^complete_instances:\s*\[", fm, re.M):
-                fm = re.sub(r"^complete_instances:\s*\[",
-                            f"complete_instances: ['{cur.isoformat()}', ",
-                            fm, count=1, flags=re.M) if "[]" not in \
-                    re.search(r"^complete_instances:.*$", fm, re.M).group(0) else \
-                    re.sub(r"^complete_instances:\s*\[\]",
-                           f"complete_instances: ['{cur.isoformat()}']",
-                           fm, count=1, flags=re.M)
-            else:
-                fm += f"\ncomplete_instances: ['{cur.isoformat()}']"
-            nxt = next_occurrence(rec, cur)
-            fm = set_field(fm, "scheduled", nxt.isoformat())
-            outcome = f"occurrence {cur.isoformat()} done, next {nxt.isoformat()}"
-        else:
-            fm = set_field(fm, "status", "done")
-            outcome = "marked done"
-    else:
-        return None, "unknown action"
-
-    fm = set_field(fm, "dateModified", now)
-    path.write_text(f"---\n{fm}\n---{rest}")
-    return outcome, None
 
 def apply_note(db, f, action):
     # Decision databases: the whole action is one status flip.
@@ -295,21 +224,19 @@ ASSETS = {
 }
 
 # GET /task shows this instead of acting, so a mail scanner prefetching the
-# link cannot mutate a task; the human clicks the button, which POSTs.
+# link cannot mutate a note; the human clicks the button, which POSTs.
 CONFIRM_BTN = """<form method="POST" action="/task">
 {inputs}<button type="submit" class="btn{variant}">{label}</button>
 </form><p class="hint">Nothing changes until you press the button.</p>"""
 
-def obsidian_uri(f, db=""):
-    subdir = DBS[db][0] if db else os.environ["TASKS_SUBDIR"]
+def obsidian_uri(f, db):
+    subdir = DBS[db][0]
     return "obsidian://open?vault=%s&file=%s" % (
         urllib.parse.quote(VAULT.name), urllib.parse.quote(f"{subdir}/{f}"))
 
-# action -> (button label, glyph, button variant); the postpone label is
-# built dynamically from the day count. Declining is the one danger button.
+# action -> (button label, glyph, button variant). Declining is the one
+# danger button.
 LABELS = {
-    "done":    ("Mark done", "\u2713", ""),
-    "postpone": (None,       "\u2192", ""),
     "accept":  ("Accept",    "\u2713", ""),
     "decline": ("Decline",   "\u2717", " danger"),
     "track":   ("Track",     "\u25b6", ""),
@@ -359,8 +286,8 @@ class H(BaseHTTPRequestHandler):
                 q.get("d", ["3"])[0], q.get("exp", [""])[0],
                 q.get("t", [""])[0], q.get("db", [""])[0])
 
-    def checked(self, f, a, d, exp, t, db=""):
-        if db and db not in DBS:
+    def checked(self, f, a, d, exp, t, db):
+        if db not in DBS:
             self.reply(403, "warning", "Unknown database", "Nothing changed.")
             return False
         if not hmac.compare_digest(sign(f, a, d, exp, db), t):
@@ -390,15 +317,13 @@ class H(BaseHTTPRequestHandler):
             return self.reply(404, "unknown", "Not found", "Nothing is served here.")
         if not self.checked(f, a, d, exp, t, db):
             return
-        if a not in LABELS or (db and a not in DBS[db][1]) \
-                or (not db and a not in ("done", "postpone")):
+        if a not in LABELS or a not in DBS[db][1]:
             return self.reply(400, "warning", "Unknown action", "Nothing changed.")
         inputs = "".join(
             f'<input type="hidden" name="{k}" value="{html.escape(v, quote=True)}">'
             for k, v in (("f", f), ("a", a), ("d", d), ("exp", exp),
                          ("t", t), ("db", db)) if v)
         label, glyph, variant = LABELS[a]
-        label = label or f"Postpone {d} day(s)"
         self.reply(200, "confirm", f, "Confirm the action below.",
                    CONFIRM_BTN.format(inputs=inputs, variant=variant,
                                       label=html.escape(f"{glyph} {label}")))
@@ -411,7 +336,7 @@ class H(BaseHTTPRequestHandler):
         f, a, d, exp, t, db = self.params(self.rfile.read(min(n, 65536)).decode())
         if not self.checked(f, a, d, exp, t, db):
             return
-        outcome, err = apply_note(db, f, a) if db else apply(f, a, int(d))
+        outcome, err = apply_note(db, f, a)
         if err:
             return self.reply(400, "warning", err[0].upper() + err[1:], "Nothing changed.")
         self.reply(200, "ok", f, outcome)
@@ -427,10 +352,9 @@ PY
 # expiry; the secret never appears in the URL, only the HMAC. The base URL
 # is the Tailscale Funnel URL when one proxies our port (so buttons work
 # from any device), else localhost; TASK_ACTIONS_BASE_URL overrides both.
-cmd_url() { # [-b db] file-stem action [days]
-  DB=""
-  if [ "${1:-}" = "-b" ]; then DB="${2:?-b needs a database key}"; shift 2; fi
-  [ $# -ge 2 ] || { echo "usage: $(basename "$0") url [-b db] <file-stem> <action> [days]" >&2; exit 1; }
+cmd_url() { # -b db file-stem action
+  [ "${1:-}" = "-b" ] && [ $# -eq 4 ] || { echo "usage: $(basename "$0") url -b <db> <file-stem> <action>" >&2; exit 1; }
+  DB="$2"; shift 2
   ensure_secret
   # Exit 2 rather than a localhost link the recipient cannot open: a link
   # signed against 127.0.0.1 works on this machine and nowhere the digest is
@@ -438,17 +362,15 @@ cmd_url() { # [-b db] file-stem action [days]
   code=0
   base="$(resolve_base)" || code=$?
   [ "$code" -eq 0 ] || exit "$code"
-  F="$1" A="$2" D="${3:-3}" DB="$DB" BASE="$base" SECRET_FILE="$SECRET_FILE" python3 - <<'PY'
+  F="$1" A="$2" D=3 DB="$DB" BASE="$base" SECRET_FILE="$SECRET_FILE" python3 - <<'PY'
 import datetime, hashlib, hmac, os, urllib.parse
 f, a, d, db = os.environ["F"], os.environ["A"], os.environ["D"], os.environ["DB"]
 exp = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
 secret = open(os.environ["SECRET_FILE"]).read().strip().encode()
-msg = f"{db}|{f}|{a}|{d}|{exp}" if db else f"{f}|{a}|{d}|{exp}"
+msg = f"{db}|{f}|{a}|{d}|{exp}"
 t = hmac.new(secret, msg.encode(), hashlib.sha256).hexdigest()
 path = "/open" if a == "open" else "/task"
-q = {"f": f, "a": a, "d": d, "exp": exp, "t": t}
-if db:
-    q["db"] = db
+q = {"f": f, "a": a, "d": d, "exp": exp, "t": t, "db": db}
 print(os.environ["BASE"] + path + "?" + urllib.parse.urlencode(q))
 PY
 }
@@ -541,11 +463,11 @@ case "${1:-}" in
           exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|postpone> [days]|test
+usage: task-actions.sh run|start|stop|status|base-url|url -b <db> <file-stem> <action>|test
 
   run     the HTTP server itself (what the LaunchAgent calls): binds
-          127.0.0.1:8766 and applies signed done/postpone actions to
-          TaskNote frontmatter in the vault
+          127.0.0.1:8766 and applies signed decision actions to
+          note frontmatter in the vault
   start   install + load the LaunchAgent ($SYSTEM_TOOLS_LABEL_PREFIX.task-actions,
           prefix default local.system-tools), rendered from
           task-actions.plist.template
@@ -554,20 +476,17 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
           to check) — local-health-check reads these codes
   url     print a signed action URL (used by local-obsidian-review
           to build digest email buttons); links
-          expire after 7 days. `url [-b db] <stem> <action> [days]`.
+          expire after 7 days. `url -b <db> <stem> <action>`.
           Base URL: TASK_ACTIONS_BASE_URL, else the Tailscale Funnel
           URL when one proxies this port, else http://127.0.0.1:8766.
   test    run the unittest suite in tests/
 
 actions: open — HTTPS wrapper that 302-redirects to the obsidian:// URI
-(mail clients strip custom-scheme links, https survives). done —
-non-recurring tasks get status: done; recurring tasks get the occurrence
-recorded in complete_instances and scheduled advanced per the recurrence
-rule. postpone — scheduled moves N days out (default 3). GET on /task only
+(mail clients strip custom-scheme links, https survives). GET on /task only
 shows a confirmation page; the actual edit happens on POST, so mail-scanner
 link prefetches cannot mutate anything.
 
-decision databases (-b): one frontmatter status flip per action —
+decision databases (-b, required): one frontmatter status flip per action —
   blog   System/Databases/Blog Ideas       accept|decline
   skill  System/Databases/Skill Proposals  accept|decline
   tip    System/Databases/Tips and Tricks  accept|decline
@@ -582,13 +501,13 @@ serve config persists across restarts, no extra LaunchAgent needed).
 
 environment (exported, or in <config>/task-actions/.env, where <config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; see .env.example): TASK_ACTIONS_PORT
-(8766), OBSIDIAN_VAULT (~/Documents/Obsidian Vault), OBSIDIAN_TASKS_SUBDIR,
+(8766), OBSIDIAN_VAULT (~/Documents/Obsidian Vault),
 TASK_ACTIONS_SECRET_FILE, TASK_ACTIONS_BASE_URL, SYSTEM_TOOLS_LABEL_PREFIX
 HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") run|start|stop|status|base-url|url <stem> <action> [days]|test" >&2
+    echo "usage: $(basename "$0") run|start|stop|status|base-url|url -b <db> <stem> <action>|test" >&2
     exit 1
     ;;
 esac
