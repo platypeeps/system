@@ -10,7 +10,10 @@ so the drain chased it through every queue (sd:3265). With every lock held it
 waits until the gate holders `sd gate status --json` showed at that moment
 have ended. A gate admitted later is no lane's: a lane gates only under its
 held runner lock. Waiting for an idle gate starved a busy machine for hours,
-since new gates kept arriving (sd:3265). Then it runs the refresh steps with
+since new gates kept arriving (sd:3265). Follow does not wait on the gate
+(sd:4046): a lane's gate runs under its runner lock, which follow holds, and
+waiting out gates started by hand left each satellite in BuildMismatch for
+15 to 35 minutes after every hub migration. Then it runs the refresh steps with
 REPO_SYNC_LANES_HELD=1 and exits with their status. The child inherits the lock descriptors and this process keeps its
 copies, so the locks stay held until both have exited: a `kill -9` of this
 process leaves them with the child until its last step ends. No step leaves
@@ -213,17 +216,17 @@ def registry_names(script, env):
             for line in out.stdout.splitlines() if line.startswith("sd-db: ")]
 
 
-def drain(env, names=()):
-    """Hold the refresh lock, then every lane lock, and outwait the gates
-    from before; returns the held handles."""
+def drain(env, names=(), gate=True):
+    """Hold the refresh lock, then every lane lock, and with `gate` outwait
+    the gates from before; returns the held handles."""
     raw = env.get("REPO_SYNC_DRAIN_WAIT", str(DEFAULT_WAIT))
     if not raw.isdigit():
         raise Refused(f"REPO_SYNC_DRAIN_WAIT must be a number of seconds, got {raw!r}")
     limit = int(raw)
     deadline = time.monotonic() + limit
     root = lane_root(env)
-    has_sd = shutil.which("sd", path=env.get("PATH")) is not None
-    if not has_sd:
+    has_sd = gate and shutil.which("sd", path=env.get("PATH")) is not None
+    if gate and not has_sd:
         print("sd is not on PATH: no gate to wait on", flush=True)
     refresh, handle = take_refresh_lock(root, deadline, limit)
     held = {}
@@ -238,8 +241,8 @@ def drain(env, names=()):
         first = False
         if has_sd:
             wait_gate(env, deadline, limit)
-    print(f"lanes held: {len(held)} runner lock(s) under {root}; "
-          "every gate from before is done", flush=True)
+    done = "every gate from before is done" if gate else "gates not waited on: a lane gates under its lock"
+    print(f"lanes held: {len(held)} runner lock(s) under {root}; {done}", flush=True)
     return {refresh: handle, **held}
 
 
@@ -255,7 +258,7 @@ def main(argv):
         # a build the hub refuses until follow moves it.
         if verb == "refresh":
             names += registry_names(script, env)
-        held = drain(env, names)
+        held = drain(env, names, gate=verb == "refresh")
     except Refused as refusal:
         print(f"repo-sync.sh {verb}: refused, nothing moved: {refusal}", file=sys.stderr)
         if refusal.manual:
