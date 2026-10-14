@@ -210,7 +210,8 @@ R.board = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertNotIn("Plan the review", out["R"]["board"])
         self.assertIn("base=blog-idea", out["R"]["url"])
         out = self.run_page("R.list = ELS['view-list'].html;", search="?view=list&sort=score")
-        self.assertRegex(out["R"]["list"], r"An idea</button></td><td class=\"mono rp\"><span[^>]*>[^<]*</span></td><td class=\"st\">Planning</td><td>inbox</td><td class=\"mono\">7</td>")
+        self.assertRegex(out["R"]["list"], r"An idea</button><span class=\"fold mono\">[^<]*</span></td><td class=\"mono rp\"><span[^>]*>[^<]*</span></td>"
+                         r"<td class=\"st\">Planning</td><td>inbox<span class=\"fold mono\">score 7</span></td><td class=\"mono sc\">7</td>")
         self.assertLess(out["R"]["list"].index("An idea"), out["R"]["list"].index("Plan the review"))
 
     def test_the_stage_select_posts_the_move_and_names_a_render_that_failed(self):
