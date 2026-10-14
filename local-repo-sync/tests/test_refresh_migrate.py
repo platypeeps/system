@@ -250,6 +250,24 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
         self.assertNotIn("migrates nothing", result.stdout)
 
+    def test_the_migrate_reads_the_refresh_backup_folder_as_its_backup_root(self):
+        # The pack's migrate refuses unless the newest snapshot under
+        # SD_DB_BACKUP_ROOT verifies (sd:3507). Refresh's backup sits in its
+        # own folder outside that root, so refresh names the folder for the
+        # migrate call. The target pack's bin/sd-db logs each verb's variable.
+        f = self.f
+        launcher = f.upstream / "bin" / "sd-db"
+        launcher.rename(launcher.with_name("sd-db.real"))
+        launcher.write_text('#!/bin/sh\nprintf \'%s %s\\n\' "$1" "${SD_DB_BACKUP_ROOT-unset}" >> "$SD_DB_ENV_LOG"\n'
+                            'exec "$(dirname "$0")/sd-db.real" "$@"\n')
+        launcher.chmod(0o755)
+        f.upstream_migrations(f.good("one"))
+        log = f.tmp / "sd-db-env.log"
+        f.run("refresh", expect=0, extra_env={"SD_DB_ENV_LOG": str(log)})
+        self.assertEqual(f.n + 1, f.version())
+        (backup,) = f.backup_dirs()
+        self.assertIn(f"migrate {pathlib.Path(backup).parent}", log.read_text().splitlines())
+
     def test_an_unreadable_database_moves_nothing(self):
         f = self.f
         f.upstream_migrations(f.good("one"))
