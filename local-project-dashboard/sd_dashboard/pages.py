@@ -1,9 +1,9 @@
-"""The page chrome: one layout, one stylesheet, one script.
+"""The page chrome for the server-drawn screens: the v2 shell around them (sd:3586), and one script.
 
 Requirement 5's "no build step" is a construction here, not a check. There is
 no template engine, no framework and no bundler: a page is `markup.tag` calls,
-the stylesheet is one hand-written file and the script is one hand-written
-file, both served from disk. Criterion 12 asserts the folder holds no
+styled by the shell's hand-written `/ui/` stylesheets, with one hand-written
+script beside the shell's, all served from disk. Criterion 12 asserts the folder holds no
 `package.json`, no `node_modules` and no bundler config, and there is nothing
 in this module that would want one.
 
@@ -16,46 +16,15 @@ a policy the browser enforces whatever slipped the filter.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 from html import unescape
 
 from . import caching
 from .caching import STATIC_VERSIONS
 from .markup import Markup, join, tag
-from .v2 import SECTIONS as PORTED
 from .v2 import VERSIONS as UI_VERSIONS
 
-__all__ = ["SECTIONS", "Section", "page", "shell_page", "tile", "command_hint"]
-
-
-@dataclass(frozen=True)
-class Section:
-    key: str
-    label: str
-    #: A section the v2 page registry ports links that page instead (sd:2473),
-    #: so only an unported section names its path here.
-    path: str = ""
-    #: Only working destinations appear in navigation.
-    built: bool = True
-    #: Item is a section and not a destination: it is one item, reached from a
-    #: row. A nav link to `/item` would be a link to a 404, which is worse
-    #: than no link.
-    in_nav: bool = True
-
-
-SECTIONS = (
-    Section("today", "Today"),
-    Section("backlog", "Tasks"),
-    Section("contributions", "Contributions"),
-    Section("writing", "Writing"),
-    Section("operations", "Operations", "/operations"),
-    Section("protection", "Protection", "/protection"),
-    Section("item", "Item", "/item/<id>", in_nav=False),
-    Section("skills", "Skills"),
-    Section("documents", "Documents"),
-    Section("designs", "Designs"),
-)
+__all__ = ["shell_page", "tile", "command_hint"]
 
 
 def command_hint(command: str) -> Markup:
@@ -93,68 +62,6 @@ def tile(label: str, value: object, *, detail: Markup | None = None, href: str |
     return tag("div", join(body), class_="tile")
 
 
-def navigation(current: str) -> Markup:
-    links = []
-    for section in SECTIONS:
-        if not section.in_nav:
-            continue
-        if not section.built:
-            continue
-        links.append(
-            tag(
-                "a",
-                section.label,
-                href=PORTED.get(section.label, section.path),
-                class_="nav-current" if section.key == current else None,
-                aria_current="page" if section.key == current else None,
-            )
-        )
-    return tag("nav", join(links), class_="nav", aria_label="Sections")
-
-
-def page(title: str, current: str, *body: object, subtitle: str | None = None,
-         cli_equivalents: bool = True, screen: str | None = None) -> str:
-    """One page, whole. The return is a `str` because it goes down the wire.
-
-    `screen` names the picker's palette screen, one of `runner_exec.SCREENS`; it defaults to `current` (sd:4002)."""
-    head = tag(
-        "head",
-        tag("meta", charset="utf-8"),
-        tag("meta", name="viewport", content="width=device-width, initial-scale=1, viewport-fit=cover"),
-        tag("meta", name="color-scheme", content="light dark"),
-        tag("title", f"{title} — sd"),
-        # Under their digests, so the server may cache them for good (sd:2141).
-        tag("link", rel="stylesheet", href=f"/static/dashboard.css?v={STATIC_VERSIONS['dashboard.css']}"),
-        tag("script", src=f"/static/dashboard.js?v={STATIC_VERSIONS['dashboard.js']}", defer=True),
-    )
-    header: list[object] = [tag("h1", title)]
-    if subtitle:
-        header.append(tag("p", subtitle, class_="subtitle"))
-    rendered_body = join(body)
-    equivalents = _equivalents(rendered_body) if cli_equivalents else Markup("")
-    from .palette import dialog
-
-    document = tag(
-        "html",
-        head,
-        tag(
-            "body",
-            tag("header", join(header), navigation(current),
-                tag("button", "Commands", type="button", data_palette_open=True, aria_keyshortcuts="p"), class_="page-header"),
-            dialog(screen or current),
-            tag("main", rendered_body, equivalents, id="main"),
-            tag(
-                "footer",
-                tag("p", "Your work, in one place. Changes save to the local workflow database."),
-                tag("noscript", "Enable JavaScript to use task controls. Reading and filtering still work."),
-                class_="page-footer",
-            ),
-        ),
-        lang="en",
-    )
-    return "<!doctype html>" + str(document)
-
-
 def _equivalents(rendered_body: Markup) -> Markup:
     """The CLI line of every control in `rendered_body`, folded below them; nothing when no control names one."""
     commands = list(dict.fromkeys(unescape(value) for value in
@@ -165,11 +72,13 @@ def _equivalents(rendered_body: Markup) -> Markup:
         class_="cli-equivalents") if commands else Markup(""))
 
 
-def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str) -> str:
+def shell_page(title: str, section: str, *body: object, subtitle: str, note: str, screen: str,
+               cli_equivalents: bool = True) -> str:
     """A classic screen inside the v2 shell (sd:3586): the rail, pane and keys are shell.js's, the tokens the foundation's.
 
     `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope,
     one of `runner_exec.SCREENS` (sd:4002).
+    `cli_equivalents=False` leaves out the folded list of the body's commands.
     The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
     shell but `/` and `p`. `/ui/classic.css` styles that markup.
     """
@@ -196,7 +105,7 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
         tag("div", id="state", hidden=True),
         dialog(screen),
         rendered_body,
-        _equivalents(rendered_body),
+        _equivalents(rendered_body) if cli_equivalents else Markup(""),
         tag("noscript", tag("p", "Enable JavaScript to use these controls. Reading still works.", class_="hint")),
         id="main", class_="classic",
     )
@@ -218,13 +127,10 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
 
 
 def error_page(status: int, message: str) -> str:
-    """An error is a page too, and it carries the same policy the others do."""
-    return page(
-        f"{status}",
-        "today",
-        tag("p", message),
-        tag("p", tag("a", "Back to Today", href="/")),
-    )
+    """An error is a page too, and it carries the same policy the others do: a shell page under Today (sd:3586)."""
+    return shell_page(f"{status}", "Today", tag("p", tag("a", "Back to Today", href="/")), subtitle=message,
+                      note="The dashboard answered this address with an error; the rail still opens every page.",
+                      screen="today")
 
 
 def empty(message: str, next_step: str) -> Markup:

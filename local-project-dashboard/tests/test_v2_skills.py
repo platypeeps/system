@@ -53,6 +53,7 @@ COMMANDS = [
     ["skill.promote", "skill", "Promote", "p", "safe"],
     ["skill.demote", "skill", "Demote", "d", "confirm"],
     ["skill.reimport", "skill", "Re-import", "i", "safe"],
+    ["skill.reimport.user", "user skill", "Re-import", "i", "safe"],
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
     ["skill.apply", "skill", "Apply", "a", "confirm"],
     ["skill.scan", "use surfaces", "Scan", "s", "safe"],
@@ -72,6 +73,12 @@ class Pack:
             (self.root / source / name / "SKILL.md").write_text(SKILL.format(name=name))
         (self.root / "skills/paths.json").write_text(json.dumps({"paths": {"build": {"summary": "plan to ship", "skills": ["sd-used", "sd-idle"]}}}))
         patcher = mock.patch.object(skills_catalog, "location", return_value=(self.root, {}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The user's skills folder is a temporary HOME's: no test reads the real ~/.claude/skills (sd:3997).
+        self.home = Path(tempfile.mkdtemp(prefix="home-")).resolve()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.home)], check=False))
+        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -128,6 +135,30 @@ class TheDocument(Pack, ScreenCase):
                                                            "Adopted by `sd-skill-adopt` on 2026-10-13 from `/tmp/x` at revision `abc`.\n")
         by = {s["name"]: s["imported"] for s in skills_screen.document(self.connection, now=NOW)["skills"]}
         self.assertEqual(by, {"sd-extra": {"url": URL, "commit": "c" * 40}, "sd-idle": None, "sd-used": None})
+
+    def test_a_user_skill_installed_by_intake_is_listed_with_its_source(self):
+        """sd:3997: a skill in ~/.claude/skills whose trailing Provenance holds the intake's line is listed for Re-import."""
+        self.assertEqual(skills_screen.document(self.connection, now=NOW)["user"], [], "no user skills folder lists nothing")
+        line = f"Adopted by `sd skill intake` on 2026-10-13 from `{URL}` at revision `{'c' * 40} (sha256:{'d' * 16})`."
+        skills = self.home / ".claude/skills"
+        for name, tail in (("pdf-tools", f"\n## Provenance\n\n{line}\n"), ("plain", ""),
+                           ("by-adopt", "\n## Provenance\n\nAdopted by `sd-skill-adopt` on 2026-10-13 from `/tmp/x` at revision `abc`.\n"),
+                           ("planted", f"\n{line}\n")):
+            (skills / name).mkdir(parents=True)
+            (skills / name / "SKILL.md").write_text(SKILL.format(name=name) + tail)
+        # A linked folder is never the intake's: the pack's verb refuses it (sd_skill_intake.source_of).
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "SKILL.md").write_text(SKILL.format(name="linked") + f"\n## Provenance\n\n{line}\n")
+        (skills / "linked").symlink_to(elsewhere)
+        doc = skills_screen.document(self.connection, now=NOW)
+        self.assertEqual(doc["user"], [{"name": "pdf-tools", "url": URL, "commit": "c" * 40}])
+        self.assertNotIn(str(self.home), json.dumps(doc))
+        # A folder that cannot be listed is not "no skill there": the read fails, and the route answers 503 with why.
+        skills.chmod(0)
+        self.addCleanup(skills.chmod, 0o755)
+        with self.assertRaises(PermissionError):
+            skills_screen.document(self.connection, now=NOW)
 
     def test_the_document_writes_nothing(self):
         before = self.connection.total_changes
@@ -255,6 +286,13 @@ class TheIntakeRoute(Pack, BrowserSession):
         status, _, argv = self.intake({"source": URL, "scope": "user"})
         self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--scope", "user", "--", URL]))
 
+    def test_reimport_of_a_user_skill_runs_intake_on_its_name_with_the_user_scope(self):
+        """sd:3997: a user skill's name need not start with sd-; the verb finds it in ~/.claude/skills."""
+        for name in ("pdf-tools", "Notes_2.v1"):
+            with self.subTest(name=name):
+                status, _, argv = self.intake({"source": name, "scope": "user"})
+                self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--scope", "user", "--", name]))
+
     def test_approve_passes_the_exact_revision_the_report_printed(self):
         status, _, argv = self.intake({"source": URL, "scope": "pack", "approve": REVISION}, out=json.dumps(dict(REPORT, installed=True)))
         self.assertEqual(status, 200)
@@ -264,7 +302,7 @@ class TheIntakeRoute(Pack, BrowserSession):
         for source in ("http://github.com/example/skills", "https://github.com.example.test/example/skills",
                        "https://example.test/example/skills", "https://github.com/example/sk ills", "https://github.com/a`b",
                        "https://github.com/", "--approve", "file:///etc/passwd", "git@github.com:example/skills.git",
-                       "../sd-extra", "", 7, None):
+                       "../sd-extra", "", 7, None, ".hidden", "-x", "pdf/../x", "pdf tools", "pdf$(x)", "x" * 101):
             with self.subTest(source=source):
                 status, body, argv = self.intake({"source": source})
                 self.assertEqual(status, 400)
@@ -575,6 +613,56 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         for name in (hostile(folder, quote=False), hostile(folder)):
             out = self.run_page("R.cli = cmd('skill.reimport').cli({ id: %s });" % json.dumps(name))
             self.assertEqual(shell_argv(self, out["R"]["cli"], folder), ["skill", "intake", name])
+
+    def test_the_try_review_promote_and_demote_lines_quote_the_name(self):
+        """sd:3997: each line the operator copies passes the skill name, and Promote's path, through shell.shq."""
+        folder = scratch(self)
+        for name in (hostile(folder, quote=False), hostile(folder)):
+            with self.subTest(quote="'" in name):
+                promote = ("const slot = document.getElementById('form-slot'), parts = {};"
+                           " slot.querySelector = s => (parts[s] = parts[s] || El(s));"
+                           " C.run = (c, o) => { R.promote = c.cli({ id: N, path: N }); };"
+                           " cmd('skill.promote').run(C.get('sd-extra'));"
+                           " parts['#pro-form'].listeners.submit[0]({ preventDefault() {} });")
+                out = self.run_page(f"const N = {json.dumps(name)};"
+                                    " R.lines = ['skill.try', 'skill.review', 'skill.promote', 'skill.demote'].map(id => cmd(id).cli({ id: N }));"
+                                    + promote)
+                self.assertEqual([shell_argv(self, line, folder) for line in out["R"]["lines"]],
+                                 [["skill", "try", name], ["skill", "review", name], ["skill", "promote", name, "--path", "PATH"],
+                                  ["skill", "demote", name]])
+                self.assertEqual(shell_argv(self, out["R"]["promote"], folder), ["skill", "promote", name, "--path", name])
+
+    # sd:3997: a user-scope skill sd skill intake installed from GitHub gets Re-import, with the user scope, in the Adopt panel.
+    OPEN_PANEL = ("ELS.details.querySelector = s => s[0] === '#' ? document.getElementById(s.slice(1)) : El('x');"
+                  " C.rowActions = id => mk`<span class=\"rowact\" data-for=\"${id}\"></span>`;")
+
+    def test_a_user_skill_from_github_gets_reimport_with_the_user_scope(self):
+        self.doc["user"] = [{"name": "pdf-tools", "url": URL, "commit": "b" * 40}]
+        report = dict(REPORT, scope="user", skill="pdf-tools", destination="/home/.claude/skills/pdf-tools")
+        out = self.run_page(self.OPEN_PANEL + " R.cli = cmd('skill.reimport.user').cli(C.get('user:pdf-tools'));"
+                            " document.dispatchEvent(new CustomEvent('shell:open', { detail: 'user:pdf-tools' })); R.panel = ELS.details.html;"
+                            " shellRun(cmd('skill.reimport.user'), C.get('user:pdf-tools')); await flush();"
+                            " R.slot = ELS['intake-slot'].html; " + self.CLICK_APPROVE + " await flush();",
+                            answer=self.INTAKE % json.dumps(report))
+        self.assertEqual(out["R"]["cli"], "sd skill intake 'pdf-tools' --scope user")
+        panel = out["R"]["panel"]
+        self.assertIn('data-for="user:pdf-tools"', panel)
+        self.assertIn(f"{URL} at {'b' * 12}", panel)
+        self.assertEqual(out["posts"][0], ["/api/skills/intake", {"source": "pdf-tools", "scope": "user"}, 64])
+        self.assertIn("pdf-tools · user · re-import", out["R"]["slot"])
+        self.assertEqual(out["posts"][1], ["/api/skills/intake", {"source": URL, "scope": "user", "approve": REVISION}, 64])
+
+    def test_no_user_skill_from_github_shows_no_list(self):
+        out = self.run_page(self.OPEN_PANEL + " ELS['adopt-btn'].listeners.click[0](); R.panel = ELS.details.html;"
+                            " R.objs = [...OBJ.values()].filter(o => o.type === 'user skill').length;")
+        self.assertNotIn("rowact", out["R"]["panel"])
+        self.assertEqual(out["R"]["objs"], 0)
+
+    def test_the_user_reimport_line_quotes_the_name(self):
+        folder = scratch(self)
+        for name in (hostile(folder, quote=False), hostile(folder)):
+            out = self.run_page(f"R.cli = cmd('skill.reimport.user').cli({{ name: {json.dumps(name)} }});")
+            self.assertEqual(shell_argv(self, out["R"]["cli"], folder), ["skill", "intake", name, "--scope", "user"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_reader_of_its_own(self):
         self.assertNotIn("innerHTML", PAGE_JS)

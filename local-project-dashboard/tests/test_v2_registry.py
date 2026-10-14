@@ -186,7 +186,8 @@ class TheRoutes(BrowserSession):
             for entry in page.takes:
                 status, _, body = self.request(entry.path)
                 self.assertEqual(status, 200, entry.path)
-                self.assertIn("— sd</title>", body, entry.path)
+                # The old screen is server-drawn inside the v2 shell (sd:3586), not the page's template.
+                self.assertIn('<main id="main" class="classic">', body, entry.path)
                 self.assertIn(entry.path, page.classic.values(), "an old screen the page took is not in the palette")
 
 

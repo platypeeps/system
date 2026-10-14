@@ -15,8 +15,11 @@ through the shell's reader, `read.js`. The old screen was retired in sd:3402.
 
 Re-import and Evaluate (sd:3992) run `sd skill intake --json` through
 `POST /api/skills/intake` (`skill_intake.intake`). Re-import is on for a skill
-whose Provenance names the intake's source (`imported` in the document);
-Evaluate, in the Adopt panel, takes a `https://github.com/` URL and a scope.
+whose Provenance names the intake's source (`imported` in the document).
+The Adopt panel lists the skills in `~/.claude/skills` whose Provenance names
+it (`user` in the document, sd:3997), each with a Re-import that runs the
+intake with `--scope user`. Evaluate, in the same panel, takes a
+`https://github.com/` URL and a scope.
 The source goes to `sd` as one argument after `--`, never through a shell.
 Details shows the report: verdict, source, risk, match, value, revision and
 diff. Approve revision appears only under a report that can install, asks

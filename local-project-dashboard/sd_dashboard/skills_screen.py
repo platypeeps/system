@@ -5,7 +5,8 @@ skill's use in the last three Monday-start weeks from `skill_use`, and the use r
 sends no local path: the pack root and the per-file digests stay here, and a skill's source is its path inside the
 pack. `review_controls` is what the item page renders; the old screen was retired in sd:3402.
 `imported` names the GitHub source of a skill `sd skill intake` installed, which turns on the page's Re-import; the run
-itself is `skill_intake`'s, so this module still calls no git (sd:3992).
+itself is `skill_intake`'s, so this module still calls no git (sd:3992). `user` lists the skills in ~/.claude/skills the
+intake installed, by name, URL and commit, for Re-import with the user scope (sd:3997).
 """
 
 import re
@@ -114,6 +115,7 @@ def document(connection, *, now: str) -> dict:
         "use": {"first": first, "last": latest, "rows": count},
         "other": sorted(([name, n] for name, n in other.items()), key=lambda pair: (-pair[1], pair[0])),
         "attention": _attention(skills, junk),
+        "user": user_imported(Path.home() / ".claude" / "skills"),
     }
 
 
@@ -145,3 +147,15 @@ def imported(path: Path) -> dict | None:
     found = [match for line in text[start + len(PROVENANCE):].splitlines() if (match := INTAKE_LINE.fullmatch(line))]
     return {"url": found[-1][1], "commit": found[-1][2]} if found else None
 
+
+def user_imported(root: Path) -> list:
+    """`{name, url, commit}` of each skill under `root` that `sd skill intake` installed. A linked folder is never the
+    intake's: the pack's verb refuses one (sd_skill_intake.source_of). A folder that cannot be listed raises `OSError`, so
+    the page says it was not read rather than that no skill is there."""
+    found = []
+    for folder in sorted(root.iterdir()) if root.is_dir() else []:
+        path = folder / "SKILL.md"
+        source = None if folder.is_symlink() or path.is_symlink() else imported(path)
+        if source:
+            found.append({"name": folder.name, **source})
+    return found

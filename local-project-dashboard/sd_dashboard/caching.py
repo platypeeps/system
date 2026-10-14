@@ -23,9 +23,10 @@ from pathlib import Path
 #: A year, private to the browser: the dashboard sits behind its own sign-in.
 IMMUTABLE = "private, max-age=31536000, immutable"
 
-#: v1's folder and its two files, which `pages.page` links and `/static/` serves.
+#: v1's folder and its one file, which `pages.shell_page` links and `/static/` serves. Its stylesheet went with the last
+#: classic page (sd:3586); `/ui/classic.css` styles those screens.
 STATIC = Path(__file__).resolve().parent / "static"
-STATIC_FILES = ("dashboard.css", "dashboard.js")
+STATIC_FILES = ("dashboard.js",)
 
 
 def digest(body: bytes) -> str:
@@ -86,5 +87,5 @@ def gzipped(body: bytes) -> bytes:
     return gzip.compress(body, mtime=0)
 
 
-#: v1's two files under their digests, read when the module loads.
+#: v1's file under its digest, read when the module loads.
 STATIC_VERSIONS = {name: digest((STATIC / name).read_bytes()) for name in STATIC_FILES}

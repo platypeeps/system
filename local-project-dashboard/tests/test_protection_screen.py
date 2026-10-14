@@ -82,9 +82,7 @@ class ProtectionScreen(ScreenCase):
         self.assertEqual(len(self.rows(body)), 4)
         # The page lists no CLI equivalents, as the classic page did not.
         self.assertNotIn("cli-equivalents", body)
-        # Its rules moved from dashboard.css to the shell's classic.css, with a state glyph beside each colour.
-        static = Path(v2.__file__).resolve().parent.parent / "static"
-        self.assertNotRegex((static / "dashboard.css").read_text(encoding="utf-8"), r"\.protection-|column-meta")
+        # Its rules are the shell's classic.css, with a state glyph beside each colour.
         classic = (Path(v2.__file__).resolve().parent / "static/classic.css").read_text(encoding="utf-8")
         for status, glyph in (("protected", "●"), ("unprotected", "■"), ("unknown", "▨")):
             self.assertRegex(classic, rf'\.protection-{status}::before[^{{]*{{ content: "{glyph} "; }}', status)
@@ -212,12 +210,10 @@ class ProtectionScreen(ScreenCase):
 
     def test_nav_names_protection_and_an_empty_registry_says_what_to_do(self):
         body = self.render("/protection")
-        # The shell draws the rail, so the page holds no server nav; the palette's Classic screens and the classic
-        # nav still name it (sd:3586).
+        # The shell draws the rail, so no page holds a server nav; the palette's Classic screens name it (sd:3586).
         self.assertEqual(v2.SCREENS["Protection"], "/protection")
         self.assertIn("No repositories registered", body)
         self.assertIn("0 protected · 0 unprotected · 0 unknown · last observed never", body)
-        self.assertIn(">Protection</a>", self.render("/classic/contributions"))
 
     def test_the_page_writes_nothing(self):
         self.fleet()

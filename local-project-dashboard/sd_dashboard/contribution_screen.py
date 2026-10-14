@@ -11,7 +11,7 @@ from sd_db import contributions
 from .controls import form
 from .listing import Column, Listing
 from .markup import join, tag
-from .pages import page
+from .pages import shell_page
 
 # One label per lane in `contributions.LANES`; the screen's test holds the two sets equal.
 LABELS = {"newly_unblocked": "Newly unblocked", "awaiting_you": "Awaiting you",
@@ -138,11 +138,14 @@ def render(connection, *, parameters):
             tag("p", row["freshness"]["status"], ": ", row["freshness"].get("reason") or "Complete observation", class_="hint"))),
     ], rows, path="/classic/contributions", query=query, page_number=number, selected=selected,
         empty="No contributions recorded. Register local work or collect authored pull requests.")
-    return page("Contributions", "contributions",
-        tag("p", "Newly unblocked work comes first, followed by work awaiting you, awaiting others, and merged contributions.", class_="lead"),
+    return shell_page("Contributions", "Contributions",
         tag("p", "Unknown or stale observations remain visible. Acknowledging events does not complete tasks or send notifications.", class_="hint"),
         # A repository view, so its picker offers the Operations commands (sd:4002).
-        listing.render(), cli_equivalents=False, screen="operations")
+        listing.render(), cli_equivalents=False, screen="operations",
+        subtitle="Newly unblocked work comes first, followed by work awaiting you, awaiting others, and merged "
+                 "contributions.",
+        note="Contributions (classic) lists every contribution with its local clone and what blocks it, which the "
+             "Contributions page leaves out; acknowledging an event is its one write.")
 
 
 # ---------- The default UI's Contributions page (sd:2113) ----------

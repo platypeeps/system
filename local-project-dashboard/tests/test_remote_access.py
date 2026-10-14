@@ -186,7 +186,7 @@ class RemoteAccess(ScreenCase):
 
     def test_each_remote_get_head_static_health_and_post_revalidates_private_serve(self):
         cookie, csrf, _ = self.session()
-        for path, method in (("/", "GET"), ("/health", "GET"), ("/", "HEAD"), ("/static/dashboard.css", "GET")):
+        for path, method in (("/", "GET"), ("/health", "GET"), ("/", "HEAD"), ("/static/dashboard.js", "GET")):
             previous = self.checks
             self.assertEqual(self.request(path, method=method)[0], 200)
             self.assertEqual(self.checks, previous + 1)

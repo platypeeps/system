@@ -43,7 +43,7 @@ class WhatTheServerCaches(BrowserSession):
 
     def test_a_page_links_each_asset_with_its_digest_and_that_answer_is_immutable(self):
         for page, name in (("/today", "shell.js"), ("/today", "fonts.css"),
-                           ("/classic/contributions", "dashboard.css")):
+                           ("/classic/contributions", "dashboard.js")):
             with self.subTest(page=page, name=name):
                 address = self.linked(page, name)
                 self.assertRegex(address, r"\?v=[0-9a-f]{16}$")
@@ -68,7 +68,7 @@ class WhatTheServerCaches(BrowserSession):
             self.assertEqual(self.fetch(f"/ui/{font}")[1]["Cache-Control"], IMMUTABLE, font)
 
     def test_text_is_gzipped_when_the_browser_takes_it_and_plain_when_not(self):
-        for address in ("/ui/shell.js", "/ui/shell.css", "/static/dashboard.css"):
+        for address in ("/ui/shell.js", "/ui/shell.css", "/static/dashboard.js"):
             with self.subTest(address=address):
                 _, plain_headers, plain = self.fetch(address)
                 self.assertIsNone(plain_headers["Content-Encoding"])

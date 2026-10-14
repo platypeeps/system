@@ -103,11 +103,12 @@ class TheInstalledCopy(unittest.TestCase):
         self.assertTrue(self.probe()["server_build"])
 
     def test_the_static_assets_ship_with_it(self):
-        """Not only modules: the stylesheet and script are package data, and a
-        wheel that dropped them would serve a dashboard with no styling."""
+        """Not only modules: the script and the shell's stylesheets are package
+        data, and a wheel that dropped them would serve a dashboard with no
+        styling."""
         installed = Path(self.probe()["file"]).resolve().parent
-        for name in ("dashboard.css", "dashboard.js"):
-            self.assertTrue((installed / "static" / name).is_file(), name)
+        for name in ("static/dashboard.js", "v2/static/shell.css", "v2/static/classic.css"):
+            self.assertTrue((installed / name).is_file(), name)
 
     def test_the_declared_dependency_is_in_the_built_metadata(self):
         """A wheel that forgets `Requires-Dist` installs into an environment

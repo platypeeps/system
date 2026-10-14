@@ -66,7 +66,7 @@ comment gets no buttons (`sd_dashboard/decisions.py`).
 `sd_dashboard/v2/` holds the ported shell, tokens and self-hosted IBM Plex
 under `static/`, served at `/ui/`; `shell.js` marks each change from the
 reference with `build:`. The assets take `/ui/` because the old screens own
-`/static/`, which serves exactly `dashboard.css` and `dashboard.js`. Every
+`/static/`, which serves exactly `dashboard.js`. Every
 v2 script builds markup with the `html` tag in `static/markup.js`, which
 escapes each value put in it, and puts it in the page with `put`, which takes
 only what `html` made; that file holds the one HTML sink criterion 12's grep

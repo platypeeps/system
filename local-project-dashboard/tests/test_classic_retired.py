@@ -81,7 +81,7 @@ class TheRetiredScreens(ScreenCase):
 
     def test_every_kept_area_renders_inside_the_v2_shell_under_its_section(self):
         """sd:3586 PR 5: Usage under Metrics, Services under Management and Resources under Research join Trackers and
-        Sessions under Today; dashboard.css keeps no rule only these areas drew."""
+        Sessions under Today."""
         patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -94,11 +94,34 @@ class TheRetiredScreens(ScreenCase):
                 self.assertIn('<div class="shell"><main id="main" class="classic">', body)
                 self.assertNotIn("/static/dashboard.css", body)
                 self.assertEqual(body.count("<h1>"), 1)
-        classic = (PACKAGE / "static/dashboard.css").read_text(encoding="utf-8")
-        classic = re.sub(r"/\*.*?\*/", "", classic, flags=re.DOTALL)
-        for selector in (".tiles", ".tile-", ".chart-burn", ".gauge-", ".usage-", ".operations-grid", ".operation-card",
-                         ".operation-actions", ".operation-request", ".view-toggle"):
-            self.assertNotIn(selector, classic, selector)
+
+
+class TheClassicStylesheetIsGone(ScreenCase):
+    """sd:3586 PR 6: the last classic page moved into the v2 shell, so dashboard.css, `pages.page` and its nav went."""
+
+    def test_dashboard_css_is_gone_and_nothing_names_it(self):
+        self.assertFalse((PACKAGE / "static" / "dashboard.css").exists())
+        self.assertEqual(server.STATIC_FILES, ("dashboard.js",))
+        for name in ("page", "navigation", "SECTIONS", "Section"):
+            self.assertFalse(hasattr(pages, name), name)
+        found = [path.relative_to(PACKAGE.parent).as_posix()
+                 for path in (*PACKAGE.rglob("*"), PACKAGE.parent / "README.md", PACKAGE.parent / "RUNTIME.md")
+                 if path.is_file() and "__pycache__" not in path.parts
+                 and "dashboard.css" in path.read_text(encoding="utf-8", errors="replace")]
+        self.assertEqual(found, [])
+
+    def test_every_server_drawn_screen_and_the_error_page_link_the_shell_stylesheets(self):
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.item("an item")
+        bodies = {f"/operations?area={area}": self.render("/operations", {"area": [area]}) for area in KEPT_AREAS}
+        bodies.update({path: self.render(path) for path in ("/item/1", "/protection", "/classic/contributions")})
+        bodies["error"] = pages.error_page(404, "Nothing here.")
+        for path, body in bodies.items():
+            with self.subTest(path=path):
+                self.assertRegex(body, r'"/ui/classic\.css\?v=[0-9a-f]{16}"')
+                self.assertNotIn("/static/dashboard.css", body)
 
 
 class EveryPickerAsksForAKnownScreen(ScreenCase):
