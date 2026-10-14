@@ -124,6 +124,26 @@ class TheClassicStylesheetIsGone(ScreenCase):
                 self.assertNotIn("/static/dashboard.css", body)
 
 
+class EveryPickerAsksForAKnownScreen(ScreenCase):
+    """sd:4002: a page's picker names a palette screen; `runner_exec.SCREENS` is the one list, and an unknown name made
+    /api/palette answer 400, so the picker listed nothing."""
+
+    def test_every_server_drawn_page_names_a_screen_runner_exec_knows(self):
+        patcher = patch("sd_dashboard.reports_screen.collect", lambda area: "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        item = self.item("Picker fixture")
+        rendered = {f"/operations?area={area}": self.render("/operations", {"area": [area]}) for area in KEPT_AREAS}
+        rendered |= {f"/item/{item}": self.render(f"/item/{item}"), "/protection": self.render("/protection"),
+                     "/classic/contributions": self.render("/classic/contributions"),
+                     "error page": pages.error_page(404, "Nothing here.")}
+        for name, body in rendered.items():
+            with self.subTest(page=name):
+                screens = re.findall(r'data-screen="([^"]*)"', body)
+                self.assertEqual(len(screens), 1)
+                self.assertIn(screens[0], runner_exec.SCREENS)
+
+
 class ActivityTakesCommands(ScreenCase):
     """Activity lists every execution the classic Commands area listed, so that area could go."""
 
