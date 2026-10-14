@@ -307,8 +307,13 @@ const chWords = v => v === null ? 'none' : CH.filter(c => v[c]).map(c => `${c}=$
 // `chStored` is all of it; `chSetting` is the publish channels alone, null when the row names none.
 const chStored = r => r.channels === 'none' || r.chProblem ? null : chParse(r.channels);
 const chSetting = r => { const v = chStored(r); return v && CH.some(c => v[c]) ? Object.fromEntries(CH.filter(c => v[c]).map(c => [c, v[c]])) : null; };
+const chInbound = r => Object.entries(chStored(r) || {}).filter(([k]) => !CH.includes(k));
 const chDefault = (r, c) => { const n = r.path.split('/').pop(); return c === 'notion' ? n : `Briefs/${n}`; };
 function chShown(r) {
+  const inbound = chInbound(r).map(([k, v]) => html`<p class="why">Inbound ${k}, display only: <code>${v && v.url || JSON.stringify(v)}</code></p>`);
+  return html`${chOutbound(r)}${inbound}`;
+}
+function chOutbound(r) {
   if (r.chProblem) return html`<code>${r.channels}</code><p class="why">Cannot be used: ${r.chProblem}. Publishing waits until it is set again or cleared.</p>`;
   const v = chSetting(r);
   if (!v) return html`<span class="no">none · defaults</span><p class="why">Each document's research.conf.py designation, in ${CH.map(c => chDefault(r, c)).filter((f, i, a) => a.indexOf(f) === i).join(' and ')}.</p>`;

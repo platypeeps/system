@@ -948,6 +948,26 @@ propose('channels', 'on'); C.run(cmd('sddb.run'), pending[0]); await flush(); aw
         self.assertEqual(len(out["posts"]), 1)
         self.assertIn("nothing to reverse", out["toasts"][-1][0])
 
+    def test_the_channels_form_shows_a_stored_feed_as_text_and_offers_no_field_for_it(self):
+        """sd:4192: an inbound key the row holds shows beside the channels, display only; a feed alone is no outbound
+        setting, so the defaults show and every channel box stays on."""
+        path = self.ids["checkout"]
+        both = self.run_page("R.page = ELS['view-repos'].html;", search=f"?repo={path}",
+                             doc=self.stored_doc('{"drive":{},"feed":' + self.FEED + '}'))["R"]["page"]
+        alone = self.run_page("R.page = ELS['view-repos'].html;", search=f"?repo={path}",
+                              doc=self.stored_doc('{"feed":' + self.FEED + '}'))["R"]["page"]
+        for page in (both, alone):
+            self.assertIn("Inbound feed", page)
+            self.assertIn("<code>https://example.test/feed.xml</code>", page)
+            self.assertNotIn('data-chf="feed"', page)
+            self.assertNotIn('data-ch="feed"', page)
+        self.assertIn("drive Briefs/", both)
+        self.assertEqual(len(re.findall(r'data-ch="\w+" checked>', both)), 1)
+        self.assertIn('<span class="no">none · defaults</span>', alone)
+        self.assertEqual(len(re.findall(r'data-ch="\w+" checked>', alone)), 3)
+        plain = self.run_page("R.page = ELS['view-repos'].html;", search=f"?repo={path}")["R"]["page"]
+        self.assertNotIn("Inbound", plain)
+
     def test_a_channels_value_the_library_refuses_shows_why_and_clear_writes_none_without_an_undo(self):
         # sd:3465: such a value is not read as the defaults; it cannot be written back, so the clear has no Undo.
         path = self.ids["checkout"]
