@@ -484,6 +484,13 @@ class TheSave(BrowserSession):
         self.assertEqual(status, 200, undone)
         self.assertEqual(self.held(), {home_screen.KEY: "tile|Water|binary_sensor.water_leak|Leak\n"})
 
+    def test_a_previous_text_save_would_refuse_offers_no_undo(self):
+        # Codex review: the file reader skips a bad line, so Undo of a partial file posted a text Save refuses (400).
+        self.file.write_text("tile|Water|binary_sensor.water_leak|Leak\ntile|Water|INVALID|Bad\n", encoding="utf-8")
+        editor = self.read()
+        status, _, saved = self.post("/api/home/tiles", {"text": "tile|Security|lock.front_door|Front door\n", "before": editor["digest"]})
+        self.assertEqual((status, saved["previous"]), (200, ""))
+
     def test_a_list_with_no_tile_an_oversized_one_or_another_shape_is_refused(self):
         editor = self.read()
         for payload in ({"text": "# only a comment\n", "before": editor["digest"]},

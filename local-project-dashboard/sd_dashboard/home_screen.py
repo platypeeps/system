@@ -305,6 +305,20 @@ def document(connection, *, now: str, config: Path | None = None, environ=None, 
     }
 
 
+def _refused(text: str) -> str:
+    """Why Save refuses `text`, or "" when it saves: a line `parse` cannot read, no tile, or over the row's limit."""
+    from sd_db import writes
+
+    headline, groups, problems = parse(text)
+    if problems:
+        return "; ".join(problems)
+    if headline is None and not groups:
+        return "it names no tile"
+    if len(text) > writes.SETTING_VALUE_LENGTH:
+        return f"it is over {writes.SETTING_VALUE_LENGTH} characters"
+    return ""
+
+
 def save(payload) -> object:
     """`POST /api/home/tiles {text, before}` (sd:3987): the write that sets the tile row, or `ValueError` (400).
 
@@ -317,13 +331,9 @@ def save(payload) -> object:
     if set(payload) != {"text", "before"} or not isinstance(payload["text"], str) or not isinstance(payload["before"], str):
         raise ValueError("Expected {text, before}: the tile list and the digest of the text the page showed.")
     text = payload["text"]
-    headline, groups, problems = parse(text)
-    if problems:
-        raise ValueError(f"The tile list was not saved: {'; '.join(problems)}.")
-    if headline is None and not groups:
-        raise ValueError("The tile list was not saved: it names no tile.")
-    if len(text) > writes.SETTING_VALUE_LENGTH:
-        raise ValueError(f"The tile list was not saved: it is over {writes.SETTING_VALUE_LENGTH} characters.")
+    refused = _refused(text)
+    if refused:
+        raise ValueError(f"The tile list was not saved: {refused}.")
     stale = {"error": "The tile list changed since this page read it; nothing was saved. Read it again.", "reload": True}
 
     def write(connection):
@@ -337,6 +347,8 @@ def save(payload) -> object:
             writes.set_setting(connection, KEY, text, before=shown if origin == "database" else None)
         except writes.SettingStale:
             return 409, stale
-        return {"saved": KEY, "text": text, "digest": _digest("database", text), "previous": shown or ""}
+        # Undo posts `previous`, so a text Save would refuse (a file with a skipped line) offers none.
+        previous = shown if shown and not _refused(shown) else ""
+        return {"saved": KEY, "text": text, "digest": _digest("database", text), "previous": previous}
 
     return write
