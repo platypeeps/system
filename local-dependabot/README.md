@@ -33,6 +33,7 @@ watching this run.
 ../local-cron-jobs/cron-jobs.sh run dependabot-daily       # run once, now
 tail -f ../local-cron-jobs/logs/dependabot-daily.log       # watch it work
 ./dependabot.sh holds --dry-run --repo platypeeps/example-site  # the watcher, reading only
+./dependabot.sh allowed                                    # repositories outside platypeeps it may take
 ./dependabot.sh test -v                                    # its suite
 ../local-cron-jobs/cron-jobs.sh install dependabot-holds-weekly  # the watcher, weekly
 ../local-cron-jobs/cron-jobs.sh run dependabot-holds-weekly      # one pass over the fleet, now
@@ -65,11 +66,17 @@ anything in a repository with no CI configured — "no checks reported" is not
 
 Two gates decide which repositories it touches at all, and they are different
 questions. Write access says a merge would *succeed*; the owner gate says one
-is *wanted*. Both must pass. The owner gate is two written lists, not one —
-repositories named as never-touch are checked before the ones named as allowed,
-so a deny survives anything that would otherwise re-admit them. See
-`ROUTINE.md` for both lists, and for why they are written out when everything
-else here is enumerated at runtime.
+is *wanted*. Both must pass. The owner gate is a written deny list, the
+`platypeeps` owner, and an allowed list: repositories named as never-touch are
+checked first, so a deny survives anything that would otherwise re-admit them.
+The allowed list is the operator's consent for repositories outside
+`platypeeps`; it lives in the workflow database as each repository row's
+Dependabot setting, set on the dashboard's Management page or with `sd-db repo
+dependabot PATH yes`, and `./dependabot.sh allowed` prints it. Two checkouts
+of one repository are two rows, and a no on either withdraws it. When it cannot
+be read (no command pack, no hub), the gate takes no repository outside
+`platypeeps` and names the reason. See `ROUTINE.md` for the lists, and for why
+they are written out when everything else here is enumerated at runtime.
 
 It exits 0 whether or not anything merged. Finding pull requests it could not
 merge is the job working correctly; failing on that would fire the failure

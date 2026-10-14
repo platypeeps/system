@@ -257,6 +257,26 @@ class TheDocument(ScreenCase):
         rows = {row["path"]: row for row in self.document()["repos"]}
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
 
+    def test_a_repo_carries_its_dependabot_flag_and_the_owner_gate_and_the_verb_flips_it(self):
+        """sd:3984: the flag is the row's column; a platypeeps row is the owner's and a denied one is denied."""
+        checkout = self.ids["checkout"]
+        upsert_repo(self.connection, "/repos/own", remote="git@github.com:platypeeps/own.git")
+        upsert_repo(self.connection, "/repos/denied", remote="git@github.com:platypeeps/Trellis.git")
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual([(rows[path]["dependabot"], rows[path]["dependabot_gate"]) for path in
+                          (checkout, "/repos/own", "/repos/denied")], [("no", None), ("no", "owner"), ("no", "denied")])
+        got = management_screen.set_repo(self.connection, "dependabot", checkout, "yes", "no")
+        self.assertEqual((got["field"], got["value"], got["before"]), ("dependabot", "yes", "no"))
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "dependabot", checkout, "yes", "no")
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["dependabot"], "yes")
+        from sd_db.remote import HubOnly
+
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            with self.assertRaises(HubOnly):
+                management_screen.set_repo(self.connection, "dependabot", checkout, "no", "yes")
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["dependabot"], "yes")
+
     def test_the_lane_host_reads_hub_and_moves_refusing_a_stale_before_a_bad_name_and_an_unknown_path(self):
         """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name."""
         checkout = self.ids["checkout"]
@@ -561,6 +581,14 @@ class ThePage(BrowserSession):
         self.assertEqual(self.post("/api/repos/runner-merge", {**body, "value": "sometimes"})[0], 400)
         self.assertEqual(self.post("/api/repos/managed", {"path": self.ids["checkout"], "value": "yes", "before": "yes"})[0], 400)
         self.assertEqual(self.post("/api/repos/mode", {"path": self.ids["checkout"], "value": "x", "before": "y"})[0], 404)
+
+    def test_the_dependabot_route_flips_once_and_refuses_a_stale_before_and_a_bad_word(self):
+        """sd:3984: `/api/repos/dependabot` takes yes or no and the value the page showed."""
+        body = {"path": self.ids["checkout"], "value": "yes", "before": "no"}
+        status, _, got = self.post("/api/repos/dependabot", body)
+        self.assertEqual((status, got["field"], got["value"], got["before"]), (200, "dependabot", "yes", "no"))
+        self.assertEqual(self.post("/api/repos/dependabot", body)[0], 409)
+        self.assertEqual(self.post("/api/repos/dependabot", {**body, "value": "always", "before": "yes"})[0], 400)
 
     def test_the_lane_host_route_moves_once_and_refuses_a_stale_before_and_a_bad_name(self):
         """sd:3075, acceptance 2: `Build_2` is a 400 naming the rule; a repeated move is a stale 409."""
@@ -886,6 +914,28 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/repos/channels", {"path": path, "value": None, "before": '{"site":{}}'})])
         self.assertEqual(out["R"]["toast"], 'Ran locally · channels {"site":{}} → none')
         self.assertEqual(out["toasts"][-1], ['Run not undone · channels {"site":{}} → none: nothing to reverse', False])
+
+    def test_the_repo_page_shows_dependabot_and_the_toggle_runs_the_verb_and_undoes(self):
+        """sd:3984: yes or no for a repo outside the owner rule; an owner's or a denied repo shows the rule and no toggle."""
+        path = self.ids["checkout"]
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('dependabot', 'yes'); R.cmd = pending[0].cmd;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        self.assertIn('data-set="dependabot"', out["R"]["page"])
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo dependabot '{path}' yes")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/dependabot", {"path": path, "value": "yes", "before": "no"}),
+                          ("/api/repos/dependabot", {"path": path, "value": "no", "before": "yes"})])
+        self.assertEqual(out["R"]["toast"], "Ran locally · dependabot no → yes")
+        doc = json.loads(json.dumps(self.doc))
+        for gate, shown in (("owner", "always (owner)"), ("denied", "denied by name"), (None, "not read")):
+            row = next(r for r in doc["repos"] if r["path"] == path)
+            row["dependabot_gate"] = gate
+            row["dependabot"] = "no" if gate else None
+            page = self.run_page("R.page = ELS['view-repos'].html;", doc=doc, search=f"?repo={path}")["R"]["page"]
+            cell = page.split('data-key="dependabot"')[1].split('<div class="row"')[0]
+            self.assertIn(shown, cell)
+            self.assertNotIn('data-set="dependabot"', cell)
 
     def test_a_refused_write_says_why_and_reads_again(self):
         path = self.ids["checkout"]

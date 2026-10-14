@@ -99,16 +99,18 @@ So permission is necessary and not sufficient. Three rules, in order:
 2. **`platypeeps/*` — every repository, always.** The owner's own org. New
    ones join automatically, which is the enumerate-never-recite principle
    still doing its job where it applies.
-3. **Every other owner — only if named in `allowed-repos.conf`.** That file
-   lives outside the checkout in `<config>/dependabot/allowed-repos.conf`
-   (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`;
-   copy `allowed-repos.conf.example` there; `DEPENDABOT_ALLOWED_REPOS_FILE`
-   names another file), and lists one `owner/name` per line. It
-   holds the operator's own consent, so it is not published. Missing means
-   none.
+3. **Every other owner — only if `dependabot.sh allowed` names it.** Run
+   it once, before the fan-out. It prints one lower-case `owner/name` per
+   line (compare names ignoring case): the repositories whose every
+   workflow database row has Dependabot set (the
+   Management page's Dependabot control, or `sd-db repo dependabot PATH
+   yes`). It holds the operator's own consent, so it is not published. No
+   lines means none. A non-zero exit means the list is **unknown**, not
+   empty: sweep no repository outside `platypeeps`, and put its stderr line,
+   `allowed list unknown: <reason>`, in the log and the report.
 
 Anything else outside `platypeeps` is skipped and *named* in the log, so the
-omission is visible and re-authorizing it is one line of that file.
+omission is visible and re-authorizing it is one click on Management.
 
 **This list is deliberately a list, and that is not a contradiction of the
 enumerate-never-recite rule above.** That rule governs *discovery* — which
@@ -368,8 +370,8 @@ The fleet and the two gates are the daily sweep's, above: enumerate
 `MAINTAIN` and `WRITE`, then apply the owner gate -- the six denied by name
 first, then `platypeeps/*`, then the named exceptions. A repository refused
 by either gate gets one line naming the gate, `SKIP <slug> no write access`,
-`SKIP <slug> owner not authorized` or `SKIP <slug> denied by name`, and is
-not read.
+`SKIP <slug> owner not authorized`, `SKIP <slug> allowed list unknown: <reason>`
+or `SKIP <slug> denied by name`, and is not read.
 
 In each admitted repository, list every Dependabot pull request, open and
 closed (`repos/<slug>/issues?state=all&creator=dependabot[bot]`, which

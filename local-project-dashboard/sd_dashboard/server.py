@@ -334,7 +334,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
-    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels)", path)
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot)", path)
     if match:
         from .management_screen import set_repo
 
