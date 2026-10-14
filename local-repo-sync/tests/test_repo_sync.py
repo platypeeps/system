@@ -306,8 +306,9 @@ class Fixture:
         return self.state_home / "system" / "repo-sync" / f"clones.{self.profile}"
 
     def snapshot_text(self, text, root=None):
-        """A snapshot as a run under `root` (default the fixture's) writes it."""
-        return f"# root {root or self.root}\n{text}"
+        """A snapshot as a run under `root` (default the fixture's) writes it:
+        the header names the physical root."""
+        return f"# root {pathlib.Path(root or self.root).resolve()}\n{text}"
 
     def write_snapshot(self, text, root=None):
         self.snapshot().parent.mkdir(parents=True, exist_ok=True)
@@ -668,6 +669,27 @@ class DatabaseListTest(unittest.TestCase):
         self.assertNotIn("owner/old-root", result.stdout)
         self.assertIn("source  : conf", result.stdout)
         self.assertIn(f"no snapshot for {f.root}", result.stderr)
+
+    def test_a_snapshot_from_a_retargeted_root_link_is_not_read(self):
+        """REGRESSION (codex pass). The snapshot names the physical root: a
+        root that is a symlink moved to another folder is another root, even
+        though its path reads the same."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+        first, second, link = f.tmp / "first", f.tmp / "second", f.tmp / "link"
+        first.mkdir()
+        second.mkdir()
+        link.symlink_to(first)
+        f.clones("a owner/first-root\n")
+        f.run("list", extra_env={"REPO_SYNC_ROOT": str(link)})
+        link.unlink()
+        link.symlink_to(second)
+
+        result = f.run("list", extra_env={"REPO_SYNC_ROOT": str(link), "CLONES_RC": "1"})
+
+        self.assertIn("owner/from-conf", result.stdout)
+        self.assertNotIn("owner/first-root", result.stdout)
+        self.assertIn("source  : conf", result.stdout)
 
     def test_an_empty_answer_is_unknown_and_keeps_the_snapshot(self):
         """REGRESSION. Every profile lists at least `system`, so no line is a

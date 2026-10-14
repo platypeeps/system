@@ -105,9 +105,10 @@ sd_db() {
 
 # The last list the database gave for this profile. Its name carries the
 # profile, so another profile's answer is never read as this one's. Its first
-# line, `# root <ROOT>`, names the root its lines are relative to: after the
-# root moves, the pack refuses rows outside it, and an old snapshot must not
-# stand in for them. A comment, so the README's revert reads it as a conf.
+# line, `# root <ROOT>`, names the physical root its lines are relative to:
+# after the root moves (or its symlink does), the pack refuses rows outside it,
+# and an old snapshot must not stand in for them. A comment, so the README's
+# revert reads it as a conf.
 SNAPSHOT="$(st_state_dir repo-sync)/clones.$PROFILE"
 
 # Comments and blanks stripped, separators collapsed to one space, and each
@@ -136,6 +137,8 @@ load_list() {
   LIST_FILE="$TMPD/list"
   LIST_WHY=""
   l_rc=0
+  # A fresh machine has no root until sync makes one.
+  l_root=$(cd "$ROOT" 2> /dev/null && pwd -P) || l_root=$ROOT
   sd_db repo list --clones "$PROFILE" > "$TMPD/list.db" 2> "$TMPD/list.err" || l_rc=$?
   if [ "$l_rc" -ne 0 ]; then
     LIST_WHY="sd-db repo list --clones $PROFILE exited $l_rc: $(tail -1 "$TMPD/list.err")"
@@ -148,13 +151,13 @@ load_list() {
   if [ -z "$LIST_WHY" ]; then
     normalise < "$TMPD/list.db" > "$LIST_FILE"
     LIST_SOURCE=database
-    if ! { mkdir -p "${SNAPSHOT%/*}" && { printf '# root %s\n' "$ROOT" && cat "$LIST_FILE"; } > "$SNAPSHOT.tmp" \
+    if ! { mkdir -p "${SNAPSHOT%/*}" && { printf '# root %s\n' "$l_root" && cat "$LIST_FILE"; } > "$SNAPSHOT.tmp" \
         && mv -f "$SNAPSHOT.tmp" "$SNAPSHOT"; }; then
       echo "repo-sync.sh: cannot write $SNAPSHOT; without the database, the next run reads an older answer or the confs" >&2
     fi
     return 0
   fi
-  if [ -s "$SNAPSHOT" ] && [ "$(head -1 "$SNAPSHOT")" = "# root $ROOT" ]; then
+  if [ -s "$SNAPSHOT" ] && [ "$(head -1 "$SNAPSHOT")" = "# root $l_root" ]; then
     normalise < "$SNAPSHOT" > "$LIST_FILE"
     LIST_SOURCE=snapshot
     echo "repo-sync.sh: the database did not answer ($LIST_WHY); the list is its last answer, $SNAPSHOT" >&2
