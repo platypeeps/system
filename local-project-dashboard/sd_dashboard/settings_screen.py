@@ -23,7 +23,7 @@ from .management_screen import SD_SECONDS
 __all__ = ["FLEET", "document", "request"]
 
 #: The pack's `sd_lib.FLEET_KEYS`, in the order the page lists them; `test_v2_settings` pins the two equal.
-FLEET = ("fleet_owners", "copilot_review")
+FLEET = ("fleet_owners", "copilot_review", "hub_name")
 
 #: A pattern that is a list of words, which the page offers as a select.
 CHOICES = re.compile(r"[a-z]+(\|[a-z]+)+")
