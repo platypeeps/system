@@ -116,6 +116,7 @@ class ScheduledRecovery(unittest.TestCase):
 
     def test_real_hourly_backup_runs_through_cron_without_a_row_prune(self):
         self.env["SD_DB_BACKUP_HOURLY_DESTINATION"] = str(self.fixture.backups)
+        self.env["SD_DB_BACKUP_HOURLY_NAS_FOLDER"] = ""
         for _ in range(2):
             result = self.run_job("run", "sd-db-backup-hourly")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

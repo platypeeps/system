@@ -196,11 +196,20 @@ class HourlyBackupJobTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python"])
 
-    def test_a_named_destination_takes_the_snapshot_only(self):
-        # A one-off or a test names its own root; it does not copy the disk.
+    def test_a_named_destination_still_copies_to_the_nas(self):
+        # A promoted satellite names its own local root (design, "Bulk storage
+        # and paths"); its hourly copy is the recovery point all the same.
         result, calls = self.run_job(SD_DB_BACKUP_HOURLY_DESTINATION="/tmp/somewhere")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls, ["sd-db backup --destination /tmp/somewhere --keep 24 --no-row-prune"])
+        self.assertEqual(calls[0], "sd-db backup --destination /tmp/somewhere --keep 24 --no-row-prune")
+        self.assertEqual(calls[2:], ["mirror mirrors-nas-hourly.conf 1 sync",
+                                     f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7"])
+
+    def test_an_empty_nas_folder_takes_the_snapshot_only(self):
+        # A one-off or a test switches the copy off by name, not by moving the root.
+        result, calls = self.run_job(SD_DB_BACKUP_HOURLY_NAS_FOLDER="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db"])
 
 
 class NightlyReviewJobTest(unittest.TestCase):

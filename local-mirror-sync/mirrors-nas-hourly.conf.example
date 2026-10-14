@@ -3,7 +3,9 @@
 # Copy to ~/.config/system/mirror-sync/mirrors-nas-hourly.conf ($SYSTEM_TOOLS_CONFIG/mirror-sync) and set your own paths.
 # The destination is a placeholder: replace /Volumes/change-me-nas-share with
 # the NAS share's mount point, the same path as SD_DB_BACKUP_HOURLY_NAS_FOLDER
-# in the sd-db-backup-hourly job.
+# in the sd-db-backup-hourly job. The source is the job's local root: on a
+# machine that sets SD_DB_BACKUP_HOURLY_DESTINATION, such as a promoted
+# satellite, set the source to that path.
 #
 # Format matches mirrors.conf. Run this list ADDITIVE (MIRROR_SYNC_ADDITIVE=1):
 # the local root keeps 24 snapshots, and the NAS folder keeps 7 days by checkpoint age.
