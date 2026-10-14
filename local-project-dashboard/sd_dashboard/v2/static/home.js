@@ -220,7 +220,7 @@ addEventListener('DOMContentLoaded', () => {
     try { out = await saveTiles(edText.value, before); }
     catch (err) {
       edOut.textContent = err.stale ? 'Not saved: the list changed since this page read it. Cancel, then Edit tiles opens on the new list.'
-        : err.status ? `Not saved: ${err.message}` : `Not known whether it saved: ${err.message}. Read again before you save.`;
+        : err.status ? err.message : `Not known whether it saved: ${err.message}. Read again before you save.`;
       if (err.stale || !err.status) reading.load(true);
       return;
     }
