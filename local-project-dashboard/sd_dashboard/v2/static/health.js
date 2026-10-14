@@ -26,6 +26,7 @@
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
     doc: ['shield-check', '<b>What machine-setup doctor says.</b> Its WARN and FAIL lines, one row each, and the lines that pass. The doctor runs <code>brew doctor</code>, so an answer stands for ten minutes; a run still going, stopped at its deadline or failed is unknown, never clean.'],
     svc: ['activity', '<b>Long-running user services.</b> Each LaunchAgent that keeps a process alive, as <code>sd services list</code> reads it. Restart and Start run <code>sd services restart</code> and <code>start</code> here, against the row as shown. The dashboard compares the commit it serves with the checkout; its own service is protected, so a stale one gives the kickstart line to copy.'],
+    mir: ['book-open', '<b>The vault mirror of base rows.</b> Each base row write renders its notes and its page under <code>docs/dashboard</code> in the vault; a hand-edited note is kept and listed. Render mirror runs <code>sd-db records render</code> here, to catch up after a failed render.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
   };
   // Protection has no lamp: the annunciator holds 2 to 8 (the design's rule), and its matrix is Health's evidence strip.
@@ -63,7 +64,7 @@
     : a.id === 'disk' ? fullest(a)
     : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
     : a.id === 'dep' || a.id === 'sec' ? alerts(a)
-    : a.id === 'cred' || a.id === 'doc' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
+    : a.id === 'cred' || a.id === 'doc' || a.id === 'mir' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
     : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
     : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
 
@@ -252,6 +253,15 @@
     if (e.status >= 400 && e.status < 500) throw e;
     return `Not known what changed · ${o.facts.Label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
+  // Render mirror (sd:3977) answers what it wrote, or a 409 that names why it did not; the page reads again either way.
+  const render = o => shell.post('/api/records/render', {}).then(out => {
+    load();
+    return `Vault mirror rendered: ${out.kinds.join(', ') || 'no kind'} · ${plural(out.written.length, 'file')} written`;
+  }, e => {
+    load();
+    if (e.status >= 400 && e.status < 500) throw e;
+    return `Not known what changed · vault mirror: ${e.message}. Health was read again; check the row before you act again.`;
+  });
   const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
@@ -316,13 +326,17 @@
         executes: false, cli: o => o.cli, run: copyOnly },
       { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
+      { id: 'vault mirror.render', on: 'vault mirror', label: 'Render mirror', key: 'r', risk: 'confirm', executes: true,
+        primary: () => true, cli: o => o.cli,
+        consequence: () => 'Writes every base row\'s mirror note and page into the vault. A hand-edited note is kept and listed, not overwritten.',
+        run: render },
       { id: 'credential.probe', on: 'credential', label: 'Probe again', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );
     // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
     window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
       types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port',
-        'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service'] });
+        'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'vault mirror'] });
 
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));

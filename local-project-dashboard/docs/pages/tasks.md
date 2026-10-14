@@ -26,6 +26,12 @@ Every page opens an item at `/tasks?row=<id>` (`shell.itemHref`, sd:3526); an
 item the read does not list, a quiet report or one done before the week,
 goes on to its item page, `/item/<id>`.
 
+A vault base row (sd:3977) also carries its `base` (`fields.kind`), `stage` and `score`; other rows have none.
+The Base filter shows once a row has a base; the list has Stage and Score columns, and Score sorts highest first.
+A base row's Details show its stage select, declared fields, body and a link to its section of the vault mirror page.
+`POST /api/items/<id>/stage` and `POST /api/items/<id>` send a base row to `records.edit_row` under its kind's rules;
+every other row keeps its handler. The toast says when the render after the write failed.
+
 A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
 Tasks filters on. v1's screen and its run selection were deleted in sd:2622;

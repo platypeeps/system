@@ -86,6 +86,7 @@ AREAS = (
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
     ("prot", "Protection", "sd shadow sync → repo_protection", ()),
     ("svc", "Services", "sd services list · launchctl print per user LaunchAgent · the dashboard's /health commit", ()),
+    ("mir", "Vault mirror", "sd-db records render → state heartbeat records-mirror", ()),
     ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
 )
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
@@ -648,6 +649,33 @@ def _credential_rows(found: tuple[str, dict] | None, *, now: str) -> tuple[list[
     return rows, {"at": stamp}
 
 
+MIRROR_CLI = "sd-db records render"
+
+
+def read_mirror(connection: sqlite3.Connection) -> tuple[str, dict] | None:
+    """`sd_db.records.mirror_state` (sd:3977), looked up here so a library without it is the area's error, never clean."""
+    try:
+        return importlib.import_module("sd_db.records").mirror_state(connection)
+    except (ImportError, AttributeError) as missing:
+        raise ValueError("the installed sd_db has no records.mirror_state; install a pack with it") from missing
+
+
+def _mirror_rows(found: tuple[str, dict] | None) -> tuple[list[dict], dict]:
+    """One row: the last render of the vault mirror, ok only when its heartbeat says so; Render mirror runs it again."""
+    row = {"id": "mir", "type": "vault mirror", "kind": "Vault mirror", "cli": MIRROR_CLI}
+    if found is None:
+        return [{**row, "state": "unknown", "what": "Vault mirror not yet rendered",
+                 "detail": "a base row write or Render mirror records it", "facts": {"Heartbeat": "records-mirror"}}], {"at": None}
+    stamp, body = found
+    refused = [f"{one.get('path')}: {one.get('reason')}" for one in body.get("refused") or [] if isinstance(one, dict)]
+    facts = {"Observed": stamp, "Kinds": ", ".join(body.get("kinds") or []) or "—", "Written": str(body.get("written", "—"))}
+    if body.get("ok") is True:
+        return [{**row, "state": "ok", "what": "Vault mirror rendered", "detail": f"recorded {stamp}", "facts": facts}], {"at": stamp}
+    why = body.get("reason") or (f"{len(refused)} file(s) refused" if refused else "the heartbeat says not ok")
+    return [{**row, "state": "warning", "what": "Vault mirror not updated", "detail": why, "facts": facts,
+             "list": refused, "problem": [why, *refused]}], {"at": stamp}
+
+
 DOCTOR_CLI = "local-machine-setup/machine-setup.sh doctor"
 DOCTOR_STATE = {"FAIL": "warning", "WARN": "caution"}
 
@@ -870,6 +898,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         "sec": lambda: _security_rows(read_protection(connection), now=now),
         "cred": lambda: _credential_rows(read_creds(connection), now=now),
         "svc": lambda: _service_rows(read_services(connection, services), served_commit=served_commit),
+        "mir": lambda: _mirror_rows(read_mirror(connection)),
         "doc": lambda: _doctor_rows(read_doctor()),
     }
     snoozes, snooze_error = snooze.held(connection, now=now)

@@ -284,9 +284,9 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual([(a["id"], a["read"]) for a in areas],
                          [("disk", True), ("cred", True), ("wt", True),
                           ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("svc", True),
-                          ("doc", True)])
+                          ("mir", True), ("doc", True)])
         for area in areas:
-            if area["id"] not in ("br", "ports", "prot", "svc", "cred", "dep", "sec", "doc"):
+            if area["id"] not in ("br", "ports", "prot", "svc", "cred", "dep", "sec", "mir", "doc"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -857,7 +857,7 @@ class TheDocument(Collectors, ScreenCase):
         doc = self.doc(fleet=slow(fleet_of(TREES)), ports=slow(ports_snapshot),
                        disk=slow(scan_of(DISK)), branches=slow(scan_of(BRANCHES)))
         self.assertEqual([(area["id"], area["error"], bool(area["rows"])) for area in doc["areas"] if area["read"]],
-                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "svc", "doc")])
+                         [(key, "", True) for key in ("disk", "cred", "wt", "br", "dep", "sec", "ports", "prot", "svc", "mir", "doc")])
 
     def test_a_reader_past_the_page_budget_is_its_area_error_and_the_page_does_not_wait(self):
         # The reader answers only once the page has returned, so a page that
@@ -1080,7 +1080,7 @@ window.shell.state = s => OUT.states.push(s);
 
 SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
                  "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
-                 "dashboard service")
+                 "dashboard service", "vault mirror")
 
 
 class TheScript(Collectors, ScreenCase):
@@ -1122,6 +1122,7 @@ class TheScript(Collectors, ScreenCase):
             ["collector.sync", "collector", "safe", "r", None, False],
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
+            ["vault mirror.render", "vault mirror", "confirm", "r", True, False],
             ["credential.probe", "credential", "safe", "r", False, False],
         ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
           + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
@@ -1146,7 +1147,7 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
         self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("10 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
+        self.assertIn("11 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
 
@@ -1246,12 +1247,12 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 22 rows.", out["R"]["note"])
+        self.assertIn("Filtered to Credentials only: 1 of 23 rows.", out["R"]["note"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
-                         ["cred", "wt", "br", "dep", "sec", "ports", "prot"])
+                         ["cred", "wt", "br", "dep", "sec", "ports", "prot", "mir"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
                          ["cred:none", "unread:beta", "br:no_default", "dep:none", "sec:none", "port:svc-b:9020",
-                          "prot:/checkouts/gamma"])
+                          "prot:/checkouts/gamma", "mir"])
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
@@ -1378,6 +1379,22 @@ shellRun(c, o); await flush();""")
         self.assertEqual(out["gets"], ["/api/health"])
         self.assertEqual(out["toasts"][-1][0], "com.example.alpha: accepted · launchctl accepted the request; "
                                                "current state is observed separately")
+
+    RENDER_ANSWER = ("ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path === '/api/records/render' "
+                     "? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n")
+
+    def test_render_mirror_confirms_then_posts_and_names_what_it_wrote(self):
+        """sd:3977: the vault mirror row runs `sd-db records render` through POST /api/records/render."""
+        wrote = {"ok": True, "kinds": ["blog-idea", "topic"], "written": ["docs/dashboard/base-topic.html"], "refused": [], "reason": None}
+        out = self.run_page(f"var STATUS_W = 200, WROTE = {json.dumps(wrote)};\n" + self.RENDER_ANSWER
+                            + """var o = C.get('mir'); OUT.gets = []; var c = cmd('vault mirror.render');
+R.cli = c.cli(o); R.why = c.consequence(o); shellRun(c, o); await flush();""")
+        self.assertEqual(out["R"]["cli"], "sd-db records render")
+        self.assertIn("A hand-edited note is kept and listed", out["R"]["why"])
+        self.assertEqual(out["confirms"], ["vault mirror.render"])
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/records/render", {}]])
+        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["toasts"][-1][0], "Vault mirror rendered: blog-idea, topic · 1 file written")
 
     def test_a_down_service_offers_start_and_says_why_restart_is_off(self):
         out = self.service_page("svc:com.example.beta", """R.start = cmd('service.start').when(o); R.primary = cmd('service.start').primary(o);
@@ -1550,7 +1567,7 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/cleanup")
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/cleanup", "/api/records/render")
 
 
 if __name__ == "__main__":

@@ -168,6 +168,36 @@ def capture_followup(connection, *, followup_of=None, who, **values):
         return workflow.item_state(connection, item)
 
 
+def _base_kind(connection, item):
+    """The base kind of a vault base row (sd:3977), or None: the item routes send such a row to `records.edit_row`."""
+    from sd_db.sources.vault import SOURCE
+
+    row = workflow.item_state(connection, item)["item"]
+    return json.loads(row["fields"] or "{}").get("kind") if row["source"] == SOURCE else None
+
+
+def _edit_base_row(connection, item, revision, values):
+    """A base row's stage move or field and body edit, under its kind's rules, answered as the item's state.
+
+    `mirror` is the heartbeat the write's render left: a write never fails for its render, so the page says when it did.
+    """
+    from . import health_screen
+
+    try:
+        from sd_db import records
+    except ImportError as missing:  # a pack older than the records module refuses, as its vault driver would
+        raise ValueError("the installed sd_db has no records module; edit the note in the vault") from missing
+    if set(values) - {"stage", "fields", "body"}:
+        raise ValueError("A base row takes a stage, its declared fields or its body.")
+    records.edit_row(connection, item, records.rules_for(_base_kind(connection, item), home=Path.home()),
+                     revision=revision, who="dashboard", **values)
+    try:
+        beat = health_screen.read_mirror(connection)
+    except ValueError:  # a library without the read: the page says nothing rather than ok
+        beat = None
+    return {**workflow.item_state(connection, item), "mirror": beat[1] if beat else None}
+
+
 def action_route(path, payload, *, principal, operations_backend=None, services_backend=None):
     """Parse one finite action vocabulary before opening a writable connection.
 
@@ -359,7 +389,9 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
     options = {"who": "dashboard", "expected_revision": revision}
     number = int(number)
     if entity == "items" and suffix is None:
-        return lambda connection: workflow.edit_item(connection, number, values, **options)
+        return lambda connection: (_edit_base_row(connection, number, revision, values)
+                                   if _base_kind(connection, number) else
+                                   workflow.edit_item(connection, number, values, **options))
     if entity == "items" and suffix == "/status":
         if set(values) - {"status", "reason"} or "status" not in values:
             raise ValueError("A status and optional reason are required.")
@@ -385,11 +417,19 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
             raise ValueError("Provide a stage, optional correction and reason.")
         if "correct" in values and type(values["correct"]) is not bool:
             raise ValueError("Correction must be true or false.")
-        if values["stage"] == "published":
-            raise ValueError("Publication uses the reviewed publishing workflow.")
-        return lambda connection: writing.change_stage(connection, number, values["stage"],
-            actor="human", require_row=True, reason=values.get("reason") or None,
-            correct=values.get("correct", False), **options)
+
+        def stage(connection):
+            # A vault base row moves through its kind's graph (sd:3977); `published` there is a stage, not a publication.
+            if _base_kind(connection, number):
+                if set(values) != {"stage"}:
+                    raise ValueError("A base row's stage move takes the stage only.")
+                return _edit_base_row(connection, number, revision, values)
+            if values["stage"] == "published":
+                raise ValueError("Publication uses the reviewed publishing workflow.")
+            return writing.change_stage(connection, number, values["stage"],
+                actor="human", require_row=True, reason=values.get("reason") or None,
+                correct=values.get("correct", False), **options)
+        return stage
     if entity == "items" and suffix in ("/relink", "/cancel"):
         from sd_db import progress
 

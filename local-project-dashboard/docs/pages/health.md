@@ -82,6 +82,10 @@ too, never a refusal. A write where git or a check refused every step wrote
 nothing and answers 400. None of the three runs in bulk. `health_cleanup`
 holds the writes.
 
+Vault mirror (sd:3977) reads the last `records-mirror` heartbeat: ok when it says so, a warning with its reason
+and refused files, and unknown before any render. Render mirror posts `/api/records/render`, the code
+`sd-db records render` runs, after a confirm; it answers 409 with the reason when the render did not run clean.
+
 Attribute, Show biggest, Show use and Inspect listener are CLI lines for Copy,
 and Re-check reads the document again. Re-run collector posts `/api/shadow/sync`, as
 Contributions does, and reads Health again when the run ends (sd:2894).

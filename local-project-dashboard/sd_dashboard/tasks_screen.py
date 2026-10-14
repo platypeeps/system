@@ -15,6 +15,7 @@ query of the store:
   takes its fields (`_edit_capability`), so Edit, P2, recurrence and a
   matrix drop are off, with the library's reason, where the edit would fail.
   The document's `attention` is the page's rail badge (sd:3446, `_attention`).
+  A vault base row (sd:3977) also carries its `base` (`fields.kind`), `stage` and `score`; every other row has None.
 - `/api/tasks/<id>` is `details`: what `sd task show <id> --json` prints
   (`item`, `notes`, `revision`, from `workflow.item_state`), split into the
   status history and the other notes as v1's item page splits them, plus the
@@ -22,7 +23,8 @@ query of the store:
   and revision `sd assignments cancel` checks), a work
   item's relink and cancel availability (`progress.work_controls`) and its
   external context (`reads.item_shadow` and `progress.tracker_freshness`,
-  v1's "External context" block), or `null` when the item has none.
+  v1's "External context" block), or `null` when the item has none. A vault base row's
+  `base` is its stage moves, declared fields, body and mirror section (`_base`), or `null` for any other row.
 - `from_backlog` is where a v1 `/backlog` address goes since sd:2356 retired
   it: the same `/tasks` view with the query v1 read, so a bookmark or an old
   link keeps its filters.
@@ -39,12 +41,14 @@ naming it. Nothing here writes.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime
 from pathlib import Path
 
 from sd_db import reads, repos, workflow
 from sd_db.protection import github_slug
+from sd_db.sources.vault import SOURCE as VAULT
 
 __all__ = ["details", "document"]
 
@@ -116,10 +120,19 @@ def _document(connection, *, now: str) -> dict:
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(row),
             "parked": row["parked_at"],
+            **_base_fields(state["item"]),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
     return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now)}
+
+
+def _base_fields(item) -> dict:
+    """A vault base row's kind, stage and score (sd:3977), None for every other row."""
+    if item["source"] != VAULT:
+        return {"base": None, "stage": None, "score": None}
+    fields = json.loads(item["fields"] or "{}")
+    return {"base": fields.get("kind"), "stage": item["stage"], "score": fields.get("score")}
 
 
 def _attention(rows, *, now: str) -> dict:
@@ -239,7 +252,47 @@ def details(connection, item: int, *, now: str) -> dict:
         # `sd work relink` and `sd work cancel` availability, as the mutation checks it under its lock
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
+        "base": _base(state),
     }
+
+
+def _base(state) -> dict | None:
+    """A vault base row's panel (sd:3977): its stage moves, declared fields, body and mirror section.
+
+    The moves and fields are the kind's rules (`records.rules_for`); a refusal there is `reason`, and the page offers no move.
+    `mirror` is the row's section of `<vault>/docs/dashboard/base-<kind>.html`, with a Documents address when a root serves it.
+    """
+    item = state["item"]
+    if item["source"] != VAULT:
+        return None
+    fields = json.loads(item["fields"] or "{}")
+    kind = fields.pop("kind", None)
+    out = {"kind": kind, "stage": item["stage"], "fields": fields,
+           "body": json.loads(item["body"] or "{}").get("markdown", ""),
+           "stages": [], "declared": [], "reason": None, "mirror": None}
+    try:
+        from sd_db import records
+
+        rules = records.rules_for(kind, home=Path.home())
+    except (ImportError, workflow.WorkflowError) as refused:
+        out["reason"] = str(refused)
+        return out
+    out["declared"] = [name for name in rules.fields if name != "status"]
+    if rules.driver != "db":
+        out["reason"] = f"plugin {rules.prefix} still keeps {kind} rows in the vault: edit the note"
+    else:
+        graph = rules.transitions
+        out["stages"] = list(graph.get(item["stage"], []) if graph is not None else
+                             [stage for stage in rules.stages if stage != item["stage"]])
+    if rules.vault is not None:
+        from .documents import roots
+
+        name = f"base-{kind}.html"
+        folder = rules.vault / "docs" / "dashboard"
+        served = next((root.key for root in roots() if root.path.expanduser().resolve() == folder.resolve()), None)
+        out["mirror"] = {"path": f"{folder / name}#item-{item['id']}",
+                         "url": f"/documents/{served}/{name}#item-{item['id']}" if served else ""}
+    return out
 
 
 #: The views v1 /backlog had; Tasks has the same three. v1 opened on the list, Tasks on the board.
