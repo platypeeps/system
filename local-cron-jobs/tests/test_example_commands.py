@@ -169,7 +169,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(calls), 4, calls)
         self.assertTrue(calls[0].startswith("sd-db backup --destination /Volumes/local/Backup Local/sd-backups"
-                                            " --require-mount /Volumes/local --keep-days 2 --no-row-prune"), calls)
+                                            " --require-mount /Volumes/local --keep 24 --no-row-prune"), calls)
         self.assertTrue(calls[1].startswith("python "), calls)
         self.assertTrue(calls[1].endswith(f"offsite-verify.py --preflight-only --destination {self.NAS}"), calls)
         self.assertEqual(calls[2], "mirror mirrors-nas-hourly.conf 1 sync")
@@ -194,7 +194,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         # A one-off or a test names its own root; it does not copy the disk.
         result, calls = self.run_job(SD_DB_BACKUP_HOURLY_DESTINATION="/tmp/somewhere")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls, ["sd-db backup --destination /tmp/somewhere --keep-days 2 --no-row-prune"])
+        self.assertEqual(calls, ["sd-db backup --destination /tmp/somewhere --keep 24 --no-row-prune"])
 
 
 class NightlyReviewJobTest(unittest.TestCase):

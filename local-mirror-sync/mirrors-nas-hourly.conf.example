@@ -4,7 +4,7 @@
 # /Volumes/Offsite is a NAS share mounted over SMB, as in mirrors-nas.conf.
 #
 # Format matches mirrors.conf. Run this list ADDITIVE (MIRROR_SYNC_ADDITIVE=1):
-# the local root keeps 2 days, and the NAS folder keeps every hour it received.
+# the local root keeps 24 snapshots, and the NAS folder keeps 7 days by checkpoint age.
 # A promoted hub starts with one local snapshot, and an exact mirror would
 # delete the NAS history it was restored from.
 #

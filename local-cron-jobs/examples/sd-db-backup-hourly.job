@@ -9,12 +9,11 @@
 # was meant to leave. The refusal exits 1 and mails through sd-db, so a
 # detached drive is reported every hour until it is reattached.
 #
-# Retention is by age, two rolling days: `--keep-days 2` deletes verified
-# owned snapshots whose day lies wholly more than 2 days back; the NAS keeps
-# the longer history. A count (`--keep 48`) would hold two days only while
-# every hourly run happens, and a Mac asleep overnight misses runs. Only
-# directories the backup wrote and still verifies are deleted; nothing else
-# in "Backup Local" is touched.
+# Retention is by count (sd:3637): `--keep 24` keeps the newest 24 verified
+# owned snapshots, a day when every hourly run happens and longer when the
+# Mac sleeps. The NAS keeps 7 days by checkpoint age, below. Only directories
+# the backup wrote and still verifies are deleted; nothing else in
+# "Backup Local" is touched.
 #
 # `--no-row-prune`: the row prune files one report item per run, which is
 # right once a night and 24 items a day here. The nightly job keeps it.
@@ -45,7 +44,7 @@ JOB_SCHEDULE="50 * * * *"
 JOB_TIMEOUT="20m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
-SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep-days 2 --no-row-prune"
+SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
 SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination /Volumes/Offsite/Backup/sd-backups-hourly && MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination /Volumes/Offsite/Backup/sd-backups-hourly --keep-days 7"
 JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT && $SD_DB_BACKUP_HOURLY_NAS"
 [ -z "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT"

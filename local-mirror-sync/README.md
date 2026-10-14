@@ -46,8 +46,8 @@ which files a failure report that Today shows.
 | `mirrors-nas-hourly.conf` | the NAS, `Backup/sd-backups-hourly` | `sd-db-backup-hourly`, after its snapshot | :50 hourly |
 
 `sd-db-backup-hourly` (`local-cron-jobs`) snapshots the sd database into
-`/Volumes/local/Backup Local/sd-backups` at :50 every hour, keeps two rolling
-days, and refuses to write when `/Volumes/local` is not mounted. After a
+`/Volumes/local/Backup Local/sd-backups` at :50 every hour, keeps its newest
+24 snapshots, and refuses to write when `/Volumes/local` is not mounted. After a
 snapshot that succeeded and offsite-verify's preflight, it copies that root to
 the NAS folder `Backup/sd-backups-hourly`, additive, through
 `mirrors-nas-hourly.conf` (sd:4009). That copy is the 1-hour recovery point a

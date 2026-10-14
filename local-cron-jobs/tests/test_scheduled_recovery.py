@@ -85,24 +85,34 @@ class ScheduledRecovery(unittest.TestCase):
         self.assertEqual(self.run_job("verify", "sd-db-backup-hourly").returncode, 0)
 
     def hourly_command(self, **environment):
+        return self.job_command("sd-db-backup-hourly", **environment)
+
+    def job_command(self, job, **environment):
         env = {key: value for key, value in os.environ.items()
-               if key != "SD_DB_BACKUP_HOURLY_DESTINATION"}
+               if key not in ("SD_DB_BACKUP_DESTINATION", "SD_DB_BACKUP_HOURLY_DESTINATION")}
         result = subprocess.run(
             ["/bin/bash", "-c", '. "$1"; printf "%s" "$JOB_COMMAND"', "job",
-             str(self.jobs / "sd-db-backup-hourly.job")],
+             str(self.jobs / f"{job}.job")],
             env=dict(env, ROOT=str(self.cron), **environment), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
+    def test_local_retention_is_by_count(self):
+        # Operator ruling sd:3637: the hourly root keeps 24 snapshots, the nightly root 14.
+        self.assertIn(" --keep 24 --no-row-prune", self.hourly_command())
+        self.assertNotIn("--keep-days", self.hourly_command().partition(" && ")[0])
+        self.assertTrue(self.job_command("sd-db-backup").endswith(" --require-mount /Volumes/local --keep 14"),
+                        self.job_command("sd-db-backup"))
+
     def test_the_hourly_command_requires_the_mounted_local_disk(self):
         command = self.hourly_command()
         self.assertIn('backup --destination "/Volumes/local/Backup Local/sd-backups"'
-                      " --require-mount /Volumes/local --keep-days 2 --no-row-prune", command)
+                      " --require-mount /Volumes/local --keep 24 --no-row-prune", command)
         # Naming the destination stands the mount check aside, as it does for
         # the nightly job; it is how this suite runs the job at all.
         command = self.hourly_command(SD_DB_BACKUP_HOURLY_DESTINATION="/tmp/somewhere")
         self.assertNotIn("--require-mount", command)
-        self.assertIn('--destination "/tmp/somewhere" --keep-days 2 --no-row-prune', command)
+        self.assertIn('--destination "/tmp/somewhere" --keep 24 --no-row-prune', command)
 
     def test_real_hourly_backup_runs_through_cron_without_a_row_prune(self):
         self.env["SD_DB_BACKUP_HOURLY_DESTINATION"] = str(self.fixture.backups)
