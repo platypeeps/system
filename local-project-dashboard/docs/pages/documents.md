@@ -18,7 +18,12 @@ typed under Tags, else the last one applied; Enter in the Tags field tags the
 shown document without asking, and the toast names the tag (sd:3523). Pinned files sort first; the Hidden filter (or
 `is:hidden`, `?hidden=1`) shows the hidden files and only them. A view read
 that fails hides nothing, turns the six commands off and says why in the
-state slot. Disable render is off: no render switch exists. The page reads through the
+state slot. A root key's own `view` row names and hides the root (sd:3986):
+Rename root (empty goes back to the derived name) and Hide root post
+`{root, label | hidden}` with Undo. A hidden root leaves the Repo chips for a
+Hidden roots fold with Unhide root, and its files leave the list; the server
+still serves them. Details names a `label|` line documents.conf still holds,
+which is not read. Disable render is off: no render switch exists. The page reads through the
 shell's reader, `read.js` (sd:2490): only the newest read draws, a document
 the read no longer lists runs no command, and a failed read clears the rows.
 `?page=` takes a whole page number only (sd:2427).
