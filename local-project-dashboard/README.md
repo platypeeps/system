@@ -390,18 +390,18 @@ checkout, because it names the operator's own repositories and paths; copy
 listed under its directory name:
 
 ```
-label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
 skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
 img|<key>|<host>                 an image host the root's *.app.html pages may load
 ```
 
-**Reach for `label|` first.** The derived label is the directory name, and it
-reads badly for an abbreviation: `mcp-research` becomes `Mcp Research`, and no
-code recovers `MCP` from that. But that is a naming complaint and nothing
-more, so the line says the name and stops. It renames a found root; it never
-invents one, and a `label|` line for a key nothing found does nothing at all.
+**A name is not a line here.** The derived label is the directory name, and it
+reads badly for an abbreviation: `mcp-research` becomes `Mcp Research`. Rename
+root on the Documents page sets a better one, and Hide root moves a root to the
+page's Hidden roots fold; both are the root key's `view` row in the workflow
+database (sd:3986). A `label|` line is no longer read, and the page names one
+still in the file so Rename root can replace it.
 
 `root|` is for a root that genuinely lives elsewhere, outside any checkout's
 `docs/dashboard`, and it wins over a found root of the same key, its own
@@ -411,7 +411,7 @@ is the only way its pages are served. Do not reach for it to rename one. A `root
 that repeats the path enumeration already found puts the default location back
 into this file, where it goes stale the moment the repository moves while
 still looking authoritative. That is precisely the drift the enumeration was
-written to remove, so the rename gets a line form that cannot carry a path.
+written to remove.
 
 **A key with two owners has no owner.** The key is the checkout's directory
 name, and two groups may hold a checkout of the same name — `org-a/reports`
@@ -420,7 +420,7 @@ the directories in it. Picking one would serve one repository's pages at
 another's address; picking the first found would decide it by glob order, so a
 new checkout sorting earlier would repoint an address that already worked. A
 `root|` line naming the one you mean settles it, and a `skip|` line does too.
-A `label|` line does not: it says what to call the root, not which directory
+A name does not: it says what to call the root, not which directory
 is the one meant, and that is the question.
 
 **It serves rather than embeds.** Pulling a report's body into a page would run
