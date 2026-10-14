@@ -1,9 +1,10 @@
 <!doctype html>
 <!--
   Settings (sd:3438), at /settings. No design source page: built on the v2 shell and ui-design foundation/.
-  Data: none from the server. Each setting lives in this browser's storage: the theme as "theme" (theme.js, which wires
-  every data-theme-choice button) and the sections width as sd.rail.width (shell.railWidth, sd:3445). The theme moved here
-  from the rail's foot.
+  Data: /api/settings (settings_screen.document, sd:3989) for the Fleet section, the sd.* keys one value serves on every
+  machine, from sd config list sd --json; a change posts /api/settings/fleet, which runs sd config set. The rest live in this
+  browser's storage: the theme as "theme" (theme.js, which wires every data-theme-choice button) and the sections width as
+  sd.rail.width (shell.railWidth, sd:3445). The theme moved here from the rail's foot.
 -->
 <html lang="en">
 <head>
@@ -24,10 +25,18 @@
   <div class="head">
     <div>
       <h1>Settings</h1>
-      <p>This browser keeps these; another browser keeps its own.</p>
+      <p>Fleet settings serve every machine. The rest stay in this browser.</p>
     </div>
   </div>
   <div id="state" hidden></div>
+  <section class="group" aria-labelledby="fleet-h">
+    <h2 class="label" id="fleet-h">Fleet</h2>
+    <p class="note" id="fleet-note">Reading sd config…</p>
+    <ul class="settings" id="fleet"></ul>
+  </section>
+  <section class="group" aria-labelledby="browser-h">
+  <h2 class="label" id="browser-h">This browser</h2>
+  <p class="note">Another browser keeps its own.</p>
   <ul class="settings">
     <li>
       <div class="what"><h2 id="theme-h">Theme</h2><p>Dark is the default. System follows the device.</p></div>
@@ -53,8 +62,9 @@
       </div>
     </li>
   </ul>
+  </section>
 </main>
-<div class="details" id="details"><p class="note">Settings stay in this browser's storage. Nothing here reads or writes the workflow database.</p></div>
+<div class="details" id="details"><p class="note">Fleet settings are rows in the workflow database, set through sd config set. Theme and width stay in this browser's storage.</p></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/settings.js"></script>
