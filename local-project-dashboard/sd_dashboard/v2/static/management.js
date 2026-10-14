@@ -26,6 +26,7 @@ function absorb(doc) {
   REPOS = (doc.repos || []).map(r => {
     const m = (r.remote || '').match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/);
     return { path: r.path, remote: r.remote, managed: r.managed, merge: r.runner_merge, lane: r.lane_host || 'hub', mode: r.mode, ci: r.ci,
+      channels: r.channels || 'none', chProblem: r.channels_problem || null,
       pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection, runtimes: r.runtimes,
       owner: m ? m[1] : '?', slug: m ? `${m[1]}/${m[2]}` : '', name: nameOf(r.path), registered: true, git: gitBy[r.path] || null };
   });
@@ -290,6 +291,43 @@ const lock = w => html`<span class="lock">${I('lock')}${w}</span>`;
 const laneHosts = () => ['hub', ...new Set(REPOS.map(r => r.lane).filter(h => h && h !== 'hub').sort())];
 const seg = (key, opts, cur) => html`<span class="segctl" role="group" aria-label="${key}">${opts.map(o => html`<button type="button" data-set="${key}" data-v="${o}" aria-pressed="${String(o === cur)}">${o}</button>`)}</span>`;
 
+// sd:3465: a repo's publish channels. `r.channels` is the canonical text the server read (`none`: no setting), posted back
+// as `before`; a value the library refuses shows its reason and offers Clear, never the defaults.
+const CH = ['obsidian', 'notion', 'drive'];
+const chParse = t => { try { const v = JSON.parse(t); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; } };
+const chCanon = v => v === null ? 'none' : JSON.stringify(Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])));
+const chWords = v => v === null ? 'none' : CH.filter(c => v[c]).map(c => `${c}=${v[c].folder || ''}`).join(' ');
+const chSetting = r => r.channels === 'none' || r.chProblem ? null : chParse(r.channels);
+const chDefault = (r, c) => { const n = r.path.split('/').pop(); return c === 'notion' ? n : `Briefs/${n}`; };
+function chShown(r) {
+  if (r.chProblem) return html`<code>${r.channels}</code><p class="why">Cannot be used: ${r.chProblem}. Publishing waits until it is set again or cleared.</p>`;
+  const v = chSetting(r);
+  if (!v) return html`<span class="no">none · defaults</span><p class="why">Each document's research.conf.py designation, in ${CH.map(c => chDefault(r, c)).filter((f, i, a) => a.indexOf(f) === i).join(' and ')}.</p>`;
+  return CH.filter(c => v[c]).map(c => `${c} ${v[c].folder || chDefault(r, c) + ' (default)'}`).join(' · ');
+}
+function chForm(r) {
+  const v = chSetting(r), on = c => r.chProblem ? false : !v || !!v[c];
+  return html`<fieldset class="chans" id="ch-form"><legend class="sr">Channels for ${r.name}</legend>
+    ${CH.map(c => html`<label class="chk"><input type="checkbox" data-set="channels" data-ch="${c}"${on(c) ? html` checked` : ''}>${c}</label><input class="fld" type="text" data-set="channels" data-chf="${c}" value="${v?.[c]?.folder || ''}" placeholder="${chDefault(r, c)}" aria-label="${c} folder" autocomplete="off" spellcheck="false">`)}
+    ${r.channels !== 'none' ? html`<button class="btn quiet sm" type="button" data-ch-clear>${I('x')}Clear setting</button>` : ''}</fieldset>`;
+}
+// The form's value: a checked channel with its folder, or {} for the default; undefined when no box is checked.
+function chRead() {
+  const out = {};
+  CH.forEach(c => { if (document.querySelector(`#ch-form [data-ch="${c}"]`).checked) { const f = document.querySelector(`#ch-form [data-chf="${c}"]`).value.trim(); out[c] = f ? { folder: f } : {}; } });
+  return Object.keys(out).length ? out : undefined;
+}
+function proposeChannels(r, value) {
+  if (value === undefined) { withdraw('channels', true); shell.toast('Not proposed: no channel is checked. Clear setting removes the setting.'); return; }
+  if (chCanon(value) === r.channels && !r.chProblem) return withdraw('channels');
+  const was = r.chProblem ? r.channels : chWords(chSetting(r));
+  addProposal({ key: 'channels', value, shown: chWords(value), before: r.channels, verb: 'channels', route: 'sd-db', icon: 'terminal',
+    title: `channels ${was} → ${chWords(value)}`, cmd: `${SDDB} repo channels ${shq(r.path)} ${value === null ? 'none' : CH.filter(c => value[c]).map(c => shq(`${c}=${value[c].folder || ''}`)).join(' ')}`,
+    // Undo writes the setting the page read back; a value the library refuses cannot be written back, so it has none.
+    back: r.chProblem ? undefined : chSetting(r), after: chCanon(value),
+    note: `Takes effect at the next render: run sd-research-kit render in ${r.path}, or wait for the next commit.` });
+}
+
 function renderRepoPage(el) {
   const r = REPOS.find(x => x.path === repoParam);
   if (!r) { put(el, html`<p class="empty">No registered repo at <code>${repoParam}</code>. <a href="?view=repos">All repos</a></p>`); return; }
@@ -303,7 +341,7 @@ function renderRepoPage(el) {
       <li><span class="route">${I('shield-check')}GitHub · API</span> read here; edits stay on the classic Protection screen</li>
     </ul>
 
-    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Three fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code> and <code>repo lane-host</code>. The rest change only through registration or a migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
+    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Four fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code>, <code>repo lane-host</code> and <code>repo channels</code>. The rest change only through registration or a migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
       <p class="src">repo table · read ${hhmm(READ)} UTC</p></header>
       ${setRow('path', r.path, lock('primary key'))}
       ${setRow('remote', r.remote || html`<span class="no">none</span>`, lock('from the checkout'))}
@@ -311,6 +349,7 @@ function renderRepoPage(el) {
       ${setRow(html`<code>managed</code>`, r.managed, seg('managed', ['yes', 'no'], r.managed), html` data-key="managed"`)}
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
+      ${setRow(html`<code>channels</code> <button class="help" type="button" aria-label="Help: channels" data-help="<b>Where this repo's briefs publish.</b> A checked channel is on; an empty folder is its default, shown greyed. <b>none</b> is no setting: each document's research.conf.py designation and the default folders, as before the setting existed. A change takes effect at the next render.">${I('circle-help')}</button>`, chShown(r), chForm(r), html` data-key="channels"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
       ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db repo ci'))}
       ${setRow(html`<code>pieces_source</code>`, r.pieces, lock('moves only by migration'))}
@@ -343,7 +382,7 @@ function renderRepoPage(el) {
 }
 function markPending(key) {
   const row = document.querySelector(`.row[data-key="${key}"]`), p = pending.find(x => x.key === key); if (!row || !p) return;
-  row.setAttribute('data-pending', ''); row.querySelector('.v').dataset.proposed = p.value === '' || p.value == null ? 'unset' : String(p.value);
+  row.setAttribute('data-pending', ''); row.querySelector('.v').dataset.proposed = p.shown ?? (p.value === '' || p.value == null ? 'unset' : String(p.value));
   row.querySelectorAll('.segctl [data-v]').forEach(b => b.toggleAttribute('data-proposed', b.dataset.v === String(p.value)));
 }
 
@@ -358,6 +397,7 @@ function withdraw(key, quiet) {
 function propose(key, value) {
   const r = REPOS.find(x => x.path === repoParam), rv = r.review || {};
   let p;
+  if (key === 'channels') return proposeChannels(r, value === null ? null : chRead());
   if (key === 'runner_merge' || key === 'managed') {
     const before = key === 'runner_merge' ? r.merge : r.managed;
     if (value === before) return withdraw(key);
@@ -441,6 +481,7 @@ document.getElementById('view-repos').addEventListener('change', e => {
 document.getElementById('view-repos').addEventListener('click', e => {
   const b = e.target.closest('.segctl [data-set]');
   if (b) propose(b.dataset.set, b.dataset.v);
+  if (e.target.closest('[data-ch-clear]')) propose('channels', null);
   if (e.target.closest('[data-create-review]')) {
     addProposal({ key: 'review-file', route: 'file', icon: 'git-pull-request', title: '.github/sd-review.json · new file', branch: 'settings/sd-review-json',
       diff: [['hd', '@@ new file .github/sd-review.json @@'], ['add', '{'], ...(SCHEMA() ? [['add', `  "$schema": "${SCHEMA()}",`]] : []), ['add', '  "severity_floor": "high"'], ['add', '}']],
@@ -464,8 +505,9 @@ function landing(promise, msg, inverse) {
 // The command's undo: the shell passes what the run answered.
 const undoOf = (o, r) => r && r.undo ? r.undo() : false;
 async function setRepo(field, r, value, before) {
-  await window.shell.post(`/api/repos/${field}`, { path: r.path, value, before });
+  const got = await window.shell.post(`/api/repos/${field}`, { path: r.path, value, before });
   await reread();
+  return got;
 }
 const wordOf = (f, r) => f === 'runner-merge' ? r.merge : r.managed;
 const other = (f, v) => f === 'runner-merge' ? (v === 'auto' ? 'manual' : 'auto') : (v === 'yes' ? 'no' : 'yes');
@@ -515,7 +557,9 @@ function registerCommands() {
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
-        return landing(setRepo(o.verb, o.repo, o.value, o.before), () => `Ran locally · ${o.title}`, () => setRepo(o.verb, o.repo, o.before, o.value)); },
+        // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`, `after`).
+        const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? () => setRepo(o.verb, o.repo, o.back, o.after) : null;
+        return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.
     { id: 'file.prepare', on: 'file change', label: 'Prepare', key: 'p', risk: 'safe', primary: () => true, executes: false,
