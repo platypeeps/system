@@ -76,7 +76,8 @@ def shell_page(title: str, section: str, *body: object, subtitle: str, note: str
                cli_equivalents: bool = True) -> str:
     """A classic screen inside the v2 shell (sd:3586): the rail, pane and keys are shell.js's, the tokens the foundation's.
 
-    `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope.
+    `section` is the rail entry the screen belongs to; `note` fills the Details pane; `screen` names the palette scope,
+    one of `runner_exec.SCREENS` (sd:4002).
     `cli_equivalents=False` leaves out the folded list of the body's commands.
     The body keeps its server-drawn forms, which `/static/dashboard.js` submits as before; it leaves the keys to the
     shell but `/` and `p`. `/ui/classic.css` styles that markup.
