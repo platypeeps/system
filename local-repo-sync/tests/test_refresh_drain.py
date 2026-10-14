@@ -468,12 +468,12 @@ class TwoDrainsTest(unittest.TestCase):
 
     def start(self, f, name, wait):
         """Run `refresh` in a thread. Its pack's `sd-db` stub writes its
-        parent's pid, the drain's, to the returned file once, then runs the
-        fixture's stub."""
+        parent's pid, the drain's, to the returned file once, at the drain's
+        registry read (`repo list`, bare), then runs the fixture's stub."""
         pidfile = f.tmp / f"{name}.pid"
         stub = f.tmp / name / "bin" / "sd-db"
         stub.parent.mkdir(parents=True)
-        stub.write_text(f'#!/bin/sh\n[ -e "{pidfile}" ] || echo "$PPID" > "{pidfile}"\n'
+        stub.write_text(f'#!/bin/sh\n[ "$*" != "repo list" ] || [ -e "{pidfile}" ] || echo "$PPID" > "{pidfile}"\n'
                         f'exec "{f.sd_pack / "bin" / "sd-db"}" "$@"\n')
         stub.chmod(0o755)
         results = []

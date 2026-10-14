@@ -104,14 +104,8 @@ class PinFixture(HygieneFixture):
         self.launchd.mkdir()
         self.database = self.tmp / "sd.db"
         # The drain reads the repo registry through the pack's bin/sd-db
-        # (SD_PACK_ROOT); the stub prints REPO_LIST, or fails with REPO_LIST_RC.
-        self.sd_pack = self.tmp / "sd-pack-stub"
-        sd_db = self.sd_pack / "bin" / "sd-db"
-        sd_db.parent.mkdir(parents=True)
-        sd_db.write_text('#!/bin/sh\n[ "$1 $2" = "repo list" ] || exit 2\n'
-                         '[ -z "${REPO_LIST_RC:-}" ] || { echo "sd-db: boom" >&2; exit "$REPO_LIST_RC"; }\n'
-                         'cat "${REPO_LIST:-/dev/null}"\n')
-        sd_db.chmod(0o755)
+        # (SD_PACK_ROOT, the Fixture's stub): `repo list` prints REPO_LIST,
+        # or fails with REPO_LIST_RC.
         self.sd_log = self.tmp / "sd.log"
         self.lanes = self.tmp / "lanes"
         self.lanes.mkdir()
@@ -122,7 +116,7 @@ class PinFixture(HygieneFixture):
     def run(self, *args, expect=0, extra_env=None):
         env = {"MAKE_LOG": str(self.make_log), "SD_LOG": str(self.sd_log),
                "SD_LANE_ROOT": str(self.lanes), "LAUNCHD_STATE": str(self.launchd),
-               "REPO_SYNC_SD_DB": str(self.database), "SD_PACK_ROOT": str(self.sd_pack), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
+               "REPO_SYNC_SD_DB": str(self.database), "SYSTEM_TOOLS_LABEL_PREFIX": "local.system-tools",
                "XDG_STATE_HOME": str(self.tmp / "state"), **(extra_env or {})}
         return super().run(*args, expect=expect, extra_env=env)
 

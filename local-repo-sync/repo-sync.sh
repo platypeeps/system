@@ -1,5 +1,6 @@
 #!/bin/sh
-# Clone-or-pull the repo fleet listed in repos.<profile>.conf.
+# Clone-or-pull the repo fleet the workflow database lists for this machine's
+# profile (sd-db repo list --clones), else its last answer, else the confs.
 # Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|test
 set -e
 
@@ -72,7 +73,8 @@ esac
 
 ROOT="${REPO_SYNC_ROOT:-$DEFAULT_ROOT}"
 # The confs are private, per-machine lists, so they live in the shared config
-# directory outside the checkout. REPO_SYNC_CONF_DIR points elsewhere; a
+# directory outside the checkout. Since sd:3983 they are the list's third
+# source, after the database and its snapshot (load_list). REPO_SYNC_CONF_DIR points elsewhere; a
 # private fork that tracks its confs sets it to this folder.
 CONF_DIR="${REPO_SYNC_CONF_DIR:-$(st_config_dir repo-sync)}"
 COMMON_CONF="$CONF_DIR/repos.common.conf"
@@ -91,44 +93,107 @@ else
   CONF_FILES="$COMMON_CONF$NL$PROFILE_CONF"
 fi
 
-# `test` and `help` read no conf, so a fresh checkout without its local
-# confs can still run the suite and print usage.
-case "${1:-}" in
-  test|help|-h|--help|"") ;;
-  *)
-    OLDIFS=$IFS
-    IFS=$NL
-    for conf in $CONF_FILES; do
-      if [ ! -f "$conf" ]; then
-        echo "repo-sync.sh: missing config $conf" >&2
-        echo "  copy local-repo-sync/$(basename "$conf").example to $conf and list your repos" >&2
-        exit 1
-      fi
-    done
-    IFS=$OLDIFS
-    ;;
-esac
+# The pack's sd-db: the workflow database holds the list (sd:3983). Each call
+# reads /dev/null and is bounded, since on a satellite it crosses the tailnet.
+# The pack writes `repo list --clones` lines relative to SD_REPO_ROOT (default
+# ~/repos), so every call gets the root this script resolved: else a root
+# moved by REPO_SYNC_ROOT or a work root has every row refused.
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+sd_db() {
+  st_bounded 120 env SD_REPO_ROOT="$ROOT" "$SD_PACK_ROOT/bin/sd-db" "$@" < /dev/null
+}
 
-# Emits "<subdir> <owner/repo>" lines with comments and blanks stripped,
-# separators collapsed to one space, and each entry emitted once in the order
-# it first appears. Every caller either iterates this list or counts it, so a
-# repeated entry is a repo cloned and pulled twice and a total that overstates
-# the fleet. Reconcile cannot write one since it learned to match on the
-# directory a conf line actually clones to, but a hand-edited conf still can,
-# and nothing downstream would notice: `sync` and `check` iterate straight off
-# this. Deduping here rather than at each caller means the four totals are
-# right because the list is right, not because nothing upstream went wrong.
-repo_list() {
-  ( IFS=$NL; for f in $CONF_FILES; do cat "$f"; done ) \
-    | sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' \
-          -e 's/^ //' -e 's/ $//' \
+# The last list the database gave for this profile. Its name carries the
+# profile, so another profile's answer is never read as this one's. Its first
+# line, `# root <ROOT>`, names the physical root its lines are relative to:
+# after the root moves (or its symlink does), the pack refuses rows outside it,
+# and an old snapshot must not stand in for them. A comment, so the README's
+# revert reads it as a conf.
+SNAPSHOT="$(st_state_dir repo-sync)/clones.$PROFILE"
+
+# Comments and blanks stripped, separators collapsed to one space, and each
+# entry once in the order it first appears. Every caller either iterates the
+# list or counts it, so a repeated entry is a repo cloned and pulled twice and
+# a total that overstates the fleet. A hand-edited conf can repeat one, and
+# nothing downstream would notice: `sync` and `check` iterate straight off it.
+normalise() {
+  sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+      -e 's/^ //' -e 's/ $//' \
     | grep -v '^$' \
     | awk '!seen[$0]++'
+}
+
+# Reads the run's list once into $TMPD/list (design sd:3983):
+#   1. `sd-db repo list --clones PROFILE`, when it exits 0 and every line is
+#      `<subdir> <owner/repo>`. It then replaces the snapshot (temp file, then
+#      mv: a temp file a killed run left is overwritten, never read).
+#   2. Else the snapshot, the database's last answer, when it names this root.
+#   3. Else the conf files: the bootstrap of a machine that never reached it.
+#   4. Else refuse, naming both remedies.
+# A failed or empty answer is unknown, never an empty list: every profile
+# lists at least `system`, so no line means the profile was never imported.
+# LIST_SOURCE names the source; LIST_WHY why the database did not answer.
+load_list() {
+  LIST_FILE="$TMPD/list"
+  LIST_WHY=""
+  l_rc=0
+  # A fresh machine has no root until sync makes one.
+  l_root=$(cd "$ROOT" 2> /dev/null && pwd -P) || l_root=$ROOT
+  sd_db repo list --clones "$PROFILE" > "$TMPD/list.db" 2> "$TMPD/list.err" || l_rc=$?
+  if [ "$l_rc" -ne 0 ]; then
+    LIST_WHY="sd-db repo list --clones $PROFILE exited $l_rc: $(tail -1 "$TMPD/list.err")"
+  elif [ ! -s "$TMPD/list.db" ]; then
+    LIST_WHY="it lists nothing for $PROFILE"
+  else
+    l_bad=$(awk 'NF != 2 || $2 !~ /^[^\/]+\/[^\/]+$/ { print; exit }' "$TMPD/list.db")
+    [ -z "$l_bad" ] || LIST_WHY="its line '$l_bad' is not a <subdir> <owner/repo> line"
+  fi
+  if [ -z "$LIST_WHY" ]; then
+    normalise < "$TMPD/list.db" > "$LIST_FILE"
+    LIST_SOURCE=database
+    if ! { mkdir -p "${SNAPSHOT%/*}" && { printf '# root %s\n' "$l_root" && cat "$LIST_FILE"; } > "$SNAPSHOT.tmp" \
+        && mv -f "$SNAPSHOT.tmp" "$SNAPSHOT"; }; then
+      echo "repo-sync.sh: cannot write $SNAPSHOT; without the database, the next run reads an older answer or the confs" >&2
+    fi
+    return 0
+  fi
+  if [ -s "$SNAPSHOT" ] && [ "$(head -1 "$SNAPSHOT")" = "# root $l_root" ]; then
+    normalise < "$SNAPSHOT" > "$LIST_FILE"
+    LIST_SOURCE=snapshot
+    echo "repo-sync.sh: the database did not answer ($LIST_WHY); the list is its last answer, $SNAPSHOT" >&2
+    return 0
+  fi
+  l_missing=""
+  OLDIFS=$IFS
+  IFS=$NL
+  for conf in $CONF_FILES; do
+    { [ -f "$conf" ] && [ -r "$conf" ]; } || { l_missing=$conf; break; }
+  done
+  IFS=$OLDIFS
+  # A conf that fails to read is no list, not an empty one.
+  if [ -z "$l_missing" ] \
+      && ( IFS=$NL; for f in $CONF_FILES; do cat "$f" || exit 1; done ) > "$TMPD/list.conf"; then
+    normalise < "$TMPD/list.conf" > "$LIST_FILE"
+    LIST_SOURCE=conf
+    echo "repo-sync.sh: the database did not answer ($LIST_WHY) and there is no snapshot for $ROOT ($SNAPSHOT); the list is the conf files" >&2
+    return 0
+  fi
+  echo "repo-sync.sh: no repo list: the database did not answer ($LIST_WHY), there is no snapshot for $ROOT ($SNAPSHOT), and the config ${l_missing:-files} is missing or unreadable" >&2
+  echo "  list the profile in the database: SD_REPO_ROOT='$ROOT' sd-db repo seed --clones $PROFILE, or sd-db repo clones PATH +$PROFILE" >&2
+  l_missing=${l_missing:-$PROFILE_CONF}
+  echo "  or copy local-repo-sync/$(basename "$l_missing").example to $l_missing and list your repos" >&2
+  exit 1
+}
+
+# Emits the run's "<subdir> <owner/repo>" lines, as load_list read them.
+repo_list() {
+  cat "$LIST_FILE"
 }
 
 list() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
+  echo "source  : $LIST_SOURCE"
   echo
   repo_list | awk '{ printf "%-12s %s\n", $1, $2 }'
   echo
@@ -194,109 +259,98 @@ scan_disk() {
   done
 }
 
-# Drops the "<subdir> <owner/repo>" entry from whichever conf file holds it.
-# Only the confs this profile actually reads are touched, so a profile that
-# does not layer on common can never edit common.
-# The IFS change stays inside a subshell: reconcile calls this from a
-# `while read` loop, which would mis-split its own fields if IFS leaked out.
-remove_entry() {
-  ( IFS=$NL
-    for f in $CONF_FILES; do
-      awk -v s="$1" -v r="$2" '{
-        line = $0; sub(/#.*/, "", line)
-        gsub(/^[ \t]+|[ \t]+$/, "", line)
-        n = split(line, p, /[ \t]+/)
-        if (n == 2 && p[1] == s && p[2] == r) next
-        print
-      }' "$f" > "$f.reconcile.tmp" && mv "$f.reconcile.tmp" "$f"
-    done )
-}
-
-# Reconciles the conf files against what is actually checked out: repos found
-# on disk but not in any conf are appended to the profile conf, conf entries
-# whose checkout is gone are deleted (disk is the source of truth — a repo
-# deleted on purpose must not be re-cloned every night). Entries are matched
-# by target path (subdir + directory name), so a checkout whose directory no
-# longer matches its origin repo name (renamed upstream) is not dropped --
-# its conf entry still names the directory that exists. It is not added
-# under the new name either: the conf cannot express a directory that
-# differs from the repo name, so scan_disk reports it as MISMATCH instead of
-# offering it as an addition. Writes added/removed/unmanaged/mismatched
-# lists into $TMPD.
+# Compares the run's list with the checkouts on disk, and writes one thing:
+# a GitHub checkout with no row joins the database, through `sd-db repo add`
+# then `sd-db repo clones PATH +PROFILE`, so a checkout cloned by hand still
+# joins the list (design sd:3983). It writes only when the database gave the
+# list, and never removes a profile, so no outage or empty disk can look like
+# a deletion. The rest it reports: a checkout whose row does not list this
+# profile (the operator may have cleared it), and a listed one that is gone
+# (sync clones it). Entries are matched by target path (subdir + directory
+# name). A checkout whose directory differs from its origin repo name cannot
+# be a list line, so scan_disk reports it as MISMATCH. Writes its lists into
+# $TMPD; a non-empty $JOINED means the caller reads the list again.
 reconcile() {
-  scan="$TMPD/scan"; ADDED="$TMPD/added"; REMOVED="$TMPD/removed"
+  scan="$TMPD/scan"; JOINED="$TMPD/joined"; UNJOINED="$TMPD/unjoined"
+  UNLISTED="$TMPD/unlisted"; ABSENT="$TMPD/absent"
   UNMANAGED="$TMPD/unmanaged"; MISMATCHED="$TMPD/mismatched"
   WORKTREES="$TMPD/worktrees"
-  : > "$ADDED"; : > "$REMOVED"; : > "$UNMANAGED"; : > "$MISMATCHED"
-  : > "$WORKTREES"
+  : > "$JOINED"; : > "$UNJOINED"; : > "$UNLISTED"; : > "$ABSENT"
+  : > "$UNMANAGED"; : > "$MISMATCHED"; : > "$WORKTREES"
 
   scan_disk | sort -u > "$scan"
   repo_list | awk '{ n = split($2, a, "/"); print $1 "/" a[n] }' \
     | sort -u > "$TMPD/conf.keys"
-
-  # The scan key uses the checkout's directory name, not the origin repo
-  # name — a repo renamed upstream keeps its old directory and old conf
-  # entry, and must not be re-added under the new name every night.
-  while read -r subdir ownrepo dirname; do
-    grep -qxF "$subdir/$dirname" "$TMPD/conf.keys" \
-      || echo "$subdir $ownrepo" >> "$ADDED"
-  done < "$scan"
-
   repo_list | while read -r subdir ownrepo; do
     [ -e "$ROOT/$subdir/${ownrepo##*/}/.git" ] \
-      || echo "$subdir $ownrepo" >> "$REMOVED"
+      || echo "$subdir $ownrepo" >> "$ABSENT"
   done
 
-  # Defence in depth against a re-add loop. Nothing should reach here twice
-  # now that dir-mismatched checkouts are reported rather than added, but a
-  # duplicate conf line is pulled twice by `sync` and counted twice in every
-  # total, and three of them accumulated unnoticed before the cause was
-  # found. Both sides are normalised to one space: conf lines are written by
-  # hand with varying spacing, while $ADDED always uses a single space.
-  if [ -s "$ADDED" ]; then
-    repo_list | awk '{ print $1 " " $2 }' | sort -u > "$TMPD/conf.lines"
-    sort -u "$ADDED" > "$TMPD/added.uniq"
-    : > "$ADDED"
-    while read -r line; do
-      grep -qxF "$line" "$TMPD/conf.lines" || echo "$line" >> "$ADDED"
-    done < "$TMPD/added.uniq"
+  # The registered paths, absolute: `repo list` prints a row under $HOME as
+  # ~/..., and two spaces end the path. A failed read writes nothing.
+  r_rows=""
+  r_why=""
+  if [ "$LIST_SOURCE" != database ]; then
+    r_why="the database did not answer ($LIST_WHY)"
+  elif sd_db repo list > "$TMPD/rows.out" 2> "$TMPD/rows.err"; then
+    sed -n 's/^sd-db: //p' "$TMPD/rows.out" \
+      | awk -v home="$HOME" '{ sub(/  .*/, ""); if (substr($0, 1, 2) == "~/") $0 = home substr($0, 2); print }' \
+      > "$TMPD/rows"
+    r_rows=1
+  else
+    r_why="sd-db repo list failed: $(tail -1 "$TMPD/rows.err")"
   fi
-  if [ -s "$ADDED" ]; then
-    {
-      echo
-      echo "# auto-added by reconcile on $(date '+%Y-%m-%d')"
-      cat "$ADDED"
-    } >> "$PROFILE_CONF"
-  fi
-  if [ -s "$REMOVED" ]; then
-    while read -r subdir ownrepo; do
-      remove_entry "$subdir" "$ownrepo"
-    done < "$REMOVED"
-  fi
+  # A fresh machine has no root until sync makes one.
+  r_root=$(cd "$ROOT" 2> /dev/null && pwd -P) || r_root=$ROOT
+
+  # The scan key uses the checkout's directory name, not the origin repo
+  # name — a repo renamed upstream keeps its old directory and old entry.
+  while read -r subdir ownrepo dirname; do
+    if grep -qxF "$subdir/$dirname" "$TMPD/conf.keys"; then continue; fi
+    if [ "$subdir" = . ]; then r_rel=$dirname; else r_rel=$subdir/$dirname; fi
+    if [ -z "$r_rows" ] || grep -qxF -e "$ROOT/$r_rel" -e "$r_root/$r_rel" "$TMPD/rows"; then
+      echo "$subdir $ownrepo" >> "$UNLISTED"
+    elif sd_db repo add "$ROOT/$r_rel" > /dev/null 2> "$TMPD/join.err" \
+        && sd_db repo clones "$ROOT/$r_rel" "+$PROFILE" > /dev/null 2> "$TMPD/join.err"; then
+      echo "$subdir $ownrepo" >> "$JOINED"
+    else
+      echo "$subdir $ownrepo ($(tail -1 "$TMPD/join.err"))" >> "$UNJOINED"
+    fi
+  done < "$scan"
 
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
+  echo "source  : $LIST_SOURCE"
   echo
-  if [ -s "$ADDED" ]; then
-    echo "added to $(basename "$PROFILE_CONF"):"
-    sed 's/^/  /' "$ADDED"
+  [ -z "$r_why" ] || echo "reconcile wrote nothing: $r_why"
+  if [ -s "$JOINED" ]; then
+    echo "joined (registered, and listed for $PROFILE):"
+    sed 's/^/  /' "$JOINED"
   fi
-  if [ -s "$REMOVED" ]; then
-    echo "removed (checkout gone):"
-    sed 's/^/  /' "$REMOVED"
+  if [ -s "$UNJOINED" ]; then
+    echo "not joined (sd-db repo add, then repo clones +$PROFILE, failed; the next run reports it):"
+    sed 's/^/  /' "$UNJOINED"
   fi
-  if [ ! -s "$ADDED" ] && [ ! -s "$REMOVED" ]; then
-    echo "conf matches disk — no changes"
+  if [ -s "$UNLISTED" ]; then
+    echo "present, not listed for $PROFILE: list it with sd-db repo clones PATH +$PROFILE, or delete the checkout:"
+    sed 's/^/  /' "$UNLISTED"
+  fi
+  if [ -s "$ABSENT" ]; then
+    echo "listed for $PROFILE, no checkout: sync clones it; to stop, sd-db repo clones PATH -$PROFILE:"
+    sed 's/^/  /' "$ABSENT"
+  fi
+  if [ ! -s "$JOINED" ] && [ ! -s "$UNJOINED" ] && [ ! -s "$UNLISTED" ] && [ ! -s "$ABSENT" ]; then
+    echo "list matches disk — no changes"
   fi
   if [ -s "$UNMANAGED" ]; then
     echo
-    echo "unmanaged checkouts (no GitHub origin, not tracked in conf):"
+    echo "unmanaged checkouts (no GitHub origin, not in the list):"
     sed 's/^/  /' "$UNMANAGED"
   fi
   if [ -s "$MISMATCHED" ]; then
     echo
     echo "directory name does not match repo name — not representable as a"
-    echo "conf line, so left alone (rename the directory, or the repo):"
+    echo "list line, so left alone (rename the directory, or the repo):"
     sed 's/^/  /' "$MISMATCHED"
   fi
   if [ -s "$WORKTREES" ]; then
@@ -311,8 +365,9 @@ reconcile() {
 # absent without cloning it. machine-setup's `status` is the reason it exists:
 # `list` prints the configured fleet without looking at disk and `sync` clones,
 # so the repos stage had nothing it could report and sat outside the drift
-# count entirely. Touches neither the network nor the working copies — origin
+# count entirely. Touches neither a git remote nor the working copies — origin
 # comes from the local config, so a repo that is behind is still `ok` here.
+# Only the list's read reaches the database, the hub's on a satellite.
 check() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
@@ -1266,6 +1321,8 @@ drain_exec() {
   # lanes too, before a first runner makes their folder.
   REPO_SYNC_LANE_NAMES=$(repo_list | while read -r subdir full_repo; do printf '%s ' "${full_repo##*/}"; done)
   export REPO_SYNC_LANE_NAMES
+  # exec runs no EXIT trap; the child reads its own list.
+  rm -rf "$TMPD"
   exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
 }
 
@@ -1385,7 +1442,6 @@ follow() {
     echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again"
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
-    rm -rf "$TMPD"
     drain_exec follow
   fi
   # A marker left means an earlier run may have moved system past a
@@ -2218,11 +2274,13 @@ case "$1" in
   sync)
     # The `while read` loop runs in a subshell, so failures are collected in a
     # temp file rather than a variable, which would not survive the pipeline.
-    FAILLOG=$(mktemp)
-    PINLOG=$(mktemp)
-    DIVLOG=$(mktemp)
-    KEPTLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG" "$KEPTLOG"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
+    PINLOG="$TMPD/pinlog"; : > "$PINLOG"
+    DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
+    KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
+    load_list
     sync
     ;;
   refresh)
@@ -2234,11 +2292,14 @@ case "$1" in
       echo "repo-sync.sh refresh: this machine is a satellite ($HOME/.config/sd/hub.json); only follow moves its system and pack checkouts, to the hub's pins" >&2
       exit 1
     fi
+    # The list is read once, before the drain and before any move, so a
+    # pack move in this run cannot change it.
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
       drain_exec refresh "$@"
     fi
-    TMPD=$(mktemp -d)
-    trap 'rm -rf "$TMPD"' EXIT INT TERM
     refresh "$@"
     ;;
   follow)
@@ -2249,20 +2310,24 @@ case "$1" in
     fi
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     follow
     ;;
   check)
-    FINDINGS=$(mktemp)
-    trap 'rm -f "$FINDINGS"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    FINDINGS="$TMPD/findings"; : > "$FINDINGS"
+    load_list
     check
     ;;
   reconcile)
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     reconcile
     ;;
   nightly)
-    # Cron flavor: reconcile the conf against disk first, then sync, then
+    # Cron flavor: read the list, reconcile it against disk, then sync, then
     # hygiene. A changed fleet, a failed repo or a hygiene finding prints an
     # SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today
     # instead of relying on someone reading the log; nothing is mailed
@@ -2278,9 +2343,12 @@ case "$1" in
     # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
     ATTENTION=""
 
+    load_list
     RECON="$TMPD/recon"
     reconcile > "$RECON" 2>&1
     cat "$RECON"
+    # A join changed the database: read the list again, so sync pulls it.
+    [ ! -s "$JOINED" ] || load_list
 
     # A MISMATCH needs attention too. Before this path existed, such a
     # checkout made $ADDED non-empty every night and so reported every night
@@ -2290,8 +2358,18 @@ case "$1" in
     # is how the loop this replaced went unnoticed for four nights. It cannot
     # be auto-resolved, so it repeats until a human renames the directory or
     # the repo.
-    if [ -s "$ADDED" ] || [ -s "$REMOVED" ]; then
+    # A list from the snapshot or the confs is the database not answering,
+    # and reconcile wrote nothing (sd:3983).
+    if [ -s "$UNJOINED" ]; then
+      ATTENTION="repo-sync: $(wc -l < "$UNJOINED" | tr -d ' ') checkout(s) not joined to the list on $(hostname -s)"
+    elif [ "$LIST_SOURCE" != database ]; then
+      ATTENTION="repo-sync: the database did not answer; the list came from the $LIST_SOURCE on $(hostname -s)"
+    elif [ -n "$r_why" ]; then
+      ATTENTION="repo-sync: reconcile could not read the repo rows on $(hostname -s)"
+    elif [ -s "$JOINED" ] || [ -s "$ABSENT" ]; then
       ATTENTION="repo-sync: repo list changed on $(hostname -s)"
+    elif [ -s "$UNLISTED" ]; then
+      ATTENTION="repo-sync: $(wc -l < "$UNLISTED" | tr -d ' ') checkout(s) present, not listed on $(hostname -s)"
     elif [ -s "$MISMATCHED" ]; then
       ATTENTION="repo-sync: $(wc -l < "$MISMATCHED" | tr -d ' ') checkout(s) need a rename on $(hostname -s)"
     fi
@@ -2365,11 +2443,16 @@ case "$1" in
     ;;
   hygiene)
     shift
-    HYG_TMP=$(mktemp -d)
-    trap 'rm -rf "$HYG_TMP"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    HYG_TMP="$TMPD/hygiene"; mkdir "$HYG_TMP"
+    load_list
     hygiene "$@"
     ;;
   list)
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     list
     ;;
   test)
@@ -2391,20 +2474,23 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              under "kept:", not failed (sd:3744).
              A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
-             (MISSING) and which sit on a different origin than the conf
-             names (DIFFERS). Touches no network, so a repo that is merely
+             (MISSING) and which sit on a different origin than the list
+             names (DIFFERS). Fetches nothing, so a repo that is merely
              behind still reports ok. Exits 1 when anything was reported —
              this is what machine-setup's `status` folds into its drift count
-  list       print the resolved profile, root, and repo list without touching
-             disk
-  reconcile  update the conf files to match the checkouts on disk: GitHub
-             repos found under the root but missing from the conf are added
-             to the profile conf, entries whose checkout is gone are removed
-             (disk is the source of truth). Checkouts without a GitHub origin
-             are listed as unmanaged and left alone, as are checkouts whose
-             directory name differs from their repo name (MISMATCH) — the
-             conf format cannot express those. A linked worktree under the
-             root is listed as WORKTREE <dir> (of <parent>) and left alone.
+  list       print the resolved profile, root, the list's source and the
+             repo list without touching the checkouts
+  reconcile  compare the list with the checkouts on disk. A GitHub checkout
+             with no row in the workflow database joins it: `sd-db repo add`,
+             then `sd-db repo clones PATH +<profile>`; only when the database
+             gave the list. It reports, and never writes: a checkout whose
+             row does not list the profile, and a listed checkout that is
+             gone (sync clones it again; `sd-db repo clones PATH -<profile>`
+             stops that). No run removes a profile. Checkouts without a
+             GitHub origin are listed as unmanaged and left alone, as are
+             checkouts whose directory name differs from their repo name
+             (MISMATCH): a list line cannot express those. A linked worktree
+             under the root is listed as WORKTREE <dir> (of <parent>).
   hygiene [--apply]
              sweep what agents leave in each conf checkout. Without
              --apply it only reports; with it, it prunes worktree
@@ -2426,11 +2512,11 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              in-use worktree. Without --apply it exits 1 when it found
              anything; with --apply it exits 1 only when an action failed.
              It is not a status subcommand.
-  nightly    reconcile, then sync, then hygiene --apply; a changed repo
-             list, a failed repo or a hygiene report that changed, listed
-             or failed anything prints an SD_REPORT_ATTENTION line for
-             Reports and Today; this is what the repo-sync-nightly cron job
-             runs. The confs keep no git history: nightly rewrites them
+  nightly    reconcile, then sync, then hygiene --apply; a failed repo, a
+             list not from the database, a changed or unlisted checkout,
+             or a hygiene report that changed, listed or failed anything
+             prints an SD_REPORT_ATTENTION line for Reports and Today; this
+             is what the repo-sync-nightly cron job runs. It writes no conf
              and commits nothing. Exits 1 when half or more of the fleet
              failed.
   refresh [path ...]
@@ -2516,20 +2602,24 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
-             against fixture trees; sync's clone path is not covered,
+             against fixture trees and a stub sd-db; sync's clone path is not covered,
              because it clones over SSH — the suite reaches it only through
              nightly, with the transport stubbed dead.
 
-The repo fleet lives in repos.common.conf plus repos.<profile>.conf, in
-<config>/repo-sync/ (<config> is $SYSTEM_TOOLS_CONFIG, default
-~/.config/system). Copy the committed repos.<profile>.conf.example there. Format
-is "<subdir> <owner/repo>", with # comments and blank lines ignored; subdir
-"." means the repo sits directly in the root.
+The repo fleet is the workflow database's `repo` rows whose clone_profiles
+hold this profile: every command reads `sd-db repo list --clones <profile>`
+once, and keeps each answer in ~/.local/state/system/repo-sync/clones.<profile>.
+When the database does not answer (no hub, a refused build, an empty or bad
+answer), it reads that snapshot, else the confs, else refuses; each fallback
+prints a line on stderr. The confs are repos.common.conf plus
+repos.<profile>.conf, in <config>/repo-sync/ (<config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system): the bootstrap for a machine
+that never reached the hub. Copy the committed repos.<profile>.conf.example
+there. Format is "<subdir> <owner/repo>", with # comments and blank lines
+ignored; subdir "." means the repo sits directly in the root.
 
-The terra profile is the exception: it reads repos.terra.conf alone and
-skips repos.common.conf, because a terra machine deliberately carries only
-the system repo. reconcile therefore can never edit common from such a
-machine.
+The terra profile reads repos.terra.conf alone and skips repos.common.conf,
+because a terra machine deliberately carries only the system repo.
 
 environment:
   REPO_SYNC_PROFILE   personal | work | terra (default: the profile
@@ -2543,6 +2633,9 @@ environment:
                       when no profile is recorded (default:
                       SYSTEM_TOOLS_WORK_ROOT, which local-ai-apps reads too)
   REPO_SYNC_CONF_DIR  where the confs live (default: <config>/repo-sync)
+  SD_PACK_ROOT        the command pack whose bin/sd-db reads the list
+                      (default: ~/repos/platypeeps/sd-ai-command-pack)
+  XDG_STATE_HOME      where the snapshot lives (default: ~/.local/state)
   SYSTEM_TOOLS_CONFIG shared config root (default: ~/.config/system)
   MACHINE_SETUP_STATE where to look for the recorded profile
                       (default: ~/.config/machine-setup)
