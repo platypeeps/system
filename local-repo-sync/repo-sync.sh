@@ -997,8 +997,10 @@ settle() {
   if [ -n "$s_lib" ] && [ -n "$s_db" ] && [ "$s_db" -lt "$s_lib" ]; then
     echo "--- $s_pack/bin/sd-db migrate: schema $s_db to $s_lib"
     # A failed migrate recovers whatever the version reads: its exit is
-    # the one proof the run ended where it meant to.
-    "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
+    # the one proof the run ended where it meant to. The pack's migrate
+    # wants a verified snapshot under its backup root (sd:3507); the
+    # record's backup sits outside that root, so its folder is named here.
+    SD_DB_BACKUP_ROOT="${i_backup%/*}" "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
     s_db=$(db_version "$REFRESH_DB" || :)
     if [ "$s_ran" -ne 0 ]; then
       echo "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"

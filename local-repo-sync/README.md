@@ -104,7 +104,9 @@ starts the services again. A database above that `SCHEMA_VERSION`, such as one
 restored from a newer backup, is refused before the backup: nothing moves, and
 refresh names the pack or backup that would match it (sd:3535).
 
-After the moves it runs `bin/sd-db migrate`. Each migration commits on its own,
+After the moves it runs `bin/sd-db migrate` with `SD_DB_BACKUP_ROOT` set to
+the backup's folder, the root where the pack's migrate looks for a verified
+snapshot (sd:3507). Each migration commits on its own,
 so a failure can leave earlier ones applied. Then refresh moves the pack back
 to the record's sha. When the database reads above the record's version, it
 restores the backup with that pack's `bin/sd-db restore`: the target's library
