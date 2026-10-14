@@ -24,7 +24,8 @@ prints the failures as a summary at the end.
 The list is the workflow database's: the `repo` rows whose `clone_profiles`
 hold this machine's profile (sd:3983). Each run reads it once, with
 `sd-db repo list --clones <profile>` from the pack at `SD_PACK_ROOT`, and every
-step of the run uses that copy. Each answer also goes to a snapshot,
+step of the run uses that copy. Every `sd-db` call gets `SD_REPO_ROOT` set to the
+root the run resolved, since the pack writes each line relative to it. Each answer also goes to a snapshot,
 `~/.local/state/system/repo-sync/clones.<profile>`. A failed read is unknown,
 never an empty list: when the database does not answer (no hub, a hub that
 refuses this build until `follow`, an empty answer, or a line that is not

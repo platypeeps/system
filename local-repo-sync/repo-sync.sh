@@ -95,9 +95,12 @@ fi
 
 # The pack's sd-db: the workflow database holds the list (sd:3983). Each call
 # reads /dev/null and is bounded, since on a satellite it crosses the tailnet.
+# The pack writes `repo list --clones` lines relative to SD_REPO_ROOT (default
+# ~/repos), so every call gets the root this script resolved: else a root
+# moved by REPO_SYNC_ROOT or a work root has every row refused.
 SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 sd_db() {
-  st_bounded 120 "$SD_PACK_ROOT/bin/sd-db" "$@" < /dev/null
+  st_bounded 120 env SD_REPO_ROOT="$ROOT" "$SD_PACK_ROOT/bin/sd-db" "$@" < /dev/null
 }
 
 # The last list the database gave for this profile. Its name carries the
@@ -169,7 +172,7 @@ load_list() {
     return 0
   fi
   echo "repo-sync.sh: no repo list: the database did not answer ($LIST_WHY), there is no snapshot ($SNAPSHOT), and the config ${l_missing:-files} is missing or unreadable" >&2
-  echo "  list the profile in the database: sd-db repo seed --clones $PROFILE, or sd-db repo clones PATH +$PROFILE" >&2
+  echo "  list the profile in the database: SD_REPO_ROOT='$ROOT' sd-db repo seed --clones $PROFILE, or sd-db repo clones PATH +$PROFILE" >&2
   l_missing=${l_missing:-$PROFILE_CONF}
   echo "  or copy local-repo-sync/$(basename "$l_missing").example to $l_missing and list your repos" >&2
   exit 1

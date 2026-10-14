@@ -866,6 +866,77 @@ class DatabaseListTest(unittest.TestCase):
         self.assertIn("total   : 2 repos", result.stdout)
 
 
+class RealPackRootTest(unittest.TestCase):
+    """The pinned pack's real sd-db, on a root that is not ~/repos. The pack
+    computes `repo list --clones` lines against SD_REPO_ROOT, so the script
+    must hand it the root it resolved, or the list refuses every row."""
+
+    def fixture(self):
+        pack = pathlib.Path(os.environ.get("SD_ACCEPTANCE_PACK") or FOLDER.parent / ".ci" / "pack")
+        if not (pack / "bin" / "sd-db").is_file():
+            raise AssertionError(f"no pack with bin/sd-db at {pack}: run `make check`, "
+                                 "which fetches the pack at the pin into .ci/pack, or set SD_ACCEPTANCE_PACK")
+        f = Fixture()
+        self.addCleanup(f.destroy)
+        shutil.rmtree(f.sd_pack)
+        (f.sd_pack / "bin").mkdir(parents=True)
+        for name in ("sd-db", "sd_lib.py"):
+            shutil.copy2(pack / "bin" / name, f.sd_pack / "bin" / name)
+        (f.sd_pack / "bin" / "sd_install.py").write_text("")
+        shutil.copytree(pack / "lib", f.sd_pack / "lib",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info", "build"))
+        # bin/sd-db runs `env python3`; this run's interpreter is new enough.
+        (f.bin / "python3").symlink_to(sys.executable)
+        self.f = f
+        self.sd_db("init")
+        return f
+
+    def sd_db(self, *args):
+        env = {**os.environ, "HOME": str(self.f.tmp / "home"), "PYTHONDONTWRITEBYTECODE": "1",
+               "PATH": f"{self.f.bin}{os.pathsep}{os.environ['PATH']}",
+               "GIT_LOG": str(self.f.git_log), "REAL_GIT": shutil.which("git")}
+        env.pop("SD_REPO_ROOT", None)
+        result = subprocess.run([str(self.f.sd_pack / "bin" / "sd-db"), *args], env=env,
+                                capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise AssertionError(f"sd-db {' '.join(args)} exited {result.returncode}: {result.stderr}")
+        return result.stdout
+
+    def run_sync(self, *args):
+        return self.f.run(*args, extra_env={"SD_REPO_ROOT": None, "PYTHONDONTWRITEBYTECODE": "1"})
+
+    def test_the_database_list_reads_rows_under_the_resolved_root(self):
+        """REGRESSION. A row under REPO_SYNC_ROOT is listed from the database,
+        not refused as outside ~/repos with the confs read instead."""
+        f = self.fixture()
+        one = f.checkout("a/one", origin="owner/one")
+        self.sd_db("repo", "add", str(one))
+        self.sd_db("repo", "clones", str(one), "+terra")
+
+        result = self.run_sync("list")
+
+        self.assertIn("source  : database", result.stdout)
+        self.assertIn("owner/one", result.stdout)
+        self.assertEqual("", result.stderr)
+
+    def test_reconcile_joins_under_the_resolved_root_and_the_list_reads_it(self):
+        """REGRESSION. Reconcile's `repo add` and `repo clones` and the next
+        run's `repo list --clones` agree on the root."""
+        f = self.fixture()
+        one = f.checkout("a/one", origin="owner/one")
+        self.sd_db("repo", "add", str(one))
+        self.sd_db("repo", "clones", str(one), "+terra")
+        f.checkout("b/two", origin="owner/two")
+
+        joined = self.run_sync("reconcile")
+        listed = self.run_sync("list")
+
+        self.assertIn("joined (registered, and listed for terra):", joined.stdout)
+        self.assertIn("b owner/two", joined.stdout)
+        self.assertIn("source  : database", listed.stdout)
+        self.assertIn("owner/two", listed.stdout)
+
+
 class ConfigDirTest(unittest.TestCase):
     def fixture(self, **kwargs):
         f = Fixture(**kwargs)
