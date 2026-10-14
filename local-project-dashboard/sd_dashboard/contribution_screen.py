@@ -140,7 +140,8 @@ def render(connection, *, parameters):
         empty="No contributions recorded. Register local work or collect authored pull requests.")
     return shell_page("Contributions", "Contributions",
         tag("p", "Unknown or stale observations remain visible. Acknowledging events does not complete tasks or send notifications.", class_="hint"),
-        listing.render(), cli_equivalents=False, screen="contributions",
+        # A repository view, so its picker offers the Operations commands (sd:4002).
+        listing.render(), cli_equivalents=False, screen="operations",
         subtitle="Newly unblocked work comes first, followed by work awaiting you, awaiting others, and merged "
                  "contributions.",
         note="Contributions (classic) lists every contribution with its local clone and what blocks it, which the "

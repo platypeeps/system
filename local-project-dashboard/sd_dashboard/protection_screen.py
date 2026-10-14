@@ -155,4 +155,5 @@ def render(connection, *, parameters):
                  "Unprotected first, then unknown, then protected.",
         note="Protection reads repo_protection as the nightly collector left it; nothing here calls GitHub. "
              "Open a GAP cell for its sentence.",
-        screen="protection")
+        # A Management page like Services: its picker offers the Operations commands (sd:4002).
+        screen="operations")
