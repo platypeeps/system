@@ -582,7 +582,7 @@ The manifest now declares only the four queue actions.
 | Tab | What it shows | Where it comes from |
 | --- | --- | --- |
 | **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the status part of `machine-setup-update-nightly`'s log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
-| **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
+| **Vault** | One card per `* Home` area with its note count, plus Inbox pressure | vault frontmatter |
 | **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |
 | **Queues** | The four vault decision databases: how many are waiting, and the oldest undecided notes across all of them | the database folders under `System/Databases/` |

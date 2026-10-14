@@ -194,9 +194,9 @@ class ConfirmPageTest(unittest.TestCase):
         home = self.tmp / "home"
         home.mkdir()
         vault = self.tmp / "vault"
-        (vault / "TaskNotes" / "Tasks").mkdir(parents=True)
-        (vault / "TaskNotes" / "Tasks" / "Pay rent.md").write_text(
-            "---\nstatus: open\nscheduled: 2026-10-12\n---\nbody\n")
+        (vault / "System" / "Databases" / "Blog Ideas").mkdir(parents=True)
+        self.idea = vault / "System" / "Databases" / "Blog Ideas" / "Idea.md"
+        self.idea.write_text("---\nstatus: proposed\n---\nbody\n")
         self.vault = vault
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -223,8 +223,8 @@ class ConfirmPageTest(unittest.TestCase):
         else:
             self.fail("the server did not start")
 
-    def signed(self, action, days="3", name="Pay rent"):
-        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", name, action, days],
+    def signed(self, action, db="blog", name="Idea"):
+        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "-b", db, name, action],
                              env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout.strip()
@@ -242,7 +242,7 @@ class ConfirmPageTest(unittest.TestCase):
         return status, headers, body.decode()
 
     def test_the_confirm_page_loads_the_foundation_and_carries_no_style_of_its_own(self):
-        status, _, page = self.page(self.signed("done"))
+        status, _, page = self.page(self.signed("accept"))
         self.assertEqual(status, 200)
         self.assertIn('href="/static/tokens.css"', page)
         self.assertIn('src="/static/theme.js"', page)
@@ -251,27 +251,24 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertNotRegex(page, self.RAW_COLOUR)
 
     def test_the_confirm_page_names_the_action_and_asks_for_the_button(self):
-        _, _, page = self.page(self.signed("postpone", "5"))
-        self.assertIn("Postpone 5 day(s)", page)
+        _, _, page = self.page(self.signed("adopt", db="topic"))
+        self.assertIn("Adopt", page)
         self.assertIn('method="POST"', page)
         self.assertIn("Nothing changes until you press the button", page)
 
     def test_decline_is_the_danger_button_and_the_rest_are_not(self):
-        db = urllib.parse.quote("blog")
-        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "-b", db, "Idea", "decline"],
-                             env=self.env, capture_output=True, text=True, timeout=60)
-        _, _, decline = self.page(out.stdout.strip())
-        _, _, done = self.page(self.signed("done"))
+        _, _, decline = self.page(self.signed("decline"))
+        _, _, accept = self.page(self.signed("accept"))
         self.assertIn('class="btn danger"', decline)
-        self.assertNotIn("danger", done)
+        self.assertNotIn("danger", accept)
 
     def test_the_theme_control_is_on_the_page(self):
-        _, _, page = self.page(self.signed("done"))
+        _, _, page = self.page(self.signed("accept"))
         for choice in ("dark", "light", "system"):
             self.assertIn(f'data-theme-choice="{choice}"', page)
 
     def test_the_pages_send_a_policy_that_runs_only_their_own_files(self):
-        _, headers, _ = self.get(self.signed("done"))
+        _, headers, _ = self.get(self.signed("accept"))
         policy = headers["Content-Security-Policy"]
         for directive in ("default-src 'none'", "script-src 'self'", "style-src 'self'",
                           "font-src 'self'", "form-action 'self'", "frame-ancestors 'none'"):
@@ -279,7 +276,7 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertNotIn("unsafe-inline", policy)
 
     def test_every_stylesheet_and_script_the_page_names_is_served(self):
-        _, _, page = self.page(self.signed("done"))
+        _, _, page = self.page(self.signed("accept"))
         wanted = re.findall(r'(?:href|src)="(/static/[^"]+)"', page)
         self.assertGreaterEqual(len(wanted), 3)
         for name in wanted:
@@ -314,40 +311,34 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertTrue(used)
         self.assertEqual(used - defined, set(), "a token the foundation does not define")
 
-    def test_a_done_task_says_so_with_a_glyph_and_words(self):
-        url = self.signed("done")
+    def post(self, url):
         data = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         form = urllib.parse.urlencode({k: v[0] for k, v in data.items()}).encode()
         with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=form),
                                     timeout=10) as r:
-            page = r.read().decode()
-        self.assertIn("marked done", page)
+            return r.read().decode()
+
+    def test_an_accepted_note_says_so_with_a_glyph_and_words(self):
+        page = self.post(self.signed("accept"))
+        self.assertIn("status: proposed \u2192 accepted", page)
         self.assertIn("\u25cf", page)  # normal
-        self.assertIn("status: done", (self.vault / "TaskNotes" / "Tasks" / "Pay rent.md").read_text())
+        self.assertIn("status: accepted", self.idea.read_text())
 
-    def mark_done(self, name, scheduled, rule):
-        task = self.vault / "TaskNotes" / "Tasks" / f"{name}.md"
-        task.write_text(f"---\nstatus: open\nscheduled: {scheduled}\nrecurrence: {rule}\n---\nbody\n")
-        data = urllib.parse.parse_qs(urllib.parse.urlparse(self.signed("done", name=name)).query)
-        form = urllib.parse.urlencode({k: v[0] for k, v in data.items()}).encode()
-        with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=form), timeout=10) as r:
-            return r.read().decode(), task.read_text()
-
-    def test_mark_done_on_a_month_end_or_leap_day_moves_to_the_last_day_that_exists(self):
-        # REGRESSION sd:3559: date.replace raised on the 29th to 31st, the POST got no page and the task stayed as it was.
-        for scheduled, rule, nxt in (("2026-01-31", "FREQ=MONTHLY", "2026-02-28"),
-                                     ("2026-10-31", "FREQ=MONTHLY;INTERVAL=4", "2027-02-28"),
-                                     ("2028-02-29", "FREQ=YEARLY", "2029-02-28"),
-                                     ("2026-02-28", "FREQ=MONTHLY;BYMONTHDAY=31", "2026-03-31"),
-                                     ("2026-01-15", "FREQ=MONTHLY", "2026-02-15")):
-            with self.subTest(scheduled=scheduled, rule=rule):
-                page, text = self.mark_done("Pay card", scheduled, rule)
-                self.assertIn(f"occurrence {scheduled} done, next {nxt}", page)
-                self.assertIn(f"scheduled: {nxt}", text)
-                self.assertIn(f"complete_instances: ['{scheduled}']", text)
+    def test_a_link_without_a_database_is_refused_and_signed_never(self):
+        # The TaskNotes done/postpone actions are gone (sd:4635): no database, no link.
+        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "Idea", "done"],
+                             env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("usage:", out.stderr)
+        query = urllib.parse.urlparse(self.signed("accept")).query
+        bare = "&".join(p for p in query.split("&") if not p.startswith("db="))
+        status, _, page = self.page(f"{self.base}/task?{bare}")
+        self.assertEqual(status, 403)
+        self.assertIn("Unknown database", page)
+        self.assertIn("status: proposed", self.idea.read_text())
 
     def test_a_refusal_says_nothing_changed_with_a_glyph_and_words(self):
-        url = self.signed("done").replace("t=", "t=0")
+        url = self.signed("accept").replace("t=", "t=0")
         status, _, page = self.page(url)
         self.assertEqual(status, 403)
         self.assertIn("Bad signature", page)
