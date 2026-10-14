@@ -191,7 +191,9 @@ failed, or a migrate that is not settled withholds it. The tag names the pinned
 system sha, and its message carries `pack=<sha>`, so one push publishes the
 pair. That one tag may move backwards; nothing else is forced. A failed
 push, or a pinned system without a pinned pack, exits 1: satellites keep the
-old pair until refresh runs again. The workflow database is not involved, so a satellite whose
+old pair until refresh runs again. Before the push, the pack's `sd-db fence`
+must exit 0 (sd:4010): a returning old hub, which another machine replaced
+as hub, publishes no pins. The workflow database is not involved, so a satellite whose
 `sd_db` lags the hub's build still follows. A machine with
 `~/.config/sd/hub.json` is a satellite. There, `sync` and `nightly` never pull
 system or pack, pinned or on a branch, and `refresh` refuses and names

@@ -1213,6 +1213,13 @@ push_pins() {
     echo "!!! failed: hub-pin not published: system is pinned and no pinned pack is in the conf; satellites keep the old pins; pin the pack, then run refresh again"
     return 1
   fi
+  # The fence (sd:4010): a returning old hub publishes no pins. `sd-db fence`
+  # exits 0 on the hub role's holder, or with no sd.hub_name set; anything
+  # else, a pack without the verb included, withholds the tag.
+  if ! p_fence=$(bound_step 120 "$p_pack/bin/sd-db" fence < /dev/null 2>&1); then
+    echo "!!! refused: hub-pin not published: this machine may not be the hub: $(printf '%s\n' "$p_fence" | grep -v '^\[step ' | tail -1); satellites keep the old pins (a pack before sd:4044 has no sd-db fence: move its pin)"
+    return 1
+  fi
   p_sha=$(git -C "$p_sys" rev-parse HEAD)
   p_pack_sha=$(git -C "$p_pack" rev-parse HEAD)
   if git -C "$p_sys" tag -f -a -m "hub-pin: the system and pack a hub refresh moved to (sd:3100)" \

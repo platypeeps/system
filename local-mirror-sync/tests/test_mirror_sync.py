@@ -2493,6 +2493,19 @@ class BackupRootIdentity(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.work, True)
         self.point = self.verifier._mount_point(self.work)
         self.expected = "192.0.2.10/Offsite"
+        # The preflight asks the pack's `sd-db fence` (sd:4010); this stub
+        # answers FENCE_RC, the holder when unset, and logs each call.
+        pack = self.work / "pack"
+        (pack / "bin").mkdir(parents=True)
+        (pack / "bin" / "sd-db").write_text(
+            '#!/bin/sh\n[ "$1" = fence ] || exit 2\necho fence >> "$FENCE_LOG"\n'
+            'echo "${FENCE_LINE:-holder: this machine holds the hub role}"\nexit "${FENCE_RC:-0}"\n')
+        (pack / "bin" / "sd-db").chmod(0o755)
+        self.fence_log = self.work / "fence.log"
+        self.patch_env = unittest.mock.patch.dict(
+            os.environ, {"SD_PACK_ROOT": str(pack), "FENCE_LOG": str(self.fence_log)})
+        self.patch_env.start()
+        self.addCleanup(self.patch_env.stop)
 
     def check(self, device: str, options: str, expected: str | None = None):
         report = self.verifier.Report()
@@ -2603,6 +2616,54 @@ class BackupRootIdentity(unittest.TestCase):
         self.assertNotIn("sd-backups", allowed.stdout)
         self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
         self.assertIn("attached to this machine", refused.stderr)
+
+    def test_a_fenced_machine_writes_no_backup(self) -> None:
+        # A returning old hub runs the same backup jobs; its NAS copy would
+        # land beside the promoted hub's (sd:4010). `sd-db fence` exiting 1,
+        # or anything but 0, refuses the preflight, so the job writes nothing.
+        local = self.work / "Backup"
+        local.mkdir()
+        runs = {}
+        for rc in ("1", "2"):
+            runs[rc] = subprocess.run(
+                [sys.executable, str(OFFSITE_VERIFY), "--preflight-only", "--allow-local-root",
+                 "--root", str(local)],
+                capture_output=True, text=True,
+                env={**os.environ, "FENCE_RC": rc,
+                     "FENCE_LINE": "elsewhere: sd.hub_name names hub.example.test"},
+            )
+
+        for rc, result in runs.items():
+            self.assertEqual(result.returncode, 1, rc + result.stdout + result.stderr)
+            self.assertIn(f"sd-db fence exited {rc}: elsewhere: sd.hub_name names hub.example.test",
+                          result.stderr)
+        self.assertEqual("fence\nfence\n", self.fence_log.read_text())
+
+    def test_a_fence_that_cannot_run_refuses_the_preflight(self) -> None:
+        # No bin/sd-db is no answer, and no answer is not a pass.
+        local = self.work / "Backup"
+        local.mkdir()
+        result = subprocess.run(
+            [sys.executable, str(OFFSITE_VERIFY), "--preflight-only", "--allow-local-root",
+             "--root", str(local)],
+            capture_output=True, text=True,
+            env={**os.environ, "SD_PACK_ROOT": str(self.work / "no-pack")},
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("cannot ask", result.stderr)
+
+    def test_the_holder_passes_the_fence(self) -> None:
+        local = self.work / "Backup"
+        local.mkdir()
+        result = subprocess.run(
+            [sys.executable, str(OFFSITE_VERIFY), "--preflight-only", "--allow-local-root",
+             "--root", str(local)],
+            capture_output=True, text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ok    sd-db fence: holder", result.stdout)
 
     def test_a_write_destination_linked_off_the_share_is_refused(self) -> None:
         # The root can be the NAS while `sd-backups` under it is a link to
