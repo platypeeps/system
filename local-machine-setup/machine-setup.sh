@@ -5578,7 +5578,9 @@ for peer in (status.get("Peer") or {}).values():
         promote_refuse "tailscale status did not answer; rerun once Tailscale is up"
       elif [ -n "$held" ]; then
         echo "promote: the tailnet node $held still holds the name $short." >&2
-        echo "  In the Tailscale admin console, rename or remove that machine, then rerun: $(basename "$SELF") promote --apply" >&2
+        echo "  Stop that machine first: power it off, or unload its sd-serve and lane agents." >&2
+        echo "  If you cannot reach it, remove it in the Tailscale admin console." >&2
+        echo "  Then rename or remove it in the admin console, and rerun: $(basename "$SELF") promote --apply" >&2
         exit 1
       fi
       bound_step 60 tailscale set "--hostname=$short" || promote_refuse "tailscale set --hostname=$short failed; rerun"

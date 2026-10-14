@@ -369,13 +369,17 @@ Get the standby ready, once:
 
 Promote, once the hub is dead:
 
+Stop the old hub first: power it off, or unload its `sd-serve` and lane agents.
+If you cannot reach it, remove it in the Tailscale admin console.
+This is the second guard: an old hub cut from the control plane already refuses, since its fence reads `unknown` (sd:4044).
+
 1. Run `machine-setup.sh promote --apply` on the standby. Add `--from DIR` for another root, such as the hub's USB disk.
    It refuses while the hub answers, or while a `hub-ready` line reads `NOT-READY`.
 2. It holds the lanes, moves `hub.json` to `hub.json.promoted-<UTC stamp>`, and runs `sd-db restore --newest` over the roots.
    It copies the restored snapshot into the hourly root, so the next hourly run does not reuse a name the NAS already holds.
 3. It refuses while the restored database has no `sd.hub_name`: run `sd config set sd.hub_name <name>`, then run promote again.
 4. If the dead node still holds the hub's tailnet name, it stops and prints the one console step.
-   Rename or remove that machine in the Tailscale admin console, then run promote again.
+   Stop that machine as above, rename or remove it in the Tailscale admin console, then run promote again.
 5. It renames this node, installs the hub role, opens one session on its own `sd-serve` by the hub's name, and prints the loss report.
 6. Read the report. Enqueue each NULL-host repository's open pull requests again, then run `sd restore resume`.
 

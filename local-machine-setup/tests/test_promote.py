@@ -309,7 +309,9 @@ class Promote(unittest.TestCase):
 
     def test_a_peer_holding_the_name_stops_at_step_7_with_the_console_step(self):
         result = self.run_promote("--apply", expect=1, STUB_PEER="hub")
-        self.assertIn("In the Tailscale admin console, rename or remove that machine", result.stderr)
+        self.assertIn("Stop that machine first: power it off, or unload its sd-serve and lane agents.", result.stderr)
+        self.assertIn("If you cannot reach it, remove it in the Tailscale admin console.", result.stderr)
+        self.assertIn("Then rename or remove it in the admin console, and rerun:", result.stderr)
         self.assertEqual("7", self.marker_step())
         self.assertEqual([], self.calls("tailscale set"))
         self.assertEqual([], self.installed(), "a hub-role service went in before the name")

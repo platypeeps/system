@@ -65,7 +65,7 @@ Each section below answers one exploration point of the item.
    With an empty root the day's names restart, and the additive NAS copy writes into the NAS folders of the same names (sd:4012 note).
 7. **Take the hub's name.** First, `sd-db fence` must not read `off`: the restored database must hold `sd.hub_name`, else promote refuses and names `sd config set` (decision on sd:4044).
    If no tailnet peer holds the hub's name, run `tailscale set --hostname=<hub name>`.
-   If the dead node still holds it, stop and print the one console step: rename or remove that node in the Tailscale admin console.
+   If the dead node still holds it, stop and print the steps: stop that node (power off, or unload its `sd-serve` and lane agents; if unreachable, remove it in the Tailscale admin console), then rename or remove it there. The runbook asks for the stop before every promote; the fence's `Self.Online` check is the first guard (sd:4044).
    A rerun continues here. The step ends only when the fence reads "holder".
 8. **Install the hub role.** Run the `sd`, `cron` and `agents` stages with the hub role on (see "Hub role" below).
    They add the hub-role labels only when the fence reads "holder", so this step must follow step 7; a rerun from the marker keeps that order.
