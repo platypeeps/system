@@ -34,9 +34,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # A notify.sh call that sends a scheduled report: `-k status` or `-k brief`.
 SENDER = re.compile(r"notify.*\s-k\s+(status|brief)\b|\$NOTIFY\".*\s-k\s+(status|brief)\b", re.I)
-# The two obsidian digests mail an HTML card with signed action buttons, which
-# Reports cannot show; whether they keep mailing is an open sd:3537 question.
-PENDING = {"local-obsidian-tasks/obsidian-tasks.sh", "local-obsidian-review/obsidian-review.sh"}
+# The obsidian digest mails an HTML card with signed action buttons, which
+# Reports cannot show; whether it keeps mailing is an open sd:3537 question.
+PENDING = {"local-obsidian-review/obsidian-review.sh"}
 
 
 def tracked_scripts():

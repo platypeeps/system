@@ -303,9 +303,17 @@ const CH = ['obsidian', 'notion', 'drive'];
 const chParse = t => { try { const v = JSON.parse(t); return v && typeof v === 'object' && !Array.isArray(v) ? v : null; } catch { return null; } };
 const chCanon = v => v === null ? 'none' : JSON.stringify(Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])));
 const chWords = v => v === null ? 'none' : CH.filter(c => v[c]).map(c => `${c}=${v[c].folder || ''}`).join(' ');
-const chSetting = r => r.channels === 'none' || r.chProblem ? null : chParse(r.channels);
+// sd:4632, sd:4192: the stored object also holds inbound keys (the repo's feed), which the form shows and never edits.
+// `chStored` is all of it; `chSetting` is the publish channels alone, null when the row names none.
+const chStored = r => r.channels === 'none' || r.chProblem ? null : chParse(r.channels);
+const chSetting = r => { const v = chStored(r); return v && CH.some(c => v[c]) ? Object.fromEntries(CH.filter(c => v[c]).map(c => [c, v[c]])) : null; };
+const chInbound = r => Object.entries(chStored(r) || {}).filter(([k]) => !CH.includes(k));
 const chDefault = (r, c) => { const n = r.path.split('/').pop(); return c === 'notion' ? n : `Briefs/${n}`; };
 function chShown(r) {
+  const inbound = chInbound(r).map(([k, v]) => html`<p class="why">Inbound ${k}, display only: <code>${v && v.url || JSON.stringify(v)}</code></p>`);
+  return html`${chOutbound(r)}${inbound}`;
+}
+function chOutbound(r) {
   if (r.chProblem) return html`<code>${r.channels}</code><p class="why">Cannot be used: ${r.chProblem}. Publishing waits until it is set again or cleared.</p>`;
   const v = chSetting(r);
   if (!v) return html`<span class="no">none · defaults</span><p class="why">Each document's research.conf.py designation, in ${CH.map(c => chDefault(r, c)).filter((f, i, a) => a.indexOf(f) === i).join(' and ')}.</p>`;
@@ -325,12 +333,13 @@ function chRead() {
 }
 function proposeChannels(r, value) {
   if (value === undefined) { withdraw('channels', true); shell.toast('Not proposed: no channel is checked. Clear setting removes the setting.'); return; }
-  if (chCanon(value) === r.channels && !r.chProblem) return withdraw('channels');
+  if (!r.chProblem && chSetting(r) && chCanon(value) === chCanon(chSetting(r))) return withdraw('channels');
   const was = r.chProblem ? r.channels : chWords(chSetting(r));
   addProposal({ key: 'channels', value, shown: chWords(value), before: r.channels, verb: 'channels', route: 'sd-db', icon: 'terminal',
     title: `channels ${was} → ${chWords(value)}`, cmd: `${SDDB} repo channels ${shq(r.path)} ${value === null ? 'none' : CH.filter(c => value[c]).map(c => shq(`${c}=${value[c].folder || ''}`)).join(' ')}`,
-    // Undo writes the setting the page read back; a value the library refuses cannot be written back, so it has none.
-    back: r.chProblem ? undefined : chSetting(r), after: chCanon(value),
+    // Undo writes the whole setting the page read back. A value the library refuses cannot be written back, and a row that
+    // held only inbound keys cannot be: a set that names no channel keeps the new ones, and none would drop the feed.
+    back: r.chProblem || (r.channels !== 'none' && !chSetting(r)) ? undefined : chStored(r),
     note: `Takes effect at the next render: run sd-research-kit render in ${r.path}, or wait for the next commit.` });
 }
 
@@ -565,8 +574,9 @@ function registerCommands() {
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
-        // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`, `after`).
-        const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? () => setRepo(o.verb, o.repo, o.back, o.after) : null;
+        // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
+        // write answered (sd:4632): the library keeps an inbound key the form never posts, so that row is not the posted value.
+        const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? v => setRepo(o.verb, o.repo, o.back, v?.value) : null;
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.

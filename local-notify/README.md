@@ -99,9 +99,9 @@ Priorities (ntfy): `min|low|default|high|urgent`. Also linked as `notify` in
   Gmail through the local `google_workspace_mcp` HTTP server
   (launchd, port 8083); needs `NOTIFY_EMAIL_TO` and `EMAIL_FROM` (the Google
   account authorized in that server). Title becomes the subject; `-f html`
-  sends the body as HTML (obsidian-tasks uses this for its action
+  sends the body as HTML (obsidian-review uses this for its action
   buttons — the other channels always get the body as-is). Used by
-  the nightly report jobs (brew-doctor, repo-sync, obsidian-tasks).
+  the nightly report jobs (brew-doctor, repo-sync, obsidian-review).
 
 Configuration comes from exported variables or `<config>/notify/.env`,
 outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default
