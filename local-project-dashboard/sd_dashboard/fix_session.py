@@ -79,6 +79,8 @@ def start(connection, item: int, *, expected_revision: str, who: str):
         row = state["item"]
         if row["status"] == "done":
             raise workflow.WorkflowError(f"item {item} is done; Fix starts a session only for an open item")
+        if row["kind"] == "report" and row["source"] == "brief":
+            raise workflow.WorkflowError(f"item {item} is a routine brief; Fix starts no debug session for one (sd:3459)")
         directory = checkout(row)
         session = "debug" if row["kind"] == "report" else "builder"
         try:

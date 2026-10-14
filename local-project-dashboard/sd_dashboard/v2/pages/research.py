@@ -1,5 +1,5 @@
 """Research (sd:2122): the board, and one checkout's source registry, from collect_research in a child. The classic
-Resources table stays in the palette: it also holds Toolbox, Briefs, Vault and Queues, which have no page yet."""
+Resources table stays in the palette: it also holds Toolbox, Vault and Queues, which have no page yet."""
 
 from __future__ import annotations
 

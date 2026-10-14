@@ -14,7 +14,7 @@ claims yet, so both show as unknown with that reason. Render and Review are
 copy only: the dashboard does not run `sd-research-kit`. Start research is
 off with its reason; the field shows the `sd task add` line for
 Copy. The old view stays in the palette as Resources (classic), with Toolbox,
-Briefs, Vault and Queues. The board reads through the
+Vault and Queues. The board reads through the
 shell's reader, `read.js` (sd:2491): only the newest read draws, a project
 the read no longer lists runs no command, and a failed read clears the board
 and the ledger. The child's deadline counts from the page's start (sd:2501).
