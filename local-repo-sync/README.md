@@ -97,16 +97,23 @@ the pack moves to at every refresh, never the checkout movement. When the
 database is below, and before anything moves, it runs the pack's
 `bin/sd-db backup --no-row-prune` into a fresh folder under
 `~/.local/state/repo-sync/refresh-backups/`. No retention prunes that folder,
-so the backup stays until you remove it. Then it writes the rollback point,
+so its backups stay until you remove them. Then it writes the rollback point,
 `~/.local/state/repo-sync/refresh-intent`: the system and pack shas, the
 version and the backup. A failed backup or record write moves nothing and
 starts the services again. A database above that `SCHEMA_VERSION`, such as one
 restored from a newer backup, is refused before the backup: nothing moves, and
 refresh names the pack or backup that would match it (sd:3535).
 
-After the moves it runs `bin/sd-db migrate` with `SD_DB_BACKUP_ROOT` set to
-the backup's folder, the root where the pack's migrate looks for a verified
-snapshot (sd:3507). Each migration commits on its own,
+After the moves, with the database still at the record's version, the moved
+pack takes a second backup into the same folder, and the record names it
+(sd:3507). The services are stopped and the lanes drained, but cron reports
+and `sd` calls still write with the old library until the pack moves; the new
+one refuses to write an older schema, so this backup holds those writes. Above
+the record's version, a migrate a kill cut short, the record keeps its own
+backup and the second one only serves the migrate. A failed second backup or
+record write runs no migrate and recovers as below.
+Then it runs `bin/sd-db migrate` with `SD_DB_BACKUP_ROOT` set to the backups'
+folder, the root where the pack's migrate looks for a verified snapshot. Each migration commits on its own,
 so a failure can leave earlier ones applied. Then refresh moves the pack back
 to the record's sha. When the database reads above the record's version, it
 restores the backup with that pack's `bin/sd-db restore`: the target's library
@@ -115,8 +122,8 @@ moves system back and runs `make setup`, deletes the record, starts the
 services and exits 1 with no `hub-pin`. A restore leaves its record
 unresolved, and the runner dispatches nothing until `sd restore resume`.
 
-A rerun reuses a record left and never replaces it, so recovery lands at the
-first run's pair and version. It reads the record, the version and the
+A rerun reuses a record left and changes only its backup line, so recovery
+lands at the first run's pair and version. It reads the record, the version and the
 checkouts, and migrates forward or recovers again. An unreadable record, a
 missing backup or one at another version, or a recovery step that fails keeps
 the record and the services stopped, pushes no `hub-pin` and exits 1: put the
