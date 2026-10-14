@@ -170,6 +170,12 @@ A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
 steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
 by hand during a refresh.
 
+`follow` holds the refresh lock and every runner lock the same way, but does
+not wait on the gate (sd:4046). A lane's gate runs under its runner lock,
+which follow holds, so the gates left are ones started by hand, and the
+merge gates again under its lane's lock. Waiting them out left each satellite
+in `BuildMismatch` for 15 to 35 minutes after every hub migration.
+
 The wait is bounded at 45 minutes in total, for the refresh lock, the lane
 locks and the gate together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
 seconds (default 2700). It prints what it waits on
