@@ -6124,6 +6124,8 @@ environment:
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
                           (default the pack's .venv/bin/python)
   SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run
+  SD_NOTIFY               hub-ready: the notify command sd-db reports with
+                          (default notify on PATH)
   SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
                           port and its tailscale serve port (8767, 8443)
   MACHINE_SETUP_SPOTLIGHT_PLIST  tests only: the plist that stands in for
