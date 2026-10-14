@@ -12,8 +12,8 @@ the day's `status_change` notes (`reads.status_change_notes`). Runs are the
 runner assignments that started or ended that day.
 
 Each day also carries its daily note's text (sd:3426), read from the
-Obsidian vault that `local-obsidian-review` and `local-obsidian-tasks` read:
-`OBSIDIAN_VAULT`, else either tool's `<config>/<tool>/.env`, else
+Obsidian vault that `local-obsidian-review` reads:
+`OBSIDIAN_VAULT`, else its `<config>/obsidian-review/.env`, else
 `~/Documents/Obsidian Vault`. The note's name comes from the vault's
 `.obsidian/daily-notes.json` (`folder`, and the `format`, default
 `YYYY-MM-DD`); a day folder holding the note of the same name counts too. The

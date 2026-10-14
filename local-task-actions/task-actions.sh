@@ -552,8 +552,8 @@ usage: task-actions.sh run|start|stop|status|base-url|url <file-stem> <done|post
   stop    unload the LaunchAgent
   status  agent + HTTP state; exits 0 ok / 1 degraded / 3 not loaded (nothing
           to check) — local-health-check reads these codes
-  url     print a signed action URL (used by local-obsidian-tasks and
-          local-obsidian-review to build digest email buttons); links
+  url     print a signed action URL (used by local-obsidian-review
+          to build digest email buttons); links
           expire after 7 days. `url [-b db] <stem> <action> [days]`.
           Base URL: TASK_ACTIONS_BASE_URL, else the Tailscale Funnel
           URL when one proxies this port, else http://127.0.0.1:8766.

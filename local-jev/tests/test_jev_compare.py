@@ -830,7 +830,7 @@ class TheStageList(TheArmsAreOptIn):
     HUB_STAGES = ("JEV_SD_REVIEW", "JEV_SD_REVIEW_BLIND", "JEV_SD_REVIEW_TRIAGE", "JEV_SD_TASK_DEDUPE",
                   "JEV_SD_DOCS_LINT", "JEV_SD_FACT_CHECK", "JEV_SD_PROSE_SCORE", "JEV_SD_PUBLISH", "JEV_SD_PLAN",
                   "JEV_ADVERSARIAL_GATE", "JEV_MAIL_INTAKE", "JEV_DRIVE_INTAKE", "JEV_NOTIFY", "JEV_HEALTH_CHECK",
-                  "JEV_OBSIDIAN_REVIEW", "JEV_OBSIDIAN_TASKS", "JEV_JOB_TRIAGE", "JEV_REPO_SYNC_HYGIENE",
+                  "JEV_OBSIDIAN_REVIEW", "JEV_JOB_TRIAGE", "JEV_REPO_SYNC_HYGIENE",
                   "JEV_GENAI_FIELD_AUDIT", "JEV_WEEKLY_DIGEST")
 
     def test_every_stage_the_hub_lists_runs_all_three_arms(self):
