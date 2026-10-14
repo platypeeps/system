@@ -221,6 +221,17 @@ class MigrateFixture(FollowFixture):
         (directory,) = [d for d in root.iterdir() if d.is_dir()]
         return directory
 
+    def hand_migrate(self, check=True):
+        """The migrate as settle() runs it after the moves: first a read-only
+        backup with the moved pack into the record's folder, which the record
+        then names, since the pack's migrate takes only such a backup
+        (sd:3507, sd:4028)."""
+        record = self.record.read_text()
+        first = self.field(record, "backup")
+        self.sd_db("backup", "--destination", str(pathlib.Path(first).parent), "--no-row-prune")
+        self.write_record(record.replace(f"backup={first}\n", f"backup={self.second_backup(first)}\n"))
+        return self.sd_db("migrate", check=check)
+
     def write_record(self, text):
         self.record.parent.mkdir(parents=True, exist_ok=True)
         self.record.write_text(text)
@@ -577,11 +588,12 @@ class RefreshMigrateTest(unittest.TestCase):
         b = f.upstream_migrations(f.good("one"))
         self.killed_after_the_move(f)
         self.assertEqual(b, f.head(f.pack))
-        f.sd_db("migrate")  # what a kill after N+1 committed leaves
+        f.hand_migrate()  # what a kill after N+1 committed leaves
         self.assertEqual(f.n + 1, f.version())
         f.upstream_migrations(f.bad("two"))
         f.run("refresh", expect=1)
-        self.assert_at_first_pair(f)
+        # The refresh's backup, the hand migrate's, and the rerun's.
+        self.assert_at_first_pair(f, backups=3)
         self.assertEqual(1, len(f.restores()))
 
     def test_a_kill_after_the_first_of_two_migrations_finishes_both_before_a_start(self):
@@ -593,7 +605,7 @@ class RefreshMigrateTest(unittest.TestCase):
         # What a kill between the two migrations' commits leaves: the real
         # migrate of the first alone, from the commit that adds it.
         f.git(f.pack, "switch", "-q", "--detach", first)
-        f.sd_db("migrate")
+        f.hand_migrate()
         f.git(f.pack, "switch", "-q", "--detach", target)
         self.assertEqual(f.n + 1, f.version())
         f.run("refresh", expect=0)
@@ -659,15 +671,15 @@ class RefreshMigrateTest(unittest.TestCase):
         """The state a kill at `point` of a recovery leaves: the pack moved to
         B, whose second migration fails, and the first committed."""
         self.killed_after_the_move(f)
-        f.sd_db("migrate", check=False)
+        f.hand_migrate(check=False)
         self.assertEqual(f.n + 1, f.version())
         if point == "before the restore":
             return
         f.git(f.pack, "switch", "-q", "--detach", f.a_pack)
         if point == "after the pack moved back":
             return
-        (backup,) = f.backup_dirs()
-        f.sd_db("restore", backup)
+        # The record's backup, as recover restores it: the hand migrate's.
+        f.sd_db("restore", f.field(f.record.read_text(), "backup"))
         self.assertEqual(f.n, f.version())
         if point == "after the restore":
             return
@@ -682,7 +694,7 @@ class RefreshMigrateTest(unittest.TestCase):
                 f.upstream_migrations(f.good("one"), f.bad("two"))
                 self.recovery_state(f, point)
                 f.run("refresh", expect=1)
-                self.assert_at_first_pair(f)
+                self.assert_at_first_pair(f, backups=3)
 
     def test_a_kill_during_recovery_with_a_fixed_target_ends_at_the_target(self):
         f = self.f
