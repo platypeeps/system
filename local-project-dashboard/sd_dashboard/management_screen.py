@@ -31,29 +31,36 @@ source guarded on its own so one that fails is a reason and not an empty list
 
 Each repo also carries the overview's columns (sd:1629): its required checks
 and `strict` from the protection reading, and `runtimes`, the Python and Node
-versions its checkout pins (`_runtimes`).
+versions its checkout pins (`_runtimes`). `dependabot` is the row's consent
+for the daily Dependabot sweep, and `dependabot_gate` names the sweep's owner
+rule when it decides first (`denied`, `owner`), read from
+`local-dependabot/holds.py` (sd:3984).
 
 Every write the page makes goes through a route `server.action_route`
 answers: job retry and cancel, service start, stop
 and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`, `repos.set_lane_host`), which refuse a stale `before`
+`repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`), which refuse a stale `before`
 and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
 """
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import os
 import sqlite3
 import stat
 import subprocess
+import sys
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sd_db import database, operations, protection, reads, repos, workflow
+from sd_db import channels, database, operations, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
+from . import fix_session
 from . import fleet as fleet_module
 from .repos_screen import primary
 
@@ -242,10 +249,51 @@ def _repos(connection) -> list[dict]:
             # sd:3075: NULL is the hub; a database before migration 24 has no column and reads as the hub.
             "lane_host": (row["lane_host"] if "lane_host" in row.keys() else None) or repos.LANE_HUB,
             "pieces_source": row["pieces_source"],
+            # sd:3465: the canonical text the form posts back as `before`, `none` for no setting, and why a stored value
+            # cannot be used, which the form shows beside a Clear.
+            "channels": channels.canonical(row["channels"]), "channels_problem": _channels_problem(row["channels"]),
+            # sd:3984: a store before migration 33 has no column, and an unread flag is unknown, not no.
+            "dependabot": ("yes" if row["dependabot"] else "no") if "dependabot" in row.keys() else None,
+            "dependabot_gate": _dependabot_gate(row["remote"]),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
     return out
+
+
+def _channels_problem(text: str | None) -> str | None:
+    """Why a stored channels value is not a setting `channels.validate` accepts; None for NULL or a good one."""
+    if text is None:
+        return None
+    try:
+        channels.validate(json.loads(text))
+    except (ValueError, SdDbError) as error:
+        return str(error)
+    return None
+
+
+@functools.cache
+def _holds():
+    """`local-dependabot/holds.py`, loaded by path as `active_sessions` loads herdr's: its owner gate is the sweep's."""
+    spec = importlib.util.spec_from_file_location("sd_dashboard_dependabot_holds",
+                                                  fix_session.CHECKOUT / "local-dependabot" / "holds.py")
+    if spec is None or spec.loader is None:
+        raise ValueError("local-dependabot/holds.py could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    # Its dataclasses look their module up in sys.modules while the class is built.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _dependabot_gate(remote: str | None) -> str | None:
+    """`denied` or `owner` when the sweep's owner gate decides before the row's flag (sd:3984), else None."""
+    found = repos.parse_remote(remote)
+    if found.kind != "github":
+        return None
+    holds = _holds()
+    slug = f"{found.owner}/{found.name}"
+    return "denied" if slug in holds.DENIED else "owner" if found.owner in holds.ALLOWED_OWNERS else None
 
 
 def _git(read, now: str) -> dict:
@@ -488,14 +536,15 @@ def _attention(jobs) -> dict:
 
 #: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
 SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed"),
-           "lane-host": (repos.set_lane_host, "lane_host")}
+           "lane-host": (repos.set_lane_host, "lane_host"), "channels": (repos.set_channels, "channels"),
+           "dependabot": (repos.set_dependabot, "dependabot")}
 
 
 class StaleSetting(workflow.StaleItem):
     """The row no longer holds the value the page showed."""
 
 
-def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, before: str) -> dict:
+def set_repo(connection: sqlite3.Connection, field: str, path: str, value, before: str) -> dict:
     """One sd-db repo verb, refused when the row moved since the page read it; returns the new setting.
 
     The read, the check and the write hold one `BEGIN IMMEDIATE`: the server
@@ -509,11 +558,16 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value: str, 
         # sd:3075: the move commits under the ship lock, so it holds its own transaction and checks `before` in it.
         path, was = setter(connection, path, value, before=before)
         return {"path": path, "field": column, "value": value, "before": was}
+    if field == "channels":
+        # sd:3465: `set_channels` validates the object and checks `before` inside its own write transaction.
+        path, was = setter(connection, path, value, before=before)
+        return {"path": path, "field": column, "value": channels.dumps(None if value is None else channels.validate(value)),
+                "before": was, "remedy": f"Run `sd-research-kit render` in {path} to publish under it, or wait for the next commit."}
     with workflow.transaction(connection):
         row = repos.row_for(connection, path)
         if row is None:
             raise repos.RepoRefusal(f"{path} is not a registered repository")
-        current = ("yes" if row["managed"] else "no") if column == "managed" else row[column]
+        current = ("yes" if row[column] else "no") if column in ("managed", "dependabot") else row[column]
         if current != before:
             raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
         _, was = setter(connection, row["path"], value)

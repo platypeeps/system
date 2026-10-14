@@ -48,8 +48,6 @@ STUBS = ("launchctl", "docker", "kind", "kubectl", "curl", "tailscale", "osascri
 PROBE_BOUND = 30
 #: The verb no entrypoint has; `status` that answers like it is no verb.
 UNKNOWN = "no-such-verb"
-#: The retired forwarder execs the command pack, absent from the sandbox.
-RETIRED = "local-" + "sd-db"
 
 
 def index(root=ROOT):
@@ -180,7 +178,7 @@ class TheTree(unittest.TestCase):
 
 class UsageOnAnEmptyMachine(unittest.TestCase):
     def setUp(self):
-        self.paths = sorted(p for p in entrypoints(index()) if not p.startswith(RETIRED + "/"))
+        self.paths = sorted(entrypoints(index()))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.sandbox = Sandbox(Path(tmp.name))
@@ -207,7 +205,7 @@ class UsageOnAnEmptyMachine(unittest.TestCase):
 class StatusOnAnEmptyMachine(unittest.TestCase):
     def test_every_status_has_nothing_to_check(self):
         reports = recorded("`status` reports")
-        probed = [p for p in entrypoints(index()) if not p.startswith(RETIRED + "/")]
+        probed = list(entrypoints(index()))
         with tempfile.TemporaryDirectory() as tmp:
             codes = Sandbox(Path(tmp)).status_codes(probed)
         self.assertIn("local-cswap/cswap.sh", codes, "the probe found no status verb")

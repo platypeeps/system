@@ -11,6 +11,9 @@ cron-jobs wrapper's stamp file and the end of its log; a log that cannot be
 read is no log, with the reason. The merge grant is read once, machine-wide.
 Writes go through the routes the server already answers: job retry and cancel,
 service start, stop and restart, and the `sd-db repo` verbs, which refuse a
-stale revision and, on a satellite, refuse with `HubOnly`. Open item goes to
+stale revision and, on a satellite, refuse with `HubOnly`.
+A repo's page shows its Dependabot consent (sd:3984), the row's `dependabot`
+column: yes or no, written with `sd-db repo dependabot`. A `platypeeps` repo
+and one the sweep denies by name show that rule and no toggle. Open item goes to
 the item's row on Tasks. The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.

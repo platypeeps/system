@@ -257,6 +257,26 @@ class TheDocument(ScreenCase):
         rows = {row["path"]: row for row in self.document()["repos"]}
         self.assertEqual((rows[self.ids["checkout"]]["runner_merge"], rows[self.ids["checkout"]]["managed"]), ("auto", "yes"))
 
+    def test_a_repo_carries_its_dependabot_flag_and_the_owner_gate_and_the_verb_flips_it(self):
+        """sd:3984: the flag is the row's column; a platypeeps row is the owner's and a denied one is denied."""
+        checkout = self.ids["checkout"]
+        upsert_repo(self.connection, "/repos/own", remote="git@github.com:platypeeps/own.git")
+        upsert_repo(self.connection, "/repos/denied", remote="git@github.com:platypeeps/Trellis.git")
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual([(rows[path]["dependabot"], rows[path]["dependabot_gate"]) for path in
+                          (checkout, "/repos/own", "/repos/denied")], [("no", None), ("no", "owner"), ("no", "denied")])
+        got = management_screen.set_repo(self.connection, "dependabot", checkout, "yes", "no")
+        self.assertEqual((got["field"], got["value"], got["before"]), ("dependabot", "yes", "no"))
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "dependabot", checkout, "yes", "no")
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["dependabot"], "yes")
+        from sd_db.remote import HubOnly
+
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            with self.assertRaises(HubOnly):
+                management_screen.set_repo(self.connection, "dependabot", checkout, "no", "yes")
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["dependabot"], "yes")
+
     def test_the_lane_host_reads_hub_and_moves_refusing_a_stale_before_a_bad_name_and_an_unknown_path(self):
         """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name."""
         checkout = self.ids["checkout"]
@@ -277,6 +297,41 @@ class TheDocument(ScreenCase):
             management_screen.set_repo(self.connection, "lane-host", checkout, "hub", "build-2")
         self.assertIn("run the move on build-2 (sd:3003 part 2)", str(refused.exception))
         self.assertEqual(lane(), "build-2")
+
+    def test_the_channels_form_writes_a_setting_and_refuses_a_stale_before_a_bad_folder_and_a_satellite(self):
+        """sd:3465: a value writes through `repos.set_channels` and answers the render remedy; an old `before`, a folder
+        `channels.validate` refuses and a satellite's write each change nothing. NULL reads `none`, the defaults."""
+        from sd_db.remote import HubOnly
+
+        checkout = self.ids["checkout"]
+        row = lambda: {r["path"]: r for r in self.document()["repos"]}[checkout]  # noqa: E731
+        self.assertEqual((row()["channels"], row()["channels_problem"]), ("none", None))
+        got = management_screen.set_repo(self.connection, "channels", checkout,
+                                          {"obsidian": {"folder": "Briefs/x"}, "drive": {}}, "none")
+        written = '{"drive":{},"obsidian":{"folder":"Briefs/x"}}'
+        self.assertEqual((got["field"], got["value"], got["before"]), ("channels", written, "none"))
+        self.assertIn("sd-research-kit render", got["remedy"])
+        self.assertEqual(row()["channels"], written)
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "channels", checkout, None, "none")
+        with self.assertRaises(repos.RepoRefusal) as refused:
+            management_screen.set_repo(self.connection, "channels", checkout, {"notion": {"folder": "a/b"}}, written)
+        self.assertIn("one page name", str(refused.exception))
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            with self.assertRaises(HubOnly) as refused:
+                management_screen.set_repo(self.connection, "channels", checkout, None, written)
+        self.assertIn("repo channels runs on the sd hub only", str(refused.exception))
+        self.assertEqual(row()["channels"], written)
+        got = management_screen.set_repo(self.connection, "channels", checkout, None, written)
+        self.assertEqual((got["value"], got["before"], row()["channels"]), ("none", written, "none"))
+
+    def test_a_stored_channels_value_the_library_refuses_is_named_not_read_as_the_defaults(self):
+        # sd:3465: `repo_channels` raises on such a value rather than publish to the defaults; the form says why and offers Clear.
+        self.connection.execute("UPDATE repo SET channels = ? WHERE path = ?", ('{"site": {}}', self.ids["checkout"]))
+        self.connection.commit()
+        got = {r["path"]: r for r in self.document()["repos"]}[self.ids["checkout"]]
+        self.assertEqual(got["channels"], '{"site":{}}')
+        self.assertIn("'site' is not a channel", got["channels_problem"])
 
     def test_a_satellite_refuses_a_lane_move_and_writes_nothing(self):
         """sd:3075 part 1: a move holds the lane host's ship lock, which only the hub's dashboard reaches."""
@@ -527,6 +582,14 @@ class ThePage(BrowserSession):
         self.assertEqual(self.post("/api/repos/managed", {"path": self.ids["checkout"], "value": "yes", "before": "yes"})[0], 400)
         self.assertEqual(self.post("/api/repos/mode", {"path": self.ids["checkout"], "value": "x", "before": "y"})[0], 404)
 
+    def test_the_dependabot_route_flips_once_and_refuses_a_stale_before_and_a_bad_word(self):
+        """sd:3984: `/api/repos/dependabot` takes yes or no and the value the page showed."""
+        body = {"path": self.ids["checkout"], "value": "yes", "before": "no"}
+        status, _, got = self.post("/api/repos/dependabot", body)
+        self.assertEqual((status, got["field"], got["value"], got["before"]), (200, "dependabot", "yes", "no"))
+        self.assertEqual(self.post("/api/repos/dependabot", body)[0], 409)
+        self.assertEqual(self.post("/api/repos/dependabot", {**body, "value": "always", "before": "yes"})[0], 400)
+
     def test_the_lane_host_route_moves_once_and_refuses_a_stale_before_and_a_bad_name(self):
         """sd:3075, acceptance 2: `Build_2` is a 400 naming the rule; a repeated move is a stale 409."""
         body = {"path": self.ids["checkout"], "value": "build-2", "before": "hub"}
@@ -540,6 +603,26 @@ class ThePage(BrowserSession):
         self.assertEqual(status, 400)
         self.assertIn("not a registered repository", got["error"])
         self.assertEqual(self.post("/api/repos/lane-host", {**body, "value": "", "before": "build-2"})[0], 400)
+
+    def test_the_channels_route_writes_once_and_refuses_an_old_before_a_bad_folder_and_a_satellite(self):
+        """sd:3465 acceptance: a form changes a repo's row, and a second form posted with the old value is refused."""
+        body = {"path": self.ids["checkout"], "value": {"notion": {"folder": "Example"}}, "before": "none"}
+        status, _, got = self.post("/api/repos/channels", body)
+        self.assertEqual((status, got["value"], got["before"]), (200, '{"notion":{"folder":"Example"}}', "none"))
+        self.assertIn("sd-research-kit render", got["remedy"])
+        status, _, got = self.post("/api/repos/channels", {**body, "value": {"drive": {}}})
+        self.assertEqual((status, got.get("reload")), (409, True))
+        status, _, got = self.post("/api/repos/channels", {**body, "value": {"drive": {"folder": "../up"}}, "before": '{"notion":{"folder":"Example"}}'})
+        self.assertEqual(status, 400)
+        self.assertIn("'..' segment", got["error"])
+        self.assertEqual(self.post("/api/repos/channels", {**body, "value": "drive="})[0], 400)
+        self.assertEqual(self.post("/api/repos/channels", {**body, "before": None})[0], 400)
+        with patch("sd_db.database.served_by", return_value="hub.example.test:8765"):
+            status, _, got = self.post("/api/repos/channels", {**body, "value": None, "before": '{"notion":{"folder":"Example"}}'})
+        self.assertEqual(status, 400)
+        self.assertIn("runs on the sd hub only", got["error"])
+        status, _, got = self.post("/api/repos/channels", {**body, "value": None, "before": '{"notion":{"folder":"Example"}}'})
+        self.assertEqual((status, got["value"]), (200, "none"))
 
     def test_the_repo_write_is_refused_on_a_satellite(self):
         """sd:1629: the POST passes the session and CSRF checks, then the verb refuses: a 400 naming the hub, no change."""
@@ -778,6 +861,81 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         cells = re.findall(r'data-k="lane">([^<]*)</td>', out["R"]["repos"])
         self.assertIn("hub", cells)
         self.assertIn("build-3", cells)
+
+    # The channels form's inputs: document.querySelector answers each `#ch-form [data-ch...]` selector from FORM.
+    FORM = """const FORM = {}; const fill = (c, on, folder) => { FORM[`#ch-form [data-ch="${c}"]`] = { checked: on }; FORM[`#ch-form [data-chf="${c}"]`] = { value: folder }; };
+const pageQuery = document.querySelector; document.querySelector = sel => FORM[sel] || pageQuery(sel);
+"""
+
+    def test_the_channels_form_shows_the_defaults_proposes_the_verb_runs_it_and_undoes(self):
+        """sd:3465: a repo with no setting shows the defaults; a checkbox and a folder per channel propose the
+        `sd-db repo channels` line; Run posts the value with the setting the page showed and toasts the render remedy;
+        Undo writes the old setting back; a form with no channel checked proposes nothing."""
+        path = self.ids["checkout"]
+        name = Path(path).name
+        remedy = f"Run `sd-research-kit render` in {path} to publish under it, or wait for the next commit."
+        out = self.run_page(self.FORM + """R.page = ELS['view-repos'].html;
+fill('obsidian', true, ' Briefs/x '); fill('notion', false, 'Ignored'); fill('drive', true, '');
+propose('channels', 'on'); R.cmd = pending[0].cmd; R.title = pending[0].title; R.note = pending[0].note;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();
+fill('obsidian', false, ''); fill('drive', false, ''); propose('channels', 'on'); R.left = pending.length;""",
+                            search=f"?repo={path}", answer="(p, b) => [200, { remedy: " + json.dumps(remedy) + " }]")
+        page = out["R"]["page"]
+        self.assertIn('data-key="channels"', page)
+        self.assertIn('<span class="no">none · defaults</span>', page)
+        self.assertIn(f"in Briefs/{name} and {name}.", page)
+        self.assertEqual(len(re.findall(r'<input type="checkbox" data-set="channels" data-ch="\w+" checked>', page)), 3)
+        self.assertIn(f'data-chf="drive" value="" placeholder="Briefs/{name}"', page)
+        self.assertNotIn("data-ch-clear", page, "no setting, nothing to clear")
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo channels '{path}' 'obsidian=Briefs/x' 'drive='")
+        self.assertEqual(out["R"]["title"], "channels none → obsidian=Briefs/x drive=")
+        self.assertIn("sd-research-kit render", out["R"]["note"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/channels", {"path": path, "value": {"obsidian": {"folder": "Briefs/x"}, "drive": {}}, "before": "none"}),
+                          ("/api/repos/channels", {"path": path, "value": None, "before": '{"drive":{},"obsidian":{"folder":"Briefs/x"}}'})])
+        self.assertEqual(out["R"]["toast"], f"Ran locally · channels none → obsidian=Briefs/x drive= · {remedy}")
+        self.assertEqual(out["R"]["left"], 0)
+        self.assertEqual(out["toasts"][-1], ["Not proposed: no channel is checked. Clear setting removes the setting.", False])
+
+    def test_a_channels_value_the_library_refuses_shows_why_and_clear_writes_none_without_an_undo(self):
+        # sd:3465: such a value is not read as the defaults; it cannot be written back, so the clear has no Undo.
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        row = next(r for r in doc["repos"] if r["path"] == path)
+        row.update(channels='{"site":{}}', channels_problem="'site' is not a channel; expected obsidian, notion or drive")
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('channels', null); R.title = pending[0].title;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            doc=doc, search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        page = out["R"]["page"]
+        self.assertIn("Cannot be used: &#39;site&#39; is not a channel", page)
+        self.assertIn("data-ch-clear", page)
+        self.assertNotIn(" checked>", page.split('id="ch-form"')[1].split("</fieldset>")[0])
+        self.assertEqual(out["R"]["title"], 'channels {"site":{}} → none')
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/repos/channels", {"path": path, "value": None, "before": '{"site":{}}'})])
+        self.assertEqual(out["R"]["toast"], 'Ran locally · channels {"site":{}} → none')
+        self.assertEqual(out["toasts"][-1], ['Run not undone · channels {"site":{}} → none: nothing to reverse', False])
+
+    def test_the_repo_page_shows_dependabot_and_the_toggle_runs_the_verb_and_undoes(self):
+        """sd:3984: yes or no for a repo outside the owner rule; an owner's or a denied repo shows the rule and no toggle."""
+        path = self.ids["checkout"]
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('dependabot', 'yes'); R.cmd = pending[0].cmd;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        self.assertIn('data-set="dependabot"', out["R"]["page"])
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo dependabot '{path}' yes")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/dependabot", {"path": path, "value": "yes", "before": "no"}),
+                          ("/api/repos/dependabot", {"path": path, "value": "no", "before": "yes"})])
+        self.assertEqual(out["R"]["toast"], "Ran locally · dependabot no → yes")
+        doc = json.loads(json.dumps(self.doc))
+        for gate, shown in (("owner", "always (owner)"), ("denied", "denied by name"), (None, "not read")):
+            row = next(r for r in doc["repos"] if r["path"] == path)
+            row["dependabot_gate"] = gate
+            row["dependabot"] = "no" if gate else None
+            page = self.run_page("R.page = ELS['view-repos'].html;", doc=doc, search=f"?repo={path}")["R"]["page"]
+            cell = page.split('data-key="dependabot"')[1].split('<div class="row"')[0]
+            self.assertIn(shown, cell)
+            self.assertNotIn('data-set="dependabot"', cell)
 
     def test_a_refused_write_says_why_and_reads_again(self):
         path = self.ids["checkout"]

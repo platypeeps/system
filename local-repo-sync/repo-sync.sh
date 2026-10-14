@@ -2489,7 +2489,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
   follow     on a satellite (one with ~/.config/sd/hub.json), fetch the
              hub-pin tag from the system origin and the pack sha it names
              from the pack origin and, where a checkout differs, drain the
-             lanes as refresh does, then move it, detached, to exactly that
+             lanes as refresh does, without the gate wait (a lane gates
+             under its runner lock), then move it, detached, to exactly that
              sha, never to origin's default branch, and run `make setup` in
              the pack. Then, lanes still held, it runs this system
              checkout's `machine-setup.sh update bin --apply` and

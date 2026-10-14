@@ -31,6 +31,15 @@ A read that fails pins, hides and tags nothing: `store.available` is false and
 off. `request` is `POST /api/documents/view`, `{"root", "file"}` and any of
 `pinned`, `hidden` and `tags`: a file the server does not serve is refused,
 and the pack judges the values. A field left out keeps its value.
+
+**Root views.** A root key's own `view` row (no `/`) names and hides the root
+(sd:3986): its `label` replaces the derived name, and `hidden` moves the root
+to the page's Hidden roots fold and its files out of the rows. Serving does
+not change. Each root says its `label`, the `derived` name, the name its row
+`set`, `hidden`, and `file_label`, a `label|` line documents.conf still holds,
+which is not read. An unread store shows derived names and hides no root.
+`request` with `{"root"}` and no `file` writes `label` or `hidden` for a root
+the page lists.
 """
 
 from __future__ import annotations
@@ -54,6 +63,8 @@ HEAD_BYTES = 256 * 1024
 
 #: What a view write may set (sd:3428); a field left out keeps its value.
 VIEW_FIELDS = ("pinned", "hidden", "tags")
+#: What a root's view write may set (sd:3986).
+ROOT_FIELDS = ("label", "hidden")
 
 #: The folders under a research checkout that never hold a source Markdown; dot folders are skipped too.
 SKIP_FOLDERS = ("build", "node_modules", "dist", "storage")
@@ -242,6 +253,8 @@ def views(connection) -> tuple[dict[str, dict], str]:
 
 def request(payload: dict, *, config_path: Path | None = None, repo_root: Path | None = None):
     """The POST's checks, before the server opens a writer; the write as `action_route` returns one."""
+    if "file" not in payload:
+        return _root_request(payload, config_path=config_path, repo_root=repo_root)
     if (not isinstance(payload.get("root"), str) or not isinstance(payload.get("file"), str)
             or set(payload) - {"root", "file", *VIEW_FIELDS} or not set(payload) & set(VIEW_FIELDS)):
         raise ValueError("Send the document's root and file, and pinned, hidden or tags.")
@@ -254,18 +267,35 @@ def request(payload: dict, *, config_path: Path | None = None, repo_root: Path |
     return lambda connection: {"key": key, **writes.set_view(connection, key, **fields)}
 
 
+def _root_request(payload: dict, *, config_path: Path | None, repo_root: Path | None):
+    """A root's rename or hide (sd:3986): a root the page lists, and `label` (text, empty clears) or `hidden`."""
+    if (not isinstance(payload.get("root"), str) or set(payload) - {"root", *ROOT_FIELDS}
+            or not set(payload) & set(ROOT_FIELDS) or not isinstance(payload.get("label", ""), str)):
+        raise ValueError("Send the root, and its label or hidden.")
+    if all(root.key != payload["root"] for root in documents.roots(config_path, repo_root)):
+        raise ValueError(f"No document root {payload['root']} is listed: read the documents again.")
+    key = payload["root"]
+    fields = {name: payload[name] for name in ROOT_FIELDS if name in payload}
+    return lambda connection: {"key": key, **writes.set_view(connection, key, **fields)}
+
+
 def document(connection=None, *, now: str, config_path: Path | None = None, repo_root: Path | None = None) -> dict:
     """The Documents page's document: every root, every file the server serves, and what was not read."""
     kept, unread = views(connection)
+    file_labels = documents.file_labels(config_path)
     rows: list[dict] = []
     listed: list[dict] = []
     for root in documents.roots(config_path, repo_root):
         checkout = _checkout(root)
         research = bool(checkout and (checkout / "research.conf.py").is_file())
         found = documents.documents(root)
+        own = kept.get(root.key, {})
+        listed.append({"key": root.key, "label": own.get("label") or root.label, "derived": root.label,
+                       "set": own.get("label"), "hidden": bool(own.get("hidden")), "file_label": file_labels.get(root.key),
+                       "path": _tilde(root.path.expanduser()), "n": len(found), "research": research})
+        if own.get("hidden"):
+            continue
         sources = _sources(checkout, [entry["name"] for entry in found]) if research else {}
-        listed.append({"key": root.key, "label": root.label, "path": _tilde(root.path.expanduser()),
-                       "n": len(found), "research": research})
         for entry in found:
             source = sources.get(entry["name"])
             try:

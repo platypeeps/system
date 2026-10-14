@@ -2,7 +2,7 @@
 # The Dependabot sweep's one entrypoint: the held-bump watcher's mechanical
 # pass, and this folder's suite. The daily sweep itself stays prompt-driven
 # (`ROUTINE.md`, run by local-cron-jobs); nothing here merges.
-# Usage: dependabot.sh holds [--dry-run] [--repo OWNER/NAME]...|test|help
+# Usage: dependabot.sh holds [--dry-run] [--repo OWNER/NAME]...|allowed|test|help
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,6 +24,11 @@ Usage: dependabot.sh <command>
                 --dry-run          read and report; write nothing
                 --repo OWNER/NAME  watch this repository instead of the
                                    fleet (repeatable)
+  allowed     The repositories outside platypeeps the sweep may take, one
+              owner/name per line: the repo rows with `dependabot` set in
+              the workflow database (Management, or `sd-db repo dependabot
+              PATH yes`). Exits 1 naming the reason when the list cannot be
+              read; the sweep then takes none of them.
   test        Run this folder's tests.
   help        This text.
 
@@ -77,6 +82,10 @@ case "${1:-}" in
         shift
         pick_python
         exec "$PYTHON" "$DIR/holds.py" "$@"
+        ;;
+    allowed)
+        pick_python
+        exec "$PYTHON" "$DIR/holds.py" allowed
         ;;
     test)
         shift
