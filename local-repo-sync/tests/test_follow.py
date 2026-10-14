@@ -410,6 +410,24 @@ class FollowTest(unittest.TestCase):
         self.assertTrue(f.gate_calls())
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
 
+    def test_a_hub_that_refuses_this_build_follows_from_the_snapshot(self):
+        """NEW (sd:3983). After a hub migration the hub refuses this
+        satellite's older sd_db until it follows. The list's database read
+        fails then, so follow finds system and the pack in the last answer,
+        and moves both."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        f.run("list", expect=0)
+        f.write_conf("")
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, pinned[0], pack=pinned[1])
+
+        result = f.run("follow", expect=0, extra_env={"CLONES_RC": "1"})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn("the hub refused this build", result.stderr)
+        self.assertIn(str(f.snapshot()), result.stderr)
+
     def test_follow_pins_a_branch_checkout(self):
         """NEW. A satellite's system on `main` is detached by the move, so a
         later hand `git pull` refuses."""

@@ -72,6 +72,58 @@ esac
 """
 
 
+SD_DB_STUB = """#!/bin/sh
+# Test stub for the pack's bin/sd-db (SD_PACK_ROOT): a workflow database in
+# files under $SD_DB_STUB, so no case reads the machine's own. It logs each
+# call to $SD_DB_STUB/calls.
+#   clones  the `repo list --clones` answer. Without it the stub answers with
+#           the fixture's confs, as a store seeded from them does.
+#   rows    one registered path per line, for `repo list`; REPO_LIST names a
+#           file to print instead, and REPO_LIST_RC fails the verb.
+# CLONES_RC fails `repo list --clones`; ADD_RC and CLONES_SET_RC fail
+# `repo add` and `repo clones`.
+printf '%s\\n' "$*" >> "$SD_DB_STUB/calls"
+answer() {
+  if [ -e "$SD_DB_STUB/clones" ]; then cat "$SD_DB_STUB/clones"; return; fi
+  dir=${REPO_SYNC_CONF_DIR:-$SYSTEM_TOOLS_CONFIG/repo-sync}
+  if [ "$1" = terra ]; then set -- "$dir/repos.terra.conf"
+  else set -- "$dir/repos.common.conf" "$dir/repos.$1.conf"; fi
+  cat "$@" 2>/dev/null | sed 's/#.*//' | awk 'NF == 2 && !seen[$1 " " $2]++ { print $1 " " $2 }'
+}
+case "$1 $2" in
+  "repo list")
+    if [ "${3:-}" = --clones ]; then
+      [ -z "${CLONES_RC:-}" ] || { echo "sd-db: the hub refused this build" >&2; exit "$CLONES_RC"; }
+      answer "$4"
+      exit 0
+    fi
+    [ -z "${REPO_LIST_RC:-}" ] || { echo "sd-db: boom" >&2; exit "$REPO_LIST_RC"; }
+    if [ -n "${REPO_LIST:-}" ]; then cat "$REPO_LIST"; exit 0; fi
+    [ ! -e "$SD_DB_STUB/rows" ] || sed 's/^/sd-db: /; s/$/  -  no  github  hub  manual/' "$SD_DB_STUB/rows"
+    ;;
+  "repo add")
+    [ -z "${ADD_RC:-}" ] || { echo "sd-db: database is locked" >&2; exit "$ADD_RC"; }
+    (cd "$3" && pwd -P) >> "$SD_DB_STUB/rows"
+    echo "sd-db: registered $3"
+    ;;
+  "repo clones")
+    [ -z "${CLONES_SET_RC:-}" ] || { echo "sd-db: database is locked" >&2; exit "$CLONES_SET_RC"; }
+    path=$(cd "$3" && pwd -P)
+    rel=${path#"$(cd "$REPO_SYNC_ROOT" && pwd -P)"/}
+    case "$rel" in */*) sub=${rel%/*} ;; *) sub=. ;; esac
+    own=$("${REAL_GIT:-git}" -C "$path" remote get-url origin)
+    own=${own#git@github.com:}
+    profile=${4#+}
+    answer "$profile" > "$SD_DB_STUB/clones.new"
+    echo "$sub ${own%.git}" >> "$SD_DB_STUB/clones.new"
+    mv "$SD_DB_STUB/clones.new" "$SD_DB_STUB/clones"
+    echo "sd-db: $path clone_profiles none -> $profile"
+    ;;
+  *) echo "sd-db stub: unexpected $*" >&2; exit 2 ;;
+esac
+"""
+
+
 GIT_WRAPPER = """#!/bin/sh
 # Test wrapper for git: record the call, then run the real git, so the script
 # still scans and pulls while the test sees every verb it used.
@@ -111,6 +163,14 @@ class Fixture:
         (self.bin / "sd").write_text(SD_STUB)
         (self.bin / "sd").chmod(0o755)
         self.git_log = self.tmp / "git.log"
+        # The pack's sd-db is a stub holding its rows in files (SD_DB_STUB).
+        self.sd_pack = self.tmp / "sd-pack-stub"
+        (self.sd_pack / "bin").mkdir(parents=True)
+        (self.sd_pack / "bin" / "sd-db").write_text(SD_DB_STUB)
+        (self.sd_pack / "bin" / "sd-db").chmod(0o755)
+        self.db = self.tmp / "db"
+        self.db.mkdir()
+        self.state_home = self.tmp / "state"
         self.root = self.tmp / "root"
         self.root.mkdir()
         (self.tmp / "home").mkdir()
@@ -191,6 +251,10 @@ class Fixture:
             # Must not resolve, or the recorded profile would win over the env.
             MACHINE_SETUP_STATE=str(self.tmp / "no-such-state"),
             HOME=str(self.tmp / "home"),
+            # The list's database read and its snapshot are the fixture's.
+            SD_PACK_ROOT=str(self.sd_pack),
+            SD_DB_STUB=str(self.db),
+            XDG_STATE_HOME=str(self.state_home),
             NOTIFY_LOG=str(self.notify_log),
             # No invocation may reach the network, and "the fixture gives it
             # nothing to clone" is not enough: aimed at pre-#231 code the
@@ -221,6 +285,32 @@ class Fixture:
             )
         return result
 
+    def clones(self, text):
+        """What `sd-db repo list --clones` answers from now on, in place of
+        the confs."""
+        (self.db / "clones").write_text(text)
+
+    def rows(self, *rels):
+        """Register checkouts `rels` under the root, as `repo add` does."""
+        with (self.db / "rows").open("a") as rows:
+            for rel in rels:
+                rows.write(f"{(self.root / rel).resolve()}\n")
+
+    def db_calls(self, verb=""):
+        """Every sd-db call the script made that starts with `verb`."""
+        calls = self.db / "calls"
+        lines = calls.read_text().splitlines() if calls.exists() else []
+        return [line for line in lines if line.startswith(verb)]
+
+    def snapshot(self):
+        return self.state_home / "system" / "repo-sync" / f"clones.{self.profile}"
+
+    def quiet_fleet(self):
+        """One listed checkout that pulls from a local bare repository, so
+        the list is a database answer and a nightly has nothing to report."""
+        self.local_clone("a/good")
+        self.write_conf("a owner/good\n")
+
     # --- reading it back ----------------------------------------------------
 
     def entries(self):
@@ -241,50 +331,49 @@ class RepoSyncTest(unittest.TestCase):
         self.addCleanup(f.destroy)
         return f
 
-    def test_nightly_rewrites_the_confs_and_commits_nothing(self):
-        """PIN: the confs keep no git history.
-
-        A removal rewrites repos.common.conf as well as the profile conf,
-        because `remove_entry` loops over $CONF_FILES. The nightly writes
-        both and stops: no git call stages, commits or pushes them.
-        """
+    def test_nightly_leaves_the_confs_and_commits_nothing(self):
+        """REGRESSION (sd:3983). The list lives in the database now: nightly
+        writes no conf, even for a listed checkout that is gone, and no git
+        call stages, commits or pushes anything."""
         f = self.fixture(profile="personal")
         (f.folder / "repos.common.conf").write_text("a owner/gone-common\n")
         f.write_conf("a owner/gone-profile\n")
         f.checkout("a/kept", "owner/kept")
+        f.rows("a/kept")
 
         f.run("nightly", expect=None)
 
-        self.assertEqual((f.folder / "repos.common.conf").read_text().strip(), "")
-        self.assertNotIn("owner/gone-profile",
-                         (f.folder / "repos.personal.conf").read_text())
+        self.assertEqual((f.folder / "repos.common.conf").read_text(), "a owner/gone-common\n")
+        self.assertEqual((f.folder / "repos.personal.conf").read_text(), "a owner/gone-profile\n")
         self.assertTrue(f.git_verbs(), "the wrapper saw no git call")
         for call in f.git_verbs():
             words = call.split()
             for verb in ("add", "commit", "push"):
                 self.assertNotIn(verb, words, call)
 
-    def test_reconcile_run_twice_adds_the_entry_once(self):
-        """PIN. The ordinary path: a checkout whose directory is named after its
-        repo is added once and then left alone.
-
-        It has to run twice -- one run cannot duplicate anything, so asserting
-        a single entry after a single run proves nothing. Note this case does
-        NOT reproduce the re-add loop and passes against the code that had it:
-        that bug needed a directory whose name differed from its repo, which
-        the next test covers. Kept because it pins the behaviour the fix had
-        to preserve while removing the loop.
-        """
+    def test_reconcile_joins_a_checkout_with_no_row_once(self):
+        """REGRESSION (sd:3983). A GitHub checkout on disk with no row is
+        registered and listed for the profile, through `repo add` then
+        `repo clones PATH +PROFILE`, and the conf is not touched. Run twice:
+        the second run finds the row and the line, and writes nothing."""
         f = self.fixture()
         f.checkout("a/one", "owner/one")
+        f.checkout("a/two", "owner/two")
+        f.rows("a/one")
+        f.clones("a owner/one\n")
+        two = str(f.root / "a" / "two")
 
         first = f.run("reconcile")
-        self.assertIn("a owner/one", first.stdout)
-        self.assertEqual(f.entries(), ["a owner/one"])
+        self.assertIn("joined", first.stdout)
+        self.assertIn("a owner/two", first.stdout)
+        self.assertEqual(f.db_calls("repo add"), [f"repo add {two}"])
+        self.assertEqual(f.db_calls("repo clones"), [f"repo clones {two} +terra"])
+        self.assertEqual(f.entries(), [])
 
         second = f.run("reconcile")
-        self.assertIn("conf matches disk", second.stdout)
-        self.assertEqual(f.entries(), ["a owner/one"])
+        self.assertIn("list matches disk", second.stdout)
+        self.assertEqual(len(f.db_calls("repo add")), 1)
+        self.assertEqual(len(f.db_calls("repo clones")), 1)
 
     def test_directory_name_mismatch_is_reported_and_never_added(self):
         """REGRESSION (#231, and the reason the loop existed). A checkout whose directory is not named after its repo cannot be
@@ -342,16 +431,24 @@ class RepoSyncTest(unittest.TestCase):
             result.stdout.index("owner/zeta"), result.stdout.index("owner/alpha")
         )
 
-    def test_removing_a_gone_checkout_takes_every_copy(self):
-        """PIN. remove_entry filters every matching line, not the first -- so a
-        duplicate outlives its checkout by exactly zero reconciles."""
+    def test_a_gone_listed_checkout_is_reported_and_never_removed(self):
+        """REGRESSION (sd:3983). Deleting a checkout no longer stops its sync:
+        no run removes a profile, so no outage or empty disk can look like a
+        deletion. Reconcile names the line, says sync clones it, and names
+        the one way to stop it."""
         f = self.fixture()
-        f.write_conf("a owner/one\na owner/one\n")
+        f.checkout("a/kept", "owner/kept")
+        f.rows("a/kept", "a/one")
+        f.clones("a owner/kept\na owner/one\n")
 
         result = f.run("reconcile")
 
-        self.assertIn("removed (checkout gone)", result.stdout)
-        self.assertEqual(f.entries(), [])
+        self.assertIn("listed for terra, no checkout: sync clones it", result.stdout)
+        self.assertIn("a owner/one", result.stdout)
+        self.assertIn("repo clones PATH -terra", result.stdout)
+        self.assertEqual(f.db_calls("repo clones"), [])
+        self.assertEqual((f.db / "clones").read_text(), "a owner/kept\na owner/one\n")
+        self.assertNotIn("remove_entry", SCRIPT.read_text())
 
     def test_a_checkout_without_a_github_origin_is_left_alone(self):
         """PIN. It cannot be recreated from a conf line, so it is reported rather
@@ -372,6 +469,7 @@ class RepoSyncTest(unittest.TestCase):
         have bought silence: a green night nobody reads. sd:3454: the run's
         report carries it to Reports and Today, and nothing is mailed."""
         f = self.fixture()
+        f.quiet_fleet()
         f.checkout("a/fun-ai-stuff", "owner/other-name")
 
         result = f.run("nightly")
@@ -384,6 +482,7 @@ class RepoSyncTest(unittest.TestCase):
         """PIN. The other half of the same guard: a report that needs
         attention on a quiet night trains its reader to ignore it."""
         f = self.fixture()
+        f.quiet_fleet()
 
         result = f.run("nightly")
 
@@ -485,11 +584,287 @@ class RepoSyncTest(unittest.TestCase):
         ssh_add.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
         ssh_add.chmod(0o755)
 
+        f.quiet_fleet()
+
         result = f.run("nightly", extra_env={"GIT_SSH_COMMAND": str(ssh), "REPO_SYNC_SSH_ADD": str(ssh_add)})
 
         self.assertIn("loaded key(s) from the keychain", result.stdout)
         self.assertNotIn("no key authenticates", result.stdout)
         self.assertEqual(attention(result), [])
+
+class DatabaseListTest(unittest.TestCase):
+    """sd:3983: the list is `sd-db repo list --clones PROFILE`, read once per
+    run; else the last answer's snapshot; else the confs; else a refusal."""
+
+    def fixture(self, **kwargs):
+        f = Fixture(**kwargs)
+        self.addCleanup(f.destroy)
+        return f
+
+    def test_the_list_comes_from_the_database(self):
+        """REGRESSION. The database answers, so the conf is not read."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+        f.clones("a owner/from-db\n")
+
+        result = f.run("list")
+
+        self.assertIn("owner/from-db", result.stdout)
+        self.assertNotIn("owner/from-conf", result.stdout)
+        self.assertIn("source  : database", result.stdout)
+        self.assertEqual(f.db_calls(), ["repo list --clones terra"])
+        self.assertEqual("", result.stderr)
+
+    def test_an_answer_replaces_the_snapshot_through_a_temp_file(self):
+        """REGRESSION. The answer goes to a temp file, then `mv`. A temp file
+        a killed run left is overwritten, not read."""
+        f = self.fixture()
+        f.clones("a owner/one\n. owner/two\n")
+        f.snapshot().parent.mkdir(parents=True)
+        f.snapshot().write_text("a owner/old\n")
+        left = f.snapshot().with_name(f.snapshot().name + ".tmp")
+        left.write_text("half a lin")
+
+        f.run("list")
+
+        self.assertEqual("a owner/one\n. owner/two\n", f.snapshot().read_text())
+        self.assertFalse(left.exists())
+
+    def test_a_failed_read_falls_back_to_the_snapshot(self):
+        """REGRESSION. A failed read is unknown, never an empty list: the
+        last answer stands, and stderr names the failure and the source."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+        f.snapshot().parent.mkdir(parents=True)
+        f.snapshot().write_text("a owner/from-snapshot\n")
+
+        result = f.run("list", extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("owner/from-snapshot", result.stdout)
+        self.assertNotIn("owner/from-conf", result.stdout)
+        self.assertIn("source  : snapshot", result.stdout)
+        self.assertIn("the hub refused this build", result.stderr)
+        self.assertIn(str(f.snapshot()), result.stderr)
+        self.assertEqual("a owner/from-snapshot\n", f.snapshot().read_text())
+
+    def test_an_empty_answer_is_unknown_and_keeps_the_snapshot(self):
+        """REGRESSION. Every profile lists at least `system`, so no line is a
+        profile never imported, not an empty fleet: the snapshot is kept, it
+        answers, and nightly's report names the fallback."""
+        f = self.fixture()
+        f.local_clone("a/good")
+        f.clones("")
+        f.snapshot().parent.mkdir(parents=True)
+        f.snapshot().write_text("a owner/good\n")
+
+        result = f.run("nightly")
+
+        self.assertEqual("a owner/good\n", f.snapshot().read_text())
+        self.assertIn("lists nothing for terra", result.stderr)
+        [reason] = attention(result)
+        self.assertRegex(reason, r"^repo-sync: the database did not answer; the list came from the snapshot on ")
+        self.assertIn("pull --ff-only", " ".join(f.git_verbs()))
+
+    def test_a_line_that_is_not_a_conf_line_is_unknown(self):
+        """REGRESSION. An answer is used whole or not at all: one line that is
+        not `<subdir> <owner/repo>` makes it unknown, and the snapshot stays."""
+        f = self.fixture()
+        f.clones("a owner/one\nsd-db: ~/repos/a/two  git@github.com:owner/two.git  no\n")
+        f.snapshot().parent.mkdir(parents=True)
+        f.snapshot().write_text("a owner/kept\n")
+
+        result = f.run("list")
+
+        self.assertIn("owner/kept", result.stdout)
+        self.assertNotIn("owner/one", result.stdout)
+        self.assertIn("not a <subdir> <owner/repo> line", result.stderr)
+        self.assertEqual("a owner/kept\n", f.snapshot().read_text())
+
+    def test_no_answer_and_no_snapshot_reads_the_confs(self):
+        """REGRESSION. The fresh-machine bootstrap: a machine that never
+        reached the hub syncs from the conf it was given, and says so."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+
+        result = f.run("list", extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("owner/from-conf", result.stdout)
+        self.assertIn("source  : conf", result.stdout)
+        self.assertIn("no snapshot", result.stderr)
+        self.assertFalse(f.snapshot().exists())
+
+    def test_nothing_answers_refuses_naming_both_remedies(self):
+        """REGRESSION. No database answer, no snapshot and no conf: refuse,
+        and name both ways out."""
+        f = self.fixture()
+        (f.folder / "repos.terra.conf").unlink()
+
+        result = f.run("list", expect=1, extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("sd-db repo seed --clones terra", result.stderr)
+        self.assertIn("copy local-repo-sync/repos.terra.conf.example to", result.stderr)
+        self.assertIn("the hub refused this build", result.stderr)
+
+    def test_nightly_reads_the_list_once(self):
+        """REGRESSION. One read per run: sync, hygiene and the total read the
+        run's copy. A join reads it once more, after reconcile, so sync sees
+        the joined checkout."""
+        f = self.fixture()
+        f.quiet_fleet()
+
+        f.run("nightly")
+        self.assertEqual(f.db_calls("repo list --clones"), ["repo list --clones terra"])
+
+        f.checkout("b/new", "owner/new")
+        (f.db / "calls").unlink()
+        result = f.run("nightly", expect=None)
+        self.assertEqual(len(f.db_calls("repo list --clones")), 2)
+        self.assertIn("=== refreshing owner/new", result.stdout)
+
+    def test_a_hub_that_does_not_answer_makes_reconcile_write_nothing(self):
+        """REGRESSION. From the snapshot or the conf, reconcile cannot know
+        which checkout has a row, so it writes nothing; sync still runs, and
+        the report names the source."""
+        f = self.fixture()
+        f.quiet_fleet()
+        f.checkout("b/new", "owner/new")
+
+        result = f.run("nightly", extra_env={"CLONES_RC": "1"})
+
+        self.assertEqual(f.db_calls("repo add") + f.db_calls("repo clones"), [])
+        self.assertIn("present, not listed for terra", result.stdout)
+        self.assertIn("reconcile wrote nothing", result.stdout)
+        self.assertIn("pull --ff-only", " ".join(f.git_verbs()))
+        [reason] = attention(result)
+        self.assertRegex(reason, r"^repo-sync: the database did not answer; the list came from the conf on ")
+
+    def test_a_join_stopped_after_add_is_reported_not_finished(self):
+        """REGRESSION. Stopped between `repo add` and `repo clones +P`, the
+        next run finds a row without P. A cleared P may be the operator's
+        choice, so it reports the checkout and writes nothing."""
+        f = self.fixture()
+        f.quiet_fleet()
+        f.checkout("b/new", "owner/new")
+
+        first = f.run("reconcile", extra_env={"CLONES_SET_RC": "1"})
+        self.assertIn("not joined", first.stdout)
+        self.assertIn("database is locked", first.stdout)
+        self.assertEqual(len(f.db_calls("repo add")), 1)
+
+        second = f.run("reconcile")
+        self.assertIn("present, not listed for terra", second.stdout)
+        self.assertIn("b owner/new", second.stdout)
+        self.assertEqual(len(f.db_calls("repo add")), 1)
+        self.assertEqual(len(f.db_calls("repo clones")), 1)
+
+    def test_a_failed_add_writes_nothing_more(self):
+        """REGRESSION. When `repo add` fails, `repo clones` is not called; the
+        checkout is named, and nightly reports it before anything else."""
+        f = self.fixture()
+        f.quiet_fleet()
+        f.checkout("b/new", "owner/new")
+
+        result = f.run("nightly", expect=None, extra_env={"ADD_RC": "1"})
+
+        self.assertEqual(f.db_calls("repo clones"), [])
+        self.assertIn("b owner/new (sd-db: database is locked)", result.stdout)
+        [reason] = attention(result)
+        self.assertRegex(reason, r"^repo-sync: 1 checkout\(s\) not joined to the list on ")
+
+    def test_a_missing_pack_is_a_failed_read(self):
+        """PIN. No sd-db to run is the database not answering, not an empty
+        list."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+
+        result = f.run("list", extra_env={"SD_PACK_ROOT": str(f.tmp / "no-pack")})
+
+        self.assertIn("owner/from-conf", result.stdout)
+        self.assertIn("exited 127", result.stderr)
+
+    def test_an_unreadable_conf_is_no_list(self):
+        """REGRESSION (codex pass). With no database answer and no snapshot,
+        a conf that cannot be read refuses; it is not an empty fleet."""
+        f = self.fixture()
+        conf = f.folder / "repos.terra.conf"
+        conf.write_text("a owner/one\n")
+        conf.chmod(0)
+        self.addCleanup(conf.chmod, 0o644)
+
+        result = f.run("list", expect=1, extra_env={"CLONES_RC": "1"})
+
+        self.assertIn(f"the config {conf} is missing or unreadable", result.stderr)
+        self.assertNotIn("total", result.stdout)
+
+    def test_a_failed_row_read_needs_attention(self):
+        """REGRESSION (codex pass). The list answered but `repo list` did not:
+        reconcile wrote nothing, and nightly's report says so."""
+        f = self.fixture()
+        f.quiet_fleet()
+
+        result = f.run("nightly", extra_env={"REPO_LIST_RC": "1"})
+
+        self.assertIn("reconcile wrote nothing: sd-db repo list failed: sd-db: boom", result.stdout)
+        [reason] = attention(result)
+        self.assertRegex(reason, r"^repo-sync: reconcile could not read the repo rows on ")
+
+    def test_a_home_relative_row_is_a_row(self):
+        """PIN. `repo list` prints a path under $HOME as `~/...`, as the
+        store keys it; that row counts, so its checkout is not joined again."""
+        f = self.fixture()
+        f.quiet_fleet()
+        f.checkout("b/new", "owner/new")
+        (f.db / "rows").write_text("~/root/b/new\n")
+
+        result = f.run("reconcile", extra_env={"HOME": str(f.tmp)})
+
+        self.assertIn("present, not listed for terra", result.stdout)
+        self.assertEqual(f.db_calls("repo add"), [])
+
+    def test_reconcile_on_a_machine_with_no_root_yet_reports_every_line(self):
+        """REGRESSION. A fresh machine has no checkout root until sync makes
+        it; reconcile still runs and names every listed line for sync."""
+        f = self.fixture()
+        f.clones("a owner/one\n")
+        shutil.rmtree(f.root)
+
+        result = f.run("reconcile")
+
+        self.assertIn("listed for terra, no checkout: sync clones it", result.stdout)
+        self.assertIn("a owner/one", result.stdout)
+
+    def test_another_profiles_snapshot_is_not_read(self):
+        """PIN. The snapshot's name carries its profile: a machine whose
+        profile changed reads its own, or the confs, never the old one."""
+        f = self.fixture()
+        f.write_conf("a owner/from-conf\n")
+        other = f.snapshot().with_name("clones.personal")
+        other.parent.mkdir(parents=True)
+        other.write_text("a owner/personal-only\n")
+
+        result = f.run("list", extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("owner/from-conf", result.stdout)
+        self.assertNotIn("owner/personal-only", result.stdout)
+
+    def test_a_snapshot_restores_the_previous_script(self):
+        """REGRESSION. The README's revert: with the confs deleted, the
+        snapshot copied to the profile conf and an empty common conf are a
+        list the conf reader reads whole."""
+        f = self.fixture(profile="personal")
+        f.clones("a owner/one\n. owner/two\n")
+        f.run("list")
+        (f.folder / "repos.common.conf").write_text("")
+        shutil.copy(f.snapshot(), f.folder / "repos.personal.conf")
+        f.snapshot().unlink()
+
+        result = f.run("list", extra_env={"CLONES_RC": "1"})
+
+        self.assertIn("source  : conf", result.stdout)
+        self.assertIn("owner/one", result.stdout)
+        self.assertIn("owner/two", result.stdout)
+        self.assertIn("total   : 2 repos", result.stdout)
+
 
 class ConfigDirTest(unittest.TestCase):
     def fixture(self, **kwargs):
@@ -500,7 +875,7 @@ class ConfigDirTest(unittest.TestCase):
     def test_the_confs_default_to_the_shared_config_directory(self):
         """PIN. With no REPO_SYNC_CONF_DIR the confs come from
         $SYSTEM_TOOLS_CONFIG/repo-sync, not from beside the script, and
-        nightly rewrites them there."""
+        nightly leaves both as they were (sd:3983)."""
         f = self.fixture(profile="terra")
         conf_root = f.tmp / "config"
         (conf_root / "repo-sync").mkdir(parents=True)
@@ -513,11 +888,10 @@ class ConfigDirTest(unittest.TestCase):
         self.assertIn("owner/from-config", listed.stdout)
         self.assertNotIn("owner/from-folder", listed.stdout)
 
-        f.run("nightly", extra_env=env)
-        self.assertNotIn("owner/from-config",
+        f.run("nightly", expect=None, extra_env=env)
+        self.assertEqual("only owner/from-config\n",
                          (conf_root / "repo-sync" / "repos.terra.conf").read_text())
-        self.assertIn("owner/from-folder",
-                      (f.folder / "repos.terra.conf").read_text())
+        self.assertEqual("beside owner/from-folder\n", (f.folder / "repos.terra.conf").read_text())
 
     def test_a_missing_conf_names_the_config_path_and_the_example(self):
         """PIN. The error says where the conf belongs and what to copy."""
