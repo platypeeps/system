@@ -1,7 +1,7 @@
 # local-task-actions
 
 Tiny localhost HTTP service backing the action buttons in the Obsidian task
-digest email (`local-obsidian-tasks`): **Mark done** and **Postpone** links
+digest email (`local-obsidian-review`): **Mark done** and **Postpone** links
 that edit TaskNote frontmatter directly in the vault.
 
 ## How it works
