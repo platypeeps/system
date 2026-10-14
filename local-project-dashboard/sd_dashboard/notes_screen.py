@@ -14,8 +14,8 @@ machine's own time zone, from records the library already keeps:
   reads them (`activity_screen.runs`).
 
 - **daily**: each day's daily note text (sd:3426), from the Obsidian vault
-  `local-obsidian-review` and `local-obsidian-tasks` read: `OBSIDIAN_VAULT`
-  when exported, else from `<config>/shared.env`, else their
+  `local-obsidian-review` reads: `OBSIDIAN_VAULT`
+  when exported, else from `<config>/shared.env`, else its
   default `~/Documents/Obsidian Vault`. The note's name is the one Obsidian's
   daily-notes settings give it (`.obsidian/daily-notes.json`: `folder` and
   the moment `format`, default `YYYY-MM-DD`); a day folder that holds the

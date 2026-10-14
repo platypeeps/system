@@ -387,7 +387,6 @@ case "$SUITE_LEG" in
     # codebase-memory-mcp.sh takes only `run`, which launchd calls; the
     # suite is named directly. It stubs the binary, so Linux runs it.
     run_suite codebase-memory-mcp "$PYTHON" local-codebase-memory-mcp/tests/test_codebase_memory_mcp.py -v
-    run_suite obsidian-tasks sh local-obsidian-tasks/obsidian-tasks.sh test
     run_suite obsidian-review sh local-obsidian-review/obsidian-review.sh test
     run_suite task-actions sh local-task-actions/task-actions.sh test -v
     run_suite weekly-digest sh local-weekly-digest/weekly-digest.sh test -v

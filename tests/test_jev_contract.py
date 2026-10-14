@@ -75,7 +75,6 @@ KNOWN_CALLERS = frozenset({
     "local-mail-intake",
     "local-notify",
     "local-obsidian-review",
-    "local-obsidian-tasks",
     "local-project-dashboard",
     "local-repo-sync",
     "local-scan-for-secrets",
