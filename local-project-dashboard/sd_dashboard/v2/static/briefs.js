@@ -1,8 +1,8 @@
 // Briefs (sd:2112): the design source's products/system/designs/v2/briefs.js at b2b8c2b, ported. Each change from the reference
-// is marked "build:". The rows are /api/briefs (briefs_screen.py): the brief notes the vault's System/AI Generated/Briefs folder
-// holds, never sample data. The design reads brief mail; no mail reader exists, so unread state, follow-up flags and the
-// watchdog's failures are left out, and the Missed lamp is unknown with the document's reason. The one write is Make task, which
-// opens the shell's capture form; the form files it with POST /api/items.
+// is marked "build:". The rows are /api/briefs (briefs_screen.py): the routine briefs the workflow database holds (sd:3459), never
+// sample data. Read opens a brief's item page, which renders its Markdown. The design reads brief mail; no mail reader exists, so
+// unread state, follow-up flags and the watchdog's failures are left out, and the Missed lamp is unknown with the document's
+// reason. The one write is Make task, which opens the shell's capture form; the form files it with POST /api/items.
 const { html, put, plural, cells } = window.markup;
 // build: nothing here can be loud. The watchdog is not read, so the page claims nothing for the rail or Today.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'watchdog not read' };
@@ -15,8 +15,9 @@ addEventListener('DOMContentLoaded', () => {
   // build: capture files through the shell's default capture (sd:3520): POST /api/items, as Today and Tasks do.
 
   // ---------- Data (build) ----------
-  // BRIEFS: { id, subj, src, day, at (null when not known), words, lead, rel, open }. READ: when the server read them.
-  let BRIEFS = [], SOURCES = [], READ = null, READER = null, WATCH = '', LOADED = false;
+  // BRIEFS: { id (the stem), item, subj, src, day, at (null when not known), words, lead, rel, open, copy }. rel and open are
+  // null unless the last render vouches for the vault copy, and copy says why. READ: when the server read them.
+  let BRIEFS = [], SOURCES = [], READ = null, READER = null, WATCH = '', COPIES = null, LOADED = false;
   const DAY_MS = 864e5;
   const RANGES = { '24h': 1, '7d': 7, '30d': 30 };
   // build: the reference had one fixed week of sample mail; the range here is the last 1, 7 or 30 days before the read.
@@ -64,7 +65,9 @@ addEventListener('DOMContentLoaded', () => {
   // The reader says capped only when it cut rows; a skipped row is not a cut, so total > shown does not decide it.
   const capped = () => !!READER && !!READER.capped;
   const oldest = () => BRIEFS.reduce((m, b) => b.day < m ? b.day : m, '9999-12-31');
+  const LAMP = { ok: 'ok', off: 'ok', failed: 'caution', unknown: 'unknown' };
   function renderAnnunciator() {
+    const c = COPIES || { state: 'unknown', reason: 'not read', at: null };
     const n = ranged().length, srcs = new Set(ranged().map(b => b.src)).size;
     // No read behind the lamp is unknown, never ok: a refused or failed read is not zero briefs.
     const got = !!READER && READER.state !== 'error', floor = capped() && BRIEFS.length && oldest() >= DAYS[0];
@@ -73,6 +76,9 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('annunciator'), cells([
       { state: got ? 'ok' : 'unknown', label: 'Briefs', mark: I('inbox'), val: count },
       { state: 'unknown', attrs: html` title="${WATCH}"`, label: 'Missed', mark: I('siren'), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span>` },
+      // build (sd:3459): the brief-copies heartbeat. Off is quiet; failed is caution, since Read never needs a copy.
+      { state: LAMP[c.state] || 'unknown', attrs: html` title="${c.reason || `rendered ${c.at}`}"`, label: 'Vault copies', mark: I('hard-drive-download'),
+        val: html`<span class="ph"><b>${c.state}</b></span>${c.at ? html` · <span class="ph">${c.at.slice(5, 16).replace('T', ' ')} UTC</span>` : ''}` },
       { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: read },
     ]));
   }
@@ -160,7 +166,7 @@ addEventListener('DOMContentLoaded', () => {
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
     put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${all.length} shown</span>`);
-    document.getElementById('sub').textContent = READER ? (capped() ? `${plural(READER.total, 'brief')}, newest ${READER.shown} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
+    document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
   document.getElementById('pager').addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c) return;
@@ -183,10 +189,11 @@ addEventListener('DOMContentLoaded', () => {
       <h2>${b.subj}</h2>
       <dl><dt>Source</dt><dd>${b.src}</dd><dt>Day</dt><dd>${dayLabel(b.day)}</dd>
         <dt>Written</dt><dd>${b.at ? `${b.at.slice(0, 16).replace('T', ' ')} UTC · ${ago(b.at)}` : 'time not known: the note changed after its day'}</dd>
-        <dt>Words</dt><dd>${b.words}</dd><dt>Note</dt><dd><code>${b.rel}</code></dd>
+        <dt>Words</dt><dd>${b.words}</dd><dt>Item</dt><dd>#${b.item}</dd>
+        <dt>Vault copy</dt><dd>${b.rel ? html`<code>${b.rel}</code>` : b.copy}</dd>
         <dt>Watchdog</dt><dd><span class="g-unknown" aria-hidden="true">▨</span> ${WATCH}</dd></dl>
       <h3>Body · first lines</h3><div class="mailbody">${b.lead}${b.lead.length >= 200 ? '…' : ''}</div>
-      <p class="why off">First lines only. The note in the vault holds the whole brief.</p>
+      <p class="why off">First lines only. Read opens the whole brief.</p>
       <h3>Act</h3>${C.bar(id)}`);
     C.select(id);
     shell.suggest(['Summarise this brief in three lines', `What else did ${b.src} write this week?`, 'Turn what this brief asks into tasks']);
@@ -208,16 +215,19 @@ addEventListener('DOMContentLoaded', () => {
   function select(id, open) { if (!show(id)) return; selected = id; if (open) shell.openPane('tab-details'); }
 
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
-  // build: two of the reference's four brief commands. Acknowledge and Mark read wrote a message store that does not exist and
-  // had nothing to change here; Open in Gmail is Open in Obsidian, the note's own link.
+  // build: Read, then two of the reference's four brief commands. Acknowledge and Mark read wrote a message store that does not
+  // exist and had nothing to change here; Open in Gmail is Open in Obsidian, the vault copy's link, off without one (sd:3459).
   function registerCommands() {
     C.register(
+      // build (sd:3459): every brief is a row in the database, so Read works with or without a vault copy.
+      { id: 'brief.read', on: 'brief', label: 'Read', key: 'r', risk: 'safe', primary: () => true, executes: false,
+        cli: o => `sd reports brief show ${shq(o.id)}`, run: o => { location.href = shell.itemPage(o.item); return `#${o.item} opens`; } },
       // build: no verb deletes a task, so no Undo: the capture form shows the line and files it only on Capture.
-      { id: 'brief.task', on: 'brief', label: 'Make task', key: 'k', risk: 'safe', primary: () => true,
+      { id: 'brief.task', on: 'brief', label: 'Make task', key: 'k', risk: 'safe',
         cli: o => `sd task add ${shq(o.label)}`, run: o => { shell.capture(o, o.label); return 'Check the title, then Capture'; } },
       { id: 'brief.open', on: 'brief', label: 'Open in Obsidian', key: 'o', risk: 'safe', executes: false,
-        when: o => !!o.open || 'no vault link for this note', cli: o => `open ${shq(o.open)}`,
-        run: o => { window.open(o.open, '_blank', 'noopener'); return 'Obsidian opens the note'; } },
+        when: o => !!o.open || o.copy || 'no vault copy for this brief', cli: o => `open ${shq(o.open)}`,
+        run: o => { window.open(o.open, '_blank', 'noopener'); return 'Obsidian opens the copy'; } },
     );
   }
   document.addEventListener('shell:open', e => { if (BRIEFS.some(b => b.id === e.detail)) select(e.detail, true); });
@@ -261,6 +271,7 @@ addEventListener('DOMContentLoaded', () => {
     adopt: doc => {
       READ = doc.read; READER = doc.reader || { state: 'error', reason: 'no reader in the answer', total: 0, shown: 0 };
       WATCH = doc.watchdog?.available ? 'read' : (doc.watchdog?.reason || 'no watchdog reader');
+      COPIES = READER.copies || null;
       BRIEFS = READER.state === 'error' ? [] : (doc.briefs || []);
       const by = new Map();
       BRIEFS.forEach(b => { const s = by.get(b.src) || { id: b.src, n: 0, newest: b.day }; s.n++; if (b.day > s.newest) s.newest = b.day; by.set(b.src, s); });
@@ -270,19 +281,19 @@ addEventListener('DOMContentLoaded', () => {
       DAYS = days(); LOADED = true;
       const source = READER.source || '/api/briefs';
       const state = READER.state === 'error' ? { kind: 'error', text: `The briefs were not read: ${READER.reason}. Reload retries it.`, source }
-        : !BRIEFS.length ? { kind: 'empty', title: 'No briefs', text: 'The Briefs folder holds no note.', source }
-        : READER.skipped || capped() ? { kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown} of ${READER.total}; the rest are in the folder. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source }
+        : !BRIEFS.length ? { kind: 'empty', title: 'No briefs', text: 'The workflow database holds no routine brief.', source }
+        : READER.skipped || capped() ? { kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown}; older briefs are in the database. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source }
         : null;
-      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, open: b.open })), state };
+      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, item: b.item, open: b.open, copy: b.copy })), state };
     },
     // Nothing from the last read stays on screen: rows, lanes and the observed time.
-    clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },
+    clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; COPIES = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },
     draw: () => { renderRange(); update(); },
     current: () => selected,
     first: () => (BRIEFS.filter(match)[0] || BRIEFS[0])?.id,
     select,
     // No current brief: nothing from an earlier read stays selected, and Details offers no command on it.
-    unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see its note.</p>`); },
+    unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see it.</p>`); },
   });
   readURL();
   if (F.q) input.value = F.q;

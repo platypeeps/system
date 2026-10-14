@@ -1801,6 +1801,42 @@ R.work = five('{port}'); R.done = five('{ask}');""")
         self.assertIn("overflow-x: auto;", wrap.group(1))
         self.assertIn("position: relative;", wrap.group(1), "the wrap does not contain the table's absolutely placed labels")
 
+    def test_the_list_fits_its_column_beside_the_docked_pane(self):
+        # sd:4037: with a base's Stage and Score the list scrolled sideways 305 px in its 729 px column at 1440 and 1024.
+        # The design source's folds (design.md, sd:2249): the wrap is a container whose narrow width drops the row's
+        # primary button and narrows every gutter, Due drops the word its head says, and a long repo name ends in an ellipsis.
+        css = (V2 / "static" / "tasks.css").read_text(encoding="utf-8")
+        wrap = re.search(r"^\.list-wrap \{([^}]*)\}", css, re.M)
+        self.assertIn("container-type: inline-size;", wrap.group(1))
+        narrow = re.search(r"^@container \(max-width: 64rem\) \{\n(.*?)^\}", css, re.S | re.M)
+        self.assertIsNotNone(narrow, "tasks.css has no narrow-list container block")
+        self.assertIn(".list .rowact .btn.sm { display: none; }", narrow.group(1))
+        self.assertRegex(css, r"\.list td\.rp span \{[^}]*text-overflow: ellipsis;")
+        self.doc["read"] = "2026-09-06T12:00:00Z"
+        self.doc["rows"] = [{**self.row("plan"), "id": 900, "title": "Far off", "due": "2026-10-01", "repo": "example-research"}]
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
+R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
+        self.assertIn('<td class="mono rp"><span title="example-research">example-research</span></td>', out["R"]["list"])
+        self.assertRegex(out["R"]["list"], r'<td class="mono due ?[^"]*">Oct 1</td>')
+
+    def test_the_list_folds_id_repo_and_score_beside_the_docked_pane_at_1280(self):
+        # sd:4037: the docked pane leaves the list 529 px at 1240 and 569 px at 1280, where it still scrolled 150 px.
+        # Below 45.5rem Id and Repo fold into a line under the title and Score into one under Stage; no text is cut.
+        css = (V2 / "static" / "tasks.css").read_text(encoding="utf-8")
+        narrow = re.search(r"^@container \(max-width: 45\.5rem\) \{\n(.*?)^\}", css, re.S | re.M)
+        self.assertIsNotNone(narrow, "tasks.css has no block that folds columns beside the docked pane")
+        self.assertIn(".list :is(th, td):is(.id, .rp, .sc) { display: none; }", narrow.group(1))
+        self.assertIn(".list .fold { display: block;", narrow.group(1))
+        self.assertIn(".list .fold { display: none; }", css)
+        self.doc["rows"] = [{**self.row("plan"), "id": 900, "title": "An idea", "repo": "example-research",
+                             "base": "blog-idea", "stage": "inbox", "score": "7"}]
+        out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
+R.list = ELS['view-list'].html;""")
+        self.assertIn('<td class="mono id">#900</td>', out["R"]["list"])
+        self.assertIn('An idea</button><span class="fold mono">#900 · example-research</span></td>', out["R"]["list"])
+        self.assertIn('<td>inbox<span class="fold mono">score 7</span></td><td class="mono sc">7</td>', out["R"]["list"])
+        self.assertEqual(re.findall(r'<th scope="col" class="label (id|rp|sc)"', out["R"]["list"]), ["id", "rp", "sc"])
+
     def test_a_plain_toast_clears_a_live_undo_and_the_bulk_bar(self):
         # The bar lifts both toasts one layer, and a plain message over a live Undo is one more: with all three up, the plain
         # one sits two layers above the bar's, or "Copied" covers the Undo (review, PR #46).

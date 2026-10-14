@@ -890,6 +890,56 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual((br["error"], [row["id"] for row in br["rows"]]), ("", [f"br:{alpha}"]))
 
 
+class TheBriefCopiesRow(Collectors, ScreenCase):
+    """sd:3459: the `brief-copies` heartbeat as one Vault mirror row. Failed, unread or stale is a finding; off is quiet."""
+
+    doc = TheDocument.doc
+
+    def row(self, found):
+        return health_screen._brief_copies_row(lambda: found, now=NOW)
+
+    def beat(self, state, stamp="2026-09-06T11:00:00+00:00", **more):
+        return stamp, {"at": stamp, "ok": state != "failed", "state": state, "folder": {"/repos/system": "Briefs/system"},
+                       "previous_folder": {}, "written": 3, "refused": [], "reason": None, **more}
+
+    def test_a_failed_and_a_missing_heartbeat_each_show(self):
+        # Failure table, "add, hub: render after commit": a render that failed, or none at all, is never clean.
+        mirror = next(area for area in self.doc()["areas"] if area["id"] == "mir")
+        self.assertEqual([(row["id"], row["state"], row["what"]) for row in mirror["rows"]][-1],
+                         ("mir:briefs", "unknown", "Brief copies not yet rendered"))
+        row = self.row(self.beat("failed", reason="the vault is not a directory", refused=["2026-09-05 - Daily"]))
+        self.assertEqual((row["state"], row["what"], row["detail"]),
+                         ("warning", "Brief copies not written", "the vault is not a directory"))
+        self.assertEqual(row["list"], ["2026-09-05 - Daily"])
+        row = self.row(self.beat("failed", refused=["2026-09-05 - Daily"]))
+        self.assertEqual((row["state"], row["detail"]), ("warning", "1 copies refused"))
+
+    def test_the_real_heartbeat_reaches_the_row(self):
+        from sd_db import routine_briefs
+
+        upsert_repo(self.connection, "/repos/system", remote="git@example.invalid:x.git")
+        routine_briefs.add(self.connection, "2026-09-05 - Daily", "---\nseries: x\n---\n\nBody.\n", repo="/repos/system",
+                           who="test")
+        routine_briefs.render(self.connection, Path(self.tmp.name) / "no vault")
+        row = health_screen._brief_copies_row(lambda: health_screen.read_brief_copies(self.connection),
+                                              now=writes.now())
+        self.assertEqual(row["state"], "warning")
+        self.assertIn("no vault", row["detail"])
+
+    def test_off_is_quiet_ok_is_ok_and_an_old_render_is_caution(self):
+        self.assertEqual((self.row(self.beat("off"))["state"], self.row(self.beat("off"))["what"]), ("ok", "Brief copies off"))
+        self.assertEqual(self.row(self.beat("ok"))["state"], "ok")
+        old = self.row(self.beat("ok", stamp="2026-09-03T11:00:00+00:00"))
+        self.assertEqual((old["state"], old["what"]), ("caution", "Brief copies last rendered 3 days ago"))
+        self.assertEqual(self.row(self.beat("ok", stamp="2026-09-04T13:00:00+00:00"))["state"], "ok")
+
+    def test_a_heartbeat_that_cannot_be_read_is_unknown(self):
+        def refuse():
+            raise sqlite3.OperationalError("database is locked")
+        row = health_screen._brief_copies_row(refuse, now=NOW)
+        self.assertEqual((row["state"], row["detail"]), ("unknown", "database is locked"))
+
+
 class TheDoctor(Collectors, ScreenCase):
     """The Doctor area (sd:3393): `machine-setup.sh doctor` lines, read in a bounded child. A stub stands in for the script."""
 
@@ -1247,12 +1297,12 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = ELS.areas.html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 23 rows.", out["R"]["note"])
+        self.assertIn("Filtered to Credentials only: 1 of 24 rows.", out["R"]["note"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
                          ["cred", "wt", "br", "dep", "sec", "ports", "prot", "mir"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
                          ["cred:none", "unread:beta", "br:no_default", "dep:none", "sec:none", "port:svc-b:9020",
-                          "prot:/checkouts/gamma", "mir"])
+                          "prot:/checkouts/gamma", "mir", "mir:briefs"])
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"

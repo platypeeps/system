@@ -1,4 +1,4 @@
-"""Briefs (sd:2112): the brief notes the vault's Briefs folder holds, read by the child Resources > Briefs runs."""
+"""Briefs (sd:2112): the routine briefs the workflow database holds (sd:3459), each read on its item page."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from . import Api, Page
 def _read(read):
     from ... import briefs_screen
 
-    return briefs_screen.document(now=read.now)
+    return briefs_screen.document(read.connection, now=read.now)
 
 
 PAGE = Page(

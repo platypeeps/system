@@ -13,7 +13,7 @@ Operations Resources views and its Ports area.
 imports this module for its tabs. `sd_dashboard/ports_screen.py` loads it by
 path and calls `collect_ports` inside the serving process, with no tile in
 between. (`sd_dashboard/reports_screen.py` runs `sd_tile.py` as a child for
-five views, so it reaches the collectors through the first caller. It
+four views, so it reaches the collectors through the first caller. It
 loads this module by path only for `Budget`, which reads that child within the
 64KB and a ceiling each view declares, sd:758.)
 
@@ -39,8 +39,8 @@ for the whole table.
 
 Five seconds on a whole tile process was the retired plugin contract's outer
 limit. The pack's loader enforced it for every tab; a Resources view's `Budget`
-enforces it now for the five tabs it runs (`reports_screen.VIEWS`,
-`VIEW_SECONDS`), which hold Toolbox, Briefs, Vault, Research and Queues, and
+enforces it now for the four tabs it runs (`reports_screen.VIEWS`,
+`VIEW_SECONDS`), which hold Toolbox, Vault, Research and Queues, and
 kills the tile's process group there. Ports is not among them: no Resources
 view runs the ports tile, and the Ports page calls `collect_ports` in-process.
 `sd_tile.py` holds every tab a second earlier than five, so the collector
@@ -741,8 +741,7 @@ def require_vault():
     """Raise unless the vault reads. For collectors with nowhere to put an error.
 
     `collect_areas` returns a dict and reports the reason inside it, because
-    its tab draws a page either way. `collect_briefs` returns a list and
-    `db_rows` returns rows: there is no field to carry a sentence, and an empty
+    its tab draws a page either way. `db_rows` returns rows: there is no field to carry a sentence, and an empty
     list is indistinguishable from an empty vault -- which is the failure the
     probe exists to prevent. Raising instead gives the tile its exit 1 with
     the reason on stderr, which a Resources view shows in place of the view
@@ -1258,48 +1257,6 @@ def cron_next(expr, now=None):
                 if t > now:
                     return t
     return None
-
-
-#: How much of a brief's body `collect_briefs` keeps as its `lead`.
-BRIEF_LEAD = 200
-
-
-def collect_briefs():
-    """What the scheduled routines actually wrote. They mail these and file
-    them in the vault; nothing surfaced them anywhere you would browse.
-
-    Only the Briefs folder: the Scheduled Tasks tree next to it holds SKILL.md
-    definitions and append-only run logs, which are configuration and exhaust,
-    not output. Files are named `YYYY-MM-DD - Kind.md`, so the kind is the
-    useful grouping — there is no routine name in the note to group by.
-
-    `at` is the note's modification time in UTC, and `lead` its first
-    `BRIEF_LEAD` characters of body text with whitespace folded: the Briefs
-    page (`sd_dashboard/briefs_screen.py`) shows both, the Resources view
-    neither.
-    """
-    require_vault()
-    root = VAULT / "System" / "AI Generated" / "Briefs"
-    out = []
-    if root.is_dir():
-        for f in sorted(root.glob("*.md")):
-            rel = f.relative_to(VAULT)
-            st = f.stat()
-            m = re.match(r"(\d{4}-\d{2}-\d{2})\s*-\s*(.+)$", f.stem)
-            day, kind = (m.group(1), m.group(2)) if m else ("", "other")
-            fm, body = frontmatter(f)
-            text = body if body is not None else f.read_text(errors="replace")
-            out.append({
-                "stem": f.stem, "rel": str(rel), "kind": kind, "day": day,
-                "when": day or datetime.date.fromtimestamp(st.st_mtime).isoformat(),
-                "at": datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "age_d": age_days(day) if day else None,
-                "words": len(text.split()),
-                "lead": " ".join(text.split())[:BRIEF_LEAD],
-                "obsidian": obsidian_url(str(rel)[:-3]),
-            })
-    out.sort(key=lambda b: (b["when"], b["stem"]), reverse=True)
-    return {"briefs": out, "total": len(out), "root": str(root)}
 
 
 MACHINE_SETUP = SYSTEM / "local-machine-setup" / "machine-setup.sh"
