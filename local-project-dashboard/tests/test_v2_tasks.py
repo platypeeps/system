@@ -1804,7 +1804,8 @@ class TheFilterAddress(ScreenCase):
             self.assertEqual(re.findall(sorted_, out["R"][key]), want, key)
             self.assertEqual(out["R"][key].count("aria-sort"), 1, key)
         # sd:2682: every column with an order sorts, through shell.list's header.
-        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["a"]), ["id", "title", "repo", "status", "stage", "score", "p", "due"])
+        # sd:3977: Stage and Score show only once a row has a base; this store has none.
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["a"]), ["id", "title", "repo", "status", "p", "due"])
         self.assertIn("sort=due&dir=desc", out["R"]["url"])
 
     def test_status_age_and_active_narrow_as_v1_did(self):
