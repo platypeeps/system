@@ -854,7 +854,15 @@ forget_intent() {
     echo "!!! failed: cannot delete $REFRESH_INTENT"
     return 1
   fi
-  echo "refresh: deleted $REFRESH_INTENT; the backup $i_backup stays until you remove it"
+  echo "refresh: deleted $REFRESH_INTENT; the backups in ${i_backup%/*} stay until you remove them"
+}
+
+# Writes the record: system sha $1, pack sha $2, schema $3, backup $4. The
+# rename replaces it whole, so a kill leaves the old record or the new one.
+write_intent() {
+  { mkdir -p "${REFRESH_INTENT%/*}" \
+    && printf 'system=%s\npack=%s\nschema=%s\nbackup=%s\n' "$1" "$2" "$3" "$4" > "$REFRESH_INTENT.tmp" \
+    && mv -f "$REFRESH_INTENT.tmp" "$REFRESH_INTENT"; } 2> /dev/null
 }
 
 # Design D2 step 2, with the services stopped and the moves planned. Returns
@@ -911,10 +919,7 @@ rollback_point() {
     echo "!!! refused: cannot read the system or pack sha; nothing moved, no record written; the backup $p_backup stays"
     return 1
   fi
-  if ! { mkdir -p "${REFRESH_INTENT%/*}" \
-      && printf 'system=%s\npack=%s\nschema=%s\nbackup=%s\n' "$p_sys_sha" "$p_pack_sha" "$p_db" "$p_backup" \
-        > "$REFRESH_INTENT.tmp" \
-      && mv -f "$REFRESH_INTENT.tmp" "$REFRESH_INTENT"; } 2> /dev/null; then
+  if ! write_intent "$p_sys_sha" "$p_pack_sha" "$p_db" "$p_backup"; then
     echo "!!! refused: cannot write $REFRESH_INTENT; nothing moved; the backup $p_backup stays"
     return 1
   fi
@@ -981,6 +986,49 @@ recover() {
   forget_intent
 }
 
+# Design D2 step 4, first half (sd:3507): the services stop and the lanes
+# drain, but cron reports and sd calls still write the database with the old
+# lib/ until the pack moves; once it has, the new lib/ refuses to write an
+# older schema. So the moved pack backs the database up again, read-only,
+# into the record's folder: the newest snapshot, which the migrate checks
+# against the database. At the record's schema the record names it, so
+# recover restores it; above, a migrate a kill cut short, the record keeps
+# its own. A kill here leaves the database as it was and the old record or
+# the new one. Returns 1, with the record as it was, on a failure.
+fresh_point() {
+  f_root=${i_backup%/*}
+  if ! f_before=$(ls "$f_root"); then
+    echo "!!! failed: cannot list $f_root"
+    return 1
+  fi
+  echo "--- $s_pack/bin/sd-db backup: again, with the moved pack, right before the migrate"
+  if ! "$s_pack/bin/sd-db" backup --destination "$f_root" --no-row-prune < /dev/null; then
+    echo "!!! failed: the second backup into $f_root"
+    return 1
+  fi
+  f_backup=""
+  for f_found in "$f_root"/*; do
+    [ -d "$f_found" ] || continue
+    if printf '%s\n' "$f_before" | grep -qxF "${f_found##*/}"; then continue; fi
+    [ -z "$f_backup" ] || { f_backup=""; break; }
+    f_backup=$f_found
+  done
+  if [ -z "$f_backup" ] || [ "$(db_version "$f_backup/sd.db" || :)" != "$s_db" ]; then
+    echo "!!! failed: $f_root holds no one new backup at schema $s_db"
+    return 1
+  fi
+  if [ "$s_db" != "$i_schema" ]; then
+    echo "refresh: the database is at schema $s_db, above the record's $i_schema; the record keeps $i_backup"
+    return 0
+  fi
+  if ! write_intent "$i_sys" "$i_pack" "$i_schema" "$f_backup"; then
+    echo "!!! failed: cannot write $REFRESH_INTENT; it still names $i_backup"
+    return 1
+  fi
+  i_backup=$f_backup
+  echo "refresh: $REFRESH_INTENT names the second backup $f_backup"
+}
+
 # Design D2 steps 4 and 5, with a record left: migrates the database to the
 # checked-out pack's schema, or recovers to the record. Returns 0 there with
 # the record deleted; 1 recovered, record deleted, as a failed migrate; 2
@@ -995,15 +1043,20 @@ settle() {
   s_db=$(db_version "$REFRESH_DB" || :)
   s_ran=0
   if [ -n "$s_lib" ] && [ -n "$s_db" ] && [ "$s_db" -lt "$s_lib" ]; then
-    echo "--- $s_pack/bin/sd-db migrate: schema $s_db to $s_lib"
-    # A failed migrate recovers whatever the version reads: its exit is
-    # the one proof the run ended where it meant to. The pack's migrate
-    # wants a verified snapshot under its backup root (sd:3507); the
-    # record's backup sits outside that root, so its folder is named here.
-    SD_DB_BACKUP_ROOT="${i_backup%/*}" "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
-    s_db=$(db_version "$REFRESH_DB" || :)
-    if [ "$s_ran" -ne 0 ]; then
-      echo "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"
+    if ! fresh_point; then
+      echo "refresh: no migrate"
+      s_ran=1
+    else
+      echo "--- $s_pack/bin/sd-db migrate: schema $s_db to $s_lib"
+      # A failed migrate recovers whatever the version reads: its exit is
+      # the one proof the run ended where it meant to. The pack's migrate
+      # wants a verified snapshot under its backup root (sd:3507); the
+      # record's backup sits outside that root, so its folder is named here.
+      SD_DB_BACKUP_ROOT="${i_backup%/*}" "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
+      s_db=$(db_version "$REFRESH_DB" || :)
+      if [ "$s_ran" -ne 0 ]; then
+        echo "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"
+      fi
     fi
   fi
   if [ "$s_ran" -eq 0 ] && [ -n "$s_lib" ] && [ "$s_db" = "$s_lib" ]; then
