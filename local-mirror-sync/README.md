@@ -16,8 +16,8 @@ basename into existing destination directories.
 
 Pairs live in `mirrors.conf` (`source|destination`, one per line, `#`
 comments). The pair lists are local, gitignored files; copy the committed
-`mirrors.conf.example`, `mirrors-repos.conf.example` and
-`mirrors-nas.conf.example` and set your own paths. Directory sources mirror their contents. File sources require an
+`mirrors.conf.example`, `mirrors-repos.conf.example`,
+`mirrors-nas.conf.example` and `mirrors-nas-hourly.conf.example` and set your own paths. Directory sources mirror their contents. File sources require an
 existing destination directory. Run `plan` before the first `sync`.
 
 A pair may carry an optional **third field**: comma-separated rsync exclude
@@ -36,18 +36,27 @@ Installed as the `mirror-sync-nightly` job in `local-cron-jobs` (03:30,
 listed in the machine's cron profile). A failed or refused pair exits 1,
 which files a failure report that Today shows.
 
-## The three lists
+## The four lists
 
 | List | Destination | Job | Schedule |
 |---|---|---|---|
 | `mirrors.conf` | iCloud and `/Volumes/local` | `mirror-sync-nightly` | 03:30 daily |
 | `mirrors-repos.conf` | `/Volumes/local` | `repos-mirror` | 04:30 and 16:30 |
 | `mirrors-nas.conf` | the NAS, `/Volumes/Offsite` | `sd-db-backup`, after its snapshot | 02:10 daily |
+| `mirrors-nas-hourly.conf` | the NAS, `Backup/sd-backups-hourly` | `sd-db-backup-hourly`, after its snapshot | :50 hourly |
 
-One more writer uses the same disk without this folder: `sd-db-backup-hourly`
-(`local-cron-jobs`) snapshots the sd database into
-`/Volumes/local/Backup Local/sd-backups` at :50 every hour, keeps a rolling
-week, and refuses to write when `/Volumes/local` is not mounted.
+`sd-db-backup-hourly` (`local-cron-jobs`) snapshots the sd database into
+`/Volumes/local/Backup Local/sd-backups` at :50 every hour, keeps its newest
+24 snapshots, and refuses to write when `/Volumes/local` is not mounted. After a
+snapshot that succeeded and offsite-verify's preflight, it copies that root to
+the NAS folder `Backup/sd-backups-hourly`, additive, through
+`mirrors-nas-hourly.conf` (sd:4009). That copy is the 1-hour recovery point a
+failover restores from; the nightly copy below is the 24-hour one. After the
+copy, the same job runs `sd-db backup --prune-only` over the NAS folder: it
+deletes copies whose checkpoint is more than 7 days old and that still match
+their manifests (sd:4011). It needs a pack with that flag. A machine that
+moves the local root with `SD_DB_BACKUP_HOURLY_DESTINATION`, such as a promoted
+satellite, still copies and prunes; the pair list's source must name that root.
 
 `/Volumes/local` is a portable USB disk plugged into this Mac. A copy there
 does not survive theft, fire or a dead Mac. `mirrors-repos.conf` replaced
@@ -161,6 +170,12 @@ copied first, so nothing writes to the share; `home` is a temporary directory,
 so the restored database, configuration and journals land there and the live
 store is never touched; and `control_gate` is a file lock under that same
 throwaway home, not a service control.
+
+It does this twice: for the newest nightly snapshot in `sd-backups/`, which
+may be 36 hours old, and for the newest hourly copy in `sd-backups-hourly/`,
+which may be 3 hours old. A missing hourly folder fails the run, as a missing
+nightly one does. Schedule the run away from :50, when the hourly copy is
+writing its newest directory.
 
 Running the whole verb matters because its parts do not add up to it. The
 database validator alone passes a snapshot whose runner journal holds a

@@ -78,7 +78,7 @@ The copy is additive (`MIRROR_SYNC_ADDITIVE`), with its own conf and its own NAS
 An exact mirror was rejected: a promoted hub starts with an empty local root, and its first mirror would delete the NAS history it was restored from.
 The NAS keeps its own window: after the copy, the same job deletes NAS directories whose manifest checkpoint is more than 7 days old, reusing the backup job's owned-backup retention code.
 Only the fence holder runs that prune, as the `--preflight-only` gate already ensures.
-The local hourly window drops from 7 to 2 days, about 36 GB; the NAS keeps 7 days, about 130 GB.
+The local hourly root keeps its newest 24 snapshots (`--keep 24`, ruling sd:3637), about 19 GB; the NAS keeps 7 days by checkpoint age, about 130 GB.
 Each run copies one 783 MB directory and prunes at most one.
 `offsite-verify` gains a second root with a 3-hour age limit, so a stalled hourly copy mails the next morning.
 
@@ -108,7 +108,8 @@ A satellite's `hub.json` names `hub.example.test` (the hub's MagicDNS name). Aft
 The dashboard origin (`https://<name>...:8443`) and the task-actions funnel URL in sent mails keep working, because both are built from the node name.
 The cost is one manual console step per failover: the dead node gives up the name. No tool can do it without a Tailscale API key, a new secret.
 
-Rejected: a Tailscale Service name. Service hosts must be tagged nodes (to confirm in slice 1), and `serve` refuses to start on a tagged node (R8 of the second-machine plan).
+Rejected: a Tailscale Service name. Service hosts must be tagged nodes, and `serve` refuses to start on a tagged node (R8 of the second-machine plan).
+Tailscale's Services page says: "Any device you want to use as a Service host must use a tag-based identity" ([kb/1552](https://tailscale.com/kb/1552/tailscale-services), read 2026-10-13).
 Rejected as default, kept as the fallback: rewrite `hub.json` on every satellite. It needs a session on each, and every URL changes.
 
 ### The fence: the old hub returns
@@ -322,7 +323,7 @@ Slices 2 and 3 touch `sd_db`. They land in the pack once sd:2997 step 1 moves it
 
 The operator decided on 2026-10-10 (sd:3256 note).
 
-- **D1. Recovery point.** Chain an additive hourly NAS copy in the hourly job, with its own 7-day NAS prune, and cut the local hourly window to 2 days: a 1-hour recovery point.
+- **D1. Recovery point.** Chain an additive hourly NAS copy in the hourly job, with its own 7-day NAS prune, and keep the newest 24 hourly snapshots locally (`--keep 24`, ruling sd:3637): a 1-hour recovery point.
 - **D2. Where the verb lives.** `machine-setup.sh promote`. Roles, agents, cron and Tailscale routes live there, and sd:2997 does not move it.
 - **D3. How satellites find the hub.** The hub's tailnet machine name moves, with one console step per failover; `hub.json` and every URL stay.
 - **D4. The standby machine.** The work satellite. It runs the work repositories' lanes, and while promoted it holds the personal records.

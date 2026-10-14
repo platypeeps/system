@@ -11,6 +11,10 @@
 # a machine whose disk is mounted elsewhere or a one-off run to a local path;
 # an operator who names the destination has answered the mount question.
 #
+# Retention is by count (sd:3637): `--keep 14` keeps the newest 14 verified
+# owned snapshots, two weeks of nights. Only directories the backup wrote and
+# still verifies are deleted.
+#
 # An off-machine copy is not part of this job. To chain one after the
 # snapshot (so it never reads a half-written snapshot directory), put a
 # same-named sd-db-backup.job in a CRON_JOBS_EXTRA_DIRS directory; it
@@ -18,5 +22,5 @@
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
-JOB_COMMAND="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep all"
+JOB_COMMAND="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
 unset SD_DB_BACKUP_MOUNT
