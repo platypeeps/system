@@ -226,6 +226,52 @@ class TheDocuments(ScreenCase):
         self.assertEqual({row["id"] for row in rows if row["parked"] is None}, {self.ids["plan"], self.ids["ask"], self.ids["port"]})
         self.assertEqual(rows[-1]["revision"], workflow.item_state(self.connection, parked)["revision"])
 
+    def test_the_details_list_where_the_item_was_published_in_the_designs_order(self):
+        """sd:3465: the item row holds each URL and the Details read the row: every document in `fields.published` with
+        its channel links, then `fields.writing.published_urls`, then each publication claim's url. Only http, https and
+        obsidian addresses become links; any other is shown as text."""
+        from sd_db import channels
+
+        plan = self.ids["plan"]
+        self.assertEqual(tasks_screen.details(self.connection, plan, now=NOW)["published"], [])
+        repo = self.repo()
+        channels.record_url(self.connection, plan, repo, "brief.md", "The brief", "notion", "https://example.test/p", "test")
+        channels.record_url(self.connection, plan, repo, "brief.md", "The brief", "obsidian",
+                            "obsidian://open?vault=v&file=Briefs/x/brief", "test")
+        fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id = ?", (plan,)).fetchone()[0])
+        fields["writing"] = {"published_urls": {"gdrive": "https://example.test/d", "site": "javascript:alert(1)"}}
+        self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), plan))
+        self.connection.commit()
+        got = tasks_screen.details(self.connection, plan, now=NOW)["published"]
+        link = lambda channel, url, safe=True: {"channel": channel, "url": url, "href": url if safe else None}  # noqa: E731
+        self.assertEqual(got, [
+            {"title": "The brief", "where": f"{Path(repo).name} · brief.md",
+             "links": [link("obsidian", "obsidian://open?vault=v&file=Briefs/x/brief"), link("notion", "https://example.test/p")]},
+            {"title": "Writing piece", "where": "writing targets",
+             "links": [link("gdrive", "https://example.test/d"), link("site", "javascript:alert(1)", safe=False)]},
+        ])
+
+    def test_a_writing_pieces_details_list_each_publication_claims_url(self):
+        # sd:3465: a claim belongs to a writing piece; `writing.piece_state` reads its claims, and one with no url is left out.
+        from sd_db import writing
+
+        root = Path(self.tmp.name) / "writing"
+        (root / "content" / "2026" / "a-piece").mkdir(parents=True)
+        (root / "content" / "2026" / "a-piece" / "index.md").write_text("---\ntitle: A piece\nstatus: review\n---\n\n## Draft\n\nWords.\n")
+        upsert_repo(self.connection, str(root), pieces_source="file")
+        piece = writing.import_piece(self.connection, str(root), "2026/a-piece", who="test")["item"]["id"]
+        claim = "INSERT INTO publication_claim (id, item, payload, state, created_at, updated_at) VALUES (?, ?, '{}', ?, ?, ?)"
+        self.connection.execute(claim, ("c1aim0000000", piece, json.dumps({"phase": "published", "url": "https://example.test/c"}), NOW, NOW))
+        self.connection.execute(claim, ("c2aim0000000", piece, json.dumps({"phase": "claimed"}), "2026-09-07T00:00:00Z", NOW))
+        self.connection.commit()
+        self.assertEqual(tasks_screen.details(self.connection, piece, now=NOW)["published"], [
+            {"title": "Publication claim c1aim000", "where": "published",
+             "links": [{"channel": "claim", "url": "https://example.test/c", "href": "https://example.test/c"}]}])
+        # A claims read that fails is named, not read as no claim.
+        with patch.object(writing, "piece_state", side_effect=workflow.WorkflowError("the store is locked")):
+            self.assertEqual(tasks_screen.details(self.connection, piece, now=NOW)["published"],
+                             [{"title": "Publication claims", "where": "not read: the store is locked", "links": []}])
+
     def test_a_missing_item_raises_for_the_route_to_answer_404(self):
         with self.assertRaises(workflow.MissingItem):
             tasks_screen.details(self.connection, 9999, now=NOW)
@@ -727,6 +773,23 @@ change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
         self.assertIn(f"#{plan} priority P2 → P1 · sd task edit {plan} --priority 1", msgs)
         self.assertIn(f"#{plan} repo → none · sd task edit {plan} --no-repo", msgs)
         self.assertIn(f"#{plan} due removed · sd task edit {plan} --clear-due", msgs)
+
+    def test_the_published_section_links_each_url_under_its_documents_title(self):
+        # sd:3465: the Details link where the item's work was published; an address that is not a link stays text, and an
+        # item with nothing published shows no section.
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        self.details[str(plan)]["published"] = [
+            {"title": "The brief", "where": "system · brief.md", "links": [
+                {"channel": "notion", "url": "https://example.test/p", "href": "https://example.test/p"},
+                {"channel": "site", "url": "javascript:alert(1)", "href": None}]}]
+        out = self.run_page(f"open({plan}); await flush(); R.plan = ELS.details.html; open({ask}); await flush(); R.ask = ELS.details.html;")
+        html = out["R"]["plan"]
+        self.assertIn("<h3>Published ", html)
+        self.assertIn('<li><span><b>The brief</b> <small>system · brief.md</small>', html)
+        self.assertIn('notion <a class="ext" href="https://example.test/p" target="_blank" rel="noopener noreferrer">https://example.test/p</a>', html)
+        self.assertIn("site <code>javascript:alert(1)</code>", html)
+        self.assertNotIn('href="javascript', html)
+        self.assertNotIn("<h3>Published ", out["R"]["ask"])
 
     def test_the_title_and_description_edit_in_place_with_undo(self):
         # sd:3467: the v2 Details lost the classic item page's Details textarea; the title and body are fields again.

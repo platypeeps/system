@@ -10,6 +10,8 @@ from pathlib import Path
 from sd_db import writing
 from sd_db.workflow import WorkflowError
 
+from .markup import href
+
 
 #: Draft paragraphs the editor shows; the rest stay in the file.
 PARAGRAPHS = 6
@@ -42,7 +44,7 @@ def document(connection, *, now):
             "updated": row["updated_at"], "revision": full["revision"],
             "gates_ok": gates["ok"], "problems": gates["problems"], "owner": state["owner"],
             "ready_recorded": bool(row["ready_digest"]) and row["ready_digest"] == gates["digest"],
-            "publication": {"claim": live["id"], "url": live["url"], "phase": live["phase"]} if live else None,
+            "publication": {"claim": live["id"], "url": live["url"], "phase": live["phase"], "href": href(live["url"])} if live else None,
             "next": state["available_stages"], "corrections": state["correction_stages"],
             "files": files, "draft": draft, "words": words,
         })

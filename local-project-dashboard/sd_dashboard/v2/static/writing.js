@@ -138,6 +138,7 @@ addEventListener('DOMContentLoaded', () => {
         <dt>Draft</dt><dd>${p.words ? p.words.toLocaleString() + ' words' : 'none'}</dd>
         <dt>Updated</dt><dd>${utc(p.updated)}</dd>
         <dt>Readiness</dt><dd>${p.ready_recorded ? 'recorded for this draft' : 'not recorded'}</dd>
+        ${p.publication ? html`<dt>Published</dt><dd>${p.publication.href ? html`<a class="ext" href="${p.publication.href}" target="_blank" rel="noopener noreferrer">${p.publication.url}</a>` : html`<code>${p.publication.url}</code>`}</dd>` : ''}
       </dl>
       <h3 class="label">Gates</h3>
       <ul class="gates">${L.map(([, n, s, w]) => html`<li><span class="g g-${s}" aria-hidden="true">${GLYPH[s]}</span><span>${n}</span><span class="what">${w}</span></li>`)}</ul>
