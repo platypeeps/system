@@ -51,8 +51,10 @@ days, and refuses to write when `/Volumes/local` is not mounted. After a
 snapshot that succeeded and offsite-verify's preflight, it copies that root to
 the NAS folder `Backup/sd-backups-hourly`, additive, through
 `mirrors-nas-hourly.conf` (sd:4009). That copy is the 1-hour recovery point a
-failover restores from; the nightly copy below is the 24-hour one. Nothing
-prunes the NAS folder yet, so it grows by one snapshot an hour.
+failover restores from; the nightly copy below is the 24-hour one. After the
+copy, the same job runs `sd-db backup --prune-only` over the NAS folder: it
+deletes copies whose checkpoint is more than 7 days old and that still match
+their manifests (sd:4011). It needs a pack with that flag.
 
 `/Volumes/local` is a portable USB disk plugged into this Mac. A copy there
 does not survive theft, fire or a dead Mac. `mirrors-repos.conf` replaced

@@ -132,15 +132,15 @@ class SecretScanWeeklyTest(unittest.TestCase):
 # mirror-sync.sh: each records its call and exits with its own code.
 RECORD = '#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "$CHAIN_MARKER"\nexit "${{{rc}:-0}}"\n'
 MIRROR_RECORD = ('#!/bin/sh\nprintf "mirror %s %s %s\\n" "$MIRROR_SYNC_CONF" "$MIRROR_SYNC_ADDITIVE" "$*"'
-                 ' >> "$CHAIN_MARKER"\n')
+                 ' >> "$CHAIN_MARKER"\nexit "${MIRROR_RC:-0}"\n')
 
 
 class HourlyBackupJobTest(unittest.TestCase):
-    """The hourly snapshot, then its copy to the NAS, in one job (sd:4009).
+    """The hourly snapshot, then its copy to the NAS and the NAS prune, in one job (sd:4009, sd:4011).
 
     The copy runs only after a snapshot that succeeded and a preflight that
-    proved the NAS folder is on the share. A separate schedule would not
-    order them: launchd runs missed jobs together at wake.
+    proved the NAS folder is on the share; the prune only after the copy. A
+    separate schedule would not order them: launchd runs missed jobs together at wake.
     """
 
     JOB = EXAMPLES / "sd-db-backup-hourly.job"
@@ -164,15 +164,21 @@ class HourlyBackupJobTest(unittest.TestCase):
         result = fx.exec_job(self.JOB.stem, extra_env=env)
         return result, marker.read_text().splitlines() if marker.exists() else []
 
-    def test_the_snapshot_then_the_preflight_then_the_additive_copy(self):
+    def test_the_snapshot_then_the_preflight_then_the_additive_copy_then_the_prune(self):
         result, calls = self.run_job()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(calls), 3, calls)
+        self.assertEqual(len(calls), 4, calls)
         self.assertTrue(calls[0].startswith("sd-db backup --destination /Volumes/local/Backup Local/sd-backups"
                                             " --require-mount /Volumes/local --keep-days 2 --no-row-prune"), calls)
         self.assertTrue(calls[1].startswith("python "), calls)
         self.assertTrue(calls[1].endswith(f"offsite-verify.py --preflight-only --destination {self.NAS}"), calls)
         self.assertEqual(calls[2], "mirror mirrors-nas-hourly.conf 1 sync")
+        self.assertEqual(calls[3], f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7")
+
+    def test_a_failed_copy_prunes_nothing(self):
+        result, calls = self.run_job(MIRROR_RC="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror"])
 
     def test_a_failed_snapshot_copies_nothing(self):
         result, calls = self.run_job(SNAPSHOT_RC="1")
