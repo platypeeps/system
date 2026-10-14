@@ -15,7 +15,7 @@ import subprocess
 import unittest
 
 from tests import fixture_config
-from tests.test_backbone import ROOT, ROUTE_PRESENT, Fixture, write_stub
+from tests.test_backbone import PACK, ROOT, ROUTE_PRESENT, Fixture, write_stub
 
 PREFIX = fixture_config.LABEL_PREFIX
 HUB = "hub.example.test"
@@ -41,12 +41,19 @@ case "$1" in
     if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
     newest=$(ls "$3" | sort | tail -1)
     mkdir -p "$HOME/.local/share/sd"
-    # The row `restore` writes, which step 9 compares through the session.
-    python3 -c 'import sqlite3, sys
-c = sqlite3.connect(sys.argv[1])
-c.execute("CREATE TABLE IF NOT EXISTS state (kind TEXT, key TEXT, body TEXT)")
-c.execute("INSERT INTO state VALUES (?, ?, ?)", ("restore", sys.argv[2], "{\"restored_at\": \"fixture\"}"))
-c.commit()' "$HOME/.local/share/sd/sd.db" "$newest"
+    # The row `restore` writes, which step 9 compares through the session; the pack builds the file.
+    "$STUB_REAL_PYTHON" -I -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from sd_db import database, writes
+from sd_db.migrate import initialise
+path = Path(sys.argv[2])
+if not path.exists():
+    initialise(path)
+c = database.open_local(path, write=True, create=False)
+writes.record_state(c, "restore", key=sys.argv[3], body={"restored_at": "fixture"})
+c.commit()
+c.close()' "$STUB_PYTHONPATH" "$HOME/.local/share/sd/sd.db" "$newest"
     echo "sd-db: restored $3/$newest (checkpoint 2026-10-14T08:50:00+00:00) to $HOME/.local/share/sd"
     echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
     exit 0 ;;
@@ -373,24 +380,19 @@ class Promote(unittest.TestCase):
 
     def test_step_9_refuses_a_session_that_reaches_another_database(self):
         """codex pass: the session must reach this machine's restored database, not any server by that name."""
-        # The pack's lib/ is the real one; a wrapper hands the proof a fake `sd_db` instead.
-        lib = self.tmp / "fake-lib" / "sd_db"
-        lib.mkdir(parents=True)
-        (lib / "__init__.py").write_text("")
-        (lib / "hub.py").write_text("CONNECT_TIMEOUT = ANSWER_TIMEOUT = 5\n")
-        (lib / "remote.py").write_text(
-            "import os, sqlite3\n"
-            "def connect(host, port, path, token, write, timeout, answer_timeout):\n"
-            "    return sqlite3.connect(os.environ['STUB_REMOTE_DB'])\n")
-        other = self.tmp / "other.db"
-        import sqlite3
-        connection = sqlite3.connect(other)
-        connection.execute("CREATE TABLE state (kind TEXT, key TEXT, body TEXT)")
-        connection.commit()
-        connection.close()
+        # A wrapper runs the proof with the pack's own `remote.connect` answering from STUB_REMOTE_DB.
         import sys
+        prelude = ("import os, sys\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
+                   "from sd_db import database, remote\n"
+                   "remote.connect = lambda *a, **k: database.open_local(Path(os.environ['STUB_REMOTE_DB']), "
+                   "write=False, create=False)\n")
+        other = self.tmp / "other.db"
+        subprocess.run([sys.executable, "-I", "-c", "import sys\nsys.path.insert(0, sys.argv[1])\n"
+                        "from sd_db.migrate import initialise\ninitialise(sys.argv[2])",
+                        str(PACK / "lib"),
+                        str(other)], check=True, capture_output=True, timeout=60)
         python = write_stub(self.fixture.stubs, "fake-lib-python",
-                            f'code=$3; shift 4\nexec "{sys.executable}" -I -c "$code" "{lib.parent}" "$@"\n')
+                            f'code=$3; shift 3\nexec "{sys.executable}" -I -c "{prelude}$code" "$@"\n')
         result = self.run_promote("--apply", expect=1, SD_DB_PYTHON=python, STUB_REMOTE_DB=str(other))
         self.assertIn("reached a database without this restore", result.stderr)
         self.assertEqual("9", self.marker_step())

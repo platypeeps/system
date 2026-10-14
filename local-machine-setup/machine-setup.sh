@@ -5617,11 +5617,12 @@ for peer in (status.get("Peer") or {}).values():
   HUB_ROLE=""
   hub_role || promote_refuse "this machine does not hold the hub role now (sd-db fence); rerun once it does"
   port=$(marker_get port)
-  if ! "$SD_DB_PYTHON" -I -c 'import sqlite3, sys
+  if ! "$SD_DB_PYTHON" -I -c 'import sys
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from sd_db import hub, remote
+from sd_db import database, hub, remote
 row = "SELECT body FROM state WHERE kind = ? AND key = ?"
-local = sqlite3.connect("file:" + sys.argv[4] + "?mode=ro", uri=True)
+local = database.open_local(Path(sys.argv[4]), write=False, create=False)
 try:
     want = local.execute(row, ("restore", sys.argv[5])).fetchone()
 finally:
