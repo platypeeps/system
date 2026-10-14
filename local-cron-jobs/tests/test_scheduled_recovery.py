@@ -97,12 +97,12 @@ class ScheduledRecovery(unittest.TestCase):
     def test_the_hourly_command_requires_the_mounted_local_disk(self):
         command = self.hourly_command()
         self.assertIn('backup --destination "/Volumes/local/Backup Local/sd-backups"'
-                      " --require-mount /Volumes/local --keep-days 7 --no-row-prune", command)
+                      " --require-mount /Volumes/local --keep-days 2 --no-row-prune", command)
         # Naming the destination stands the mount check aside, as it does for
         # the nightly job; it is how this suite runs the job at all.
         command = self.hourly_command(SD_DB_BACKUP_HOURLY_DESTINATION="/tmp/somewhere")
         self.assertNotIn("--require-mount", command)
-        self.assertIn('--destination "/tmp/somewhere" --keep-days 7 --no-row-prune', command)
+        self.assertIn('--destination "/tmp/somewhere" --keep-days 2 --no-row-prune', command)
 
     def test_real_hourly_backup_runs_through_cron_without_a_row_prune(self):
         self.env["SD_DB_BACKUP_HOURLY_DESTINATION"] = str(self.fixture.backups)

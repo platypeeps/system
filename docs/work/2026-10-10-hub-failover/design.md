@@ -108,7 +108,8 @@ A satellite's `hub.json` names `hub.example.test` (the hub's MagicDNS name). Aft
 The dashboard origin (`https://<name>...:8443`) and the task-actions funnel URL in sent mails keep working, because both are built from the node name.
 The cost is one manual console step per failover: the dead node gives up the name. No tool can do it without a Tailscale API key, a new secret.
 
-Rejected: a Tailscale Service name. Service hosts must be tagged nodes (to confirm in slice 1), and `serve` refuses to start on a tagged node (R8 of the second-machine plan).
+Rejected: a Tailscale Service name. Service hosts must be tagged nodes, and `serve` refuses to start on a tagged node (R8 of the second-machine plan).
+Tailscale's Services page says: "Any device you want to use as a Service host must use a tag-based identity" ([kb/1552](https://tailscale.com/kb/1552/tailscale-services), read 2026-10-13).
 Rejected as default, kept as the fallback: rewrite `hub.json` on every satellite. It needs a session on each, and every URL changes.
 
 ### The fence: the old hub returns

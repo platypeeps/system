@@ -22,6 +22,7 @@ import subprocess
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -1609,6 +1610,9 @@ class OffsiteVerify(Fixture):
                 }
             )
         )
+        # The hourly mirror's copy of a later run, as rsync leaves it: the
+        # same files, with their times kept.
+        shutil.copytree(snapshot, root / "sd-backups-hourly" / "2026-09-21.5")
         # The run's HOME, where tests put the things that are NOT on the share.
         (self.work / "home").mkdir()
         return root
@@ -1629,6 +1633,62 @@ class OffsiteVerify(Fixture):
             text=True,
             env=environment,
         )
+
+    def age(self, path: Path, hours: float) -> None:
+        when = time.time() - hours * 3600
+        os.utime(path, (when, when))
+
+    def test_a_good_share_restores_the_nightly_and_the_hourly_copy(self) -> None:
+        root = self.build_share()
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("newest snapshot: sd-backups/2026-09-21", result.stdout)
+        self.assertIn("newest snapshot: sd-backups-hourly/2026-09-21.5", result.stdout)
+        self.assertIn("a full restore of 2026-09-21.5 into a throwaway home succeeded",
+                      result.stdout)
+
+    def test_a_stale_hourly_copy_fails(self) -> None:
+        # The hourly mirror is the 1-hour recovery point (sd:4009). A copy
+        # that stalled is reported the next run, not when a failover needs it.
+        root = self.build_share()
+        self.age(root / "sd-backups-hourly" / "2026-09-21.5" / "sd.db", 4)
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("newest sd-backups-hourly snapshot is 4.0h old (limit 3h)", result.stderr)
+
+    def test_the_nightly_copy_keeps_its_own_limit(self) -> None:
+        # A nightly snapshot 30 hours old is one missed night, not a stall.
+        root = self.build_share()
+        self.age(root / "sd-backups" / "2026-09-21" / "sd.db", 30)
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_share_without_hourly_copies_fails(self) -> None:
+        root = self.build_share()
+        shutil.rmtree(root / "sd-backups-hourly")
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"database snapshots directory exists: {root / 'sd-backups-hourly'}",
+                      result.stderr)
+
+    def test_a_partial_hourly_copy_fails(self) -> None:
+        # A mirror stopped mid-directory leaves a snapshot without its
+        # database; the newest copy is the one a failover would take.
+        root = self.build_share()
+        (root / "sd-backups-hourly" / "2026-09-21.5" / "sd.db").unlink()
+
+        result = self.run_verify(root)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("2026-09-21.5/sd.db is present", result.stderr)
 
     def test_unmounted_root_fails(self) -> None:
         result = self.run_verify(self.work / "not-mounted")
@@ -2299,6 +2359,51 @@ class NasCopy(unittest.TestCase):
         self.assertEqual((nas / "Backup/sd-backups/2026-09-27/sd.db").read_text(), "tonight\n")
         self.assertEqual((nas / "Backup/sd-backups/2026-09-20/sd.db").read_text(), "last week\n")
         self.assertTrue((nas / "Backup" / "only-on-nas").is_dir())
+
+
+class NasHourlyCopy(unittest.TestCase):
+    """The hourly snapshots to the NAS, after each hourly run (sd:4009).
+
+    The pair list is the committed example (and the local list when this
+    checkout has one); the job is local-cron-jobs' sd-db-backup-hourly example.
+    """
+
+    CONF_NAME = "mirrors-nas-hourly.conf"
+    CONFS = _shipped_and_local(CONF_NAME)
+
+    def test_the_hourly_root_goes_to_its_own_nas_folder(self) -> None:
+        for conf in self.CONFS:
+            with self.subTest(conf=conf.name):
+                pairs = _pairs(conf)
+                self.assertEqual(len(pairs), 1, pairs)
+                source, destination = pairs[0][:2]
+                self.assertTrue(source.rstrip("/").endswith("/Backup Local/sd-backups"), source)
+                self.assertTrue(destination.rstrip("/").endswith("/Backup/sd-backups-hourly"),
+                                destination)
+
+    def test_a_short_local_root_leaves_the_nas_history(self) -> None:
+        # A promoted hub starts with one local snapshot; the NAS holds a
+        # week. An exact mirror would delete the week it was restored from.
+        work = Path(tempfile.mkdtemp(prefix="nas-hourly-test-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        source = work / "local" / "Backup Local" / "sd-backups"
+        (source / "2026-10-13").mkdir(parents=True)
+        (source / "2026-10-13" / "sd.db").write_text("this hour\n")
+        nas = work / "nas" / "Backup" / "sd-backups-hourly"
+        week = [f"2026-10-{day:02d}" for day in range(6, 13)]
+        for name in week:
+            (nas / name).mkdir(parents=True)
+            (nas / name / "sd.db").write_text(f"{name}\n")
+        conf = work / "pairs.conf"
+        conf.write_text(f"{source}|{nas}\n")
+
+        run = subprocess.run(["/bin/sh", str(MIRROR_SYNC), "sync"], capture_output=True, text=True,
+                             env={**{k: v for k, v in os.environ.items() if k != "MIRROR_SYNC_BACKUP_ROOT"},
+                                  "MIRROR_SYNC_CONF": str(conf), "MIRROR_SYNC_ADDITIVE": "1"})
+
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(sorted(path.name for path in nas.iterdir()), [*week, "2026-10-13"])
+        self.assertEqual((nas / "2026-10-13" / "sd.db").read_text(), "this hour\n")
 
 
 class WriterPreflight(unittest.TestCase):
