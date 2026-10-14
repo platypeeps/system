@@ -5,9 +5,8 @@ The page is `v2/home.html`; it holds no tiles. It reads one JSON document,
 
 **Which tiles.** The design names the critical Home Assistant entities one
 home has: alarm panels, locks, leak and smoke sensors. Those names describe
-the operator's house, and this repository is public, so they live in
-`<config>/project-dashboard/home-tiles.conf` (`home-tiles.conf.example` is the
-template), one line per tile:
+the operator's house, and this repository is public, so they live outside the
+checkout (`home-tiles.conf.example` is the template), one line per tile:
 
     headline|<entity_id>|<name>[|<type>]          the lamp above the groups (the problems sensor)
     tile|<group>|<entity_id>|<name>[|<type>]      a tile, in its group, in file order
@@ -18,6 +17,16 @@ binary sensor that works as a switch needs `toggle` said.
 
 A line this module cannot read is named in `config.problems` with its line
 number and skipped; the other lines still count.
+
+**Where the list lives (sd:3987).** The workflow database's setting row
+`dashboard.home_tiles` (`KEY`) holds the text. Row wins: once the row exists,
+`<config>/project-dashboard/home-tiles.conf` is not read; with no row it
+answers as before. A row read that fails is unknown: the page says "tile list
+not read", reads no file in its place and calls Home Assistant for nothing.
+Home's "Edit tiles" opens on the row, else the file, else the example, and
+`save` writes the row: it parses first (400, each problem with its line) and
+refuses a `before` that is not the digest of the text the page showed (409).
+The rows keep history, so Undo posts the previous text.
 
 **Live state (sd:3427).** Each document makes one `GET /api/states` call to
 Home Assistant, bounded by `TIMEOUT`, with the URL and token local-ha-mcp
@@ -37,6 +46,7 @@ stays off. Nothing here writes to Home Assistant.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -49,10 +59,19 @@ from urllib.parse import urlsplit
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["CONFIG", "NOT_LISTED", "NO_TILES", "TIMEOUT", "TYPES", "WRITES_REASON", "document", "parse"]
+__all__ = ["CONFIG", "KEY", "NOT_LISTED", "NO_TILES", "ROW_SOURCE", "TIMEOUT", "TYPES", "WRITES_REASON", "document", "parse", "save"]
 
 #: In this machine's config directory, never supplied by a request. The checkout ships `home-tiles.conf.example` only.
 CONFIG = _config_dir() / "home-tiles.conf"
+
+#: The tracked template the editor opens on when neither the row nor the file holds a list.
+EXAMPLE = Path(__file__).resolve().parents[1] / "home-tiles.conf.example"
+
+#: The setting row that holds the tile list (sd:3987); once written it wins over `CONFIG`.
+KEY = "dashboard.home_tiles"
+
+#: How the page names the row as its source.
+ROW_SOURCE = f"workflow database setting {KEY}"
 
 #: Seconds for each socket step of the one Home Assistant read; the page waits on it.
 TIMEOUT = 3.0
@@ -205,21 +224,68 @@ def _state(row: dict) -> dict:
             "device_class": device_class if isinstance(device_class, str) else None, "unit": unit if isinstance(unit, str) else None}
 
 
-def document(*, now: str, config: Path | None = None, environ=None, timeout: float = TIMEOUT) -> dict:
+class _Unread(Exception):
+    """The setting row was not read: its answer is unknown, never "no row"."""
+
+
+def _current(connection, config: Path) -> tuple[str, str | None]:
+    """The tile text the page shows and where it came from: `database` (row wins; a cleared row holds None), else `file`,
+    else `missing`. Raises `_Unread` on a failed row read, and `OSError` or `UnicodeDecodeError` on an unreadable file."""
+    from sd_db import writes
+
+    if connection is None:
+        raise _Unread("no workflow database connection")
+    if not hasattr(writes, "read_settings"):
+        raise _Unread("the command pack predates setting rows (sd:3989); update it")
+    try:
+        held = writes.read_settings(connection, [KEY])
+    except Exception as error:  # any failed read is unknown, named; the file is not read in its place
+        raise _Unread(f"{error.__class__.__name__}: {error}") from None
+    if KEY in held:
+        return "database", held[KEY]
+    try:
+        return "file", config.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "missing", None
+
+
+def _digest(origin: str, text: str | None) -> str:
+    """What a save's `before` must equal: the text the page showed, and where it came from."""
+    return hashlib.sha256(f"{origin}\n{text or ''}".encode("utf-8")).hexdigest()
+
+
+def _editor(origin: str, text: str | None) -> dict:
+    """What "Edit tiles" opens on: the row, else the file, else the example."""
+    if text is None:
+        try:
+            shown = EXAMPLE.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            shown = ""
+        return {"from": "example", "text": shown, "digest": _digest(origin, text)}
+    return {"from": origin, "text": text, "digest": _digest(origin, text)}
+
+
+def document(connection, *, now: str, config: Path | None = None, environ=None, timeout: float = TIMEOUT) -> dict:
     """The Home page's document: the configured tiles, each with its live state or a named error."""
     config = CONFIG if config is None else config
-    source = f"<config>/project-dashboard/{config.name}"
+    source, editor, headline, groups, empty = f"<config>/project-dashboard/{config.name}", None, None, [], NO_TILES
     try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        state, headline, groups, problems = "missing", None, [], []
+        origin, text = _current(connection, config)
+    except _Unread as unread:
+        state, source, problems = "error", ROW_SOURCE, [f"tile list not read: {unread}"]
+        empty = problems[0]
     except (OSError, UnicodeDecodeError) as error:
-        state, headline, groups, problems = "error", None, [], [f"not read: {error.__class__.__name__}"]
+        state, problems = "error", [f"not read: {error.__class__.__name__}"]
     else:
-        headline, groups, problems = parse(text)
-        state = "partial" if problems else "read"
+        source = ROW_SOURCE if origin == "database" else source
+        editor = _editor(origin, text)
+        if text is None:
+            state, problems = "missing", []
+        else:
+            headline, groups, problems = parse(text)
+            state = "partial" if problems else "read"
     tiles = ([headline] if headline else []) + [tile for group in groups for tile in group["tiles"]]
-    reader, states, short = {"available": False, "reason": NO_TILES}, {}, NO_TILES
+    reader, states, short = {"available": False, "reason": empty}, {}, empty
     if tiles:
         try:
             states, reader = _read_states(environ, timeout), {"available": True, "reason": ""}
@@ -231,9 +297,46 @@ def document(*, now: str, config: Path | None = None, environ=None, timeout: flo
         tile["error"] = None if row else NOT_LISTED if reader["available"] else short
     return {
         "read": now,
-        "config": {"state": state, "source": source, "problems": problems},
+        "config": {"state": state, "source": source, "problems": problems, "editor": editor},
         "reader": reader,
         "writes": {"available": False, "reason": WRITES_REASON},
         "headline": headline,
         "groups": groups,
     }
+
+
+def save(payload) -> object:
+    """`POST /api/home/tiles {text, before}` (sd:3987): the write that sets the tile row, or `ValueError` (400).
+
+    `before` is the editor's digest of the text the page showed. The write
+    reads that text again and answers 409 when it differs; `set_setting` then
+    checks the row in its own transaction, so a save between the two is a 409 too.
+    """
+    from sd_db import writes
+
+    if set(payload) != {"text", "before"} or not isinstance(payload["text"], str) or not isinstance(payload["before"], str):
+        raise ValueError("Expected {text, before}: the tile list and the digest of the text the page showed.")
+    text = payload["text"]
+    headline, groups, problems = parse(text)
+    if problems:
+        raise ValueError(f"The tile list was not saved: {'; '.join(problems)}.")
+    if headline is None and not groups:
+        raise ValueError("The tile list was not saved: it names no tile.")
+    if len(text) > writes.SETTING_VALUE_LENGTH:
+        raise ValueError(f"The tile list was not saved: it is over {writes.SETTING_VALUE_LENGTH} characters.")
+    stale = {"error": "The tile list changed since this page read it; nothing was saved. Read it again.", "reload": True}
+
+    def write(connection):
+        try:
+            origin, shown = _current(connection, CONFIG)
+        except _Unread as unread:
+            return 503, {"error": f"tile list not read: {unread}; nothing was saved"}
+        if _digest(origin, shown) != payload["before"]:
+            return 409, stale
+        try:
+            writes.set_setting(connection, KEY, text, before=shown if origin == "database" else None)
+        except writes.SettingStale:
+            return 409, stale
+        return {"saved": KEY, "text": text, "digest": _digest("database", text), "previous": shown or ""}
+
+    return write

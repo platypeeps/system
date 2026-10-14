@@ -1,7 +1,7 @@
 // Home (sd:2117): the design source's products/system/designs/v2/home.js at d82daa1, ported; home-kiosk.js sets the wall display flag. Each change from the reference is marked
 // "build:". The tiles are /api/home (home_screen.py): the entities <config>/project-dashboard/home-tiles.conf names, each with its
 // live Home Assistant state and last change, or a named error (sd:3427), never sample data. Every command is off with the
-// document's write reason: the page sends nothing.
+// document's write reason: the page sends nothing to Home Assistant. Edit tiles (sd:3987) writes the tile list's setting row.
 const { html, put, plural } = window.markup;
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 window.PAGE_COMMANDS = [{ label: 'Wall display', icon: 'maximize-2', run: () => document.dispatchEvent(new CustomEvent('home:kiosk', { detail: true })) }];
@@ -169,17 +169,18 @@ addEventListener('DOMContentLoaded', () => {
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
     if (HEAD) E[HEAD.id] = { ...HEAD, group: null };
     GROUPS.forEach(g => g.tiles.forEach(t => { E[t.id] = { ...t, group: g.name }; }));
+    document.getElementById('edit-tiles').disabled = !CONFIG?.editor;
     const problems = CONFIG?.problems || [];
     const unread = Object.values(E).filter(e => !e.state);
-    const state = CONFIG?.state === 'missing' ? { kind: 'empty', title: 'No tile list', text: `Copy project-dashboard/home-tiles.conf.example to ${CONFIG.source} to list the entities worth a lamp.`, source: CONFIG.source }
-      : CONFIG?.state === 'error' ? { kind: 'error', text: `The tile list was not read: ${problems.join('; ')}.`, source: CONFIG.source }
+    const state = CONFIG?.state === 'missing' ? { kind: 'empty', title: 'No tile list', text: 'Edit tiles opens on project-dashboard/home-tiles.conf.example; Save keeps the list in the workflow database.', source: CONFIG.source }
+      : CONFIG?.state === 'error' ? { kind: 'error', text: `The tile list was not read: ${problems.map(p => p.replace(/^tile list not read: /, '')).join('; ')}. Home Assistant was not called.`, source: CONFIG.source }
       : problems.length ? { kind: 'partial', text: `${plural(problems.length, 'line')} skipped: ${problems.join('; ')}. ${REASON ? `No tile has a state: ${REASON}.` : ''}`, source: CONFIG.source }
       : REASON ? { kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' }
       : unread.length ? { kind: 'partial', title: 'Some tiles not read', text: `${plural(unread.length, 'tile')} without a state: ${unread.map(e => `${e.id} (${e.error || 'no reading'})`).join('; ')}.`, source: '/api/home' }
       : null;
     return { objects: Object.values(E).map(e => ({ id: e.id, type: typeOf(e.id), label: e.name })), state };
   }
-  function clear(err) { E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; delete document.body.dataset.observed; }
+  function clear(err) { document.getElementById('edit-tiles').disabled = true; E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; delete document.body.dataset.observed; }
   function unselect() {
     selected = null; markSelected();
     put(details, html`<p class="why">Select a tile to see its entity and its state.</p>`);
@@ -191,6 +192,46 @@ addEventListener('DOMContentLoaded', () => {
     select: (id, opened) => { if (root.hasAttribute('data-kiosk')) unselect(); else showDetails(id, opened); },
   });
   const load = () => reading.load();
+
+  // ---------- Edit tiles (sd:3987) ----------
+  // The editor opens on the text the last read showed: the row, else the file, else the example. Save posts it with that
+  // text's digest. A 400 names each refused line and keeps the editor open; a 409 wrote nothing and reads again. A save
+  // closes the editor and toasts with Undo, which posts the previous text with the saved text's digest.
+  const ed = document.getElementById('editor'), edText = document.getElementById('editor-text'), edOut = document.getElementById('editor-out');
+  const edit = document.getElementById('edit-tiles');
+  const FROM = {
+    database: 'Opened on the list in the workflow database.',
+    file: 'Opened on home-tiles.conf. Save moves the list to the workflow database; the file is not read after that.',
+    example: 'Opened on the example. Save keeps the list in the workflow database.',
+  };
+  let before = '';
+  function openEditor() {
+    const e = CONFIG?.editor; if (!e) return;
+    edText.value = e.text; before = e.digest; edOut.textContent = '';
+    document.getElementById('editor-from').textContent = FROM[e.from] || '';
+    ed.hidden = false; edText.focus();
+  }
+  function closeEditor() { ed.hidden = true; edit.focus(); }
+  const saveTiles = (text, digest) => window.shell.post('/api/home/tiles', { text, before: digest });
+  ed.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    edOut.textContent = 'Saving…';
+    let out;
+    try { out = await saveTiles(edText.value, before); }
+    catch (err) {
+      edOut.textContent = err.stale ? 'Not saved: the list changed since this page read it. Cancel, then Edit tiles opens on the new list.'
+        : err.status ? `Not saved: ${err.message}` : `Not known whether it saved: ${err.message}. Read again before you save.`;
+      if (err.stale || !err.status) reading.load(true);
+      return;
+    }
+    ed.hidden = true; edit.focus();
+    const undo = out.previous ? () => saveTiles(out.previous, out.digest).then(() => { toast('Tile list put back'); reading.reread(); },
+      err => { toast(`Undo not done: ${err.message}`); if (err.stale || !err.status) reading.load(true); }) : null;
+    toast('Tile list saved', undo);
+    reading.reread();
+  });
+  document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+  edit.addEventListener('click', () => (ed.hidden ? openEditor() : closeEditor()));
   registerCommands();
   load();
   // Live state (sd:3522): Read again reads /api/home now, and a visible page reads it each minute, so the wall display follows

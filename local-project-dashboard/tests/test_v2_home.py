@@ -27,6 +27,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -37,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from sd_db import writes
 from sd_dashboard import home_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -156,13 +158,14 @@ class TheDocument(ScreenCase):
         return path
 
     def test_no_config_is_named_and_lists_nothing(self):
-        doc = home_screen.document(now=NOW, config=self.dir / "home-tiles.conf")
-        self.assertEqual(doc["config"], {"state": "missing", "source": "<config>/project-dashboard/home-tiles.conf", "problems": []})
+        doc = home_screen.document(self.connection, now=NOW, config=self.dir / "home-tiles.conf")
+        self.assertEqual({key: doc["config"][key] for key in ("state", "source", "problems")},
+                         {"state": "missing", "source": "<config>/project-dashboard/home-tiles.conf", "problems": []})
         self.assertEqual((doc["headline"], doc["groups"], doc["read"]), (None, [], NOW))
         self.assertEqual(doc["reader"], {"available": False, "reason": home_screen.NO_TILES})
 
     def test_the_example_reads_as_a_headline_and_groups_in_file_order(self):
-        doc = home_screen.document(now=NOW, config=EXAMPLE)
+        doc = home_screen.document(self.connection, now=NOW, config=EXAMPLE)
         self.assertEqual((doc["config"]["state"], doc["config"]["problems"]), ("read", []))
         self.assertEqual(doc["headline"], {"id": "binary_sensor.problems_active", "name": "Problems active", "domain": "binary_sensor", "type": None,
                                            "state": None, "error": "HA not configured"})
@@ -174,7 +177,7 @@ class TheDocument(ScreenCase):
         self.assertFalse(doc["reader"]["available"])
 
     def test_a_line_it_cannot_read_is_named_and_the_rest_still_count(self):
-        doc = home_screen.document(now=NOW, config=self.conf("\n".join([
+        doc = home_screen.document(self.connection, now=NOW, config=self.conf("\n".join([
             "# a comment",
             "tile|Security|lock.front_door|Front door",
             "tile|Security|Not An Id|Bad",
@@ -200,10 +203,11 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["headline"]["id"], "binary_sensor.problems_active")
 
 
-class TheLiveRead(unittest.TestCase):
+class TheLiveRead(ScreenCase):
     """sd:3427: one GET /api/states, with local-ha-mcp's URL and token; every failure is a named error and the tiles still list."""
 
     def setUp(self):
+        super().setUp()
         self.config = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def stub(self, answer=None):
@@ -215,7 +219,7 @@ class TheLiveRead(unittest.TestCase):
         return {"SYSTEM_TOOLS_CONFIG": str(self.config), "HA_TOKEN": token, "HA_MCP_URL": f"{url}/mcp_server/sse", **more}
 
     def doc(self, environ, timeout=2.0):
-        return home_screen.document(now=NOW, config=EXAMPLE, environ=environ, timeout=timeout)
+        return home_screen.document(self.connection, now=NOW, config=EXAMPLE, environ=environ, timeout=timeout)
 
     def tile(self, doc, entity_id):
         tiles = [doc["headline"]] + [t for g in doc["groups"] for t in g["tiles"]]
@@ -317,7 +321,7 @@ class TheLiveRead(unittest.TestCase):
 
     def test_no_tile_list_makes_no_call(self):
         stub = self.stub()
-        doc = home_screen.document(now=NOW, config=self.config / "home-tiles.conf", environ=self.env(stub.url))
+        doc = home_screen.document(self.connection, now=NOW, config=self.config / "home-tiles.conf", environ=self.env(stub.url))
         self.assertEqual((stub.calls, doc["groups"]), ([], []))
 
     def test_writes_stay_off_with_their_own_reason_when_the_read_works(self):
@@ -362,6 +366,134 @@ class ThePage(BrowserSession):
         self.assertNotIn("ha.example.test", body)
 
 
+class TheRow(ScreenCase):
+    """sd:3987: the tile list is the setting row `dashboard.home_tiles`. The row wins over the file; with no row the file
+    answers; and a failed row read is unknown: it is named, the file is not read in its place, and Home Assistant is not called."""
+
+    ROW = "headline|binary_sensor.problems_active|Problems\ntile|Security|lock.front_door|Front door\n"
+
+    def setUp(self):
+        super().setUp()
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.file = self.dir / "home-tiles.conf"
+
+    def doc(self, **more):
+        return home_screen.document(self.connection, now=NOW, config=self.file, **more)
+
+    def test_the_row_wins_over_the_file_and_the_editor_opens_on_it(self):
+        self.file.write_text("tile|Water|binary_sensor.water_leak|Leak\n", encoding="utf-8")
+        writes.set_setting(self.connection, home_screen.KEY, self.ROW)
+        doc = self.doc()
+        self.assertEqual([t["id"] for g in doc["groups"] for t in g["tiles"]], ["lock.front_door"])
+        self.assertEqual(doc["headline"]["id"], "binary_sensor.problems_active")
+        self.assertEqual((doc["config"]["state"], doc["config"]["source"]), ("read", home_screen.ROW_SOURCE))
+        self.assertEqual((doc["config"]["editor"]["from"], doc["config"]["editor"]["text"]), ("database", self.ROW))
+
+    def test_with_no_row_the_file_answers_and_the_editor_opens_on_it(self):
+        self.file.write_text("tile|Water|binary_sensor.water_leak|Leak\n", encoding="utf-8")
+        doc = self.doc()
+        self.assertEqual(doc["config"]["source"], "<config>/project-dashboard/home-tiles.conf")
+        self.assertEqual([t["id"] for g in doc["groups"] for t in g["tiles"]], ["binary_sensor.water_leak"])
+        self.assertEqual(doc["config"]["editor"]["from"], "file")
+        self.assertEqual(doc["config"]["editor"]["text"], "tile|Water|binary_sensor.water_leak|Leak\n")
+
+    def test_with_neither_the_editor_opens_on_the_example(self):
+        doc = self.doc()
+        self.assertEqual(doc["config"]["state"], "missing")
+        self.assertEqual(doc["config"]["editor"]["from"], "example")
+        self.assertEqual(doc["config"]["editor"]["text"], EXAMPLE.read_text(encoding="utf-8"))
+
+    def test_the_same_entries_draw_from_the_row_as_from_the_file(self):
+        text = EXAMPLE.read_text(encoding="utf-8")
+        self.file.write_text(text, encoding="utf-8")
+        before = self.doc()
+        writes.set_setting(self.connection, home_screen.KEY, text)
+        self.file.unlink()
+        after = self.doc()
+        self.assertEqual((after["headline"], after["groups"]), (before["headline"], before["groups"]))
+        self.assertEqual(sum(len(g["tiles"]) for g in after["groups"]) + 1, 9)
+
+    def test_a_failed_row_read_is_named_and_neither_the_file_nor_home_assistant_is_read(self):
+        self.file.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+        stub = Stub(lambda path: (200, STATES, {}))
+        self.addCleanup(stub.close)
+        environ = {"SYSTEM_TOOLS_CONFIG": os.environ["SYSTEM_TOOLS_CONFIG"], "HA_TOKEN": HA_TOKEN, "HA_MCP_URL": f"{stub.url}/mcp_server/sse"}
+        with mock.patch.object(writes, "read_settings", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc(environ=environ)
+        self.assertEqual(stub.calls, [], "a failed row read called Home Assistant")
+        self.assertEqual((doc["headline"], doc["groups"], doc["config"]["state"]), (None, [], "error"))
+        self.assertEqual(doc["config"]["problems"], ["tile list not read: OperationalError: database is locked"])
+        self.assertEqual(doc["reader"], {"available": False, "reason": "tile list not read: OperationalError: database is locked"})
+        self.assertIsNone(doc["config"]["editor"], "a page that could not read the row offered an editor")
+
+    def test_no_connection_is_a_failed_read_not_an_empty_one(self):
+        self.file.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+        doc = home_screen.document(None, now=NOW, config=self.file)
+        self.assertEqual(doc["config"]["state"], "error")
+        self.assertTrue(doc["config"]["problems"][0].startswith("tile list not read: "))
+
+
+class TheSave(BrowserSession):
+    """sd:3987: POST /api/home/tiles {text, before} parses first, refuses a stale `before` (409) and writes one setting row."""
+
+    def setUp(self):
+        super().setUp()
+        self.file = Path(self.enterContext(tempfile.TemporaryDirectory())) / "home-tiles.conf"
+        self.enterContext(mock.patch.object(home_screen, "CONFIG", self.file))
+
+    def read(self):
+        status, _, body = self.request("/api/home", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        return json.loads(body)["config"]["editor"]
+
+    def held(self):
+        return writes.read_settings(self.connection, [home_screen.KEY])
+
+    def test_the_first_save_imports_the_file_text_and_the_page_reads_the_row(self):
+        self.file.write_text("tile|Water|binary_sensor.water_leak|Leak\n", encoding="utf-8")
+        editor = self.read()
+        text = editor["text"] + "tile|Security|lock.front_door|Front door\n"
+        status, _, answer = self.post("/api/home/tiles", {"text": text, "before": editor["digest"]})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.held(), {home_screen.KEY: text})
+        self.assertEqual(answer["previous"], editor["text"])
+        self.assertEqual(self.read(), {"from": "database", "text": text, "digest": answer["digest"]})
+
+    def test_a_bad_entity_id_is_refused_naming_its_line_and_nothing_is_written(self):
+        editor = self.read()
+        status, _, answer = self.post("/api/home/tiles", {"text": "tile|Security|lock.front_door|Front door\ntile|Security|Not An Id|Bad\n",
+                                                           "before": editor["digest"]})
+        self.assertEqual(status, 400)
+        self.assertIn("line 2: 'Not An Id' is not an entity id", answer["error"])
+        self.assertEqual(self.held(), {})
+
+    def test_two_saves_from_one_read_the_second_is_stale_and_writes_nothing(self):
+        editor = self.read()
+        first = "tile|Security|lock.front_door|Front door\n"
+        self.assertEqual(self.post("/api/home/tiles", {"text": first, "before": editor["digest"]})[0], 200)
+        status, _, answer = self.post("/api/home/tiles", {"text": "tile|Security|lock.back_door|Back door\n", "before": editor["digest"]})
+        self.assertEqual(status, 409, answer)
+        self.assertTrue(answer["reload"])
+        self.assertEqual(self.held(), {home_screen.KEY: first})
+
+    def test_undo_posts_the_previous_text_with_the_saved_digest(self):
+        self.file.write_text("tile|Water|binary_sensor.water_leak|Leak\n", encoding="utf-8")
+        editor = self.read()
+        _, _, saved = self.post("/api/home/tiles", {"text": "tile|Security|lock.front_door|Front door\n", "before": editor["digest"]})
+        status, _, undone = self.post("/api/home/tiles", {"text": saved["previous"], "before": saved["digest"]})
+        self.assertEqual(status, 200, undone)
+        self.assertEqual(self.held(), {home_screen.KEY: "tile|Water|binary_sensor.water_leak|Leak\n"})
+
+    def test_a_list_with_no_tile_an_oversized_one_or_another_shape_is_refused(self):
+        editor = self.read()
+        for payload in ({"text": "# only a comment\n", "before": editor["digest"]},
+                        {"text": "tile|G|lock.a|A\n" + "#" * writes.SETTING_VALUE_LENGTH, "before": editor["digest"]},
+                        {"text": "tile|G|lock.a|A\n"}, {"text": 3, "before": editor["digest"]}):
+            status, _, answer = self.post("/api/home/tiles", payload)
+            self.assertEqual(status, 400, (payload, answer))
+        self.assertEqual(self.held(), {})
+
+
 # The stand-in additions home.js and home-kiosk.js need beyond test_v2_tasks: a root element with attributes, a clock, and the shell's row, url and
 # closePane.
 ROOT = r"""
@@ -386,7 +518,7 @@ class TheScript(ScreenCase):
 
     def setUp(self):
         super().setUp()
-        self.doc = home_screen.document(now=NOW, config=EXAMPLE)
+        self.doc = home_screen.document(self.connection, now=NOW, config=EXAMPLE)
 
     def run_page(self, body, answer=None, search=""):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
@@ -411,7 +543,7 @@ class TheScript(ScreenCase):
         """The document `home_screen` builds against a stub Home Assistant."""
         stub = Stub(answer or (lambda path: (200, STATES, {})))
         self.addCleanup(stub.close)
-        return home_screen.document(now=NOW, config=EXAMPLE, environ={
+        return home_screen.document(self.connection, now=NOW, config=EXAMPLE, environ={
             "SYSTEM_TOOLS_CONFIG": os.environ["SYSTEM_TOOLS_CONFIG"], "HA_TOKEN": HA_TOKEN, "HA_MCP_URL": f"{stub.url}/mcp_server/sse"})
 
     def test_every_write_is_off_with_the_write_reason_and_sends_nothing(self):
@@ -496,7 +628,7 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
         self.assertIn(f"Not read: {html.escape(doc['reader']['reason'], quote=False)}.", out["R"]["det"])
 
     def test_a_missing_config_and_a_failed_read_each_say_so(self):
-        missing = home_screen.document(now=NOW, config=Path(self.enterContext(tempfile.TemporaryDirectory())) / "home-tiles.conf")
+        missing = home_screen.document(self.connection, now=NOW, config=Path(self.enterContext(tempfile.TemporaryDirectory())) / "home-tiles.conf")
         out = self.run_page("R.groups = ELS.groups.html;", answer=f"() => [200, {json.dumps(missing)}]")
         last = out["states"][-1]
         self.assertEqual((last["kind"], last["title"], last["source"]), ("empty", "No tile list", "<config>/project-dashboard/home-tiles.conf"))
@@ -601,8 +733,59 @@ INTERVALS.filter(i => i[1] === 60 * 1000).forEach(i => i[0]()); await flush();""
         self.assertNotIn("lock.front_door", out["R"]["det"])
 
 
+class TheEditor(TheScript):
+    """sd:3987: Edit tiles opens on the text the read showed, Save posts it with that text's digest, and each refusal says why."""
+
+    def answer(self, post):
+        return f"(path, body) => path === '/api/home' ? [200, {json.dumps(self.doc)}] : {post}"
+
+    # The page's form starts hidden, as home.html has it.
+    OPEN = "ELS.editor.hidden = true; document.getElementById('edit-tiles').listeners.click[0]();"
+    SAVE = "await ELS.editor.listeners.submit[0]({ preventDefault() {} }); await flush();"
+
+    def test_edit_tiles_opens_on_the_text_the_read_showed(self):
+        out = self.run_page(self.OPEN + " R.text = ELS['editor-text'].value; R.hidden = ELS.editor.hidden; R.off = ELS['edit-tiles'].disabled;"
+                            " R.from = ELS['editor-from'].textContent;")
+        self.assertEqual(out["R"]["text"], EXAMPLE.read_text(encoding="utf-8"))
+        self.assertEqual((out["R"]["hidden"], out["R"]["off"]), (False, False))
+        self.assertIn("Save moves the list to the workflow database", out["R"]["from"])
+
+    def test_save_posts_the_text_and_digest_then_reads_again_and_undo_posts_the_previous_text(self):
+        saved = {"saved": home_screen.KEY, "text": "tile|G|lock.a|A\n", "digest": "d" * 64, "previous": "tile|G|lock.b|B\n"}
+        out = self.run_page(self.OPEN + " ELS['editor-text'].value = 'tile|G|lock.a|A\\n'; " + self.SAVE
+                            + " R.hidden = ELS.editor.hidden; OUT.toasts[OUT.toasts.length - 1].undo(); await flush();",
+                            answer=self.answer(f"[200, {json.dumps(saved)}]"))
+        digest = self.doc["config"]["editor"]["digest"]
+        self.assertEqual(out["posts"], [["/api/home/tiles", {"text": "tile|G|lock.a|A\n", "before": digest}, 64],
+                                        ["/api/home/tiles", {"text": "tile|G|lock.b|B\n", "before": "d" * 64}, 64]])
+        self.assertTrue(out["R"]["hidden"])
+        self.assertEqual(out["toasts"], [["Tile list saved", True], ["Tile list put back", False]])
+        self.assertEqual(out["gets"], ["/api/home"] * 3, "the first read, one after the save and one after Undo")
+
+    def test_a_refused_save_names_its_lines_and_keeps_the_editor_open(self):
+        out = self.run_page(self.OPEN + self.SAVE + " R.out = ELS['editor-out'].textContent; R.hidden = ELS.editor.hidden;",
+                            answer=self.answer("[400, { error: \"The tile list was not saved: line 2: 'X' is not an entity id (domain.object_id).\" }]"))
+        self.assertIn("line 2: 'X' is not an entity id", out["R"]["out"])
+        self.assertFalse(out["R"]["hidden"])
+        self.assertEqual((out["gets"], out["toasts"]), (["/api/home"], []))
+
+    def test_a_stale_save_writes_nothing_and_reads_again(self):
+        out = self.run_page(self.OPEN + self.SAVE + " R.out = ELS['editor-out'].textContent;",
+                            answer=self.answer("[409, { error: 'changed', reload: true }]"))
+        self.assertIn("the list changed since this page read it", out["R"]["out"])
+        self.assertEqual(out["gets"], ["/api/home"] * 2)
+
+    def test_a_read_that_could_not_read_the_row_offers_no_editor(self):
+        doc = json.loads(json.dumps(self.doc))
+        doc["config"].update(state="error", editor=None, problems=["tile list not read: OperationalError: database is locked"])
+        out = self.run_page("R.off = ELS['edit-tiles'].disabled;", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertTrue(out["R"]["off"])
+        self.assertEqual(out["states"][-1]["text"], "The tile list was not read: OperationalError: database is locked. Home Assistant was not called.")
+        self.assertTrue(self.run_page("R.off = ELS['edit-tiles'].disabled;", answer="() => [500, { error: 'boom' }]")["R"]["off"])
+
+
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "home", "Home", "/home", ("/api/home",)
+    page, section, route, api = "home", "Home", "/home", ("/api/home", "/api/home/tiles")
 
 
 if __name__ == "__main__":
