@@ -386,13 +386,18 @@ This is the second guard: an old hub cut from the control plane already refuses,
 A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next step; `promote --apply` goes on from there.
 `status` names the marker in its `hub-ready` block.
 
-Hand the role back to a personal machine (`promote --undo`, sd:4048, is not built yet; these are its steps):
+Hand the role back to a personal machine:
 
-1. On the standby, boot out the hub-role agents and jobs, then run the hourly backup once: its snapshot is the hand-back point.
-2. On the repaired or new hub, make it a satellite (below), then run `promote --apply` from that snapshot. The console step moves the name back.
-3. On the standby, check that `sd-db fence` reads `elsewhere` and that the new hub answers a session.
-4. On the standby, delete `~/.local/share/sd/` and the local backup roots the hub-role jobs wrote.
-5. Move `hub.json.promoted-<stamp>` back to `~/.config/sd/hub.json`, then run `machine-setup.sh update satellite --apply`.
+1. On the standby, run `machine-setup.sh promote --undo --apply`.
+   It holds the lanes, stops the hub role, writes the hand-back snapshot to the NAS hourly root, puts `hub.json` back and gives up the hub's tailnet name.
+   From then on every `sd` command on the standby refuses, since `hub.json` sits beside the database: no write lands in records it will delete.
+   It stops there, because the new hub does not serve the snapshot yet, and prints the next step.
+2. On the repaired or new hub, make it a satellite (below), then run `promote --apply`: the hand-back snapshot is the newest in the NAS hourly root.
+3. On the standby, run `promote --undo --apply` again. It deletes nothing until the local fence reads `elsewhere`, a session on the hub's name answers, and that hub's newest restore names the hand-back snapshot and holds its checkpoint.
+4. It then deletes `~/.local/share/sd/` and the hub-role backup roots under `$HOME`, runs `update satellite --apply`, and checks the stage's dry run.
+
+A run that stops leaves `~/.local/state/sd/promote-undo`, which names the next step; `status` names it in its `hub-ready` block.
+If the snapshot fails, the hub role starts again and nothing is deleted.
 
 Make an old hub a satellite, so it can take the role back or rejoin:
 

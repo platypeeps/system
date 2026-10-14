@@ -229,11 +229,13 @@ A drill killed before its cleanup leaves the folder; the next drill and `status`
 `machine-setup.sh promote --undo` on the work satellite, in order:
 
 1. Stop the hub-role agents and jobs, then write one last snapshot to the NAS hourly root. Its checkpoint id is the hand-back point.
-2. The repaired or replacement hub runs `promote` from that snapshot, and takes the tailnet name back.
-3. `--undo` continues only when three checks pass: the fence reads "not holder"; the new hub answers a session;
-   and the new hub's open `restore` row names the hand-back snapshot. That last check ties the deletion to the one snapshot that carries every record written here.
-4. Delete `~/.local/share/sd/`, the local backup root the hub-role jobs wrote, and any drill folder left behind.
-5. Put `hub.json` back, then run `update satellite --apply`.
+   Put `hub.json` back and give the tailnet name back to this machine's own: beside the database, `hub.json` makes every `sd` command refuse, so no write lands after the hand-back point.
+2. The repaired or replacement hub runs `promote`, which restores that snapshot, the newest, and takes the tailnet name back.
+3. `--undo` continues only when three checks pass: the fence, read from the local database, reads "elsewhere"; the new hub answers a session;
+   and the new hub's newest `restore` row names the hand-back snapshot and it holds that snapshot's checkpoint. That last check ties the deletion to the one snapshot that carries every record written here.
+   The newest row, open or not: the operator may run `sd restore resume` on the new hub first.
+4. Delete `~/.local/share/sd/`, the local backup roots under `$HOME` the hub-role jobs wrote, and any drill folder left behind.
+5. Run `update satellite --apply`, and prove it by the stage's dry run, as `follow` does.
 6. Prove it: `status` shows no local `sd.db`, no hub-role backup root and no `promote-intent` marker.
 
 The NAS copies stay on the NAS, which is where every hub keeps them.
@@ -312,10 +314,11 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | 6 seed | snapshot copied into the hourly root | killed mid-copy | the copy goes to `<name>.seeding` first; the rerun removes it and copies again | `test_a_seed_cut_short_is_copied_again` |
 | hourly copy | NAS gains a directory | a promoted hub with a nearly empty local root copies | additive: the NAS history stays; only the prune deletes, by checkpoint age | mirror test with a one-directory source and a seven-directory NAS root |
 | hand-back entry | old `sd.db` moved aside, `hub.json` copied | the operator skips the copy | step 1 refuses: no `hub.json`; nothing moved | `test_step_1_refuses_an_old_hub_with_no_hub_json` |
-| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | `--undo`, sd:4048 |
-| undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | `--undo`, sd:4048 |
-| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | `--undo`, sd:4048 |
-| undo 5 | `hub.json` back | the satellite stage fails | the rerun runs the stage again; `status` names it | `--undo`, sd:4048 |
+| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | `test_a_snapshot_that_fails_starts_the_role_again_and_deletes_nothing`; killed between the stop and the snapshot, `test_killed_after_the_stop_a_rerun_writes_the_snapshot` |
+| undo 2 | `hub.json` back, tailnet name given up | killed after the move, or `tailscale set` fails | the marker names step 2; the rerun gives up the name; every `sd` command refuses beside the database (HubConflict), so no write lands in the records step 4 deletes | `test_killed_after_hub_json_went_back_a_rerun_gives_up_the_name` |
+| undo 3 | nothing | the new hub restored another snapshot, lacks the hand-back checkpoint, or does not answer; this machine still holds the name; the session reaches this machine | refuse; nothing deleted; the records stay until the checks pass | `test_a_new_hub_that_does_not_answer_deletes_nothing`, `test_a_new_hub_that_restored_another_snapshot_deletes_nothing`, `test_a_new_hub_without_the_hand_back_checkpoint_deletes_nothing`, `test_a_machine_that_still_holds_the_name_deletes_nothing`, `test_a_session_that_reaches_this_machine_deletes_nothing` |
+| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest; a root outside `$HOME` is never deleted | `test_killed_mid_delete_a_rerun_deletes_the_rest`, `test_a_root_outside_home_is_left` |
+| undo 5 | the satellite stage applied | the stage fails, or its dry run after shows drift or no proof line | the marker names step 5; the rerun runs the stage again; `status` names it | `test_a_satellite_stage_that_fails_stops_at_step_5_and_status_names_it` |
 | drill | throwaway home written | killed before cleanup | the next drill and `status` remove the folder first | kill test inside the drill |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
@@ -330,7 +333,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 3. **Restore picks the newest (pack, `sd_db`).** `restore --newest ROOT...` and the lease settling.
    Leaves working: `restore DIR` unchanged.
 4. **Promote (system).** The hub role as a state, the `promote` verb, the `hub-ready` block and the README runbook, demotion included.
-   `--undo` is in the runbook as hand steps; the verb, its readiness lines (pins, `gh` push access, notify) and the promoted satellite's nightly NAS copy follow as sd:4048.
+   `--undo`, its readiness lines (pins, `gh` push access, notify) and the promoted satellite's nightly NAS copy follow as sd:4048.
    Leaves working: satellites as today; a promotion is possible.
 5. **Drill (system and config).** `promote --drill`, the monthly job example, and the first timed run quoted in the PR body.
 
