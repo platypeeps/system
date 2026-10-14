@@ -11,6 +11,13 @@
 .facet { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: var(--space-xs); align-items: start; }
 .facet > .label { padding-top: 0.45rem; display: flex; align-items: center; gap: var(--space-2xs); }
 .facet .chips { margin: 0; }
+/* sd:3986: hidden roots fold under the Repo chips, each with Unhide root. */
+.rootfold { grid-column: 2; font-size: var(--text-xs); color: var(--color-ink-2); }
+.rootfold summary { display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: var(--row-touch); cursor: pointer; }
+.rootfold summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.rootfold summary .n { color: var(--color-muted); }
+.rootfold ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.rootfold li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs); min-width: 0; overflow-wrap: anywhere; }
 .chip .n { color: var(--color-muted); }
 .chip[aria-pressed="true"] .n { color: var(--color-ink-2); }
 /* build: an unavailable chip is aria-disabled so it keeps focus and its reason. */
@@ -76,6 +83,7 @@
 @media (max-width: 899px) {
   .facet { grid-template-columns: minmax(0, 1fr); gap: var(--space-2xs); }
   .facet > .label { padding-top: 0; }
+  .rootfold { grid-column: 1; }
   .ledger thead { display: none; }
   .ledger tbody tr { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". meta acts"; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
   .ledger td { height: auto; border: 0; padding: 0 var(--space-2xs); }

@@ -61,6 +61,10 @@ COMMANDS = [
     # build (sd:3525, review 2026-10-12 A2 F5): the design's "Run", r, undo read as a run with an Undo, and r is Render on a
     # document. It only copies the line, so it is Request, safe, and has no key until it files the request.
     ["document.request", "document request draft", "Request", None, "safe"],
+    # sd:3986: a root's name and Hide are its own view row.
+    ["root.rename", "document root", "Rename root", None, "undo"],
+    ["root.hide", "document root", "Hide root", None, "undo"],
+    ["root.unhide", "document root", "Unhide root", None, "undo"],
 ]
 
 #: Seconds since the epoch, a day apart: the fixture's files and sources are dated with them.
@@ -268,6 +272,70 @@ class TheViewState(ScreenCase):
         self.assertEqual(writes.views(self.connection), {"lab/plan.html": {"pinned": False, "hidden": False, "tags": ["q4"]}})
 
 
+class TheRootViews(ScreenCase):
+    """sd:3986: a root key's view row names and hides the root; documents.conf's `label|` lines are named, not read."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture(self.base)
+        self.conf = write(self.base / "documents.conf", "label|lab|Old Lab\n", T0)
+
+    def read(self, connection):
+        doc = documents_screen.document(connection, now=NOW, config_path=self.conf, repo_root=self.base)
+        return {r["key"]: r for r in doc["roots"]}, [f"{r['key']}/{r['file']}" for r in doc["documents"]], doc
+
+    def test_a_root_row_names_and_hides_its_root_and_the_file_label_is_named_not_read(self):
+        roots, rows, _ = self.read(self.connection)
+        self.assertEqual([(r["label"], r["derived"], r["set"], r["hidden"], r["file_label"]) for r in roots.values()],
+                         [("Civic", "Civic", None, False, None), ("Lab", "Lab", None, False, "Old Lab"),
+                          ("Quiet", "Quiet", None, False, None)])
+        writes.set_view(self.connection, "lab", label="Research Lab")
+        writes.set_view(self.connection, "civic", hidden=True)
+        roots, rows, _ = self.read(self.connection)
+        self.assertEqual((roots["lab"]["label"], roots["lab"]["set"], roots["lab"]["derived"]), ("Research Lab", "Research Lab", "Lab"))
+        # A hidden root stays listed for its fold, with its count; its files leave the rows, and the server still serves them.
+        self.assertEqual((roots["civic"]["hidden"], roots["civic"]["n"]), (True, 1))
+        self.assertEqual(rows, ["lab/orphan.html", "lab/plan.html", "lab/overview.html"])
+        self.assertIsNotNone(documents.resolve("civic", "brief.html", self.conf, self.base))
+
+    def test_an_unread_store_shows_derived_names_hides_no_root_and_brings_no_file_label_back(self):
+        writes.set_view(self.connection, "lab", label="Research Lab")
+        writes.set_view(self.connection, "civic", hidden=True)
+        closed = connect(self.path)
+        closed.close()
+        roots, rows, doc = self.read(closed)
+        self.assertFalse(doc["store"]["available"])
+        self.assertEqual((roots["lab"]["label"], roots["civic"]["hidden"]), ("Lab", False))
+        self.assertIn("civic/brief.html", rows)
+
+    def test_a_root_write_names_a_listed_root_and_a_label_or_hidden(self):
+        ask = lambda payload: documents_screen.request(payload, config_path=self.conf, repo_root=self.base)
+        for payload in ({"root": "lab"}, {"root": "lab", "pinned": True}, {"root": "lab", "tags": []},
+                        {"root": "gone", "hidden": True}, {"root": "twin", "label": "Twin"},
+                        {"root": "lab", "file": "plan.html", "label": "x"}, {"root": "lab", "label": 5}):
+            with self.assertRaises(ValueError, msg=payload):
+                ask(payload)
+        self.assertEqual(ask({"root": "lab", "label": "Research Lab"})(self.connection),
+                         {"key": "lab", "pinned": False, "hidden": False, "tags": [], "label": "Research Lab"})
+        # Hide keeps the label; an empty label goes back to the derived name.
+        self.assertEqual(ask({"root": "lab", "hidden": True})(self.connection)["label"], "Research Lab")
+        ask({"root": "lab", "label": ""})(self.connection)
+        roots, _, _ = self.read(self.connection)
+        self.assertEqual((roots["lab"]["label"], roots["lab"]["set"], roots["lab"]["hidden"]), ("Lab", None, True))
+
+    def test_a_rerun_of_the_label_import_writes_the_same_answer(self):
+        """The failure table's import loop: stopped at row k, it is run again from the top."""
+        labels = {"lab": "Research Lab", "civic": "Civic Briefs"}
+        for _ in range(2):
+            for key, label in labels.items():
+                writes.set_view(self.connection, key, label=label)
+            if _ == 0:
+                first = writes.views(self.connection)
+        self.assertEqual(writes.views(self.connection), first)
+        self.assertEqual({key: first[key]["label"] for key in labels}, labels)
+
+
 class ThePage(BrowserSession):
     def test_the_route_answers_under_the_shared_policy(self):
         status, headers, body = self.request("/documents")
@@ -456,6 +524,57 @@ R.when = [cmd('document.pin').when(over), cmd('document.hide').when(over)];""", 
         # Every landed write and every Undo reads the list again, so the rows show what the store now holds.
         self.assertEqual(out["gets"], ["/api/documents"] * 9)
         self.assertEqual(out["R"]["when"], ["already pinned", "already hidden"])
+
+    def root(self, key):
+        return next(r for r in self.doc["roots"] if r["key"] == key)
+
+    def test_rename_and_hide_a_root_post_its_view_and_undo_posts_the_value_shown(self):
+        """sd:3986: Rename root asks for the name, filled with the one set; Undo posts it back. Hide root posts hidden."""
+        self.root("lab").update(label="Research Lab", set="Research Lab")
+        out = self.run_page("""const lab = C.get('root:lab');
+R.fields = cmd('root.rename').fields(lab).map(f => [f.name, f.value, f.placeholder, !!f.required]);
+R.det = ELS.details.html; R.chips = ELS.facets.html;
+FIELD_VALUES.label = 'Lab Notes'; shellRun(cmd('root.rename'), lab); await flush(); lastToast().undo(); await flush();
+FIELD_VALUES.label = ''; shellRun(cmd('root.rename'), lab); await flush();
+shellRun(cmd('root.hide'), lab); await flush(); lastToast().undo(); await flush();""",
+                            answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
+        self.assertEqual(out["R"]["fields"], [["label", "Research Lab", "Lab", False]])
+        self.assertEqual(self.view_posts(out), [{"root": "lab", "label": "Lab Notes"}, {"root": "lab", "label": "Research Lab"},
+                                                {"root": "lab", "label": ""},
+                                                {"root": "lab", "hidden": True}, {"root": "lab", "hidden": False}])
+        self.assertEqual([t[0] for t in out["toasts"] if t[1]],
+                         ["Renamed Research Lab to Lab Notes", "Research Lab is Lab again",
+                          "Hidden: Research Lab. Hidden roots, under Repo, lists it."])
+        self.assertIn("Research Lab", out["R"]["chips"])
+        self.assertIn('<dt>Label</dt><dd>Research Lab', out["R"]["det"])
+
+    def test_a_refused_rename_says_why_and_the_name_shown_stays(self):
+        """The failure table's first Rename: a refused write names the reason and reads nothing again."""
+        out = self.run_page("""FIELD_VALUES.label = 'x'.repeat(61); shellRun(cmd('root.rename'), C.get('root:lab')); await flush();
+R.chips = ELS.facets.html;""", answer="(path, body) => path === '/api/documents/view' ? [400, { error: 'a label is 1 to 60 characters' }] : [200, %s]"
+                            % json.dumps(self.doc))
+        self.assertEqual(out["toasts"], [["Lab not changed: a label is 1 to 60 characters", False]])
+        self.assertEqual(out["gets"], ["/api/documents"])
+        self.assertIn(">Lab <span", out["R"]["chips"])
+
+    def test_a_hidden_root_leaves_the_repo_chips_for_the_hidden_roots_fold(self):
+        """sd:3986: a hidden root's chip goes; the fold under Repo names it with Unhide. A label| line still in the file is named."""
+        self.root("civic")["hidden"] = True
+        self.doc["documents"] = [r for r in self.doc["documents"] if r["key"] != "civic"]
+        self.root("lab")["file_label"] = "Old Lab"
+        out = self.run_page("""R.facets = ELS.facets.html; R.det = ELS.details.html; R.sub = ELS.subhead.html;
+R.when = [cmd('root.hide').when(C.get('root:civic')), cmd('root.unhide').when(C.get('root:lab')), cmd('root.unhide').primary(C.get('root:civic'))];
+shellRun(cmd('root.unhide'), C.get('root:civic')); await flush();""", answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
+        facets = out["R"]["facets"]
+        self.assertNotIn('data-v="civic"', facets)
+        self.assertIn('data-v="lab"', facets)
+        self.assertRegex(facets, r'<details class="rootfold"[^>]*><summary>Hidden roots <span class="n">1</span></summary>')
+        self.assertIn("Civic", facets.split('class="rootfold"')[1])
+        self.assertEqual(out["R"]["when"], ["already hidden", "not hidden", True])
+        self.assertEqual(self.view_posts(out), [{"root": "civic", "hidden": False}])
+        self.assertIn("in 2 roots", out["R"]["sub"])
+        self.assertIn("label|lab|Old Lab", out["R"]["det"])
+        self.assertIn("not read", out["R"]["det"])
 
     def test_a_refused_write_says_why_offers_no_undo_and_reads_nothing_again(self):
         out = self.run_page("""shellRun(cmd('document.pin'), C.get('lab/plan.html')); await flush();""",

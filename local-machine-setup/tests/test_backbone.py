@@ -540,7 +540,7 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("FAIL", out)
         # A machine with no sd agent, a satellite among them, still passes the
         # retired-folder check when no config names it.
-        self.assertIn("ok      no config names the retired local-sd-db", out)
+        self.assertIn("ok      no config names the deleted local-sd-db", out)
 
     # sd:3281: a missed machine shows up here, not as a job that runs a missing script.
 
@@ -556,7 +556,7 @@ class DoctorTest(unittest.TestCase):
             "/home/someone/repos/system/local-sd-db/sd-db", "serve"]}))
         code, out = self.doctor()
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {plist} names the retired local-sd-db, now only a forwarder to be deleted", out)
+        self.assertIn(f"FAIL    {plist} names the deleted local-sd-db", out)
         self.assertIn("bin/sd-db", out)
 
     def test_a_cron_job_file_naming_the_retired_folder_fails(self):
@@ -567,7 +567,7 @@ class DoctorTest(unittest.TestCase):
         job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db\\" backup"\n')
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {job} names the retired local-sd-db, now only a forwarder to be deleted", out)
+        self.assertIn(f"FAIL    {job} names the deleted local-sd-db", out)
 
     def test_an_installed_cron_plist_naming_the_retired_folder_fails(self):
         self.fixture.make_database()
@@ -578,7 +578,7 @@ class DoctorTest(unittest.TestCase):
             "/bin/sh", "-c", "/home/someone/repos/system/local-sd-db/sd-db.sh credentials"]}))
         code, out = self.doctor()
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {plist} names the retired local-sd-db", out)
+        self.assertIn(f"FAIL    {plist} names the deleted local-sd-db", out)
 
     def test_a_per_host_cron_job_file_naming_the_retired_folder_fails(self):
         self.fixture.make_database()
@@ -588,7 +588,7 @@ class DoctorTest(unittest.TestCase):
         job.write_text('JOB_COMMAND="\\"$ROOT/../local-sd-db/sd-db.sh\\" credentials"\n')
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {job} names the retired local-sd-db", out)
+        self.assertIn(f"FAIL    {job} names the deleted local-sd-db", out)
 
     def test_a_plist_template_naming_the_retired_folder_fails(self):
         self.fixture.make_database()
@@ -598,7 +598,7 @@ class DoctorTest(unittest.TestCase):
             "@HOME@/repos/platypeeps/sd-ai-command-pack/bin/sd-db", "@ROOT@/local-sd-db/sd-db"))
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    {template} names the retired local-sd-db, now only a forwarder to be deleted", out)
+        self.assertIn(f"FAIL    {template} names the deleted local-sd-db", out)
 
     def test_a_job_folder_that_cannot_be_searched_is_not_a_pass(self):
         self.fixture.make_database()
@@ -610,7 +610,7 @@ class DoctorTest(unittest.TestCase):
         self.addCleanup(jobs.chmod, 0o755)
         code, out = self.doctor(SYSTEM_TOOLS_CONFIG=config)
         self.assertEqual(code, 1, out)
-        self.assertIn(f"FAIL    cannot search {jobs} for config that names the retired local-sd-db", out)
+        self.assertIn(f"FAIL    cannot search {jobs} for config that names the deleted local-sd-db", out)
         self.assertNotIn("ok      no config names", out)
 
 

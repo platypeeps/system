@@ -5,7 +5,8 @@
 #
 # At the hub's pin, `follow` does nothing and drains nothing, so most runs
 # cost one tag fetch. When they differ, it drains this machine's
-# lanes first, waiting up to 45 minutes, moves, then runs the machine-setup
+# lanes first, waiting up to 45 minutes for their runner locks but not for
+# gates (sd:4046), moves, then runs the machine-setup
 # bin and satellite stages with the lanes held, each with its dry run as a
 # check, each bounded at 450 s (sd:3168), and, after a shared.md change, the
 # 120 s agent prompt refresh (sd:3262). JOB_TIMEOUT sits above them all, so

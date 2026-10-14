@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import json
 import os
 import re
@@ -27,16 +28,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-import system_tools_config  # noqa: E402
-
 #: The owner gate, as `ROUTINE.md` writes it. The denied list is recited there
 #: on purpose (authorization cannot be enumerated from a filesystem) and copied
 #: here because a runtime parse of prose is a second thing to get wrong; the
 #: suite asserts these two agree with the document, so they cannot drift
 #: silently. Repositories allowed outside ALLOWED_OWNERS are the operator's
-#: own consent, so they live in `<config>/dependabot/allowed-repos.conf`,
-#: outside the checkout.
+#: own consent, so they live in the workflow database, as the `repo` rows
+#: with `dependabot` set (sd:3984), not in the checkout.
 DENIED = (
     "platypeeps/Trellis",
     "platypeeps/google_workspace_mcp",
@@ -48,24 +46,39 @@ DENIED = (
 ALLOWED_OWNERS = ("platypeeps",)
 
 
-def _allowed_repos() -> tuple[str, ...]:
-    """Repositories outside ALLOWED_OWNERS the owner consented to, read from
-    `<config>/dependabot/allowed-repos.conf` (one `owner/name` per line, `#`
-    comments) or the file DEPENDABOT_ALLOWED_REPOS_FILE names. Missing means
-    none: the gate fails closed."""
-    path = Path(os.environ.get("DEPENDABOT_ALLOWED_REPOS_FILE")
-                or system_tools_config.config_dir("dependabot") / "allowed-repos.conf")
-    if not path.is_file():
-        return ()
-    slugs = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line and line not in slugs:
-            slugs.append(line)
-    return tuple(slugs)
+@functools.cache
+def allowed_repos() -> tuple[tuple[str, ...], str]:
+    """Repositories outside ALLOWED_OWNERS the owner consented to, and why the list is unknown.
 
+    The slugs of the `repo` rows with `dependabot` set, read once per run
+    through the command pack's `sd_db` (`$SD_PACK_ROOT`, default
+    `~/repos/platypeeps/sd-ai-command-pack`), set with `sd-db repo dependabot
+    PATH yes` or the Management page. Any failure -- no pack, no database, no
+    hub, a store without the column -- answers `((), reason)`: the gate fails
+    closed and names the reason, never "none allowed". Two checkouts of one
+    repository are two rows, and a no on either one withdraws the consent.
+    """
+    lib = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"
+    if not (lib / "sd_db").is_dir():
+        return (), f"no sd_db under {lib}; set SD_PACK_ROOT to the command pack"
+    if str(lib) not in sys.path:
+        sys.path.insert(0, str(lib))
+    try:
+        from sd_db import connect, repos
+        connection = connect(write=False)
+        try:
+            consent: dict[str, bool] = {}
+            for row in repos.registered(connection):
+                found = repos.parse_remote(row["remote"])
+                if found.kind == "github":
+                    slug = f"{found.owner}/{found.name}".lower()  # GitHub names ignore case
+                    consent[slug] = consent.get(slug, True) and bool(row["dependabot"])
+        finally:
+            connection.close()
+    except Exception as error:  # every failure is an unknown list, and the gate closes on it
+        return (), f"{type(error).__name__}: {error}"
+    return tuple(slug for slug, given in consent.items() if given), ""
 
-ALLOWED_REPOS = _allowed_repos()
 
 #: `gh repo view --json viewerPermission` answers a merge would succeed.
 WRITE_VIEWER = {"ADMIN", "MAINTAIN", "WRITE"}
@@ -487,9 +500,12 @@ def owner_gate(slug: str) -> str | None:
     """Why the owner gate refuses `slug`, or None when it admits it."""
     if slug in DENIED:
         return "denied by name"
-    if slug.split("/")[0] in ALLOWED_OWNERS or slug in ALLOWED_REPOS:
+    if slug.split("/")[0] in ALLOWED_OWNERS:
         return None
-    return "owner not authorized"
+    slugs, unknown = allowed_repos()
+    if unknown:
+        return f"allowed list unknown: {unknown}"
+    return None if slug.lower() in slugs else "owner not authorized"
 
 
 def fleet(root: Path) -> list[str]:
@@ -756,5 +772,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def allowed_main() -> int:
+    """`dependabot.sh allowed`: the allowed list, one slug per line, for the daily sweep."""
+    slugs, unknown = allowed_repos()
+    if unknown:
+        print(f"dependabot allowed: allowed list unknown: {unknown}", file=sys.stderr)
+        return 1
+    for slug in slugs:
+        print(slug)
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(allowed_main() if sys.argv[1:] == ["allowed"] else main())

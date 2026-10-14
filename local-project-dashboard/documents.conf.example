@@ -13,16 +13,14 @@
 # What a directory cannot say, this file still says. Pipe-separated, because a
 # path can hold a space and `read -r a b` splits it in the wrong place.
 #
-#   label|<key>|<label>              a found root, better named
 #   skip|<key>                       a found root the dashboard should not list
 #   skip|<key>|<file>                one file of a root, neither listed nor served
 #   root|<key>|<label>|<directory>   a root that is somewhere else entirely
 #   img|<key>|<host>                 an image host the root's *.app.html pages may load
 #
-# Reach for `label|` first. The derived label is the directory name and reads
-# badly for an abbreviation -- `mcp-research` becomes `Mcp Research`, and no
-# amount of code recovers `MCP` from it -- but that is a naming complaint and
-# nothing more, so the line says the name and stops.
+# A found root's name and whether the page hides it are not here: Rename root
+# and Hide root on the Documents page set them in the workflow database
+# (sd:3986). A `label|` line is no longer read; the page names one it finds.
 #
 # `root|` is for a root that genuinely lives elsewhere, and it wins over a
 # found root of the same key. Do not use it to rename one: repeating the path
@@ -36,9 +34,6 @@
 #
 # `key` appears in the URL, so it is short and lowercase. The directory is
 # read, never written, and only its regular `.html` files are ever served.
-
-# An abbreviation the derived label would spell `Mcp Research`.
-label|mcp-research|MCP
 
 # A found root that should not be listed.
 skip|scratch-notes

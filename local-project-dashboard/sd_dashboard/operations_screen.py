@@ -41,7 +41,7 @@ SECTIONS = {
     "services": ("Management",
                  "Services lists this Mac's launchd services with each one's last request and its controls."),
     "resources": ("Research",
-                  "Resources shows what the local collectors read: Toolbox, Briefs, Vault, Research and Queues."),
+                  "Resources shows what the local collectors read: Toolbox, Vault, Research and Queues."),
     "trackers": ("Today", "Trackers lists the open pull requests and issues that sd shadow sync last saw."),
     "sessions": ("Today",
                  "Sessions lists the worktrees each checkout registered and the sd commands running at this read."),

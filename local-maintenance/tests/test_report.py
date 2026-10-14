@@ -37,7 +37,7 @@ class ReportTest(unittest.TestCase):
         _stub(self.bin / "mas", "exit 0\n")
         _stub(self.bin / "docker", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
-        # FAKE_DAY stands for the run's date in the report's reason.
+        # FAKE_DAY stands for the run's date, which the reason must not carry.
         _stub(self.bin / "date", '''[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }
 exec /bin/date "$@"
 ''')
@@ -63,16 +63,33 @@ exec /bin/date "$@"
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(f"- cert: {self.tmp}/missing.pem missing", run.stdout)
         [line] = self.attention(run)
-        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost, \d{4}-\d\d-\d\d$")
+        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
 
-    def test_each_day_files_its_own_report(self):
-        """sd:3537: the ingest folds an open reason and keeps its first body.
-        A checksum with digits erased made worker1 and worker2 one report."""
+    def test_the_reason_follows_the_findings_not_the_day(self):
+        """sd:4182: the ingest folds an open reason and keeps its first body.
+        The same findings on two nights give one reason, so one open report;
+        a changed finding gives another (sd:3537: a checksum with digits
+        erased made worker1 and worker2 one report)."""
         first = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\n", FAKE_DAY="2026-10-12"))
-        second = self.attention(self.maintenance(f"cert|{self.tmp}/worker2.pem|30\n", FAKE_DAY="2026-10-13"))
-        self.assertEqual(first, ["SD_REPORT_ATTENTION: maintenance: 1 finding(s) on fixturehost, 2026-10-12"])
-        self.assertEqual(second, ["SD_REPORT_ATTENTION: maintenance: 1 finding(s) on fixturehost, 2026-10-13"])
+        again = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\n", FAKE_DAY="2026-10-13"))
+        other = self.attention(self.maintenance(f"cert|{self.tmp}/worker2.pem|30\n", FAKE_DAY="2026-10-13"))
+        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
+        self.assertEqual(again, first)
+        self.assertNotEqual(other, first)
+
+    def test_a_moving_measure_keeps_the_reason(self):
+        """sd:4182: low disk at 5% free one night and 4% the next is the
+        same finding, so the same reason; another disk is another finding.
+        The report itself still prints each night's measure."""
+        five = self.maintenance("disk|/|10\n", DF_USED="95")
+        four = self.maintenance("disk|/|10\n", DF_USED="96")
+        other = self.maintenance("disk|/Volumes/Other|10\n", DF_USED="96")
+        self.assertIn("- disk: only 5% free on / (threshold 10%)", five.stdout)
+        self.assertIn("- disk: only 4% free on / (threshold 10%)", four.stdout)
+        self.assertEqual(self.attention(four), self.attention(five))
+        self.assertEqual(len(self.attention(five)), 1, five.stdout)
+        self.assertNotEqual(self.attention(other), self.attention(five))
 
     def test_a_clean_run_needs_nothing(self):
         run = self.maintenance("# nothing to check\n")

@@ -49,6 +49,9 @@ from pathlib import Path
 from sd_db import reads, repos, workflow
 from sd_db.protection import github_slug
 from sd_db.sources.vault import SOURCE as VAULT
+from sd_db.workflow import WorkflowError
+
+from .markup import href
 
 __all__ = ["details", "document"]
 
@@ -249,11 +252,50 @@ def details(connection, item: int, *, now: str) -> dict:
         "assignments": assignments, "allowed": workflow.allowed_statuses(connection, item, state=state),
         "external": _external(connection, row, now=now),
         "documents": _documents(connection, state),
+        "published": _published(connection, state),
         # `sd work relink` and `sd work cancel` availability, as the mutation checks it under its lock
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
         "base": _base(state),
     }
+
+
+def _published(connection, state) -> list[dict]:
+    """Where the item's work was published (sd:3465), in the design's order: each document in `fields.published`
+    with its channel links, then `fields.writing.published_urls`, then each publication claim's url.
+
+    The item row holds each URL (`channels.record_url`); `href` is the URL when it is a link the page may open, else None.
+    """
+    from sd_db.channels import CHANNELS
+
+    fields = json.loads(state["item"]["fields"] or "{}")
+    link = lambda channel, url: {"channel": channel, "url": url, "href": href(url, ("https", "http", "obsidian"))}  # noqa: E731
+    out = []
+    published = fields.get("published")
+    for key, entry in (published.items() if isinstance(published, dict) else ()):
+        if not isinstance(entry, dict):
+            continue
+        repo, _, document = key.rpartition("::")
+        order = [c for c in CHANNELS if c in entry] + sorted(c for c in entry if c not in CHANNELS and c != "title")
+        out.append({"title": str(entry.get("title") or document), "where": f"{Path(repo).name} · {document}",
+                    "links": [link(c, str(entry[c])) for c in order]})
+    writing = fields.get("writing")
+    urls = writing.get("published_urls") if isinstance(writing, dict) else None
+    if isinstance(urls, dict) and urls:
+        out.append({"title": "Writing piece", "where": "writing targets",
+                    "links": [link(str(target), str(url)) for target, url in urls.items()]})
+    # A publication claim belongs to a writing piece; `writing.piece_state` reads them. A read that fails says so.
+    item = state["item"]
+    if item["kind"] == "idea" and item["piece"]:
+        from sd_db import writing as pieces
+
+        try:
+            claims = pieces.piece_state(connection, item["id"])["writing"].get("publications") or []
+        except (WorkflowError, ValueError, KeyError) as error:
+            return out + [{"title": "Publication claims", "where": f"not read: {error}", "links": []}]
+        out += [{"title": f"Publication claim {claim['id'][:8]}", "where": str(claim["phase"] or ""),
+                 "links": [link("claim", str(claim["url"]))]} for claim in claims if claim["url"]]
+    return out
 
 
 def _base(state) -> dict | None:

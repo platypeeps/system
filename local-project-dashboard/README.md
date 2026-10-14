@@ -235,7 +235,7 @@ and Commands on Activity. Any other `area=` is a 404.
 | --- | --- |
 | **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db usage` binds it. |
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
-| **Resources** | The five legacy vault and machine views — Toolbox, Briefs, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
+| **Resources** | The four legacy vault and machine views — Toolbox, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
 | **Sessions** | Every worktree the fleet's checkouts have registered under `.git/worktrees`, abandoned ones first — a registration whose directory is gone still holds its branch; one whose files cannot be read is unknown, not abandoned — and every `sd` or `sd-*` command in the process table. Read by the fleet child under its 12-second budget; a root that does not exist is said in place of the worktree count, and a `ps` that did not answer is said beside the worktrees that did. |
 
@@ -342,9 +342,9 @@ separate visual check; unit tests do not establish it.
 The Backlog list component is `listing.py` — filter, selection and paging, in
 that order, with the filter applied before the paging.
 
-**The six legacy collectors** cover the vault, the launchd job table, research
+**The five legacy collectors** cover the vault, the launchd job table, research
 builds and the service port map. Their CLI commands remain available, and the
-workflow dashboard renders all six itself: Toolbox, Briefs, Vault, Research and
+workflow dashboard renders all five itself: Toolbox, Vault, Research and
 Queues as Resources views through `sd_tile.py`, and Ports in-process on Health. The
 manifest no longer declares them as plugin tabs (sd:719 step 3). Retaining the
 collectors does not imply feature parity with the old dashboard.
@@ -390,18 +390,18 @@ checkout, because it names the operator's own repositories and paths; copy
 listed under its directory name:
 
 ```
-label|<key>|<label>              a found root, better named
 skip|<key>                       a found root the dashboard should not list
 skip|<key>|<file>                one file of a root, neither listed nor served
 root|<key>|<label>|<directory>   a root that is somewhere else entirely
 img|<key>|<host>                 an image host the root's *.app.html pages may load
 ```
 
-**Reach for `label|` first.** The derived label is the directory name, and it
-reads badly for an abbreviation: `mcp-research` becomes `Mcp Research`, and no
-code recovers `MCP` from that. But that is a naming complaint and nothing
-more, so the line says the name and stops. It renames a found root; it never
-invents one, and a `label|` line for a key nothing found does nothing at all.
+**A name is not a line here.** The derived label is the directory name, and it
+reads badly for an abbreviation: `mcp-research` becomes `Mcp Research`. Rename
+root on the Documents page sets a better one, and Hide root moves a root to the
+page's Hidden roots fold; both are the root key's `view` row in the workflow
+database (sd:3986). A `label|` line is no longer read, and the page names one
+still in the file so Rename root can replace it.
 
 `root|` is for a root that genuinely lives elsewhere, outside any checkout's
 `docs/dashboard`, and it wins over a found root of the same key, its own
@@ -411,7 +411,7 @@ is the only way its pages are served. Do not reach for it to rename one. A `root
 that repeats the path enumeration already found puts the default location back
 into this file, where it goes stale the moment the repository moves while
 still looking authoritative. That is precisely the drift the enumeration was
-written to remove, so the rename gets a line form that cannot carry a path.
+written to remove.
 
 **A key with two owners has no owner.** The key is the checkout's directory
 name, and two groups may hold a checkout of the same name — `org-a/reports`
@@ -420,7 +420,7 @@ the directories in it. Picking one would serve one repository's pages at
 another's address; picking the first found would decide it by glob order, so a
 new checkout sorting earlier would repoint an address that already worked. A
 `root|` line naming the one you mean settles it, and a `skip|` line does too.
-A `label|` line does not: it says what to call the root, not which directory
+A name does not: it says what to call the root, not which directory
 is the one meant, and that is the question.
 
 **It serves rather than embeds.** Pulling a report's body into a page would run
@@ -582,7 +582,6 @@ The manifest now declares only the four queue actions.
 | Tab | What it shows | Where it comes from |
 | --- | --- | --- |
 | **Toolbox** | Cron jobs with launchd's own last-exit code **and the next time each one fires**, launch agents, docker containers, and `machine-setup` drift with the age of the measurement | `launchctl list`, `jobs/*.job`, `docker ps`, and the status part of `machine-setup-update-nightly`'s log rather than a fresh `machine-setup.sh status`, which cost most of the five-second budget |
-| **Briefs** | Everything the scheduled routines wrote, newest first, grouped by kind, each readable inline | `System/AI Generated/Briefs` |
 | **Vault** | One card per `* Home` area with note and open-task counts, plus overdue/due-today and Inbox pressure | vault frontmatter |
 | **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |

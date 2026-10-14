@@ -550,8 +550,12 @@ addEventListener('DOMContentLoaded', () => {
     due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999, stage: t => t.stage || '~',
     // A base row's score, highest first; a row with none sorts last (sd:3977).
     score: t => t.score === null || t.score === '' || isNaN(+t.score) ? Infinity : -t.score };
-  const COLS = [[null, html`<span class="sr">Select</span>`], [null, html`<span class="sr">State</span>`], ['id', 'Id', 'label'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label'],
-    ['status', 'Status', 'label'], ['stage', 'Stage', 'label'], ['score', 'Score', 'label'], ['p', 'P', 'label'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`]];
+  // slim: a control or short cell (pick, glyph, P, actions) keeps the narrow gutter that lets the list fit its column (sd:4037).
+  // id, rp and sc mark the columns that fold into a .fold line of their neighbour in a narrower column (tasks.css).
+  const COLS = [[null, html`<span class="sr">Select</span>`, 'slim'], [null, html`<span class="sr">State</span>`, 'slim'], ['id', 'Id', 'label id'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label rp'],
+    ['status', 'Status', 'label'], ['stage', 'Stage', 'label'], ['score', 'Score', 'label sc'], ['p', 'P', 'label slim'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`, 'slim']];
+  // Due's head says the word, so a cell drops it (the design source's shortDue).
+  const shortDue = s => s === 'no due' ? 'none' : s.replace(/^due /, '');
   let seek = false;
   function renderList() {
     const list = window.shell.list, k = SORTS[L.sort];
@@ -563,7 +567,7 @@ addEventListener('DOMContentLoaded', () => {
     // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
     const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
     put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
-      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}</td><td class="mono">${t.score ?? ''}</td>` : ''}<td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
+      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button><span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
@@ -676,6 +680,7 @@ addEventListener('DOMContentLoaded', () => {
     return html`${desc}${baseOf(t, d)}
       <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
+      ${published(t, d.published || [])}
       <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
       <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src('Notes', `sd task show ${t.id} --json · every other note kind`)}</h3>
@@ -687,6 +692,13 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
       <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
+  }
+  // sd:3465: where the item's work was published, each URL under its document's title; tasks_screen._published sets
+  // `href` only for an address the page may open, so any other shows as text. Nothing published shows no section.
+  function published(t, list) {
+    if (!list.length) return '';
+    return html`<h3>Published ${src('Published', `/api/tasks/${t.id} · fields.published, fields.writing.published_urls, publication claims`)}</h3>
+      <ol class="rec">${list.map(p => html`<li><span><b>${p.title}</b> <small>${p.where}</small>${p.links.map(l => html`<br>${l.channel} ${l.href ? html`<a class="ext" href="${l.href}" target="_blank" rel="noopener noreferrer">${l.url}</a>` : html`<code>${l.url}</code>`}`)}</span></li>`)}</ol>`;
   }
   // build (sd:3977): a vault base row's stage, declared fields, body and its section of the vault mirror page.
   // The stage select is the row's own write: edit_item's refusal of an idea's other fields does not turn it off.

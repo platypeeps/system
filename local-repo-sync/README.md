@@ -5,10 +5,10 @@ Clone-or-pull the whole repo fleet in one sweep. Symlinked as `repo-sync` in `~/
 ## Usage
 
 ```sh
-./repo-sync.sh list       # resolved profile, root and repo list — touches nothing
+./repo-sync.sh list       # resolved profile, root, list source and repo list
 ./repo-sync.sh sync       # clone what is missing, fast-forward what is not
 ./repo-sync.sh check      # read-only: what is missing or on another origin
-./repo-sync.sh reconcile  # update the conf files to match the checkouts on disk
+./repo-sync.sh reconcile  # join unlisted checkouts to the database; report the rest
 ./repo-sync.sh hygiene    # report stale worktrees, dead locks, landed branches
 ./repo-sync.sh hygiene --apply  # act on the safe classes, list the rest
 ./repo-sync.sh nightly    # reconcile + sync + hygiene --apply, reporting (cron)
@@ -21,15 +21,35 @@ repo-sync                 # symlink in ~/bin/common, works from anywhere
 `sync` exits 1 if any repo failed, but only *after* trying all the others, and
 prints the failures as a summary at the end.
 
-`reconcile` treats disk as the source of truth: GitHub checkouts under the
-root that are missing from the conf are appended to the profile conf, and
-conf entries whose checkout is gone are deleted — so a repo cloned or removed
-by hand is picked up automatically and a deliberately deleted repo is not
-re-cloned every night. Checkouts without a GitHub origin are listed as
+The list is the workflow database's: the `repo` rows whose `clone_profiles`
+hold this machine's profile (sd:3983). Each run reads it once, with
+`sd-db repo list --clones <profile>` from the pack at `SD_PACK_ROOT`, and every
+step of the run uses that copy. Every `sd-db` call gets `SD_REPO_ROOT` set to the
+root the run resolved, since the pack writes each line relative to it. Each
+answer also goes to a snapshot, `~/.local/state/system/repo-sync/clones.<profile>`,
+whose first line names the root; a run under another root does not read it.
+A failed read is unknown,
+never an empty list: when the database does not answer (no hub, a hub that
+refuses this build until `follow`, an empty answer, or a line that is not
+`<subdir> <owner/repo>`), the run reads the snapshot, else the conf files
+below, else refuses and names both remedies. Each fallback prints a line on
+stderr, and `nightly` reports it.
+
+`reconcile` compares that list with the checkouts on disk, and writes one
+thing: a GitHub checkout with no row joins the database (`sd-db repo add`,
+then `sd-db repo clones PATH +<profile>`), so a repo cloned by hand still
+joins the list. It writes only when the database gave the list. It reports
+the rest: a checkout whose row does not list the profile (the operator may
+have cleared it), and a listed checkout that is gone. No run removes a
+profile, so no outage or empty disk can look like a deletion. **Deleting a
+checkout no longer stops its sync**: the next `sync` clones it again. To stop
+cloning a repo on a profile, run `sd-db repo clones PATH -<profile>`. A
+profile names a kind of machine, so clearing it stops the repo on every
+machine of that profile. Checkouts without a GitHub origin are listed as
 unmanaged and left alone. Matching is by directory name, so a repo renamed
 upstream keeps its existing entry.
 
-A conf line clones to `$ROOT/<subdir>/<repo>`, so it can only describe a
+A list line clones to `$ROOT/<subdir>/<repo>`, so it can only describe a
 checkout whose directory is named after its repo. A checkout in a
 differently named directory is reported as `MISMATCH` and left alone rather
 than added — adding it looped, because the entry reconcile wrote could never
@@ -38,7 +58,7 @@ entry kept the removal probe passing. Rename the directory or the repo to
 bring it under management.
 
 A linked worktree placed under the root is not a checkout. `reconcile` lists
-it as `WORKTREE <dir> (of <parent>)` and leaves the conf alone; `hygiene`
+it as `WORKTREE <dir> (of <parent>)` and leaves it alone; `hygiene`
 reaches it through its parent's worktree registrations.
 
 ## Pinned checkouts
@@ -96,8 +116,9 @@ Refresh also migrates the database (D2, sd:3345). It reads the database's
 the pack moves to at every refresh, never the checkout movement. When the
 database is below, and before anything moves, it runs the pack's
 `bin/sd-db backup --no-row-prune` into a fresh folder under
-`~/.local/state/repo-sync/refresh-backups/`. No retention prunes that folder,
-so its backups stay until you remove them. Then it writes the rollback point,
+`~/.local/state/repo-sync/refresh-backups/`, where a finished refresh keeps
+the newest three folders and removes the rest (sd:4022). Then it writes the
+rollback point,
 `~/.local/state/repo-sync/refresh-intent`: the system and pack shas, the
 version and the backup. A failed backup or record write moves nothing and
 starts the services again. A database above that `SCHEMA_VERSION`, such as one
@@ -168,6 +189,12 @@ launchd, which passes no descriptor on, and the child's git runs with
 A gate started by hand (`sd-ship prepare`, `sd-check`) while the refresh
 steps run is not excluded: no `sd gate` verb holds every slot. Run no gate
 by hand during a refresh.
+
+`follow` holds the refresh lock and every runner lock the same way, but does
+not wait on the gate (sd:4046). A lane's gate runs under its runner lock,
+which follow holds, so the gates left are ones started by hand, and the
+merge gates again under its lane's lock. Waiting them out left each satellite
+in `BuildMismatch` for 15 to 35 minutes after every hub migration.
 
 The wait is bounded at 45 minutes in total, for the refresh lock, the lane
 locks and the gate together, not 45 minutes each. `REPO_SYNC_DRAIN_WAIT` overrides it in
@@ -309,15 +336,16 @@ Without `--apply` it exits 1 when it found anything. With `--apply` it exits
 
 `nightly` is what the `repo-sync-nightly` cron job (local-cron-jobs, 02:45)
 runs: reconcile, then sync, then `hygiene --apply`, each printing its output
-to the job log. A changed repo list, a checkout that needs a rename, a failed
-repo, or a hygiene report that changed, listed or failed anything prints one
-`SD_REPORT_ATTENTION:` line at the end, so the run's report reaches Reports and
-Today; nothing is mailed (sd:3454). Since #200 it exits 1 when half or more of
+to the job log. A failed repo, a checkout that did not join, a list read from
+the snapshot or the confs, a joined or re-cloned checkout, a checkout present
+and not listed, a checkout that needs a rename, or a hygiene report that
+changed, listed or failed anything prints one `SD_REPORT_ATTENTION:` line at
+the end, so the run's report reaches Reports and Today; nothing is mailed
+(sd:3454). Since #200 it exits 1 when half or more of
 the fleet failed to sync — one unreachable repo is a finding, half the fleet
 is an outage. The threshold is not "all": a dead network still lets the odd
-repo through, so an equality test would have gone on reporting success. After
-a reconcile the updated conf sits in `<config>/repo-sync/`; the run's report is
-the record of what changed.
+repo through, so an equality test would have gone on reporting success. The
+run's report is the record of what changed.
 
 After the hygiene report, `nightly` asks local-jev, in shadow, whether each
 listed line holds live, abandoned or superseded work (sd:2094). Jev's
@@ -332,9 +360,10 @@ and `jev off`, no key or a spent budget skip it too. The suite stubs
 
 ## Profiles
 
-The work and personal machines carry different repo lists, so the list lives in
-config instead of an `if` in the script. The conf files are private and
-per-machine, so they live outside the checkout in
+The work and personal machines carry different repo lists, so each row in the
+database names the profiles that clone it. The conf files are the list's third
+source: the bootstrap for a machine that never reached the hub. They are
+private and per-machine, so they live outside the checkout in
 `<config>/repo-sync/`, where `<config>` is `$SYSTEM_TOOLS_CONFIG` (default
 `~/.config/system`). The repository ships a `.example` for each. Copy
 the ones your profile reads and list your own repos:
@@ -354,7 +383,11 @@ cp repos.personal.conf.example ~/.config/system/repo-sync/repos.personal.conf
 | `repos.work.conf` | work machine — for example `work` and the toolbox itself |
 | `repos.terra.conf` | terra machine — the toolbox repo and nothing else |
 
-The confs keep no git history: `nightly` rewrites them and commits nothing.
+`nightly` writes no conf and commits nothing.
+
+To go back to a `repo-sync.sh` from before sd:3983 once the confs are deleted,
+copy the snapshot to `repos.<profile>.conf` and write an empty
+`repos.common.conf` (personal and work read both).
 
 Format is `<subdir> <owner/repo>`; `#` comments and blank lines are ignored.
 `<subdir>` is the folder under the checkout root, so `ai jomjol/AI-on-the-edge-device`
@@ -369,10 +402,7 @@ iterate that list directly and four totals count it, so a repeated entry used
 to mean a repo pulled twice and a fleet count that overstated itself. The
 duplicate line stays in the file for as long as its checkout does; it just
 no longer does anything, so a hand-edit that repeats an entry is inert rather
-than a nightly double-pull. When the checkout does go away, `reconcile` takes
-every copy of the entry rather than the first — `remove_entry` filters all
-matching lines, and it has always compared them with the same normalisation
-this list now applies.
+than a nightly double-pull.
 
 `terra` is the one profile that does **not** layer on `repos.common.conf`.
 Everywhere else the pair is common + profile; a terra machine carries only
@@ -390,9 +420,8 @@ The work root is `REPO_SYNC_WORK_ROOT`, else `SYSTEM_TOOLS_WORK_ROOT`.
 `SYSTEM_TOOLS_WORK_ROOT` fallback; set the shared name once to drive both.
 
 Deferring to the recorded profile matters: the fallback calls any machine
-without a work root `personal`, so on a terra machine `reconcile` would see
-nearly all of `personal`'s checkouts missing and — disk being the source of
-truth — delete them from the confs.
+without a work root `personal`, so a terra machine would clone all of
+`personal`'s list.
 
 ## Tests
 

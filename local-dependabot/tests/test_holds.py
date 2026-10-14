@@ -36,6 +36,7 @@ import holds  # noqa: E402
 ME = "example-owner"
 TODAY = "2026-09-24"
 ADMITTED = "platypeeps/admitted"
+PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack")
 
 
 def block(*probes, since="2026-09-10", reason="vitest 5 Assertion<R, T>; jest-dom 7.0.1 augments Assertion<T>",
@@ -105,10 +106,21 @@ class HoldsCase(unittest.TestCase):
         self.repo(slug)["comments"][str(number)] = [comment(cid, body, login=login), *more]
         return cid
 
+    def empty_home(self):
+        """A HOME whose workflow database has no repo rows: the owner gate reads it, never the operator's (sd:3984)."""
+        home = Path(self.tmp.name).resolve() / "empty-home"
+        if not home.exists():
+            sys.path.insert(0, str(PACK_ROOT / "lib"))
+            from sd_db.migrate import initialise
+            home.mkdir()
+            initialise(home=home)
+        return home
+
     def run_holds(self, *repos, dry_run=False, expect=0, env=None):
         self.state_path.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
         environment = dict(os.environ)
         environment.update({
+            "HOME": str(self.empty_home()), "SD_PACK_ROOT": str(PACK_ROOT),
             "PYTHON": sys.executable,
             "SD_HOLDS_GH": f"{sys.executable} {DOUBLES / 'gh.py'}",
             "SD_HOLDS_NPM": f"{sys.executable} {DOUBLES / 'npm.py'}",
@@ -198,7 +210,7 @@ class C2Discovery(HoldsCase):
         text = (FOLDER / "ROUTINE.md").read_text(encoding="utf-8")
         recited = re.findall(r"^ {7}([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$", text, re.MULTILINE)
         self.assertEqual(sorted(recited), sorted(holds.DENIED))
-        self.assertIn("allowed-repos.conf", text)
+        self.assertIn("dependabot.sh allowed", text)
         self.assertTrue(all(slug.startswith("platypeeps/") for slug in holds.DENIED))
         self.assertIn("`platypeeps/*` — every repository, always", text)
         self.assertEqual(holds.ALLOWED_OWNERS, ("platypeeps",))
@@ -473,25 +485,74 @@ class Ranges(unittest.TestCase):
         self.assertTrue(holds.compare("v7.1.0", "=", "7.1.0"))
 
 
-class AllowedReposFile(unittest.TestCase):
-    """The consent list lives in <config>/dependabot/, outside the checkout."""
+class AllowedRepos(HoldsCase):
+    """The consent list is the `repo` rows with `dependabot` set (sd:3984); a failed read is unknown, not none."""
 
-    def test_the_default_file_is_in_the_config_dir_and_the_override_wins(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            conf = Path(tmp) / "dependabot"
-            conf.mkdir()
-            (conf / "allowed-repos.conf").write_text("example-org/one # note\n\nexample-org/one\n")
-            other = Path(tmp) / "other.conf"
-            other.write_text("example-org/two\n")
-            env = {k: v for k, v in os.environ.items() if k != "DEPENDABOT_ALLOWED_REPOS_FILE"}
-            env["SYSTEM_TOOLS_CONFIG"] = tmp
-            with unittest.mock.patch.dict(os.environ, env, clear=True):
-                self.assertEqual(holds._allowed_repos(), ("example-org/one",))
-                os.environ["DEPENDABOT_ALLOWED_REPOS_FILE"] = str(other)
-                self.assertEqual(holds._allowed_repos(), ("example-org/two",))
-                del os.environ["DEPENDABOT_ALLOWED_REPOS_FILE"]
-                os.environ["SYSTEM_TOOLS_CONFIG"] = str(Path(tmp) / "absent")
-                self.assertEqual(holds._allowed_repos(), ())
+    def setUp(self):
+        super().setUp()
+        self.home = Path(self.tmp.name).resolve() / "home"
+        self.home.mkdir()
+        sys.path.insert(0, str(PACK_ROOT / "lib"))
+        from sd_db import connect, repos, writes
+        from sd_db.migrate import initialise
+        initialise(home=self.home)
+        connection = connect(home=self.home)
+        for name in ("one", "two"):
+            writes.upsert_repo(connection, str(self.home / "repos" / name),
+                               remote=f"git@github.com:example-org/{name}.git")
+        repos.set_dependabot(connection, self.home / "repos" / "one", "yes")
+        connection.close()
+
+    def allowed(self, **env):
+        environment = dict(os.environ, PYTHON=sys.executable, HOME=str(self.home), SD_PACK_ROOT=str(PACK_ROOT))
+        environment.update(env)
+        return subprocess.run(["/bin/sh", str(ENTRYPOINT), "allowed"], capture_output=True, text=True,
+                              env=environment)
+
+    def test_allowed_prints_each_row_with_dependabot_set(self):
+        done = self.allowed()
+        self.assertEqual((done.returncode, done.stdout), (0, "example-org/one\n"), done.stderr)
+
+    def test_a_no_on_any_row_naming_the_repository_withdraws_its_consent(self):
+        """Two checkouts of one repository are two rows; Management shows one. A no on either one is a no (sd:3984)."""
+        from sd_db import connect, repos, writes
+        connection = connect(home=self.home)
+        writes.upsert_repo(connection, str(self.home / "clones" / "one"), remote="https://github.com/Example-Org/One")
+        repos.set_dependabot(connection, self.home / "clones" / "one", "yes")
+        connection.close()
+        self.assertEqual(self.allowed().stdout, "example-org/one\n")
+        connection = connect(home=self.home)
+        repos.set_dependabot(connection, self.home / "repos" / "one", "no")
+        connection.close()
+        done = self.allowed()
+        self.assertEqual((done.returncode, done.stdout), (0, ""), done.stderr)
+
+    def test_a_missing_pack_is_unknown_not_none(self):
+        done = self.allowed(SD_PACK_ROOT=str(self.home / "absent"))
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+        self.assertIn("allowed list unknown: no sd_db under", done.stderr)
+
+    def test_a_failed_database_read_is_unknown_not_none(self):
+        empty = self.home / "empty"
+        empty.mkdir()
+        done = self.allowed(HOME=str(empty))
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+        self.assertIn("allowed list unknown:", done.stderr)
+
+    def test_the_gate_admits_a_flagged_repository_and_names_an_unknown_list(self):
+        self.state["viewer"]["example-org/one"] = "ADMIN"
+        self.state["repos"]["example-org/one"] = {"pulls": [], "comments": {}, "permission": {}}
+        env = {"HOME": str(self.home), "SD_PACK_ROOT": str(PACK_ROOT)}
+        log = self.run_holds("example-org/one", "example-org/two", env=env)
+        self.assertNotIn("example-org/one", " ".join(self.lines(log, "SKIP")))
+        self.assertIn("SKIP example-org/two owner not authorized", log)
+        empty = self.home / "empty"
+        empty.mkdir()
+        log = self.run_holds("example-org/one", ADMITTED, env=env | {"HOME": str(empty)})
+        unknown = [line for line in log if line.startswith("SKIP example-org/one allowed list unknown: ")]
+        self.assertEqual(len(unknown), 1, log)
+        self.assertNotIn(f"SKIP {ADMITTED}", " ".join(log))
+        self.assertEqual(self.journal(), [])
 
 
 class Parsing(unittest.TestCase):

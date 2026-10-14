@@ -1,5 +1,6 @@
 #!/bin/sh
-# Clone-or-pull the repo fleet listed in repos.<profile>.conf.
+# Clone-or-pull the repo fleet the workflow database lists for this machine's
+# profile (sd-db repo list --clones), else its last answer, else the confs.
 # Usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|test
 set -e
 
@@ -26,6 +27,15 @@ exec 4>&2
 bound_step() { # seconds, command...
   # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
   (ST_STEP_FD3=1; st_step "$@" 3>&4)
+}
+
+# Prints failure line $1, and keeps it in $TMPD/flagged when there is a TMPD:
+# a failed refresh prints those lines again on stderr. The lane's post-merge
+# report keeps stderr alone when there is any, and a step line always is, so
+# a reason on stdout alone was lost (sd:4045).
+flag() {
+  echo "$1"
+  [ -z "${TMPD:-}" ] || printf '%s\n' "$1" >> "$TMPD/flagged"
 }
 
 # The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
@@ -63,7 +73,8 @@ esac
 
 ROOT="${REPO_SYNC_ROOT:-$DEFAULT_ROOT}"
 # The confs are private, per-machine lists, so they live in the shared config
-# directory outside the checkout. REPO_SYNC_CONF_DIR points elsewhere; a
+# directory outside the checkout. Since sd:3983 they are the list's third
+# source, after the database and its snapshot (load_list). REPO_SYNC_CONF_DIR points elsewhere; a
 # private fork that tracks its confs sets it to this folder.
 CONF_DIR="${REPO_SYNC_CONF_DIR:-$(st_config_dir repo-sync)}"
 COMMON_CONF="$CONF_DIR/repos.common.conf"
@@ -82,44 +93,107 @@ else
   CONF_FILES="$COMMON_CONF$NL$PROFILE_CONF"
 fi
 
-# `test` and `help` read no conf, so a fresh checkout without its local
-# confs can still run the suite and print usage.
-case "${1:-}" in
-  test|help|-h|--help|"") ;;
-  *)
-    OLDIFS=$IFS
-    IFS=$NL
-    for conf in $CONF_FILES; do
-      if [ ! -f "$conf" ]; then
-        echo "repo-sync.sh: missing config $conf" >&2
-        echo "  copy local-repo-sync/$(basename "$conf").example to $conf and list your repos" >&2
-        exit 1
-      fi
-    done
-    IFS=$OLDIFS
-    ;;
-esac
+# The pack's sd-db: the workflow database holds the list (sd:3983). Each call
+# reads /dev/null and is bounded, since on a satellite it crosses the tailnet.
+# The pack writes `repo list --clones` lines relative to SD_REPO_ROOT (default
+# ~/repos), so every call gets the root this script resolved: else a root
+# moved by REPO_SYNC_ROOT or a work root has every row refused.
+SD_PACK_ROOT="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
+sd_db() {
+  st_bounded 120 env SD_REPO_ROOT="$ROOT" "$SD_PACK_ROOT/bin/sd-db" "$@" < /dev/null
+}
 
-# Emits "<subdir> <owner/repo>" lines with comments and blanks stripped,
-# separators collapsed to one space, and each entry emitted once in the order
-# it first appears. Every caller either iterates this list or counts it, so a
-# repeated entry is a repo cloned and pulled twice and a total that overstates
-# the fleet. Reconcile cannot write one since it learned to match on the
-# directory a conf line actually clones to, but a hand-edited conf still can,
-# and nothing downstream would notice: `sync` and `check` iterate straight off
-# this. Deduping here rather than at each caller means the four totals are
-# right because the list is right, not because nothing upstream went wrong.
-repo_list() {
-  ( IFS=$NL; for f in $CONF_FILES; do cat "$f"; done ) \
-    | sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' \
-          -e 's/^ //' -e 's/ $//' \
+# The last list the database gave for this profile. Its name carries the
+# profile, so another profile's answer is never read as this one's. Its first
+# line, `# root <ROOT>`, names the physical root its lines are relative to:
+# after the root moves (or its symlink does), the pack refuses rows outside it,
+# and an old snapshot must not stand in for them. A comment, so the README's
+# revert reads it as a conf.
+SNAPSHOT="$(st_state_dir repo-sync)/clones.$PROFILE"
+
+# Comments and blanks stripped, separators collapsed to one space, and each
+# entry once in the order it first appears. Every caller either iterates the
+# list or counts it, so a repeated entry is a repo cloned and pulled twice and
+# a total that overstates the fleet. A hand-edited conf can repeat one, and
+# nothing downstream would notice: `sync` and `check` iterate straight off it.
+normalise() {
+  sed -e 's/#.*//' -e 's/[[:space:]][[:space:]]*/ /g' \
+      -e 's/^ //' -e 's/ $//' \
     | grep -v '^$' \
     | awk '!seen[$0]++'
+}
+
+# Reads the run's list once into $TMPD/list (design sd:3983):
+#   1. `sd-db repo list --clones PROFILE`, when it exits 0 and every line is
+#      `<subdir> <owner/repo>`. It then replaces the snapshot (temp file, then
+#      mv: a temp file a killed run left is overwritten, never read).
+#   2. Else the snapshot, the database's last answer, when it names this root.
+#   3. Else the conf files: the bootstrap of a machine that never reached it.
+#   4. Else refuse, naming both remedies.
+# A failed or empty answer is unknown, never an empty list: every profile
+# lists at least `system`, so no line means the profile was never imported.
+# LIST_SOURCE names the source; LIST_WHY why the database did not answer.
+load_list() {
+  LIST_FILE="$TMPD/list"
+  LIST_WHY=""
+  l_rc=0
+  # A fresh machine has no root until sync makes one.
+  l_root=$(cd "$ROOT" 2> /dev/null && pwd -P) || l_root=$ROOT
+  sd_db repo list --clones "$PROFILE" > "$TMPD/list.db" 2> "$TMPD/list.err" || l_rc=$?
+  if [ "$l_rc" -ne 0 ]; then
+    LIST_WHY="sd-db repo list --clones $PROFILE exited $l_rc: $(tail -1 "$TMPD/list.err")"
+  elif [ ! -s "$TMPD/list.db" ]; then
+    LIST_WHY="it lists nothing for $PROFILE"
+  else
+    l_bad=$(awk 'NF != 2 || $2 !~ /^[^\/]+\/[^\/]+$/ { print; exit }' "$TMPD/list.db")
+    [ -z "$l_bad" ] || LIST_WHY="its line '$l_bad' is not a <subdir> <owner/repo> line"
+  fi
+  if [ -z "$LIST_WHY" ]; then
+    normalise < "$TMPD/list.db" > "$LIST_FILE"
+    LIST_SOURCE=database
+    if ! { mkdir -p "${SNAPSHOT%/*}" && { printf '# root %s\n' "$l_root" && cat "$LIST_FILE"; } > "$SNAPSHOT.tmp" \
+        && mv -f "$SNAPSHOT.tmp" "$SNAPSHOT"; }; then
+      echo "repo-sync.sh: cannot write $SNAPSHOT; without the database, the next run reads an older answer or the confs" >&2
+    fi
+    return 0
+  fi
+  if [ -s "$SNAPSHOT" ] && [ "$(head -1 "$SNAPSHOT")" = "# root $l_root" ]; then
+    normalise < "$SNAPSHOT" > "$LIST_FILE"
+    LIST_SOURCE=snapshot
+    echo "repo-sync.sh: the database did not answer ($LIST_WHY); the list is its last answer, $SNAPSHOT" >&2
+    return 0
+  fi
+  l_missing=""
+  OLDIFS=$IFS
+  IFS=$NL
+  for conf in $CONF_FILES; do
+    { [ -f "$conf" ] && [ -r "$conf" ]; } || { l_missing=$conf; break; }
+  done
+  IFS=$OLDIFS
+  # A conf that fails to read is no list, not an empty one.
+  if [ -z "$l_missing" ] \
+      && ( IFS=$NL; for f in $CONF_FILES; do cat "$f" || exit 1; done ) > "$TMPD/list.conf"; then
+    normalise < "$TMPD/list.conf" > "$LIST_FILE"
+    LIST_SOURCE=conf
+    echo "repo-sync.sh: the database did not answer ($LIST_WHY) and there is no snapshot for $ROOT ($SNAPSHOT); the list is the conf files" >&2
+    return 0
+  fi
+  echo "repo-sync.sh: no repo list: the database did not answer ($LIST_WHY), there is no snapshot for $ROOT ($SNAPSHOT), and the config ${l_missing:-files} is missing or unreadable" >&2
+  echo "  list the profile in the database: SD_REPO_ROOT='$ROOT' sd-db repo seed --clones $PROFILE, or sd-db repo clones PATH +$PROFILE" >&2
+  l_missing=${l_missing:-$PROFILE_CONF}
+  echo "  or copy local-repo-sync/$(basename "$l_missing").example to $l_missing and list your repos" >&2
+  exit 1
+}
+
+# Emits the run's "<subdir> <owner/repo>" lines, as load_list read them.
+repo_list() {
+  cat "$LIST_FILE"
 }
 
 list() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
+  echo "source  : $LIST_SOURCE"
   echo
   repo_list | awk '{ printf "%-12s %s\n", $1, $2 }'
   echo
@@ -185,109 +259,98 @@ scan_disk() {
   done
 }
 
-# Drops the "<subdir> <owner/repo>" entry from whichever conf file holds it.
-# Only the confs this profile actually reads are touched, so a profile that
-# does not layer on common can never edit common.
-# The IFS change stays inside a subshell: reconcile calls this from a
-# `while read` loop, which would mis-split its own fields if IFS leaked out.
-remove_entry() {
-  ( IFS=$NL
-    for f in $CONF_FILES; do
-      awk -v s="$1" -v r="$2" '{
-        line = $0; sub(/#.*/, "", line)
-        gsub(/^[ \t]+|[ \t]+$/, "", line)
-        n = split(line, p, /[ \t]+/)
-        if (n == 2 && p[1] == s && p[2] == r) next
-        print
-      }' "$f" > "$f.reconcile.tmp" && mv "$f.reconcile.tmp" "$f"
-    done )
-}
-
-# Reconciles the conf files against what is actually checked out: repos found
-# on disk but not in any conf are appended to the profile conf, conf entries
-# whose checkout is gone are deleted (disk is the source of truth — a repo
-# deleted on purpose must not be re-cloned every night). Entries are matched
-# by target path (subdir + directory name), so a checkout whose directory no
-# longer matches its origin repo name (renamed upstream) is not dropped --
-# its conf entry still names the directory that exists. It is not added
-# under the new name either: the conf cannot express a directory that
-# differs from the repo name, so scan_disk reports it as MISMATCH instead of
-# offering it as an addition. Writes added/removed/unmanaged/mismatched
-# lists into $TMPD.
+# Compares the run's list with the checkouts on disk, and writes one thing:
+# a GitHub checkout with no row joins the database, through `sd-db repo add`
+# then `sd-db repo clones PATH +PROFILE`, so a checkout cloned by hand still
+# joins the list (design sd:3983). It writes only when the database gave the
+# list, and never removes a profile, so no outage or empty disk can look like
+# a deletion. The rest it reports: a checkout whose row does not list this
+# profile (the operator may have cleared it), and a listed one that is gone
+# (sync clones it). Entries are matched by target path (subdir + directory
+# name). A checkout whose directory differs from its origin repo name cannot
+# be a list line, so scan_disk reports it as MISMATCH. Writes its lists into
+# $TMPD; a non-empty $JOINED means the caller reads the list again.
 reconcile() {
-  scan="$TMPD/scan"; ADDED="$TMPD/added"; REMOVED="$TMPD/removed"
+  scan="$TMPD/scan"; JOINED="$TMPD/joined"; UNJOINED="$TMPD/unjoined"
+  UNLISTED="$TMPD/unlisted"; ABSENT="$TMPD/absent"
   UNMANAGED="$TMPD/unmanaged"; MISMATCHED="$TMPD/mismatched"
   WORKTREES="$TMPD/worktrees"
-  : > "$ADDED"; : > "$REMOVED"; : > "$UNMANAGED"; : > "$MISMATCHED"
-  : > "$WORKTREES"
+  : > "$JOINED"; : > "$UNJOINED"; : > "$UNLISTED"; : > "$ABSENT"
+  : > "$UNMANAGED"; : > "$MISMATCHED"; : > "$WORKTREES"
 
   scan_disk | sort -u > "$scan"
   repo_list | awk '{ n = split($2, a, "/"); print $1 "/" a[n] }' \
     | sort -u > "$TMPD/conf.keys"
-
-  # The scan key uses the checkout's directory name, not the origin repo
-  # name — a repo renamed upstream keeps its old directory and old conf
-  # entry, and must not be re-added under the new name every night.
-  while read -r subdir ownrepo dirname; do
-    grep -qxF "$subdir/$dirname" "$TMPD/conf.keys" \
-      || echo "$subdir $ownrepo" >> "$ADDED"
-  done < "$scan"
-
   repo_list | while read -r subdir ownrepo; do
     [ -e "$ROOT/$subdir/${ownrepo##*/}/.git" ] \
-      || echo "$subdir $ownrepo" >> "$REMOVED"
+      || echo "$subdir $ownrepo" >> "$ABSENT"
   done
 
-  # Defence in depth against a re-add loop. Nothing should reach here twice
-  # now that dir-mismatched checkouts are reported rather than added, but a
-  # duplicate conf line is pulled twice by `sync` and counted twice in every
-  # total, and three of them accumulated unnoticed before the cause was
-  # found. Both sides are normalised to one space: conf lines are written by
-  # hand with varying spacing, while $ADDED always uses a single space.
-  if [ -s "$ADDED" ]; then
-    repo_list | awk '{ print $1 " " $2 }' | sort -u > "$TMPD/conf.lines"
-    sort -u "$ADDED" > "$TMPD/added.uniq"
-    : > "$ADDED"
-    while read -r line; do
-      grep -qxF "$line" "$TMPD/conf.lines" || echo "$line" >> "$ADDED"
-    done < "$TMPD/added.uniq"
+  # The registered paths, absolute: `repo list` prints a row under $HOME as
+  # ~/..., and two spaces end the path. A failed read writes nothing.
+  r_rows=""
+  r_why=""
+  if [ "$LIST_SOURCE" != database ]; then
+    r_why="the database did not answer ($LIST_WHY)"
+  elif sd_db repo list > "$TMPD/rows.out" 2> "$TMPD/rows.err"; then
+    sed -n 's/^sd-db: //p' "$TMPD/rows.out" \
+      | awk -v home="$HOME" '{ sub(/  .*/, ""); if (substr($0, 1, 2) == "~/") $0 = home substr($0, 2); print }' \
+      > "$TMPD/rows"
+    r_rows=1
+  else
+    r_why="sd-db repo list failed: $(tail -1 "$TMPD/rows.err")"
   fi
-  if [ -s "$ADDED" ]; then
-    {
-      echo
-      echo "# auto-added by reconcile on $(date '+%Y-%m-%d')"
-      cat "$ADDED"
-    } >> "$PROFILE_CONF"
-  fi
-  if [ -s "$REMOVED" ]; then
-    while read -r subdir ownrepo; do
-      remove_entry "$subdir" "$ownrepo"
-    done < "$REMOVED"
-  fi
+  # A fresh machine has no root until sync makes one.
+  r_root=$(cd "$ROOT" 2> /dev/null && pwd -P) || r_root=$ROOT
+
+  # The scan key uses the checkout's directory name, not the origin repo
+  # name — a repo renamed upstream keeps its old directory and old entry.
+  while read -r subdir ownrepo dirname; do
+    if grep -qxF "$subdir/$dirname" "$TMPD/conf.keys"; then continue; fi
+    if [ "$subdir" = . ]; then r_rel=$dirname; else r_rel=$subdir/$dirname; fi
+    if [ -z "$r_rows" ] || grep -qxF -e "$ROOT/$r_rel" -e "$r_root/$r_rel" "$TMPD/rows"; then
+      echo "$subdir $ownrepo" >> "$UNLISTED"
+    elif sd_db repo add "$ROOT/$r_rel" > /dev/null 2> "$TMPD/join.err" \
+        && sd_db repo clones "$ROOT/$r_rel" "+$PROFILE" > /dev/null 2> "$TMPD/join.err"; then
+      echo "$subdir $ownrepo" >> "$JOINED"
+    else
+      echo "$subdir $ownrepo ($(tail -1 "$TMPD/join.err"))" >> "$UNJOINED"
+    fi
+  done < "$scan"
 
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
+  echo "source  : $LIST_SOURCE"
   echo
-  if [ -s "$ADDED" ]; then
-    echo "added to $(basename "$PROFILE_CONF"):"
-    sed 's/^/  /' "$ADDED"
+  [ -z "$r_why" ] || echo "reconcile wrote nothing: $r_why"
+  if [ -s "$JOINED" ]; then
+    echo "joined (registered, and listed for $PROFILE):"
+    sed 's/^/  /' "$JOINED"
   fi
-  if [ -s "$REMOVED" ]; then
-    echo "removed (checkout gone):"
-    sed 's/^/  /' "$REMOVED"
+  if [ -s "$UNJOINED" ]; then
+    echo "not joined (sd-db repo add, then repo clones +$PROFILE, failed; the next run reports it):"
+    sed 's/^/  /' "$UNJOINED"
   fi
-  if [ ! -s "$ADDED" ] && [ ! -s "$REMOVED" ]; then
-    echo "conf matches disk — no changes"
+  if [ -s "$UNLISTED" ]; then
+    echo "present, not listed for $PROFILE: list it with sd-db repo clones PATH +$PROFILE, or delete the checkout:"
+    sed 's/^/  /' "$UNLISTED"
+  fi
+  if [ -s "$ABSENT" ]; then
+    echo "listed for $PROFILE, no checkout: sync clones it; to stop, sd-db repo clones PATH -$PROFILE:"
+    sed 's/^/  /' "$ABSENT"
+  fi
+  if [ ! -s "$JOINED" ] && [ ! -s "$UNJOINED" ] && [ ! -s "$UNLISTED" ] && [ ! -s "$ABSENT" ]; then
+    echo "list matches disk — no changes"
   fi
   if [ -s "$UNMANAGED" ]; then
     echo
-    echo "unmanaged checkouts (no GitHub origin, not tracked in conf):"
+    echo "unmanaged checkouts (no GitHub origin, not in the list):"
     sed 's/^/  /' "$UNMANAGED"
   fi
   if [ -s "$MISMATCHED" ]; then
     echo
     echo "directory name does not match repo name — not representable as a"
-    echo "conf line, so left alone (rename the directory, or the repo):"
+    echo "list line, so left alone (rename the directory, or the repo):"
     sed 's/^/  /' "$MISMATCHED"
   fi
   if [ -s "$WORKTREES" ]; then
@@ -302,8 +365,9 @@ reconcile() {
 # absent without cloning it. machine-setup's `status` is the reason it exists:
 # `list` prints the configured fleet without looking at disk and `sync` clones,
 # so the repos stage had nothing it could report and sat outside the drift
-# count entirely. Touches neither the network nor the working copies — origin
+# count entirely. Touches neither a git remote nor the working copies — origin
 # comes from the local config, so a repo that is behind is still `ok` here.
+# Only the list's read reaches the database, the hub's on a satellite.
 check() {
   echo "profile : $PROFILE"
   echo "root    : $ROOT"
@@ -567,7 +631,7 @@ pin_schema() {
 refresh_one() {
   if ! r_dir=$(cd "$1" 2>/dev/null && pwd) \
      || ! git -C "$r_dir" rev-parse -q --git-dir > /dev/null 2>&1; then
-    echo "!!! failed: $1 is not a git checkout"
+    flag "!!! failed: $1 is not a git checkout"
     return 1
   fi
   if ! is_pinned "$r_dir"; then
@@ -581,15 +645,15 @@ refresh_one() {
   # A tracked change would ride along to the new commit, or block the switch
   # halfway. Untracked files stay where they are, so they do not count.
   if [ -n "$(git -C "$r_dir" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
-    echo "!!! refused: $r_dir has uncommitted changes; commit or stash them, then refresh again"
+    flag "!!! refused: $r_dir has uncommitted changes; commit or stash them, then refresh again"
     return 1
   fi
   if ! bound_step 300 git -C "$r_dir" fetch -q origin < /dev/null; then
-    echo "!!! failed: fetch in $r_dir; still at $r_short"
+    flag "!!! failed: fetch in $r_dir; still at $r_short"
     return 1
   fi
   if ! r_def=$(pin_default "$r_dir"); then
-    echo "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
+    flag "!!! failed: $r_dir has no origin/HEAD, origin/main or origin/master; still at $r_short"
     return 1
   fi
   printf '%s\n' "$r_dir${US}origin/$r_def" >> "$TMPD/plan"
@@ -607,14 +671,14 @@ pin_move() {
   # has no switch to stop it, so a checkout with submodules is moved by hand.
   for m_at in HEAD "$m_rev"; do
     if git -C "$m_dir" ls-tree -r "$m_at" | awk '$2 == "commit" { f = 1 } END { exit !f }'; then
-      echo "!!! refused: $m_at in $m_dir holds a submodule; $3 does not move one; still at $m_short"
+      flag "!!! refused: $m_at in $m_dir holds a submodule; $3 does not move one; still at $m_short"
       return 1
     fi
   done
   # An ignored file is often local config or data; git overwrites one that
   # the target commit tracks unless told not to, and then refuses the switch.
   if ! git -C "$m_dir" switch -q --detach --no-overwrite-ignore "$m_rev"; then
-    echo "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)"
+    flag "!!! failed: switch to $m_rev in $m_dir; HEAD is now $(git -C "$m_dir" rev-parse --short HEAD)"
     return 1
   fi
   m_new=$(git -C "$m_dir" rev-parse --short HEAD)
@@ -628,7 +692,7 @@ pin_move() {
   if [ -f "$m_dir/bin/sd_install.py" ]; then
     echo "--- make setup"
     if ! make -C "$m_dir" setup; then
-      echo "!!! failed: make setup; the checkout is at $m_new, rerun: make -C $m_dir setup"
+      flag "!!! failed: make setup; the checkout is at $m_new, rerun: make -C $m_dir setup"
       m_rc=1
     fi
   fi
@@ -685,11 +749,11 @@ svc_wait() {
 # Boots out label $1 and waits until launchd has unloaded it.
 svc_stop() {
   if ! launchctl bootout "gui/$(id -u)/$1"; then
-    echo "!!! failed: launchctl bootout $1"
+    flag "!!! failed: launchctl bootout $1"
     return 1
   fi
   if ! svc_wait "$1" unloaded; then
-    echo "!!! failed: $1 did not unload within 10 s of its bootout"
+    flag "!!! failed: $1 did not unload within 10 s of its bootout"
     return 1
   fi
 }
@@ -701,7 +765,7 @@ stop_consumers() {
   for c in $CONSUMERS; do
     c_label="$LABEL_PREFIX.$c"
     if ! c_state=$(svc_state "$c_label"); then
-      echo "!!! failed: launchctl print $c_label gave no answer"
+      flag "!!! failed: launchctl print $c_label gave no answer"
       return 1
     fi
     [ "$c_state" = loaded ] || continue
@@ -723,14 +787,14 @@ stop_consumers() {
 start_consumers() {
   [ -s "$REFRESH_STOPPED" ] || return 0
   if [ -e "$REFRESH_INTENT" ]; then
-    echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")($REFRESH_INTENT is left: its migrate is not settled)"
+    flag "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")($REFRESH_INTENT is left: its migrate is not settled)"
     return 1
   fi
   c_pack=$(hub_dir pack)
   c_lib=$(lib_version "$c_pack")
   c_db=$(db_version "$REFRESH_DB" || :)
   if [ -z "$c_lib" ] || [ "$c_db" != "$c_lib" ]; then
-    echo "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
+    flag "!!! left stopped: $(tr '\n' ' ' < "$REFRESH_STOPPED")(database schema ${c_db:-unknown}, the pack's lib/ ${c_lib:-unknown})"
     schema_remedy "$c_db" "$c_lib" "$c_pack" "to start them"
     return 1
   fi
@@ -738,7 +802,7 @@ start_consumers() {
     c_label="$LABEL_PREFIX.$c"
     grep -qxF "$c_label" "$REFRESH_STOPPED" || continue
     if ! c_state=$(svc_state "$c_label"); then
-      echo "!!! failed: launchctl print $c_label gave no answer; left stopped, refresh again to start it"
+      flag "!!! failed: launchctl print $c_label gave no answer; left stopped, refresh again to start it"
       return 1
     fi
     if [ "$c_state" = loaded ] && ! svc_stop "$c_label"; then
@@ -746,11 +810,11 @@ start_consumers() {
       return 1
     fi
     if ! launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$c_label.plist"; then
-      echo "!!! failed: launchctl bootstrap $c_label; left stopped, refresh again to start it"
+      flag "!!! failed: launchctl bootstrap $c_label; left stopped, refresh again to start it"
       return 1
     fi
     if ! svc_wait "$c_label" loaded; then
-      echo "!!! failed: $c_label did not load within 10 s of its bootstrap; left listed, refresh again to start it"
+      flag "!!! failed: $c_label did not load within 10 s of its bootstrap; left listed, refresh again to start it"
       return 1
     fi
     grep -vxF "$c_label" "$REFRESH_STOPPED" > "$REFRESH_STOPPED.tmp" || :
@@ -790,7 +854,7 @@ schema_remedy() {
 # once one writes, the backup is no longer a rollback point.
 REFRESH_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-intent"
 # Each refresh backup gets its own folder here, outside the backup root that
-# retention prunes, so it stays until the operator removes it.
+# the pack's retention prunes; prune_backups keeps the newest three.
 REFRESH_BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-backups"
 REFRESH_DB="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
 
@@ -798,10 +862,12 @@ REFRESH_DB="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
 # when it cannot be read: no answer, never a version. Not -readonly: that
 # cannot open a WAL database whose -shm went with its last connection, as
 # it does once the services stop. The PRAGMA writes nothing, and the -f
-# check keeps sqlite3 from creating a database that is not there.
+# check keeps sqlite3 from creating a database that is not there. A lock,
+# such as an sd call's checkpoint as it closes, is waited out for up to 30 s:
+# sqlite3 alone fails at once, and refresh refused (sd:4045).
 db_version() {
   [ -f "$1" ] || return 1
-  d_v=$(sqlite3 "$1" 'PRAGMA user_version' 2>/dev/null) || return 1
+  d_v=$(sqlite3 -cmd '.timeout 30000' "$1" 'PRAGMA user_version' 2>/dev/null) || return 1
   case $d_v in ''|*[!0-9]*) return 1 ;; esac
   echo "$d_v"
 }
@@ -851,10 +917,32 @@ read_intent() {
 forget_intent() {
   rm -f "$REFRESH_INTENT"
   if [ -e "$REFRESH_INTENT" ]; then
-    echo "!!! failed: cannot delete $REFRESH_INTENT"
+    flag "!!! failed: cannot delete $REFRESH_INTENT"
     return 1
   fi
-  echo "refresh: deleted $REFRESH_INTENT; the backups in ${i_backup%/*} stay until you remove them"
+  echo "refresh: deleted $REFRESH_INTENT"
+  prune_backups
+}
+
+# Removes all but the newest three refresh backup folders, named for their
+# UTC time, so they sort oldest first (sd:4022). Only with no record left:
+# a record names the backup of a refresh not yet done, the newest folder.
+prune_backups() {
+  [ ! -e "$REFRESH_INTENT" ] || return 0
+  b_n=0
+  for b_dir in "$REFRESH_BACKUPS"/[0-9]*Z-*; do
+    if [ -d "$b_dir" ]; then b_n=$((b_n + 1)); fi
+  done
+  for b_dir in "$REFRESH_BACKUPS"/[0-9]*Z-*; do
+    [ "$b_n" -gt 3 ] || break
+    [ -d "$b_dir" ] || continue
+    b_n=$((b_n - 1))
+    if rm -rf "$b_dir"; then
+      echo "refresh: removed the old backup $b_dir"
+    else
+      echo "note: cannot remove the old backup $b_dir"
+    fi
+  done
 }
 
 # Writes the record: system sha $1, pack sha $2, schema $3, backup $4. The
@@ -872,7 +960,7 @@ write_intent() {
 rollback_point() {
   if [ -e "$REFRESH_INTENT" ]; then
     if ! read_intent; then
-      echo "!!! refused: $REFRESH_INTENT is left by a migrate that did not finish, and its rollback point is unknown: $i_why"
+      flag "!!! refused: $REFRESH_INTENT is left by a migrate that did not finish, and its rollback point is unknown: $i_why"
       echo "  nothing moved; the services stay stopped and no hub-pin goes out; put the database and checkouts right by hand, then delete $REFRESH_INTENT"
       return 2
     fi
@@ -885,11 +973,11 @@ rollback_point() {
   p_lib=$(pin_schema "$p_pack" "$p_rev")
   if [ -z "$p_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   if ! p_db=$(db_version "$REFRESH_DB"); then
-    echo "!!! refused: cannot read the schema version of $REFRESH_DB, so whether it needs a migrate is unknown; nothing moved"
+    flag "!!! refused: cannot read the schema version of $REFRESH_DB, so whether it needs a migrate is unknown; nothing moved"
     return 1
   fi
   if [ "$p_db" -gt "$p_lib" ]; then
-    echo "!!! refused: $REFRESH_DB is at schema $p_db, above the $p_lib of the pack's lib/ at $p_rev; nothing moved"
+    flag "!!! refused: $REFRESH_DB is at schema $p_db, above the $p_lib of the pack's lib/ at $p_rev; nothing moved"
     schema_remedy "$p_db" "$p_lib" "$p_pack" ""
     return 1
   fi
@@ -897,7 +985,7 @@ rollback_point() {
   p_root="$REFRESH_BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)-$$"
   echo "--- $p_pack/bin/sd-db backup: the database is at schema $p_db, the pack's lib/ at $p_rev at $p_lib"
   if ! "$p_pack/bin/sd-db" backup --destination "$p_root" --no-row-prune < /dev/null; then
-    echo "!!! refused: the backup before the migrate failed; nothing moved, no record written"
+    flag "!!! refused: the backup before the migrate failed; nothing moved, no record written"
     return 1
   fi
   p_backup=""
@@ -907,7 +995,7 @@ rollback_point() {
     p_backup=$p_found
   done
   if [ -z "$p_backup" ] || [ "$(db_version "$p_backup/sd.db" || :)" != "$p_db" ]; then
-    echo "!!! refused: $p_root holds no one backup at schema $p_db; nothing moved, no record written"
+    flag "!!! refused: $p_root holds no one backup at schema $p_db; nothing moved, no record written"
     return 1
   fi
   # A sha that cannot be read is no rollback point: an empty one would skip
@@ -916,11 +1004,11 @@ rollback_point() {
   p_sys_sha=""
   if { [ -n "$p_sys" ] && ! p_sys_sha=$(git -C "$p_sys" rev-parse HEAD); } \
       || ! p_pack_sha=$(git -C "$p_pack" rev-parse HEAD); then
-    echo "!!! refused: cannot read the system or pack sha; nothing moved, no record written; the backup $p_backup stays"
+    flag "!!! refused: cannot read the system or pack sha; nothing moved, no record written; the backup $p_backup stays"
     return 1
   fi
   if ! write_intent "$p_sys_sha" "$p_pack_sha" "$p_db" "$p_backup"; then
-    echo "!!! refused: cannot write $REFRESH_INTENT; nothing moved; the backup $p_backup stays"
+    flag "!!! refused: cannot write $REFRESH_INTENT; nothing moved; the backup $p_backup stays"
     return 1
   fi
   echo "refresh: wrote $REFRESH_INTENT: system ${p_sys_sha:-none}, pack $p_pack_sha, schema $p_db, backup $p_backup"
@@ -933,7 +1021,7 @@ back_to() {
     echo "refresh: put $1 back at $(git -C "$1" rev-parse --short HEAD)"
     return 0
   fi
-  echo "!!! failed: cannot put $1 back at $2; by hand: git -C '$1' switch --detach $2"
+  flag "!!! failed: cannot put $1 back at $2; by hand: git -C '$1' switch --detach $2"
   return 1
 }
 
@@ -949,7 +1037,7 @@ recover() {
   v_sys=$(hub_dir system)
   back_to "$v_pack" "$i_pack" || return 1
   if ! v_db=$(db_version "$REFRESH_DB"); then
-    echo "!!! failed: cannot read the schema version of $REFRESH_DB; by hand: $v_pack/bin/sd-db restore '$i_backup'"
+    flag "!!! failed: cannot read the schema version of $REFRESH_DB; by hand: $v_pack/bin/sd-db restore '$i_backup'"
     return 1
   fi
   if [ "$v_db" -gt "$i_schema" ]; then
@@ -958,29 +1046,29 @@ recover() {
     # copy migrates the restored one up to its own version.
     echo "--- sd_db restore $i_backup from $v_pack/lib: schema $v_db back to $i_schema"
     if ! PYTHONPATH="$v_pack/lib" python3 -P -m sd_db.jobs.cli restore "$i_backup" < /dev/null; then
-      echo "!!! failed: the restore of $i_backup"
+      flag "!!! failed: the restore of $i_backup"
       return 1
     fi
     v_db=$(db_version "$REFRESH_DB" || :)
     if [ "$v_db" != "$i_schema" ]; then
-      echo "!!! failed: the restore left $REFRESH_DB at schema ${v_db:-unknown}, not $i_schema"
+      flag "!!! failed: the restore left $REFRESH_DB at schema ${v_db:-unknown}, not $i_schema"
       return 1
     fi
     echo "note: the runner dispatches nothing until \`sd restore resume\` clears the restore record"
   elif [ "$v_db" -lt "$i_schema" ]; then
-    echo "!!! failed: $REFRESH_DB reads schema $v_db, below the record's $i_schema"
+    flag "!!! failed: $REFRESH_DB reads schema $v_db, below the record's $i_schema"
     return 1
   fi
   if [ -n "$i_sys" ] && [ -n "$v_sys" ]; then back_to "$v_sys" "$i_sys" || return 1; fi
   if [ -f "$v_pack/bin/sd_install.py" ]; then
     echo "--- make setup at $(git -C "$v_pack" rev-parse --short HEAD)"
     if ! make -C "$v_pack" setup; then
-      echo "!!! failed: make setup at the record's pack; by hand: make -C '$v_pack' setup"
+      flag "!!! failed: make setup at the record's pack; by hand: make -C '$v_pack' setup"
       return 1
     fi
   fi
   if [ "$(lib_version "$v_pack")" != "$i_schema" ]; then
-    echo "!!! failed: the record's pack $i_pack holds lib/ schema $(lib_version "$v_pack"), not the database's $i_schema"
+    flag "!!! failed: the record's pack $i_pack holds lib/ schema $(lib_version "$v_pack"), not the database's $i_schema"
     return 1
   fi
   forget_intent
@@ -998,12 +1086,12 @@ recover() {
 fresh_point() {
   f_root=${i_backup%/*}
   if ! f_before=$(ls "$f_root"); then
-    echo "!!! failed: cannot list $f_root"
+    flag "!!! failed: cannot list $f_root"
     return 1
   fi
   echo "--- $s_pack/bin/sd-db backup: again, with the moved pack, right before the migrate"
   if ! "$s_pack/bin/sd-db" backup --destination "$f_root" --no-row-prune < /dev/null; then
-    echo "!!! failed: the second backup into $f_root"
+    flag "!!! failed: the second backup into $f_root"
     return 1
   fi
   f_backup=""
@@ -1014,7 +1102,7 @@ fresh_point() {
     f_backup=$f_found
   done
   if [ -z "$f_backup" ] || [ "$(db_version "$f_backup/sd.db" || :)" != "$s_db" ]; then
-    echo "!!! failed: $f_root holds no one new backup at schema $s_db"
+    flag "!!! failed: $f_root holds no one new backup at schema $s_db"
     return 1
   fi
   if [ "$s_db" != "$i_schema" ]; then
@@ -1022,7 +1110,7 @@ fresh_point() {
     return 0
   fi
   if ! write_intent "$i_sys" "$i_pack" "$i_schema" "$f_backup"; then
-    echo "!!! failed: cannot write $REFRESH_INTENT; it still names $i_backup"
+    flag "!!! failed: cannot write $REFRESH_INTENT; it still names $i_backup"
     return 1
   fi
   i_backup=$f_backup
@@ -1035,7 +1123,7 @@ fresh_point() {
 # stuck, the record and the stopped services kept for the operator.
 settle() {
   if ! read_intent; then
-    echo "!!! failed: $i_why"
+    flag "!!! failed: $i_why"
     return 2
   fi
   s_pack=$(hub_dir pack)
@@ -1055,7 +1143,7 @@ settle() {
       SD_DB_BACKUP_ROOT="${i_backup%/*}" "$s_pack/bin/sd-db" migrate < /dev/null || s_ran=$?
       s_db=$(db_version "$REFRESH_DB" || :)
       if [ "$s_ran" -ne 0 ]; then
-        echo "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"
+        flag "!!! failed: $s_pack/bin/sd-db migrate exited $s_ran"
       fi
     fi
   fi
@@ -1075,7 +1163,7 @@ pin_ready() {
   if [ -z "$q_lib" ] || [ ! -e "$REFRESH_DB" ]; then return 0; fi
   q_db=$(db_version "$REFRESH_DB" || :)
   [ "$q_db" != "$q_lib" ] || return 0
-  echo "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib"
+  flag "!!! failed: hub-pin not published: the database reads schema ${q_db:-unknown}, the pack's lib/ $q_lib"
   schema_remedy "$q_db" "$q_lib" "$(hub_dir pack)" "to publish it"
   return 1
 }
@@ -1130,7 +1218,7 @@ refresh() {
     : > "$TMPD/plan.kept"
     while IFS=$US read -r r_dir r_rev; do
       if hub_checkout "$r_dir" > /dev/null; then
-        echo "!!! held: $r_dir stays at $(git -C "$r_dir" rev-parse --short HEAD): the other hub checkout failed"
+        flag "!!! held: $r_dir stays at $(git -C "$r_dir" rev-parse --short HEAD): the other hub checkout failed"
       else
         printf '%s\n' "$r_dir$US$r_rev" >> "$TMPD/plan.kept"
       fi
@@ -1146,7 +1234,7 @@ refresh() {
   # whatever this one moves: nothing may start the services before that.
   [ ! -e "$REFRESH_INTENT" ] || r_hub=1
   if [ -n "$r_hub" ] && ! stop_consumers; then
-    echo "!!! refused: a library consumer did not stop; nothing moved"
+    flag "!!! refused: a library consumer did not stop; nothing moved"
     r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1))
   else
     r_point=0
@@ -1166,7 +1254,7 @@ refresh() {
         settle || r_settle=$?
         if [ "$r_settle" -ne 0 ]; then r_failed=$((r_failed + 1)) r_hub_failed=$((r_hub_failed + 1)); fi
         if [ "$r_settle" -eq 2 ]; then
-          echo "!!! the services stay stopped and $REFRESH_INTENT stays, so no hub-pin goes out; refresh again to retry, or put the database and checkouts right by hand"
+          flag "!!! the services stay stopped and $REFRESH_INTENT stays, so no hub-pin goes out; refresh again to retry, or put the database and checkouts right by hand"
         fi
       fi
     fi
@@ -1183,6 +1271,7 @@ refresh() {
   echo "----------------------------------------"
   if [ "$r_failed" -gt 0 ]; then
     echo "refresh : $r_failed step(s) failed"
+    { cat "$TMPD/flagged" 2> /dev/null || :; echo "refresh : $r_failed step(s) failed"; } >&2
     return 1
   fi
   echo "refresh : done"
@@ -1210,7 +1299,7 @@ push_pins() {
   if [ -z "$p_sys" ] || ! is_pinned "$p_sys"; then return 0; fi
   p_pack=$(hub_dir pack)
   if [ -z "$p_pack" ] || ! is_pinned "$p_pack"; then
-    echo "!!! failed: hub-pin not published: system is pinned and no pinned pack is in the conf; satellites keep the old pins; pin the pack, then run refresh again"
+    flag "!!! failed: hub-pin not published: system is pinned and no pinned pack is in the conf; satellites keep the old pins; pin the pack, then run refresh again"
     return 1
   fi
   # The fence (sd:4010): a returning old hub publishes no pins. `sd-db fence`
@@ -1227,7 +1316,7 @@ push_pins() {
       && bound_step 300 git -C "$p_sys" push -q origin +refs/tags/hub-pin < /dev/null; then
     echo "hub-pin : system $(git -C "$p_sys" rev-parse --short HEAD), pack $(git -C "$p_pack" rev-parse --short HEAD), for satellites"
   else
-    echo "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
+    flag "!!! failed: push of the hub-pin tag in $p_sys; satellites keep the old pins; run refresh again"
     return 1
   fi
 }
@@ -1239,6 +1328,8 @@ drain_exec() {
   # lanes too, before a first runner makes their folder.
   REPO_SYNC_LANE_NAMES=$(repo_list | while read -r subdir full_repo; do printf '%s ' "${full_repo##*/}"; done)
   export REPO_SYNC_LANE_NAMES
+  # exec runs no EXIT trap; the child reads its own list.
+  rm -rf "$TMPD"
   exec python3 "$DIR/refresh_drain.py" "$DIR/repo-sync.sh" "$@"
 }
 
@@ -1273,7 +1364,7 @@ follow_want() {
       echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
     fi
   elif [ -n "$(git -C "$3" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
-    echo "!!! refused: $3 has uncommitted changes; commit or stash them"
+    flag "!!! refused: $3 has uncommitted changes; commit or stash them"
     f_failed=$((f_failed + 1))
   else
     printf '%s\n' "$1$US$2$US$3" >> "$TMPD/moves"
@@ -1296,7 +1387,7 @@ follow_prompt() {
   p_refused=$(sed -nE 's/^  (DIFFERS|UNKNOWN) ([^ ]+) .*/\2/p' "$TMPD/prompt" | tr '\n' ' ')
   p_refused=${p_refused% }
   if [ -n "$p_refused" ]; then p_what="refused $p_refused"; else p_what=failed; fi
-  echo "!!! agent-prompt.sh refresh --apply $p_what; the move stands; by hand: sh '$p_ap' diff, then capture <target> --apply or refresh --force"
+  flag "!!! agent-prompt.sh refresh --apply $p_what; the move stands; by hand: sh '$p_ap' diff, then capture <target> --apply or refresh --force"
 }
 
 # On a satellite, moves system and pack to the shas of the hub-pin tag on the
@@ -1322,7 +1413,7 @@ follow() {
       echo "follow: the system origin has no hub-pin tag yet; nothing to follow"
       return 0
     fi
-    echo "!!! refused: cannot fetch the hub-pin tag in $f_sys: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
+    flag "!!! refused: cannot fetch the hub-pin tag in $f_sys: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
     echo "follow  : refused, nothing moved"
     return 1
   fi
@@ -1330,7 +1421,7 @@ follow() {
   f_sys_sha=$(git -C "$f_sys" rev-parse "$f_tag^{commit}")
   f_pack_sha=$(git -C "$f_sys" cat-file tag "$f_tag" 2>/dev/null | sed -n 's/^pack=//p' | head -1)
   if ! printf '%s\n' "$f_pack_sha" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-    echo "!!! refused: the hub-pin tag carries no pack=<sha> line, so the pair is unknown"
+    flag "!!! refused: the hub-pin tag carries no pack=<sha> line, so the pair is unknown"
     echo "follow  : refused, nothing moved"
     return 1
   fi
@@ -1342,7 +1433,7 @@ follow() {
     echo "follow: no pack checkout in the conf; skipped"
   elif ! git -C "$f_pack" cat-file -e "$f_pack_sha^{commit}" 2>/dev/null \
       && ! bound_step 300 git -C "$f_pack" fetch -q origin "$f_pack_sha" < /dev/null 2> "$TMPD/err"; then
-    echo "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
+    flag "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
     f_failed=$((f_failed + 1))
   else
     follow_want pack "$f_pack_sha" "$f_pack"
@@ -1358,7 +1449,6 @@ follow() {
     echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again"
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
-    rm -rf "$TMPD"
     drain_exec follow
   fi
   # A marker left means an earlier run may have moved system past a
@@ -1367,7 +1457,7 @@ follow() {
   [ ! -e "$FOLLOW_INTENT" ] || f_prompt=1
   mkdir -p "${FOLLOW_INTENT%/*}" && printf 'system=%s\npack=%s\n' "$f_sys_sha" "$f_pack_sha" \
     > "$FOLLOW_INTENT.tmp" && mv -f "$FOLLOW_INTENT.tmp" "$FOLLOW_INTENT" \
-    || { echo "!!! refused: cannot write $FOLLOW_INTENT; nothing moved"; return 1; }
+    || { flag "!!! refused: cannot write $FOLLOW_INTENT; nothing moved"; return 1; }
   : > "$TMPD/moved"
   f_back=1
   while IFS=$US read -r f_name f_sha f_dir <&3; do
@@ -1375,7 +1465,7 @@ follow() {
     if [ "$f_name" = setup ]; then
       echo "--- make setup"
       if make -C "$f_dir" setup; then continue; fi
-      echo "!!! failed: make setup; by hand: make -C '$f_dir' setup"
+      flag "!!! failed: make setup; by hand: make -C '$f_dir' setup"
       f_failed=1
       f_back=0
       break
@@ -1427,7 +1517,7 @@ follow() {
           f_why=" did not prove its end state, printed above"
         fi
       fi
-      echo "!!! failed: machine-setup update $f_stage$f_why; the checkouts stay at the hub's pin; by hand: sh '$f_ms' update $f_stage --apply"
+      flag "!!! failed: machine-setup update $f_stage$f_why; the checkouts stay at the hub's pin; by hand: sh '$f_ms' update $f_stage --apply"
       echo "follow  : moved, update failed; $FOLLOW_INTENT stays, so the next run sets up and updates again"
       return 1
     done
@@ -1447,7 +1537,7 @@ follow() {
     f_setup=
     if [ -f "$f_dir/bin/sd_install.py" ]; then f_setup=" && make -C '$f_dir' setup"; fi
     if ! git -C "$f_dir" switch -q --detach --no-overwrite-ignore "$f_old"; then
-      echo "!!! failed: cannot put $f_dir back; by hand: git -C '$f_dir' switch --detach $f_old$f_setup"
+      flag "!!! failed: cannot put $f_dir back; by hand: git -C '$f_dir' switch --detach $f_old$f_setup"
       f_back=0
       continue
     fi
@@ -1455,7 +1545,7 @@ follow() {
     if [ -n "$f_setup" ]; then
       echo "--- make setup at the old sha"
       if ! make -C "$f_dir" setup; then
-        echo "!!! failed: make setup at the old sha; the pack's commands may be from the hub's pin; by hand: make -C '$f_dir' setup"
+        flag "!!! failed: make setup at the old sha; the pack's commands may be from the hub's pin; by hand: make -C '$f_dir' setup"
         f_back=0
       fi
     fi
@@ -2191,11 +2281,13 @@ case "$1" in
   sync)
     # The `while read` loop runs in a subshell, so failures are collected in a
     # temp file rather than a variable, which would not survive the pipeline.
-    FAILLOG=$(mktemp)
-    PINLOG=$(mktemp)
-    DIVLOG=$(mktemp)
-    KEPTLOG=$(mktemp)
-    trap 'rm -f "$FAILLOG" "$PINLOG" "$DIVLOG" "$KEPTLOG"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    FAILLOG="$TMPD/faillog"; : > "$FAILLOG"
+    PINLOG="$TMPD/pinlog"; : > "$PINLOG"
+    DIVLOG="$TMPD/divlog"; : > "$DIVLOG"
+    KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
+    load_list
     sync
     ;;
   refresh)
@@ -2207,11 +2299,14 @@ case "$1" in
       echo "repo-sync.sh refresh: this machine is a satellite ($HOME/.config/sd/hub.json); only follow moves its system and pack checkouts, to the hub's pins" >&2
       exit 1
     fi
+    # The list is read once, before the drain and before any move, so a
+    # pack move in this run cannot change it.
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
       drain_exec refresh "$@"
     fi
-    TMPD=$(mktemp -d)
-    trap 'rm -rf "$TMPD"' EXIT INT TERM
     refresh "$@"
     ;;
   follow)
@@ -2222,20 +2317,24 @@ case "$1" in
     fi
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     follow
     ;;
   check)
-    FINDINGS=$(mktemp)
-    trap 'rm -f "$FINDINGS"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    FINDINGS="$TMPD/findings"; : > "$FINDINGS"
+    load_list
     check
     ;;
   reconcile)
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     reconcile
     ;;
   nightly)
-    # Cron flavor: reconcile the conf against disk first, then sync, then
+    # Cron flavor: read the list, reconcile it against disk, then sync, then
     # hygiene. A changed fleet, a failed repo or a hygiene finding prints an
     # SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today
     # instead of relying on someone reading the log; nothing is mailed
@@ -2251,9 +2350,12 @@ case "$1" in
     # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
     ATTENTION=""
 
+    load_list
     RECON="$TMPD/recon"
     reconcile > "$RECON" 2>&1
     cat "$RECON"
+    # A join changed the database: read the list again, so sync pulls it.
+    [ ! -s "$JOINED" ] || load_list
 
     # A MISMATCH needs attention too. Before this path existed, such a
     # checkout made $ADDED non-empty every night and so reported every night
@@ -2263,8 +2365,18 @@ case "$1" in
     # is how the loop this replaced went unnoticed for four nights. It cannot
     # be auto-resolved, so it repeats until a human renames the directory or
     # the repo.
-    if [ -s "$ADDED" ] || [ -s "$REMOVED" ]; then
+    # A list from the snapshot or the confs is the database not answering,
+    # and reconcile wrote nothing (sd:3983).
+    if [ -s "$UNJOINED" ]; then
+      ATTENTION="repo-sync: $(wc -l < "$UNJOINED" | tr -d ' ') checkout(s) not joined to the list on $(hostname -s)"
+    elif [ "$LIST_SOURCE" != database ]; then
+      ATTENTION="repo-sync: the database did not answer; the list came from the $LIST_SOURCE on $(hostname -s)"
+    elif [ -n "$r_why" ]; then
+      ATTENTION="repo-sync: reconcile could not read the repo rows on $(hostname -s)"
+    elif [ -s "$JOINED" ] || [ -s "$ABSENT" ]; then
       ATTENTION="repo-sync: repo list changed on $(hostname -s)"
+    elif [ -s "$UNLISTED" ]; then
+      ATTENTION="repo-sync: $(wc -l < "$UNLISTED" | tr -d ' ') checkout(s) present, not listed on $(hostname -s)"
     elif [ -s "$MISMATCHED" ]; then
       ATTENTION="repo-sync: $(wc -l < "$MISMATCHED" | tr -d ' ') checkout(s) need a rename on $(hostname -s)"
     fi
@@ -2298,11 +2410,28 @@ case "$1" in
     if [ -z "$ATTENTION" ] && { [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; }; then
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
-    # The ingest folds a reason it already holds open into that report and
-    # keeps its first body. The reason ends in the date, as weekly-digest's
-    # does, so each day's run files its own report and no fold hides another
-    # failure (sd:3537).
-    [ -z "$ATTENTION" ] || echo "SD_REPORT_ATTENTION: $ATTENTION, $(date '+%Y-%m-%d')"
+    # The ingest folds a run into the open report with the same job and
+    # reason and keeps that report's first body. So the reason ends in a
+    # checksum of what the report names, not the date: where the list came
+    # from and why, and reconcile's lists (sd:3983), each line under the name
+    # of its list, a failed join with its error; each failed repo's section
+    # of the sync output, its step lines left out; and hygiene's lines, its
+    # notes left out with the header of a section that holds only notes. The
+    # same findings fold into one open report, and a new or changed one opens
+    # its own (sd:4182). The host stays in it, as every host files under one
+    # job name. No 2>/dev/null: an input missing here is a bug to see in the
+    # log, not an empty list (review round 1).
+    if [ -n "$ATTENTION" ]; then
+      sum=$({ printf 'source: %s %s\nrows: %s\n' "$LIST_SOURCE" "$LIST_WHY" "$r_why"
+              sed 's/^/joined: /' "$JOINED"; sed 's/^/unjoined: /' "$UNJOINED"
+              sed 's/^/unlisted: /' "$UNLISTED"; sed 's/^/absent: /' "$ABSENT"
+              sed 's/^/rename: /' "$MISMATCHED"
+              awk '/^=== |^---/{if (f) printf "%s", b; b=""; f=0} /^\[step /{next}
+                   /^!!! failed: /{f=1} {b = b $0 "\n"} END{if (f) printf "%s", b}' "$OUT"
+              awk '/^=== /{h=$0; next} /^  note: /||/^$/{next} /^---/{h=""}
+                   {if (h != "") {print h; h=""} print}' "$HYG_OUT"; } | cksum | cut -d' ' -f1)
+      echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
+    fi
     # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true
 
@@ -2325,11 +2454,16 @@ case "$1" in
     ;;
   hygiene)
     shift
-    HYG_TMP=$(mktemp -d)
-    trap 'rm -rf "$HYG_TMP"' EXIT INT TERM
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    HYG_TMP="$TMPD/hygiene"; mkdir "$HYG_TMP"
+    load_list
     hygiene "$@"
     ;;
   list)
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT INT TERM
+    load_list
     list
     ;;
   test)
@@ -2351,20 +2485,23 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              under "kept:", not failed (sd:3744).
              A pinned checkout is not a failure
   check      read-only: report which configured repos have no checkout
-             (MISSING) and which sit on a different origin than the conf
-             names (DIFFERS). Touches no network, so a repo that is merely
+             (MISSING) and which sit on a different origin than the list
+             names (DIFFERS). Fetches nothing, so a repo that is merely
              behind still reports ok. Exits 1 when anything was reported —
              this is what machine-setup's `status` folds into its drift count
-  list       print the resolved profile, root, and repo list without touching
-             disk
-  reconcile  update the conf files to match the checkouts on disk: GitHub
-             repos found under the root but missing from the conf are added
-             to the profile conf, entries whose checkout is gone are removed
-             (disk is the source of truth). Checkouts without a GitHub origin
-             are listed as unmanaged and left alone, as are checkouts whose
-             directory name differs from their repo name (MISMATCH) — the
-             conf format cannot express those. A linked worktree under the
-             root is listed as WORKTREE <dir> (of <parent>) and left alone.
+  list       print the resolved profile, root, the list's source and the
+             repo list without touching the checkouts
+  reconcile  compare the list with the checkouts on disk. A GitHub checkout
+             with no row in the workflow database joins it: `sd-db repo add`,
+             then `sd-db repo clones PATH +<profile>`; only when the database
+             gave the list. It reports, and never writes: a checkout whose
+             row does not list the profile, and a listed checkout that is
+             gone (sync clones it again; `sd-db repo clones PATH -<profile>`
+             stops that). No run removes a profile. Checkouts without a
+             GitHub origin are listed as unmanaged and left alone, as are
+             checkouts whose directory name differs from their repo name
+             (MISMATCH): a list line cannot express those. A linked worktree
+             under the root is listed as WORKTREE <dir> (of <parent>).
   hygiene [--apply]
              sweep what agents leave in each conf checkout. Without
              --apply it only reports; with it, it prunes worktree
@@ -2386,11 +2523,11 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              in-use worktree. Without --apply it exits 1 when it found
              anything; with --apply it exits 1 only when an action failed.
              It is not a status subcommand.
-  nightly    reconcile, then sync, then hygiene --apply; a changed repo
-             list, a failed repo or a hygiene report that changed, listed
-             or failed anything prints an SD_REPORT_ATTENTION line for
-             Reports and Today; this is what the repo-sync-nightly cron job
-             runs. The confs keep no git history: nightly rewrites them
+  nightly    reconcile, then sync, then hygiene --apply; a failed repo, a
+             list not from the database, a changed or unlisted checkout,
+             or a hygiene report that changed, listed or failed anything
+             prints an SD_REPORT_ATTENTION line for Reports and Today; this
+             is what the repo-sync-nightly cron job runs. It writes no conf
              and commits nothing. Exits 1 when half or more of the fleet
              failed.
   refresh [path ...]
@@ -2426,8 +2563,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              and refresh exits 1. When the database (REPO_SYNC_SD_DB) is
              below the SCHEMA_VERSION of the lib/sd_db the pack moves to,
              it first runs the pack's `bin/sd-db backup` into
-             ~/.local/state/repo-sync/refresh-backups/, which no retention
-             prunes, and writes ~/.local/state/repo-sync/refresh-intent: the
+             ~/.local/state/repo-sync/refresh-backups/, where a finished
+             refresh keeps the newest three folders, and writes
+             ~/.local/state/repo-sync/refresh-intent: the
              system and pack shas, the version and the backup. A failed
              backup or record write moves nothing. After the moves it runs
              `bin/sd-db migrate`. On a failure it moves the pack back to the
@@ -2448,7 +2586,8 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
   follow     on a satellite (one with ~/.config/sd/hub.json), fetch the
              hub-pin tag from the system origin and the pack sha it names
              from the pack origin and, where a checkout differs, drain the
-             lanes as refresh does, then move it, detached, to exactly that
+             lanes as refresh does, without the gate wait (a lane gates
+             under its runner lock), then move it, detached, to exactly that
              sha, never to origin's default branch, and run `make setup` in
              the pack. Then, lanes still held, it runs this system
              checkout's `machine-setup.sh update bin --apply` and
@@ -2474,20 +2613,24 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              pack; only follow moves them.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
-             against fixture trees; sync's clone path is not covered,
+             against fixture trees and a stub sd-db; sync's clone path is not covered,
              because it clones over SSH — the suite reaches it only through
              nightly, with the transport stubbed dead.
 
-The repo fleet lives in repos.common.conf plus repos.<profile>.conf, in
-<config>/repo-sync/ (<config> is $SYSTEM_TOOLS_CONFIG, default
-~/.config/system). Copy the committed repos.<profile>.conf.example there. Format
-is "<subdir> <owner/repo>", with # comments and blank lines ignored; subdir
-"." means the repo sits directly in the root.
+The repo fleet is the workflow database's `repo` rows whose clone_profiles
+hold this profile: every command reads `sd-db repo list --clones <profile>`
+once, and keeps each answer in ~/.local/state/system/repo-sync/clones.<profile>.
+When the database does not answer (no hub, a refused build, an empty or bad
+answer), it reads that snapshot, else the confs, else refuses; each fallback
+prints a line on stderr. The confs are repos.common.conf plus
+repos.<profile>.conf, in <config>/repo-sync/ (<config> is
+$SYSTEM_TOOLS_CONFIG, default ~/.config/system): the bootstrap for a machine
+that never reached the hub. Copy the committed repos.<profile>.conf.example
+there. Format is "<subdir> <owner/repo>", with # comments and blank lines
+ignored; subdir "." means the repo sits directly in the root.
 
-The terra profile is the exception: it reads repos.terra.conf alone and
-skips repos.common.conf, because a terra machine deliberately carries only
-the system repo. reconcile therefore can never edit common from such a
-machine.
+The terra profile reads repos.terra.conf alone and skips repos.common.conf,
+because a terra machine deliberately carries only the system repo.
 
 environment:
   REPO_SYNC_PROFILE   personal | work | terra (default: the profile
@@ -2501,6 +2644,9 @@ environment:
                       when no profile is recorded (default:
                       SYSTEM_TOOLS_WORK_ROOT, which local-ai-apps reads too)
   REPO_SYNC_CONF_DIR  where the confs live (default: <config>/repo-sync)
+  SD_PACK_ROOT        the command pack whose bin/sd-db reads the list
+                      (default: ~/repos/platypeeps/sd-ai-command-pack)
+  XDG_STATE_HOME      where the snapshot lives (default: ~/.local/state)
   SYSTEM_TOOLS_CONFIG shared config root (default: ~/.config/system)
   MACHINE_SETUP_STATE where to look for the recorded profile
                       (default: ~/.config/machine-setup)

@@ -47,8 +47,7 @@ from .markup import Markup, escape, join, tag
 # cannot be read. A screen of its own would have imported the collectors
 # in-process, as Ports does, and read the vault inside the server process
 # rather than in a child that the budget can kill.
-VIEWS = (("toolbox", "Toolbox"), ("briefs", "Briefs"), ("vault", "Vault"), ("research", "Research"),
-         ("queues", "Queues"))
+VIEWS = (("toolbox", "Toolbox"), ("vault", "Vault"), ("research", "Research"), ("queues", "Queues"))
 # The child each view runs: one plugin tile, owned by this dashboard checkout
 # and never supplied by a page.
 TILE = Path(__file__).resolve().parents[1] / "sd_tile.py"
@@ -66,7 +65,7 @@ TILE = Path(__file__).resolve().parents[1] / "sd_tile.py"
 # not grow; the machine was busy. A view that outgrows its ceiling is
 # refused with the reason, not waited on; file it as sd:756 was filed for Ports
 # rather than raise the number here.
-VIEW_SECONDS = {"toolbox": 5.0, "briefs": 5.0, "vault": 5.0, "research": 5.0, "queues": 5.0}
+VIEW_SECONDS = {"toolbox": 5.0, "vault": 5.0, "research": 5.0, "queues": 5.0}
 
 
 class SafeFragment(HTMLParser):
@@ -153,7 +152,8 @@ def resources(parameters, *, backend=None):
 
 
 def report_controls(connection, row, revision):
-    if row["kind"] != "report":
+    # A routine brief is a report row filed done for good (sd:3459): no source to show, nothing to acknowledge.
+    if row["kind"] != "report" or row["source"] == "brief":
         return ""
     try:
         # The library's parse, so the verdict is the one retention and the

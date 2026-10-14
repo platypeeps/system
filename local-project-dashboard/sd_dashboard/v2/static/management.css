@@ -102,6 +102,13 @@ pre.code { margin: 0; padding: var(--space-sm); overflow-x: auto; background: va
 .fld:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 input.fld { width: 100%; max-width: 16rem; }
 input.fld.num { width: 5rem; }
+/* sd:3465: the channels form, one line per channel: its checkbox, then its folder; an off channel's folder dims. */
+.chans { display: grid; grid-template-columns: auto minmax(0, 12rem); align-items: center; gap: var(--space-3xs) var(--space-sm); min-width: 0; margin: 0; padding: 0; border: 0; }
+.chans .chk { display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: 2.25rem; font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-ink-2); cursor: pointer; }
+.chans .chk input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--color-accent); }
+.chans .chk input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.chans .chk:has(input:not(:checked)) + .fld { opacity: .55; }
+.chans [data-ch-clear] { grid-column: 1 / -1; justify-self: end; }
 
 /* Lane strip and bars. */
 .strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; padding: 1px; margin: 0 0 var(--space-lg); background: var(--color-rule-2); border-radius: var(--radius-md); list-style: none; }
@@ -151,7 +158,7 @@ input.fld.num { width: 5rem; }
 
 @media (pointer: coarse) {
   .segctl button, .linkbtn, .ledger a.ext, .crumb .ext, .filters .chip { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
-  .fld { min-height: var(--row-touch); }
+  .fld, .chans .chk { min-height: var(--row-touch); }
   .bar { min-height: var(--row-touch); }
 }
 @media (max-width: 1099px) { .subviews { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

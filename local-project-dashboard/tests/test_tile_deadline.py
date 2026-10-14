@@ -207,7 +207,7 @@ class Nested(unittest.TestCase):
         # view's five. Each view that probes the vault gets the actionable
         # reason, from `vault_blocked`, inside its budget.
         reached = self.root / "main"
-        for area in ("vault", "briefs"):
+        for area in ("vault",):
             with self.subTest(area=area):
                 for attempt in (1, 2, 3):
                     self.reap()

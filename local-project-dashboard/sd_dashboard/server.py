@@ -334,9 +334,18 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
-    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host)", path)
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot)", path)
     if match:
         from .management_screen import set_repo
+
+        if match[1] == "channels":
+            # sd:3465: the value is an object of channels or null, no setting; `channels.validate` judges the object,
+            # and `before` is the canonical text the page showed, `none` for no setting.
+            if (set(values) != {"path", "value", "before"} or not isinstance(values["path"], str)
+                    or not isinstance(values["value"], (dict, type(None)))
+                    or not isinstance(values["before"], str) or not values["before"]):
+                raise ValueError("Provide the repository path, the new channels object or null, and the value the page showed.")
+            return lambda connection: set_repo(connection, "channels", values["path"], values["value"], values["before"])
 
         # The sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
         # A lane host is `hub` or a typed host name (sd:3075): `repos.set_lane_host` refuses a bad one by its rule.

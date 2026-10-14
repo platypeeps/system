@@ -122,9 +122,14 @@ TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 FINDINGS="$TMPD/findings"
 INFO="$TMPD/info"
-: > "$FINDINGS"; : > "$INFO"
+KEYS="$TMPD/keys"
+: > "$FINDINGS"; : > "$INFO"; : > "$KEYS"
 
-# finding HEADLINE FIX SHAREABLE
+# finding HEADLINE FIX SHAREABLE [KEY]
+#
+# KEY is the headline without a measure that moves while the finding stays
+# the same (a load average, a crash count), so the reason's checksum does not
+# move with it (sd:4182). Omitted, it is the headline.
 #
 # SHAREABLE is the only form of the finding Jev may see (sd:1362). The
 # headline stays on this machine: it names launchd labels, crashing apps,
@@ -139,6 +144,7 @@ JEVLINES="$TMPD/jev.shareable"
 : > "$JEVLINES"
 finding() {
   printf -- '- %s\n  fix: %s\n' "$1" "$2" >> "$FINDINGS"
+  printf '%s\n' "${4:-$1}" >> "$KEYS"
   case "${3:-}" in
     =) printf '%s\n' "$1" ;;
     *) printf '%s\n' "${3:-}" ;;
@@ -234,7 +240,8 @@ if [ -s "$TMPD/crashes" ]; then
   apps=$(sort "$TMPD/crashes" | uniq -c | sort -rn | awk '{ printf "%s(%s) ", $2, $1 }')
   finding "app crash report(s) in the last day: $apps" \
     "read the report in Console.app > Crash Reports; if one app repeats, update or reinstall it" \
-    "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)"
+    "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)" \
+    "app crash report(s) in the last day: $(sort -u "$TMPD/crashes" | tr '\n' ' ')"
 fi
 
 # --- launchd job health --------------------------------------------------
@@ -335,7 +342,8 @@ if command -v smartctl >/dev/null 2>&1; then
   cw=$(echo "$sm" | sed -n 's/^Critical Warning:[[:space:]]*\(0x[0-9a-fA-F]*\).*/\1/p')
   if [ -n "$wear" ] && [ "$wear" -ge 85 ] 2>/dev/null; then
     finding "SSD wear at ${wear}% of rated life" \
-      "plan a replacement/new machine before it hits 100; keep backups tight" =
+      "plan a replacement/new machine before it hits 100; keep backups tight" = \
+      "SSD wear at 85% of rated life or more"
   fi
   if [ -n "$media" ] && [ "$media" -gt 0 ] 2>/dev/null; then
     finding "SSD media/data integrity errors: $media" \
@@ -358,12 +366,14 @@ ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
 load5=$(sysctl -n vm.loadavg 2>/dev/null | awk '{ print int($3) }')
 if [ -n "$load5" ] && [ "$load5" -gt $(( ncpu * 2 )) ] 2>/dev/null; then
   finding "5-minute load average $load5 on $ncpu cores" \
-    "something is pegging the CPU — Activity Monitor > CPU, sort by % CPU" =
+    "something is pegging the CPU — Activity Monitor > CPU, sort by % CPU" = \
+    "5-minute load average over $(( ncpu * 2 )) on $ncpu cores"
 fi
 swap_used=$(sysctl -n vm.swapusage 2>/dev/null | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p')
 if [ -n "$swap_used" ] && [ "$(printf '%.0f' "$swap_used")" -gt 8192 ] 2>/dev/null; then
   finding "swap in use: ${swap_used}MB" \
-    "something is leaking or the workload outgrew RAM — Activity Monitor > Memory, sort by memory" =
+    "something is leaking or the workload outgrew RAM — Activity Monitor > Memory, sort by memory" = \
+    "swap in use over 8192MB"
 fi
 
 # --- unified-log fault volume ---------------------------------------------
@@ -384,7 +394,8 @@ elif [ "$faults" -gt $(( prev * 2 )) ] && [ "$faults" -gt 50000 ]; then
     | head -3 | awk '{ n=$1; $1=""; sub(/^ /,""); printf "%s(%s) ", $0, n }')
   finding "log faults jumped: $faults in 24h (baseline $prev); top: $top" \
     "the top process is misbehaving — check for an update, or restart it and watch tomorrow's count" \
-    "log faults jumped: $faults in 24h (baseline $prev)"
+    "log faults jumped: $faults in 24h (baseline $prev)" \
+    "log faults jumped; top: $(printf '%s' "$top" | sed 's/([0-9]*) /\n/g' | sort | tr '\n' ' ')"
 fi
 echo "$faults" > "$STATE/fault-count"
 
@@ -730,9 +741,12 @@ fi
 
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
-# The ingest folds a reason it already holds open into that report and keeps
-# its first body. The reason ends in the date, as weekly-digest's does, so each
-# day's run files its own report and no fold hides another failure (sd:3537).
+# The ingest folds a run into the open report with the same job and reason
+# and keeps that report's first body. So the reason ends in a checksum of the
+# findings' keys, not the date, and not of the printed list, which Jev may
+# reorder and tag: the same findings fold into one open report, and a new or
+# changed one opens its own (sd:4182). The host stays in it, as every host
+# files under the one job name.
 if [ "$REPORT" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  echo "SD_REPORT_ATTENTION: health check: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s), $(date '+%Y-%m-%d')"
+  echo "SD_REPORT_ATTENTION: health check: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(cksum < "$KEYS" | cut -d' ' -f1)]"
 fi

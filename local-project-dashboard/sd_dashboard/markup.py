@@ -24,12 +24,22 @@ from __future__ import annotations
 
 import html
 import re
+from urllib.parse import urlsplit
 
-__all__ = ["Markup", "attribute", "escape", "join", "markdown", "tag", "text"]
+__all__ = ["Markup", "attribute", "escape", "href", "join", "markdown", "tag", "text"]
 
 #: The two schemes a link may carry. Everything else -- `javascript:`,
 #: `data:`, `vbscript:`, a scheme-relative `//host` -- renders as text.
 LINK_SCHEMES = ("http://", "https://", "/")
+
+
+def href(url: str, schemes: tuple[str, ...] = ("https", "http")) -> str | None:
+    """`url` when it is an absolute address in one of `schemes`, else None: a page shows that one as text."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    return url if parsed.scheme in schemes and parsed.netloc else None
 
 
 class Markup(str):

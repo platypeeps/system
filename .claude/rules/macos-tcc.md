@@ -6,7 +6,6 @@ paths:
   - "local-mirror-sync/**"
   - "local-notify/**"
   - "local-obsidian-review/**"
-  - "local-obsidian-tasks/**"
   - "local-task-actions/**"
 ---
 

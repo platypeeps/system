@@ -90,7 +90,7 @@ class Resources(unittest.TestCase):
                     self.assertNotIn("<img", html)
             payload["rows"] = []
             with patch.dict(os.environ, {"TILE_PAYLOAD": json.dumps(payload)}):
-                self.assertNotIn("Needs attention", reports_screen.collect("briefs"))
+                self.assertNotIn("Needs attention", reports_screen.collect("toolbox"))
 
     def test_resource_observations_refuse_incomplete_rows(self):
         tile, _ = self.tile("import os, sys\nsys.stdout.write(os.environ['TILE_PAYLOAD'])\n")
@@ -101,16 +101,14 @@ class Resources(unittest.TestCase):
 
     def test_a_view_passes_its_start_and_the_tile_counts_its_deadline_from_it(self):
         # sd:2501: the tile counted from its own main(), so a slow interpreter start spent the margin and the view's kill won.
-        from sd_dashboard import briefs_screen
         tile, directory = self.tile("import json, sys\nopen(sys.argv[0] + '.argv', 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
-                                    "sys.stdout.write(json.dumps({'html': '', 'rows': [], 'briefs': []}))\n")
+                                    "sys.stdout.write(json.dumps({'html': '', 'rows': []}))\n")
         with tile:
             before = time.clock_gettime(time.CLOCK_MONOTONIC)
             reports_screen.collect("toolbox")
-            briefs_screen.collect()
             after = time.clock_gettime(time.CLOCK_MONOTONIC)
         calls = [json.loads(line) for line in (directory / "tile.py.argv").read_text().splitlines()]
-        self.assertEqual([call[0] for call in calls], ["toolbox", "briefs-rows"])
+        self.assertEqual([call[0] for call in calls], ["toolbox"])
         for call in calls:
             self.assertEqual(len(call), 2, call)
             self.assertTrue(before <= float(call[1]) <= after, call)
