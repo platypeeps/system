@@ -407,7 +407,7 @@ class FollowTest(unittest.TestCase):
         self.assertNotEqual(later, f.head(system))
         self.assertEqual(("", ""), (f.branch(system), f.branch(pack)))
         self.assertIn("lanes held", result.stdout)
-        self.assertTrue(f.gate_calls())
+        self.assertEqual([], f.gate_calls())  # sd:4046
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
 
     def test_follow_pins_a_branch_checkout(self):
@@ -450,7 +450,7 @@ class FollowTest(unittest.TestCase):
         self.assertIn(f"cannot fetch the hub's pack pin {'f' * 40}", result.stdout)
         self.assertIn("nothing moved", result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
-        self.assertEqual([], f.gate_calls())
+        self.assertNotIn("lanes held", result.stdout)
 
     def test_a_tag_without_a_pack_line_refuses_and_moves_nothing(self):
         """NEW (round 1). A tag that names system alone is half a pair."""
@@ -666,7 +666,7 @@ class FollowTest(unittest.TestCase):
 
         self.assertIn("a follow stopped before its make setup finished", result.stdout)
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
-        self.assertTrue(f.gate_calls())
+        self.assertIn("lanes held", result.stdout)
         self.assertFalse(f.intent.exists())
 
         f.run("follow", expect=0)
@@ -732,7 +732,7 @@ class FollowTest(unittest.TestCase):
 
         self.assertIn("uncommitted changes", result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
-        self.assertEqual([], f.gate_calls())
+        self.assertNotIn("lanes held", result.stdout)
 
     def test_the_drain_runs_first(self):
         """NEW. A busy lane past the bound refuses before anything moves."""
@@ -777,6 +777,26 @@ class FollowTest(unittest.TestCase):
                 self.assertEqual(0, running, ships.read_text())
             running += {"start": 1, "end": -1}.get(line.split()[0], 0)
 
+    def test_a_gate_holder_from_before_does_not_hold_the_follow(self):
+        """REGRESSION (sd:4046). After each hub migration a satellite stays in
+        BuildMismatch until follow moves it, and follow waited out every gate
+        holder from before: 15 to 35 minutes a time. A lane gates only under
+        its runner lock, which follow still holds, so follow reads no gate."""
+        f = self.fixture()
+        system, pack, _ = self.pair(f)
+        pinned = (f.advance_origin(system), f.advance_origin(pack))
+        f.set_hub_pin(system, *pinned)
+        script = f.tmp / "gate.sh"
+        script.write_text("echo '{\"holders\": [{\"slot\": 1, \"pid\": 7, \"since\": \"t0\"}], "
+                          "\"waiters\": []}'\n")
+
+        result = f.run("follow", expect=0, extra_env={
+            "SD_GATE_SCRIPT": str(script), "REPO_SYNC_DRAIN_WAIT": "3"})
+
+        self.assertEqual(pinned, (f.head(system), f.head(pack)))
+        self.assertIn("lanes held", result.stdout)
+        self.assertEqual([], f.gate_calls())
+
     def test_follow_is_a_no_op_when_already_there(self):
         """NEW. At the hub's pair, follow drains nothing and runs no make."""
         f = self.fixture()
@@ -787,7 +807,7 @@ class FollowTest(unittest.TestCase):
 
         self.assertIn("system already at the hub's pin", result.stdout)
         self.assertIn("pack already at the hub's pin", result.stdout)
-        self.assertEqual([], f.gate_calls())
+        self.assertNotIn("lanes held", result.stdout)
         self.assertEqual([], f.make_calls())
 
     def test_no_hub_pin_tag_is_a_no_op(self):
@@ -800,7 +820,7 @@ class FollowTest(unittest.TestCase):
 
         self.assertIn("no hub-pin tag yet", result.stdout)
         self.assertEqual(old, (f.head(system), f.head(pack)))
-        self.assertEqual([], f.gate_calls())
+        self.assertNotIn("lanes held", result.stdout)
 
     def test_follow_does_not_read_the_workflow_database(self):
         """NEW. A satellite's sd_db may be a build the hub refuses until follow
@@ -1031,11 +1051,11 @@ class FollowUpdateTest(unittest.TestCase):
         f.set_hub_pin(system, f.head(system), pack="e" * 40)
         f.leave_intent(f.head(system), "e" * 40)
 
-        f.run("follow", expect=0)
+        result = f.run("follow", expect=0)
 
         self.assertEqual(["update bin --apply", "update bin", "update satellite --apply", "update satellite"],
                          f.update_calls())
-        self.assertTrue(f.gate_calls())
+        self.assertIn("lanes held", result.stdout)
         self.assertFalse(f.intent.exists())
 
     def test_a_rollback_keeps_a_marker_an_earlier_update_left(self):
