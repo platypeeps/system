@@ -37,7 +37,8 @@ addEventListener('DOMContentLoaded', () => {
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null, real: true });
+    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
+    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
@@ -48,7 +49,7 @@ addEventListener('DOMContentLoaded', () => {
     if (t.due !== state.item.due || t.recurrence !== state.item.recurrence) t.nextDue = undefined; // not known until the rows are read again
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
-      anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title });
+      anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title, stage: t.base ? state.item.stage : null });
     if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
       repo: state.item.repo ? tasks.find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
@@ -196,7 +197,8 @@ addEventListener('DOMContentLoaded', () => {
   // page take the query v1 /backlog took (status, age, active=1, q, page), so Operations' histogram bars and the capture
   // check land here with their filter.
   // build (sd:3012): Parked swaps the listed rows for the ones the nightly prune parked, for triage's Unpark.
-  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set(), parked: new Set() };
+  // build (sd:3977): Base narrows to one vault base's rows; it shows once a row has a base.
+  const F = { kind: new Set(), base: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set(), parked: new Set() };
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
   let Q = '';
@@ -205,6 +207,7 @@ addEventListener('DOMContentLoaded', () => {
   const DUE_OPTS = [['overdue', 'overdue'], ['week', '≤ 7 days'], ['later', 'later'], ['none', 'no due']];
   function renderFilters() {
     const repos = [...new Set(tasks.map(t => t.repo))].sort(), kinds = [...new Set(tasks.map(t => t.kind))].sort();
+    const bases = [...new Set(tasks.map(t => t.base).filter(Boolean))].sort();
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
     const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
@@ -213,7 +216,7 @@ addEventListener('DOMContentLoaded', () => {
     const combo = (key, name, opts) => { const all = [...new Set([...opts, ...F[key]])], n = F[key].size;
       return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>All</option>${
         all.map(v => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${v}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select></div>`; };
-    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${combo('repo', 'Repo', repos)}${
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${bases.length || F.base.size ? combo('base', 'Base', bases) : ''}${combo('repo', 'Repo', repos)}${
       grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
       grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
       grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
@@ -223,7 +226,7 @@ addEventListener('DOMContentLoaded', () => {
       (on() ? window.shell.list.chips(activeFilters(), visible().length, listed().length) : html`<div class="fsum">${ICON('filter')}<span>${listed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
-  const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
+  const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
   const fvalue = (k, v) => k === 'p' ? (v ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
     : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : k === 'parked' ? 'parked only' : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
@@ -244,8 +247,8 @@ addEventListener('DOMContentLoaded', () => {
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
-  const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind}`.toLowerCase();
-  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
+  const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
+  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
@@ -544,9 +547,11 @@ addEventListener('DOMContentLoaded', () => {
   const LIST = { sort: 'p', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
   const ORDER = Object.fromEntries(STATUSES.map(([st], i) => [st, i]));
   const SORTS = { id: t => t.id, title: t => t.title.toLowerCase(), repo: t => t.repo.toLowerCase(), status: t => ORDER[t.status] ?? 99, p: t => t.p ?? 9,
-    due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999 };
+    due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999, stage: t => t.stage || '~',
+    // A base row's score, highest first; a row with none sorts last (sd:3977).
+    score: t => t.score === null || t.score === '' || isNaN(+t.score) ? Infinity : -t.score };
   const COLS = [[null, html`<span class="sr">Select</span>`], [null, html`<span class="sr">State</span>`], ['id', 'Id', 'label'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label'],
-    ['status', 'Status', 'label'], ['p', 'P', 'label'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`]];
+    ['status', 'Status', 'label'], ['stage', 'Stage', 'label'], ['score', 'Score', 'label'], ['p', 'P', 'label'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`]];
   let seek = false;
   function renderList() {
     const list = window.shell.list, k = SORTS[L.sort];
@@ -555,8 +560,10 @@ addEventListener('DOMContentLoaded', () => {
     // no ?page= opens the page that holds it.
     if (seek) { seek = false; const i = all.findIndex(t => t.key === selected); if (i >= 0) L.page = Math.floor(i / L.size) + 1; }
     const v = list.pageOf(all, L);
-    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead>${list.sortHead(COLS, L)}</thead><tbody>
-      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td><td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="9" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
+    // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
+    const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
+    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
+      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st}">${st ? GLYPH[st] : ''}</td><td class="mono">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button></td><td class="mono">${t.repo}</td><td>${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}</td><td class="mono">${t.score ?? ''}</td>` : ''}<td><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${dt}</td><td>${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
@@ -633,6 +640,11 @@ addEventListener('DOMContentLoaded', () => {
       commitEdit(t, { body: v }, 'description changed', { before: () => ({ body: text() }),
         check: r => known()?.rev !== r.revision ? STALE_BODY : v !== text() || 'the description is already that' }); return true; }
     if (id === 'det-status') return v !== t.status && move(t.key, v);
+    // build (sd:3977): a base row's stage moves through records.edit_row; its render can fail after the move lands.
+    if (id === 'det-stage') { if (v === t.stage) return false;
+      write(t.key, x => `/api/items/${x.id}/stage`, { stage: v }).then(out => toast(`${label(t)} stage → ${v}${out.mirror && !out.mirror.ok
+        ? ` · mirror not updated: ${out.mirror.reason || 'see Health'}` : ''}`), err => { failed(label(t), err); err.status === 409 ? refused() : redrawDet(t.id); });
+      return true; }
     if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
     if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
       commitEdit(t, { p: n }, `priority ${t.p ? 'P' + t.p : 'unset'} → ${n ? 'P' + n : 'unset'}`, { check: r => r.p !== n || `it is already ${n ? 'P' + n : 'unset'}` }); return true; }
@@ -661,7 +673,7 @@ addEventListener('DOMContentLoaded', () => {
     const it = d.item;
     const open = d.notes.filter(n => n.kind === 'followup' && !n.resolved).length;
     const docs = d.documents || [];
-    return html`${desc}
+    return html`${desc}${baseOf(t, d)}
       <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
       <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
@@ -675,6 +687,18 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
       <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
+  }
+  // build (sd:3977): a vault base row's stage, declared fields, body and its section of the vault mirror page.
+  // The stage select is the row's own write: edit_item's refusal of an idea's other fields does not turn it off.
+  function baseOf(t, d) {
+    const b = d.base; if (!b) return '';
+    const off = b.reason || (!live(t.key) && 'this task was not read again after the change') || (!b.stages.length && 'no move leaves this stage');
+    return html`<h3>Base · ${b.kind} ${src('Base', `sd-db records render ${b.kind} · the kind's rules from sd plugin list --json`)}</h3>
+      <dl class="fields"><dt><label for="det-stage">Stage</label></dt><dd><select id="det-stage" class="fld"${off ? html` disabled aria-describedby="det-base-off"` : ''}><option value="${b.stage}" selected>${b.stage}</option>${b.stages.map(s => html`<option value="${s}">${s}</option>`)}</select></dd>
+        ${b.declared.map(f => html`<dt>${f}</dt><dd>${Array.isArray(b.fields[f]) ? b.fields[f].join(', ') : b.fields[f] ?? '—'}</dd>`)}
+        <dt>Mirror</dt><dd>${!b.mirror ? 'no vault named' : b.mirror.url ? html`<a href="${b.mirror.url}" target="_blank" rel="noopener">its section</a>` : html`<code>${b.mirror.path}</code>`}</dd></dl>
+      ${off ? html`<p class="why" id="det-base-off">${off}.</p>` : ''}
+      ${b.body ? html`<pre class="body">${b.body}</pre>` : ''}`;
   }
   // Each Details section names its read in a help icon beside its heading; pressing the icon copies the command (sd:3444).
   function src(name, s) {
