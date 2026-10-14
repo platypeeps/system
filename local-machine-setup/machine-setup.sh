@@ -5535,6 +5535,17 @@ cmd_promote() {
         promote_refuse "could not copy $snapshot into $dest; rerun"
       fi
     fi
+    # `sd-db backup` takes the first free name of the UTC day, so each name the
+    # NAS holds for today or later is held here too, as an empty folder: the
+    # additive copy changes nothing on the NAS for it, and retention leaves it.
+    promote_roots | python3 -c 'import datetime, os, re, sys
+dest = sys.argv[1]
+today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+for root in filter(None, sys.stdin.read().splitlines()):
+    for name in (os.listdir(root) if os.path.isdir(root) else []):
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name) and name[:10] >= today:
+            os.makedirs(os.path.join(dest, name), exist_ok=True)' "$dest" ||
+      promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
     echo "seed    : $seeded"
     marker_set step 7
     step=7
@@ -5598,18 +5609,31 @@ for peer in (status.get("Peer") or {}).values():
     marker_set step 9
     step=9
   fi
-  # Step 9: one session on this machine's sd-serve, by the hub's name.
+  # Step 9: one session on this machine's sd-serve, by the hub's name. Asked
+  # on every run: a rerun here may follow a change of holder. The session must
+  # read this machine's own restore row, not any database a server by that name holds.
+  HUB_ROLE=""
+  hub_role || promote_refuse "this machine does not hold the hub role now (sd-db fence); rerun once it does"
   port=$(marker_get port)
-  if ! "$SD_DB_PYTHON" -I -c 'import sys
+  if ! "$SD_DB_PYTHON" -I -c 'import sqlite3, sys
 sys.path.insert(0, sys.argv[1])
 from sd_db import hub, remote
+row = "SELECT body FROM state WHERE kind = ? AND key = ?"
+local = sqlite3.connect("file:" + sys.argv[4] + "?mode=ro", uri=True)
+try:
+    want = local.execute(row, ("restore", sys.argv[5])).fetchone()
+finally:
+    local.close()
 session = remote.connect(sys.argv[2], int(sys.argv[3]), None, token="", write=False,
                          timeout=hub.CONNECT_TIMEOUT, answer_timeout=hub.ANSWER_TIMEOUT)
 try:
-    session.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    got = session.execute(row, ("restore", sys.argv[5])).fetchone()
 finally:
-    session.close()' "$SD_PACK_ROOT/lib" "$hub" "$port" </dev/null; then
-    promote_refuse "no session on $hub:$port; check sd-serve (launchctl print gui/$(id -u)/$LABEL_PREFIX.sd-serve), then rerun"
+    session.close()
+if want is None or got is None or tuple(got) != tuple(want):
+    sys.exit("promote: the session on " + sys.argv[2] + " reached a database without this restore")' \
+      "$SD_PACK_ROOT/lib" "$hub" "$port" "$SD_DB" "$(basename "$(marker_get snapshot)")" </dev/null; then
+    promote_refuse "no session on $hub:$port reads this machine's database; check sd-serve (launchctl print gui/$(id -u)/$LABEL_PREFIX.sd-serve) and who holds $hub, then rerun"
   fi
   echo
   echo "hub failover report"

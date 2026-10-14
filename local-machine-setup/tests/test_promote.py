@@ -41,7 +41,12 @@ case "$1" in
     if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
     newest=$(ls "$3" | sort | tail -1)
     mkdir -p "$HOME/.local/share/sd"
-    : > "$HOME/.local/share/sd/sd.db"
+    # The row `restore` writes, which step 9 compares through the session.
+    python3 -c 'import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE IF NOT EXISTS state (kind TEXT, key TEXT, body TEXT)")
+c.execute("INSERT INTO state VALUES (?, ?, ?)", ("restore", sys.argv[2], "{\"restored_at\": \"fixture\"}"))
+c.commit()' "$HOME/.local/share/sd/sd.db" "$newest"
     echo "sd-db: restored $3/$newest (checkpoint 2026-10-14T08:50:00+00:00) to $HOME/.local/share/sd"
     echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
     exit 0 ;;
@@ -217,7 +222,8 @@ class Promote(unittest.TestCase):
         self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists(), "the hourly root was not seeded")
         self.assertEqual(["tailscale set --hostname=hub"], self.calls("tailscale set"))
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
-        self.assertEqual([f"prove {self.fixture.pack}/lib {HUB} {self.port}"], self.calls("prove"))
+        self.assertEqual([f"prove {self.fixture.pack}/lib {HUB} {self.port} {self.fixture.db} 2026-10-14.5"],
+                         self.calls("prove"))
         self.assertIn("writes after this time are lost", result.stdout)
         self.assertIn("leases released: run-7", result.stdout)
         self.assertIsNone(self.marker_step())
@@ -351,6 +357,56 @@ class Promote(unittest.TestCase):
         self.assertEqual("9", self.marker_step())
         self.run_promote("--apply")
         self.assertIsNone(self.marker_step())
+
+    def test_a_rerun_at_step_9_asks_the_fence_again(self):
+        """codex pass: a rerun at step 9 follows a change of holder; it proves nothing for another hub."""
+        self.run_promote("--apply", expect=1, STUB_PROVE_RC="1")
+        self.assertEqual("9", self.marker_step())
+        self.fence.write_text("elsewhere\n")
+        before = len(self.calls("prove"))
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("this machine does not hold the hub role now", result.stderr)
+        self.assertEqual("9", self.marker_step())
+        self.assertEqual(before, len(self.calls("prove")))
+
+    def test_step_9_refuses_a_session_that_reaches_another_database(self):
+        """codex pass: the session must reach this machine's restored database, not any server by that name."""
+        # The pack's lib/ is the real one; a wrapper hands the proof a fake `sd_db` instead.
+        lib = self.tmp / "fake-lib" / "sd_db"
+        lib.mkdir(parents=True)
+        (lib / "__init__.py").write_text("")
+        (lib / "hub.py").write_text("CONNECT_TIMEOUT = ANSWER_TIMEOUT = 5\n")
+        (lib / "remote.py").write_text(
+            "import os, sqlite3\n"
+            "def connect(host, port, path, token, write, timeout, answer_timeout):\n"
+            "    return sqlite3.connect(os.environ['STUB_REMOTE_DB'])\n")
+        other = self.tmp / "other.db"
+        import sqlite3
+        connection = sqlite3.connect(other)
+        connection.execute("CREATE TABLE state (kind TEXT, key TEXT, body TEXT)")
+        connection.commit()
+        connection.close()
+        import sys
+        python = write_stub(self.fixture.stubs, "fake-lib-python",
+                            f'code=$3; shift 4\nexec "{sys.executable}" -I -c "$code" "{lib.parent}" "$@"\n')
+        result = self.run_promote("--apply", expect=1, SD_DB_PYTHON=python, STUB_REMOTE_DB=str(other))
+        self.assertIn("reached a database without this restore", result.stderr)
+        self.assertEqual("9", self.marker_step())
+        self.run_promote("--apply", SD_DB_PYTHON=python, STUB_REMOTE_DB=str(self.fixture.db))
+        self.assertIsNone(self.marker_step())
+
+    def test_the_seed_holds_every_nas_name_of_the_day(self):
+        """codex pass: the hourly job takes the first free name of the UTC day, so each NAS name is held."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today, yesterday = now.strftime("%Y-%m-%d"), (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        for name in (f"{yesterday}.2", today, f"{today}.9"):
+            (self.nas / "sd-backups-hourly" / name).mkdir(exist_ok=True)
+            (self.nas / "sd-backups-hourly" / name / "manifest.json").write_text("{}\n")
+        self.run_promote("--apply")
+        self.assertTrue((self.hourly / f"{today}.9" / "manifest.json").exists(), "the restored snapshot was not copied")
+        self.assertEqual([], list((self.hourly / today).iterdir()), "an earlier name is held by an empty folder")
+        self.assertFalse((self.hourly / f"{yesterday}.2").exists(), "an earlier day was held")
 
     def test_hub_ready_names_a_marker_left_behind(self):
         self.write_marker(step=7)
