@@ -446,6 +446,22 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertFalse(f.record.exists())
         self.assertEqual([DASHBOARD, SERVE], f.loaded())
 
+    def test_old_backups_go_once_the_record_does_and_the_newest_three_stay(self):
+        # Nothing pruned the backup folders (sd:4022). While a record is left
+        # its refresh is not done, so its backup and every other one stays.
+        f = self.f
+        old = [f"2020010{day}T000000Z-{day}" for day in range(1, 5)]
+        for name in (*old, "by-hand"):
+            (f.backups / name).mkdir(parents=True)
+            (f.backups / name / "sd.db").write_text("old\n")
+        f.upstream_migrations(f.good("one"))
+        record = self.killed_after_the_move(f)
+        backup = pathlib.Path(f.field(record, "backup")).parent.name
+        self.assertEqual(sorted([*old, "by-hand", backup]), sorted(p.name for p in f.backups.iterdir()))
+        result = f.run("refresh", expect=0)
+        self.assertEqual(sorted([*old[2:], "by-hand", backup]), sorted(p.name for p in f.backups.iterdir()))
+        self.assertIn(f"refresh: removed the old backup {f.backups / old[0]}", result.stdout)
+
     def test_a_kill_after_the_move_reuses_the_record_and_migrates_before_a_start(self):
         f = self.f
         target = f.upstream_migrations(f.good("one"), f.good("two"))

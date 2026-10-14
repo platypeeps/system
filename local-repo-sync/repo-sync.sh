@@ -799,7 +799,7 @@ schema_remedy() {
 # once one writes, the backup is no longer a rollback point.
 REFRESH_INTENT="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-intent"
 # Each refresh backup gets its own folder here, outside the backup root that
-# retention prunes, so it stays until the operator removes it.
+# the pack's retention prunes; prune_backups keeps the newest three.
 REFRESH_BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/repo-sync/refresh-backups"
 REFRESH_DB="${REPO_SYNC_SD_DB:-$HOME/.local/share/sd/sd.db}"
 
@@ -865,7 +865,29 @@ forget_intent() {
     flag "!!! failed: cannot delete $REFRESH_INTENT"
     return 1
   fi
-  echo "refresh: deleted $REFRESH_INTENT; the backups in ${i_backup%/*} stay until you remove them"
+  echo "refresh: deleted $REFRESH_INTENT"
+  prune_backups
+}
+
+# Removes all but the newest three refresh backup folders, named for their
+# UTC time, so they sort oldest first (sd:4022). Only with no record left:
+# a record names the backup of a refresh not yet done, the newest folder.
+prune_backups() {
+  [ ! -e "$REFRESH_INTENT" ] || return 0
+  b_n=0
+  for b_dir in "$REFRESH_BACKUPS"/[0-9]*Z-*; do
+    if [ -d "$b_dir" ]; then b_n=$((b_n + 1)); fi
+  done
+  for b_dir in "$REFRESH_BACKUPS"/[0-9]*Z-*; do
+    [ "$b_n" -gt 3 ] || break
+    [ -d "$b_dir" ] || continue
+    b_n=$((b_n - 1))
+    if rm -rf "$b_dir"; then
+      echo "refresh: removed the old backup $b_dir"
+    else
+      echo "note: cannot remove the old backup $b_dir"
+    fi
+  done
 }
 
 # Writes the record: system sha $1, pack sha $2, schema $3, backup $4. The
@@ -2431,8 +2453,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              and refresh exits 1. When the database (REPO_SYNC_SD_DB) is
              below the SCHEMA_VERSION of the lib/sd_db the pack moves to,
              it first runs the pack's `bin/sd-db backup` into
-             ~/.local/state/repo-sync/refresh-backups/, which no retention
-             prunes, and writes ~/.local/state/repo-sync/refresh-intent: the
+             ~/.local/state/repo-sync/refresh-backups/, where a finished
+             refresh keeps the newest three folders, and writes
+             ~/.local/state/repo-sync/refresh-intent: the
              system and pack shas, the version and the backup. A failed
              backup or record write moves nothing. After the moves it runs
              `bin/sd-db migrate`. On a failure it moves the pack back to the
