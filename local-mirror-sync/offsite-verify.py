@@ -16,7 +16,9 @@ sd_db from the command pack checkout's lib/ (`SD_PACK_ROOT`, else the home
 clone), ahead of any copy the interpreter has installed (sd:3279), and says so
 as a failure when it cannot.
 
-The database snapshot is the only thing on the share it checks. The repos
+The database snapshots are the only thing on the share it checks: the newest
+nightly one in `sd-backups/`, and the newest hourly one in `sd-backups-hourly/`,
+which must be at most 3 hours old (sd:4009). The repos
 mirror that used to be here, with its sampled byte comparison, was retired on
 2026-09-23: the repo fleet now goes to a USB disk attached to this Mac, which
 the `repos-mirror` job writes and nothing here reads.
@@ -97,6 +99,12 @@ SNAPSHOT_NAME = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})(?:\.(?P<serial>\d+))?$
 #: machine that was asleep.
 DEFAULT_MAX_DB_AGE_HOURS = 36.0
 
+#: The hourly job mirrors its snapshots here, beside the nightly ones (sd:4009).
+#: They are the 1-hour recovery point a failover restores from, so 3 hours
+#: names a stalled copy the next run, and two missed hours do not.
+HOURLY_FOLDER = "sd-backups-hourly"
+MAX_HOURLY_AGE_HOURS = 3.0
+
 
 class Report:
     """Collects every check's outcome so one run names every problem."""
@@ -159,13 +167,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_database(root: Path, report: Report, *, max_age_hours: float, now: datetime) -> None:
-    """Restore the newest snapshot off the share and compare it with its manifest."""
+def verify_database(root: Path, report: Report, *, max_age_hours: float, now: datetime,
+                    folder: str = "sd-backups") -> None:
+    """Restore the newest snapshot in `folder` off the share and compare it with its manifest."""
     try:
         share = root.resolve()
     except OSError:
         share = root
-    backups = root / "sd-backups"
+    backups = root / folder
     if not report.check(backups.is_dir(), f"database snapshots directory exists: {backups}"):
         return
     try:
@@ -176,7 +185,7 @@ def verify_database(root: Path, report: Report, *, max_age_hours: float, now: da
     if not report.check(snapshot is not None, f"a dated snapshot exists under {backups}"):
         return
     assert snapshot is not None
-    report.ok(f"newest snapshot: {snapshot.name}")
+    report.ok(f"newest snapshot: {folder}/{snapshot.name}")
     # Every check below follows links, so a snapshot directory or a database file
     # pointed back at this machine restores, validates and hashes exactly like
     # a real backup. Losing the Mac would then destroy the snapshots this run
@@ -203,7 +212,7 @@ def verify_database(root: Path, report: Report, *, max_age_hours: float, now: da
     age = _age_hours(datetime.fromtimestamp(database.stat().st_mtime, UTC), now)
     report.check(
         age <= max_age_hours,
-        f"newest snapshot is {age:.1f}h old (limit {max_age_hours:.0f}h)",
+        f"newest {folder} snapshot is {age:.1f}h old (limit {max_age_hours:.0f}h)",
     )
 
     try:
@@ -724,6 +733,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     verify_database(root, report, max_age_hours=arguments.max_db_age_hours, now=now)
+    verify_database(root, report, max_age_hours=MAX_HOURLY_AGE_HOURS, now=now,
+                    folder=HOURLY_FOLDER)
 
     for line in report.lines:
         print(line)

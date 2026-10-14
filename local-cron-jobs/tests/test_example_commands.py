@@ -128,6 +128,90 @@ class SecretScanWeeklyTest(unittest.TestCase):
                 result, _ = self.run_job(scan_rc)
                 self.assertEqual(result.returncode, scan_rc, result.stdout + result.stderr)
 
+# A stand-in for sd-db, the interpreter that runs offsite-verify, and
+# mirror-sync.sh: each records its call and exits with its own code.
+RECORD = '#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "$CHAIN_MARKER"\nexit "${{{rc}:-0}}"\n'
+MIRROR_RECORD = ('#!/bin/sh\nprintf "mirror %s %s %s\\n" "$MIRROR_SYNC_CONF" "$MIRROR_SYNC_ADDITIVE" "$*"'
+                 ' >> "$CHAIN_MARKER"\nexit "${MIRROR_RC:-0}"\n')
+
+
+class HourlyBackupJobTest(unittest.TestCase):
+    """The hourly snapshot, then its copy to the NAS and the NAS prune, in one job (sd:4009, sd:4011).
+
+    The copy runs only after a snapshot that succeeded and a preflight that
+    proved the NAS folder is on the share; the prune only after the copy. A
+    separate schedule would not order them: launchd runs missed jobs together at wake.
+    """
+
+    JOB = EXAMPLES / "sd-db-backup-hourly.job"
+    #: A placeholder the operator replaces, in this job and in the pair list alike.
+    NAS = "/Volumes/change-me-nas-share/Backup/sd-backups-hourly"
+
+    def run_job(self, **codes):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        programs = {
+            fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db": RECORD.format(name="sd-db", rc="SNAPSHOT_RC"),
+            fx.tmp / "python": RECORD.format(name="python", rc="PREFLIGHT_RC"),
+            fx.tmp / "local-mirror-sync/mirror-sync.sh": MIRROR_RECORD,
+        }
+        for path, text in programs.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            path.chmod(0o755)
+        marker = fx.tmp / "chain-calls"
+        env = {"CHAIN_MARKER": str(marker), "SD_DB_PYTHON": str(fx.tmp / "python"), **codes}
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, extra_env=env)
+        return result, marker.read_text().splitlines() if marker.exists() else []
+
+    def test_the_snapshot_then_the_preflight_then_the_additive_copy_then_the_prune(self):
+        result, calls = self.run_job()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(calls), 4, calls)
+        self.assertTrue(calls[0].startswith("sd-db backup --destination /Volumes/local/Backup Local/sd-backups"
+                                            " --require-mount /Volumes/local --keep 24 --no-row-prune"), calls)
+        self.assertTrue(calls[1].startswith("python "), calls)
+        self.assertTrue(calls[1].endswith(f"offsite-verify.py --preflight-only --destination {self.NAS}"), calls)
+        self.assertEqual(calls[2], "mirror mirrors-nas-hourly.conf 1 sync")
+        self.assertEqual(calls[3], f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7")
+
+    def test_a_failed_copy_prunes_nothing(self):
+        result, calls = self.run_job(MIRROR_RC="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror"])
+
+    def test_the_pair_list_example_copies_to_the_same_placeholder(self):
+        conf = EXAMPLES.parent.parent / "local-mirror-sync/mirrors-nas-hourly.conf.example"
+        pairs = [line for line in conf.read_text().splitlines() if line and not line.startswith("#")]
+        self.assertEqual([pair.split("|")[1] for pair in pairs], [self.NAS])
+
+    def test_a_failed_snapshot_copies_nothing(self):
+        result, calls = self.run_job(SNAPSHOT_RC="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db"])
+
+    def test_a_failed_preflight_copies_nothing(self):
+        result, calls = self.run_job(PREFLIGHT_RC="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python"])
+
+    def test_a_named_destination_still_copies_to_the_nas(self):
+        # A promoted satellite names its own local root (design, "Bulk storage
+        # and paths"); its hourly copy is the recovery point all the same.
+        result, calls = self.run_job(SD_DB_BACKUP_HOURLY_DESTINATION="/tmp/somewhere")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls[0], "sd-db backup --destination /tmp/somewhere --keep 24 --no-row-prune")
+        self.assertEqual(calls[2:], ["mirror mirrors-nas-hourly.conf 1 sync",
+                                     f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7"])
+
+    def test_an_empty_nas_folder_takes_the_snapshot_only(self):
+        # A one-off or a test switches the copy off by name, not by moving the root.
+        result, calls = self.run_job(SD_DB_BACKUP_HOURLY_NAS_FOLDER="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db"])
+
+
 class NightlyReviewJobTest(unittest.TestCase):
     """The nightly review runs `nightly-review.sh run` at 06:15, bounded at 30 minutes (sd:3638).
 
