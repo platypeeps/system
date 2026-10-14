@@ -16,6 +16,7 @@ steps by hand. Every case is NEW: written before the change and seen to fail
 against the script without it.
 """
 
+import json
 import os
 import pathlib
 import shutil
@@ -35,6 +36,10 @@ ROOT = FOLDER.parent
 CAPTURE = '[ ! -e "$XDG_STATE_HOME/repo-sync/refresh-intent" ] || cp "$XDG_STATE_HOME/repo-sync/refresh-intent" "$RECORD_SEEN"'
 # A kill of refresh after the pack moved, before the migrate.
 KILL = CAPTURE + '; kill -KILL $PPID'
+# A write after the rollback backup, as a cron report makes with the old
+# lib/ before the pack moves (sd:3507). Once: the recovery's make setup runs
+# the hook again.
+WRITE = CAPTURE + """; [ -e "$WROTE" ] || { sqlite3 "$REPO_SYNC_SD_DB" "INSERT INTO state (kind, key, timestamp) VALUES ('heartbeat', 'window-write', '2026-10-14T00:00:00+00:00')" && touch "$WROTE"; }"""
 
 # Logs each bootstrap with the database's schema and whether the record is
 # there, then runs LAUNCHCTL_HOOK and the stub of test_pinned.py.
@@ -114,9 +119,15 @@ class MigrateFixture(FollowFixture):
         return super().run(*args, expect=expect, extra_env=env)
 
     def sd_db(self, *args, check=True):
-        """The pack checkout's bin/sd-db, as refresh runs it, on the fixture home."""
+        """The pack checkout's bin/sd-db, as refresh runs it, on the fixture home.
+
+        Its backup root is the record's backup folder, as refresh names it for
+        the migrate: unset, the pack's default is this machine's backup disk."""
+        root = self.tmp / "no-backups"
+        if self.record.exists():
+            root = pathlib.Path(self.field(self.record.read_text(), "backup")).parent
         env = {**os.environ, "HOME": str(self.home), "PYTHONDONTWRITEBYTECODE": "1",
-               "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}"}
+               "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "SD_DB_BACKUP_ROOT": str(root)}
         result = subprocess.run([str(self.pack / "bin" / "sd-db"), *args], env=env,
                                 capture_output=True, text=True, check=False)
         if check and result.returncode != 0:
@@ -159,14 +170,35 @@ class MigrateFixture(FollowFixture):
     def restores(self):
         return [line for line in self.read_only("SELECT body FROM state WHERE kind = 'restore'").splitlines() if line]
 
+    def restored_from(self):
+        """The backup the one restore record names."""
+        (restore,) = self.restores()
+        return json.loads(restore)["from"]
+
     def read_only(self, sql):
         return subprocess.run(["sqlite3", str(self.database), sql],
                               check=True, capture_output=True, text=True).stdout.strip()
 
-    def backup_dirs(self):
+    def all_backups(self):
         if not self.backups.exists():
             return []
         return sorted(str(d) for root in self.backups.iterdir() for d in root.iterdir() if d.is_dir())
+
+    def backup_dirs(self):
+        """The rollback points: the first backup in each folder. A second one,
+        taken right before the migrate, is named for its day with a suffix."""
+        def order(path):
+            day, _, index = pathlib.Path(path).name.partition(".")
+            return day, int(index or 0)
+        folders = {}
+        for path in self.all_backups():
+            folders.setdefault(pathlib.Path(path).parent, []).append(path)
+        return sorted(min(paths, key=order) for paths in folders.values())
+
+    def second_backup(self, first):
+        """The one backup beside `first` taken after it."""
+        (second,) = [b for b in self.all_backups() if b != first and pathlib.Path(b).parent == pathlib.Path(first).parent]
+        return second
 
     def loaded(self):
         return sorted(p.name for p in self.launchd.iterdir() if p.suffix != ".pending")
@@ -189,9 +221,26 @@ class MigrateFixture(FollowFixture):
         (directory,) = [d for d in root.iterdir() if d.is_dir()]
         return directory
 
+    def hand_migrate(self, check=True):
+        """The migrate as settle() runs it after the moves: first a read-only
+        backup with the moved pack into the record's folder, which the record
+        then names, since the pack's migrate takes only such a backup
+        (sd:3507, sd:4028)."""
+        record = self.record.read_text()
+        first = self.field(record, "backup")
+        self.sd_db("backup", "--destination", str(pathlib.Path(first).parent), "--no-row-prune")
+        self.write_record(record.replace(f"backup={first}\n", f"backup={self.second_backup(first)}\n"))
+        return self.sd_db("migrate", check=check)
+
     def write_record(self, text):
         self.record.parent.mkdir(parents=True, exist_ok=True)
         self.record.write_text(text)
+
+    def window_writes(self, database=None):
+        """The rows WRITE made in `database`, the live one by default."""
+        return subprocess.run(["sqlite3", str(database or self.database),
+                               "SELECT count(*) FROM state WHERE key = 'window-write'"],
+                              check=True, capture_output=True, text=True).stdout.strip()
 
     def record_text(self, system, pack, schema, backup):
         return f"system={system}\npack={pack}\nschema={schema}\nbackup={backup}\n"
@@ -207,7 +256,7 @@ class RefreshMigrateTest(unittest.TestCase):
 
     # --- helpers that read one end state -----------------------------------
 
-    def assert_at_first_pair(self, f, backups=1):
+    def assert_at_first_pair(self, f, backups=2):
         """Recovered: schema N, both checkouts at A, no record, the services
         started at N with no record, no hub-pin, no new backup."""
         self.assertEqual(f.n, f.version())
@@ -216,7 +265,7 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertEqual([DASHBOARD, SERVE], f.loaded())
         self.assertEqual([f"{SERVE} schema={f.n} record=no", f"{DASHBOARD} schema={f.n} record=no"], f.starts())
         self.assertIsNone(f.hub_pin(f.system))
-        self.assertEqual(backups, len(f.backup_dirs()))
+        self.assertEqual(backups, len(f.all_backups()))
         # Old code opens the database: the pack at A answers status.
         self.assertEqual(0, f.sd_db("status", check=False).returncode)
 
@@ -227,6 +276,11 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertEqual(record, f.record.read_text())
         self.assertIsNone(f.hub_pin(f.system))
         self.assertIn("step(s) failed", result.stdout)
+
+    def second_record(self, f):
+        """The record once the second backup is in it."""
+        (first,) = f.backup_dirs()
+        return f.record_text(f.a_system, f.a_pack, f.n, f.second_backup(first))
 
     def killed_after_the_move(self, f):
         """Run a refresh that the make stub kills during the pack's make setup."""
@@ -249,6 +303,24 @@ class RefreshMigrateTest(unittest.TestCase):
                          f.starts())
         self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
         self.assertNotIn("migrates nothing", result.stdout)
+
+    def test_the_migrate_reads_the_refresh_backup_folder_as_its_backup_root(self):
+        # The pack's migrate refuses unless the newest snapshot under
+        # SD_DB_BACKUP_ROOT verifies (sd:3507). Refresh's backup sits in its
+        # own folder outside that root, so refresh names the folder for the
+        # migrate call. The target pack's bin/sd-db logs each verb's variable.
+        f = self.f
+        launcher = f.upstream / "bin" / "sd-db"
+        launcher.rename(launcher.with_name("sd-db.real"))
+        launcher.write_text('#!/bin/sh\nprintf \'%s %s\\n\' "$1" "${SD_DB_BACKUP_ROOT-unset}" >> "$SD_DB_ENV_LOG"\n'
+                            'exec "$(dirname "$0")/sd-db.real" "$@"\n')
+        launcher.chmod(0o755)
+        f.upstream_migrations(f.good("one"))
+        log = f.tmp / "sd-db-env.log"
+        f.run("refresh", expect=0, extra_env={"SD_DB_ENV_LOG": str(log)})
+        self.assertEqual(f.n + 1, f.version())
+        (backup,) = f.backup_dirs()
+        self.assertIn(f"migrate {pathlib.Path(backup).parent}", log.read_text().splitlines())
 
     def test_an_unreadable_database_moves_nothing(self):
         f = self.f
@@ -339,6 +411,98 @@ class RefreshMigrateTest(unittest.TestCase):
                          f.starts())
         self.assertEqual((f.head(f.system), target), f.hub_pin(f.system))
 
+    # --- the second backup, right before the migrate (sd:3507) --------------
+
+    def write_after_the_backup(self, f, expect):
+        result = f.run("refresh", expect=expect,
+                       extra_env={"MAKE_HOOK": WRITE, "WROTE": str(f.tmp / "wrote")})
+        self.assertTrue((f.tmp / "wrote").exists())
+        return result
+
+    def test_a_write_after_the_rollback_backup_is_in_the_backup_the_migrate_reads(self):
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        result = self.write_after_the_backup(f, 0)
+        self.assertEqual(f.n + 1, f.version())
+        (first,) = f.backup_dirs()
+        self.assertEqual(f.record_text(f.a_system, f.a_pack, f.n, first), f.record_seen.read_text())
+        self.assertEqual(2, len(f.all_backups()))
+        second = f.second_backup(first)
+        self.assertEqual(("0", "1"), (f.window_writes(f"{first}/sd.db"), f.window_writes(f"{second}/sd.db")))
+        self.assertIn(f"{f.record} names the second backup {second}", result.stdout)
+        self.assertFalse(f.record.exists())
+
+    def test_a_failed_migrate_restores_the_second_backup_and_keeps_the_write(self):
+        f = self.f
+        f.upstream_migrations(f.good("one"), f.bad("two"))
+        self.write_after_the_backup(f, 1)
+        self.assert_at_first_pair(f, backups=2)
+        (first,) = f.backup_dirs()
+        self.assertEqual(f.second_backup(first), f.restored_from())
+        self.assertEqual("1", f.window_writes())
+
+    def test_a_failed_second_backup_runs_no_migrate_and_recovers(self):
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        locked = 'chmod 500 "$XDG_STATE_HOME"/repo-sync/refresh-backups/*'
+        self.addCleanup(lambda: [os.chmod(d, 0o700) for d in f.backups.iterdir()])
+        result = f.run("refresh", expect=1, extra_env={"MAKE_HOOK": f"{CAPTURE}; {locked}"})
+        self.assertIn("!!! failed: the second backup into", result.stdout)
+        self.assertIn("refresh: no migrate", result.stdout)
+        self.assertNotIn("bin/sd-db migrate: schema", result.stdout)
+        self.assert_at_first_pair(f, backups=1)
+        self.assertEqual([], f.restores())
+
+    def test_a_failed_record_rewrite_runs_no_migrate_and_recovers(self):
+        f = self.f
+        f.upstream_migrations(f.good("one"))
+        blocked = 'mkdir -p "$XDG_STATE_HOME/repo-sync/refresh-intent.tmp"'
+        result = f.run("refresh", expect=1, extra_env={"MAKE_HOOK": f"{CAPTURE}; {blocked}"})
+        (first,) = f.backup_dirs()
+        self.assertIn(f"cannot write {f.record}; it still names {first}", result.stdout)
+        self.assertNotIn("bin/sd-db migrate: schema", result.stdout)
+        self.assert_at_first_pair(f, backups=2)
+        self.assertEqual([], f.restores())
+
+    def by_hand_second_backup(self, f, record):
+        """What a kill right after the second backup leaves: the record, and a
+        backup the moved pack took beside the first."""
+        first = f.field(record, "backup")
+        f.sd_db("backup", "--destination", str(pathlib.Path(first).parent), "--no-row-prune")
+        return f.second_backup(first)
+
+    def test_a_kill_after_the_second_backup_takes_another_on_rerun(self):
+        f = self.f
+        target = f.upstream_migrations(f.good("one"))
+        record = self.killed_after_the_move(f)
+        self.by_hand_second_backup(f, record)
+        f.record_seen.unlink()
+        result = f.run("refresh", expect=0)
+        self.assertEqual(record, f.record_seen.read_text())
+        self.assertEqual(3, len(f.all_backups()))
+        self.assertIn("names the second backup", result.stdout)
+        self.assertEqual(f.n + 1, f.version())
+        self.assertEqual(target, f.head(f.pack))
+        self.assertFalse(f.record.exists())
+        self.assertEqual([f"{SERVE} schema={f.n + 1} record=no", f"{DASHBOARD} schema={f.n + 1} record=no"],
+                         f.starts())
+
+    def test_a_kill_after_the_record_rewrite_reuses_it_and_migrates(self):
+        f = self.f
+        target = f.upstream_migrations(f.good("one"))
+        record = self.killed_after_the_move(f)
+        second = self.by_hand_second_backup(f, record)
+        rewritten = f.record_text(f.a_system, f.a_pack, f.n, second)
+        f.write_record(rewritten)
+        f.record_seen.unlink()
+        result = f.run("refresh", expect=0)
+        self.assertIn("reused, no new backup", result.stdout)
+        self.assertEqual(rewritten, f.record_seen.read_text())
+        self.assertEqual(3, len(f.all_backups()))
+        self.assertEqual(f.n + 1, f.version())
+        self.assertEqual(target, f.head(f.pack))
+        self.assertFalse(f.record.exists())
+
     # --- an unknown rollback point -----------------------------------------
 
     def refused_on_record(self, record):
@@ -388,8 +552,7 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertIn(f"schema {f.n + 1} back to {f.n}", result.stdout)
         self.assert_at_first_pair(f)
         (backup,) = f.backup_dirs()
-        (restore,) = f.restores()
-        self.assertIn(backup, restore)
+        self.assertEqual(f.second_backup(backup), f.restored_from())
 
     def test_a_failed_restore_keeps_services_stopped_and_the_record(self):
         f = self.f
@@ -403,7 +566,7 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertIn("!!! failed: the restore of", result.stdout)
         self.assertEqual(f.n + 1, f.version())
         self.assertEqual(f.a_pack, f.head(f.pack))
-        self.assert_stuck(f, result, f.record_seen.read_text())
+        self.assert_stuck(f, result, self.second_record(f))
 
     def test_a_failed_move_back_keeps_services_stopped_and_the_record(self):
         f = self.f
@@ -415,7 +578,7 @@ class RefreshMigrateTest(unittest.TestCase):
         self.assertIn("!!! failed: " + str(f.pack) + "/bin/sd-db migrate", result.stdout)
         self.assertIn(f"!!! failed: cannot put {f.pack} back at {f.a_pack}", result.stdout)
         self.assertEqual(f.n + 1, f.version())
-        self.assert_stuck(f, result, f.record_seen.read_text())
+        self.assert_stuck(f, result, self.second_record(f))
 
     # --- reruns --------------------------------------------------------------
 
@@ -425,11 +588,12 @@ class RefreshMigrateTest(unittest.TestCase):
         b = f.upstream_migrations(f.good("one"))
         self.killed_after_the_move(f)
         self.assertEqual(b, f.head(f.pack))
-        f.sd_db("migrate")  # what a kill after N+1 committed leaves
+        f.hand_migrate()  # what a kill after N+1 committed leaves
         self.assertEqual(f.n + 1, f.version())
         f.upstream_migrations(f.bad("two"))
         f.run("refresh", expect=1)
-        self.assert_at_first_pair(f)
+        # The refresh's backup, the hand migrate's, and the rerun's.
+        self.assert_at_first_pair(f, backups=3)
         self.assertEqual(1, len(f.restores()))
 
     def test_a_kill_after_the_first_of_two_migrations_finishes_both_before_a_start(self):
@@ -441,7 +605,7 @@ class RefreshMigrateTest(unittest.TestCase):
         # What a kill between the two migrations' commits leaves: the real
         # migrate of the first alone, from the commit that adds it.
         f.git(f.pack, "switch", "-q", "--detach", first)
-        f.sd_db("migrate")
+        f.hand_migrate()
         f.git(f.pack, "switch", "-q", "--detach", target)
         self.assertEqual(f.n + 1, f.version())
         f.run("refresh", expect=0)
@@ -462,7 +626,8 @@ class RefreshMigrateTest(unittest.TestCase):
         last = "    raise SystemExit(dispatch_verb(sys.argv[1:]))\n"
         text = entry.read_text()
         self.assertIn(last, text)
-        entry.write_text(text.replace(last, "    dispatch_verb(sys.argv[1:])\n    raise SystemExit(1)\n"))
+        entry.write_text(text.replace(last, "    dispatch_verb(sys.argv[1:])\n"
+                                            "    raise SystemExit(1 if sys.argv[1:2] == ['migrate'] else 0)\n"))
         f.git(f.upstream, "commit", "-q", "-am", "sd-db exits 1 after its verb")
         f.git(f.upstream, "push", "-q", "origin", "main")
         result = f.run("refresh", expect=1)
@@ -506,15 +671,15 @@ class RefreshMigrateTest(unittest.TestCase):
         """The state a kill at `point` of a recovery leaves: the pack moved to
         B, whose second migration fails, and the first committed."""
         self.killed_after_the_move(f)
-        f.sd_db("migrate", check=False)
+        f.hand_migrate(check=False)
         self.assertEqual(f.n + 1, f.version())
         if point == "before the restore":
             return
         f.git(f.pack, "switch", "-q", "--detach", f.a_pack)
         if point == "after the pack moved back":
             return
-        (backup,) = f.backup_dirs()
-        f.sd_db("restore", backup)
+        # The record's backup, as recover restores it: the hand migrate's.
+        f.sd_db("restore", f.field(f.record.read_text(), "backup"))
         self.assertEqual(f.n, f.version())
         if point == "after the restore":
             return
@@ -529,7 +694,7 @@ class RefreshMigrateTest(unittest.TestCase):
                 f.upstream_migrations(f.good("one"), f.bad("two"))
                 self.recovery_state(f, point)
                 f.run("refresh", expect=1)
-                self.assert_at_first_pair(f)
+                self.assert_at_first_pair(f, backups=3)
 
     def test_a_kill_during_recovery_with_a_fixed_target_ends_at_the_target(self):
         f = self.f
@@ -555,7 +720,10 @@ class RefreshMigrateTest(unittest.TestCase):
         holder.stdout.close()
         self.assertTrue(f.record.exists())
         f.run("refresh", expect=1)
-        self.assert_at_first_pair(f)
+        # No new rollback point: the third backup is the one the migrate
+        # checks the partly migrated database against.
+        self.assert_at_first_pair(f, backups=3)
+        self.assertEqual(1, len(f.backup_dirs()))
 
     def test_a_kill_after_the_record_delete_starts_on_rerun(self):
         f = self.f
@@ -584,7 +752,8 @@ class RefreshMigrateTest(unittest.TestCase):
         backups = f.backup_dirs()
         self.assertEqual(2, len(backups))
         second = next(b for b in backups if b != first)
-        self.assertEqual(f.record_text(f.a_system, f.a_pack, f.n, second), f.record_seen.read_text())
+        # Seen at the recovery's make setup, once the record names the second backup.
+        self.assertEqual(f.record_text(f.a_system, f.a_pack, f.n, f.second_backup(second)), f.record_seen.read_text())
         self.assertEqual(f.n, f.version())
         self.assertEqual([DASHBOARD, SERVE], f.loaded())
 
