@@ -1865,6 +1865,12 @@ stage_sd() {
     echo "  SKIP    no sd agent in this profile ($LABEL_PREFIX.sd-dashboard)"
     return 0
   fi
+  # An old hub demoted by the README keeps its hub profile until it takes the
+  # role back; a database built here would stop that promote at step 1.
+  if sd_in_profile && [ -e "$SD_HUB_CONFIG" ] && [ ! -f "$SD_DB" ]; then
+    echo "  DIFFERS $SD_HUB_CONFIG — this hub profile is demoted (hub.json, no database): take the role back with $(basename "$SELF") promote --apply, or rejoin with a satellite profile (README, 'Hub failover')"
+    return 0
+  fi
   if [ -f "$SD_DB" ]; then
     echo "  ok      database $SD_DB"
   else

@@ -455,7 +455,7 @@ class Promote(unittest.TestCase):
         self.assertIsNone(self.marker_step())
 
     def test_a_hub_profile_that_rejoined_as_a_satellite_takes_the_role_back(self):
-        """Its `.satellite` file keeps is_satellite true; holding the role still installs its hub-only labels."""
+        """A hub profile that also names a satellite: holding the role still installs its hub-only labels."""
         self.hub_profile(satellite=True)
         self.run_promote("--apply")
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
@@ -598,6 +598,19 @@ class HubRole(unittest.TestCase):
             with self.subTest(stage=stage):
                 self.update(stage, "holder")
                 self.assertFalse(pathlib.Path(f"{self.log}.fences").exists(), f"the {stage} stage asked the fence")
+
+    def test_a_demoted_hub_profile_says_so_and_builds_no_database(self):
+        """Between demotion and take-back: hub profile, hub.json, no database. Not the hub's EXTRA, no init."""
+        (self.fixture.state / "profile").write_text("personal\n")
+        self.fixture.db.unlink()
+        hub_json = self.fixture.home / ".config/sd/hub.json"
+        hub_json.parent.mkdir(parents=True)
+        hub_json.write_text(json.dumps({"hub": HUB, "port": 8769}))
+        out = self.update("sd", "elsewhere")
+        self.assertIn("this hub profile is demoted", out)
+        self.assertNotIn("remove it", out)
+        self.assertEqual([], [line for line in self.log.read_text().splitlines() if line == "init"]
+                         if self.log.exists() else [])
 
     def test_a_satellite_profile_still_holds_the_role_once_promoted(self):
         """A `<profile>.satellite` file keeps is_satellite true after hub.json moved."""

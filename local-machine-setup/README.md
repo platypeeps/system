@@ -398,7 +398,8 @@ Hand the role back to a personal machine (`promote --undo`, sd:4048, is not buil
 Make an old hub a satellite, so it can take the role back or rejoin:
 
 1. Move its `~/.local/share/sd/sd.db` to `sd.db.demoted-<date>`. It holds the writes after the last snapshot; copy any item or note back by hand.
-2. Copy `~/.config/sd/hub.json` from any satellite. To rejoin for good, also add `<profile>.satellite` and run `machine-setup.sh update satellite --apply`.
+2. Copy `~/.config/sd/hub.json` from any satellite. Until it takes the role back, the sd stage reads `DIFFERS ... demoted` and builds no database.
+   To rejoin for good, give it a satellite profile: take the `SD_HUB_ONLY_AGENTS` labels out of `<profile>.agent` and `<profile>.cron`, add `<profile>.satellite`, then run `machine-setup.sh update --apply`.
 
 Until then, the fence keeps a returning old hub from writing off the machine: its NAS copies and its `hub-pin` push refuse.
 
