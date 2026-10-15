@@ -5442,6 +5442,18 @@ time.sleep(float(sys.argv[3]))
 os._exit(1)' "$1" "$2" "$3"
 }
 
+# The fence's name rule (sd_db hub.py `_matches`), case, blanks and trailing
+# dots aside: two full names agree whole; a bare machine name matches the first
+# label. Either side may be the bare one: hub.json and sd.hub_name both name the hub.
+hub_name_matches() {
+  hm_a=$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | sed 's/\.*$//')
+  hm_b=$(printf '%s' "$2" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | sed 's/\.*$//')
+  case "$hm_a/$hm_b" in
+    *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
+    *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
+  esac
+}
+
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per
 # check, `ok`, `--` when it cannot be read now, or NOT-READY. Not a drift word:
 # a satellite that is no standby is not drifted, so the nightly drift count
@@ -5475,7 +5487,7 @@ hub_ready() {
   # The hub holds the setting; a dead hub cannot say, and promote checks it
   # again in the restored database before it takes the name.
   if hr_name=$(bound_step 30 sd config get sd.hub_name 2>/dev/null); then
-    if [ "$hr_name" = "$1" ]; then
+    if hub_name_matches "$1" "$hr_name"; then
       echo "  ok      sd.hub_name is $hr_name"
     elif [ -z "$hr_name" ]; then
       echo "  NOT-READY sd.hub_name is unset: on the hub, sd config set sd.hub_name $1"
@@ -5541,16 +5553,25 @@ else:
     echo "  --      the repository list was not read from the hub; gh push access not checked"
   fi
   # A hub-role job mails a miss through notify's email channel (the pack's
-  # sd-db backup, report_failure).
+  # sd-db backup, report_failure). A machine that keeps ntfy and drops email
+  # is ready too (operator ruling, sd:4683); its first word says which.
   hr_unset=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
 env = stc.read_env("notify")
-print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
-               if "change-me" in (os.environ[k] if k in os.environ else env.get(k, "")) or
-               not (os.environ[k] if k in os.environ else env.get(k, ""))))')
+def unset(k):
+    v = os.environ[k] if k in os.environ else env.get(k, "")
+    return not v or "change-me" in v
+print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM") if unset(k)))')
+  hr_ntfy=${hr_unset%% *}
+  hr_unset=${hr_unset#"$hr_ntfy"}
+  hr_unset=${hr_unset# }
   if [ -z "${SD_NOTIFY:-}" ] && ! command -v notify >/dev/null 2>&1; then
     echo "  NOT-READY no notify on PATH: a hub-role job could not mail a miss; $(basename "$SELF") update bin --apply"
+  elif [ -z "$hr_ntfy" ]; then
+    echo "  --      notify's settings were not read; its channels were not checked"
+  elif [ -n "$hr_unset" ] && [ "$hr_ntfy" = ntfy ]; then
+    echo "  ok      notify reaches you by ntfy; email is off here"
   elif [ -n "$hr_unset" ]; then
-    echo "  NOT-READY notify's email channel lacks $hr_unset: copy local-notify/.env.example to $(st_config_dir notify)/.env and set it"
+    echo "  NOT-READY notify's email channel lacks $hr_unset, and ntfy has no NTFY_TOPIC: copy local-notify/.env.example to $(st_config_dir notify)/.env and set either"
   else
     echo "  ok      notify's email channel is set"
   fi
@@ -5611,6 +5632,35 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
   else
     echo "  ok      hourly backup root: $hr_dest"
   fi
+  # A NAS pair whose destination holds a folder its source lacks loses it on
+  # a pass with --delete, such as a share's other folders when the pair names
+  # the share's parent; the dated snapshot folders are the history an
+  # additive pass keeps. Read only: it deletes nothing (sd:4683).
+  for hr_list in mirrors-nas.conf mirrors-nas-hourly.conf; do
+    hr_conf="$(st_config_dir mirror-sync)/$hr_list"
+    [ -f "$hr_conf" ] || continue
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$hr_conf" | grep -v '^$' |
+      while IFS='|' read -r hr_src hr_dst _; do
+        # A listing that fails is no answer, not an empty folder.
+        if ! hr_names=$(ls -A "$hr_dst" 2>/dev/null); then
+          echo "  --      $hr_list: $hr_dst not readable now; its folders were not compared"
+          continue
+        fi
+        if ! ls -A "$hr_src" >/dev/null 2>&1; then
+          echo "  --      $hr_list: $hr_src not readable now; its folders were not compared"
+          continue
+        fi
+        hr_extra=$(printf '%s\n' "$hr_names" | grep -Ev '^([0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?)?$' |
+          while IFS= read -r hr_n; do
+            if [ -d "$hr_dst/$hr_n" ] && [ ! -e "$hr_src/$hr_n" ]; then printf '%s\n' "$hr_n"; fi
+          done | awk 'NR > 1 {printf ", "} {printf "%s", $0}')
+        if [ -n "$hr_extra" ]; then
+          echo "  NOT-READY $hr_list: $hr_dst holds $hr_extra, which $hr_src lacks; a pass with --delete deletes them: pair the sd-backups folder itself"
+        else
+          echo "  ok      $hr_list: $hr_dst holds no folder $hr_src lacks"
+        fi
+      done
+  done
   if [ -z "$hr_newest" ]; then
     echo "  NOT-READY no dated snapshot under the backup roots"
   else

@@ -454,6 +454,52 @@ class Promote(PromoteCase):
         self.assertIn("  --      sd.hub_name not read from the hub", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
 
+    def test_the_hub_name_line_takes_the_fences_rule(self):
+        """sd:4683: a bare machine name matches the full MagicDNS name, as the
+        fence's `_matches` has it; two full names must agree whole."""
+        for named, setting, ready in [("hub", HUB, True), (HUB, "hub", True), (HUB, "HUB.example.test.", True),
+                                      (HUB, " Hub.Example.Test.. ", True), (HUB, "hub.other.test", False), ("hub", "other.example.test", False),
+                                      (HUB, "other", False)]:
+            with self.subTest(named=named, setting=setting):
+                self.hub_json.write_text(json.dumps({"hub": named, "port": self.port}) + "\n")
+                out = self.run_promote(STUB_HUB_NAME=setting).stdout
+                line = f"  ok      sd.hub_name is {setting}"
+                (self.assertIn if ready else self.assertNotIn)(line, out)
+                self.assertEqual(not ready, f"NOT-READY sd.hub_name is {setting}," in out)
+
+    def test_a_nas_list_whose_destination_holds_other_folders_is_not_ready(self):
+        """sd:4683: a NAS pair named by the share's parent folder would trim the
+        share's other folders on a pass with --delete; the dated snapshot
+        folders an additive pass keeps are no finding, and nothing is deleted."""
+        share = self.tmp / "share"
+        for name in ("sd-backups/2026-10-13.1", "Photos", "Tax records"):
+            (share / name).mkdir(parents=True)
+        local = self.tmp / "local-nightly"
+        (local / "sd-backups/2026-10-14.1").mkdir(parents=True)
+        # A source behind a folder it cannot enter is no answer, not an empty source.
+        locked = self.tmp / "locked"
+        (locked / "sd-backups").mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        lists = self.config / "mirror-sync"
+        lists.mkdir(exist_ok=True)
+        cases = [(f"{local}|{share}\n",
+                  f"  NOT-READY mirrors-nas.conf: {share} holds Photos, Tax records, which {local} lacks; "
+                  "a pass with --delete deletes them: pair the sd-backups folder itself"),
+                 (f"# the per-folder pair\n{local}/sd-backups|{share}/sd-backups\n",
+                  f"  ok      mirrors-nas.conf: {share}/sd-backups holds no folder {local}/sd-backups lacks"),
+                 (f"{local}|{self.tmp}/unmounted\n",
+                  f"  --      mirrors-nas.conf: {self.tmp}/unmounted not readable now; its folders were not compared"),
+                 (f"{locked}/sd-backups|{share}\n",
+                  f"  --      mirrors-nas.conf: {locked}/sd-backups not readable now; its folders were not compared")]
+        for conf, line in cases:
+            with self.subTest(conf=conf):
+                (lists / "mirrors-nas.conf").write_text(conf)
+                out = self.run_promote().stdout
+                self.assertIn(line + "\n", out)
+                self.assertEqual("NOT-READY" in line, "NOT-READY" in out)
+        self.assertEqual(["Photos", "Tax records", "sd-backups"], sorted(p.name for p in share.iterdir()))
+
     def test_the_drain_waits_for_a_gate_from_before(self):
         """A gate run by hand outside every lane lock ends before the role moves."""
         count = self.tmp / "gate.count"
@@ -912,6 +958,18 @@ class Promote(PromoteCase):
         result = self.run_promote("--apply", expect=1)
         self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", result.stdout)
         self.assertTrue(self.hub_json.exists())
+
+    def test_a_notify_with_ntfy_and_no_email_is_ready(self):
+        """sd:4683 (d): a machine that keeps ntfy and drops email is ready; a
+        placeholder topic is no channel."""
+        (self.config / "notify/.env").write_text("NTFY_TOPIC=example-topic\n#NOTIFY_EMAIL_TO=ops@example.test\n")
+        out = self.run_promote().stdout
+        self.assertIn("  ok      notify reaches you by ntfy; email is off here\n", out)
+        self.assertNotIn("NOT-READY", out)
+        (self.config / "notify/.env").write_text("NTFY_TOPIC=change-me\n")
+        out = self.run_promote().stdout
+        self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", out)
+        self.assertNotIn("by ntfy", out)
 
 
 class HubRole(unittest.TestCase):

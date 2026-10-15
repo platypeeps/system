@@ -11,4 +11,9 @@
 #
 # /Volumes/local/Backup carries the nightly sd-db snapshot in sd-backups/,
 # so this pair is also how that snapshot leaves the machine.
+#
+# A promoted satellite pairs its SD_DB_BACKUP_DESTINATION folder with the
+# NAS's sd-backups folder, one folder to one folder, never a parent with the
+# share: the share's other folders are not in the source (sd:4683).
+#   /path/to/sd-backups|/Volumes/Offsite/Backup/sd-backups
 /Volumes/local/Backup|/Volumes/Offsite/Backup

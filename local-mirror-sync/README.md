@@ -78,7 +78,9 @@ overwrites on the NAS is gone (operator decision, 2026-09-26). The only thing th
 folder checks on the NAS is that snapshot (see `offsite-verify.py` below).
 A machine that moves the snapshot root with `SD_DB_BACKUP_DESTINATION`, such
 as a promoted satellite, still copies, as the hourly job does (sd:4048): the
-pair list's source must name that root's parent. An empty
+pair list names that root and the NAS's `sd-backups` folder, one folder to
+one folder: its parent can hold folders the NAS share lacks, and the share
+folders it lacks, which a pass with `--delete` would delete (sd:4683). An empty
 `SD_DB_BACKUP_NAS_FOLDER` takes the snapshot only, for a one-off.
 
 **A detached drive fails loudly.** It looks like a missing destination
