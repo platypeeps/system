@@ -5478,8 +5478,8 @@ promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 # on stdin holds for today or later is held in $1 too, as an empty folder: the
 # additive NAS copy changes nothing on the NAS for it, and retention leaves it.
 # Prints each NAS root it cannot list, as today's names there are not held,
-# and each snapshot in $1 that differs from the one of its name in the NAS
-# root it is copied to (the same folder name): the copy would overwrite it.
+# and each snapshot in $1, of any day, that differs from the one of its name
+# in the NAS hourly root, where the hourly copy would overwrite it.
 hold_names() {
   python3 -c 'import datetime, os, re, sys
 dest, nas = sys.argv[1], sys.argv[2].splitlines()
@@ -5498,12 +5498,15 @@ for root in filter(None, sys.stdin.read().splitlines()):
             print(root + " cannot be listed")
         continue
     for name in names:
-        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name) and name[:10] >= today:
-            held = os.path.join(dest, name)
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name):
+            continue
+        held = os.path.join(dest, name)
+        if name[:10] >= today:
             os.makedirs(held, exist_ok=True)
-            pair = root in nas and os.path.basename(root) == os.path.basename(dest)
-            if pair and os.listdir(held) and (manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
-                print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$(nas_roots)"
+        pair = root in nas and os.path.basename(root) == "sd-backups-hourly"
+        if pair and os.path.isdir(held) and os.listdir(held) and (
+                manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
+            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$(nas_roots)"
 }
 
 # Step 4, 5 and the seed are the ones that move files; each first records what

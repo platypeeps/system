@@ -144,7 +144,8 @@ class Promote(unittest.TestCase):
                 (self.nas / folder / name).mkdir(parents=True)
                 (self.nas / folder / name / "manifest.json").write_text("{}\n")
         # This satellite's own hub-role job files; the hourly one names a local root.
-        self.hourly = self.tmp / "local-backups" / "sd-backups-hourly"
+        # Named as the job example's default local root, not as the NAS's hourly root.
+        self.hourly = self.tmp / "local-backups" / "sd-backups"
         self.hourly.parent.mkdir()
         jobs = self.config / "cron-jobs" / "jobs"
         jobs.mkdir(parents=True)
@@ -287,16 +288,21 @@ class Promote(unittest.TestCase):
         """The hourly job writes here while its NAS copy waits; that name may be on the NAS."""
         _, _, gone, args, _ = self.promote_from_usb()
         name = f"{utc_today()}.9"
+        # The rerun may come after UTC midnight: yesterday's snapshot still collides.
+        before = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%d.9")
         (gone / "sd-backups").mkdir(parents=True)
         for root, body in ((gone / "sd-backups-hourly", "nas\n"), (self.hourly, "taken here\n")):
-            (root / name).mkdir(parents=True)
-            (root / name / "manifest.json").write_text(body)
+            for n in (name, before):
+                (root / n).mkdir(parents=True)
+                (root / n / "manifest.json").write_text(body)
         result = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
-        self.assertIn(f"  {self.hourly}/{name} is not the snapshot of that name in {gone}/sd-backups-hourly; move it aside",
-                      result.stderr)
+        for n in (name, before):
+            self.assertIn(f"  {self.hourly}/{n} is not the snapshot of that name in {gone}/sd-backups-hourly; move it aside",
+                          result.stderr)
         self.assertEqual("hold", self.marker_step())
-        # Moved aside, the name is held, and the promotion ends.
+        # Moved aside, today's name is held, and the promotion ends.
         (self.hourly / name).rename(self.tmp / "aside")
+        (self.hourly / before).rename(self.tmp / "aside-before")
         self.run_promote(*args, OFFSITE_VERIFY_ROOT=gone)
         self.assertEqual([], list((self.hourly / name).iterdir()))
         self.assertIsNone(self.marker_step())
