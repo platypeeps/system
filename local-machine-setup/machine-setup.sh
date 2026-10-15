@@ -71,7 +71,7 @@ STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite ag
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node mailto"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -451,6 +451,17 @@ node_versions() {
   printf '%s\n' "${nv:-18
 20
 24}"
+}
+
+# The npm that installs the .npm CLIs: Homebrew's, of the first node formula
+# the brew manifest lists. Every Homebrew node keeps its globals under
+# $(brew --prefix), whose bin is on PATH in every shell; an fnm node keeps
+# them per version, so the npm first on PATH depends on the shell (sd:4739).
+brew_npm() {
+  bn=$(manifest brew | grep -xE 'node(@[0-9]+)?' | head -1)
+  [ -n "$bn" ] && command -v brew >/dev/null 2>&1 || return 1
+  bn="$(bound_step 60 brew --prefix)/opt/$bn/bin/npm"
+  [ -x "$bn" ] && echo "$bn"
 }
 
 # The bundle id that answers mailto: links: the first line of <profile>.mailto,
@@ -1543,7 +1554,8 @@ stage_services() {
 # ----------------------------------------------------------------- verbs ----
 
 # Developer tooling that doctor already checks for: fnm node versions,
-# rtk hooks, and the mailto handler (via duti, in common.brew).
+# rtk hooks, and the mailto handler (via duti, in common.brew). Also the
+# global npm CLIs of the .npm files, which status reports through this stage.
 # Everything is idempotent — present things are skipped, not reinstalled.
 stage_tooling() {
   echo "== tooling"
@@ -1560,6 +1572,28 @@ stage_tooling() {
     done
   else
     echo "  SKIP    fnm not installed (brew stage provides it)"
+  fi
+  # A package is present when npm ls prints its path; npm's exit code says
+  # neither way: npm 10 exits 0 on a miss, npm 11 exits 1 for a present
+  # package in a tree with problems. Any other code is a failed probe.
+  npm_pkgs=$(manifest npm)
+  if [ -z "$npm_pkgs" ]; then
+    :
+  elif ! np=$(brew_npm); then
+    echo "  MISSING npm (none from a Homebrew node formula in the brew manifest; the brew stage installs it)"
+  else
+    for p in $npm_pkgs; do
+      np_rc=0
+      np_out=$(bound_step 60 "$np" ls -g --depth=0 --parseable "$p" 2>/dev/null) || np_rc=$?
+      if [ "$np_rc" -gt 1 ]; then
+        note_failure "npm ls -g $p: presence unknown, nothing installed" "$np_rc"
+      elif printf '%s\n' "$np_out" | grep -q .; then
+        echo "  ok      npm $p"
+      else
+        echo "  MISSING npm $p"
+        run bound_step 600 "$np" install -g "$p"
+      fi
+    done
   fi
   if command -v rtk >/dev/null 2>&1; then
     if [ -f "$HOME/.claude/settings.json" ] && grep -q 'rtk' "$HOME/.claude/settings.json" 2>/dev/null; then
@@ -6639,12 +6673,14 @@ HELPEOF
 
 Profiles layer: common.<kind> applies everywhere, <profile>.<kind> adds to it.
 Kinds are tap, brew, cask, mas, service, cron, agent, macos, app, obsidian, iterm2,
-spotlight, satellite, node, mailto — plain lists with # comments. macos lines are
+spotlight, satellite, node, npm, mailto — plain lists with # comments. macos lines are
 "<domain> <key> <type> <value>"; only keys listed there are ever touched or captured.
 iterm2 holds a single folder path.
 spotlight holds absolute paths; a leading ~ is this account's home.
-node lists the node majors fnm keeps (none listed anywhere: 18, 20, 24). mailto holds
-one bundle id, the profile's before common's (neither: com.google.Chrome).
+node lists the node majors fnm keeps (none listed anywhere: 18, 20, 24). npm lists
+global npm CLIs (pkg or pkg@version) the tooling stage installs with the npm of
+the brew manifest's node formula. mailto holds one bundle id, the profile's
+before common's (neither: com.google.Chrome).
 
 configuration (outside this repo; nothing private is committed here):
   $SYSTEM_TOOLS_CONFIG/machine-setup/
