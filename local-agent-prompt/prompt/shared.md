@@ -126,6 +126,7 @@ A PR that raises a measured budget constant cites a fresh measurement in its bod
 Run mechanical builder work (deletions, renames, doc moves) on Sonnet; keep design, review fixes and concurrency work on Opus.
 Run a suite the way the gate runs it, against the pinned pack in `.ci/pack`, not the live one: three gate failures passed locally (sd:3534 adds `make test SUITE=`).
 After a hub refresh, run `dashboard.sh health` and kickstart a service still on the old build: three stale-service incidents in three days (until sd:3528).
+A merged change to a scheduled job runs at its next slot: pause the job, or hold the merge, while an approval it depends on is pending: the NAS prune of sd:4694 ran 09:51 MDT, before the operator saw its dry run.
 
 # Review rounds
 
