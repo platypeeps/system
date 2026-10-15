@@ -214,6 +214,22 @@ class FixtureFingerprints(unittest.TestCase):
                 self.assertIn("session.jsonl:1:", result.stdout)
                 self.assertNotIn("listed fixture key", result.stdout)
 
+    def test_a_listed_value_inside_a_longer_secret_is_still_reported(self) -> None:
+        """Codex: a full-value pattern's match stops where its class stops, so
+        it can be a slice of a longer secret. The skip needs a delimiter on
+        both sides of every occurrence in the line; a JSON `\\n` escape and a
+        quote are delimiters."""
+        listed = self.fingerprint(self.FAKE) + "\n"
+        cases = [(f"postgres://u:{self.FAKE}-different-password@db.example.test/app\n", 2),
+                 (f"secret=xyz{self.FAKE}\n", 2),
+                 (f'{{"text": "a = 1\\n{self.FAKE}\\n"}}\n', 0)]
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text, code in cases:
+                with self.subTest(searcher=searcher, text=text[:14]):
+                    result = self.scan(text, path, listed)
+                    self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                    self.assertNotIn(self.FAKE, result.stdout + result.stderr)
+
     def test_every_pattern_is_full_value_or_always_kept(self) -> None:
         """The enumeration: each PATTERNS entry is in FULL_VALUE_PATTERNS, the
         only ones a fingerprint may skip, or is one of the two kept ones. A new

@@ -279,7 +279,9 @@ dropped only when its matched text hashes to a listed line, so the same key
 format with any other value still fails. Only a pattern whose match is the
 whole secret can be skipped (`FULL_VALUE_PATTERNS`): a private-key finding
 matches the header alone and an `Authorization` finding can stop short of
-the value, so both are always reported; the report says how many it
+the value, so both are always reported. A match can also be a slice of a
+longer secret, so the skip also needs a delimiter (a quote, a blank, a
+bracket, the line's edge) on each side of every occurrence in the line; the report says how many it
 skipped and never prints a value. No list changes nothing.
 
 Exit 0 = clean, exit 2 = findings (matches truncated to 8 chars — open the

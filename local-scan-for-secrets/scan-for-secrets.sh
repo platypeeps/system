@@ -1370,6 +1370,34 @@ OUT=$(printf '%s\n' "$OUT" | grep -Ev "$FAKE_FIXTURE_RE" || true)
 # its whole matched text is a FULL_VALUE_PATTERNS match and hashes to a listed
 # line, so a real key anywhere still fails. A hash or a read that fails keeps
 # the hit. The value is never printed.
+#
+# A full-value match still stops where its class stops, so it can be a slice
+# of a longer secret, such as a URL password that starts with a listed value.
+# s4s_bounded reads the hit's line again and passes only when every occurrence
+# of the value there has a delimiter on each side: the line's edge, a blank, a
+# quote, a backslash, a bracket, `,` or `;`, and before it also `=` or `:` or a
+# JSON escape such as `\n`. A match ending in `@` is the URL entry, delimited by
+# its pattern. A line it cannot read keeps the hit. The value reaches awk on
+# stdin, never in argv or the environment.
+s4s_bounded() { # hit
+  b_path=${1%%"$US"*}; b_rest=${1#*"$US"}; b_line=${b_rest%%"$US"*}; b_match=${b_rest#*"$US"}
+  case $b_line in ''|*[!0-9]*) return 1 ;; esac
+  { printf '%s\n' "$b_match"; sed -n "${b_line}{p;q;}" < "$b_path"; } 2>/dev/null | awk '
+    NR == 1 { v = $0; next }
+    NR == 2 {
+      L = " \t\r\"\047`\\([{<,;=:"; R = " \t\r\"\047`\\)]}>,;"
+      line = $0; from = 0
+      while ((i = index(substr(line, from + 1), v)) > 0) {
+        at = from + i; seen = 1
+        b = substr(line, at - 1, 1); a = substr(line, at + length(v), 1)
+        escaped = (at > 2 && substr(line, at - 2, 1) == "\\" && index("ntr", b))
+        if (!(at == 1 || index(L, b) || escaped)) bad = 1
+        if (!(a == "" || index(R, a) || substr(v, length(v)) == "@")) bad = 1
+        from = at
+      }
+    }
+    END { exit !(seen && !bad) }'
+}
 S4S_FINGERPRINTS="$(st_config_dir scan-for-secrets)/fixture-fingerprints"
 if [ -n "$OUT" ] && [ -f "$S4S_FINGERPRINTS" ]; then
   S4S_FULL_ERE=$(printf '%s\n' "$FULL_VALUE_PATTERNS" | sed 's/\\s/[:space:]/g')
@@ -1381,7 +1409,8 @@ if [ -n "$OUT" ] && [ -f "$S4S_FINGERPRINTS" ]; then
       continue
     fi
     fp=$(printf '%s' "$match" | shasum -a 256 2>/dev/null | cut -c1-64)
-    if [ "${#fp}" -eq 64 ] && grep -qixF -e "$fp" "$S4S_FINGERPRINTS" 2>/dev/null; then continue; fi
+    if [ "${#fp}" -eq 64 ] && grep -qixF -e "$fp" "$S4S_FINGERPRINTS" 2>/dev/null &&
+       s4s_bounded "$hit"; then continue; fi
     printf '%s\n' "$hit"
   done)
   S4S_SKIPPED=$((S4S_BEFORE - $(printf '%s' "$OUT" | grep -c '' || :)))
