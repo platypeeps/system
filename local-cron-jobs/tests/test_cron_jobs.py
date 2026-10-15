@@ -2603,7 +2603,8 @@ class WatchdogTest(unittest.TestCase):
         run = self.watchdog()
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("STALE   demo", run.stdout)
-        self.assertRegex(run.stdout, r"(?m)^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on ")
+        self.assertRegex(run.stdout, r"(?m)^SD_REPORT_ATTENTION: watchdog on \S+: demo: never finished a run, "
+                                     r"installed \d{4}-\d\d-\d\d \d\d:\d\d$")
         self.assertFalse(self.notify_log.exists(), self.notify_log.read_text() if self.notify_log.exists() else "")
 
     def test_a_job_within_its_cadence_needs_nothing(self):
@@ -2661,7 +2662,7 @@ class WatchdogTest(unittest.TestCase):
         _, finished = reason("2026-10-13")
         log.write_text(f"[demo] {self.stamp(2 * 86400)} done\n")
         _, finished_again = reason("2026-10-13")
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: watchdog: 1 cron job\(s\) not running on \S+ \[\d+\]$")
+        self.assertEqual(len(first), 1, out)
         self.assertEqual(later, first)
         self.assertEqual(len({" ".join(r) for r in (first, unreadable, finished, finished_again)}), 4,
                          (first, unreadable, finished, finished_again))
@@ -2671,7 +2672,18 @@ class WatchdogTest(unittest.TestCase):
         (self.fx.folder / "logs" / "demo.log").write_text("[demo] 12 done\n")
         run = self.watchdog()
         self.assertIn("STALE   demo (cannot read the time of its last run: 12)", run.stdout)
-        self.assertIn("SD_REPORT_ATTENTION: watchdog: 1 cron job(s)", run.stdout)
+        self.assertRegex(run.stdout, r"(?m)^SD_REPORT_ATTENTION: watchdog on \S+: demo: cannot read 12$")
+
+    def test_each_stale_job_is_its_own_line(self):
+        """sd:4664: one line per stale job, so a job that runs again leaves a
+        subset, which the pack folds into the open report (pack sd:4658)."""
+        self.install("demo", 3 * 86400)
+        self.install("other", 3 * 86400)
+        both = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        (self.fx.folder / "logs" / "other.log").write_text(f"[other] {self.stamp(3600)} done\n")
+        one = [l for l in self.watchdog().stdout.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        self.assertEqual(len(both), 2, both)
+        self.assertEqual(one, [l for l in both if ": demo: " in l])
 
 
 class UnfinishedRunTest(unittest.TestCase):

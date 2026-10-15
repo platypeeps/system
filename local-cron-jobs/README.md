@@ -203,10 +203,12 @@ A job with findings prints that line and exits 0; nothing is mailed or pushed
 The ingest folds a run into the open report with the same job and reason, and
 gives that report the newest body; the reason is every distinct
 `SD_REPORT_ATTENTION` line of a run. So a
-finding job ends its reason in its host and a checksum of its findings, not
-the date: the same findings each night stay one open report that counts the
-nights, and a new or changed finding opens its own (sd:4182). The host stays in
-the reason because every host files under the one job name. The host's newest
+finding job prints one line per finding, each naming its host and the finding,
+not the date: the same findings each night stay one open report that counts the
+nights, and a new or changed finding opens its own (sd:4182). A run whose lines
+are a subset of the open report's folds into it too, and the report keeps the
+smaller set in `repeats.basis` (pack sd:4658). The host stays in
+each line because every host files under the one job name. The host's newest
 run, when it exits 0 with findings and a whole log, closes every other open
 findings report of its job and host as `superseded by sd:N` (pack sd:4641). A
 late run or a replay closes nothing. These stay open: a failure report, one

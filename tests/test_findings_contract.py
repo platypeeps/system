@@ -15,7 +15,9 @@ The ingest folds a run into the open report with the same job and every
 declared line, and gives that report the newest body. So a reason names its
 findings, not the day: one open report per job and host while the findings
 stay the same, and a new or changed finding opens its own (sd:4182, ruling
-on sd:4042) and closes the older one of that host (pack sd:4641). An
+on sd:4042) and closes the older one of that host (pack sd:4641). Each job
+prints one line per finding, so a smaller set is a subset of the open
+report's lines and folds into it (pack sd:4658, sd:4664). An
 acknowledged report takes the same findings while they repeat without a
 break on the host, and stays done (pack sd:4629).
 """
@@ -147,8 +149,20 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
         self.assertEqual(state["recorded"], "report")
-        self.assertRegex(state["why"], r"^brew doctor: 2 warning\(s\) on fixturehost \[\d+\]$")
+        # sd:4664: one line per warning, each with its host and a checksum of that warning's text.
+        self.assertRegex(state["why"], r"^brew doctor on fixturehost: Warning: one \[\d+\]\n"
+                                       r"brew doctor on fixturehost: Warning: two \[\d+\]$")
         self.assertIn("Warning: two", state["item"]["body"])
+
+    def test_a_shrinking_set_of_warnings_folds_into_the_open_report(self):
+        """PIN of the pack (sd:4658): one warning fixed is the same report with
+        the smaller body, not a new report that supersedes it (sd:4664)."""
+        _, first = self.doctor_run("r1", "2026-10-10")
+        self.doctor.write_text("Warning: one\n")
+        _, second = self.doctor_run("r2", "2026-10-11")
+        self.assertEqual((second["recorded"], second["item"]["id"]), ("folded", first["item"]["id"]), second)
+        self.assertNotIn("Warning: two", second["item"]["body"])
+        self.assertEqual(self.open_reports(), [first["item"]["id"]])
 
     def test_the_same_warnings_on_the_next_night_fold_into_the_open_report(self):
         """sd:4182: unchanged findings keep one open report, which counts the nights."""

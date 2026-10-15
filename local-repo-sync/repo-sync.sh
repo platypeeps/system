@@ -2347,9 +2347,9 @@ case "$1" in
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     SYNC_FAILED=0
-    # One SD_REPORT_ATTENTION line at the end: the ingest's reason is every
-    # distinct such line of a run (pack sd:4629), so one line names it once.
-    ATTENTION=""
+    # The kinds of finding this run has, one per line, without a count; the
+    # SD_REPORT_ATTENTION lines at the end name them and each finding.
+    KINDS="$TMPD/kinds"; : > "$KINDS"
 
     load_list
     RECON="$TMPD/recon"
@@ -2368,19 +2368,17 @@ case "$1" in
     # the repo.
     # A list from the snapshot or the confs is the database not answering,
     # and reconcile wrote nothing (sd:3983).
-    if [ -s "$UNJOINED" ]; then
-      ATTENTION="repo-sync: $(wc -l < "$UNJOINED" | tr -d ' ') checkout(s) not joined to the list on $(hostname -s)"
-    elif [ "$LIST_SOURCE" != database ]; then
-      ATTENTION="repo-sync: the database did not answer; the list came from the $LIST_SOURCE on $(hostname -s)"
-    elif [ -n "$r_why" ]; then
-      ATTENTION="repo-sync: reconcile could not read the repo rows on $(hostname -s)"
-    elif [ -s "$JOINED" ] || [ -s "$ABSENT" ]; then
-      ATTENTION="repo-sync: repo list changed on $(hostname -s)"
-    elif [ -s "$UNLISTED" ]; then
-      ATTENTION="repo-sync: $(wc -l < "$UNLISTED" | tr -d ' ') checkout(s) present, not listed on $(hostname -s)"
-    elif [ -s "$MISMATCHED" ]; then
-      ATTENTION="repo-sync: $(wc -l < "$MISMATCHED" | tr -d ' ') checkout(s) need a rename on $(hostname -s)"
-    fi
+    {
+      [ ! -s "$UNJOINED" ] || echo "checkouts not joined to the list"
+      if [ "$LIST_SOURCE" != database ]; then
+        echo "the database did not answer; the list came from the $LIST_SOURCE"
+      elif [ -n "$r_why" ]; then
+        echo "reconcile could not read the repo rows"
+      fi
+      if [ -s "$JOINED" ] || [ -s "$ABSENT" ]; then echo "repo list changed"; fi
+      [ ! -s "$UNLISTED" ] || echo "checkouts present, not listed"
+      [ ! -s "$MISMATCHED" ] || echo "checkouts need a rename"
+    } >> "$KINDS"
 
     SSH_NOTE="$TMPD/ssh"
     ssh_preflight > "$SSH_NOTE" 2>&1 || true
@@ -2394,8 +2392,7 @@ case "$1" in
       # most of this list.
       echo "failed repos:"
       sed 's/^/  /' "$FAILLOG"
-      # Failed repos outrank a list change as the report's reason.
-      ATTENTION="repo-sync: $(wc -l < "$FAILLOG" | tr -d ' ') repo(s) failed on $(hostname -s)"
+      echo "repos failed" >> "$KINDS"
     else
       cat "$OUT"
     fi
@@ -2408,31 +2405,41 @@ case "$1" in
     HYG_OUT="$TMPD/hygiene.out"
     ( hygiene --apply ) > "$HYG_OUT" 2>&1 || true
     cat "$HYG_OUT"
-    if [ -z "$ATTENTION" ] && { [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; }; then
-      ATTENTION="repo-sync: hygiene report on $(hostname -s)"
+    if [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; then
+      echo "hygiene report" >> "$KINDS"
     fi
-    # The ingest folds a run into the open report with the same job and
-    # reason and gives that report the newest body. So the reason ends in a
-    # checksum of what the report names, not the date: where the list came
-    # from and why, and reconcile's lists (sd:3983), each line under the name
-    # of its list, a failed join with its error; each failed repo's section
-    # of the sync output, its step lines left out; and hygiene's lines, its
-    # notes left out with the header of a section that holds only notes. The
-    # same findings fold into one open report, and a new or changed one opens
-    # its own (sd:4182) and closes the older one on this host, with the
-    # exceptions local-cron-jobs/README.md names (pack sd:4641). The host
-    # stays in it, as every host files under one job name. No 2>/dev/null: an input missing here is a bug to see in the
-    # log, not an empty list (review round 1).
-    if [ -n "$ATTENTION" ]; then
-      sum=$({ printf 'source: %s %s\nrows: %s\n' "$LIST_SOURCE" "$LIST_WHY" "$r_why"
-              sed 's/^/joined: /' "$JOINED"; sed 's/^/unjoined: /' "$UNJOINED"
-              sed 's/^/unlisted: /' "$UNLISTED"; sed 's/^/absent: /' "$ABSENT"
-              sed 's/^/rename: /' "$MISMATCHED"
-              awk '/^=== |^---/{if (f) printf "%s", b; b=""; f=0} /^\[step /{next}
-                   /^!!! failed: /{f=1} {b = b $0 "\n"} END{if (f) printf "%s", b}' "$OUT"
-              awk '/^=== /{h=$0; next} /^  note: /||/^$/{next} /^---/{h=""}
-                   {if (h != "") {print h; h=""} print}' "$HYG_OUT"; } | cksum | cut -d' ' -f1)
-      echo "SD_REPORT_ATTENTION: $ATTENTION [$sum]"
+    # One SD_REPORT_ATTENTION line per kind and per finding, not the date:
+    # why the list did not come from the database, reconcile's lists (sd:3983),
+    # each line under the name of its list, a failed join with its error; each
+    # failed repo's section of the sync output with a checksum of it, its step
+    # lines left out; and each of hygiene's lines under its section, its notes
+    # and its counts left out. The ingest's reason is the run's set of lines:
+    # the same set folds into the open report, a smaller one folds into it too
+    # (pack sd:4658), and a new finding opens its own report and closes the
+    # older one on this host, with the exceptions local-cron-jobs/README.md
+    # names (pack sd:4641). The host stays in each line, as every host files
+    # under one job name. No 2>/dev/null: an input missing here is a bug to see
+    # in the log, not an empty list (review round 1).
+    if [ -s "$KINDS" ]; then
+      # Each failed repo's section to its own file, as the checksum's input;
+      # sync's only --- line is the closing rule.
+      awk -v d="$TMPD" 'function flush() { if (f) { printf "%s", b > (d "/failed." n); close(d "/failed." n) } f = 0 }
+           /^=== |^---/ { flush(); n++; b = "" } /^\[step / { next } /^!!! failed: / { f = 1 }
+           { b = b $0 "\n" } END { flush() }' "$OUT"
+      {
+        cat "$KINDS"
+        [ "$LIST_SOURCE" = database ] || [ -z "$LIST_WHY" ] || echo "list: $LIST_WHY"
+        [ -z "$r_why" ] || echo "rows: $r_why"
+        sed 's/^/joined: /' "$JOINED"; sed 's/^/unjoined: /' "$UNJOINED"
+        sed 's/^/unlisted: /' "$UNLISTED"; sed 's/^/absent: /' "$ABSENT"
+        sed 's/^/rename: /' "$MISMATCHED"
+        for fs in "$TMPD"/failed.*; do
+          [ -f "$fs" ] || continue
+          echo "failed: $(head -1 "$fs" | sed 's/^=== //') [$(cksum < "$fs" | cut -d' ' -f1)]"
+        done
+        awk '/^=== /{ h = substr($0, 5); next } /^  note: /||/^$/{ next } /^---/{ h = ""; next }
+             h != "" { print "hygiene: " h ": " $0 }' "$HYG_OUT"
+      } | awk -v p="SD_REPORT_ATTENTION: repo-sync on $(hostname -s): " 'NF && !seen[$0]++ { print p $0 }'
     fi
     # After the report, so Jev never delays or changes it.
     hyg_jev_shadow "$HYG_OUT" || true

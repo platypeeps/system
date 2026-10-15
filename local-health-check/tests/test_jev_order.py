@@ -440,7 +440,10 @@ esac
         # Jev reorders the printed findings and tags each one; the reason
         # names the findings, so it does not move with that order.
         ordered = reason("day-2-ordered", "Failing on worker1", "2026-10-13", jev="1")
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        # sd:4664: one line per finding, so a smaller set is a subset the pack folds (pack sd:4658).
+        for line in first:
+            self.assertRegex(line, r"^SD_REPORT_ATTENTION: health check on \S+: \S")
+        self.assertEqual(len(first), len(set(first)))
         self.assertEqual(again, first)
         self.assertNotEqual(other, first)
         self.assertEqual(ordered, first)
@@ -465,11 +468,14 @@ esac
         self.assertIn(CRASHED_APP + "(2)", twice)
         self.assertIn("- 5-minute load average 30 on 8 cores", thirty)
         self.assertIn("- 5-minute load average 40 on 8 cores", forty)
-        self.assertEqual(len(quiet), 1, once)
-        self.assertRegex(quiet[0], r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        findings = once.split("\nfindings:\n", 1)[1].split("\n\nnotes:\n", 1)[0]
+        self.assertEqual(len(quiet), findings.count("\n- ") + findings.startswith("- "), once)
         self.assertEqual(crashed, quiet)
         self.assertEqual(busier, busy)
-        self.assertNotEqual(busy, quiet)
+        # sd:4664: the load finding gone, the rest is a subset of the busier night's lines (pack sd:4658).
+        self.assertLess(set(quiet), set(busy))
+        self.assertEqual([l for l in busy if l not in quiet],
+                         [l for l in busy if "5-minute load average" in l])
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])
