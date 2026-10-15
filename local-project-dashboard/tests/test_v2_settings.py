@@ -45,6 +45,7 @@ case "$1 $2" in
     value() { if [ -f "$SD_STUB/$1" ]; then printf '"%s", "source": "database"' "$(cat "$SD_STUB/$1")"; else printf 'null, "source": "default"'; fi; }
     printf '{"copilot_review": {"description": "When sd-ship requests a Copilot review.", "pattern": "deep|never|always", "value": %s},\n' "$(value copilot_review)"
     printf ' "fleet_owners": {"description": "Comma-separated GitHub logins.", "pattern": "[A-Za-z0-9](-?[A-Za-z0-9])*(,[A-Za-z0-9](-?[A-Za-z0-9])*)*", "value": %s},\n' "$(value fleet_owners)"
+    printf ' "hub_name": {"description": "The hub node name.", "pattern": "", "value": %s},\n' "$(value hub_name)"
     printf ' "gate_slots": {"description": "Gates at once.", "pattern": "[0-9]+", "value": null, "source": "default"}}\n'
     exit 0 ;;
   "config set")
@@ -102,7 +103,8 @@ class TheFleetRead(unittest.TestCase):
         doc = settings_screen.document(now="2026-10-14T12:00:00+00:00")
         self.assertEqual(doc["reason"], "")
         self.assertEqual([(k["key"], k["value"], k["source"], k["choices"]) for k in doc["fleet"]],
-                         [("fleet_owners", None, "default", None), ("copilot_review", "never", "database", ["deep", "never", "always"])])
+                         [("fleet_owners", None, "default", None), ("copilot_review", "never", "database", ["deep", "never", "always"]),
+                          ("hub_name", None, "default", None)])
         self.assertEqual(doc["fleet"][1]["description"], "When sd-ship requests a Copilot review.")
         self.assertEqual(self.sd.calls(), ["config list sd --json"])
 

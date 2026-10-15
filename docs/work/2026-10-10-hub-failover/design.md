@@ -46,7 +46,7 @@ Each section below answers one exploration point of the item.
    No readiness line (below) reads `NOT-READY`.
    The newest candidate's schema is at or below this machine's library: `restore --newest` stops on a newer one before it writes.
    `sd.hub_name` cannot be read here: it lives in the dead hub's database. Step 7 reads it from the restored one.
-2. **Drain.** Hold this machine's lane locks and wait for its gates, through `refresh_drain.py`, as `follow` does.
+2. **Drain.** Hold this machine's lane locks and ship locks and wait for its gates from before, through `refresh_drain.py`. The lane root comes from this machine's config, never through `sd`, which may reach the dead hub.
    A lane this satellite hosts keeps its ship lock under `$XDG_STATE_HOME/sd/ship-locks/`; after step 4 the lock lives beside the database, so no ship may run across the move.
 3. **Intent marker.** Write `${XDG_STATE_HOME:-~/.local/state}/sd/promote-intent` atomically, as `follow-intent` does (sd:3100).
    It names the step reached and, after step 5, the snapshot chosen.
@@ -294,6 +294,9 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | --- | --- | --- | --- | --- |
 | 1 preflight | nothing | the hub answers, a readiness line fails, or the snapshot is newer than the library | refuse; nothing moved | `test_step_1_refuses_while_the_hub_answers`; `test_step_1_refuses_a_hub_ready_line_that_is_not_ok`; the schema stop is the pack's `restore --newest` test |
 | 2 drain | lane locks held | a lane or gate does not finish in 45 min | refuse; locks released; nothing moved | `refresh_drain` tests with a held lock; `test_an_apply_holds_the_lanes_first` |
+| 2 drain | none | the hub is dead, and an `sd` that reaches it cannot read `sd.lane_root` | the promote drain reads the setting from this machine's pack config through the pack's `file_setting`, never through `sd`; a failed read refuses, nothing moved | `test_the_drain_reads_the_lane_root_here_while_sd_cannot_reach_the_dead_hub`, `test_a_lane_root_that_cannot_be_read_here_refuses_and_nothing_moves` |
+| 2 drain | ship locks held | a ship or gate run by hand holds no lane lock | the drain waits for the gates from before, holders and those queued then, and takes every satellite ship lock, held through the role move; past 45 min it refuses, nothing moved | `test_the_drain_waits_for_a_gate_from_before`, `test_the_drain_waits_for_a_gate_queued_before_it`, `test_a_held_ship_lock_stops_the_drain_and_nothing_moves` |
+| 1 preflight | none | `sd config get sd.hub_name` goes to the dead hub | bounded at 30 s; no answer reads `--`, not NOT-READY; step 7 reads the restored copy | `test_a_hub_name_the_dead_hub_cannot_give_is_unread_not_refused` |
 | 3 marker | marker written | killed after the write | next run reads the marker and continues at step 4 | `test_killed_after_the_marker_a_rerun_moves_hub_json_and_goes_on` |
 | 3 marker | marker written | killed mid-write | one write and a rename, so a marker always names its step; a marker with no step is deleted and step 1 runs again | `test_killed_inside_step_3_a_marker_with_no_step_starts_again` |
 | 4 role | `hub.json` moved aside | killed after the move | next run continues from the marker; `status` reports the moved file and the marker | `test_killed_after_the_move_a_rerun_restores`; after the restore, `test_killed_after_the_restore_a_rerun_seeds_without_a_second_restore` |

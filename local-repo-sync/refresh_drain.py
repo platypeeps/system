@@ -13,7 +13,11 @@ held runner lock. Waiting for an idle gate starved a busy machine for hours,
 since new gates kept arriving (sd:3265). Follow does not wait on the gate
 (sd:4046): a lane's gate runs under its runner lock, which follow holds, and
 waiting out gates started by hand left each satellite in BuildMismatch for
-15 to 35 minutes after every hub migration. Then it runs the refresh steps with
+15 to 35 minutes after every hub migration. `machine-setup.sh promote` (sd:4012)
+does wait on them, and also holds every ship lock in this satellite's ship-lock
+folder: a ship or gate run by hand holds no lane lock, and the role moves under
+it. It reads the lane root from this machine's pack config, never through
+`sd`, which may reach the dead hub. Then it runs the refresh steps with
 REPO_SYNC_LANES_HELD=1 and exits with their status. The child inherits the lock descriptors and this process keeps its
 copies, so the locks stay held until both have exited: a `kill -9` of this
 process leaves them with the child until its last step ends. No step leaves
@@ -69,13 +73,41 @@ class Refused(Exception):
         self.manual = manual
 
 
-def lane_root(env):
-    """The pack's lane_root(): SD_LANE_ROOT, the sd.lane_root setting, the state default."""
-    value = env.get("SD_LANE_ROOT") or lane_root_setting(env)
+def lane_root(env, local=False):
+    """The pack's lane_root(): SD_LANE_ROOT, the sd.lane_root setting, the state default.
+    `local` reads the setting from this machine's pack config, never through `sd`."""
+    value = env.get("SD_LANE_ROOT") or (lane_root_file(env) if local else lane_root_setting(env))
     if value:
         return pathlib.Path(os.path.expanduser(value))
-    state = env.get("XDG_STATE_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/state")
-    return pathlib.Path(state) / "sd" / "lanes"
+    return state_home(env) / "sd" / "lanes"
+
+
+def state_home(env):
+    state = env.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(state):
+        state = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local/state")
+    return pathlib.Path(state)
+
+
+def pack_root(env):
+    return pathlib.Path(env.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser()
+
+
+def lane_root_file(env):
+    """sd.lane_root as the pack's own `file_setting` reads it from this machine's
+    config file. Promote drains while the hub is dead, and an `sd` that reaches
+    it would refuse the drain before anything moved (sd:4012). A failed read is
+    no answer, so it refuses rather than guess the default."""
+    bin_dir = str(pack_root(env) / "bin")
+    sys.path.insert(0, bin_dir)
+    try:
+        import sd_lib  # noqa: PLC0415 - the pack's copy, found only here
+        return sd_lib.file_setting("lane_root", env)
+    except Exception as error:  # noqa: BLE001 - any failure is no answer
+        raise Refused(f"sd.lane_root was not read from this machine's pack config ({bin_dir}/sd_lib.py): "
+                      f"{type(error).__name__}: {error}", manual=True) from None
+    finally:
+        sys.path.remove(bin_dir)
 
 
 def lane_root_setting(env):
@@ -162,8 +194,9 @@ def take_locks(root, held, deadline, limit, names=()):
     return len(new)
 
 
-def gate_holders(env):
-    """The holders `sd gate status --json` lists now, as a key per holder."""
+def gate_holders(env, queued=None):
+    """The holders `sd gate status --json` lists now, as a key per holder;
+    `queued`, a set, gains the pid of each waiter."""
     try:
         out = subprocess.run(["sd", "gate", "status", "--json"], capture_output=True,
                              text=True, env=env, timeout=120)
@@ -180,29 +213,73 @@ def gate_holders(env):
             raise TypeError
     except (ValueError, KeyError, TypeError):
         raise Refused("sd gate status --json printed no holders and waiters lists", manual=True) from None
+    if queued is not None:
+        queued.update(waiter.get("pid") for waiter in waiters if isinstance(waiter, dict) and waiter.get("pid"))
     # A slot's next holder has another pid or start, so a key names one gate run.
     return {(holder.get("slot"), holder.get("pid"), holder.get("since")): holder for holder in holders}
 
 
-def wait_gate(env, deadline, limit):
-    """Wait until each gate holder present now has ended; later ones do not count."""
-    first = gate_holders(env)
+def wait_gate(env, deadline, limit, queued=False):
+    """Wait until each gate holder present now has ended; later ones do not count.
+    With `queued`, a gate waiting now counts too, until its process ends:
+    promote moves the role, and a gate queued before it would start under the
+    old one. Its process, not the status list: between its ticket and its
+    holder record, the list names it nowhere."""
+    waiting = set() if queued else None
+    first = gate_holders(env, waiting)
 
     def busy():
         left = [first[key] for key in gate_holders(env) if key in first]
+        if queued:
+            left += [{"pid": pid} for pid in sorted(waiting) if alive(pid)]
         if not left:
             return None
         pids = ", ".join(f"pid {holder.get('pid') or '?'}" for holder in left)
         return f"the gate: {len(left)} holder(s) that started before the lanes were held ({pids})"
 
-    if first:
+    if first or waiting:
         wait(busy, deadline, limit)
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, OverflowError):
+        return True
+    return True
+
+
+def take_ship_locks(env, held, deadline, limit):
+    """Take every ship lock in this satellite's ship-lock folder, waiting while
+    a ship run by hand holds one. Held through the role move, so no ship that
+    started as a satellite's runs on after it (sd:4012)."""
+    folder = state_home(env) / "sd" / "ship-locks"
+    locks = sorted(folder.glob("*.lock")) if folder.is_dir() else []
+    for lock in locks:
+        try:
+            held[lock] = open(lock, "a", encoding="utf-8")
+        except OSError as error:
+            raise Refused(f"cannot open {lock}: {error.strerror}") from None
+    busy = list(locks)
+
+    def still_busy():
+        for lock in list(busy):
+            try:
+                fcntl.flock(held[lock], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            busy.remove(lock)
+        return "; ".join(f"a ship (it holds {lock})" for lock in busy) or None
+
+    wait(still_busy, deadline, limit)
+    return len(locks)
 
 
 def registry_names(script, env):
     """The checkout folder names of every repository `sd-db repo list` holds."""
-    pack = pathlib.Path(env.get("SD_PACK_ROOT") or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
-    sd_db = pack.expanduser() / "bin" / "sd-db"
+    sd_db = pack_root(env) / "bin" / "sd-db"
     try:
         out = subprocess.run([str(sd_db), "repo", "list"], capture_output=True,
                              text=True, env=env, timeout=120)
@@ -216,20 +293,22 @@ def registry_names(script, env):
             for line in out.stdout.splitlines() if line.startswith("sd-db: ")]
 
 
-def drain(env, names=(), gate=True):
+def drain(env, names=(), gate=True, promote=False):
     """Hold the refresh lock, then every lane lock, and with `gate` outwait
-    the gates from before; returns the held handles."""
+    the gates from before; returns the held handles. `promote` reads the lane
+    root here and holds the ship locks too."""
     raw = env.get("REPO_SYNC_DRAIN_WAIT", str(DEFAULT_WAIT))
     if not raw.isdigit():
         raise Refused(f"REPO_SYNC_DRAIN_WAIT must be a number of seconds, got {raw!r}")
     limit = int(raw)
     deadline = time.monotonic() + limit
-    root = lane_root(env)
+    root = lane_root(env, local=promote)
     has_sd = gate and shutil.which("sd", path=env.get("PATH")) is not None
     if gate and not has_sd:
         print("sd is not on PATH: no gate to wait on", flush=True)
     refresh, handle = take_refresh_lock(root, deadline, limit)
     held = {}
+    ships = take_ship_locks(env, held, deadline, limit) if promote else 0
     # A lane folder made during the gate wait is taken on the next pass, and
     # its runner's gate is seen: each pass that takes a lock checks the gate.
     # The first pass checks it even with no lane at all.
@@ -240,9 +319,10 @@ def drain(env, names=(), gate=True):
             break
         first = False
         if has_sd:
-            wait_gate(env, deadline, limit)
+            wait_gate(env, deadline, limit, queued=promote)
     done = "every gate from before is done" if gate else "gates not waited on: a lane gates under its lock"
-    print(f"lanes held: {len(held)} runner lock(s) under {root}; {done}", flush=True)
+    print(f"lanes held: {len(held) - ships} runner lock(s) under {root}; {done}"
+          + (f"; {ships} ship lock(s) held" if promote else ""), flush=True)
     return {refresh: handle, **held}
 
 
@@ -260,7 +340,9 @@ def main(argv):
         # a build the hub refuses until follow moves it.
         if verb == "refresh":
             names += registry_names(script, env)
-        held = drain(env, names, gate=verb == "refresh")
+        # Promote waits for the gates from before, as refresh does: a gate or
+        # ship run by hand holds no lane lock (sd:4012).
+        held = drain(env, names, gate=verb in ("refresh", "promote"), promote=verb == "promote")
     except Refused as refusal:
         print(f"repo-sync.sh {verb}: refused, nothing moved: {refusal}", file=sys.stderr)
         if refusal.manual:
