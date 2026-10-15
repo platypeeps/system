@@ -71,11 +71,11 @@ exit 2
 
 # tailscale: `status --json` lists $STUB_PEER as a peer when set; `set
 # --hostname=` logs and makes the fence read holder; `serve status` as the
-# backbone's stub.
+# backbone's stub, or fails with STUB_SERVE_RC.
 TAILSCALE_STUB = r'''
 echo "tailscale $*" >> "$STUB_LOG"
 case "$1 $2" in
-  "serve status") cat "$STUB_SERVE_STATUS"; exit 0 ;;
+  "serve status") [ -z "${STUB_SERVE_RC:-}" ] || exit "$STUB_SERVE_RC"; cat "$STUB_SERVE_STATUS"; exit 0 ;;
   "status --json")
     if [ -n "$STUB_PEER" ]; then
       printf '{"Peer": {"k": {"HostName": "%s", "DNSName": "%s.tailnet.example.test."}}}\n' "$STUB_PEER" "$STUB_PEER"
@@ -675,6 +675,93 @@ class Promote(unittest.TestCase):
         self.assertEqual("9", self.marker_step())
         self.run_promote("--apply", SD_DB_PYTHON=python, STUB_REMOTE_DB=str(self.fixture.db))
         self.assertIsNone(self.marker_step())
+
+    # Step 9: the dashboard by its answer, not its label (sd:4661).
+
+    def dashboard_curl(self):
+        """curl, logged: a URL holding STUB_CURL_DOWN does not connect; an
+        https URL answers STUB_CURL_ROUTE_BODY and STUB_CURL_ROUTE_CODE when set;
+        STUB_CURL_RC is curl's exit after it wrote the body."""
+        write_stub(self.fixture.stubs, "curl", (
+            'echo "curl $*" >> "$STUB_LOG"\nout=""\nurl=""\n'
+            'while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; url="$1"; shift; done\n'
+            'case "$url" in *"${STUB_CURL_DOWN:-//none/}"*) echo "curl: (7) Failed to connect" >&2; exit 7 ;; esac\n'
+            'body=$STUB_CURL_BODY\ncode=${STUB_CURL_CODE:-200}\n'
+            'case "$url" in https:*) body=${STUB_CURL_ROUTE_BODY:-$body}; code=${STUB_CURL_ROUTE_CODE:-$code} ;; esac\n'
+            'printf "%s" "$body" > "$out"\nprintf "%s" "$code"\nexit "${STUB_CURL_RC:-0}"\n'))
+
+    def test_step_9_asks_the_dashboard_on_its_port_and_its_route_bounded(self):
+        self.dashboard_curl()
+        out = self.run_promote("--apply").stdout
+        self.assertIn("step 9  : the dashboard answers on http://127.0.0.1:8767/health", out)
+        self.assertIn("step 9  : the dashboard answers on https://host.example-tailnet.invalid:8443/health", out)
+        asked = self.calls("curl ")
+        self.assertEqual(2, len(asked))
+        for call in asked:
+            self.assertIn("--max-time 10", call)
+            self.assertIn("--retry-max-time 30", call)
+
+    def test_a_loaded_dashboard_that_does_not_answer_sends_the_rerun_back_to_step_8(self):
+        """Its label is loaded, so the round-4 check passes; the answer is what step 9 proves."""
+        self.dashboard_curl()
+        result = self.run_promote("--apply", expect=1, STUB_CURL_DOWN="127.0.0.1:8767")
+        self.assertIn("promote: refused: the dashboard does not answer on http://127.0.0.1:8767/health "
+                      "(no answer: curl: (7) Failed to connect)", result.stderr)
+        self.assertIn(f"{PREFIX}.sd-dashboard", (self.tmp / "stub.log.loaded").read_text().split())
+        self.assertEqual("8", self.marker_step())
+        self.assertNotIn("hub failover report", result.stdout)
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+
+    def test_a_route_that_does_not_answer_refuses_at_step_9(self):
+        self.dashboard_curl()
+        result = self.run_promote("--apply", expect=1, STUB_CURL_DOWN=":8443")
+        self.assertIn("the dashboard does not answer on https://host.example-tailnet.invalid:8443/health", result.stderr)
+        self.assertEqual("8", self.marker_step())
+
+    def test_a_route_to_a_local_only_dashboard_refuses_and_names_the_front_door(self):
+        self.dashboard_curl()
+        result = self.run_promote("--apply", expect=1, STUB_CURL_ROUTE_CODE="403",
+                                  STUB_CURL_ROUTE_BODY='{"error": "Untrusted dashboard host."}')
+        self.assertIn("(HTTP 403, Untrusted dashboard host: the service runs a local-only configuration", result.stderr)
+        self.assertEqual("8", self.marker_step())
+
+    def test_an_unhealthy_dashboard_refuses_with_its_reason(self):
+        self.dashboard_curl()
+        result = self.run_promote("--apply", expect=1, STUB_CURL_CODE="503",
+                                  STUB_CURL_BODY='{"service": "sd-dashboard", "ok": false, "error": "database is locked"}')
+        self.assertIn("on http://127.0.0.1:8767/health (HTTP 503, unhealthy: database is locked)", result.stderr)
+        self.assertEqual("8", self.marker_step())
+
+    def test_a_healthy_body_on_a_failed_answer_is_no_answer(self):
+        """codex: the body alone proves nothing; curl must succeed with HTTP 200."""
+        self.dashboard_curl()
+        for extra in ({"STUB_CURL_RC": "18"}, {"STUB_CURL_CODE": "503"}):
+            with self.subTest(**extra):
+                result = self.run_promote("--apply", expect=1, **extra)
+                self.assertIn("the dashboard does not answer on http://127.0.0.1:8767/health", result.stderr)
+                self.assertEqual("8", self.marker_step())
+
+    def test_no_dashboard_route_sends_the_rerun_back_to_step_8_whose_sd_stage_adds_it(self):
+        from tests.test_backbone import ROUTE_ABSENT
+        self.dashboard_curl()
+        self.fixture.serve_status.write_text(ROUTE_ABSENT)
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("the dashboard has no private route: tailscale serve https:8443 not 127.0.0.1:8767", result.stderr)
+        self.assertEqual("8", self.marker_step())
+        self.assertEqual([], self.calls("curl "))
+        self.assertIn("tailscale serve --bg --https=8443 --set-path=/ http://127.0.0.1:8767", self.calls("serve --bg"))
+        self.fixture.serve_status.write_text(ROUTE_PRESENT)
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+
+    def test_a_serve_status_that_does_not_answer_is_no_answer(self):
+        """A failed read is no answer, not a missing route: the marker stays and step 9 asks again."""
+        self.dashboard_curl()
+        result = self.run_promote("--apply", expect=1, STUB_SERVE_RC="1")
+        self.assertIn("could not read tailscale serve status for the dashboard's route", result.stderr)
+        self.assertEqual("9", self.marker_step())
+        self.assertEqual([], self.calls("curl "))
 
     def test_the_seed_holds_every_nas_name_of_the_day(self):
         """codex pass: the hourly job takes the first free name of the UTC day, so each NAS name is held."""

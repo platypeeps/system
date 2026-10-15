@@ -5742,6 +5742,47 @@ if want is None or got is None or tuple(got) != tuple(want):
       "$SD_PACK_ROOT/lib" "$hub" "$port" "$SD_DB" "$(basename "$(marker_get snapshot)")" </dev/null; then
     promote_refuse "no session on $hub:$port reads this machine's database; check sd-serve (launchctl print gui/$(id -u)/$LABEL_PREFIX.sd-serve) and who holds $hub, then rerun"
   fi
+  # The dashboard by its answer, not its label (sd:4661): its /health on the
+  # loopback port, then over the private route the sd stage adds. A route or
+  # an answer that is not there sends the marker back to step 8, whose stages
+  # add the route and load the agent; an unread serve status is no answer.
+  serve=""
+  { command -v tailscale >/dev/null 2>&1 && serve=$(bound_step 60 tailscale serve status 2>/dev/null); } ||
+    promote_refuse "could not read tailscale serve status for the dashboard's route; rerun once Tailscale is up"
+  origin=$(printf '%s\n' "$serve" | sd_route_origin)
+  if [ -z "$origin" ]; then
+    held=$(printf '%s\n' "$serve" | sd_route_holder)
+    marker_set step 8
+    promote_refuse "the dashboard has no private route: tailscale serve https:$SD_DASHBOARD_HTTPS_PORT ${held:+serves $held, }not 127.0.0.1:$SD_DASHBOARD_PORT; free the port if it is held, then rerun, and the sd stage adds it"
+  fi
+  body=$(mktemp)
+  for url in "http://127.0.0.1:$SD_DASHBOARD_PORT/health" "$origin/health"; do
+    # Emptied first: curl writes no file it got no answer for, so the loopback's
+    # body would stand in for the route's. Retried for a few seconds: step 8
+    # may have just loaded the agent.
+    : > "$body"
+    code=$(curl -q -sS --max-time 10 --retry 5 --retry-delay 2 --retry-connrefused --retry-max-time 30 \
+      -o "$body" -w '%{http_code}' "$url" 2>"$body.err") || code=000
+    # The body counts only with curl's exit 0 and HTTP 200: a cut-off answer is no answer.
+    if [ "$code" = 200 ] && grep -q '"service": *"sd-dashboard"' "$body" && grep -q '"ok": *true' "$body"; then
+      echo "step 9  : the dashboard answers on $url"
+      continue
+    fi
+    if [ "$code" = 000 ]; then
+      why=$(head -1 "$body.err")
+      why="no answer${why:+: $why}"
+    elif grep -q '"service": *"sd-dashboard"' "$body"; then
+      why="HTTP $code, unhealthy: $(sd_health_reason "$body")"
+    elif grep -q 'Untrusted dashboard host' "$body"; then
+      why="HTTP $code, Untrusted dashboard host: the service runs a local-only configuration; see the private front door in local-project-dashboard/RUNTIME.md"
+    else
+      why="HTTP $code and not its health body"
+    fi
+    rm -f "$body" "$body.err"
+    marker_set step 8
+    promote_refuse "the dashboard does not answer on $url ($why); check $LABEL_PREFIX.sd-dashboard and ~/Library/Logs/$LABEL_PREFIX.sd-dashboard.err, then rerun, and step 8's stages run again"
+  done
+  rm -f "$body" "$body.err"
   echo
   echo "hub failover report"
   echo "  snapshot    : $(marker_get snapshot)"
