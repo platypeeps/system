@@ -5477,21 +5477,33 @@ promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 # `sd-db backup` takes the first free name of the UTC day, so each name a root
 # on stdin holds for today or later is held in $1 too, as an empty folder: the
 # additive NAS copy changes nothing on the NAS for it, and retention leaves it.
-# Prints each NAS root it cannot list: today's names there are not held.
+# Prints each NAS root it cannot list, as today's names there are not held,
+# and each snapshot in $1 that differs from the one of its name in the NAS
+# root it is copied to (the same folder name): the copy would overwrite it.
 hold_names() {
   python3 -c 'import datetime, os, re, sys
 dest, nas = sys.argv[1], sys.argv[2].splitlines()
 today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+def manifest(folder):
+    try:
+        with open(os.path.join(folder, "manifest.json"), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
 for root in filter(None, sys.stdin.read().splitlines()):
     try:
         names = os.listdir(root)
     except OSError:
         if root in nas:
-            print(root)
+            print(root + " cannot be listed")
         continue
     for name in names:
         if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name) and name[:10] >= today:
-            os.makedirs(os.path.join(dest, name), exist_ok=True)' "$1" "$(nas_roots)"
+            held = os.path.join(dest, name)
+            os.makedirs(held, exist_ok=True)
+            pair = root in nas and os.path.basename(root) == os.path.basename(dest)
+            if pair and os.listdir(held) and (manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
+                print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$(nas_roots)"
 }
 
 # Step 4, 5 and the seed are the ones that move files; each first records what
@@ -5715,15 +5727,17 @@ if want is None or got is None or tuple(got) != tuple(want):
   echo "  lanes       : enqueue each NULL-host repository's open pull requests again (sd-ship lane enqueue)"
   echo "  dispatch stays paused: read this, then run sd restore resume"
   # The hold step: a NAS root not listed holds names of today this machine's
-  # hourly job may take again, and the NAS copy would overwrite them. The
-  # marker stays, and offsite-verify refuses the copies while it exists.
+  # hourly job may take again, and the NAS copy would overwrite them; so does
+  # a snapshot the job took here while it waited. The marker stays, and
+  # offsite-verify refuses the copies while it exists.
   dest=$(hourly_destination)
   [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
   unheld=$(nas_roots | hold_names "$dest") ||
     promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
   if [ -n "$unheld" ]; then
     marker_set step hold
-    echo "promote: paused: the hub serves; the NAS copies wait, as $(printf '%s' "$unheld" | tr '\n' ' ') cannot be listed. Rerun promote --apply once the NAS is back" >&2
+    echo "promote: paused: the hub serves; the NAS copies wait until promote --apply runs again after this:" >&2
+    printf '%s\n' "$unheld" | sed 's/^/  /' >&2
     exit 1
   fi
   rm -f "$PROMOTE_MARKER"

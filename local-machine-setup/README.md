@@ -384,6 +384,7 @@ This is the second guard: an old hub cut from the control plane already refuses,
    Stop that machine as above, rename or remove it in the Tailscale admin console, then run promote again.
 5. It renames this node, installs the hub role, opens one session on its own `sd-serve` by the hub's name, and prints the loss report.
    If a NAS root still cannot be listed, the hub serves but the promotion pauses: the NAS copies refuse until `promote --apply` runs again with the NAS back.
+   That rerun stays paused while an hourly snapshot taken here has a name the NAS holds for another snapshot; it names the folder to move aside.
 6. Read the report. Enqueue each NULL-host repository's open pull requests again, then run `sd restore resume`.
 
 A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next step; `promote --apply` goes on from there.

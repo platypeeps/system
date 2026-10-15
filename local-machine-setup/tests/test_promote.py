@@ -266,16 +266,39 @@ class Promote(unittest.TestCase):
         # The hub serves, but the NAS's names of today are not held: the
         # promotion pauses at its hold step, and hub-ready says so.
         self.assertIn("hub failover report", result.stdout)
-        self.assertIn(f"promote: paused: the hub serves; the NAS copies wait, as {gone}/sd-backups-hourly {gone}/sd-backups cannot be listed", result.stderr)
+        self.assertIn("promote: paused: the hub serves; the NAS copies wait until promote --apply runs again after this:\n"
+                      f"  {gone}/sd-backups-hourly cannot be listed\n  {gone}/sd-backups cannot be listed\n", result.stderr)
         self.assertEqual("hold", self.marker_step())
         self.assertIn(f"NOT-READY promote stopped before its end: {self.marker} names step hold", self.run_promote().stdout)
 
     def test_a_paused_promotion_holds_the_nas_names_once_the_nas_is_back(self):
         _, _, gone, args, _ = self.promote_from_usb()
         (gone / "sd-backups-hourly" / f"{utc_today()}.9").mkdir(parents=True)
-        (gone / "sd-backups").mkdir()
+        # A nightly name is no pair of the hourly root's snapshot of that name.
+        (gone / "sd-backups" / f"{utc_today()}.1").mkdir(parents=True)
+        (gone / "sd-backups" / f"{utc_today()}.1" / "manifest.json").write_text("nightly\n")
+        (self.hourly / f"{utc_today()}.1").mkdir()
+        (self.hourly / f"{utc_today()}.1" / "manifest.json").write_text("hourly\n")
         self.run_promote(*args, OFFSITE_VERIFY_ROOT=gone)
         self.assertEqual([], list((self.hourly / f"{utc_today()}.9").iterdir()))
+        self.assertIsNone(self.marker_step())
+
+    def test_a_snapshot_taken_while_paused_under_a_nas_name_keeps_the_pause(self):
+        """The hourly job writes here while its NAS copy waits; that name may be on the NAS."""
+        _, _, gone, args, _ = self.promote_from_usb()
+        name = f"{utc_today()}.9"
+        (gone / "sd-backups").mkdir(parents=True)
+        for root, body in ((gone / "sd-backups-hourly", "nas\n"), (self.hourly, "taken here\n")):
+            (root / name).mkdir(parents=True)
+            (root / name / "manifest.json").write_text(body)
+        result = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
+        self.assertIn(f"  {self.hourly}/{name} is not the snapshot of that name in {gone}/sd-backups-hourly; move it aside",
+                      result.stderr)
+        self.assertEqual("hold", self.marker_step())
+        # Moved aside, the name is held, and the promotion ends.
+        (self.hourly / name).rename(self.tmp / "aside")
+        self.run_promote(*args, OFFSITE_VERIFY_ROOT=gone)
+        self.assertEqual([], list((self.hourly / name).iterdir()))
         self.assertIsNone(self.marker_step())
 
     def test_a_paused_promotion_stays_paused_while_the_nas_cannot_be_listed(self):
