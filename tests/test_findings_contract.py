@@ -15,8 +15,9 @@ The ingest folds a run into the open report with the same job and every
 declared line, and gives that report the newest body. So a reason names its
 findings, not the day: one open report per job and host while the findings
 stay the same, and a new or changed finding opens its own (sd:4182, ruling
-on sd:4042). An acknowledged report takes the same findings while they
-repeat without a break on the host, and stays done (pack sd:4629).
+on sd:4042) and closes the older one of that host (pack sd:4641). An
+acknowledged report takes the same findings while they repeat without a
+break on the host, and stays done (pack sd:4629).
 """
 
 import re
@@ -27,10 +28,11 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 from sd_db import connect
 from sd_db.migrate import initialise
-from sd_db import reporting
+from sd_db import reporting, workflow
 from sd_db.ship import this_host
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,15 +123,16 @@ class EndToEndTest(unittest.TestCase):
         self.database = self.tmp / "sd.db"
         initialise(self.database)
 
-    def doctor_run(self, run_id, day="2026-10-10"):
-        """One brew-doctor run on DAY, its output ingested as cron-jobs ingests it."""
+    def doctor_run(self, run_id, day="2026-10-10", ingest_host=None):
+        """One brew-doctor run on DAY, its output ingested as cron-jobs ingests it, on INGEST_HOST if named."""
         self.day.write_text(day + "\n")
         run = subprocess.run(["sh", str(self.tmp / "local-brew-doctor/brew-doctor.sh"), "run"],
                              capture_output=True, text=True, timeout=120,
                              env={"HOME": str(self.tmp), "PATH": f"{self.bin}:/usr/bin:/bin"})
         log = self.tmp / f"{run_id}.log"
         log.write_text(run.stdout + run.stderr)
-        with closing(connect(self.database)) as connection:
+        with closing(connect(self.database)) as connection, \
+                mock.patch("sd_db.ship.socket.gethostname", return_value=ingest_host or this_host()):
             state = reporting.ingest_log(connection, job="brew-doctor-nightly", run_id=run_id,
                                          started=f"{day}T08:15:00Z", ended=f"{day}T08:16:00Z",
                                          exit_code=run.returncode, log_path=str(log), offset=0)
@@ -155,16 +158,23 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(second["why"], first["why"])
         self.assertEqual(self.open_reports(), [first["item"]["id"]])
 
-    def test_a_changed_warning_files_its_own_report_with_its_own_body(self):
+    def test_a_changed_warning_files_its_own_report_and_supersedes_the_older_one(self):
         """sd:3537: a checksum with digits erased folded worker2 into
-        worker1's report, which then showed only worker1."""
+        worker1's report, which then showed only worker1. PIN of the pack
+        (rule e, sd:4641): the new report closes the older one of the job and
+        host, so one findings report per host stays open."""
         self.doctor.write_text("Warning: worker1 is unlinked\n")
         _, first = self.doctor_run("r1", "2026-10-10")
         self.doctor.write_text("Warning: worker2 is unlinked\n")
         _, second = self.doctor_run("r2", "2026-10-11")
         self.assertEqual(second["recorded"], "report", second)
         self.assertIn("worker2", second["item"]["body"])
-        self.assertEqual(sorted(self.open_reports()), sorted([first["item"]["id"], second["item"]["id"]]))
+        self.assertEqual(self.open_reports(), [second["item"]["id"]])
+        with closing(connect(self.database)) as connection:
+            older = workflow.item_state(connection, first["item"]["id"])
+        self.assertEqual(older["item"]["status"], "done")
+        self.assertIn(f"superseded by sd:{second['item']['id']}",
+                      [n["body"] for n in older["notes"] if n["kind"] == "status_change"][-1])
 
     def test_the_same_warnings_fold_into_the_open_report(self):
         self.doctor_run("r1")
@@ -215,12 +225,14 @@ class EndToEndTest(unittest.TestCase):
 
     def test_each_host_keeps_its_own_report(self):
         """PIN: hosts share a job name in the one database, so the host stays
-        in the reason, or one host's report would hide another's."""
+        in the reason, or one host's report would hide another's; another
+        host's report supersedes nothing here (pack sd:4641)."""
         _, first = self.doctor_run("r1")
         self.host.write_text("otherhost\n")
-        _, second = self.doctor_run("r2")
+        _, second = self.doctor_run("r2", ingest_host="otherhost")
         self.assertEqual(second["recorded"], "report", second)
         self.assertNotEqual(second["item"]["id"], first["item"]["id"])
+        self.assertEqual(sorted(self.open_reports()), sorted([first["item"]["id"], second["item"]["id"]]))
 
     def test_a_doctor_that_fails_without_a_warning_fails_the_run(self):
         """A crash used to read as "brew doctor: clean"."""
@@ -231,12 +243,16 @@ class EndToEndTest(unittest.TestCase):
 
     def test_a_failed_run_does_not_fold_into_the_findings_report(self):
         """PIN: a non-zero exit is the pack's basis, `job exited N on <host>`
-        (sd:4629), so a crash after a night of warnings opens its own report."""
+        (sd:4629), so a crash after a night of warnings opens its own report.
+        A failure report is never superseded (pack sd:4641)."""
         _, first = self.doctor_run("r1", "2026-10-10")
         self.doctor.write_text("Error: something broke\n")
         _, crash = self.doctor_run("r2", "2026-10-11")
         self.assertEqual((crash["recorded"], crash["why"]), ("report", f"job exited 1 on {this_host()}"), crash)
         self.assertNotEqual(crash["item"]["id"], first["item"]["id"])
+        self.doctor.write_text("Warning: three\n")
+        _, changed = self.doctor_run("r3", "2026-10-12")
+        self.assertEqual(sorted(self.open_reports()), sorted([crash["item"]["id"], changed["item"]["id"]]))
 
 if __name__ == "__main__":
     unittest.main(argv=sys.argv)

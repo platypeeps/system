@@ -114,6 +114,9 @@ def seed(case):
     return ids
 
 
+ABSENT = object()
+
+
 class TheDocument(ScreenCase):
     """`reports_screen.document` gives every source the page reads, each guarded on its own."""
 
@@ -146,6 +149,21 @@ class TheDocument(ScreenCase):
         # sd:3446: the rail badge is the read's; only the open report that asks for attention counts.
         self.assertEqual(doc["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
         self.assertEqual(reports_screen._attention(None), {"state": "unknown", "n": 0, "what": "reports not read"})
+
+    def test_truncated_reads_the_kept_body_not_the_first_run(self):
+        # sd:4652: pack sd:4641 lets a later whole body replace a cut first run, and `repeats.body_truncated` says
+        # what the kept body is; `report.truncated` stays the first run's and is only the fallback.
+        item = self.ids["failed"]
+        fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id = ?", (item,)).fetchone()[0])
+        # ABSENT: no `body_truncated` key; a null one is the pack's `_kept_cut` reading, not a fallback.
+        for first, kept, shown in ((True, ABSENT, True), (True, False, False), (False, True, True), (False, ABSENT, False),
+                                   (True, None, False)):
+            with self.subTest(first=first, kept=kept):
+                fields["report"]["truncated"] = first
+                fields["repeats"] = {"count": 2} if kept is ABSENT else {"count": 2, "body_truncated": kept}
+                self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), item))
+                self.connection.commit()
+                self.assertIs({r["id"]: r for r in self.doc()["reports"]}[item]["truncated"], shown)
 
     def test_the_cadence_counts_each_local_day_from_the_log_and_the_calendar_leaves_days_out(self):
         doc = self.doc()

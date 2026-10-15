@@ -1534,7 +1534,9 @@ cmd_logs() {
 # each stale job's name and the run or install it is stale since, not of its
 # age and not the date: a job still stale a night later folds into the open
 # report, and a new stale job, or one that ran and stopped again, opens its
-# own (sd:4182). The host stays in it, as every host files under one job name.
+# own (sd:4182) and closes the older one on this host, with the exceptions
+# the README names (pack sd:4641). The host stays in it, as every host files
+# under one job name.
 cmd_watchdog() {
   local job dom dow max log age ref now stale last at since=""
   now=$(date +%s)

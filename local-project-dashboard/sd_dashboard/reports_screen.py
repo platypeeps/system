@@ -200,7 +200,7 @@ def report_controls(connection, row, revision):
         tag("dl", join(tag("div", tag("dt", label), tag("dd", provenance.get(key, "Not recorded")))
             for key, label in (("job", "Job"), ("started", "Started"), ("ended", "Ended"), ("exit_code", "Exit code"),
                                ("source_path", "Source log"), ("attention_basis", "Attention evidence"))), repeated),
-        tag("p", "Output was truncated. The complete source remains in the log.", class_="notice") if provenance.get("truncated") else "",
+        tag("p", "Output was truncated. The complete source remains in the log.", class_="notice") if _cut(provenance, repeats) else "",
         form(f"/api/reports/{row['id']}/acknowledge", label="Acknowledge report", command=f"sd reports acknowledge {row['id']}", revision=revision)
         if row["status"] != "done" else tag("p", "Acknowledged"), class_="control-panel")
 
@@ -358,6 +358,14 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
     return out
 
 
+def _cut(provenance, repeats) -> bool:
+    """Whether the report's kept body is cut (sd:4652): a later whole run can replace a cut first one (pack sd:4641),
+    and `repeats.body_truncated` then says so; `report.truncated` is the first run's, read only when that key is absent,
+    as the pack's `reporting._kept_cut` reads it."""
+    repeats = repeats if isinstance(repeats, dict) else {}
+    return repeats.get("body_truncated", provenance.get("truncated")) is True
+
+
 def _report(connection, row, revision, followups) -> dict:
     try:
         fields = reporting.fields_document(connection, row["fields"])
@@ -379,7 +387,7 @@ def _report(connection, row, revision, followups) -> dict:
         "job": provenance.get("job") or None, "run": provenance.get("run_id"),
         "started": provenance.get("started"), "ended": provenance.get("ended"), "exit": provenance.get("exit_code"),
         "src": provenance.get("source_path"), "basis": provenance.get("attention_basis"),
-        "truncated": provenance.get("truncated") is True,
+        "truncated": _cut(provenance, repeats),
         "repeats": {"count": repeats.get("count"), "last": repeats.get("last_ended")} if repeats else None,
         "body": text[-BODY_CHARS:], "cut": len(text) > BODY_CHARS,
         "followups": followups,
