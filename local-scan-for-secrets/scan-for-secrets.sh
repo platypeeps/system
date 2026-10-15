@@ -309,7 +309,9 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # The Hugging Face entry is a token's fixed length, hf_ and 34 letters or
 # digits, then a word boundary: uncapped, it matched a 68-character hf_
 # identifier in a Codex log (sd:4698). It has no boundary before it, because
-# a JSON `\n` escape puts the word character `n` there.
+# a JSON `\n` escape puts the word character `n` there. The searchers run with
+# `--no-unicode` and `LC_ALL=C`, so the boundary is ASCII: in Unicode a CJK
+# letter is a word character, and a token right before one went unreported.
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{40,}
@@ -595,7 +597,7 @@ PRUNE_EOF
     # containing regex metacharacters (+ is common in base64) went unmasked.
     MATCH_MODE=$1
     if [ "$HAVE_RG" = 1 ]; then
-      set -- --no-config --no-ignore --hidden -l -f -
+      set -- --no-config --no-unicode --no-ignore --hidden -l -f -
       [ "$MATCH_MODE" = fixed ] && set -- "$@" -F
       for d in $MASK_EXCLUDE_DIRS;  do set -- "$@" -g "!$d/"; done
       for g in $EXCLUDE_GLOBS;      do set -- "$@" -g "!$g"; done
@@ -619,7 +621,7 @@ TARGETS_EOF
     # its safe list, ~/repos among them (review, sd:1254).
     [ "$MASK_TARGET_COUNT" -gt 0 ] || return 0
     if [ "$HAVE_RG" = 1 ]; then rg "$@" 2>/dev/null || true
-    else grep "$@" 2>/dev/null || true; fi
+    else LC_ALL=C grep "$@" 2>/dev/null || true; fi
   }
   # No values, no literal pass: an empty line is an empty pattern, and an
   # empty pattern matches every file.
@@ -1271,7 +1273,7 @@ mask_tag() {
 
 rg_args() { # shared ripgrep flags: unignored + hidden (secrets live in
             # gitignored dotfiles), binaries auto-skipped, size-capped.
-  set -- --no-config --no-ignore --hidden --max-filesize "$MAX_SIZE" -n -o
+  set -- --no-config --no-unicode --no-ignore --hidden --max-filesize "$MAX_SIZE" -n -o
   for d in $EXCLUDE_DIRS;  do set -- "$@" -g "!$d/"; done
   for g in $EXCLUDE_GLOBS; do set -- "$@" -g "!$g";  done
   if [ "$SCAN_SECRETS_FILES" = 0 ]; then
@@ -1362,7 +1364,7 @@ TARGETS_EOF
   [ $# -gt 0 ] || set -- .
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
-  OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
+  OUT=$(LC_ALL=C grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
 fi
 # Known-fake fixtures: AWS docs example keys, and URL matches whose password
 # is a placeholder (${VAR}, <name>) or an obvious dev value. Matches end at

@@ -159,6 +159,16 @@ class HuggingFaceToken(unittest.TestCase):
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                     self.assertIn("Hugging Face token", result.stdout)
 
+    def test_a_token_before_non_ascii_text_is_a_finding(self) -> None:
+        """The boundary is ASCII: ripgrep, and grep -E in a UTF-8 locale, count
+        a CJK letter as a word character, so the token hid before one (codex
+        review)."""
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher), mock.patch.dict(os.environ, {"LC_ALL": "en_US.UTF-8"}):
+                result = self.scan(f"# {self.TOKEN}是访问令牌\n", path)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("Hugging Face token", result.stdout)
+
 
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in
