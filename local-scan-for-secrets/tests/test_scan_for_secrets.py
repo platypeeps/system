@@ -199,6 +199,46 @@ class HuggingFaceToken(unittest.TestCase):
         self.assertEqual(pcount, 0)
 
 
+class OpenAIProjectKey(unittest.TestCase):
+    """sd:4707: an OpenAI project key is sk-proj- and well over 100 key
+    characters; a shorter sk-proj- string in an agent log is a test value."""
+
+    scan = UrlCredentials.scan
+    # Joined here, so this file is not a finding of the repository scan.
+    PREFIX = "sk-" + "proj-"
+    SHORT = (PREFIX + "abcDEF12" * 4, PREFIX + "a" * 99)
+    KEY = PREFIX + "Ab3_xY9-" * 19
+
+    def test_a_short_sk_proj_string_is_not_a_finding(self) -> None:
+        self.assertEqual([len(s) for s in self.SHORT], [40, 107])
+        # `_` is a key character, so it counts toward the 100.
+        texts = [t for s in self.SHORT for t in (f"{s}\n", f'"{s}"\n')] + [f"{self.SHORT[0]}_\n"]
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in texts:
+                with self.subTest(searcher=searcher, text=text[:1] + str(len(text))):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_key_of_real_length_is_a_finding(self) -> None:
+        self.assertEqual(len(self.KEY), 160)
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in (f"{self.KEY}\n", f'"{self.KEY}_"\n', self.PREFIX + "a" * 100):
+                with self.subTest(searcher=searcher, text=text[:1]):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("OpenAI project API key", result.stdout)
+
+    def test_mask_rewrites_a_key_and_not_a_short_string(self) -> None:
+        body = re.search(r"^PATTERNS='(.*?)'$", SCRIPT.read_text(), re.S | re.M).group(1)
+        mod = load_mask_files()
+        pats = mod.parse_patterns(body)
+        _, _, pcount, _ = mod.masked(f'k = "{self.SHORT[0]}"'.encode(), [], pats)
+        self.assertEqual(pcount, 0)
+        new, _, pcount, _ = mod.masked(f'k = "{self.KEY}"'.encode(), [], pats)
+        self.assertEqual(pcount, 1)
+        self.assertEqual(new, b'k = "' + mod.fit(mod.MARK, 160) + b'"')
+
+
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in
     <config>/scan-for-secrets/fixture-fingerprints is a known fake key and is
