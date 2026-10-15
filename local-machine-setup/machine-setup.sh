@@ -1242,7 +1242,7 @@ stage_cron() {
     host_jobs=
     sweep=0
   fi
-  hub_role || :
+  hub_ask
   jobs=$( { manifest cron; printf '%s\n' "$host_jobs"; if hub_role; then hub_role_labels cron; fi; } | awk 'NF && !seen[$0]++')
   # A retired job stays out of every machine's wanted list, even where a
   # profile or a host folder written before the retirement still names it:
@@ -1284,7 +1284,7 @@ stage_cron() {
   echo "$jobs" | while read -r j; do
     # The agents stage's guard: skipped, and left to the satellite stage's
     # EXTRA when one is here, so the sweep below keeps it too.
-    if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite && ! hub_role; then
+    if sd_hub_only "$LABEL_PREFIX.cron.$j" && is_satellite && ! hub_holder; then
       echo "  SKIP    $j — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
@@ -1406,7 +1406,7 @@ agent_replace() { # label, src, dst
 
 stage_agents() {
   echo "== agents"
-  hub_role || :
+  hub_ask
   agents=$(role_agents)
   if [ -z "$agents" ]; then
     echo "  no launch agents in this profile"
@@ -1417,7 +1417,7 @@ stage_agents() {
     # A guard: no satellite profile lists a hub-only agent today, and one
     # that adds it later must not start a second dashboard.
     # Skipped, not removed: the satellite stage reports one already here.
-    if sd_hub_only "$label" && is_satellite && ! hub_role; then
+    if sd_hub_only "$label" && is_satellite && ! hub_holder; then
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
@@ -1752,23 +1752,31 @@ sd_hub_only() { # label
 is_satellite() {
   [ -n "$(manifest satellite)" ] || [ -e "$SD_HUB_CONFIG" ]
 }
-# The hub role as a state, not a profile (hub failover, sd:4012): a satellite
-# that `promote` made the hub runs the hub's sd agents and jobs on top of its
-# own profile. It holds the role while hub.json is gone, the database is here
-# and `sd-db fence` reads holder; `off`, an unset sd.hub_name, is not enough,
-# since promote takes the name before it installs the role. A hub profile
-# lists the labels itself and asks nothing. Asked once per run: call it in
-# the main shell before any pipeline, where a subshell would ask again.
-hub_role() {
-  if [ -z "${HUB_ROLE:-}" ]; then
-    HUB_ROLE=no
-    if ! sd_in_profile && [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ] &&
+# The hub role as a state, not a profile (hub failover, sd:4012). A machine
+# holds it while hub.json is gone, the database is here and `sd-db fence`
+# reads holder; `off`, an unset sd.hub_name, is not enough, since promote
+# takes the name before it installs the role. Any profile can hold it: a
+# repaired hub takes the role back with its hub profile (round 2). Asked once
+# per run: call it in the main shell before any pipeline, where a subshell
+# would ask again.
+hub_holder() {
+  if [ -z "${HUB_HOLDER:-}" ]; then
+    HUB_HOLDER=no
+    if [ ! -e "$SD_HUB_CONFIG" ] && [ -f "$SD_DB" ] &&
        hr_fence=$(bound_step 120 "$SD_PACK_ROOT/bin/sd-db" fence 2>/dev/null); then
-      case "$hr_fence" in *"fence: holder:"*) HUB_ROLE=yes ;; esac
+      case "$hr_fence" in *"fence: holder:"*) HUB_HOLDER=yes ;; esac
     fi
   fi
-  [ "$HUB_ROLE" = yes ]
+  [ "$HUB_HOLDER" = yes ]
 }
+# A holder whose profile runs no sd agent gets the role's labels on top of
+# its own profile; a hub profile lists them itself and asks nothing.
+hub_role() { ! sd_in_profile && hub_holder; }
+# A hub profile with no satellite in it, as the live hub: no stage needs the
+# fence's answer there, so none asks it.
+plain_hub() { sd_in_profile && ! is_satellite; }
+# Ask the fence once, in the main shell, before any pipeline.
+hub_ask() { plain_hub || hub_holder || :; }
 # The hub-role labels: the hub-only list but the iCloud mirror, which copies
 # the hub's own folders, which a satellite lacks. `agent` prints labels,
 # `cron` job names.
@@ -1852,9 +1860,15 @@ sd_database_elsewhere() {
 
 stage_sd() {
   echo "== sd"
-  hub_role || :
+  hub_ask
   if ! sd_in_profile && ! hub_role; then
     echo "  SKIP    no sd agent in this profile ($LABEL_PREFIX.sd-dashboard)"
+    return 0
+  fi
+  # An old hub demoted by the README keeps its hub profile until it takes the
+  # role back; a database built here would stop that promote at step 1.
+  if sd_in_profile && [ -e "$SD_HUB_CONFIG" ] && [ ! -f "$SD_DB" ]; then
+    echo "  DIFFERS $SD_HUB_CONFIG — this hub profile is demoted (hub.json, no database): take the role back with $(basename "$SELF") promote --apply, or rejoin with a satellite profile (README, 'Hub failover')"
     return 0
   fi
   if [ -f "$SD_DB" ]; then
@@ -1941,7 +1955,7 @@ stage_satellite() {
   # A satellite runs no hub service (prd R5). Detect only: the operator
   # decides which role is wrong. On a hub profile the sd stage's one EXTRA
   # for hub.json names the conflict instead (criterion 7).
-  if hub_role; then
+  if ! plain_hub && hub_holder; then
     echo "  SKIP    this machine holds the hub role (promoted): no hub.json, the database is here, and sd-db fence reads holder"
     return 0
   fi
@@ -5368,7 +5382,7 @@ hub_ready() {
   if [ -e "$DRILL_HOME" ]; then
     echo "  NOT-READY a drill did not finish and left the records in $DRILL_HOME; remove it (rm -rf), or the next promote --drill does"
   fi
-  if hub_role; then
+  if hub_holder; then
     echo "  ok      this machine holds the hub role (promoted)"
     return 0
   fi
@@ -5720,11 +5734,15 @@ for peer in (status.get("Peer") or {}).values():
     done
     # A stage that cannot read the fence skips the role and still exits 0,
     # so the role is checked here, by a fresh probe and by its plists.
-    HUB_ROLE=""
-    hub_role || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
+    HUB_HOLDER=""
+    hub_holder || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
     for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
-      [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ] ||
-        promote_refuse "the hub role is not installed: no $hr_label plist; rerun"
+      [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ] && continue
+      # A hub profile installs what it lists; the role adds nothing to it.
+      if sd_in_profile; then
+        promote_refuse "the hub role is not installed: no $hr_label plist, and this hub profile does not list it; add it to $PROFILE.agent or $PROFILE.cron, then rerun"
+      fi
+      promote_refuse "the hub role is not installed: no $hr_label plist; rerun"
     done
     marker_set step 9
     step=9
@@ -5732,8 +5750,8 @@ for peer in (status.get("Peer") or {}).values():
   # Step 9: one session on this machine's sd-serve, by the hub's name. Asked
   # on every run: a rerun here may follow a change of holder. The session must
   # read this machine's own restore row, not any database a server by that name holds.
-  HUB_ROLE=""
-  hub_role || promote_refuse "this machine does not hold the hub role now (sd-db fence); rerun once it does"
+  HUB_HOLDER=""
+  hub_holder || promote_refuse "this machine does not hold the hub role now (sd-db fence); rerun once it does"
   port=$(marker_get port)
   if ! "$SD_DB_PYTHON" -I -c 'import sys
 from pathlib import Path

@@ -51,6 +51,7 @@ from sd_db.protection import github_slug
 from sd_db.sources.vault import SOURCE as VAULT
 from sd_db.workflow import WorkflowError
 
+from . import issues
 from .markup import href
 
 __all__ = ["details", "document"]
@@ -127,7 +128,9 @@ def _document(connection, *, now: str) -> dict:
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
-    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now)}
+    # Your issues (sd:4628): each repo's open issues assigned to or filed by the operator, drawn under the views.
+    return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now),
+            **issues.document(connection)}
 
 
 def _base_fields(item) -> dict:

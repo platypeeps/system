@@ -1099,8 +1099,10 @@ addEventListener('DOMContentLoaded', () => {
   // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws; a task the read no longer
   // lists loses its pick and runs no command; a failed load leaves no row; and a failed reread after a write keeps the rows
   // and says the write landed. The Details keep their own per-item generation (DET.gen).
-  let drawn = false;
+  let drawn = false, ISSUES = null;
   function draw() {
+    // Your issues (sd:4628) are this document's too; issues.js draws them, or says the read failed.
+    document.dispatchEvent(new CustomEvent('issues:read', { detail: ISSUES || { error: 'the tasks could not be read' } }));
     if (!drawn) {
       // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
       drawn = true;
@@ -1117,10 +1119,11 @@ addEventListener('DOMContentLoaded', () => {
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
     adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null;
+      ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
       return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
-    clear: () => { tasks = []; READ = null; ATTENTION = null; },
+    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; },
     draw,
     // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
     current: () => selected,

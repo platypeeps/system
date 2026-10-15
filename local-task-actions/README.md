@@ -1,8 +1,8 @@
 # local-task-actions
 
-Tiny localhost HTTP service backing the action buttons in the Obsidian task
-digest email (`local-obsidian-review`): **Mark done** and **Postpone** links
-that edit TaskNote frontmatter directly in the vault.
+Tiny localhost HTTP service backing the action buttons in the Obsidian review
+digest email (`local-obsidian-review`): **Accept**, **Decline** and similar links
+that flip one frontmatter `status` in a decision database note in the vault.
 
 ## How it works
 
@@ -14,13 +14,10 @@ that edit TaskNote frontmatter directly in the vault.
   `local.system-tools`).
 - Links are HMAC-SHA256-signed with a secret in
   `~/.config/task-actions/secret` (auto-generated, 0600, never committed)
-  and expire after 7 days. `task-actions.sh url <file-stem> <done|postpone>
-  [days]` prints a signed URL — that's what the digest builder calls.
-- `done`: non-recurring tasks get `status: done`; recurring tasks get the
-  occurrence appended to `complete_instances` and `scheduled` advanced per
-  the recurrence rule (DAILY/WEEKLY/MONTHLY/YEARLY with INTERVAL).
-- `postpone`: `scheduled` moves N days out from today or the current
-  schedule, whichever is later (default 3).
+  and expire after 7 days. `task-actions.sh url -b <db> <file-stem> <action>`
+  prints a signed URL — that's what the digest builder calls. The database
+  keys and their actions are in `task-actions.sh help`; a link without a
+  database is refused.
 
 ## Usage
 
@@ -29,7 +26,7 @@ that edit TaskNote frontmatter directly in the vault.
 ./task-actions.sh stop     # unload it
 ./task-actions.sh status   # agent + HTTP state (exit 0 ok, 1 degraded, 3 not loaded)
 ./task-actions.sh run      # foreground server (what launchd calls)
-./task-actions.sh url "My Task" done
+./task-actions.sh url -b blog "My Idea" accept
 ./task-actions.sh base-url # the base every signed link is built on
 ```
 
@@ -90,7 +87,7 @@ every one of them against 127.0.0.1 (sd:1203).
   Settings > Privacy & Security > Files and Folders / Full Disk Access.
   Until granted, action requests block and return nothing.
 - Environment overrides, exported or in `<config>/task-actions/.env` (`<config>` is
-  `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; see `.env.example`): `TASK_ACTIONS_PORT` (8766), `OBSIDIAN_TASKS_SUBDIR`,
+  `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`; see `.env.example`): `TASK_ACTIONS_PORT` (8766),
   `TASK_ACTIONS_SECRET_FILE`. `OBSIDIAN_VAULT` (default
   `~/Documents/Obsidian Vault`) and `SYSTEM_TOOLS_LABEL_PREFIX` are kept once in
   `<config>/shared.env`; an exported value wins.

@@ -401,6 +401,7 @@ Hand the role back to a personal machine:
    From then on every `sd` command on the standby refuses, since `hub.json` sits beside the database: no write lands in records it will delete.
    It stops there, because the new hub does not serve the snapshot yet, and prints the next step.
 2. On the repaired or new hub, make it a satellite (below), then run `promote --apply`: the hand-back snapshot is the newest in the NAS hourly root.
+   Its hub profile stays as it is: the fence, not the profile, says it holds the role, and it installs the role's agents and jobs from its own lists.
 3. On the standby, run `promote --undo --apply` again. It deletes nothing until the local fence reads `elsewhere`, a session on the hub's name answers, and that hub's newest restore names the hand-back snapshot and holds its checkpoint.
 4. It then deletes `~/.local/share/sd/` and the hub-role backup roots under `$HOME`, runs `update satellite --apply`, and checks the stage's dry run.
 
@@ -410,7 +411,8 @@ If the snapshot fails, the hub role starts again and nothing is deleted.
 Make an old hub a satellite, so it can take the role back or rejoin:
 
 1. Move its `~/.local/share/sd/sd.db` to `sd.db.demoted-<date>`. It holds the writes after the last snapshot; copy any item or note back by hand.
-2. Copy `~/.config/sd/hub.json` from any satellite. To rejoin for good, also add `<profile>.satellite` and run `machine-setup.sh update satellite --apply`.
+2. Copy `~/.config/sd/hub.json` from any satellite. Until it takes the role back, the sd stage reads `DIFFERS ... demoted` and builds no database.
+   To rejoin for good, give it a satellite profile: take the `SD_HUB_ONLY_AGENTS` labels out of `<profile>.agent` and `<profile>.cron`, add `<profile>.satellite`, then run `machine-setup.sh update --apply`.
 
 Until then, the fence keeps a returning old hub from writing off the machine: its NAS copies and its `hub-pin` push refuse.
 
