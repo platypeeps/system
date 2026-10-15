@@ -131,8 +131,9 @@ fi
 echo "Needs a decision:"
 echo
 cat "$tmp/doctor2"
-# One line per warning: its first line and a checksum of its whole text, not
-# the date, so a warning whose list changed is a new finding. The ingest's
+# One line per warning, its first line and a checksum of its prose, and one
+# per item it lists (an indented line), not the date: a warning whose prose
+# changed is a new finding, and one item fixed leaves a subset. The ingest's
 # reason is the run's set of lines: the same set folds into the open report, a
 # smaller one folds into it too (pack sd:4658), and a new warning opens its own
 # report and closes the older one on this host, with the exceptions
@@ -141,6 +142,7 @@ cat "$tmp/doctor2"
 awk -v d="$tmp" '/^Warning:/ { n++ } n { print > (d "/warning." n) }' "$tmp/doctor2"
 i=1
 while [ -f "$tmp/warning.$i" ]; do
-  echo "SD_REPORT_ATTENTION: brew doctor on $(hostname -s): $(head -1 "$tmp/warning.$i") [$(cksum < "$tmp/warning.$i" | cut -d' ' -f1)]"
+  echo "$(head -1 "$tmp/warning.$i") [$(grep -v '^[[:space:]]' "$tmp/warning.$i" | cksum | cut -d' ' -f1)]"
+  awk 'NR == 1 { w = $0; next } /^[[:space:]]+[^[:space:]]/ { sub(/^[[:space:]]+/, ""); print w ": " $0 }' "$tmp/warning.$i"
   i=$((i + 1))
-done
+done | awk -v p="SD_REPORT_ATTENTION: brew doctor on $(hostname -s): " '!seen[$0]++ { print p $0 }'

@@ -2412,8 +2412,8 @@ case "$1" in
     # why the list did not come from the database, reconcile's lists (sd:3983),
     # each line under the name of its list, a failed join with its error; each
     # failed repo's section of the sync output with a checksum of it, its step
-    # lines left out; and each of hygiene's lines under its section, its notes
-    # and its counts left out. The ingest's reason is the run's set of lines:
+    # and fetch lines left out; and each of hygiene's lines under its section,
+    # its notes and its counts left out. The ingest's reason is the run's set of lines:
     # the same set folds into the open report, a smaller one folds into it too
     # (pack sd:4658), and a new finding opens its own report and closes the
     # older one on this host, with the exceptions local-cron-jobs/README.md
@@ -2422,9 +2422,11 @@ case "$1" in
     # in the log, not an empty list (review round 1).
     if [ -s "$KINDS" ]; then
       # Each failed repo's section to its own file, as the checksum's input;
-      # sync's only --- line is the closing rule.
+      # sync's only --- line is the closing rule. Its step lines and git's
+      # fetch lines (`From <url>`, `old..new main -> origin/main`) are left
+      # out: they move with the clock and the upstream, not the cause.
       awk -v d="$TMPD" 'function flush() { if (f) { printf "%s", b > (d "/failed." n); close(d "/failed." n) } f = 0 }
-           /^=== |^---/ { flush(); n++; b = "" } /^\[step / { next } /^!!! failed: / { f = 1 }
+           /^=== |^---/ { flush(); n++; b = "" } /^\[step |^From |^ .* -> / { next } /^!!! failed: / { f = 1 }
            { b = b $0 "\n" } END { flush() }' "$OUT"
       {
         cat "$KINDS"
@@ -2437,8 +2439,10 @@ case "$1" in
           [ -f "$fs" ] || continue
           echo "failed: $(head -1 "$fs" | sed 's/^=== //') [$(cksum < "$fs" | cut -d' ' -f1)]"
         done
+        # A checkout further behind is the same finding: its counts are left out.
         awk '/^=== /{ h = substr($0, 5); next } /^  note: /||/^$/{ next } /^---/{ h = ""; next }
-             h != "" { print "hygiene: " h ": " $0 }' "$HYG_OUT"
+             h != "" { sub(/is [0-9]+ commit\(s\) behind/, "is behind"); sub(/\([0-9]+ local commit\(s\)\)/, "(local commits)")
+                       print "hygiene: " h ": " $0 }' "$HYG_OUT"
       } | awk -v p="SD_REPORT_ATTENTION: repo-sync on $(hostname -s): " 'NF && !seen[$0]++ { print p $0 }'
     fi
     # After the report, so Jev never delays or changes it.

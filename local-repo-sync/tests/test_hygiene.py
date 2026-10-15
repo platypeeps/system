@@ -1271,6 +1271,29 @@ class NightlyHygieneTest(unittest.TestCase):
         # sd:4664: one line per hygiene finding, so the first night's set is a subset of the larger one (pack sd:4658).
         self.assertLess(set(first), set(listed))
 
+    def test_a_checkout_further_behind_keeps_its_lines(self):
+        """REGRESSION (sd:4664). A checkout that cannot fast-forward is the
+        same finding when its upstream moves on: the count of commits behind
+        stays in the report and out of the attention lines."""
+        f = self.fixture()
+        repo = f.repo()
+        other = f.tmp / "other"
+        f.git(f.tmp, "clone", "-q", "-b", "main", f.git(repo, "remote", "get-url", "origin"), str(other))
+        f.commit(repo, "local", "local\n", "local commit")
+        f.repo("a/good1")
+        f.repo("a/good2")
+
+        def night(n):
+            f.commit(other, f"up{n}", "upstream\n", f"upstream {n}")
+            f.git(other, "push", "-q", "origin", "main")
+            result = f.run("nightly", expect=0)
+            self.assertIn(f"checkout is {n} commit(s) behind", result.stdout)
+            return attention(result)
+
+        first = night(1)
+        self.assertTrue([line for line in first if ": hygiene: " in line and "behind" in line], first)
+        self.assertEqual(night(2), first)
+
     def test_nightly_is_silent_when_hygiene_finds_nothing(self):
         """NEW. Criterion 8, second half: a clean fleet reports nothing."""
         f = self.fixture()

@@ -144,7 +144,8 @@ awk 'BEGIN { for (i = 0; i <= 60000; i++)
         # machine-supplied word inside a finding's shareable form.
         _stub(cls.bin, "diskutil",
               '[ -z "$SMART_STUB" ] || echo "   SMART Status: $SMART_STUB"\n')
-        _stub(cls.bin, "smartctl", "exit 0\n")
+        # Silent unless a run hands it a media error count (sd:4664).
+        _stub(cls.bin, "smartctl", '[ -z "$MEDIA_STUB" ] || echo "Media and Data Integrity Errors:    $MEDIA_STUB"\n')
         # Two labels are not loaded; every other one is loaded, holds no pid,
         # and last exited 1.
         _stub(cls.bin, "launchctl", """\
@@ -476,6 +477,24 @@ esac
         self.assertLess(set(quiet), set(busy))
         self.assertEqual([l for l in busy if l not in quiet],
                          [l for l in busy if "5-minute load average" in l])
+
+    def test_each_crashing_app_and_panic_is_its_own_line(self):
+        """sd:4664: one line per crashing app and per panic report, so a night
+        with one of them gone is a subset the pack folds (pack sd:4658); a
+        media error count that grows keeps its line."""
+        def run(name, files=(), env=None):
+            reports = self.tmp / ("reports-" + name)
+            reports.mkdir()
+            for f in files:
+                (reports / f).write_text("{}\n")
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports),
+                                        **(env or {})}, verb="run")["out"]
+            return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        both = run("two-apps", ("Other-App-2026-01-02-000000.ips", "Kernel-2026-01-01.panic", "Kernel-2026-01-02.panic"))
+        one = run("one-app", ("Kernel-2026-01-01.panic",))
+        self.assertLess(set(one), set(both))
+        self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
+        self.assertEqual(run("media-3", env={"MEDIA_STUB": "3"}), run("media-5", env={"MEDIA_STUB": "5"}))
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

@@ -164,6 +164,16 @@ class EndToEndTest(unittest.TestCase):
         self.assertNotIn("Warning: two", second["item"]["body"])
         self.assertEqual(self.open_reports(), [first["item"]["id"]])
 
+    def test_a_package_cleared_from_a_warning_folds_into_the_open_report(self):
+        """sd:4664: a warning's listed packages are each their own line, so
+        one package fixed leaves a subset that folds (pack sd:4658)."""
+        listing = "Warning: Some installed formulae are deprecated.\nReplace them:\n  example-a\n  example-b\n\n"
+        self.doctor.write_text(listing)
+        _, first = self.doctor_run("r1", "2026-10-10")
+        self.doctor.write_text(listing.replace("  example-b\n", ""))
+        _, second = self.doctor_run("r2", "2026-10-11")
+        self.assertEqual((second["recorded"], second["item"]["id"]), ("folded", first["item"]["id"]), second)
+
     def test_the_same_warnings_on_the_next_night_fold_into_the_open_report(self):
         """sd:4182: unchanged findings keep one open report, which counts the nights."""
         _, first = self.doctor_run("r1", "2026-10-10")

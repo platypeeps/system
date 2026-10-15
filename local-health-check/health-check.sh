@@ -128,8 +128,10 @@ KEYS="$TMPD/keys"
 # finding HEADLINE FIX SHAREABLE [KEY]
 #
 # KEY is the headline without a measure that moves while the finding stays
-# the same (a load average, a crash count), so the reason's checksum does not
-# move with it (sd:4182). Omitted, it is the headline.
+# the same (a load average, a crash count), so its attention line does not
+# move with it (sd:4182). One line per item where a finding lists several (a
+# crashing app, a panic report), so one item gone leaves a subset (sd:4664).
+# Omitted, it is the headline.
 #
 # SHAREABLE is the only form of the finding Jev may see (sd:1362). The
 # headline stays on this machine: it names launchd labels, crashing apps,
@@ -234,14 +236,15 @@ done
 if [ -s "$TMPD/panics" ]; then
   finding "kernel panic report(s) in the last 7 days: $(tr '\n' ' ' < "$TMPD/panics")" \
     "open the .panic file in Console.app; recurring panics usually mean bad RAM, a kext, or failing hardware — run Apple Diagnostics (hold D at boot)" \
-    "kernel panic report(s) in the last 7 days: $(wc -l < "$TMPD/panics" | tr -d ' ')"
+    "kernel panic report(s) in the last 7 days: $(wc -l < "$TMPD/panics" | tr -d ' ')" \
+    "$(sed 's|.*/||; s/^/kernel panic report(s) in the last 7 days: /' "$TMPD/panics")"
 fi
 if [ -s "$TMPD/crashes" ]; then
   apps=$(sort "$TMPD/crashes" | uniq -c | sort -rn | awk '{ printf "%s(%s) ", $2, $1 }')
   finding "app crash report(s) in the last day: $apps" \
     "read the report in Console.app > Crash Reports; if one app repeats, update or reinstall it" \
     "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)" \
-    "app crash report(s) in the last day: $(sort -u "$TMPD/crashes" | tr '\n' ' ')"
+    "$(sort -u "$TMPD/crashes" | sed 's/^/app crash report(s) in the last day: /')"
 fi
 
 # --- launchd job health --------------------------------------------------
@@ -347,7 +350,8 @@ if command -v smartctl >/dev/null 2>&1; then
   fi
   if [ -n "$media" ] && [ "$media" -gt 0 ] 2>/dev/null; then
     finding "SSD media/data integrity errors: $media" \
-      "back up NOW and watch this number — any growth means the disk is dying" =
+      "back up NOW and watch this number — any growth means the disk is dying" = \
+      "SSD media/data integrity errors"
   fi
   case "$cw" in ''|0x00) ;; *)
     finding "SSD critical warning flag: $cw" \
