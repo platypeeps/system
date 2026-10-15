@@ -5682,11 +5682,21 @@ for peer in (status.get("Peer") or {}).values():
       sh "$SELF" update "$st" --apply || promote_refuse "the $st stage did not finish; rerun"
     done
     # A stage that cannot read the fence skips the role and still exits 0,
-    # so the role is checked here, by a fresh probe and by its plists.
+    # and the cron stage logs a failed bootstrap and goes on, its plist
+    # already written; so the role is checked here, by a fresh probe and by
+    # launchd for each label (round 4). Only print's 113 is "not loaded".
     HUB_HOLDER=""
     hub_holder || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
     for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
-      [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ] && continue
+      if [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ]; then
+        lr=0
+        launchctl print "gui/$(id -u)/$hr_label" >/dev/null 2>&1 || lr=$?
+        case "$lr" in
+          0) continue ;;
+          113) promote_refuse "the hub role is not running: launchd has not loaded $hr_label; rerun, and the stages load it again" ;;
+          *) promote_refuse "could not ask launchd whether $hr_label is loaded (launchctl print exited $lr); rerun" ;;
+        esac
+      fi
       # A hub profile installs what it lists; the role adds nothing to it.
       if sd_in_profile; then
         promote_refuse "the hub role is not installed: no $hr_label plist, and this hub profile does not list it; add it to $PROFILE.agent or $PROFILE.cron, then rerun"
