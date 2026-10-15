@@ -12,6 +12,7 @@ import os
 import pathlib
 import socket
 import subprocess
+import sys
 import unittest
 
 from tests import fixture_config
@@ -84,8 +85,15 @@ exit 0
 SD_STUB = r'''
 case "$*" in
   "config get sd.hub_name") [ -n "$STUB_HUB_NAME" ] || exit 1; echo "$STUB_HUB_NAME" ;;
-  "config get sd.lane_root") echo "sd.lane_root is not set" >&2; exit 1 ;;
-  "gate status --json") echo '{"holders": [], "waiters": []}' ;;
+  "config get sd.lane_root")
+    # STUB_SD_DEAD: sd reaches the dead hub, as a satellite's sd may.
+    if [ -n "$STUB_SD_DEAD" ]; then echo "sd: hub unavailable: connection refused" >&2; exit 1; fi
+    echo "sd.lane_root is not set" >&2; exit 1 ;;
+  "gate status --json")
+    # STUB_GATE_COUNT: a gate from before holds a slot for the first two reads.
+    n=$(cat "$STUB_GATE_COUNT" 2>/dev/null || echo 2); echo $((n + 1)) > "${STUB_GATE_COUNT:-/dev/null}"
+    if [ "$n" -lt 2 ]; then echo '{"holders": [{"slot": 1, "pid": 7, "since": "t0"}], "waiters": []}'
+    else echo '{"holders": [], "waiters": []}'; fi ;;
   *) exit 2 ;;
 esac
 '''
@@ -114,6 +122,8 @@ class Promote(unittest.TestCase):
         self.prove = write_stub(f.stubs, "prove-python", PROVE_STUB)
         fixture_config.seal(self, f.stubs)
         (f.pack / "bin").mkdir()
+        # The pack's settings reader, which the drain imports; a link, never written.
+        (f.pack / "bin/sd_lib.py").symlink_to(PACK / "bin/sd_lib.py")
         write_stub(f.pack / "bin", "sd-db", SD_DB_STUB)
         # The NAS: two roots, each with dated snapshot folders.
         self.nas = self.tmp / "nas"
@@ -240,6 +250,54 @@ class Promote(unittest.TestCase):
         (self.lanes / "some-repo").mkdir()
         result = self.run_promote("--apply")
         self.assertIn("lanes held:", result.stdout + result.stderr)
+
+    def test_the_drain_reads_the_lane_root_here_while_sd_cannot_reach_the_dead_hub(self):
+        """Step 2 runs while the hub is dead: the lane root comes from this machine's pack config, not sd."""
+        (self.lanes / "some-repo/lane").mkdir(parents=True)
+        env = self.fixture.env()
+        config = pathlib.Path(env.get("XDG_CONFIG_HOME") or self.fixture.home / ".config")
+        (config / "sd-ai-command-pack").mkdir(parents=True, exist_ok=True)
+        (config / "sd-ai-command-pack/config.json").write_text(
+            json.dumps({"config": {"sd": {"lane_root": str(self.lanes)}}}) + "\n")
+        result = self.run_promote("--apply", SD_LANE_ROOT="", STUB_SD_DEAD="1")
+        self.assertIn(f"lanes held: 1 runner lock(s) under {self.lanes}", result.stdout + result.stderr)
+
+    def test_a_lane_root_that_cannot_be_read_here_refuses_and_nothing_moves(self):
+        """No pack settings reader: no answer, so no guess at the default root."""
+        (self.fixture.pack / "bin/sd_lib.py").unlink()
+        result = self.run_promote("--apply", expect=1, SD_LANE_ROOT="")
+        self.assertIn("sd.lane_root was not read from this machine's pack config", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.calls("restore"))
+
+    def test_a_hub_name_the_dead_hub_cannot_give_is_unread_not_refused(self):
+        """The preflight's one read through the hub: unanswered, it reads `--`, and step 7 checks the restored copy."""
+        result = self.run_promote(STUB_HUB_NAME="")
+        self.assertIn("  --      sd.hub_name not read from the hub", result.stdout)
+        self.assertNotIn("NOT-READY", result.stdout)
+
+    def test_the_drain_waits_for_a_gate_from_before(self):
+        """A gate run by hand outside every lane lock ends before the role moves."""
+        count = self.tmp / "gate.count"
+        count.write_text("0\n")
+        result = self.run_promote("--apply", STUB_GATE_COUNT=count)
+        self.assertIn("waiting for the gate: 1 holder(s) that started before the lanes were held (pid 7)",
+                      result.stdout)
+        self.assertIsNone(self.marker_step())
+
+    def test_a_held_ship_lock_stops_the_drain_and_nothing_moves(self):
+        """A ship run by hand holds its satellite ship lock; the role does not move under it."""
+        lock = self.fixture.home / ".local/state/sd/ship-locks" / ("a" * 64 + ".lock")
+        lock.parent.mkdir(parents=True)
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys, time\nh = open(sys.argv[1], 'a')\n"
+                                   "fcntl.flock(h, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(60)\n",
+                                   str(lock)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
+        self.assertEqual("locked", holder.stdout.readline().strip())
+        result = self.run_promote("--apply", expect=1, REPO_SYNC_DRAIN_WAIT="2")
+        self.assertIn(f"a ship (it holds {lock})", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.calls("restore"))
 
     # Step 5.
 
@@ -435,6 +493,8 @@ class HubRole(unittest.TestCase):
         write_stub(f.stubs, "launchctl", LAUNCHCTL_STUB)
         fixture_config.seal(self, f.stubs)
         (f.pack / "bin").mkdir()
+        # The pack's settings reader, which the drain imports; a link, never written.
+        (f.pack / "bin/sd_lib.py").symlink_to(PACK / "bin/sd_lib.py")
         write_stub(f.pack / "bin", "sd-db", SD_DB_STUB)
         f.db.parent.mkdir(parents=True)
         f.db.write_text("")
