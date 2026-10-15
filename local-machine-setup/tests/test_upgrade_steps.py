@@ -35,6 +35,8 @@ LIB = FOLDER.parent / "lib"
 # value would reach the stub as the script's whole list (sd:3542).
 # BREW_OUTDATED renames the outdated formula; BREW_UPGRADES_ALL makes
 # `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
+# CLAUDE_LINK and CLAUDE_NEW: `brew upgrade --cask --greedy` relinks the
+# claude cask's binary to its new Caskroom path (sd:4738).
 # BREW_FAIL names one call, its arguments as logged, that exits 1.
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
@@ -46,6 +48,7 @@ case "$*" in
   "list --pinned") [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED" ;;
   "uses --installed --recursive $STUB_PINNED") [ -z "$BREW_DEPENDENT" ] || echo "$BREW_DEPENDENT" ;;
   "outdated --cask --greedy --quiet") [ -z "$BREW_GREEDY_CASK" ] || echo "$BREW_GREEDY_CASK" ;;
+  "upgrade --cask --greedy") [ -z "$CLAUDE_NEW" ] || ln -sf "$CLAUDE_NEW" "$CLAUDE_LINK" ;;
   --cellar) [ -z "$BREW_CELLAR" ] || echo "$BREW_CELLAR" ;;
   "cleanup --prune=all") [ -z "$BREW_CLEANUP_FAIL" ] || exit 1 ;;
   upgrade) [ -z "$BREW_STARTED" ] || : > "$BREW_STARTED"
@@ -103,6 +106,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         base = pathlib.Path(self.tmp.name)
+        self.tmp_path = base
         repo = base / "repo"
         self.folder = repo / "local-machine-setup"
         shutil.copytree(FOLDER, self.folder, ignore=shutil.ignore_patterns("tests", "__pycache__"))
@@ -120,6 +124,7 @@ class UpgradeStepTest(unittest.TestCase):
         write_exec(self.stubs / "brew", BREW_STUB)
         write_exec(self.stubs / "mas", MAS_STUB)
         fixture_config.seal(self, self.stubs)
+        self.cask_move = {}
 
     def env(self, **extra):
         return {
@@ -132,6 +137,7 @@ class UpgradeStepTest(unittest.TestCase):
             "MAS_LOG": str(self.mas_log),
             "NOTIFY_LOG": str(self.notify_log),
             "ST_BOUNDED_GRACE": "1",
+            **self.cask_move,
             **extra,
         }
 
@@ -166,14 +172,16 @@ class UpgradeStepTest(unittest.TestCase):
         return [line.split(": ", 1)[1] for line in lines]
 
     def claude_moves_to(self, old, new):
-        """~/.local/bin/claude links to version OLD; `claude update` relinks it to NEW."""
-        versions = self.home / ".local/share/claude/versions"
+        """The claude-code@latest cask: `claude` on PATH links into the Caskroom
+        version folder OLD, and `brew upgrade --cask --greedy` relinks it to NEW
+        (sd:4738)."""
+        caskroom = self.tmp_path / "Caskroom/claude-code@latest"
         for version in (old, new):
-            write_exec(versions / version, "#!/bin/sh\nexit 0\n")
-        write_exec(versions / old, f'#!/bin/sh\nln -sf {versions / new} {self.home / ".local/bin/claude"}\n')
-        (self.home / ".local/bin").mkdir(parents=True, exist_ok=True)
-        (self.home / ".local/bin/claude").symlink_to(versions / old)
-        return versions
+            write_exec(caskroom / version / "claude", "#!/bin/sh\nexit 0\n")
+        link = self.stubs / "claude"
+        link.symlink_to(caskroom / old / "claude")
+        self.cask_move = {"CLAUDE_LINK": str(link), "CLAUDE_NEW": str(caskroom / new / "claude")}
+        return caskroom
 
     def brew_calls(self):
         return self.brew_log.read_text().splitlines() if self.brew_log.exists() else []
@@ -190,35 +198,27 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.mas_log.read_text(), "upgrade\n")
         self.assertIn("failed steps: brew upgrade", result.stdout)
 
-    def test_the_sweep_updates_claude_code_before_brew_cleanup(self):
-        """sd:3033: Claude Code updates in the weekly upgrade only."""
-        # The stub logs into brew's log, so one list holds the order.
+    def test_the_sweep_runs_no_native_claude_update(self):
+        """sd:4738: Claude Code is the claude-code@latest cask, which
+        `brew upgrade --cask --greedy` moves; a native install left behind is
+        not updated by the sweep."""
         write_exec(self.home / ".local/bin/claude", f'#!/bin/sh\necho "claude $*" >> {self.brew_log}\n')
         result = self.run_verb("upgrade", "--apply")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.brew_calls(),
-                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "claude update",
-                          "cleanup --prune=all"])
-        self.assertRegex(result.stderr, STEP.format(re.escape(str(self.home / ".local/bin/claude")) + " update", 600))
+                         ["update", "list --pinned", "upgrade", "upgrade --cask --greedy", "cleanup --prune=all"])
+        self.assertNotIn("claude update", result.stderr)
 
-    def test_a_quiet_week_still_updates_claude_code(self):
-        """sd:3033: upgrade-report returns before the sweep when nothing is
-        outdated, and Claude Code updates outside brew."""
+    def test_a_quiet_week_runs_no_native_claude_update(self):
+        """sd:4738: upgrade-report returns before the sweep when nothing is
+        outdated, and runs no update of its own."""
         write_exec(self.home / ".local/bin/claude", f'#!/bin/sh\necho "claude $*" >> {self.brew_log}\n')
         result = self.run_verb("upgrade-report", BREW_QUIET="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("nothing outdated", result.stdout)
-        self.assertEqual(self.brew_calls().count("claude update"), 1, self.brew_calls())
-        self.assertFalse(self.notify_log.exists())
-
-    def test_a_failed_quiet_week_claude_update_fails_the_job(self):
-        """No mail goes in a quiet week, so the exit is what reports it."""
-        write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
-        result = self.run_verb("upgrade-report", BREW_QUIET="1")
-
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.brew_calls().count("claude update"), 0, self.brew_calls())
         self.assertFalse(self.notify_log.exists())
 
     def test_each_step_has_its_own_default_bound(self):
@@ -271,20 +271,19 @@ class UpgradeStepTest(unittest.TestCase):
         """sd:3062: the report names the binary and the permission, and
         sd:3454 sends it to Reports and Today instead of a push; the job
         still exits 0."""
-        versions = self.claude_moves_to("1.0.0", "1.0.1")
+        caskroom = self.claude_moves_to("1.0.0", "1.0.1")
         result = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1", NOTIFY_FAIL="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.sends(), [])
         self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", result.stdout)
-        self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", result.stdout)
+        self.assertIn(f"Claude Code: {caskroom / '1.0.0/claude'} -> {caskroom / '1.0.1/claude'}", result.stdout)
         self.assertIn("TCC grants (dashboard.sh grants, exit 1)", result.stdout)
         self.assertEqual(self.findings(result), ["still outdated (formula): example-formula",
                                                  "TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
 
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
-        """`claude update` runs in a quiet week too, and can drop a grant."""
-        self.claude_moves_to("1.0.0", "1.0.1")
+        """The grants probe runs in a quiet week too."""
         result = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -294,13 +293,16 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(len(self.attention(result)), 1, result.stdout)
 
     def test_a_grant_still_to_redo_after_the_update_night_keeps_the_reason(self):
-        """sd:4182: the update that dropped the grant shows only on its own
-        night; the grant still to redo the next night is the same finding."""
-        versions = self.claude_moves_to("1.0.0", "1.0.1")
-        update_night = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
-        next_night = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
-        self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", update_night.stdout)
-        self.assertNotIn(f"-> {versions / '1.0.1'}", next_night.stdout)
+        """sd:4182: the upgrade that dropped the grant shows only on its own
+        night; the grant still to redo the next night is the same finding.
+        The cask moves in the sweep, and the stub's upgrade clears the
+        outdated list, so the next night is quiet (sd:4738)."""
+        caskroom = self.claude_moves_to("1.0.0", "1.0.1")
+        update_night = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        next_night = self.run_verb("upgrade-report", GRANTS_OUT=REFUSED, GRANTS_RC="1")
+        self.assertIn(f"Claude Code: {caskroom / '1.0.0/claude'} -> {caskroom / '1.0.1/claude'}", update_night.stdout)
+        self.assertNotIn(f"-> {caskroom / '1.0.1/claude'}", next_night.stdout)
+        self.assertIn("nothing outdated", next_night.stdout)
         self.assertEqual(self.findings(update_night), ["TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
         self.assertEqual(self.attention(next_night), self.attention(update_night))
 
@@ -337,8 +339,8 @@ class UpgradeStepTest(unittest.TestCase):
         """sd:4182: the ingest folds a run into the open report with its reason.
         The same failed step on two nights gives one reason, so one open
         report; another failed step gives another (sd:3537: a checksum of
-        "upgrade sweep failed" made a failed cleanup and a failed claude
-        update one report)."""
+        "upgrade sweep failed" made a failed cleanup and a failed mas
+        upgrade one report)."""
         write_exec(self.stubs / "date", '#!/bin/sh\n[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && '
                                         '{ echo "$FAKE_DAY"; exit 0; }\nexec /bin/date "$@"\n')
         upgraded = self.brew_log.with_name(self.brew_log.name + ".upgraded")
@@ -348,8 +350,8 @@ class UpgradeStepTest(unittest.TestCase):
         again = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_CLEANUP_FAIL="1",
                                              FAKE_DAY="2026-10-13"))
         upgraded.unlink()
-        write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
-        other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", FAKE_DAY="2026-10-13"))
+        other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_FAIL="upgrade",
+                                             FAKE_DAY="2026-10-13"))
         self.assertRegex(" ".join(first), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
         self.assertEqual(again, first)
         self.assertRegex(" ".join(other), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")

@@ -129,11 +129,13 @@ mkdir -p "$LOG_DIR"
 # plist spells the directory into PATH, so it stayed latent — until a nightly
 # planner resolved the same binary the same way from a queue and died with
 # FileNotFoundError: 'claude'. The order is an explicit CLAUDE_BIN, then PATH,
-# then the install location — and when none of them exists, one sentence now rather than an
-# exec error later. Called where the binary is needed; list, verify and help
-# never ask.
+# then the claude-code@latest cask's binary under the brew prefix, then the
+# native installer's ~/.local/bin/claude, kept for a machine without the cask
+# yet (sd:4738) — and when none of them exists, one sentence now rather than
+# an exec error later. Called where the binary is needed; list, verify and
+# help never ask.
 claude_binary() {
-  local installed="$HOME/.local/bin/claude" found
+  local cask="${HOMEBREW_PREFIX:-/opt/homebrew}/bin/claude" installed="$HOME/.local/bin/claude" found
   if [ -n "${CLAUDE_BIN:-}" ]; then
     echo "$CLAUDE_BIN"
     return 0
@@ -142,11 +144,13 @@ claude_binary() {
     echo "$found"
     return 0
   fi
-  if [ -x "$installed" ]; then
-    echo "$installed"
-    return 0
-  fi
-  echo "cron-jobs.sh: no claude on PATH and none at $installed; export CLAUDE_BIN to the binary that should run the job, or install claude at ~/.local/bin/claude" >&2
+  for found in "$cask" "$installed"; do
+    if [ -x "$found" ]; then
+      echo "$found"
+      return 0
+    fi
+  done
+  echo "cron-jobs.sh: no claude on PATH, none at $cask and none at $installed; export CLAUDE_BIN to the binary that should run the job, or run: brew install --cask claude-code@latest" >&2
   return 1
 }
 
@@ -1184,9 +1188,9 @@ cmd_exec() { # invoked by launchd (and by `run`)
   # like any other non-zero exit instead of killing the script before the
   # lock and the tee are in place.
   elif claude_bin="$(claude_binary)"; then
-    # The binary and what it links to: ~/.local/bin/claude is a symlink into
-    # ~/.local/share/claude/versions/ that the installer moves, so a version
-    # flip between two runs is readable from the log (sd:972).
+    # The binary and what it links to: the cask's `claude` is a symlink into
+    # a versioned Caskroom folder that each upgrade moves, so a version flip
+    # between two runs is readable from the log (sd:972, sd:4738).
     echo "[$job] $(date '+%Y-%m-%dT%H:%M:%S%z') agent: $claude_bin -> $(readlink -f "$claude_bin" 2>/dev/null || echo "$claude_bin")"
     # SD_HANDOFF_RESTORE=0 for this one call: the pack's SessionStart hook
     # (sd-ai-command-pack bin/sd-handoff-restore, which reads it at ~:535)

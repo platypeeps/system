@@ -457,8 +457,10 @@ with an MCP initialize and restarts the agent once when that goes unanswered.
 - Jobs run with `--dangerously-skip-permissions` — headless runs can't answer
   permission prompts. Only add jobs whose prompts you trust end to end.
 - The agent binary is resolved when a prompt job runs, in this order: an
-  exported `CLAUDE_BIN`, `claude` on `PATH`, then `~/.local/bin/claude` (the
-  install location). None of the three means the job fails with one sentence
+  exported `CLAUDE_BIN`, `claude` on `PATH`, `/opt/homebrew/bin/claude` (the
+  `claude-code@latest` cask), then `~/.local/bin/claude` (the native installer,
+  kept for a machine without the cask yet). None of the four means the job
+  fails with one sentence
   naming `CLAUDE_BIN` — not a "no such file" from exec, which is what a bare
   name fallback gave any caller that reached this script without a login
   shell's `PATH`. `list`, `verify` and `help` never resolve it.

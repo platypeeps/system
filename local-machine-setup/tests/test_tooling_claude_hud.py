@@ -166,13 +166,17 @@ class ToolingClaudeHudTest(unittest.TestCase):
         self.assertIn("ok      claude-hud plugin", out)
         self.assertIn("MISSING statusLine -> local-statusline", out)
 
-    def test_a_machine_without_claude_skips_the_hud(self):
+    def test_a_machine_without_claude_is_missing_and_names_the_cask(self):
+        """sd:4738: a missing claude is drift that --fail-on-drift sees, not a
+        SKIP that hides it; the line names the cask to install. The HUD
+        pieces wait for the binary."""
         (self.stubs / "claude").unlink()
 
         out = self.run_tooling("--apply")
 
-        self.assertIn("SKIP    claude not installed", out)
-        self.assertNotIn("MISSING", out)
+        self.assertIn("MISSING claude (brew install --cask claude-code@latest)", out)
+        self.assertNotIn("SKIP    claude", out)
+        self.assertEqual(out.count("MISSING"), 1, out)
         self.assertEqual(self.calls(self.statusline_log), [])
 
     def test_no_settings_file_skips_the_status_line(self):

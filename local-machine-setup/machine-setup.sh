@@ -515,10 +515,11 @@ valid_profile() {
 # Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
 # patch upgrade drops the macOS grants its binary held; the operator unpins
 # and re-grants on purpose. python@3.12 is left as it is. opencode and codex
-# are pinned because the pack's merge gate runs a live test against the
+# are listed because the pack's merge gate runs a live test against the
 # installed binary, and the weekly upgrade must not move it under the gate
 # (sd:3542); the upgrade report lists what a pin holds back. A cask install
-# cannot be pinned, so only a formula install is held.
+# cannot be pinned, so only a formula install is held: codex is a cask on
+# the operator's machines, so its entry holds nothing there (sd:4738).
 BREW_PINNED="python@3.14 opencode codex"
 
 # Each BREW_PINNED formula that is installed and not pinned, one per line.
@@ -1626,7 +1627,8 @@ stage_tooling() {
     # The settings baseline in claude_settings.py, the same on every machine:
     # deny rules (secret reads, GitHub issues, claude-mem work state), no
     # attribution lines, the `sd today` hook, and DISABLE_AUTOUPDATER (the
-    # weekly upgrade updates Claude Code). It adds missing entries after a
+    # weekly `brew upgrade --cask --greedy` moves the claude-code@latest
+    # cask). It adds missing entries after a
     # backup and never touches the operator's own.
     if [ -f "$HOME/.claude/settings.json" ]; then
       if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then
@@ -1643,7 +1645,10 @@ stage_tooling() {
       fi
     fi
   else
-    echo "  SKIP    claude not installed (HUD not set up)"
+    # Claude Code is the claude-code@latest cask on every profile, so a
+    # machine without it is drift, not a SKIP (sd:4738). The brew stage
+    # installs what the profile lists; this names the gap for status.
+    echo "  MISSING claude (brew install --cask claude-code@latest)"
   fi
   # opencode gets the same secret-read denies as a top-level permission.read
   # block, inserted as text so the operator's comments stay. A file with its
@@ -4288,6 +4293,12 @@ cmd_doctor() {
   else
     echo "  WARN    fnm missing (the tooling stage installs node versions with it)"
   fi
+  # Claude Code is the claude-code@latest cask on every profile (sd:4738).
+  if command -v claude >/dev/null 2>&1; then
+    echo "  ok      claude ($(command -v claude))"
+  else
+    echo "  WARN    claude missing — run: brew install --cask claude-code@latest"
+  fi
 
   # Key material no stage installs: copied by hand, never through git.
   # The ssh identity may be spelled per machine, so MACHINE_SETUP_SSH_KEYS
@@ -4693,7 +4704,7 @@ run_step() { # seconds, command...
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
 cmd_upgrade() {
-  echo "upgrade : brew + Claude Code + App Store maintenance sweep"
+  echo "upgrade : brew + App Store maintenance sweep"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
   failed=""
@@ -4722,18 +4733,13 @@ cmd_upgrade() {
       fi
     fi
     # --greedy takes casks with `auto_updates true` too, whose own updaters
-    # stage_macos turns off where the app holds a TCC grant (sd:3062).
+    # stage_macos turns off where the app holds a TCC grant (sd:3062). It
+    # moves Claude Code too, the claude-code@latest cask, whose own updater
+    # the settings baseline turns off (sd:3033, sd:4738).
     run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
+    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
-  fi
-  # Claude Code's native install updates here, weekly only: the settings
-  # baseline turns its background updater off (sd:3033).
-  if [ -x "$HOME/.local/bin/claude" ]; then
-    run_step 600 "$HOME/.local/bin/claude" update || failed="$failed, claude update"
-  fi
-  if command -v brew >/dev/null 2>&1; then
-    run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   fi
   if command -v mas >/dev/null 2>&1; then
     run_step 1200 mas upgrade || failed="$failed, mas upgrade"
@@ -4802,10 +4808,11 @@ held_section() {
 }
 
 # grant_paths before|after: the paths whose change drops a macOS grant, one
-# file per kind under $tmp. ~/.local/bin/claude links to a versioned binary,
-# and `brew upgrade python` moves the Cellar path (.claude/rules/macos-tcc.md).
+# file per kind under $tmp. The claude-code@latest cask links `claude` on PATH
+# to a versioned Caskroom binary, and `brew upgrade python` moves the Cellar
+# path (.claude/rules/macos-tcc.md).
 grant_paths() {
-  readlink "$HOME/.local/bin/claude" > "$tmp/claude.$1" 2>/dev/null || :
+  readlink "$(command -v claude 2>/dev/null)" > "$tmp/claude.$1" 2>/dev/null || :
   : > "$tmp/python.$1"
   if command -v brew >/dev/null 2>&1; then
     _cellar=$(bound_step 60 brew --cellar 2>/dev/null) || _cellar=""
@@ -4891,11 +4898,10 @@ upgrade_attention() {
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
 # after the sweep, and prints what got upgraded / what failed / what is still
 # pending, with the AI-app inventory capture and the TCC grants probe's
-# result. When nothing is outdated it only updates Claude Code, captures the
-# inventory and probes the grants. Leftovers, a failed capture or a missing
-# grant print an SD_REPORT_ATTENTION line, so the run's report reaches Reports
-# and Today; nothing is mailed (sd:3454). Exits 1 when the quiet-week Claude
-# update or capture failed.
+# result. When nothing is outdated it only captures the inventory and probes
+# the grants. Leftovers, a failed capture or a missing grant print an
+# SD_REPORT_ATTENTION line, so the run's report reaches Reports and Today;
+# nothing is mailed (sd:3454). Exits 1 when the quiet-week capture failed.
 cmd_upgrade_report() {
   APPLY=1
   tmp=$(mktemp -d)
@@ -4914,12 +4920,7 @@ cmd_upgrade_report() {
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ] \
       && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/unknown.before" ]; then
-    # Claude Code updates outside brew, and cmd_upgrade, which runs it, does
-    # not run this week (sd:3033).
     rc=0
-    if [ -x "$HOME/.local/bin/claude" ]; then
-      run_step 600 "$HOME/.local/bin/claude" update || rc=1
-    fi
     echo "nothing outdated — no upgrade"
     held_section before
     inventory_capture || rc=1
@@ -4972,7 +4973,7 @@ cmd_upgrade_report() {
   cat "$tmp/body"
   grants_push
   # A clean upgrade is a receipt, not a problem: leftovers, a failed sweep
-  # step (claude update, brew cleanup) or a failed capture need attention.
+  # step (brew cleanup) or a failed capture need attention.
   # One finding per line: each package left under its list's name, and a
   # failed step with a checksum of its output without its step lines, which
   # carry the time of day.
@@ -6568,8 +6569,8 @@ for a in "$@"; do
   doctor sd        those sd checks alone, exit 1 on any FAIL
   test             run the unittest suite in tests/ (extra args go to unittest)
   upgrade          maintenance sweep: brew update/upgrade (casks with
-                   --greedy, so self-updating ones move too), claude update
-                   (when ~/.local/bin/claude exists), brew cleanup + mas
+                   --greedy, so self-updating ones move too, Claude Code's
+                   claude-code@latest among them), brew cleanup + mas
                    upgrade (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
@@ -6578,10 +6579,10 @@ for a in "$@"; do
                    upgraded / what failed / what is still outdated, with the
                    ai-apps inventory capture and the result of
                    local-project-dashboard's `grants` probe; when nothing
-                   is outdated it only runs claude update, the capture and
-                   the probe; leftovers, a failed step or a missing grant print one
+                   is outdated it only runs the capture and the probe;
+                   leftovers, a failed step or a missing grant print one
                    SD_REPORT_ATTENTION line for Reports and Today; exits 1
-                   when that quiet-week claude update or capture failed
+                   when that quiet-week capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
   decommission     retire this machine: list dirty/unpushed repos, uninstall

@@ -136,6 +136,11 @@ class NodeVersions(Case):
         self.assertIn("  ok      fnm node 22 installed", out)
         self.assertNotIn("fnm node 18", out)
 
+    def test_doctor_names_the_cask_when_claude_is_missing(self):
+        """sd:4738: the stubs folder has no claude, so doctor names the cask."""
+        out = self.run_script("doctor", fnm_have="20").stdout
+        self.assertIn("  WARN    claude missing — run: brew install --cask claude-code@latest", out)
+
     def test_doctor_without_a_node_file_checks_18_20_and_24(self):
         out = self.run_script("doctor", fnm_have="20").stdout
         self.assertIn("  WARN    fnm node 18 missing — run: fnm install 18", out)
