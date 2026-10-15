@@ -112,9 +112,13 @@ SUITE_RUNNER = "tests/ci-native.sh"
 #: `local-machine-setup` runs `jev shadow on` on a satellite whose shadow file
 #: is missing (sd:2838): it sets a switch, asks Jev nothing, and skips the step
 #: where `jev` is not on PATH.
+#: `local-weekly-digest` reads the judgment ledger through `sd-db judgments
+#: compare` to report Jev against the fallback (sd:3583); its suite fails a
+#: call to a `jev` on PATH.
 NOT_CALLERS = frozenset({
     "local-bin-links",
     "local-machine-setup",
+    "local-weekly-digest",
 })
 
 
