@@ -5477,16 +5477,17 @@ promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 # `sd-db backup` takes the first free name of the UTC day, so each name a root
 # on stdin holds for today or later is held in $1 too, as an empty folder: the
 # additive NAS copy changes nothing on the NAS for it, and retention leaves it.
-# Prints each NAS root it cannot list, as today's names there are not held,
-# and each snapshot in $1, of any day, that differs from the one of its name
-# in the NAS hourly root, where the hourly copy would overwrite it.
+# Prints each NAS root ($2, one per line) it cannot list, as today's names
+# there are not held, and each snapshot in $1, of any day, that differs from
+# the one of its name in the NAS hourly root, where the hourly copy would
+# overwrite it. `sd-db backup` writes its manifest last.
 hold_names() {
   python3 -c 'import datetime, os, re, sys
 dest, nas = sys.argv[1], sys.argv[2].splitlines()
 today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 def manifest(folder):
     try:
-        with open(os.path.join(folder, "manifest.json"), "rb") as f:
+        with open(os.path.join(folder, "backup-manifest.json"), "rb") as f:
             return f.read()
     except OSError:
         return None
@@ -5506,7 +5507,7 @@ for root in filter(None, sys.stdin.read().splitlines()):
         pair = root in nas and os.path.basename(root) == "sd-backups-hourly"
         if pair and os.path.isdir(held) and os.listdir(held) and (
                 manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
-            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$(nas_roots)"
+            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$2"
 }
 
 # Step 4, 5 and the seed are the ones that move files; each first records what
@@ -5620,7 +5621,8 @@ cmd_promote() {
       fi
     fi
     # A NAS root it cannot list now is listed again after the report.
-    promote_roots | hold_names "$dest" >/dev/null ||
+    nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
+    { printf '%s' "$PROMOTE_FROM"; printf '%s\n' "$nas"; } | hold_names "$dest" "$nas" >/dev/null ||
       promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
     echo "seed    : $seeded"
     marker_set step 7
@@ -5735,7 +5737,9 @@ if want is None or got is None or tuple(got) != tuple(want):
   # offsite-verify refuses the copies while it exists.
   dest=$(hourly_destination)
   [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
-  unheld=$(nas_roots | hold_names "$dest") ||
+  # A failed read of the NAS roots is no answer, not none to hold.
+  nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
+  unheld=$(printf '%s\n' "$nas" | hold_names "$dest" "$nas") ||
     promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
   if [ -n "$unheld" ]; then
     marker_set step hold

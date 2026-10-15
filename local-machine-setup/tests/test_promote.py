@@ -142,7 +142,7 @@ class Promote(unittest.TestCase):
                               ("sd-backups", ("2026-10-13.1",))):
             for name in names:
                 (self.nas / folder / name).mkdir(parents=True)
-                (self.nas / folder / name / "manifest.json").write_text("{}\n")
+                (self.nas / folder / name / "backup-manifest.json").write_text("{}\n")
         # This satellite's own hub-role job files; the hourly one names a local root.
         # Named as the job example's default local root, not as the NAS's hourly root.
         self.hourly = self.tmp / "local-backups" / "sd-backups"
@@ -245,7 +245,7 @@ class Promote(unittest.TestCase):
         # names its NAS copy took today.
         usb = self.tmp / "usb" / "sd-backups"
         (usb / "2026-10-14.7").mkdir(parents=True)
-        (usb / "2026-10-14.7" / "manifest.json").write_text("{}\n")
+        (usb / "2026-10-14.7" / "backup-manifest.json").write_text("{}\n")
         usb_hourly = self.tmp / "usb" / "sd-backups-hourly"
         (usb_hourly / f"{utc_today()}.3").mkdir(parents=True)
         gone = self.tmp / "nas-unmounted"
@@ -262,7 +262,7 @@ class Promote(unittest.TestCase):
         self.assertIn(f"restore --newest {usb} {usb_hourly} {gone}/sd-backups-hourly", self.calls("restore")[0])
         self.assertIn(f"not read    : {gone}/sd-backups-hourly {gone}/sd-backups", result.stdout)
         # The unread NAS cannot name today's snapshots; the USB root does, so they are held.
-        self.assertTrue((self.hourly / "2026-10-14.7" / "manifest.json").exists(), "the restored snapshot was not seeded")
+        self.assertTrue((self.hourly / "2026-10-14.7" / "backup-manifest.json").exists(), "the restored snapshot was not seeded")
         self.assertEqual([], list((self.hourly / f"{today}.3").iterdir()))
         # The hub serves, but the NAS's names of today are not held: the
         # promotion pauses at its hold step, and hub-ready says so.
@@ -277,12 +277,24 @@ class Promote(unittest.TestCase):
         (gone / "sd-backups-hourly" / f"{utc_today()}.9").mkdir(parents=True)
         # A nightly name is no pair of the hourly root's snapshot of that name.
         (gone / "sd-backups" / f"{utc_today()}.1").mkdir(parents=True)
-        (gone / "sd-backups" / f"{utc_today()}.1" / "manifest.json").write_text("nightly\n")
+        (gone / "sd-backups" / f"{utc_today()}.1" / "backup-manifest.json").write_text("nightly\n")
         (self.hourly / f"{utc_today()}.1").mkdir()
-        (self.hourly / f"{utc_today()}.1" / "manifest.json").write_text("hourly\n")
+        (self.hourly / f"{utc_today()}.1" / "backup-manifest.json").write_text("hourly\n")
         self.run_promote(*args, OFFSITE_VERIFY_ROOT=gone)
         self.assertEqual([], list((self.hourly / f"{utc_today()}.9").iterdir()))
         self.assertIsNone(self.marker_step())
+
+    def test_a_paused_promotion_that_cannot_read_the_nas_setting_stays_paused(self):
+        """A failed read of OFFSITE_VERIFY_ROOT is no answer, not a NAS with nothing to hold."""
+        _, _, _, args, _ = self.promote_from_usb()
+        env = self.config / "mirror-sync" / ".env"
+        env.parent.mkdir(exist_ok=True)
+        env.write_text("OFFSITE_VERIFY_ROOT=/Volumes/example\n")
+        env.chmod(0)
+        self.addCleanup(env.chmod, 0o600)
+        result = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT="")
+        self.assertIn("could not read OFFSITE_VERIFY_ROOT for the NAS roots", result.stderr)
+        self.assertEqual("hold", self.marker_step())
 
     def test_a_snapshot_taken_while_paused_under_a_nas_name_keeps_the_pause(self):
         """The hourly job writes here while its NAS copy waits; that name may be on the NAS."""
@@ -294,7 +306,7 @@ class Promote(unittest.TestCase):
         for root, body in ((gone / "sd-backups-hourly", "nas\n"), (self.hourly, "taken here\n")):
             for n in (name, before):
                 (root / n).mkdir(parents=True)
-                (root / n / "manifest.json").write_text(body)
+                (root / n / "backup-manifest.json").write_text(body)
         result = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
         for n in (name, before):
             self.assertIn(f"  {self.hourly}/{n} is not the snapshot of that name in {gone}/sd-backups-hourly; move it aside",
@@ -330,7 +342,7 @@ class Promote(unittest.TestCase):
         self.assertEqual(1, len(self.moved()))
         self.assertTrue(self.fixture.db.exists())
         self.assertIn(f"restore --newest {self.nas}/sd-backups-hourly {self.nas}/sd-backups", self.calls("restore")[0])
-        self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists(), "the hourly root was not seeded")
+        self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists(), "the hourly root was not seeded")
         self.assertEqual(["tailscale set --hostname=hub"], self.calls("tailscale set"))
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
         self.assertEqual([f"prove {self.fixture.pack}/lib {HUB} {self.port} {self.fixture.db} 2026-10-14.5"],
@@ -459,7 +471,7 @@ class Promote(unittest.TestCase):
         (self.hourly / "2026-10-14.5.seeding").mkdir(parents=True)
         self.write_marker(step=6, moved=moved, snapshot=self.nas / "sd-backups-hourly/2026-10-14.5")
         self.run_promote("--apply")
-        self.assertTrue((self.hourly / "2026-10-14.5" / "manifest.json").exists())
+        self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
         self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
 
     def test_killed_inside_step_3_a_marker_with_no_step_starts_again(self):
@@ -614,9 +626,9 @@ class Promote(unittest.TestCase):
         today, yesterday = now.strftime("%Y-%m-%d"), (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         for name in (f"{yesterday}.2", today, f"{today}.9"):
             (self.nas / "sd-backups-hourly" / name).mkdir(exist_ok=True)
-            (self.nas / "sd-backups-hourly" / name / "manifest.json").write_text("{}\n")
+            (self.nas / "sd-backups-hourly" / name / "backup-manifest.json").write_text("{}\n")
         self.run_promote("--apply")
-        self.assertTrue((self.hourly / f"{today}.9" / "manifest.json").exists(), "the restored snapshot was not copied")
+        self.assertTrue((self.hourly / f"{today}.9" / "backup-manifest.json").exists(), "the restored snapshot was not copied")
         self.assertEqual([], list((self.hourly / today).iterdir()), "an earlier name is held by an empty folder")
         self.assertFalse((self.hourly / f"{yesterday}.2").exists(), "an earlier day was held")
 
