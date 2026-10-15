@@ -959,6 +959,18 @@ class Promote(PromoteCase):
         self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", result.stdout)
         self.assertTrue(self.hub_json.exists())
 
+    def test_a_notify_with_ntfy_and_no_email_is_ready(self):
+        """sd:4683 (d): a machine that keeps ntfy and drops email is ready; a
+        placeholder topic is no channel."""
+        (self.config / "notify/.env").write_text("NTFY_TOPIC=example-topic\n#NOTIFY_EMAIL_TO=ops@example.test\n")
+        out = self.run_promote().stdout
+        self.assertIn("  ok      notify reaches you by ntfy; email is off here\n", out)
+        self.assertNotIn("NOT-READY", out)
+        (self.config / "notify/.env").write_text("NTFY_TOPIC=change-me\n")
+        out = self.run_promote().stdout
+        self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", out)
+        self.assertNotIn("by ntfy", out)
+
 
 class HubRole(unittest.TestCase):
     """The agents and cron stages add the hub-role labels only for the holder."""

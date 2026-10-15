@@ -5553,16 +5553,25 @@ else:
     echo "  --      the repository list was not read from the hub; gh push access not checked"
   fi
   # A hub-role job mails a miss through notify's email channel (the pack's
-  # sd-db backup, report_failure).
+  # sd-db backup, report_failure). A machine that keeps ntfy and drops email
+  # is ready too (operator ruling, sd:4683); its first word says which.
   hr_unset=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
 env = stc.read_env("notify")
-print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
-               if "change-me" in (os.environ[k] if k in os.environ else env.get(k, "")) or
-               not (os.environ[k] if k in os.environ else env.get(k, ""))))')
+def unset(k):
+    v = os.environ[k] if k in os.environ else env.get(k, "")
+    return not v or "change-me" in v
+print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM") if unset(k)))')
+  hr_ntfy=${hr_unset%% *}
+  hr_unset=${hr_unset#"$hr_ntfy"}
+  hr_unset=${hr_unset# }
   if [ -z "${SD_NOTIFY:-}" ] && ! command -v notify >/dev/null 2>&1; then
     echo "  NOT-READY no notify on PATH: a hub-role job could not mail a miss; $(basename "$SELF") update bin --apply"
+  elif [ -z "$hr_ntfy" ]; then
+    echo "  --      notify's settings were not read; its channels were not checked"
+  elif [ -n "$hr_unset" ] && [ "$hr_ntfy" = ntfy ]; then
+    echo "  ok      notify reaches you by ntfy; email is off here"
   elif [ -n "$hr_unset" ]; then
-    echo "  NOT-READY notify's email channel lacks $hr_unset: copy local-notify/.env.example to $(st_config_dir notify)/.env and set it"
+    echo "  NOT-READY notify's email channel lacks $hr_unset, and ntfy has no NTFY_TOPIC: copy local-notify/.env.example to $(st_config_dir notify)/.env and set either"
   else
     echo "  ok      notify's email channel is set"
   fi
