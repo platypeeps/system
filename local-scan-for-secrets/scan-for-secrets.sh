@@ -305,6 +305,11 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # The URL entry leaves `[` and `]` out of the user and password: RFC 3986
 # allows neither in userinfo, and a grammar line such as
 # `scheme://[user[:password]@]host` matched as a credential (sd:2591).
+#
+# The Hugging Face entry is a token's fixed length, hf_ and 34 letters or
+# digits, then a word boundary: uncapped, it matched a 68-character hf_
+# identifier in a Codex log (sd:4698). It has no boundary before it, because
+# a JSON `\n` escape puts the word character `n` there.
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{40,}
@@ -317,7 +322,7 @@ AIza[0-9A-Za-z_-]{35}
 ya29\.[0-9A-Za-z_-]{30,}
 xox[baprs]-[0-9A-Za-z-]{10,}
 xapp-[0-9]-[0-9A-Za-z-]{10,}
-hf_[A-Za-z0-9]{30,}
+hf_[A-Za-z0-9]{34}\b
 npm_[A-Za-z0-9]{36}
 sktsec_[A-Za-z0-9_-]{20,}
 sts_[0-9a-f]{20,}
@@ -351,7 +356,7 @@ AIza[0-9A-Za-z_-]{35}
 ya29\.[0-9A-Za-z_-]{30,}
 xox[baprs]-[0-9A-Za-z-]{10,}
 xapp-[0-9]-[0-9A-Za-z-]{10,}
-hf_[A-Za-z0-9]{30,}
+hf_[A-Za-z0-9]{34}\b
 npm_[A-Za-z0-9]{36}
 sktsec_[A-Za-z0-9_-]{20,}
 sts_[0-9a-f]{20,}

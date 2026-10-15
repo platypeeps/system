@@ -130,14 +130,44 @@ class UrlCredentials(unittest.TestCase):
                 self.assertIn("URL with embedded credentials", result.stdout)
 
 
+class HuggingFaceToken(unittest.TestCase):
+    """sd:4698: a Hugging Face token is hf_ and 34 letters or digits; a longer
+    hf_ identifier in a Codex log is not one."""
+
+    scan = UrlCredentials.scan
+    # Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+
+    def test_a_longer_hf_identifier_is_not_a_finding(self) -> None:
+        identifier = "hf_" + "a1B2c3D4" * 8 + "x"
+        self.assertEqual(len(identifier), 68)
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f'{{"id": "{identifier}"}}\n', path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Hugging Face token", result.stdout)
+
+    def test_a_token_is_a_finding(self) -> None:
+        """Also after a JSON `\\n` escape, as a session log holds it: the
+        boundary is on the right only, since `n` before the token is a word
+        character."""
+        self.assertEqual(len(self.TOKEN), 37)
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in (f"HF_TOKEN={self.TOKEN}\n", f'{{"text": "a = 1\\n{self.TOKEN}\\n"}}\n'):
+                with self.subTest(searcher=searcher, text=text[:8]):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("Hugging Face token", result.stdout)
+
+
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in
     <config>/scan-for-secrets/fixture-fingerprints is a known fake key and is
     dropped; any other finding stands, and no list changes nothing."""
 
     # Joined here, so this file is not a finding of the repository scan.
-    FAKE = "hf_" + "FixtureKeyForTheScanSuite0123456789"
-    OTHER = "hf_" + "UnlistedValueTheScanMustStillReport42"
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+    OTHER = "hf_" + "UnlistedValueTheScanMustReport4200"
 
     def scan(self, text: str, path: str, fingerprints: str | None) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temporary:
