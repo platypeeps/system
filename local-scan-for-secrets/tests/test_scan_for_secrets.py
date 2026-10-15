@@ -251,6 +251,41 @@ class OpenAIKey(unittest.TestCase):
                 self.assertEqual(pcount, 1)
                 self.assertEqual(new, b'k = "' + mod.fit(mod.MARK, len(key)) + b'"')
 
+    # sd:4709: the service account and admin keys, in gitleaks' 74 and 58 forms.
+    SVCACCT = "sk-" + "svcacct-" + "Ab3_xY9-cD" * 7 + "Ab3_" + MARK + "eF5-gH7_iJ" * 7 + "eF5A"
+    ADMIN = "sk-" + "admin-" + "Ab3_xY9-cD" * 5 + "Ab3_xY9-" + MARK + "eF5-gH7_iJ" * 5 + "eF5-gH7A"
+    OTHER_KINDS = ((SVCACCT, "OpenAI service account key"), (ADMIN, "OpenAI admin key"))
+
+    def test_a_service_account_or_admin_key_is_a_finding(self) -> None:
+        self.assertEqual([len(self.SVCACCT), len(self.ADMIN)], [167, 133])
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for key, label in self.OTHER_KINDS:
+                for text in (f"{key}\n", f'"{key}_"\n', f"OPENAI_ADMIN_KEY={key}"):
+                    with self.subTest(searcher=searcher, label=label, text=text[:1]):
+                        result = self.scan(text, path)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn(label, result.stdout)
+
+    def test_an_unmarked_service_account_or_admin_string_is_not_a_finding(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for key, _ in self.OTHER_KINDS:
+                unmarked = key.replace(self.MARK, "xxxxxxxx")
+                with self.subTest(searcher=searcher, prefix=key[:6]):
+                    result = self.scan(f'"{unmarked}"\n', path)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_mask_rewrites_a_service_account_or_admin_key(self) -> None:
+        body = re.search(r"^PATTERNS='(.*?)'$", SCRIPT.read_text(), re.S | re.M).group(1)
+        mod = load_mask_files()
+        pats = mod.parse_patterns(body)
+        for key, _ in self.OTHER_KINDS:
+            with self.subTest(prefix=key[:6]):
+                new, _, pcount, _ = mod.masked(f'k = "{key}"'.encode(), [], pats)
+                self.assertEqual(pcount, 1)
+                self.assertEqual(new, b'k = "' + mod.fit(mod.MARK, len(key)) + b'"')
+                _, _, pcount, _ = mod.masked(key.replace(self.MARK, "xxxxxxxx").encode(), [], pats)
+                self.assertEqual(pcount, 0)
+
 
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in
