@@ -5442,11 +5442,12 @@ time.sleep(float(sys.argv[3]))
 os._exit(1)' "$1" "$2" "$3"
 }
 
-# The fence's name rule (sd_db hub.py `_matches`), case and a trailing dot
-# aside: two full names agree whole; a bare machine name matches the first label.
+# The fence's name rule (sd_db hub.py `_matches`), case, blanks and trailing
+# dots aside: two full names agree whole; a bare machine name matches the first
+# label. Either side may be the bare one: hub.json and sd.hub_name both name the hub.
 hub_name_matches() {
-  hm_a=$(printf '%s' "${1%.}" | tr '[:upper:]' '[:lower:]')
-  hm_b=$(printf '%s' "${2%.}" | tr '[:upper:]' '[:lower:]')
+  hm_a=$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | sed 's/\.*$//')
+  hm_b=$(printf '%s' "$2" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | sed 's/\.*$//')
   case "$hm_a/$hm_b" in
     *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
     *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
@@ -5636,7 +5637,7 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
           echo "  --      $hr_list: $hr_dst not readable now; its folders were not compared"
           continue
         fi
-        if [ -e "$hr_src" ] && ! ls -A "$hr_src" >/dev/null 2>&1; then
+        if ! ls -A "$hr_src" >/dev/null 2>&1; then
           echo "  --      $hr_list: $hr_src not readable now; its folders were not compared"
           continue
         fi

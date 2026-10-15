@@ -458,7 +458,7 @@ class Promote(PromoteCase):
         """sd:4683: a bare machine name matches the full MagicDNS name, as the
         fence's `_matches` has it; two full names must agree whole."""
         for named, setting, ready in [("hub", HUB, True), (HUB, "hub", True), (HUB, "HUB.example.test.", True),
-                                      (HUB, "hub.other.test", False), ("hub", "other.example.test", False),
+                                      (HUB, " Hub.Example.Test.. ", True), (HUB, "hub.other.test", False), ("hub", "other.example.test", False),
                                       (HUB, "other", False)]:
             with self.subTest(named=named, setting=setting):
                 self.hub_json.write_text(json.dumps({"hub": named, "port": self.port}) + "\n")
@@ -476,6 +476,11 @@ class Promote(PromoteCase):
             (share / name).mkdir(parents=True)
         local = self.tmp / "local-nightly"
         (local / "sd-backups/2026-10-14.1").mkdir(parents=True)
+        # A source behind a folder it cannot enter is no answer, not an empty source.
+        locked = self.tmp / "locked"
+        (locked / "sd-backups").mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
         lists = self.config / "mirror-sync"
         lists.mkdir(exist_ok=True)
         cases = [(f"{local}|{share}\n",
@@ -484,7 +489,9 @@ class Promote(PromoteCase):
                  (f"# the per-folder pair\n{local}/sd-backups|{share}/sd-backups\n",
                   f"  ok      mirrors-nas.conf: {share}/sd-backups holds no folder {local}/sd-backups lacks"),
                  (f"{local}|{self.tmp}/unmounted\n",
-                  f"  --      mirrors-nas.conf: {self.tmp}/unmounted not readable now; its folders were not compared")]
+                  f"  --      mirrors-nas.conf: {self.tmp}/unmounted not readable now; its folders were not compared"),
+                 (f"{locked}/sd-backups|{share}\n",
+                  f"  --      mirrors-nas.conf: {locked}/sd-backups not readable now; its folders were not compared")]
         for conf, line in cases:
             with self.subTest(conf=conf):
                 (lists / "mirrors-nas.conf").write_text(conf)
