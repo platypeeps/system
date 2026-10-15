@@ -222,7 +222,10 @@ class FixtureFingerprints(unittest.TestCase):
         listed = self.fingerprint(self.FAKE) + "\n"
         cases = [(f"postgres://u:{self.FAKE}-different-password@db.example.test/app\n", 2),
                  (f"secret=xyz{self.FAKE}\n", 2),
-                 (f'{{"text": "a = 1\\n{self.FAKE}\\n"}}\n', 0)]
+                 (f"postgres://u:{self.FAKE},different-password@db.example.test/app\n", 2),
+                 (f'{{"secret": "prefix\\\\n{self.FAKE}"}}\n', 2),
+                 (f'{{"text": "a = 1\\n{self.FAKE}\\n"}}\n', 0),
+                 (f"key = '{self.FAKE}'\n", 0)]
         for searcher, path in UrlCredentials.SEARCHERS.items():
             for text, code in cases:
                 with self.subTest(searcher=searcher, text=text[:14]):
