@@ -386,6 +386,13 @@ This is the second guard: an old hub cut from the control plane already refuses,
 A run that stops leaves `~/.local/state/sd/promote-intent`, which names the next step; `promote --apply` goes on from there.
 `status` names the marker in its `hub-ready` block.
 
+Rehearse it, on the standby:
+
+- Run `machine-setup.sh promote --drill`. It runs promote's steps 1, 5, 6 and 9 against a throwaway home, `~/.local/state/sd/promote-drill`: the preflight, the restore of the newest snapshot, and one session on a loopback server.
+  It prints each step's seconds and the total, and deletes the home, pass or fail. `hub.json`, launchd and Tailscale stay as they are.
+- A drill killed before its cleanup leaves the home; `status` names it in its `hub-ready` block, and the next drill or `promote --undo` deletes it.
+- `local-cron-jobs/examples/promote-drill-monthly.job` runs it on the 1st; a miss files a failure report.
+
 Hand the role back to a personal machine:
 
 1. On the standby, run `machine-setup.sh promote --undo --apply`.

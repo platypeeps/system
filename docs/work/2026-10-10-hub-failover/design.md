@@ -223,7 +223,7 @@ No hub config folder, no hub secret and no hub host job is copied.
 As a satellite it already reads every record over the wire and holds the hub's `providers.yaml`; promotion adds the records at rest.
 
 **The drill touches the records too.** The monthly drill restores a copy into a throwaway home under the system disk and deletes it when the run ends, pass or fail, as `offsite-verify` does.
-A drill killed before its cleanup leaves the folder; the next drill and `status` remove it first and name it.
+A drill killed before its cleanup leaves the folder; `status` names it, and the next drill and `promote --undo` remove it. `status` stays read-only.
 
 **How the records leave.** The role goes back to a hub on a personal machine as soon as one is ready; the work satellite is a stopgap.
 `machine-setup.sh promote --undo` on the work satellite, in order:
@@ -321,7 +321,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | undo 3 | nothing | the new hub restored another snapshot, lacks the hand-back checkpoint, or does not answer; this machine still holds the name; the session reaches this machine | refuse; nothing deleted; the records stay until the checks pass | `test_a_new_hub_that_does_not_answer_deletes_nothing`, `test_a_new_hub_that_restored_another_snapshot_deletes_nothing`, `test_a_new_hub_without_the_hand_back_checkpoint_deletes_nothing`, `test_a_machine_that_still_holds_the_name_deletes_nothing`, `test_a_session_that_reaches_this_machine_deletes_nothing` |
 | undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest; a root outside `$HOME` is never deleted | `test_killed_mid_delete_a_rerun_deletes_the_rest`, `test_a_root_outside_home_is_left` |
 | undo 5 | the satellite stage applied | the stage fails, or its dry run after shows drift or no proof line | the marker names step 5; the rerun runs the stage again; `status` names it | `test_a_satellite_stage_that_fails_stops_at_step_5_and_status_names_it` |
-| drill | throwaway home written | killed before cleanup | the next drill and `status` remove the folder first | kill test inside the drill |
+| drill | throwaway home written | killed before cleanup | `status` names the folder; the next drill and `promote --undo` remove it first | `test_killed_before_cleanup_status_names_the_folder_and_the_next_drill_removes_it`, `test_a_hand_back_deletes_a_drill_folder_left_here` |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
 ## Slices

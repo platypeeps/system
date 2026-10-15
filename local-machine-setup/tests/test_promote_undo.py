@@ -159,6 +159,14 @@ class Undo(PromoteCase):
         self.assertIn("hand-back report", result.stdout)
         self.assertEqual(1, len(self.calls("backup --destination")))
 
+    def test_a_hand_back_deletes_a_drill_folder_left_here(self):
+        drill = self.fixture.home / ".local/state/sd/promote-drill/home/.local/share/sd"
+        drill.mkdir(parents=True)
+        (drill / "sd.db").write_text("records\n")
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertFalse(drill.parents[3].exists())
+
     def test_a_root_outside_home_is_left(self):
         outside = self.tmp / "elsewhere/sd-backups"
         (outside / PROMOTED).mkdir(parents=True)

@@ -59,6 +59,11 @@ c.close()' "$STUB_PYTHONPATH" "$HOME/.local/share/sd/sd.db" "$newest"
     echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
     exit 0 ;;
   repo) printf '%s' "$STUB_REPOS"; exit 0 ;;
+  # The drill's loopback server: the pack's own.
+  serve) shift; exec "$STUB_REAL_PYTHON" -I -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from sd_db import serve
+sys.exit(serve.main(sys.argv[2:]))' "$STUB_PYTHONPATH" "$@" ;;
   backup)
     if [ -n "$STUB_BACKUP_RC" ]; then echo "sd-db backup: fixture failure" >&2; exit "$STUB_BACKUP_RC"; fi
     name=${STUB_BACKUP_NAME:-2026-10-14.6}

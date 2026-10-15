@@ -5251,7 +5251,7 @@ cmd_status() {
     echo
   done
   # Read-only and outside the drift count: see hub_ready.
-  if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || hub_role; then
+  if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
     hub_ready
     echo
   fi
@@ -5281,6 +5281,10 @@ PROMOTE_MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-intent"
 PROMOTE_FROM=""
 PROMOTE_UNDO=0
 UNDO_MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-undo"
+PROMOTE_DRILL=0
+# The drill's throwaway home, on the system disk; it holds a restored copy of
+# the records only while a drill runs.
+DRILL_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-drill"
 
 marker_get() { # key
   [ ! -f "$PROMOTE_MARKER" ] || sed -n "s/^$1=//p" "$PROMOTE_MARKER" | tail -1
@@ -5360,6 +5364,9 @@ hub_ready() {
   fi
   if [ -f "$UNDO_MARKER" ]; then
     echo "  NOT-READY promote --undo stopped before its end: $UNDO_MARKER names step $(PROMOTE_MARKER=$UNDO_MARKER; marker_get step); rerun: $(basename "$SELF") promote --undo --apply"
+  fi
+  if [ -e "$DRILL_HOME" ]; then
+    echo "  NOT-READY a drill did not finish and left the records in $DRILL_HOME; remove it (rm -rf), or the next promote --drill does"
   fi
   if hub_role; then
     echo "  ok      this machine holds the hub role (promoted)"
@@ -5524,6 +5531,11 @@ promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 cmd_promote() {
   load_profile
   echo "profile : $PROFILE"
+  if [ "$PROMOTE_DRILL" = 1 ]; then
+    [ "$PROMOTE_UNDO" = 0 ] || promote_refuse "--drill and --undo do not go together"
+    promote_drill
+    return 0
+  fi
   if [ "$PROMOTE_UNDO" = 1 ]; then
     [ -z "$PROMOTE_FROM" ] || promote_refuse "--from belongs to a promotion, not to --undo"
     [ ! -f "$PROMOTE_MARKER" ] || promote_refuse "$PROMOTE_MARKER names step $(marker_get step): finish the promotion first"
@@ -5770,7 +5782,7 @@ undo_restart() { # why
 # The local roots the hub-role backup jobs wrote. Only a root under $HOME:
 # the NAS copies stay on the NAS.
 undo_roots() {
-  for ur in "$(hourly_destination)" "$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION)"; do
+  for ur in "$(hourly_destination)" "$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION)" "$DRILL_HOME"; do
     case "$ur" in "$HOME"/?*) printf '%s\n' "$ur" ;; esac
   done
 }
@@ -5926,6 +5938,84 @@ if held is None:
   echo "  this machine: a satellite of $hub again"
 }
 
+# The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
+# throwaway home. hub.json, launchd and Tailscale stay as they are. The home
+# goes when the run ends, pass or fail; one a killed drill left goes first.
+drill_cleanup() {
+  if [ -n "${DRILL_SERVE:-}" ]; then kill "$DRILL_SERVE" 2>/dev/null || :; wait "$DRILL_SERVE" 2>/dev/null || :; fi
+  rm -rf "$DRILL_HOME"
+}
+
+drill_time() { # label start
+  echo "$1: $(( $(date +%s) - $2 )) s"
+}
+
+promote_drill() {
+  if [ -e "$DRILL_HOME" ]; then
+    rm -rf "$DRILL_HOME"
+    echo "drill   : removed $DRILL_HOME, which a drill that did not finish left"
+  fi
+  [ -e "$SD_HUB_CONFIG" ] || promote_refuse "no $SD_HUB_CONFIG: the drill runs on a standby satellite"
+  began=$(date +%s)
+  ready=$(hub_ready)
+  printf '%s\n' "$ready"
+  ! printf '%s\n' "$ready" | grep -q 'NOT-READY' || promote_refuse "drill: a hub-ready line is not ok"
+  drill_time "step 1  : preflight" "$began"
+  at=$(date +%s)
+  mkdir -p "$DRILL_HOME/home"
+  # A signal exits, and so runs EXIT, as trap_tmp does.
+  trap drill_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  set --
+  for pr in $(promote_roots | tr ' ' '\001'); do set -- "$@" "$(printf '%s' "$pr" | tr '\001' ' ')"; done
+  # The live state and config folders stay out: the throwaway home is the
+  # only place the restore writes.
+  out=$(env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
+    "$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1 </dev/null) || promote_refuse "drill: restore --newest failed: $out"
+  printf '%s\n' "$out"
+  snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db: restored \(.*\) (checkpoint .*) to .*/\1/p' | tail -1)
+  [ -n "$snapshot" ] || promote_refuse "drill: restore --newest named no snapshot"
+  drill_time "step 5-6: restore and settle" "$at"
+  at=$(date +%s)
+  db="$DRILL_HOME/home/.local/share/sd/sd.db"
+  port=$("$SD_DB_PYTHON" -I -c 'import socket
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])') || promote_refuse "drill: no free loopback port"
+  env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
+    "$SD_PACK_ROOT/bin/sd-db" serve --loopback --port "$port" --database "$db" </dev/null >"$DRILL_HOME/serve.log" 2>&1 &
+  DRILL_SERVE=$!
+  # One session reads the restore row the drill wrote, so it reached this copy.
+  "$SD_DB_PYTHON" -I -c 'import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sd_db import hub, remote, serve
+db, token = Path(sys.argv[3]), Path(sys.argv[3] + serve.TOKEN_SUFFIX)
+deadline = time.monotonic() + 30
+while True:
+    try:
+        session = remote.connect("127.0.0.1", int(sys.argv[2]), db, token=serve.read_token(token), write=False,
+                                 timeout=hub.CONNECT_TIMEOUT, answer_timeout=hub.ANSWER_TIMEOUT)
+        break
+    except Exception as error:
+        if time.monotonic() > deadline:
+            sys.exit(f"drill: no session on the loopback server: {type(error).__name__}: {error}")
+        time.sleep(0.2)
+try:
+    row = session.execute("SELECT 1 FROM state WHERE kind = ? AND key = ?", ("restore", sys.argv[4])).fetchone()
+finally:
+    session.close()
+if row is None:
+    sys.exit("drill: the session reached a database without this restore")' \
+    "$SD_PACK_ROOT/lib" "$port" "$db" "$(basename "$snapshot")" </dev/null ||
+    promote_refuse "drill: the session failed; the server said: $(tail -3 "$DRILL_HOME/serve.log")"
+  drill_time "step 9  : one session served" "$at"
+  drill_time "total   " "$began"
+  echo "drill   : passed on $snapshot; $DRILL_HOME is deleted"
+}
+
 # ------------------------------------------------------------------ main ----
 
 VERB=""
@@ -5939,6 +6029,7 @@ for a in "$@"; do
     --apply) APPLY=1 ;;
     --from) [ "$VERB" = promote ] || die "--from belongs to promote"; FROM_NEXT=1 ;;
     --undo) [ "$VERB" = promote ] || die "--undo belongs to promote"; PROMOTE_UNDO=1 ;;
+    --drill) [ "$VERB" = promote ] || die "--drill belongs to promote"; PROMOTE_DRILL=1 ;;
     --additive) ADDITIVE=1 ;;
     --fail-on-drift) FAIL_ON_DRIFT=1 ;;
     --stale-ok) STALE_OK=1 ;;
@@ -5994,6 +6085,11 @@ for a in "$@"; do
                    tailnet name; once the new hub serves that snapshot, it
                    deletes the local records and runs `update satellite`;
                    a rerun goes on at the step the promote-undo marker names
+                   --drill rehearses steps 1, 5, 6 and 9 on a standby
+                   satellite: restores the newest snapshot into a
+                   throwaway home, serves it on loopback, opens one
+                   session, prints each step's seconds, and deletes the
+                   home, pass or fail; hub.json, launchd and Tailscale stay
   doctor           read-only sanity check: CLT, brew, docker, fnm, key
                    material, launchd agents, and which .env files still
                    need filling in on this machine; on a profile with an sd
