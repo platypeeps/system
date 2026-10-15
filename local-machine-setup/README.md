@@ -390,6 +390,7 @@ Hand the role back to a personal machine (`promote --undo`, sd:4048, is not buil
 
 1. On the standby, boot out the hub-role agents and jobs, then run the hourly backup once: its snapshot is the hand-back point.
 2. On the repaired or new hub, make it a satellite (below), then run `promote --apply` from that snapshot. The console step moves the name back.
+   Its hub profile stays as it is: the fence, not the profile, says it holds the role, and it installs the role's agents and jobs from its own lists.
 3. On the standby, check that `sd-db fence` reads `elsewhere` and that the new hub answers a session.
 4. On the standby, delete `~/.local/share/sd/` and the local backup roots the hub-role jobs wrote.
 5. Move `hub.json.promoted-<stamp>` back to `~/.config/sd/hub.json`, then run `machine-setup.sh update satellite --apply`.

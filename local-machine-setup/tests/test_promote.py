@@ -435,6 +435,49 @@ class Promote(unittest.TestCase):
 
     # Step 9.
 
+    # Hand-back: the repaired hub keeps its hub profile (round 2, sd:4012).
+
+    def hub_profile(self, satellite=False):
+        """The repaired old hub, demoted by the README: hub.json copied in, its hub profile kept."""
+        profiles = self.config / "machine-setup/profiles"
+        (profiles / "personal.agent").write_text("\n".join(ROLE_AGENTS) + "\n")
+        (profiles / "personal.cron").write_text("\n".join(ROLE_JOBS) + "\n")
+        if satellite:
+            (profiles / "personal.satellite").write_text(f"{HUB}:8769\n")
+        (self.fixture.state / "profile").write_text("personal\n")
+
+    def test_a_hub_profile_takes_the_role_back(self):
+        """Hand-back step 2: its profile lists the role, and the fence, not the profile, says it holds it."""
+        self.hub_profile()
+        self.run_promote("--apply")
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+        self.assertEqual(1, len(self.calls("prove")))
+        self.assertIsNone(self.marker_step())
+
+    def test_a_hub_profile_that_rejoined_as_a_satellite_takes_the_role_back(self):
+        """Its `.satellite` file keeps is_satellite true; holding the role still installs its hub-only labels."""
+        self.hub_profile(satellite=True)
+        self.run_promote("--apply")
+        self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+        self.assertIsNone(self.marker_step())
+
+    def test_a_hub_profile_stopped_at_step_9_reads_as_the_holder(self):
+        """hub-ready names the role it holds, not a missing hub.json."""
+        self.hub_profile()
+        self.run_promote("--apply", expect=1, STUB_PROVE_RC="1")
+        self.assertEqual("9", self.marker_step())
+        out = self.run_promote().stdout
+        self.assertIn("  ok      this machine holds the hub role", out)
+        self.assertNotIn("is not a satellite", out)
+
+    def test_a_hub_profile_that_lacks_a_role_label_names_the_profile(self):
+        """Its profile, not the role, decides what it installs; a gap stops step 8 and says where."""
+        self.hub_profile()
+        (self.config / "machine-setup/profiles/personal.cron").write_text("sd-db-backup\n")
+        result = self.run_promote("--apply", expect=1)
+        self.assertEqual("8", self.marker_step())
+        self.assertIn("personal.cron", result.stderr)
+
     def test_a_failed_session_keeps_the_marker_and_a_rerun_proves_again(self):
         result = self.run_promote("--apply", expect=1, STUB_PROVE_RC="1")
         self.assertIn("no session on", result.stderr)
@@ -547,6 +590,14 @@ class HubRole(unittest.TestCase):
         self.update("agents", "holder")
         self.update("cron", "holder")
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+
+    def test_the_live_hub_asks_no_fence(self):
+        """A hub profile with no hub.json and no satellite: every stage runs as before the role existed."""
+        (self.fixture.state / "profile").write_text("personal\n")
+        for stage in ("sd", "cron", "agents", "satellite"):
+            with self.subTest(stage=stage):
+                self.update(stage, "holder")
+                self.assertFalse(pathlib.Path(f"{self.log}.fences").exists(), f"the {stage} stage asked the fence")
 
     def test_a_satellite_profile_still_holds_the_role_once_promoted(self):
         """A `<profile>.satellite` file keeps is_satellite true after hub.json moved."""
