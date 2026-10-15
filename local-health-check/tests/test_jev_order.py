@@ -509,6 +509,9 @@ esac
         self.assertRegex(at91[0], r": SSD wear at 90% of rated life or more$")
         self.assertRegex(wear("117")[0], r": SSD wear at 100% of rated life or more$")
         self.assertEqual(wear("84"), [])
+        # A leading zero is decimal, not octal (codex round 1).
+        self.assertEqual(wear("085"), wear("85"))
+        self.assertRegex(wear("0100")[0], r": SSD wear at 100% of rated life or more$")
 
     def test_a_growing_media_error_count_is_a_new_line(self):
         """REGRESSION (sd:4664 review). Media errors only grow, and growth means

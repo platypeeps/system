@@ -347,7 +347,8 @@ if command -v smartctl >/dev/null 2>&1; then
   if [ -n "$wear" ] && [ "$wear" -ge 85 ] 2>/dev/null; then
     # Wear only grows: its key steps by 5% from 85 to 100, so growth after an
     # acknowledgement re-raises it and a 1% creep does not (sd:4682).
-    wear_step=$(( wear / 5 * 5 )); [ "$wear_step" -le 100 ] || wear_step=100
+    # awk, not $(( )): sh reads a leading zero (085) as octal.
+    wear_step=$(awk -v w="$wear" 'BEGIN { s = int(w / 5) * 5; print (s > 100 ? 100 : s) }')
     finding "SSD wear at ${wear}% of rated life" \
       "plan a replacement/new machine before it hits 100; keep backups tight" = \
       "SSD wear at ${wear_step}% of rated life or more"
