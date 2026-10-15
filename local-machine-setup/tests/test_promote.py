@@ -7,6 +7,7 @@ step-9 session never reach this Mac, its Tailscale node or a hub. Each step's
 case stops the run there and checks the next run finishes it or undoes it.
 """
 
+import datetime
 import json
 import os
 import pathlib
@@ -20,6 +21,10 @@ from tests.test_backbone import PACK, ROOT, ROUTE_PRESENT, Fixture, write_stub
 
 PREFIX = fixture_config.LABEL_PREFIX
 HUB = "hub.example.test"
+
+
+def utc_today():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.task-actions"]
 ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly"]
 
@@ -233,19 +238,23 @@ class Promote(unittest.TestCase):
         self.assertIn("NOT-READY no backup root", result.stdout)
         self.assertTrue(self.hub_json.exists())
 
-    def test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read(self):
-        """Round 3: one readable root with a snapshot is enough; restore --newest reports the others."""
-        import datetime
-        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-        # The hub's USB disk: the stub restores from the first root; the hourly
-        # root holds the names its NAS copy took today.
+    def promote_from_usb(self):
+        """Round 3: the NAS unmounted, the hub's USB disk passed as --from."""
+        # The stub restores from the first root; the hourly root holds the
+        # names its NAS copy took today.
         usb = self.tmp / "usb" / "sd-backups"
         (usb / "2026-10-14.7").mkdir(parents=True)
         (usb / "2026-10-14.7" / "manifest.json").write_text("{}\n")
         usb_hourly = self.tmp / "usb" / "sd-backups-hourly"
-        (usb_hourly / f"{today}.3").mkdir(parents=True)
+        (usb_hourly / f"{utc_today()}.3").mkdir(parents=True)
         gone = self.tmp / "nas-unmounted"
-        result = self.run_promote("--apply", "--from", str(usb), "--from", str(usb_hourly), OFFSITE_VERIFY_ROOT=gone)
+        args = ("--apply", "--from", str(usb), "--from", str(usb_hourly))
+        return usb, usb_hourly, gone, args, self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
+
+    def test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read(self):
+        """One readable root with a snapshot is enough; restore --newest reports the others."""
+        today = utc_today()
+        usb, usb_hourly, gone, _, result = self.promote_from_usb()
         self.assertIn(f"  --      backup root not readable now: {gone}/sd-backups-hourly", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
         self.assertTrue(self.fixture.db.exists())
@@ -254,7 +263,27 @@ class Promote(unittest.TestCase):
         # The unread NAS cannot name today's snapshots; the USB root does, so they are held.
         self.assertTrue((self.hourly / "2026-10-14.7" / "manifest.json").exists(), "the restored snapshot was not seeded")
         self.assertEqual([], list((self.hourly / f"{today}.3").iterdir()))
+        # The hub serves, but the NAS's names of today are not held: the
+        # promotion pauses at its hold step, and hub-ready says so.
+        self.assertIn("hub failover report", result.stdout)
+        self.assertIn(f"promote: paused: the hub serves; the NAS copies wait, as {gone}/sd-backups-hourly {gone}/sd-backups cannot be listed", result.stderr)
+        self.assertEqual("hold", self.marker_step())
+        self.assertIn(f"NOT-READY promote stopped before its end: {self.marker} names step hold", self.run_promote().stdout)
+
+    def test_a_paused_promotion_holds_the_nas_names_once_the_nas_is_back(self):
+        _, _, gone, args, _ = self.promote_from_usb()
+        (gone / "sd-backups-hourly" / f"{utc_today()}.9").mkdir(parents=True)
+        (gone / "sd-backups").mkdir()
+        self.run_promote(*args, OFFSITE_VERIFY_ROOT=gone)
+        self.assertEqual([], list((self.hourly / f"{utc_today()}.9").iterdir()))
         self.assertIsNone(self.marker_step())
+
+    def test_a_paused_promotion_stays_paused_while_the_nas_cannot_be_listed(self):
+        _, _, gone, args, _ = self.promote_from_usb()
+        result = self.run_promote(*args, expect=1, OFFSITE_VERIFY_ROOT=gone)
+        self.assertIn("promote: paused:", result.stderr)
+        self.assertEqual("hold", self.marker_step())
+        self.assertEqual(1, len(self.calls("restore")))
 
     def test_no_readable_root_is_not_ready(self):
         """With no root it can read, promote has no path: it refuses before anything moves."""

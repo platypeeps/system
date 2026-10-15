@@ -229,6 +229,9 @@ verifier, so they cannot drift into disagreeing about what off-machine means.
 The preflight also asks the pack's `sd-db fence` (sd:4010), and refuses unless
 it exits 0: only the machine that holds the hub role writes the hub's backups,
 so a returning old hub copies nothing beside the promoted hub's.
+It refuses too while `~/.local/state/sd/promote-intent` exists: a promotion
+that could not list the NAS has not held today's names there, so it waits
+for `machine-setup.sh promote --apply` to run again (sd:4012).
 
 The writer also names the directory it is about to write into, with
 `--destination`: `Backup` for the NAS copy. The root being the share says

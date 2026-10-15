@@ -672,6 +672,23 @@ def _hub_fence(report: Report) -> bool:
     return True
 
 
+def _no_unfinished_promotion(report: Report) -> bool:
+    """No copy while `machine-setup.sh promote --apply` has not finished.
+
+    Its marker stays at the hold step while a NAS root cannot be listed, so
+    the NAS's snapshot names of today are not held locally; the additive
+    copy could then overwrite one (sd:4012). The rerun lists it and removes
+    the marker. A marker at any other step is a promotion cut short.
+    """
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    marker = Path(state) / "sd" / "promote-intent"
+    if marker.exists():
+        report.fail(f"a promotion has not finished: {marker} exists;"
+                    " rerun machine-setup.sh promote --apply")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
@@ -751,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
     # disagreeing about what off-machine means.
     if arguments.preflight_only:
         _hub_fence(report)
+        _no_unfinished_promotion(report)
         for destination in arguments.destination:
             _writable_destination(destination, root, report)
         for line in report.lines:
