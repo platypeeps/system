@@ -2510,8 +2510,10 @@ class BackupRootIdentity(unittest.TestCase):
             'echo "${FENCE_LINE:-holder: this machine holds the hub role}"\nexit "${FENCE_RC:-0}"\n')
         (pack / "bin" / "sd-db").chmod(0o755)
         self.fence_log = self.work / "fence.log"
+        # promote's marker lives under XDG_STATE_HOME; never the real one.
         self.patch_env = unittest.mock.patch.dict(
-            os.environ, {"SD_PACK_ROOT": str(pack), "FENCE_LOG": str(self.fence_log)})
+            os.environ, {"SD_PACK_ROOT": str(pack), "FENCE_LOG": str(self.fence_log),
+                         "XDG_STATE_HOME": str(self.work / "state")})
         self.patch_env.start()
         self.addCleanup(self.patch_env.stop)
 
@@ -2660,6 +2662,25 @@ class BackupRootIdentity(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("cannot ask", result.stderr)
+
+    def test_an_unfinished_promotion_writes_no_backup(self) -> None:
+        # promote --apply keeps its marker at the hold step while it cannot
+        # list a NAS root, so today's names there are not held (sd:4012); a
+        # copy then could overwrite one. The copies wait for the rerun.
+        local = self.work / "Backup"
+        local.mkdir()
+        marker = self.work / "state" / "sd" / "promote-intent"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("step=hold\n")
+        result = subprocess.run(
+            [sys.executable, str(OFFSITE_VERIFY), "--preflight-only", "--allow-local-root",
+             "--root", str(local)],
+            capture_output=True, text=True,
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"a promotion has not finished: {marker} exists; rerun machine-setup.sh promote --apply",
+                      result.stderr)
 
     def test_the_holder_passes_the_fence(self) -> None:
         local = self.work / "Backup"

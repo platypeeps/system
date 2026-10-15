@@ -5317,6 +5317,10 @@ marker_set() { # key value
 # (<config>/mirror-sync/.env, offsite-verify's own setting). One per line.
 promote_roots() {
   printf '%s' "$PROMOTE_FROM"
+  nas_roots
+}
+
+nas_roots() {
   PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
 root = os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT")
 if root:
@@ -5552,6 +5556,42 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
 
 promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 
+# `sd-db backup` takes the first free name of the UTC day, so each name a root
+# on stdin holds for today or later is held in $1 too, as an empty folder: the
+# additive NAS copy changes nothing on the NAS for it, and retention leaves it.
+# Prints each NAS root ($2, one per line) it cannot list, as today's names
+# there are not held, and each snapshot in $1, of any day, that differs from
+# the one of its name in the NAS hourly root, where the hourly copy would
+# overwrite it. `sd-db backup` writes its manifest last.
+hold_names() {
+  python3 -c 'import datetime, os, re, sys
+dest, nas = sys.argv[1], sys.argv[2].splitlines()
+today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+def manifest(folder):
+    try:
+        with open(os.path.join(folder, "backup-manifest.json"), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+for root in filter(None, sys.stdin.read().splitlines()):
+    try:
+        names = os.listdir(root)
+    except OSError:
+        if root in nas:
+            print(root + " cannot be listed")
+        continue
+    for name in names:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name):
+            continue
+        held = os.path.join(dest, name)
+        if name[:10] >= today:
+            os.makedirs(held, exist_ok=True)
+        pair = root in nas and os.path.basename(root) == "sd-backups-hourly"
+        if pair and os.path.isdir(held) and os.listdir(held) and (
+                manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
+            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$2"
+}
+
 # Step 4, 5 and the seed are the ones that move files; each first records what
 # it will move, so a rerun finds it.
 cmd_promote() {
@@ -5584,7 +5624,8 @@ cmd_promote() {
     hub_ready
     echo
     echo "steps   : 1 preflight, 2 drain the lanes, 3 marker, 4 hub.json aside, 5 restore --newest,"
-    echo "          seed the hourly root, 7 take the hub's tailnet name, 8 install the hub role, 9 prove and report"
+    echo "          seed the hourly root, 7 take the hub's tailnet name, 8 install the hub role, 9 prove and report,"
+    echo "          then hold while a NAS root cannot be listed (rerun --apply once it can)"
     return 0
   fi
   # Step 2: the lanes are held through refresh_drain.py, which runs this verb
@@ -5684,16 +5725,9 @@ cmd_promote() {
         promote_refuse "could not copy $snapshot into $dest; rerun"
       fi
     fi
-    # `sd-db backup` takes the first free name of the UTC day, so each name the
-    # NAS holds for today or later is held here too, as an empty folder: the
-    # additive copy changes nothing on the NAS for it, and retention leaves it.
-    promote_roots | python3 -c 'import datetime, os, re, sys
-dest = sys.argv[1]
-today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-for root in filter(None, sys.stdin.read().splitlines()):
-    for name in (os.listdir(root) if os.path.isdir(root) else []):
-        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}([.][0-9]+)?", name) and name[:10] >= today:
-            os.makedirs(os.path.join(dest, name), exist_ok=True)' "$dest" ||
+    # A NAS root it cannot list now is listed again after the report.
+    nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
+    { printf '%s' "$PROMOTE_FROM"; printf '%s\n' "$nas"; } | hold_names "$dest" "$nas" >/dev/null ||
       promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
     echo "seed    : $seeded"
     marker_set step 7
@@ -5802,6 +5836,22 @@ if want is None or got is None or tuple(got) != tuple(want):
   echo "  hub.json    : $(marker_get moved)"
   echo "  lanes       : enqueue each NULL-host repository's open pull requests again (sd-ship lane enqueue)"
   echo "  dispatch stays paused: read this, then run sd restore resume"
+  # The hold step: a NAS root not listed holds names of today this machine's
+  # hourly job may take again, and the NAS copy would overwrite them; so does
+  # a snapshot the job took here while it waited. The marker stays, and
+  # offsite-verify refuses the copies while it exists.
+  dest=$(hourly_destination)
+  [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
+  # A failed read of the NAS roots is no answer, not none to hold.
+  nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
+  unheld=$(printf '%s\n' "$nas" | hold_names "$dest" "$nas") ||
+    promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
+  if [ -n "$unheld" ]; then
+    marker_set step hold
+    echo "promote: paused: the hub serves; the NAS copies wait until promote --apply runs again after this:" >&2
+    printf '%s\n' "$unheld" | sed 's/^/  /' >&2
+    exit 1
+  fi
   rm -f "$PROMOTE_MARKER"
 }
 
@@ -6116,8 +6166,10 @@ for a in "$@"; do
                    aside, restores the newest verified snapshot under the
                    NAS roots and each --from DIR, seeds the hourly backup
                    root, takes the hub's tailnet name and installs the hub
-                   role; a rerun goes on at the step the promote-intent
-                   marker names; without --apply prints the hub-ready lines
+                   role; while a NAS root cannot be listed the marker
+                   stays at its hold step and the NAS copies refuse; a
+                   rerun goes on at the step the promote-intent marker
+                   names; without --apply prints the hub-ready lines
                    --undo hands the role back from a promoted satellite:
                    stops the hub role, writes the hand-back snapshot to
                    the NAS hourly root, puts hub.json back and gives up the
