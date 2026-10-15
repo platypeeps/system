@@ -144,7 +144,7 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
 | `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
 | `.node` | node majors the `tooling` stage installs with fnm and `doctor` checks; with no `.node` file at all, 18, 20 and 24 |
-| `.npm` | global npm CLIs the `tooling` stage installs with `npm install -g`, as `pkg` or `pkg@version`; the npm is Homebrew's, of the first `node` or `node@<major>` formula in the brew manifest, so the CLIs land in `$(brew --prefix)/bin` whichever fnm node a shell uses. `capture` does not write it |
+| `.npm` | global npm CLIs the `tooling` stage installs with `npm install -g`, as `pkg` or `pkg@version`; the npm is Homebrew's, of the first `node` or `node@<major>` formula in the brew manifest, so the CLIs land in `$(brew --prefix)/bin` whichever fnm node a shell uses. An npm 11 skips a package's install scripts unless `--allow-scripts` names them, and the stage passes none (`@google/gemini-cli` runs without its `@github/keytar` and `node-pty` scripts). `capture` does not write it |
 | `.mailto` | bundle id of the app that answers mailto: links, one line; the profile's wins over `common.mailto`; with neither, `com.google.Chrome` |
 
 Plain lists, one per line, `#` comments and blank lines ignored — the same
