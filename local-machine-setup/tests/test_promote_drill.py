@@ -74,6 +74,18 @@ class Drill(PromoteCase):
         self.assertIn("drill   : passed", result.stdout)
         self.assertFalse(self.drill.exists())
 
+    def test_a_leftover_home_behind_a_symlinked_ancestor_on_the_nas_stays(self):
+        """Review round 5: the drill deletes its home only off the NAS, wherever the state folder leads."""
+        (self.nas / "state").mkdir()
+        state = self.fixture.home / "state-link"
+        state.symlink_to(self.nas / "state")
+        left = self.nas / "state/sd/promote-drill/home"
+        left.mkdir(parents=True)
+        result = self.run_drill(expect=1, XDG_STATE_HOME=state)
+        self.assertIn("on the NAS", result.stderr)
+        self.assertIn("drill: will not delete", result.stderr)
+        self.assertTrue(left.exists(), "the drill deleted a folder on the NAS")
+
     def test_drill_and_undo_do_not_go_together(self):
         result = self.run_drill("--undo", expect=1)
         self.assertIn("--drill and --undo do not go together", result.stderr)

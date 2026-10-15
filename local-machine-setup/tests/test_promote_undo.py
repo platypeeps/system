@@ -194,6 +194,107 @@ class Undo(PromoteCase):
         self.assertTrue(outside.exists())
         self.assertFalse(self.hourly.exists())
 
+    # Review round 5: a recursive delete proves its target first. The real
+    # path (cd -P) lies under $HOME, off the NAS, and each root is one word.
+
+    def nightly_at(self, path):
+        (self.config / "cron-jobs/jobs/sd-db-backup.job").write_text(
+            f'SD_DB_BACKUP_DESTINATION="{path}"\nJOB_SCHEDULE="10 2 * * *"\nJOB_COMMAND="true"\n')
+
+    def hourly_at(self, path):
+        (self.config / "cron-jobs/jobs/sd-db-backup-hourly.job").write_text(
+            f'SD_DB_BACKUP_HOURLY_DESTINATION="{path}"\nJOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+
+    def test_a_root_that_climbs_out_of_home_through_dotdot_is_left(self):
+        outside = self.tmp / "outside/sd-backups"
+        (outside / PROMOTED).mkdir(parents=True)
+        self.nightly_at(f"{self.fixture.home}/../outside/sd-backups")
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertTrue((outside / PROMOTED).exists())
+        self.assertFalse(self.hourly.exists())
+
+    def test_a_root_behind_a_symlinked_ancestor_on_the_nas_is_left(self):
+        (self.fixture.home / "nas-link").symlink_to(self.nas)
+        self.nightly_at(self.fixture.home / "nas-link/sd-backups")
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertTrue((self.nas / "sd-backups/2026-10-13.1").exists(), "undo deleted a NAS root")
+        self.assertFalse(self.hourly.exists())
+
+    def test_a_root_that_holds_the_nas_mount_is_left(self):
+        """rm -rf crosses a mount point: a root over the NAS mount would empty the share."""
+        mnt = self.fixture.home / "mnt"
+        mnt.mkdir()
+        (mnt / "nas").symlink_to(self.nas)
+        self.nightly_at(mnt)
+        self.run_undo("--apply", expect=1, OFFSITE_VERIFY_ROOT=mnt / "nas")
+        self.new_hub_restores()
+        result = self.run_undo("--apply", OFFSITE_VERIFY_ROOT=mnt / "nas")
+        self.assertIn("holds the NAS", result.stderr, result.stdout)
+        self.assertTrue((mnt / "nas").is_symlink())
+        self.assertFalse(self.hourly.exists())
+
+    def test_a_root_with_glob_characters_deletes_that_root_only(self):
+        hourly = self.fixture.home / "hub-role/backups[old]"
+        (hourly / PROMOTED).mkdir(parents=True)
+        other = self.fixture.home / "hub-role/backupso"
+        other.mkdir()
+        self.hourly_at(hourly)
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertFalse(hourly.exists())
+        self.assertTrue(other.exists(), "the glob picked another folder")
+
+    def test_a_root_with_spaces_in_its_name_is_deleted(self):
+        hourly = self.fixture.home / "hub-role/hourly backups"
+        (hourly / PROMOTED).mkdir(parents=True)
+        (self.fixture.home / "hub-role/hourly").mkdir()
+        self.hourly_at(hourly)
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertFalse(hourly.exists())
+        self.assertTrue((self.fixture.home / "hub-role/hourly").exists())
+
+    def test_a_root_with_a_newline_in_its_name_is_left_and_named(self):
+        """Split at the newline, the name would point at another folder; job_destination ignores it."""
+        hourly = self.fixture.home / "hub-role/hourly\nbackups"
+        (hourly / PROMOTED).mkdir(parents=True)
+        other = self.fixture.home / "hub-role/hourly"
+        other.mkdir()
+        self.hourly_at(hourly)
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertIn("SD_DB_BACKUP_HOURLY_DESTINATION holds a newline", result.stderr)
+        self.assertTrue(other.exists(), "the split name deleted another folder")
+        self.assertTrue(hourly.exists())
+        self.assertFalse(self.nightly.exists())
+
+    def test_a_database_folder_behind_a_symlinked_ancestor_is_not_deleted(self):
+        share = self.fixture.home / ".local/share"
+        elsewhere = self.tmp / "elsewhere-share"
+        share.rename(elsewhere)
+        share.symlink_to(elsewhere)
+        self.handed_back()
+        result = self.run_undo("--apply", expect=1)
+        self.assertIn("still here after the delete", result.stderr)
+        self.assertTrue((elsewhere / "sd/sd.db").exists())
+
+    def test_a_root_it_cannot_resolve_stops_the_run(self):
+        """A failed resolve is no answer: the run stops at step 4; it does not count the root gone."""
+        locked = self.fixture.home / "locked"
+        (locked / "hourly" / PROMOTED).mkdir(parents=True)
+        self.hourly_at(locked / "hourly")
+        self.handed_back()
+        locked.chmod(0o000)
+        try:
+            result = self.run_undo("--apply", expect=1)
+        finally:
+            locked.chmod(0o755)
+        self.assertEqual("4", self.marker_step())
+        self.assertTrue((locked / "hourly" / PROMOTED).exists())
+        self.assertIn(f"{locked}/hourly", result.stderr)
+
     # Row undo 1: the role stopped, the hand-back snapshot written.
 
     def test_a_snapshot_that_fails_starts_the_role_again_and_deletes_nothing(self):

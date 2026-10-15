@@ -5324,16 +5324,55 @@ promote_roots() {
 }
 
 nas_roots() {
+  nr=$(nas_mount) || return 1
+  [ -z "$nr" ] || printf '%s\n' "${nr%/}/sd-backups-hourly" "${nr%/}/sd-backups"
+}
+nas_mount() {
   PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
-root = os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT")
-if root:
-    print(os.path.join(root, "sd-backups-hourly"))
-    print(os.path.join(root, "sd-backups"))'
+print(os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT") or "")'
+}
+
+# Where a recursive delete of the absolute path $1 lands, proven before
+# any rm -rf runs. cd -P resolves `..` and every symlinked ancestor, so the
+# checks see the real path, not its spelling. Prints the real path, or
+# nothing when $1 is gone. Returns 1, the reason on stderr, when the real
+# path is not under the resolved root $2, or is on the NAS mount or holds
+# it (rm -rf crosses mounts); returns 2 when it cannot tell. A last part
+# that is a symlink stays the link: rm removes it, not its target.
+rm_target() { # path allowed-root
+  case "${1:?}" in /*) ;; *) echo "$1: not an absolute path" >&2; return 1 ;; esac
+  rt_up=${1%/*}
+  if ! rt_up=$(cd -P -- "${rt_up:-/}" 2>/dev/null && pwd -P); then
+    [ ! -e "${1%/*}" ] || { echo "$1: cannot resolve its folder" >&2; return 2; }
+    return 0
+  fi
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  if [ -d "$1" ] && [ ! -L "$1" ]; then
+    rt_real=$(cd -P -- "$1" 2>/dev/null && pwd -P) || { echo "$1: cannot resolve it" >&2; return 2; }
+  else
+    rt_real=${rt_up%/}/${1##*/}
+  fi
+  rt_root=$(cd -P -- "${2:?}" 2>/dev/null && pwd -P) || { echo "$2: cannot resolve it" >&2; return 2; }
+  case "$rt_real" in "${rt_root%/}"/?*) ;; *) echo "$rt_real: not under $rt_root" >&2; return 1 ;; esac
+  rt_nas=$(nas_mount) || { echo "$1: could not read OFFSITE_VERIFY_ROOT" >&2; return 2; }
+  if [ -n "$rt_nas" ]; then
+    # The mount as spelled, with its folder resolved (a mount point is no
+    # link to follow), and fully resolved.
+    rt_nas=${rt_nas%/}; rt_nas_up=${rt_nas%/*}
+    rt_nas_up=$(cd -P -- "${rt_nas_up:-/}" 2>/dev/null && pwd -P) || rt_nas_up=
+    for rt_n in "$rt_nas" "${rt_nas_up:+${rt_nas_up%/}/${rt_nas##*/}}" "$(cd -P -- "$rt_nas" 2>/dev/null && pwd -P)"; do
+      [ -n "$rt_n" ] || continue
+      case "$rt_real/" in "${rt_n%/}"/*) echo "$rt_real: on the NAS ($rt_nas)" >&2; return 1 ;; esac
+      case "${rt_n%/}/" in "$rt_real"/*) echo "$rt_real: holds the NAS ($rt_nas)" >&2; return 1 ;; esac
+    done
+  fi
+  printf '%s\n' "$rt_real"
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
 # job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
-# when no file defines the job or the file names no destination.
+# when no file defines the job or the file names no destination, or a
+# destination with a newline: a line reader would split it into other paths.
 job_destination() { # job, variable
   jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
@@ -5343,8 +5382,13 @@ for d in stc.cron_job_dirs():
         break' "$1")
   [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
-  # shellcheck disable=SC1090,SC2030
-  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "printf '%s\\n' \"\$$2\"")
+  # shellcheck disable=SC1090,SC2030,SC2154 # eval sets jd_value
+  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
+   case "$jd_value" in
+     *'
+'*) echo "$jd_file: $2 holds a newline; ignored" >&2 ;;
+     *) printf '%s\n' "$jd_value" ;;
+   esac)
 }
 hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 
@@ -5728,7 +5772,9 @@ cmd_promote() {
     seeded="$dest/$(basename "$snapshot")"
     if [ ! -d "$seeded" ]; then
       mkdir -p "$dest"
-      rm -rf "$seeded.seeding"
+      stale=$(rm_target "$seeded.seeding" "$dest") ||
+        promote_refuse "will not delete $seeded.seeding; the hourly root must be a local folder off the NAS"
+      [ -z "$stale" ] || rm -rf -- "${stale:?}"
       if ! cp -R "$snapshot" "$seeded.seeding" || ! mv "$seeded.seeding" "$seeded"; then
         promote_refuse "could not copy $snapshot into $dest; rerun"
       fi
@@ -5893,12 +5939,36 @@ undo_restart() { # why
   exit 1
 }
 
-# The local roots the hub-role backup jobs wrote. Only a root under $HOME:
-# the NAS copies stay on the NAS.
-undo_roots() {
-  for ur in "$(hourly_destination)" "$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION)" "$DRILL_HOME"; do
-    case "$ur" in "$HOME"/?*) printf '%s\n' "$ur" ;; esac
+# The local roots the hub-role backup jobs wrote, the drill's home and the
+# database folder, each passed to $1 as one word: no splitting, no glob.
+undo_roots() { # function
+  for ur in "$(hourly_destination)" "$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION)" "$DRILL_HOME" "$(dirname "$SD_DB")"; do
+    [ -z "$ur" ] || "$1" "$ur"
   done
+}
+
+# Step 4 deletes a root only where rm_target proves it lies under $HOME and
+# off the NAS: the NAS copies stay. A root it cannot place stops the run.
+undo_delete() { # root
+  ud_rc=0; ud_real=$(rm_target "$1" "$HOME") || ud_rc=$?
+  case $ud_rc in
+    0) if [ -n "$ud_real" ]; then
+         rm -rf -- "${ud_real:?}" || promote_refuse "could not delete $ud_real; rerun"
+         echo "deleted : $ud_real"
+       fi ;;
+    1) echo "kept    : $1" ;;
+    *) promote_refuse "could not tell where $1 lies; rerun" ;;
+  esac
+}
+
+# Step 6 names a root step 4 should have deleted and is still there.
+undo_left() { # root
+  ul_rc=0; ul_real=$(rm_target "$1" "$HOME" 2>/dev/null) || ul_rc=$?
+  case $ul_rc in
+    0) [ -z "$ul_real" ] || printf '%s\n' "$1" ;;
+    1) ;;
+    *) printf '%s\n' "$1 (cannot tell)" ;;
+  esac
 }
 
 promote_undo() { # marker step
@@ -6031,13 +6101,7 @@ if held is None:
   fi
   if [ "$step" = 4 ]; then
     # Step 4: rm -rf finishes what a killed run left.
-    for ur in $(undo_roots | tr ' ' '\001'); do
-      ur=$(printf '%s' "$ur" | tr '\001' ' ')
-      rm -rf "$ur" || promote_refuse "could not delete $ur; rerun"
-      echo "deleted : $ur"
-    done
-    rm -rf "$(dirname "$SD_DB")" || promote_refuse "could not delete $(dirname "$SD_DB"); rerun"
-    echo "deleted : $(dirname "$SD_DB")"
+    undo_roots undo_delete
     marker_set step 5
     step=5
   fi
@@ -6055,8 +6119,7 @@ if held is None:
     marker_set step 6
   fi
   # Step 6: the proof the design names.
-  left=$(find "$(dirname "$SD_DB")" -name 'sd.db*' 2>/dev/null || :; for ur in $(undo_roots | tr ' ' '\001'); do
-    ur=$(printf '%s' "$ur" | tr '\001' ' '); [ ! -e "$ur" ] || printf '%s\n' "$ur"; done)
+  left=$(find "$(dirname "$SD_DB")" -name 'sd.db*' 2>/dev/null || :; undo_roots undo_left)
   [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
   rm -f "$PROMOTE_MARKER"
   echo
@@ -6072,7 +6135,14 @@ if held is None:
 # goes when the run ends, pass or fail; one a killed drill left goes first.
 drill_cleanup() {
   if [ -n "${DRILL_SERVE:-}" ]; then kill "$DRILL_SERVE" 2>/dev/null || :; wait "$DRILL_SERVE" 2>/dev/null || :; fi
-  rm -rf "$DRILL_HOME"
+  drill_remove || echo "drill   : left $DRILL_HOME; remove it by hand" >&2
+}
+
+# The home goes only where rm_target proves it lies under the state folder
+# and off the NAS.
+drill_remove() {
+  dr_real=$(rm_target "$DRILL_HOME" "${XDG_STATE_HOME:-$HOME/.local/state}") || return 1
+  [ -z "$dr_real" ] || rm -rf -- "${dr_real:?}"
 }
 
 drill_time() { # label start
@@ -6081,7 +6151,7 @@ drill_time() { # label start
 
 promote_drill() {
   if [ -e "$DRILL_HOME" ]; then
-    rm -rf "$DRILL_HOME"
+    drill_remove || promote_refuse "drill: will not delete $DRILL_HOME, which a drill that did not finish left; remove it by hand"
     echo "drill   : removed $DRILL_HOME, which a drill that did not finish left"
   fi
   [ -e "$SD_HUB_CONFIG" ] || promote_refuse "no $SD_HUB_CONFIG: the drill runs on a standby satellite"

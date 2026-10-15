@@ -546,6 +546,24 @@ class Promote(PromoteCase):
         self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
         self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
 
+    def test_a_seed_left_on_the_nas_is_not_deleted(self):
+        """Review round 5: an hourly root that leads onto the NAS keeps what is there; promote stops."""
+        moved = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.hub_json.rename(moved)
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        (self.tmp / "nas-link").symlink_to(self.nas)
+        (self.config / "cron-jobs/jobs/sd-db-backup-hourly.job").write_text(
+            f'SD_DB_BACKUP_HOURLY_DESTINATION="{self.tmp}/nas-link/sd-backups-hourly"\n'
+            'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+        on_nas = self.nas / "sd-backups-hourly/2026-10-13.1.seeding"
+        on_nas.mkdir()
+        self.write_marker(step=6, moved=moved, snapshot=self.nas / "sd-backups/2026-10-13.1")
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("on the NAS", result.stderr)
+        self.assertTrue(on_nas.exists(), "promote deleted a folder on the NAS")
+        self.assertEqual("6", self.marker_step())
+
     def test_killed_inside_step_3_a_marker_with_no_step_starts_again(self):
         """codex: a marker cut short before its step names nothing moved."""
         self.marker.parent.mkdir(parents=True)
