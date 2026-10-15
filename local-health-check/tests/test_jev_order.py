@@ -480,8 +480,7 @@ esac
 
     def test_each_crashing_app_and_panic_is_its_own_line(self):
         """sd:4664: one line per crashing app and per panic report, so a night
-        with one of them gone is a subset the pack folds (pack sd:4658); a
-        media error count that grows keeps its line."""
+        with one of them gone is a subset the pack folds (pack sd:4658)."""
         def run(name, files=(), env=None):
             reports = self.tmp / ("reports-" + name)
             reports.mkdir()
@@ -494,7 +493,18 @@ esac
         one = run("one-app", ("Kernel-2026-01-01.panic",))
         self.assertLess(set(one), set(both))
         self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
-        self.assertEqual(run("media-3", env={"MEDIA_STUB": "3"}), run("media-5", env={"MEDIA_STUB": "5"}))
+
+    def test_a_growing_media_error_count_is_a_new_line(self):
+        """REGRESSION (sd:4664 review). Media errors only grow, and growth means
+        the disk is dying: 500 errors is a new finding after 3, so it cannot
+        fold into a report someone acknowledged at 3."""
+        def media(name, count):
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "MEDIA_STUB": count}, verb="run")["out"]
+            return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ") and "media" in l]
+        three, five = media("media-3", "3"), media("media-500", "500")
+        self.assertEqual(len(three), 1, three)
+        self.assertRegex(five[0], r": SSD media/data integrity errors: 500$")
+        self.assertNotEqual(three, five)
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

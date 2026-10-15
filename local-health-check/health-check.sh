@@ -129,7 +129,8 @@ KEYS="$TMPD/keys"
 #
 # KEY is the headline without a measure that moves while the finding stays
 # the same (a load average, a crash count), so its attention line does not
-# move with it (sd:4182). One line per item where a finding lists several (a
+# move with it (sd:4182). A counter that only grows as things get worse (media
+# errors) stays in it: its growth is a new finding (sd:4664). One line per item where a finding lists several (a
 # crashing app, a panic report), so one item gone leaves a subset (sd:4664).
 # Omitted, it is the headline.
 #
@@ -350,8 +351,7 @@ if command -v smartctl >/dev/null 2>&1; then
   fi
   if [ -n "$media" ] && [ "$media" -gt 0 ] 2>/dev/null; then
     finding "SSD media/data integrity errors: $media" \
-      "back up NOW and watch this number — any growth means the disk is dying" = \
-      "SSD media/data integrity errors"
+      "back up NOW and watch this number — any growth means the disk is dying" =
   fi
   case "$cw" in ''|0x00) ;; *)
     finding "SSD critical warning flag: $cw" \
