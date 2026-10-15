@@ -4044,8 +4044,9 @@ plist_env_value() { # plist, key
 # might itself be broken: sqlite3 on the database file, tailscale for the
 # route and curl for the answer.
 doctor_sd() {
-  if [ -z "${PROFILE:-}" ] || ! sd_in_profile; then
-    echo "  SKIP    sd pieces not checked (no sd agent in this profile)"
+  # A promoted satellite holds the role with no sd agent in its profile (sd:4648).
+  if [ -z "${PROFILE:-}" ] || { ! sd_in_profile && ! hub_holder; }; then
+    echo "  SKIP    sd pieces not checked (no sd agent in this profile, and no hub role held)"
     return 0
   fi
   # Not a SKIP: every profile with an sd agent is a Mac, macOS ships
@@ -4075,7 +4076,7 @@ doctor_sd() {
 $(sd_database_elsewhere)
 EOF
 
-  if manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
+  if role_agents | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1 || ! tailscale status >/dev/null 2>&1; then
       echo "  SKIP    dashboard route and HTTPS answer not checked (tailscale not installed, not running or not logged in)"
     else
@@ -5262,7 +5263,7 @@ cmd_status() {
     echo
   done
   # Read-only and outside the drift count: see hub_ready.
-  if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || hub_role; then
+  if [ -e "$SD_HUB_CONFIG" ] || [ -f "$PROMOTE_MARKER" ] || [ -f "$UNDO_MARKER" ] || [ -e "$DRILL_HOME" ] || hub_role; then
     hub_ready
     echo
   fi
@@ -5290,6 +5291,15 @@ cmd_status() {
 # from there; the failure table in the design names each step's recovery.
 PROMOTE_MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-intent"
 PROMOTE_FROM=""
+PROMOTE_UNDO=0
+UNDO_MARKER="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-undo"
+PROMOTE_DRILL=0
+# The drill's throwaway home, on the system disk; it holds a restored copy of
+# the records only while a drill runs.
+DRILL_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-drill"
+# The file a drill writes into its home first: only a home that holds it is
+# deleted whole, by the drill or by undo.
+DRILL_MARK=".sd-promote-drill"
 
 marker_get() { # key
   [ ! -f "$PROMOTE_MARKER" ] || sed -n "s/^$1=//p" "$PROMOTE_MARKER" | tail -1
@@ -5311,29 +5321,99 @@ promote_roots() {
 }
 
 nas_roots() {
+  nr=$(nas_mount) || return 1
+  [ -z "$nr" ] || printf '%s\n' "${nr%/}/sd-backups-hourly" "${nr%/}/sd-backups"
+}
+nas_mount() {
   PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
-root = os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT")
-if root:
-    print(os.path.join(root, "sd-backups-hourly"))
-    print(os.path.join(root, "sd-backups"))'
+print(os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT") or "")'
 }
 
-# The local root the hub role's hourly job writes, from that job's own file:
-# the job is sourced as cron-jobs.sh sources it, in a subshell. Prints
-# nothing when no file defines the job or the file names no destination.
-hourly_destination() {
-  hd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import system_tools_config as stc
+# The physical path of folder $1 in rt_dir. The sentinel keeps a trailing
+# newline that $() would strip, which would name another folder.
+rt_resolve() { # folder
+  rt_dir=$(cd -P -- "$1" 2>/dev/null && pwd -P && echo .) || return 1
+  rt_dir=${rt_dir%?.}
+}
+
+# Where the absolute path $1 lies, in rt_at: its folder resolved with cd -P,
+# then its last part; a folder resolves, a symlink stays the link (rm
+# removes the link, not its target). rt_at is empty when $1 is not there.
+# Returns 2 when it cannot tell: a folder on the way it cannot enter.
+rt_locate() { # path
+  rt_at=
+  case "$1" in /*) ;; *) echo "$1: not an absolute path" >&2; return 2 ;; esac
+  rt_low=$1; rt_up=${1%/*}
+  until rt_resolve "${rt_up:-/}"; do rt_low=$rt_up; rt_up=${rt_up%/*}; done
+  if [ "$rt_low" != "$1" ]; then
+    # The first part below a folder it entered: there, so it cannot tell.
+    [ ! -d "$rt_low" ] || { echo "$1: cannot enter $rt_low" >&2; return 2; }
+    return 0
+  fi
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  if [ -d "$1" ] && [ ! -L "$1" ]; then
+    rt_resolve "$1" || { echo "$1: cannot enter it" >&2; return 2; }
+    rt_at=$rt_dir
+  else
+    rt_at=${rt_dir%/}/${1##*/}
+  fi
+}
+
+# Where a recursive delete of the absolute path $1 lands, proven before any
+# rm -rf runs: cd -P resolves `..` and every symlinked ancestor, so the
+# checks see the real path, not its spelling. Prints the real path, or
+# nothing when $1 is gone. Returns 1, the reason on stderr, when the real
+# path holds a newline, is not under the resolved root $2, or is on the NAS
+# mount or holds it (rm -rf crosses mounts); returns 2 when it cannot tell.
+rm_target() { # path allowed-root
+  case "${1:?}" in /*) ;; *) echo "$1: not an absolute path" >&2; return 1 ;; esac
+  rt_locate "$1" || return 2
+  [ -n "$rt_at" ] || return 0
+  rt_real=$rt_at
+  case "$rt_real" in *'
+'*) echo "$1: its real path holds a newline" >&2; return 1 ;; esac
+  rt_resolve "${2:?}" || { echo "$2: cannot resolve it" >&2; return 2; }
+  case "$rt_real" in "${rt_dir%/}"/?*) ;; *) echo "$rt_real: not under $rt_dir" >&2; return 1 ;; esac
+  rt_nas=$(nas_mount) || { echo "$1: could not read OFFSITE_VERIFY_ROOT" >&2; return 2; }
+  [ -n "$rt_nas" ] || { printf '%s\n' "$rt_real"; return 0; }
+  # The mount where it lies (a mount point is no link to follow), and where
+  # it leads; a mount that is not there holds nothing.
+  rt_locate "$rt_nas" || return 2
+  rt_mount=$rt_at; rt_lead=
+  if [ -n "$rt_mount" ] && [ -d "$rt_nas" ]; then
+    rt_resolve "$rt_nas" || { echo "$rt_nas: cannot enter it" >&2; return 2; }
+    rt_lead=$rt_dir
+  fi
+  for rt_n in "$rt_mount" "$rt_lead"; do
+    [ -n "$rt_n" ] || continue
+    case "$rt_real/" in "${rt_n%/}"/*) echo "$rt_real: on the NAS ($rt_nas)" >&2; return 1 ;; esac
+    case "${rt_n%/}/" in "$rt_real"/*) echo "$rt_real: holds the NAS ($rt_nas)" >&2; return 1 ;; esac
+  done
+  printf '%s\n' "$rt_real"
+}
+
+# The local root a hub-role backup job writes, from that job's own file: the
+# job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
+# when no file defines the job or the file names no destination. Fails on
+# a destination with a newline: a reader would split it into other paths.
+job_destination() { # job, variable
+  jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
-    f = d / "sd-db-backup-hourly.job"
+    f = d / (sys.argv[1] + ".job")
     if f.is_file():
         print(f)
-        break')
-  [ -n "$hd_file" ] || return 0
+        break' "$1")
+  [ -n "$jd_file" ] || return 0
   # The job's ROOT is local-cron-jobs, as cron-jobs.sh sets it.
-  # shellcheck disable=SC1090,SC2030
-  (ROOT="$ROOT/local-cron-jobs"; SD_DB_BACKUP_HOURLY_DESTINATION=""; . "$hd_file" >/dev/null 2>&1;
-   printf '%s\n' "$SD_DB_BACKUP_HOURLY_DESTINATION")
+  # shellcheck disable=SC1090,SC2030,SC2154 # eval sets jd_value
+  (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
+   case "$jd_value" in
+     *'
+'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; exit 1 ;;
+     *) printf '%s\n' "$jd_value" ;;
+   esac)
 }
+hourly_destination() { job_destination sd-db-backup-hourly SD_DB_BACKUP_HOURLY_DESTINATION; }
 
 # hub.json's hub and port, as `<host> <port>`; nothing when it cannot be read.
 hub_named() {
@@ -5371,6 +5451,12 @@ hub_ready() {
   if [ -f "$PROMOTE_MARKER" ]; then
     echo "  NOT-READY promote stopped before its end: $PROMOTE_MARKER names step $(marker_get step); rerun: $(basename "$SELF") promote --apply"
   fi
+  if [ -f "$UNDO_MARKER" ]; then
+    echo "  NOT-READY promote --undo stopped before its end: $UNDO_MARKER names step $(PROMOTE_MARKER=$UNDO_MARKER; marker_get step); rerun: $(basename "$SELF") promote --undo --apply"
+  fi
+  if [ -e "$DRILL_HOME" ]; then
+    echo "  NOT-READY a drill did not finish and left the records in $DRILL_HOME; remove it (rm -rf), or the next promote --drill does if it holds $DRILL_MARK"
+  fi
   if hub_holder; then
     echo "  ok      this machine holds the hub role (promoted)"
     return 0
@@ -5398,6 +5484,75 @@ hub_ready() {
     fi
   else
     echo "  --      sd.hub_name not read from the hub; promote reads it from the restored database"
+  fi
+  # The checkouts at the hub-pin tag follow last fetched, so the restored
+  # database meets the build the hub ran (README of local-repo-sync, "Satellites
+  # follow the hub"); then the satellite check's own proof line.
+  if hr_pin=$(git -C "$ROOT" rev-parse -q --verify 'refs/tags/hub-pin^{commit}' 2>/dev/null); then
+    hr_pack=$(git -C "$ROOT" tag -l --format='%(contents)' hub-pin 2>/dev/null | sed -n 's/^pack=//p' | head -1)
+    hr_sys=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || hr_sys=unknown
+    hr_have=$(git -C "$SD_PACK_ROOT" rev-parse HEAD 2>/dev/null) || hr_have=unknown
+    if [ "$hr_sys" = "$hr_pin" ] && [ -n "$hr_pack" ] && [ "$hr_have" = "$hr_pack" ]; then
+      echo "  ok      system and pack at hub-pin"
+    else
+      echo "  NOT-READY system at $hr_sys and pack at $hr_have, not hub-pin's $hr_pin and ${hr_pack:-no pack=}: local-repo-sync/repo-sync.sh follow"
+    fi
+  else
+    echo "  NOT-READY no hub-pin tag in $ROOT: local-repo-sync/repo-sync.sh follow fetches it"
+  fi
+  if hr_build=$(bound_step 60 "$SD_DB_PYTHON" -I -c "$SD_DB_RUN_LIB" "$SD_PACK_ROOT/lib" sd_db.satellite --hub "$1" --port "$2" 2>&1); then
+    case "$hr_build" in
+      *"matches the hub's"*) echo "  ok      sd_db build matches the hub's" ;;
+      *DIFFERS*) echo "  NOT-READY $(printf '%s\n' "$hr_build" | grep DIFFERS | head -1 | sed 's/^ *DIFFERS *//')" ;;
+      *) echo "  --      the hub did not answer; the sd_db build was not compared" ;;
+    esac
+  else
+    echo "  --      the satellite check did not run under $SD_DB_PYTHON; the sd_db build was not compared"
+  fi
+  # The lanes this machine runs as hub: every managed repository with no lane
+  # host and every one it hosts, pushed with the one active gh login (design,
+  # "One GitHub login for both sets").
+  if hr_repos=$(bound_step 60 "$SD_PACK_ROOT/bin/sd-db" repo list --managed 2>/dev/null); then
+    hr_host=$(hostname -s | tr '[:upper:]' '[:lower:]')
+    # sd-db repo list: path, remote, managed, ci, lane host, merge; two spaces apart.
+    printf '%s\n' "$hr_repos" | awk -F '  ' -v host="$hr_host" 'NF >= 6 && ($(NF-1) == "hub" || $(NF-1) == host) {print $(NF-4)}' |
+      while read -r hr_remote; do github_slug "$hr_remote" || :; done | python3 -c 'import json, subprocess, sys
+# A remote with several clones is one repository.
+want = list(dict.fromkeys(tuple(line.split("/")) for line in sys.stdin.read().split()))
+if not want:
+    sys.exit(print("  ok      gh: no managed lane repository on GitHub"))
+query = "query{viewer{login} " + " ".join(
+    f"r{i}: repository(owner: {json.dumps(o)}, name: {json.dumps(n)}){{viewerPermission}}" for i, (o, n) in enumerate(want)) + "}"
+try:
+    # gh exits 1 when a repository is not found, and still prints the data.
+    data = json.loads(subprocess.run(["gh", "api", "graphql", "-f", "query=" + query], capture_output=True,
+                                     text=True, timeout=60, stdin=subprocess.DEVNULL).stdout)["data"]
+    login = data["viewer"]["login"]
+except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+    sys.exit(print("  --      gh api did not answer; push access not checked"))
+lacking = [f"{o}/{n}" for i, (o, n) in enumerate(want)
+           if (data.get(f"r{i}") or {}).get("viewerPermission") not in ("ADMIN", "MAINTAIN", "WRITE")]
+if lacking:
+    names = ", ".join(lacking)
+    print(f"  NOT-READY gh login {login} cannot push to {len(lacking)} lane repositories: {names}")
+else:
+    print(f"  ok      gh login {login} pushes to all {len(want)} lane repositories")'
+  else
+    echo "  --      the repository list was not read from the hub; gh push access not checked"
+  fi
+  # A hub-role job mails a miss through notify's email channel (the pack's
+  # sd-db backup, report_failure).
+  hr_unset=$(PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
+env = stc.read_env("notify")
+print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
+               if "change-me" in (os.environ[k] if k in os.environ else env.get(k, "")) or
+               not (os.environ[k] if k in os.environ else env.get(k, ""))))')
+  if [ -z "${SD_NOTIFY:-}" ] && ! command -v notify >/dev/null 2>&1; then
+    echo "  NOT-READY no notify on PATH: a hub-role job could not mail a miss; $(basename "$SELF") update bin --apply"
+  elif [ -n "$hr_unset" ]; then
+    echo "  NOT-READY notify's email channel lacks $hr_unset: copy local-notify/.env.example to $(st_config_dir notify)/.env and set it"
+  else
+    echo "  ok      notify's email channel is set"
   fi
   hr_roots=$(promote_roots)
   if [ -z "$hr_roots" ]; then
@@ -5448,7 +5603,7 @@ hub_ready() {
   else
     echo "  NOT-READY the cron-jobs folders could not be read"
   fi
-  hr_dest=$(hourly_destination)
+  hr_dest=$(hourly_destination) || hr_dest=
   if [ -z "$hr_dest" ]; then
     echo "  NOT-READY the hourly job file names no SD_DB_BACKUP_HOURLY_DESTINATION; on a satellite it names a local root"
   elif [ ! -d "$(dirname "$hr_dest")" ]; then
@@ -5517,7 +5672,26 @@ for root in filter(None, sys.stdin.read().splitlines()):
 cmd_promote() {
   load_profile
   echo "profile : $PROFILE"
+  if [ "$PROMOTE_DRILL" = 1 ]; then
+    [ "$PROMOTE_UNDO" = 0 ] || promote_refuse "--drill and --undo do not go together"
+    promote_drill
+    return 0
+  fi
+  if [ "$PROMOTE_UNDO" = 1 ]; then
+    [ -z "$PROMOTE_FROM" ] || promote_refuse "--from belongs to a promotion, not to --undo"
+    [ ! -f "$PROMOTE_MARKER" ] || promote_refuse "$PROMOTE_MARKER names step $(marker_get step): finish the promotion first"
+    # The undo's own marker; the helpers read PROMOTE_MARKER.
+    PROMOTE_MARKER=$UNDO_MARKER
+  fi
   step=$(marker_get step)
+  if [ "$APPLY" -ne 1 ] && [ "$PROMOTE_UNDO" = 1 ]; then
+    echo "mode    : DRY RUN — nothing will change; re-run with --apply"
+    if [ -n "$step" ]; then echo "marker  : $PROMOTE_MARKER, at step $step"; fi
+    if hub_holder; then echo "role    : this machine holds the hub role"; else echo "role    : this machine does not hold the hub role"; fi
+    echo "steps   : 1 stop the hub role and write the hand-back snapshot, 2 hub.json back and the tailnet name given up,"
+    echo "          3 the new hub serves that snapshot, 4 delete the local records, 5 update satellite, 6 prove"
+    return 0
+  fi
   if [ "$APPLY" -ne 1 ]; then
     echo "mode    : DRY RUN — nothing will change; re-run with --apply"
     if [ -n "$step" ]; then echo "marker  : $PROMOTE_MARKER, at step $step"; fi
@@ -5536,6 +5710,10 @@ cmd_promote() {
     for a in "$@"; do shift; [ "$a" = promote ] || set -- "$@" "$a"; done
     # shellcheck disable=SC2031 # ROOT moved only in hourly_destination's subshell
     exec python3 "$ROOT/local-repo-sync/refresh_drain.py" "$SELF" promote "$@"
+  fi
+  if [ "$PROMOTE_UNDO" = 1 ]; then
+    promote_undo "$step"
+    return 0
   fi
   if [ -z "$step" ] && [ -f "$PROMOTE_MARKER" ]; then
     # A marker with no step was cut short before step 3 ended: nothing moved.
@@ -5611,13 +5789,15 @@ cmd_promote() {
     # and the additive NAS copy then writes into the NAS directories of the
     # same names. The restored snapshot in the local root continues them.
     snapshot=$(marker_get snapshot)
-    dest=$(hourly_destination)
+    dest=$(hourly_destination) || dest=
     [ -n "$dest" ] && [ -d "$(dirname "$dest")" ] ||
       promote_refuse "the hourly job file names no local root to seed; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
     seeded="$dest/$(basename "$snapshot")"
     if [ ! -d "$seeded" ]; then
       mkdir -p "$dest"
-      rm -rf "$seeded.seeding"
+      stale=$(rm_target "$seeded.seeding" "$dest") ||
+        promote_refuse "will not delete $seeded.seeding; the hourly root must be a local folder off the NAS"
+      [ -z "$stale" ] || rm -rf -- "${stale:?}"
       if ! cp -R "$snapshot" "$seeded.seeding" || ! mv "$seeded.seeding" "$seeded"; then
         promote_refuse "could not copy $snapshot into $dest; rerun"
       fi
@@ -5736,6 +5916,47 @@ if want is None or got is None or tuple(got) != tuple(want):
       "$SD_PACK_ROOT/lib" "$hub" "$port" "$SD_DB" "$(basename "$(marker_get snapshot)")" </dev/null; then
     promote_refuse "no session on $hub:$port reads this machine's database; check sd-serve (launchctl print gui/$(id -u)/$LABEL_PREFIX.sd-serve) and who holds $hub, then rerun"
   fi
+  # The dashboard by its answer, not its label (sd:4661): its /health on the
+  # loopback port, then over the private route the sd stage adds. A route or
+  # an answer that is not there sends the marker back to step 8, whose stages
+  # add the route and load the agent; an unread serve status is no answer.
+  serve=""
+  { command -v tailscale >/dev/null 2>&1 && serve=$(bound_step 60 tailscale serve status 2>/dev/null); } ||
+    promote_refuse "could not read tailscale serve status for the dashboard's route; rerun once Tailscale is up"
+  origin=$(printf '%s\n' "$serve" | sd_route_origin)
+  if [ -z "$origin" ]; then
+    held=$(printf '%s\n' "$serve" | sd_route_holder)
+    marker_set step 8
+    promote_refuse "the dashboard has no private route: tailscale serve https:$SD_DASHBOARD_HTTPS_PORT ${held:+serves $held, }not 127.0.0.1:$SD_DASHBOARD_PORT; free the port if it is held, then rerun, and the sd stage adds it"
+  fi
+  body=$(mktemp)
+  for url in "http://127.0.0.1:$SD_DASHBOARD_PORT/health" "$origin/health"; do
+    # Emptied first: curl writes no file it got no answer for, so the loopback's
+    # body would stand in for the route's. Retried for a few seconds: step 8
+    # may have just loaded the agent.
+    : > "$body"
+    code=$(curl -q -sS --max-time 10 --retry 5 --retry-delay 2 --retry-connrefused --retry-max-time 30 \
+      -o "$body" -w '%{http_code}' "$url" 2>"$body.err") || code=000
+    # The body counts only with curl's exit 0 and HTTP 200: a cut-off answer is no answer.
+    if [ "$code" = 200 ] && grep -q '"service": *"sd-dashboard"' "$body" && grep -q '"ok": *true' "$body"; then
+      echo "step 9  : the dashboard answers on $url"
+      continue
+    fi
+    if [ "$code" = 000 ]; then
+      why=$(head -1 "$body.err")
+      why="no answer${why:+: $why}"
+    elif grep -q '"service": *"sd-dashboard"' "$body"; then
+      why="HTTP $code, unhealthy: $(sd_health_reason "$body")"
+    elif grep -q 'Untrusted dashboard host' "$body"; then
+      why="HTTP $code, Untrusted dashboard host: the service runs a local-only configuration; see the private front door in local-project-dashboard/RUNTIME.md"
+    else
+      why="HTTP $code and not its health body"
+    fi
+    rm -f "$body" "$body.err"
+    marker_set step 8
+    promote_refuse "the dashboard does not answer on $url ($why); check $LABEL_PREFIX.sd-dashboard and ~/Library/Logs/$LABEL_PREFIX.sd-dashboard.err, then rerun, and step 8's stages run again"
+  done
+  rm -f "$body" "$body.err"
   echo
   echo "hub failover report"
   echo "  snapshot    : $(marker_get snapshot)"
@@ -5751,7 +5972,7 @@ if want is None or got is None or tuple(got) != tuple(want):
   # hourly job may take again, and the NAS copy would overwrite them; so does
   # a snapshot the job took here while it waited. The marker stays, and
   # offsite-verify refuses the copies while it exists.
-  dest=$(hourly_destination)
+  dest=$(hourly_destination) || dest=
   [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
   # A failed read of the NAS roots is no answer, not none to hold.
   nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
@@ -5766,6 +5987,446 @@ if want is None or got is None or tuple(got) != tuple(want):
   rm -f "$PROMOTE_MARKER"
 }
 
+# The hand-back (design, "How the records leave"): a promoted satellite gives
+# the role to a repaired or new hub and deletes the records it held. Each step
+# moves state once and the marker names the next, as in promote; the records
+# go only after the new hub serves the hand-back snapshot.
+undo_restart() { # why
+  echo "promote --undo: $1; the hub role starts again, nothing was deleted" >&2
+  for st in sd cron agents; do sh "$SELF" update "$st" --apply || :; done
+  # The stages log a failed bootstrap and go on, so launchd says what runs.
+  for ul in $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./") $(hub_role_labels agent); do
+    launchctl print "gui/$(id -u)/$ul" >/dev/null 2>&1 ||
+      echo "promote --undo: $ul did not start again; run $(basename "$SELF") update cron --apply and update agents --apply" >&2
+  done
+  rm -f "$PROMOTE_MARKER"
+  exit 1
+}
+
+# The local roots the hub-role backup jobs wrote, the drill's home and the
+# database folder, each passed to $1 as one word: no splitting, no glob.
+undo_roots() { # function
+  uh=$(hourly_destination) && un=$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION) ||
+    promote_refuse "could not read a hub-role job's destination; fix its job file, then rerun"
+  for ur in "$uh" "$un" "$DRILL_HOME" "$(dirname "$SD_DB")"; do
+    [ -z "$ur" ] || "$1" "$ur"
+  done
+}
+
+# A snapshot folder name as `sd-db backup` gives one: the pack's
+# DATED_NAME, the day, then an unpadded .N.
+undo_dated() { # name
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].[1-9]*)
+      case "${1#*.}" in *[!0-9]*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+# A folder `sd-db backup` wrote, and nothing since: it holds
+# backup-manifest.json as a regular file with the fields the pack always
+# writes (format sd-db-backup, version 1, a 32-hex run_id), and its entries
+# match the folder as the pack's _check_backup reads it: every file by
+# sha256, every folder, no link, nothing on another device; Finder's
+# metadata a copy picks up is left out. A name alone proves nothing, and a
+# file added later is not the pack's. Unreadable counts as not one: kept.
+undo_snapshot() { # folder
+  python3 -c 'import hashlib, json, os, re, stat, sys
+folder = sys.argv[1]
+path = os.path.join(folder, "backup-manifest.json")
+try:
+    details = os.lstat(path)
+    if not stat.S_ISREG(details.st_mode) or details.st_size > 16 * 1024 * 1024:
+        sys.exit(1)
+    with open(path, "rb") as f:
+        value = json.loads(f.read())
+    if not (isinstance(value, dict) and value.get("format") == "sd-db-backup"
+            and type(value.get("version")) is int and value["version"] == 1
+            and isinstance(value.get("run_id"), str) and re.fullmatch(r"[0-9a-f]{32}", value["run_id"])
+            and isinstance(value.get("entries"), dict)):
+        sys.exit(1)
+    device = os.lstat(folder).st_dev
+    found = {}
+    for top, folders, files in os.walk(folder):
+        for name in folders + files:
+            entry = os.path.join(top, name)
+            if re.fullmatch(r"\.DS_Store|\._.*", name):
+                continue
+            details = os.lstat(entry)
+            if stat.S_ISLNK(details.st_mode) or details.st_dev != device:
+                sys.exit(1)
+            if entry == path:
+                continue
+            key = os.path.relpath(entry, folder)
+            if stat.S_ISREG(details.st_mode):
+                with open(entry, "rb") as f:
+                    found[key] = hashlib.sha256(f.read()).hexdigest()
+            elif stat.S_ISDIR(details.st_mode):
+                found[key] = None
+            else:
+                sys.exit(1)
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if found == value["entries"] else 1)' "$1"
+}
+
+# Calls $2 on each item in root $1 that undo can name as hub-role output:
+# the drill's home whole when it holds DRILL_MARK; in the database folder the
+# database and its -wal, -shm and -journal files; in a backup root each
+# folder with a dated name that undo_snapshot proves `sd-db backup` wrote.
+# Anything else is not undo's to delete.
+# Returns 2 when it cannot list a backup root: no answer, not none there.
+undo_named() { # root function
+  if [ "$1" = "$DRILL_HOME" ]; then
+    [ ! -f "$1/$DRILL_MARK" ] || "$2" "$1"
+  elif [ "$1" = "$(dirname "$SD_DB")" ]; then
+    for un_e in "$SD_DB" "$SD_DB-wal" "$SD_DB-shm" "$SD_DB-journal"; do
+      if [ -e "$un_e" ] || [ -L "$un_e" ]; then "$2" "$un_e"; fi
+    done
+  else
+    { [ -r "$1" ] && [ -x "$1" ]; } || { echo "$1: cannot list it" >&2; return 2; }
+    for un_e in "$1"/*; do
+      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}" && undo_snapshot "$un_e"; then "$2" "$un_e"; fi
+    done
+  fi
+}
+
+# Step 4 deletes only what undo_named names, each where rm_target proves it
+# lies under $HOME and off the NAS: the NAS copies stay. Then the root goes
+# if it is empty; one that is not is kept with what it holds. A path it
+# cannot place stops the run.
+undo_delete() { # root
+  ud_rc=0; ud_real=$(rm_target "$1" "$HOME") || ud_rc=$?
+  case $ud_rc in
+    0) [ -n "$ud_real" ] || return 0 ;;
+    1) echo "kept    : $1"; return 0 ;;
+    *) promote_refuse "could not tell where $1 lies; rerun" ;;
+  esac
+  undo_named "$1" undo_rm || promote_refuse "could not list $1; rerun"
+  [ -e "$1" ] || return 0
+  # A root that is a link stays: rmdir takes no link, and its target is
+  # where the items were.
+  if [ -L "$ud_real" ]; then echo "kept    : $1 (a link)"; return 0; fi
+  # The empty folders promote's hold step left hold nothing: rmdir takes
+  # only an empty one, so any other stays.
+  for ud_e in "$ud_real"/*; do
+    if [ -d "$ud_e" ] && [ ! -L "$ud_e" ] && undo_dated "${ud_e##*/}"; then rmdir -- "$ud_e" 2>/dev/null || :; fi
+  done
+  ud_held=
+  for ud_e in "$ud_real"/* "$ud_real"/.[!.]* "$ud_real"/..?*; do
+    if [ -e "$ud_e" ] || [ -L "$ud_e" ]; then ud_held=1; echo "  holds : $ud_e"; fi
+  done
+  if [ -n "$ud_held" ]; then
+    echo "kept    : $1 (not empty)"
+  else
+    rmdir -- "${ud_real:?}" || promote_refuse "could not remove the empty $ud_real; rerun"
+    echo "deleted : $ud_real"
+  fi
+}
+
+undo_rm() { # item
+  ur_rc=0; ur_real=$(rm_target "$1" "$HOME") || ur_rc=$?
+  case $ur_rc in
+    0) if [ -n "$ur_real" ]; then
+         rm -rf -- "${ur_real:?}" || promote_refuse "could not delete $ur_real; rerun"
+         echo "deleted : $ur_real"
+       fi ;;
+    1) echo "kept    : $1" ;;
+    *) promote_refuse "could not tell where $1 lies; rerun" ;;
+  esac
+}
+
+# Step 6 names an item step 4 should have deleted and is still there. The
+# database is never left, wherever its folder lies: this machine would still
+# hold the records.
+undo_left() { # root
+  if [ "$1" = "$(dirname "$SD_DB")" ]; then
+    for ul_f in "$SD_DB" "$SD_DB-wal" "$SD_DB-shm" "$SD_DB-journal"; do
+      ul_rc=0; ul_real=$(rm_target "$ul_f" "$HOME" 2>/dev/null) || ul_rc=$?
+      [ "$ul_rc" = 0 ] && [ -z "$ul_real" ] || printf '%s\n' "$ul_f"
+    done
+    return 0
+  fi
+  ul_rc=0; ul_real=$(rm_target "$1" "$HOME" 2>/dev/null) || ul_rc=$?
+  case $ul_rc in
+    0) [ -z "$ul_real" ] || undo_named "$1" undo_left_item || printf '%s\n' "$1 (cannot list)" ;;
+    1) ;;
+    *) printf '%s\n' "$1 (cannot tell)" ;;
+  esac
+}
+
+# The report names each root still here: what it holds is not proven
+# undo's to delete, such as a snapshot a killed backup left without its
+# manifest. The operator checks it by hand.
+undo_kept() { # root
+  if [ -e "$1" ] || [ -L "$1" ]; then echo "  kept        : $1 holds what undo cannot name as its own; check it by hand"; fi
+}
+
+undo_left_item() { # item
+  uli_rc=0; uli_real=$(rm_target "$1" "$HOME" 2>/dev/null) || uli_rc=$?
+  case $uli_rc in
+    0) [ -z "$uli_real" ] || printf '%s\n' "$1" ;;
+    1) ;;
+    *) printf '%s\n' "$1 (cannot tell)" ;;
+  esac
+}
+
+promote_undo() { # marker step
+  step=$1
+  if [ -z "$step" ]; then
+    rm -f "$PROMOTE_MARKER"
+    hub_holder || promote_refuse "this machine does not hold the hub role: no hub.json, $SD_DB here and sd-db fence reading holder; nothing to hand back"
+    # Undo hands a standby's role back; a hub profile runs the role as its own.
+    ! sd_in_profile || promote_refuse "this hub profile holds the role as the hub, not as a promoted standby; demote it instead: README, 'Hub failover'"
+    # shellcheck disable=SC2012 # the stamp sorts; the newest promotion is the one held
+    moved=$(ls -d "$SD_HUB_CONFIG".promoted-* 2>/dev/null | sort | tail -1)
+    [ -n "$moved" ] || promote_refuse "no $SD_HUB_CONFIG.promoted-* to put back"
+    # shellcheck disable=SC2046 # two words, host and port
+    set -- $(hub_named "$moved")
+    [ -n "${1:-}" ] || promote_refuse "$moved names no hub"
+    nas=$(PROMOTE_FROM=""; promote_roots | sed -n 1p)
+    [ -n "$nas" ] || promote_refuse "no NAS hourly root: set OFFSITE_VERIFY_ROOT in $(st_config_dir mirror-sync)/.env"
+    # Never created here: a share that is not mounted has no such folder.
+    [ -d "$nas" ] || promote_refuse "the NAS hourly root $nas is not there; mount the share, then rerun"
+    mkdir -p "$(dirname "$PROMOTE_MARKER")"
+    printf 'hub=%s\nport=%s\nmoved=%s\nnas=%s\nstep=1\n' "$1" "$2" "$moved" "$nas" > "$PROMOTE_MARKER.new"
+    mv "$PROMOTE_MARKER.new" "$PROMOTE_MARKER"
+    step=1
+  fi
+  hub=$(marker_get hub)
+  port=$(marker_get port)
+  moved=$(marker_get moved)
+  # hub.json aside before the deletion: sd writes here may have landed after
+  # the snapshot, so it no longer holds every record. Take a new one.
+  if { [ "$step" = 2 ] || [ "$step" = 3 ]; } && [ -e "$moved" ]; then
+    echo "step $step  : $moved is aside, so writes may follow the snapshot; a new one is taken"
+    marker_set step 1
+    step=1
+  fi
+  if [ "$step" = 1 ] && [ ! -e "$moved" ]; then
+    # Killed after hub.json went back: no write followed the snapshot.
+    [ -n "$(marker_get snapshot)" ] || promote_refuse "$moved is gone and no snapshot is recorded; put it back, then rerun"
+  elif [ "$step" = 1 ]; then
+    # Step 1: no hub-role job or agent runs after the hand-back snapshot. A
+    # job that is running holds its lock, and its uninstall refuses. A label
+    # launchd still runs is stopped whether or not its plist is there.
+    for uj in $(hub_role_labels cron); do
+      "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$uj" </dev/null ||
+        undo_restart "the $uj job did not stop; rerun once its run ends"
+    done
+    # Every role label is hub-only, so a satellite runs none of them, even
+    # one its profile lists: each stops before the snapshot.
+    for ua in $(hub_role_labels agent); do
+      [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || launchctl print "gui/$(id -u)/$ua" >/dev/null 2>&1 || continue
+      if agent_bootout "$ua"; then rm -f "$HOME/Library/LaunchAgents/$ua.plist"; else undo_restart "$ua did not stop"; fi
+    done
+    # cron-jobs.sh uninstall removes the plist even when its bootout fails, so
+    # launchd, not the plist, says each label stopped (round 4). Only print's
+    # 113 is "not loaded"; any other answer is none.
+    for ul in $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./") $(hub_role_labels agent); do
+      lr=0
+      launchctl print "gui/$(id -u)/$ul" >/dev/null 2>&1 || lr=$?
+      case "$lr" in
+        113) ;;
+        0) undo_restart "launchd still runs $ul; rerun once it stops" ;;
+        *) undo_restart "could not ask launchd whether $ul stopped (launchctl print exited $lr)" ;;
+      esac
+    done
+    nas=$(marker_get nas)
+    out=$(bound_step 900 "$SD_PACK_ROOT/bin/sd-db" backup --destination "$nas" --no-row-prune 2>&1) ||
+      undo_restart "the hand-back snapshot failed: $out"
+    printf '%s\n' "$out"
+    snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db backup: \(.*\) — .*/\1/p' | tail -1)
+    [ -f "$snapshot/backup-manifest.json" ] || undo_restart "the backup named no snapshot with a manifest: $out"
+    marker_set snapshot "$snapshot"
+    # hub.json beside the database makes every sd command here refuse
+    # (HubConflict) until step 4 deletes it, so no write follows the snapshot.
+    mv "$moved" "$SD_HUB_CONFIG"
+    echo "step 1  : $SD_HUB_CONFIG is back"
+  fi
+  if [ "$step" = 1 ]; then
+    marker_set step 2
+    step=2
+  fi
+  snapshot=$(marker_get snapshot)
+  if [ "$step" = 2 ]; then
+    # Step 2: the tailnet name goes back to this machine's own.
+    bound_step 60 tailscale set --hostname= || promote_refuse "tailscale set --hostname= failed; rerun"
+    echo "step 2  : the tailnet name ${hub%%.*} is given up"
+    marker_set step 3
+    step=3
+  fi
+  if [ "$step" = 3 ]; then
+    # Step 3: three checks, and nothing is deleted unless each passes. The
+    # fence reads the local database, opened as step 9 opens it: sd's own
+    # open refuses it beside hub.json.
+    if ! "$SD_DB_PYTHON" -I -c 'import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sd_db import database, hub, remote
+local = database.open_local(Path(sys.argv[2]), write=False, create=False)
+try:
+    found = hub.role(local)
+finally:
+    local.close()
+if found.state != "elsewhere":
+    sys.exit(f"the fence here reads {found.state}, not elsewhere: {found.reason}")
+snapshot = Path(sys.argv[5])
+run_id = json.loads((snapshot / "backup-manifest.json").read_text())["run_id"]
+try:
+    session = remote.connect(sys.argv[3], int(sys.argv[4]), None, token="", write=False,
+                             timeout=hub.CONNECT_TIMEOUT, answer_timeout=hub.ANSWER_TIMEOUT)
+    try:
+        newest = session.execute("SELECT key FROM state WHERE kind = ? ORDER BY timestamp DESC LIMIT 1",
+                                 ("restore",)).fetchone()
+        held = session.execute("SELECT 1 FROM state WHERE kind = ? AND key = ?", ("checkpoint", run_id)).fetchone()
+    finally:
+        session.close()
+except Exception as error:
+    sys.exit(f"the new hub {sys.argv[3]}:{sys.argv[4]} does not answer a session: {type(error).__name__}: {error}")
+last = newest[0] if newest else "nothing"
+if last != snapshot.name:
+    sys.exit(f"the new hub last restored {last}, not the hand-back snapshot {snapshot.name}")
+if held is None:
+    sys.exit(f"the new hub holds no checkpoint {run_id}, the hand-back point")' \
+      "$SD_PACK_ROOT/lib" "$SD_DB" "$hub" "$port" "$snapshot" </dev/null; then
+      echo "promote --undo: refused; nothing deleted. On the new hub, as a satellite of $hub, run" >&2
+      echo "  $(basename "$SELF") promote --apply: $snapshot is the newest snapshot there" >&2
+      echo "  then rerun here: $(basename "$SELF") promote --undo --apply" >&2
+      exit 1
+    fi
+    echo "step 3  : $hub serves the hand-back snapshot $snapshot"
+    marker_set step 4
+    step=4
+  fi
+  if [ "$step" = 4 ]; then
+    # Step 4: rm -rf finishes what a killed run left.
+    undo_roots undo_delete
+    marker_set step 5
+    step=5
+  fi
+  if [ "$step" = 5 ]; then
+    # Step 5: the stage's exit does not say its install worked. Its dry run
+    # after does, as for follow: no drift word, and its proof line.
+    sh "$SELF" update satellite --apply || promote_refuse "update satellite --apply failed; rerun"
+    sat=$(sh "$SELF" update satellite 2>&1) || sat="$sat
+  FAILED  update satellite exited $?"
+    printf '%s\n' "$sat"
+    if printf '%s\n' "$sat" | grep -qE '^  (DIFFERS|MISSING|EXTRA|FAILED)' ||
+       ! printf '%s\n' "$sat" | grep -q "matches the hub's"; then
+      promote_refuse "the satellite stage did not prove this machine a satellite of $hub; rerun"
+    fi
+    marker_set step 6
+  fi
+  # Step 6: the proof the design names.
+  left=$(undo_roots undo_left)
+  [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
+  rm -f "$PROMOTE_MARKER"
+  echo
+  echo "hand-back report"
+  echo "  snapshot    : $snapshot"
+  echo "  hub         : $hub:$port serves it"
+  echo "  deleted     : the records and the snapshots sd-db backup wrote here; the NAS copies stay"
+  # A root still here holds what undo cannot name as its own: say so.
+  undo_roots undo_kept
+  echo "  this machine: a satellite of $hub again"
+}
+
+# The drill (design, "Drill"): promote's steps 1, 5, 6 and 9 against a
+# throwaway home. hub.json, launchd and Tailscale stay as they are. The home
+# goes when the run ends, pass or fail; one a killed drill left goes first.
+drill_cleanup() {
+  if [ -n "${DRILL_SERVE:-}" ]; then kill "$DRILL_SERVE" 2>/dev/null || :; wait "$DRILL_SERVE" 2>/dev/null || :; fi
+  drill_remove || echo "drill   : left $DRILL_HOME; remove it by hand" >&2
+}
+
+# The home goes only where rm_target proves it lies under the state folder
+# and off the NAS, and whole only when it holds DRILL_MARK; else only empty.
+drill_remove() {
+  dr_real=$(rm_target "$DRILL_HOME" "${XDG_STATE_HOME:-$HOME/.local/state}") || return 1
+  [ -n "$dr_real" ] || return 0
+  if [ -f "$dr_real/$DRILL_MARK" ]; then
+    rm -rf -- "${dr_real:?}"
+  else
+    rmdir -- "${dr_real:?}" 2>/dev/null || { echo "$DRILL_HOME: no $DRILL_MARK, so not a drill's home" >&2; return 1; }
+  fi
+}
+
+drill_time() { # label start
+  echo "$1: $(( $(date +%s) - $2 )) s"
+}
+
+promote_drill() {
+  if [ -e "$DRILL_HOME" ]; then
+    drill_remove || promote_refuse "drill: will not delete $DRILL_HOME, which a drill that did not finish left; remove it by hand"
+    echo "drill   : removed $DRILL_HOME, which a drill that did not finish left"
+  fi
+  [ -e "$SD_HUB_CONFIG" ] || promote_refuse "no $SD_HUB_CONFIG: the drill runs on a standby satellite"
+  began=$(date +%s)
+  ready=$(hub_ready)
+  printf '%s\n' "$ready"
+  ! printf '%s\n' "$ready" | grep -q 'NOT-READY' || promote_refuse "drill: a hub-ready line is not ok"
+  drill_time "step 1  : preflight" "$began"
+  at=$(date +%s)
+  # The marker first: a home killed before it is empty, and goes by rmdir.
+  mkdir -p "$DRILL_HOME"
+  : > "$DRILL_HOME/$DRILL_MARK"
+  mkdir -p "$DRILL_HOME/home"
+  # A signal exits, and so runs EXIT, as trap_tmp does.
+  trap drill_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  set --
+  for pr in $(promote_roots | tr ' ' '\001'); do set -- "$@" "$(printf '%s' "$pr" | tr '\001' ' ')"; done
+  # The live state and config folders stay out: the throwaway home is the
+  # only place the restore writes.
+  out=$(env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
+    "$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1 </dev/null) || promote_refuse "drill: restore --newest failed: $out"
+  printf '%s\n' "$out"
+  snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db: restored \(.*\) (checkpoint .*) to .*/\1/p' | tail -1)
+  [ -n "$snapshot" ] || promote_refuse "drill: restore --newest named no snapshot"
+  drill_time "step 5-6: restore and settle" "$at"
+  at=$(date +%s)
+  db="$DRILL_HOME/home/.local/share/sd/sd.db"
+  port=$("$SD_DB_PYTHON" -I -c 'import socket
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])') || promote_refuse "drill: no free loopback port"
+  env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
+    "$SD_PACK_ROOT/bin/sd-db" serve --loopback --port "$port" --database "$db" </dev/null >"$DRILL_HOME/serve.log" 2>&1 &
+  DRILL_SERVE=$!
+  # One session reads the restore row the drill wrote, so it reached this copy.
+  "$SD_DB_PYTHON" -I -c 'import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sd_db import hub, remote, serve
+db, token = Path(sys.argv[3]), Path(sys.argv[3] + serve.TOKEN_SUFFIX)
+deadline = time.monotonic() + 30
+while True:
+    try:
+        session = remote.connect("127.0.0.1", int(sys.argv[2]), db, token=serve.read_token(token), write=False,
+                                 timeout=hub.CONNECT_TIMEOUT, answer_timeout=hub.ANSWER_TIMEOUT)
+        break
+    except Exception as error:
+        if time.monotonic() > deadline:
+            sys.exit(f"drill: no session on the loopback server: {type(error).__name__}: {error}")
+        time.sleep(0.2)
+try:
+    row = session.execute("SELECT 1 FROM state WHERE kind = ? AND key = ?", ("restore", sys.argv[4])).fetchone()
+finally:
+    session.close()
+if row is None:
+    sys.exit("drill: the session reached a database without this restore")' \
+    "$SD_PACK_ROOT/lib" "$port" "$db" "$(basename "$snapshot")" </dev/null ||
+    promote_refuse "drill: the session failed; the server said: $(tail -3 "$DRILL_HOME/serve.log")"
+  drill_time "step 9  : one session served" "$at"
+  drill_time "total   " "$began"
+  echo "drill   : passed on $snapshot; $DRILL_HOME is deleted"
+}
+
 # ------------------------------------------------------------------ main ----
 
 VERB=""
@@ -5778,6 +6439,8 @@ for a in "$@"; do
   case "$a" in
     --apply) APPLY=1 ;;
     --from) [ "$VERB" = promote ] || die "--from belongs to promote"; FROM_NEXT=1 ;;
+    --undo) [ "$VERB" = promote ] || die "--undo belongs to promote"; PROMOTE_UNDO=1 ;;
+    --drill) [ "$VERB" = promote ] || die "--drill belongs to promote"; PROMOTE_DRILL=1 ;;
     --additive) ADDITIVE=1 ;;
     --fail-on-drift) FAIL_ON_DRIFT=1 ;;
     --stale-ok) STALE_OK=1 ;;
@@ -5829,6 +6492,17 @@ for a in "$@"; do
                    stays at its hold step and the NAS copies refuse; a
                    rerun goes on at the step the promote-intent marker
                    names; without --apply prints the hub-ready lines
+                   --undo hands the role back from a promoted satellite:
+                   stops the hub role, writes the hand-back snapshot to
+                   the NAS hourly root, puts hub.json back and gives up the
+                   tailnet name; once the new hub serves that snapshot, it
+                   deletes the local records and runs `update satellite`;
+                   a rerun goes on at the step the promote-undo marker names
+                   --drill rehearses steps 1, 5, 6 and 9 on a standby
+                   satellite: restores the newest snapshot into a
+                   throwaway home, serves it on loopback, opens one
+                   session, prints each step's seconds, and deletes the
+                   home, pass or fail; hub.json, launchd and Tailscale stay
   doctor           read-only sanity check: CLT, brew, docker, fnm, key
                    material, launchd agents, and which .env files still
                    need filling in on this machine; on a profile with an sd
@@ -5959,6 +6633,8 @@ environment:
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
                           (default the pack's .venv/bin/python)
   SD_DASHBOARD_PYTHON     doctor: another interpreter the dashboard may run
+  SD_NOTIFY               hub-ready: the notify command sd-db reports with
+                          (default notify on PATH)
   SD_DASHBOARD_PORT, SD_DASHBOARD_HTTPS_PORT  sd: the dashboard's loopback
                           port and its tailscale serve port (8767, 8443)
   MACHINE_SETUP_SPOTLIGHT_PLIST  tests only: the plist that stands in for

@@ -1,0 +1,7 @@
+# Monthly hub failover drill, on the standby satellite only (sd:4013):
+# restores the newest snapshot into a throwaway home, serves it on loopback,
+# opens one session, prints each step's seconds and deletes the home. A
+# miss exits 1, which files a failure report that Today shows. Runs at 10:30
+# on the 1st, when the machine is awake.
+JOB_SCHEDULE="30 10 1 * *"
+JOB_COMMAND="sh \"$ROOT/../local-machine-setup/machine-setup.sh\" promote --drill"
