@@ -8,6 +8,7 @@ from a fixture database; the fence's tailnet name is STUB_TAILNET_NAME. Each
 step's case stops the run there and checks the next run finishes it or undoes it.
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -40,9 +41,11 @@ PRELUDE = ("import os, sys\nfrom pathlib import Path\nsys.path.insert(0, sys.arg
 def snapshot(folder, manifest=None):
     """A folder as `sd-db backup` writes one: its manifest carries the fields the pack always writes."""
     folder.mkdir(parents=True, exist_ok=True)
-    value = {"format": "sd-db-backup", "version": 1, "run_id": "a" * 32, "counts": {"state": 1}}
-    (folder / "backup-manifest.json").write_text(json.dumps(value if manifest is None else manifest) + "\n")
     (folder / "sd.db").write_text("records\n")
+    (folder / "publications").mkdir()
+    entries = {"sd.db": hashlib.sha256(b"records\n").hexdigest(), "publications": None}
+    value = {"format": "sd-db-backup", "version": 1, "run_id": "a" * 32, "counts": {"state": 1}, "entries": entries}
+    (folder / "backup-manifest.json").write_text(json.dumps(value if manifest is None else manifest) + "\n")
     return folder
 
 
@@ -281,6 +284,15 @@ class Undo(PromoteCase):
                 self.assertTrue((self.hourly / name / "photo.jpg").exists(), f"undo deleted {name}")
         self.assertFalse((self.hourly / PROMOTED).exists(), "the real sd snapshot stayed")
         self.assertIn(f"kept    : {self.hourly} (not empty)", result.stdout)
+        self.assertIn(f"kept        : {self.hourly} holds what undo cannot name as its own", result.stdout)
+
+    def test_a_snapshot_with_a_file_added_since_stays(self):
+        """codex: the manifest is the pack's, but a file it does not list is not."""
+        (self.hourly / PROMOTED / "personal.txt").write_text("mine\n")
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertTrue((self.hourly / PROMOTED / "personal.txt").exists())
+        self.assertFalse(self.nightly.exists(), "the matching snapshot stayed")
 
     def test_a_database_folder_that_links_out_of_home_fails_the_proof(self):
         """codex: the folder's link lies under $HOME, the database behind it does not; it stays, so the proof fails."""

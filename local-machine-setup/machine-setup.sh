@@ -6031,25 +6031,51 @@ undo_dated() { # name
   return 1
 }
 
-# A folder `sd-db backup` wrote: it holds backup-manifest.json as a regular
-# file, with the fields the pack always writes (format sd-db-backup,
-# version 1, a 32-hex run_id). A name alone proves nothing: another tool's
-# daily backups take the same names. Unreadable counts as not one: kept.
+# A folder `sd-db backup` wrote, and nothing since: it holds
+# backup-manifest.json as a regular file with the fields the pack always
+# writes (format sd-db-backup, version 1, a 32-hex run_id), and its entries
+# match the folder as the pack's _check_backup reads it: every file by
+# sha256, every folder, no link, nothing on another device; Finder's
+# metadata a copy picks up is left out. A name alone proves nothing, and a
+# file added later is not the pack's. Unreadable counts as not one: kept.
 undo_snapshot() { # folder
-  python3 -c 'import json, os, re, stat, sys
-path = os.path.join(sys.argv[1], "backup-manifest.json")
+  python3 -c 'import hashlib, json, os, re, stat, sys
+folder = sys.argv[1]
+path = os.path.join(folder, "backup-manifest.json")
 try:
     details = os.lstat(path)
     if not stat.S_ISREG(details.st_mode) or details.st_size > 16 * 1024 * 1024:
         sys.exit(1)
     with open(path, "rb") as f:
         value = json.loads(f.read())
+    if not (isinstance(value, dict) and value.get("format") == "sd-db-backup"
+            and type(value.get("version")) is int and value["version"] == 1
+            and isinstance(value.get("run_id"), str) and re.fullmatch(r"[0-9a-f]{32}", value["run_id"])
+            and isinstance(value.get("entries"), dict)):
+        sys.exit(1)
+    device = os.lstat(folder).st_dev
+    found = {}
+    for top, folders, files in os.walk(folder):
+        for name in folders + files:
+            entry = os.path.join(top, name)
+            if re.fullmatch(r"\.DS_Store|\._.*", name):
+                continue
+            details = os.lstat(entry)
+            if stat.S_ISLNK(details.st_mode) or details.st_dev != device:
+                sys.exit(1)
+            if entry == path:
+                continue
+            key = os.path.relpath(entry, folder)
+            if stat.S_ISREG(details.st_mode):
+                with open(entry, "rb") as f:
+                    found[key] = hashlib.sha256(f.read()).hexdigest()
+            elif stat.S_ISDIR(details.st_mode):
+                found[key] = None
+            else:
+                sys.exit(1)
 except (OSError, ValueError):
     sys.exit(1)
-ok = (isinstance(value, dict) and value.get("format") == "sd-db-backup"
-      and type(value.get("version")) is int and value["version"] == 1
-      and isinstance(value.get("run_id"), str) and re.fullmatch(r"[0-9a-f]{32}", value["run_id"]))
-sys.exit(0 if ok else 1)' "$1"
+sys.exit(0 if found == value["entries"] else 1)' "$1"
 }
 
 # Calls $2 on each item in root $1 that undo can name as hub-role output:
@@ -6135,6 +6161,13 @@ undo_left() { # root
     1) ;;
     *) printf '%s\n' "$1 (cannot tell)" ;;
   esac
+}
+
+# The report names each root still here: what it holds is not proven
+# undo's to delete, such as a snapshot a killed backup left without its
+# manifest. The operator checks it by hand.
+undo_kept() { # root
+  if [ -e "$1" ] || [ -L "$1" ]; then echo "  kept        : $1 holds what undo cannot name as its own; check it by hand"; fi
 }
 
 undo_left_item() { # item
@@ -6301,7 +6334,9 @@ if held is None:
   echo "hand-back report"
   echo "  snapshot    : $snapshot"
   echo "  hub         : $hub:$port serves it"
-  echo "  deleted     : the records and hub-role snapshots here; anything else stays, and so do the NAS copies"
+  echo "  deleted     : the records and the snapshots sd-db backup wrote here; the NAS copies stay"
+  # A root still here holds what undo cannot name as its own: say so.
+  undo_roots undo_kept
   echo "  this machine: a satellite of $hub again"
 }
 
