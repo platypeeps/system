@@ -145,7 +145,8 @@ awk 'BEGIN { for (i = 0; i <= 60000; i++)
         _stub(cls.bin, "diskutil",
               '[ -z "$SMART_STUB" ] || echo "   SMART Status: $SMART_STUB"\n')
         # Silent unless a run hands it a media error count (sd:4664).
-        _stub(cls.bin, "smartctl", '[ -z "$MEDIA_STUB" ] || echo "Media and Data Integrity Errors:    $MEDIA_STUB"\n')
+        _stub(cls.bin, "smartctl", '[ -z "$MEDIA_STUB" ] || echo "Media and Data Integrity Errors:    $MEDIA_STUB"\n'
+                                   '[ -z "$WEAR_STUB" ] || echo "Percentage Used:                    $WEAR_STUB%"\n')
         # Two labels are not loaded; every other one is loaded, holds no pid,
         # and last exited 1.
         _stub(cls.bin, "launchctl", """\
@@ -493,6 +494,21 @@ esac
         one = run("one-app", ("Kernel-2026-01-01.panic",))
         self.assertLess(set(one), set(both))
         self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
+
+    def test_ssd_wear_re_raises_in_5_percent_steps(self):
+        """REGRESSION (sd:4682). Wear only grows; one key for 85% and over hid
+        it growing after an acknowledgement. Each 5% step from 85 is a new
+        line; growth inside a step is the same line."""
+        def wear(percent):
+            out = self.run_check("wear-" + percent, {"JEV_HEALTH_CHECK": "0", "WEAR_STUB": percent}, verb="run")["out"]
+            return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ") and "SSD wear" in l]
+        at86, at88, at91 = wear("86"), wear("88"), wear("91")
+        self.assertEqual(len(at86), 1, at86)
+        self.assertEqual(at88, at86)
+        self.assertNotEqual(at91, at86)
+        self.assertRegex(at91[0], r": SSD wear at 90% of rated life or more$")
+        self.assertRegex(wear("117")[0], r": SSD wear at 100% of rated life or more$")
+        self.assertEqual(wear("84"), [])
 
     def test_a_growing_media_error_count_is_a_new_line(self):
         """REGRESSION (sd:4664 review). Media errors only grow, and growth means
