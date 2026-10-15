@@ -64,6 +64,9 @@ def parse_patterns(text: str) -> list[re.Pattern]:
         line = line.strip()
         if not line:
             continue
+        # A trailing "no letter or digit" boundary takes a character in ERE;
+        # as a lookahead, the mask leaves that character alone (sd:4698).
+        line = line.replace("([^A-Za-z0-9]|$)", "(?![A-Za-z0-9])")
         pats.append(PEM if "PRIVATE KEY" in line else re.compile(line.encode()))
     return pats
 

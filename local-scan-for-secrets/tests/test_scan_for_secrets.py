@@ -130,14 +130,83 @@ class UrlCredentials(unittest.TestCase):
                 self.assertIn("URL with embedded credentials", result.stdout)
 
 
+class HuggingFaceToken(unittest.TestCase):
+    """sd:4698: a Hugging Face token is hf_ and 34 letters or digits; a longer
+    hf_ identifier in a Codex log is not one."""
+
+    scan = UrlCredentials.scan
+    # Joined here, so this file is not a finding of the repository scan.
+    TOKEN = "hf_" + "AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+
+    def test_a_longer_hf_identifier_is_not_a_finding(self) -> None:
+        identifier = "hf_" + "a1B2c3D4" * 8 + "x"
+        self.assertEqual(len(identifier), 68)
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f'{{"id": "{identifier}"}}\n', path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Hugging Face token", result.stdout)
+
+    def test_a_token_is_a_finding(self) -> None:
+        """Also after a JSON `\\n` escape, as a session log holds it: the
+        boundary is on the right only, since `n` before the token is a word
+        character."""
+        self.assertEqual(len(self.TOKEN), 37)
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in (f"HF_TOKEN={self.TOKEN}\n", f'{{"text": "a = 1\\n{self.TOKEN}\\n"}}\n'):
+                with self.subTest(searcher=searcher, text=text[:8]):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("Hugging Face token", result.stdout)
+
+    def test_a_token_before_non_ascii_text_is_a_finding(self) -> None:
+        """The boundary is ASCII: ripgrep, and grep -E in a UTF-8 locale, count
+        a CJK letter as a word character, so the token hid before one (codex
+        review)."""
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher), mock.patch.dict(os.environ, {"LC_ALL": "en_US.UTF-8"}):
+                result = self.scan(f"# {self.TOKEN}是访问令牌\n", path)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("Hugging Face token", result.stdout)
+
+    def test_a_token_before_an_underscore_or_at_the_end_is_a_finding(self) -> None:
+        """Only a letter or digit after it makes a longer word: `\\b` counted
+        `_` as one, and Markdown emphasis hid the token (lane review)."""
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in (f"*_{self.TOKEN}_*\n", f"__{self.TOKEN}__\n", f"HF_TOKEN={self.TOKEN}"):
+                with self.subTest(searcher=searcher, text=text[:4]):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("Hugging Face token", result.stdout)
+
+    def test_a_token_before_a_letter_is_not_a_finding(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"id = {self.TOKEN}x\n", path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_mask_rewrites_the_token_and_not_the_character_after_it(self) -> None:
+        body = re.search(r"^PATTERNS='(.*?)'$", SCRIPT.read_text(), re.S | re.M).group(1)
+        mod = load_mask_files()
+        pats = mod.parse_patterns(body)
+        for after in (b'"', b"_", b""):
+            with self.subTest(after=after):
+                data = b'k = "x' + self.TOKEN.encode() + after
+                new, _, pcount, _ = mod.masked(data, [], pats)
+                self.assertEqual(pcount, 1)
+                self.assertEqual(new, b'k = "x' + mod.fit(mod.MARK, 37) + after)
+        new, _, pcount, _ = mod.masked(self.TOKEN.encode() + b"x", [], pats)
+        self.assertEqual(pcount, 0)
+
+
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in
     <config>/scan-for-secrets/fixture-fingerprints is a known fake key and is
     dropped; any other finding stands, and no list changes nothing."""
 
     # Joined here, so this file is not a finding of the repository scan.
-    FAKE = "hf_" + "FixtureKeyForTheScanSuite0123456789"
-    OTHER = "hf_" + "UnlistedValueTheScanMustStillReport42"
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite012345678"
+    OTHER = "hf_" + "UnlistedValueTheScanMustReport4200"
 
     def scan(self, text: str, path: str, fingerprints: str | None) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temporary:
