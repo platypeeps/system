@@ -314,12 +314,15 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # mask_files.py spells as a lookahead. It has no boundary before it, because
 # a JSON `\n` escape puts the letter `n` there.
 #
-# Every OpenAI key, project or legacy, holds T3BlbkFJ (base64 of "OpenAI")
+# Every OpenAI key, project, service account, admin or legacy (sd:4709),
+# holds T3BlbkFJ (base64 of "OpenAI")
 # between two runs of 20 or more key characters (the gitleaks openai-api-key
 # rule), so an sk-proj- or sk- test value in an agent log is no finding
 # (sd:4707). A length cut missed the older 48-character project keys. Both
 # runs are open-ended, so a match ends where the key ends.
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
+sk-svcacct-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
+sk-admin-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}
 github_pat_[A-Za-z0-9_]{20,}
@@ -354,6 +357,8 @@ eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 # every real secret that shares it. A new pattern stays out until placed;
 # tests/test_scan_for_secrets.py fails until it is.
 FULL_VALUE_PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
+sk-svcacct-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
+sk-admin-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}
 github_pat_[A-Za-z0-9_]{20,}
@@ -1226,6 +1231,8 @@ mask_tag() {
     function has(s)  { return index(m, s) > 0 }
     function kind() {
       if (pre("sk-proj-"))     return "OpenAI project API key"
+      if (pre("sk-svcacct-"))  return "OpenAI service account key"
+      if (pre("sk-admin-"))    return "OpenAI admin key"
       if (pre("sk-ant-"))      return "Anthropic API key"
       if (pre("sk_live_"))     return "Stripe live secret key"
       if (pre("pk_live_"))     return "Stripe live publishable key"
