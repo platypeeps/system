@@ -2412,8 +2412,8 @@ case "$1" in
     # of the sync output, its step lines left out; and hygiene's lines, its
     # notes left out with the header of a section that holds only notes. The
     # same findings fold into one open report, and a new or changed one opens
-    # its own (sd:4182). The host stays in it, as every host files under one
-    # job name. No 2>/dev/null: an input missing here is a bug to see in the
+    # its own (sd:4182) and closes the older one on this host (pack sd:4641).
+    # The host stays in it, as every host files under one job name. No 2>/dev/null: an input missing here is a bug to see in the
     # log, not an empty list (review round 1).
     if [ -n "$ATTENTION" ]; then
       sum=$({ printf 'source: %s %s\nrows: %s\n' "$LIST_SOURCE" "$LIST_WHY" "$r_why"

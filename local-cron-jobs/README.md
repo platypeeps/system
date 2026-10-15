@@ -206,7 +206,11 @@ gives that report the newest body; the reason is every distinct
 finding job ends its reason in its host and a checksum of its findings, not
 the date: the same findings each night stay one open report that counts the
 nights, and a new or changed finding opens its own (sd:4182). The host stays in
-the reason because every host files under the one job name. An acknowledged
+the reason because every host files under the one job name. A run that exits 0
+with findings and a whole log closes every other open findings report of its
+job and host as `superseded by sd:N` (pack sd:4641). These stay open: a failure
+report, one with a followup a person wrote, one another host's run folded into,
+and one filed before the host was stored. An acknowledged
 report takes the same findings while they repeat each night on that host, and
 stays done; after a clean night, a failure or other findings, they open a new
 report (pack sd:4629). A failed run's reason is `job exited N on <host>`, and

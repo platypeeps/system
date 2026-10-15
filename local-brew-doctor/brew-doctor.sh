@@ -135,6 +135,7 @@ cat "$tmp/doctor2"
 # The ingest folds a run into the open report with the same job and reason
 # and gives that report the newest body. So the reason ends in a checksum of what
 # brew doctor still says, not the date: the same warnings fold into one open
-# report, and a new or changed one opens its own (sd:4182). The host stays in
-# it, as every host files under the one job name.
+# report, and a new or changed one opens its own (sd:4182) and closes the
+# older one on this host (pack sd:4641). The host stays in it, as every host
+# files under the one job name.
 echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s) [$(cksum < "$tmp/doctor2" | cut -d' ' -f1)]"

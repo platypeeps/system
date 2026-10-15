@@ -4800,7 +4800,8 @@ grants_push() {
 # leaves out $tmp/changed, the update that dropped a grant: it names only the
 # night of the update, and the grant stays to redo after it. The same
 # findings fold into one open report, and a new or changed one opens its own
-# (sd:4182). The host stays in it, as every host files under one job name.
+# (sd:4182) and closes the older one on this host (pack sd:4641). The host
+# stays in it, as every host files under one job name.
 upgrade_attention() { # reason...
   [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
   [ "$#" -gt 0 ] || return 0
