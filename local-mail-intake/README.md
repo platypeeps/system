@@ -234,6 +234,16 @@ Its plan lives in that private repository. The plan assumed Gmail had no shell
 path and scoped this as an agent job; the `curl` handshake above disproved
 that. Nothing it finds leaves the digest without the owner.
 
+It is also the email channel's inbound half; `local-notify` is the outbound
+half (sd:4191). A repo names the alias labels it owns in its channels
+(`sd-db repo channels PATH email=LABEL,LABEL`, or the dashboard's repo
+settings), and the dashboard's Today shows each thread that waits on you under
+that repo: the newest arrival of each thread, from the last 48 hours. Today
+reads `threads.csv` and `mail-arrivals.csv` and nothing else; it never fetches,
+stamps or calls Jev. A missing state folder, a file it cannot read, a label
+this conf does not define, or a last fetch over 36 hours old shows as "mail not
+read" under the repo, never as no mail.
+
 ### A quiet day is 3, including when the log does not exist yet
 
 `report` and `stamp` used to exit **1** whenever `mail-arrivals.csv` was absent, printing

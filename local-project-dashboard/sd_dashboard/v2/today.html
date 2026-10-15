@@ -6,6 +6,7 @@
   Your work (sd:3271): the items `sd today` lists, from the same document (work); the Snooze control is Now's, keyed today:item:<id>.
   Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
   Your issues (sd:4628): each repo's issues assigned to or filed by the operator, from the same document (issues); issues.js draws them.
+  Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
   The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
@@ -116,6 +117,18 @@
       </table>
     </section>
 
+    <section class="issues-sec" aria-labelledby="mail-h">
+      <div class="sec-head">
+        <h2 id="mail-h">Your mail <button class="help" type="button" aria-label="Help: Your mail" data-help="&lt;b&gt;Mail threads waiting on you.&lt;/b&gt; A thread shows when its newest message, in the last 48 hours, came to an alias a repo names (&lt;code&gt;email=LABEL&lt;/code&gt; on the repo&#39;s channels) and someone else wrote last. Read from mail-intake&#39;s state on this machine; &lt;code&gt;mail-intake.sh fetch&lt;/code&gt; refreshes it.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="mail-tally"></p>
+      </div>
+      <table class="ledger issues" aria-labelledby="mail-h">
+        <thead><tr><th>Sent</th><th>Subject</th><th>Repo</th><th>From</th></tr></thead>
+        <tbody id="mail"><tr class="empty"><td colspan="4">Reading mail…</td></tr></tbody>
+      </table>
+    </section>
+
     <section aria-labelledby="decisions-h">
       <div class="sec-head">
         <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item.">
@@ -138,6 +151,7 @@
 <script src="/ui/snooze.js"></script>
 <script src="/ui/commands.js"></script>
 <script src="/ui/issues.js"></script>
+<script src="/ui/mail.js"></script>
 <script src="/ui/today.js"></script>
 <script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>

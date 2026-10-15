@@ -87,7 +87,7 @@ from pathlib import Path
 from sd_db import operations, progress, reads
 from sd_db.errors import SdDbError
 
-from . import active_sessions, issues, job_failures, snooze
+from . import active_sessions, issues, job_failures, snooze, today_mail
 from . import fleet as fleet_module
 from .operations_screen import _signal_name
 
@@ -420,6 +420,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     `herdr` is its seam for the live agents.
     `issues` is Your issues (sd:4628), `issues.document`: each repo's open issues assigned to or filed by the operator, with
     `issues_error` saying why none could be read.
+    `mail` is Your mail (sd:4191), `today_mail.document`: the mail threads waiting on the operator under each repo's aliases,
+    with `mail_more`, `mail_unread` and `mail_error` saying what is left out and why.
     """
     collect_area, kept = fleet or fleet_module.collect, {}
 
@@ -455,7 +457,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     waiting = _waiting(connection, now)
     return {"now": now, "sources": sources, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
             "work": work, "work_error": work_error, "waiting": waiting, "attention": _attention(shown, waiting),
-            **issues.document(connection)}
+            **issues.document(connection), **today_mail.document(connection, now=now)}
 
 
 def _waiting(connection: sqlite3.Connection, now: str) -> int:
