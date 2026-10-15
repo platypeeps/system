@@ -331,6 +331,38 @@ eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 [a-z][a-z0-9+.-]*://[^]/\s:@"\\\[]{3,}:[^]/\s:@"\\\[]{8,}@
 [Aa]uthorization[^A-Za-z0-9]{1,4}([Bb]earer[^A-Za-z0-9]{1,3})?[A-Za-z0-9+/]{24,}(=|[+][A-Za-z0-9+/]{2,}={0,2})'
 
+# The PATTERNS entries whose match is the whole secret, the only ones a
+# fixture fingerprint may skip (sd:4692): a vendor prefix and then an uncapped
+# class, or a cap at the vendor's fixed length; the URL entry holds the whole
+# user and password. Always kept: the private-key entry matches the header
+# alone, and the Authorization entry is a key-name match whose value stops at
+# the first `=` or base64url character. Listing either one's match would skip
+# every real secret that shares it. A new pattern stays out until placed;
+# tests/test_scan_for_secrets.py fails until it is.
+FULL_VALUE_PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
+sk-ant-[A-Za-z0-9_-]{20,}
+sk-[A-Za-z0-9]{40,}
+github_pat_[A-Za-z0-9_]{20,}
+gh[pousr]_[A-Za-z0-9]{36,}
+glpat-[A-Za-z0-9_-]{20,}
+AKIA[0-9A-Z]{16}
+ASIA[0-9A-Z]{16}
+AIza[0-9A-Za-z_-]{35}
+ya29\.[0-9A-Za-z_-]{30,}
+xox[baprs]-[0-9A-Za-z-]{10,}
+xapp-[0-9]-[0-9A-Za-z-]{10,}
+hf_[A-Za-z0-9]{30,}
+npm_[A-Za-z0-9]{36}
+sktsec_[A-Za-z0-9_-]{20,}
+sts_[0-9a-f]{20,}
+r8_[A-Za-z0-9]{30,}
+pk_live_[0-9A-Za-z]{20,}
+sk_live_[0-9A-Za-z]{20,}
+sq0atp-[0-9A-Za-z_-]{20,}
+SG\.[0-9A-Za-z_-]{20,}\.[0-9A-Za-z_-]{20,}
+eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
+[a-z][a-z0-9+.-]*://[^]/\s:@"\\\[]{3,}:[^]/\s:@"\\\[]{8,}@'
+
 command -v rg >/dev/null 2>&1 && HAVE_RG=1 || HAVE_RG=0
 
 # PATTERNS for `grep -E`, the fallback without ripgrep. POSIX ERE has no `\s`:
@@ -1332,6 +1364,73 @@ fi
 # the "@" because rg/grep run with -o, hence the "@$" anchors.
 FAKE_FIXTURE_RE='AKIA[0-9A-Z]*EXAMPLE|://[^@]*[<{$][^@]*@$|:[^@:]*pass(word)?[0-9]*@$|:[^@:]*[_-]test@$|:(postgres|p%40ssword|local-secret|super-secret|changeme)@$'
 OUT=$(printf '%s\n' "$OUT" | grep -Ev "$FAKE_FIXTURE_RE" || true)
+# Known-fake fixture keys by value (sd:4692): a Codex review copies a repo's
+# test keys into its session log. <config>/scan-for-secrets/fixture-fingerprints
+# lists the sha256 of each such value, one per line; a hit is dropped only when
+# its whole matched text is a FULL_VALUE_PATTERNS match and hashes to a listed
+# line, so a real key anywhere still fails. A hash or a read that fails keeps
+# the hit. The value is never printed.
+#
+# A full-value match still stops where its class stops, so it can be a slice
+# of a longer secret, such as a URL password that starts with a listed value.
+# s4s_bounded reads the hit's line again and passes only when every occurrence
+# of the value there has a delimiter on each side: the line's edge, a blank, a
+# quote, a bracket or `,`, and before it also `=` or `:`; a backslash counts
+# only as a JSON escape (`\n`, `\"`), never after an escaped backslash. An
+# occurrence inside a URL's user info (`://` before it and `@` after it, in
+# one run without blanks or double quotes, backticks included) is kept: a password may hold any of
+# those. A quote with a word character beyond it joins a longer shell word,
+# so it is no delimiter. A match ending in `@` is the URL entry, delimited by its pattern
+# unless another `@` follows in the same run, which can extend the password. A
+# line it cannot read keeps the hit. The value reaches awk on stdin only.
+s4s_bounded() { # hit
+  b_path=${1%%"$US"*}; b_rest=${1#*"$US"}; b_line=${b_rest%%"$US"*}; b_match=${b_rest#*"$US"}
+  case $b_line in ''|*[!0-9]*) return 1 ;; esac
+  { printf '%s\n' "$b_match"; sed -n "${b_line}{p;q;}" < "$b_path"; } 2>/dev/null | awk '
+    # Backslashes in an unbroken run that ends at p; odd means p escapes.
+    function slashes(p,   k) { k = 0; while (p >= 1 && substr(line, p, 1) == "\\") { k++; p-- } return k }
+    NR == 1 { v = $0; next }
+    NR == 2 {
+      L = " \t\r\"\047`([{<,=:"; R = " \t\r\"\047`)]}>,"; STOP = " \t\r\""; Q = "\"\047`"
+      line = $0; from = 0; url = (index(v, "://") > 0)
+      while ((i = index(substr(line, from + 1), v)) > 0) {
+        at = from + i; end = at + length(v) - 1; seen = 1
+        b = substr(line, at - 1, 1); a = substr(line, end + 1, 1)
+        if (!(at == 1 || index(L, b) || (index("ntr", b) && slashes(at - 2) % 2 == 1))) bad = 1
+        # A quote joins two words in a shell: a word character past it is more value.
+        if (index(Q, b) && substr(line, at - 2, 1) ~ /[A-Za-z0-9_]/) bad = 1
+        if (index(Q, a) && substr(line, end + 2, 1) ~ /[A-Za-z0-9_]/) bad = 1
+        if (!(a == "" || index(R, a) || url ||
+              (a == "\\" && end + 2 <= length(line) && index("ntr\"", substr(line, end + 2, 1)) &&
+               slashes(end + 1) == 1))) bad = 1
+        s = at; while (s > 1 && !index(STOP, substr(line, s - 1, 1))) s--
+        t = end; while (t < length(line) && !index(STOP, substr(line, t + 1, 1))) t++
+        after = index(substr(line, end + 1, t - end), "@")
+        if ((url || index(substr(line, s, at - s), "://")) && after) bad = 1
+        from = at
+      }
+    }
+    END { exit !(seen && !bad) }'
+}
+S4S_FINGERPRINTS="$(st_config_dir scan-for-secrets)/fixture-fingerprints"
+if [ -n "$OUT" ] && [ -f "$S4S_FINGERPRINTS" ]; then
+  S4S_FULL_ERE=$(printf '%s\n' "$FULL_VALUE_PATTERNS" | sed 's/\\s/[:space:]/g')
+  S4S_BEFORE=$(printf '%s\n' "$OUT" | wc -l)
+  OUT=$(printf '%s\n' "$OUT" | while IFS= read -r hit; do
+    match=${hit#*"$US"}; match=${match#*"$US"}
+    if ! printf '%s\n' "$match" | grep -qxE -e "$S4S_FULL_ERE" 2>/dev/null; then
+      printf '%s\n' "$hit"
+      continue
+    fi
+    fp=$(printf '%s' "$match" | shasum -a 256 2>/dev/null | cut -c1-64)
+    if [ "${#fp}" -eq 64 ] && grep -qixF -e "$fp" "$S4S_FINGERPRINTS" 2>/dev/null &&
+       s4s_bounded "$hit"; then continue; fi
+    printf '%s\n' "$hit"
+  done)
+  S4S_SKIPPED=$((S4S_BEFORE - $(printf '%s' "$OUT" | grep -c '' || :)))
+  [ "$S4S_SKIPPED" -eq 0 ] ||
+    echo "  skipped $S4S_SKIPPED finding whose value is a listed fixture key ($S4S_FINGERPRINTS)"
+fi
 TRANSIENT_OUT=""
 if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
   TRANSIENT_OUT=$(printf '%s\n' "$OUT" | grep -E "$TRANSIENT_PATH_RE" || true)

@@ -1,0 +1,11 @@
+# Known-fake fixture keys, by fingerprint (sd:4692). Copy to
+# <config>/scan-for-secrets/fixture-fingerprints (<config> is
+# $SYSTEM_TOOLS_CONFIG, default ~/.config/system).
+# One sha256 per line, 64 hex characters; blank and # lines are ignored.
+# A pattern finding is dropped only when the text it matched hashes to a
+# listed line, so list a repository's fake test keys, never a real key.
+# Private-key and Authorization findings are always reported: their match
+# is not the whole secret.
+# The fingerprint of a value, without it landing in shell history:
+#   read -r v; printf %s "$v" | shasum -a 256 | cut -c1-64; unset v
+0000000000000000000000000000000000000000000000000000000000000000

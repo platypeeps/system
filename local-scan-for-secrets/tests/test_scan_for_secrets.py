@@ -130,6 +130,141 @@ class UrlCredentials(unittest.TestCase):
                 self.assertIn("URL with embedded credentials", result.stdout)
 
 
+class FixtureFingerprints(unittest.TestCase):
+    """sd:4692: a pattern finding whose matched value's sha256 is listed in
+    <config>/scan-for-secrets/fixture-fingerprints is a known fake key and is
+    dropped; any other finding stands, and no list changes nothing."""
+
+    # Joined here, so this file is not a finding of the repository scan.
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite0123456789"
+    OTHER = "hf_" + "UnlistedValueTheScanMustStillReport42"
+
+    def scan(self, text: str, path: str, fingerprints: str | None) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "home").mkdir()
+            (root / "tree").mkdir()
+            (root / "tree" / "session.jsonl").write_text(text, encoding="utf-8")
+            if fingerprints is not None:
+                (root / "config" / "scan-for-secrets").mkdir(parents=True)
+                (root / "config" / "scan-for-secrets" / "fixture-fingerprints").write_text(fingerprints)
+            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"), PATH=path,
+                       JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
+                                  capture_output=True, text=True, timeout=120)
+
+    @staticmethod
+    def fingerprint(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def test_a_listed_fixture_key_is_skipped(self) -> None:
+        """A vendor token, and a URL's user and password (its `\\s` is
+        rewritten for `grep -E`)."""
+        url = "https://fixture-user:" + "notARealSecret9@"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for value, text in ((self.FAKE, self.FAKE), (url, url + "example.test/repo")):
+                with self.subTest(searcher=searcher, value=value[:8]):
+                    result = self.scan(f'{{"key": "{text}"}}\n', path, self.fingerprint(value) + "\n")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("skipped 1 finding whose value is a listed fixture key", result.stdout)
+                    self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_an_unlisted_key_in_the_same_file_still_fails(self) -> None:
+        """Blank and comment lines in the list skip nothing."""
+        listed = f"# fixture keys\n\n{self.fingerprint(self.FAKE)}\n"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{self.FAKE}\n{self.OTHER}\n", path, listed)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:2:", result.stdout)
+                self.assertNotIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn(self.OTHER, result.stdout + result.stderr)
+
+    def test_no_list_changes_nothing(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{self.FAKE}\n", path, None)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    # The class (lane review): a pattern whose match is not the whole secret.
+    # Listing a fake one's match would hide every real secret that shares it.
+
+    def test_a_listed_private_key_header_still_reports_a_key_with_another_body(self) -> None:
+        header = "-----BEGIN RSA " + "PRIVATE KEY-----"
+        key = f"{header}\nMIIEowIBAAKCAQEAuniqueRealBodyLine0123456789\n-----END RSA " + "PRIVATE KEY-----\n"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(key, path, self.fingerprint(header) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("private key material", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    def test_a_listed_authorization_match_still_reports_a_longer_value(self) -> None:
+        """The value stops at the first `=` or base64url character, so the
+        match can be a cut-short part of the real value."""
+        fake = "Authorization: Bearer " + "QmFzZTY0Rml4dHVyZVZhbHVlMDEy" + "="
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{fake}-theRestOfARealToken_xyz\n", path, self.fingerprint(fake) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    def test_a_listed_value_inside_a_longer_secret_is_still_reported(self) -> None:
+        """Codex: a full-value pattern's match stops where its class stops, so
+        it can be a slice of a longer secret. The skip needs a delimiter on
+        both sides of every occurrence in the line; a JSON `\\n` escape and a
+        quote are delimiters."""
+        listed = self.fingerprint(self.FAKE) + "\n"
+        cases = [(f"postgres://u:{self.FAKE}-different-password@db.example.test/app\n", 2),
+                 (f"secret=xyz{self.FAKE}\n", 2),
+                 (f"postgres://u:{self.FAKE},different-password@db.example.test/app\n", 2),
+                 (f'{{"secret": "prefix\\\\n{self.FAKE}"}}\n', 2),
+                 (f'{{"text": "a = 1\\n{self.FAKE}\\n"}}\n', 0),
+                 (f"password={self.FAKE}\\\n", 2),
+                 (f"https://u:{self.FAKE},`tail@db.example.test\n", 2),
+                 (f'url=postgres://user:"{self.FAKE}"suffix@db.example.test/app\n', 2),
+                 (f'secret=prefix"{self.FAKE}"\n', 2),
+                 (f"key = '{self.FAKE}'\n", 0)]
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text, code in cases:
+                with self.subTest(searcher=searcher, text=text[:14]):
+                    result = self.scan(text, path, listed)
+                    self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                    self.assertNotIn(self.FAKE, result.stdout + result.stderr)
+
+    def test_a_listed_url_credential_with_a_later_at_sign_is_still_reported(self) -> None:
+        """The URL entry ends at the first `@`; a raw `@` after it in the same
+        run can extend the password."""
+        url = "https://alice:" + "fixtureSecret9@"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{url}remaining@example.test/repo\n", path, self.fingerprint(url) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    def test_every_pattern_is_full_value_or_always_kept(self) -> None:
+        """The enumeration: each PATTERNS entry is in FULL_VALUE_PATTERNS, the
+        only ones a fingerprint may skip, or is one of the two kept ones. A new
+        pattern fails here until it is placed."""
+        text = SCRIPT.read_text()
+
+        def block(name: str) -> list[str]:
+            body = re.search(rf"^{name}='(.*?)'$", text, re.S | re.M).group(1)
+            return body.splitlines()
+
+        patterns, full = block("PATTERNS"), block("FULL_VALUE_PATTERNS")
+        self.assertLessEqual(set(full), set(patterns))
+        kept = [p for p in patterns if p not in full]
+        self.assertEqual(2, len(kept), kept)
+        self.assertTrue(kept[0].startswith("-----BEGIN"), kept)
+        self.assertTrue(kept[1].startswith("[Aa]uthorization"), kept)
+
+
 class Recorder(BaseHTTPRequestHandler):
     """A stub endpoint that answers a System One request and keeps each body."""
 
