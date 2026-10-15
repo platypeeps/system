@@ -75,6 +75,9 @@ class Undo(PromoteCase):
         agents.mkdir(parents=True)
         for label in ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]:
             (agents / f"{label}.plist").write_text("<plist/>\n")
+        # ...and loaded: the test launchctl reads this list.
+        self.loaded = self.tmp / "stub.log.loaded"
+        self.loaded.write_text("".join(f"{label}\n" for label in ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]))
         self.marker = f.home / ".local/state/sd/promote-undo"
         # The new hub, once it restored the hand-back snapshot.
         self.new_hub = self.tmp / "new-hub.db"
@@ -101,6 +104,10 @@ class Undo(PromoteCase):
     def role_stopped(self):
         for plist in (self.fixture.home / "Library/LaunchAgents").glob("*.plist"):
             plist.unlink()
+        self.loaded.write_text("")
+
+    def still_loaded(self):
+        return self.loaded.read_text().split() if self.loaded.exists() else []
 
     def records_here(self):
         return sorted(p.name for p in self.fixture.db.parent.glob("sd.db*")) if self.fixture.db.parent.exists() else []
@@ -196,6 +203,38 @@ class Undo(PromoteCase):
         self.assertIn(f"{PREFIX}.cron.sd-db-backup-hourly", self.installed())
         self.assertTrue(self.fixture.db.exists())
         self.assertFalse(self.hub_json.exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_a_job_launchd_still_runs_takes_no_snapshot_and_the_role_starts_again(self):
+        """Round 4: cron-jobs.sh uninstall removes the plist even when its bootout
+        fails; launchd, not the plist, says the job stopped."""
+        label = f"{PREFIX}.cron.sd-db-backup-hourly"
+        result = self.run_undo("--apply", expect=1, STUB_BOOTOUT_FAIL=label)
+        self.assertIn(f"launchd still runs {label}; rerun once it stops", result.stderr)
+        self.assertEqual([], self.calls("backup --destination"))
+        self.assertIn(f"{PREFIX}.sd-serve", self.installed(), "the role did not start again")
+        self.assertIsNone(self.marker_step())
+
+    def test_a_role_that_does_not_start_again_is_named(self):
+        """The restart's stages log a failed bootstrap and exit 0; launchd says it."""
+        label = f"{PREFIX}.cron.sd-db-backup-hourly"
+        result = self.run_undo("--apply", expect=1, STUB_BACKUP_RC="1", STUB_BOOTSTRAP_FAIL=label)
+        self.assertIn(f"promote --undo: {label} did not start again", result.stderr)
+        self.assertNotIn(f"{PREFIX}.sd-serve did not start again", result.stderr)
+
+    def test_a_loaded_agent_with_no_plist_is_stopped_before_the_snapshot(self):
+        """A plist gone by hand does not stop its label."""
+        label = f"{PREFIX}.sd-serve"
+        (self.fixture.home / f"Library/LaunchAgents/{label}.plist").unlink()
+        self.run_undo("--apply", expect=1)
+        self.assertNotIn(label, self.still_loaded())
+        self.assertEqual("3", self.marker_step())
+        self.assertEqual(1, len(self.calls("backup --destination")))
+
+    def test_a_launchd_that_does_not_answer_takes_no_snapshot(self):
+        result = self.run_undo("--apply", expect=1, STUB_PRINT_RC="1")
+        self.assertIn("could not ask launchd whether", result.stderr)
+        self.assertEqual([], self.calls("backup --destination"))
         self.assertIsNone(self.marker_step())
 
     def test_killed_after_the_stop_a_rerun_writes_the_snapshot(self):

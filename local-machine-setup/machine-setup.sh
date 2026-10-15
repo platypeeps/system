@@ -5875,6 +5875,11 @@ if want is None or got is None or tuple(got) != tuple(want):
 undo_restart() { # why
   echo "promote --undo: $1; the hub role starts again, nothing was deleted" >&2
   for st in sd cron agents; do sh "$SELF" update "$st" --apply || :; done
+  # The stages log a failed bootstrap and go on, so launchd says what runs.
+  for ul in $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./") $(hub_role_labels agent); do
+    launchctl print "gui/$(id -u)/$ul" >/dev/null 2>&1 ||
+      echo "promote --undo: $ul did not start again; run $(basename "$SELF") update cron --apply and update agents --apply" >&2
+  done
   rm -f "$PROMOTE_MARKER"
   exit 1
 }
@@ -5924,16 +5929,29 @@ promote_undo() { # marker step
     [ -n "$(marker_get snapshot)" ] || promote_refuse "$moved is gone and no snapshot is recorded; put it back, then rerun"
   elif [ "$step" = 1 ]; then
     # Step 1: no hub-role job or agent runs after the hand-back snapshot. A
-    # job that is running holds its lock, and its uninstall refuses.
+    # job that is running holds its lock, and its uninstall refuses. A label
+    # launchd still runs is stopped whether or not its plist is there.
     for uj in $(hub_role_labels cron); do
-      [ -f "$HOME/Library/LaunchAgents/$LABEL_PREFIX.cron.$uj.plist" ] || continue
       "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$uj" </dev/null ||
         undo_restart "the $uj job did not stop; rerun once its run ends"
     done
     for ua in $(hub_role_labels agent); do
       ! manifest agent | grep -qxF "$ua" || continue
-      [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || continue
+      [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || launchctl print "gui/$(id -u)/$ua" >/dev/null 2>&1 || continue
       if agent_bootout "$ua"; then rm -f "$HOME/Library/LaunchAgents/$ua.plist"; else undo_restart "$ua did not stop"; fi
+    done
+    # cron-jobs.sh uninstall removes the plist even when its bootout fails, so
+    # launchd, not the plist, says each label stopped (round 4). Only print's
+    # 113 is "not loaded"; any other answer is none.
+    for ul in $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./") $(hub_role_labels agent); do
+      ! manifest agent | grep -qxF "$ul" || continue
+      lr=0
+      launchctl print "gui/$(id -u)/$ul" >/dev/null 2>&1 || lr=$?
+      case "$lr" in
+        113) ;;
+        0) undo_restart "launchd still runs $ul; rerun once it stops" ;;
+        *) undo_restart "could not ask launchd whether $ul stopped (launchctl print exited $lr)" ;;
+      esac
     done
     nas=$(marker_get nas)
     out=$(bound_step 900 "$SD_PACK_ROOT/bin/sd-db" backup --destination "$nas" --no-row-prune 2>&1) ||

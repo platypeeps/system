@@ -152,7 +152,8 @@ GH_STUB = 'echo "gh $*" >> "$STUB_LOG"\nprintf "%s" "$STUB_GH_JSON"\n[ -n "$STUB
 
 # launchd: a bootstrap loads its label, a bootout unloads it, and print finds
 # a loaded label (113, launchd's "no such service", otherwise). STUB_BOOTSTRAP_FAIL
-# names one label whose bootstrap fails after its plist is written.
+# names one label whose bootstrap fails after its plist is written;
+# STUB_BOOTOUT_FAIL one that stays loaded.
 LAUNCHCTL_STUB = r'''echo "launchctl $*" >> "$STUB_LOG"
 loaded="$STUB_LOG.loaded"
 case "$1" in
@@ -164,6 +165,7 @@ case "$1" in
              [ "${STUB_BOOTSTRAP_RC:-0}" = 0 ] || exit "$STUB_BOOTSTRAP_RC"
              echo "$label" >> "$loaded" ;;
   bootout) label=${2##*/}; [ -z "${3:-}" ] || label=$(basename "$3" .plist)
+           [ "$label" != "${STUB_BOOTOUT_FAIL:-}" ] || exit 5
            [ ! -f "$loaded" ] || { grep -vxF "$label" "$loaded" > "$loaded.new" || :; mv "$loaded.new" "$loaded"; } ;;
 esac
 exit 0
