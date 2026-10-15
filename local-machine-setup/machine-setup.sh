@@ -5944,8 +5944,9 @@ promote_undo() { # marker step
       "$ROOT/local-cron-jobs/cron-jobs.sh" uninstall "$uj" </dev/null ||
         undo_restart "the $uj job did not stop; rerun once its run ends"
     done
+    # Every role label is hub-only, so a satellite runs none of them, even
+    # one its profile lists: each stops before the snapshot.
     for ua in $(hub_role_labels agent); do
-      ! manifest agent | grep -qxF "$ua" || continue
       [ -f "$HOME/Library/LaunchAgents/$ua.plist" ] || launchctl print "gui/$(id -u)/$ua" >/dev/null 2>&1 || continue
       if agent_bootout "$ua"; then rm -f "$HOME/Library/LaunchAgents/$ua.plist"; else undo_restart "$ua did not stop"; fi
     done
@@ -5953,7 +5954,6 @@ promote_undo() { # marker step
     # launchd, not the plist, says each label stopped (round 4). Only print's
     # 113 is "not loaded"; any other answer is none.
     for ul in $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./") $(hub_role_labels agent); do
-      ! manifest agent | grep -qxF "$ul" || continue
       lr=0
       launchctl print "gui/$(id -u)/$ul" >/dev/null 2>&1 || lr=$?
       case "$lr" in
