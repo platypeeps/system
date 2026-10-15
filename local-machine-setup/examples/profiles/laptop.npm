@@ -1,0 +1,2 @@
+# Global npm CLIs for the laptop profile, one per line; pkg@version pins one.
+@google/gemini-cli
