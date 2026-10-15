@@ -206,6 +206,8 @@
   function draw() {
     // Your issues (sd:4628) are this document's too; issues.js draws them, or the failure that left none.
     document.dispatchEvent(new CustomEvent('issues:read', { detail: DOC ? { issues: DOC.issues || [], error: DOC.issues_error || '' } : { error: failed } }));
+    // Your mail (sd:4191) too; mail.js draws it from the document's mail keys.
+    document.dispatchEvent(new CustomEvent('mail:read', { detail: DOC || { mail_error: failed } }));
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
     $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;

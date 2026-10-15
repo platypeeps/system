@@ -939,14 +939,15 @@ def cmd_fetch(config_path: Path, state_dir: Path, url: str, out, dry_run: bool =
             print(f"  [{row['alias']}] {row['subject']}  — {row['who']} ({row['waiting_on']})", file=out)
         return EXIT_FOUND
 
-    write_threads(threads_path, latest, stamp, carry)
-
     if first_run:
         # Baseline. Every open thread is technically new and none of it is news.
+        write_threads(threads_path, latest, stamp, carry)
         print(f"baseline established: {len(latest)} threads across {len(config.aliases)} aliases", file=out)
         return EXIT_NONE
 
+    # The arrivals first (sd:4191): a run stopped between the two writes then reports a thread twice, not never.
     append_arrivals(log_path, rows)
+    write_threads(threads_path, latest, stamp, carry)
     if not rows:
         print(f"no change: {len(latest)} threads in the last {config.window_days} days", file=out)
         return EXIT_NONE
@@ -1049,13 +1050,19 @@ def cmd_status(config_path: Path, state_dir: Path, url: str, out) -> int:
     return EXIT_FOUND
 
 
+def paths(environ: dict[str, str]) -> tuple[Path, Path]:
+    """The conf and the state folder, each from its variable or its default. The dashboard's Today reads them too."""
+    config_path = Path(environ.get("MAIL_INTAKE_CONFIG")
+                       or system_tools_config.config_dir(TOOL, environ) / "mail-intake.conf")
+    state_dir = Path(environ.get("MAIL_INTAKE_STATE", Path.home() / ".local/share/mail-intake"))
+    return config_path, state_dir
+
+
 def main(argv: list[str], environ: dict[str, str] | None = None, out=None) -> int:
     out = sys.stdout if out is None else out
     environ = dict(os.environ if environ is None else environ)
 
-    config_path = Path(environ.get("MAIL_INTAKE_CONFIG")
-                       or system_tools_config.config_dir(TOOL, environ) / "mail-intake.conf")
-    state_dir = Path(environ.get("MAIL_INTAKE_STATE", Path.home() / ".local/share/mail-intake"))
+    config_path, state_dir = paths(environ)
     url = environ.get("WORKSPACE_MCP_URL", DEFAULT_URL)
 
     verb = argv[0] if argv else ""
