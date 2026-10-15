@@ -5442,6 +5442,17 @@ time.sleep(float(sys.argv[3]))
 os._exit(1)' "$1" "$2" "$3"
 }
 
+# The fence's name rule (sd_db hub.py `_matches`), case and a trailing dot
+# aside: two full names agree whole; a bare machine name matches the first label.
+hub_name_matches() {
+  hm_a=$(printf '%s' "${1%.}" | tr '[:upper:]' '[:lower:]')
+  hm_b=$(printf '%s' "${2%.}" | tr '[:upper:]' '[:lower:]')
+  case "$hm_a/$hm_b" in
+    *.*/*.*) [ "$hm_a" = "$hm_b" ] ;;
+    *) [ "${hm_a%%.*}" = "${hm_b%%.*}" ] ;;
+  esac
+}
+
 # The hub-ready block (design, "Satellite readiness"): read-only, one line per
 # check, `ok`, `--` when it cannot be read now, or NOT-READY. Not a drift word:
 # a satellite that is no standby is not drifted, so the nightly drift count
@@ -5475,7 +5486,7 @@ hub_ready() {
   # The hub holds the setting; a dead hub cannot say, and promote checks it
   # again in the restored database before it takes the name.
   if hr_name=$(bound_step 30 sd config get sd.hub_name 2>/dev/null); then
-    if [ "$hr_name" = "$1" ]; then
+    if hub_name_matches "$1" "$hr_name"; then
       echo "  ok      sd.hub_name is $hr_name"
     elif [ -z "$hr_name" ]; then
       echo "  NOT-READY sd.hub_name is unset: on the hub, sd config set sd.hub_name $1"

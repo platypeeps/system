@@ -454,6 +454,19 @@ class Promote(PromoteCase):
         self.assertIn("  --      sd.hub_name not read from the hub", result.stdout)
         self.assertNotIn("NOT-READY", result.stdout)
 
+    def test_the_hub_name_line_takes_the_fences_rule(self):
+        """sd:4683: a bare machine name matches the full MagicDNS name, as the
+        fence's `_matches` has it; two full names must agree whole."""
+        for named, setting, ready in [("hub", HUB, True), (HUB, "hub", True), (HUB, "HUB.example.test.", True),
+                                      (HUB, "hub.other.test", False), ("hub", "other.example.test", False),
+                                      (HUB, "other", False)]:
+            with self.subTest(named=named, setting=setting):
+                self.hub_json.write_text(json.dumps({"hub": named, "port": self.port}) + "\n")
+                out = self.run_promote(STUB_HUB_NAME=setting).stdout
+                line = f"  ok      sd.hub_name is {setting}"
+                (self.assertIn if ready else self.assertNotIn)(line, out)
+                self.assertEqual(not ready, f"NOT-READY sd.hub_name is {setting}," in out)
+
     def test_the_drain_waits_for_a_gate_from_before(self):
         """A gate run by hand outside every lane lock ends before the role moves."""
         count = self.tmp / "gate.count"
