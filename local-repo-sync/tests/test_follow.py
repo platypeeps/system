@@ -727,6 +727,22 @@ class FollowTest(unittest.TestCase):
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
         self.assertFalse(f.intent.exists())
 
+    def test_a_drained_follow_prints_each_status_line_once(self):
+        """REGRESSION (sd:4721). The first pass printed its "already at the
+        hub's pin" line, then drained and ran follow again as a child that
+        printed it again: the system line showed twice and the pack move
+        line was lost behind it."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        pinned = f.advance_origin(pack)
+        f.set_hub_pin(system, old[0], pack=pinned)
+
+        result = f.run("follow", expect=0)
+
+        self.assertEqual((old[0], pinned), (f.head(system), f.head(pack)))
+        self.assertEqual(1, result.stdout.count("system already at the hub's pin"))
+        self.assertIn(f"=== follow pack {pack}", result.stdout)
+
     def test_kill_in_the_pack_setup_sets_up_again_at_the_pin(self):
         """NEW (round 6, kill points 5 to 7). Marker left with both HEADs at
         the pin, wherever make setup stopped: the next run drains, sets up
