@@ -6036,6 +6036,7 @@ undo_dated() { # name
 # the drill's home whole when it holds DRILL_MARK; in the database folder the
 # database and its -wal, -shm and -journal files; in a backup root each
 # snapshot folder named as above. Anything else is not undo's to delete.
+# Returns 2 when it cannot list a backup root: no answer, not none there.
 undo_named() { # root function
   if [ "$1" = "$DRILL_HOME" ]; then
     [ ! -f "$1/$DRILL_MARK" ] || "$2" "$1"
@@ -6044,6 +6045,7 @@ undo_named() { # root function
       if [ -e "$un_e" ] || [ -L "$un_e" ]; then "$2" "$un_e"; fi
     done
   else
+    { [ -r "$1" ] && [ -x "$1" ]; } || { echo "$1: cannot list it" >&2; return 2; }
     for un_e in "$1"/*; do
       if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}"; then "$2" "$un_e"; fi
     done
@@ -6061,8 +6063,11 @@ undo_delete() { # root
     1) echo "kept    : $1"; return 0 ;;
     *) promote_refuse "could not tell where $1 lies; rerun" ;;
   esac
-  undo_named "$1" undo_rm
+  undo_named "$1" undo_rm || promote_refuse "could not list $1; rerun"
   [ -e "$1" ] || return 0
+  # A root that is a link stays: rmdir takes no link, and its target is
+  # where the items were.
+  if [ -L "$ud_real" ]; then echo "kept    : $1 (a link)"; return 0; fi
   ud_held=
   for ud_e in "$ud_real"/* "$ud_real"/.[!.]* "$ud_real"/..?*; do
     if [ -e "$ud_e" ] || [ -L "$ud_e" ]; then ud_held=1; echo "  holds : $ud_e"; fi
@@ -6091,15 +6096,20 @@ undo_rm() { # item
 # database is never left, wherever its folder lies: this machine would still
 # hold the records.
 undo_left() { # root
+  if [ "$1" = "$(dirname "$SD_DB")" ]; then
+    for ul_f in "$SD_DB" "$SD_DB-wal" "$SD_DB-shm" "$SD_DB-journal"; do
+      ul_rc=0; ul_real=$(rm_target "$ul_f" "$HOME" 2>/dev/null) || ul_rc=$?
+      [ "$ul_rc" = 0 ] && [ -z "$ul_real" ] || printf '%s\n' "$ul_f"
+    done
+    return 0
+  fi
   ul_rc=0; ul_real=$(rm_target "$1" "$HOME" 2>/dev/null) || ul_rc=$?
   case $ul_rc in
-    0) [ -z "$ul_real" ] || undo_named "$1" undo_left_item ;;
-    1) [ "$1" != "$(dirname "$SD_DB")" ] || undo_named "$1" undo_print ;;
+    0) [ -z "$ul_real" ] || undo_named "$1" undo_left_item || printf '%s\n' "$1 (cannot list)" ;;
+    1) ;;
     *) printf '%s\n' "$1 (cannot tell)" ;;
   esac
 }
-
-undo_print() { printf '%s\n' "$1"; }
 
 undo_left_item() { # item
   uli_rc=0; uli_real=$(rm_target "$1" "$HOME" 2>/dev/null) || uli_rc=$?

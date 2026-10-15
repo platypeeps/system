@@ -242,6 +242,47 @@ class Undo(PromoteCase):
         self.assertFalse(self.nightly.exists())
         self.assertFalse(self.fixture.db.parent.exists())
 
+    def test_a_database_folder_that_links_out_of_home_fails_the_proof(self):
+        """codex: the folder's link lies under $HOME, the database behind it does not; it stays, so the proof fails."""
+        folder = self.fixture.db.parent
+        elsewhere = self.tmp / "elsewhere-sd"
+        folder.rename(elsewhere)
+        folder.symlink_to(elsewhere)
+        self.handed_back()
+        result = self.run_undo("--apply", expect=1)
+        self.assertIn("still here after the delete", result.stderr)
+        self.assertTrue((elsewhere / "sd.db").exists())
+
+    def test_a_root_that_is_a_link_loses_its_snapshots_and_stays(self):
+        """codex: rmdir takes no link, so a linked root left empty blocked every rerun."""
+        real = self.fixture.home / "real-hourly"
+        self.hourly.rename(real)
+        self.hourly.symlink_to(real)
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertFalse((real / PROMOTED).exists())
+        self.assertTrue(self.hourly.is_symlink())
+        self.assertIn(f"kept    : {self.hourly} (a link)", result.stdout)
+
+    def test_a_root_it_cannot_list_stops_the_delete_and_fails_the_proof(self):
+        """codex: a glob over a folder it cannot list stays literal and names nothing."""
+        self.handed_back()
+        for step in ("4", "6"):
+            with self.subTest(step=step):
+                if step == "6":
+                    # Everything else gone, as step 4 leaves it: only the root it cannot list remains.
+                    subprocess.run(["rm", "-rf", str(self.nightly)], check=True)
+                    for record in self.fixture.db.parent.glob("sd.db*"):
+                        record.unlink()
+                self.write_marker(step=step, snapshot=self.nas / "sd-backups-hourly" / HANDBACK)
+                self.hourly.chmod(0o311)
+                try:
+                    result = self.run_undo("--apply", expect=1)
+                finally:
+                    self.hourly.chmod(0o755)
+                self.assertIn("cannot list", result.stderr)
+                self.assertTrue((self.hourly / PROMOTED).exists())
+
     def test_a_drill_folder_without_the_drill_marker_is_kept(self):
         drill = self.fixture.home / ".local/state/sd/promote-drill"
         (drill / "home").mkdir(parents=True)
