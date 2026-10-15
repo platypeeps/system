@@ -345,9 +345,13 @@ if command -v smartctl >/dev/null 2>&1; then
   media=$(echo "$sm" | sed -n 's/^Media and Data Integrity Errors:[[:space:]]*\([0-9]*\).*/\1/p')
   cw=$(echo "$sm" | sed -n 's/^Critical Warning:[[:space:]]*\(0x[0-9a-fA-F]*\).*/\1/p')
   if [ -n "$wear" ] && [ "$wear" -ge 85 ] 2>/dev/null; then
+    # Wear only grows: its key steps by 5% from 85 to 100, so growth after an
+    # acknowledgement re-raises it and a 1% creep does not (sd:4682).
+    # awk, not $(( )): sh reads a leading zero (085) as octal.
+    wear_step=$(awk -v w="$wear" 'BEGIN { s = int(w / 5) * 5; print (s > 100 ? 100 : s) }')
     finding "SSD wear at ${wear}% of rated life" \
       "plan a replacement/new machine before it hits 100; keep backups tight" = \
-      "SSD wear at 85% of rated life or more"
+      "SSD wear at ${wear_step}% of rated life or more"
   fi
   if [ -n "$media" ] && [ "$media" -gt 0 ] 2>/dev/null; then
     finding "SSD media/data integrity errors: $media" \

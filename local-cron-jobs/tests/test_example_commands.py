@@ -13,6 +13,7 @@ set only in the fixture's env.sh.
 """
 
 import pathlib
+import time
 import unittest
 
 from tests.test_cron_jobs import FOLDER, Fixture
@@ -147,11 +148,14 @@ class HourlyBackupJobTest(unittest.TestCase):
     #: A placeholder the operator replaces, in this job and in the pair list alike.
     NAS = "/Volumes/change-me-nas-share/Backup/sd-backups-hourly"
 
-    def run_job(self, **codes):
-        fx = Fixture()
+    def run_job(self, job_text=None, **codes):
+        fx = self.fx = Fixture()
         self.addCleanup(fx.destroy)
+        # PRUNE_SLEEP holds the prune the way a slow share did (sd:4690).
+        sd_db = RECORD.format(name="sd-db", rc="SNAPSHOT_RC").replace(
+            "exit", 'case "$*" in *--prune-only*) [ -z "$PRUNE_SLEEP" ] || sleep "$PRUNE_SLEEP" ;; esac\nexit', 1)
         programs = {
-            fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db": RECORD.format(name="sd-db", rc="SNAPSHOT_RC"),
+            fx.home / "repos/platypeeps/sd-ai-command-pack/bin/sd-db": sd_db,
             fx.tmp / "python": RECORD.format(name="python", rc="PREFLIGHT_RC"),
             fx.tmp / "local-mirror-sync/mirror-sync.sh": MIRROR_RECORD,
         }
@@ -161,9 +165,24 @@ class HourlyBackupJobTest(unittest.TestCase):
             path.chmod(0o755)
         marker = fx.tmp / "chain-calls"
         env = {"CHAIN_MARKER": str(marker), "SD_DB_PYTHON": str(fx.tmp / "python"), **codes}
-        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        fx.write_job(self.JOB.stem, job_text or self.JOB.read_text())
         result = fx.exec_job(self.JOB.stem, extra_env=env)
         return result, marker.read_text().splitlines() if marker.exists() else []
+
+    def test_a_slow_share_ends_the_prune_at_its_own_bound(self):
+        """REGRESSION (sd:4690). The prune reads the NAS share; at 01:50 a slow
+        share held it until the job's 20-minute limit failed the whole run,
+        and the log did not say which step hung. The prune now runs under
+        st_step with a 300 s bound; the run shrinks it to 2 s."""
+        text = self.JOB.read_text()
+        self.assertIn('st_step 300 \\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\\" backup --prune-only', text)
+        started = time.monotonic()
+        result, calls = self.run_job(text.replace("st_step 300 ", "st_step 2 "), PRUNE_SLEEP="20")
+        self.assertLess(time.monotonic() - started, 15, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror", "sd-db"])
+        log = result.stdout + result.stderr + "".join(p.read_text() for p in (self.fx.folder / "logs").glob("*.log"))
+        self.assertIn("timed out after 2s: ", log)
 
     def test_the_snapshot_then_the_preflight_then_the_additive_copy_then_the_prune(self):
         result, calls = self.run_job()
