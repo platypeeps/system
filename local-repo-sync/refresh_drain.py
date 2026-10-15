@@ -221,18 +221,17 @@ def gate_holders(env, queued=None):
 
 def wait_gate(env, deadline, limit, queued=False):
     """Wait until each gate holder present now has ended; later ones do not count.
-    With `queued`, a gate waiting now counts too, until it ends: promote moves
-    the role, and a gate queued before it would start under the old one."""
+    With `queued`, a gate waiting now counts too, until its process ends:
+    promote moves the role, and a gate queued before it would start under the
+    old one. Its process, not the status list: between its ticket and its
+    holder record, the list names it nowhere."""
     waiting = set() if queued else None
     first = gate_holders(env, waiting)
 
     def busy():
-        now = set() if queued else None
-        current = gate_holders(env, now)
-        left = [holder for key, holder in current.items()
-                if key in first or (queued and holder.get("pid") in waiting)]
+        left = [first[key] for key in gate_holders(env) if key in first]
         if queued:
-            left += [{"pid": pid} for pid in sorted(now & waiting)]
+            left += [{"pid": pid} for pid in sorted(waiting) if alive(pid)]
         if not left:
             return None
         pids = ", ".join(f"pid {holder.get('pid') or '?'}" for holder in left)
@@ -240,6 +239,16 @@ def wait_gate(env, deadline, limit, queued=False):
 
     if first or waiting:
         wait(busy, deadline, limit)
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, OverflowError):
+        return True
+    return True
 
 
 def take_ship_locks(env, held, deadline, limit):
