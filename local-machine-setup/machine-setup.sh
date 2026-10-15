@@ -5622,6 +5622,35 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
   else
     echo "  ok      hourly backup root: $hr_dest"
   fi
+  # A NAS pair whose destination holds a folder its source lacks loses it on
+  # a pass with --delete, such as a share's other folders when the pair names
+  # the share's parent; the dated snapshot folders are the history an
+  # additive pass keeps. Read only: it deletes nothing (sd:4683).
+  for hr_list in mirrors-nas.conf mirrors-nas-hourly.conf; do
+    hr_conf="$(st_config_dir mirror-sync)/$hr_list"
+    [ -f "$hr_conf" ] || continue
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$hr_conf" | grep -v '^$' |
+      while IFS='|' read -r hr_src hr_dst _; do
+        # A listing that fails is no answer, not an empty folder.
+        if ! hr_names=$(ls -A "$hr_dst" 2>/dev/null); then
+          echo "  --      $hr_list: $hr_dst not readable now; its folders were not compared"
+          continue
+        fi
+        if [ -e "$hr_src" ] && ! ls -A "$hr_src" >/dev/null 2>&1; then
+          echo "  --      $hr_list: $hr_src not readable now; its folders were not compared"
+          continue
+        fi
+        hr_extra=$(printf '%s\n' "$hr_names" | grep -Ev '^([0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?)?$' |
+          while IFS= read -r hr_n; do
+            if [ -d "$hr_dst/$hr_n" ] && [ ! -e "$hr_src/$hr_n" ]; then printf '%s\n' "$hr_n"; fi
+          done | awk 'NR > 1 {printf ", "} {printf "%s", $0}')
+        if [ -n "$hr_extra" ]; then
+          echo "  NOT-READY $hr_list: $hr_dst holds $hr_extra, which $hr_src lacks; a pass with --delete deletes them: pair the sd-backups folder itself"
+        else
+          echo "  ok      $hr_list: $hr_dst holds no folder $hr_src lacks"
+        fi
+      done
+  done
   if [ -z "$hr_newest" ]; then
     echo "  NOT-READY no dated snapshot under the backup roots"
   else

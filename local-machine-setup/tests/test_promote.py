@@ -467,6 +467,32 @@ class Promote(PromoteCase):
                 (self.assertIn if ready else self.assertNotIn)(line, out)
                 self.assertEqual(not ready, f"NOT-READY sd.hub_name is {setting}," in out)
 
+    def test_a_nas_list_whose_destination_holds_other_folders_is_not_ready(self):
+        """sd:4683: a NAS pair named by the share's parent folder would trim the
+        share's other folders on a pass with --delete; the dated snapshot
+        folders an additive pass keeps are no finding, and nothing is deleted."""
+        share = self.tmp / "share"
+        for name in ("sd-backups/2026-10-13.1", "Photos", "Tax records"):
+            (share / name).mkdir(parents=True)
+        local = self.tmp / "local-nightly"
+        (local / "sd-backups/2026-10-14.1").mkdir(parents=True)
+        lists = self.config / "mirror-sync"
+        lists.mkdir(exist_ok=True)
+        cases = [(f"{local}|{share}\n",
+                  f"  NOT-READY mirrors-nas.conf: {share} holds Photos, Tax records, which {local} lacks; "
+                  "a pass with --delete deletes them: pair the sd-backups folder itself"),
+                 (f"# the per-folder pair\n{local}/sd-backups|{share}/sd-backups\n",
+                  f"  ok      mirrors-nas.conf: {share}/sd-backups holds no folder {local}/sd-backups lacks"),
+                 (f"{local}|{self.tmp}/unmounted\n",
+                  f"  --      mirrors-nas.conf: {self.tmp}/unmounted not readable now; its folders were not compared")]
+        for conf, line in cases:
+            with self.subTest(conf=conf):
+                (lists / "mirrors-nas.conf").write_text(conf)
+                out = self.run_promote().stdout
+                self.assertIn(line + "\n", out)
+                self.assertEqual("NOT-READY" in line, "NOT-READY" in out)
+        self.assertEqual(["Photos", "Tax records", "sd-backups"], sorted(p.name for p in share.iterdir()))
+
     def test_the_drain_waits_for_a_gate_from_before(self):
         """A gate run by hand outside every lane lock ends before the role moves."""
         count = self.tmp / "gate.count"
