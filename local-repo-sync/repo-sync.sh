@@ -1404,8 +1404,9 @@ follow() {
     echo "follow: no system checkout in the conf, and the hub-pin tag lives there; nothing to follow"
     return 0
   fi
-  # The error named below is git's last line, not the step's own.
-  if ! bound_step 300 git -C "$f_sys" fetch -q origin refs/tags/hub-pin < /dev/null 2> "$TMPD/err"; then
+  # The error named below is git's last line, not the step's own. The local
+  # tag moves too, even backwards: promote's hub-ready reads it (sd:4683).
+  if ! bound_step 300 git -C "$f_sys" fetch -q origin +refs/tags/hub-pin:refs/tags/hub-pin < /dev/null 2> "$TMPD/err"; then
     f_rc=0
     bound_step 120 git -C "$f_sys" ls-remote --exit-code origin refs/tags/hub-pin \
       < /dev/null > /dev/null 2>&1 || f_rc=$?

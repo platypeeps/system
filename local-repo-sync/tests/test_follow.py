@@ -452,6 +452,20 @@ class FollowTest(unittest.TestCase):
         self.assertEqual([], f.gate_calls())  # sd:4046
         self.assertEqual([f"-C {pack} setup"], f.make_calls())
 
+    def test_follow_moves_the_local_hub_pin_tag_too(self):
+        """NEW (sd:4683). promote's hub-ready reads the local hub-pin tag, so
+        follow moves it to origin's, over an older one and backwards too."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, f.advance_origin(system), pack=f.advance_origin(pack))
+        f.git(system, "fetch", "-q", "origin", "+refs/tags/hub-pin:refs/tags/hub-pin")
+        f.set_hub_pin(system, old[0], pack=old[1])
+
+        f.run("follow", expect=0)
+
+        self.assertEqual(f.git(f.bare(system), "rev-parse", "refs/tags/hub-pin"),
+                         f.git(system, "rev-parse", "refs/tags/hub-pin"))
+
     def test_a_hub_that_refuses_this_build_follows_from_the_snapshot(self):
         """NEW (sd:3983). After a hub migration the hub refuses this
         satellite's older sd_db until it follows. The list's database read
