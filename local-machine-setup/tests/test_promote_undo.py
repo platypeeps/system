@@ -37,6 +37,15 @@ PRELUDE = ("import os, sys\nfrom pathlib import Path\nsys.path.insert(0, sys.arg
            "hub._this_name = lambda: os.environ['STUB_TAILNET_NAME']\n")
 
 
+def snapshot(folder, manifest=None):
+    """A folder as `sd-db backup` writes one: its manifest carries the fields the pack always writes."""
+    folder.mkdir(parents=True, exist_ok=True)
+    value = {"format": "sd-db-backup", "version": 1, "run_id": "a" * 32, "counts": {"state": 1}}
+    (folder / "backup-manifest.json").write_text(json.dumps(value if manifest is None else manifest) + "\n")
+    (folder / "sd.db").write_text("records\n")
+    return folder
+
+
 def make_db(path, *, restored, checkpoint=None, hub_name=HUB):
     initialise(path)
     connection = database.open_local(path, write=True, create=False)
@@ -65,7 +74,7 @@ class Undo(PromoteCase):
         (jobs / "sd-db-backup.job").write_text(
             f'SD_DB_BACKUP_DESTINATION="{self.nightly}"\nJOB_SCHEDULE="10 2 * * *"\nJOB_COMMAND="true"\n')
         for root in (self.hourly, self.nightly):
-            (root / PROMOTED).mkdir(parents=True)
+            snapshot(root / PROMOTED)
         (self.config / "machine-setup/profiles/work.satellite").write_text(f"{HUB}:{self.port}\n")
         # Promoted: hub.json aside, the database restored, the role installed.
         self.aside = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
@@ -191,7 +200,7 @@ class Undo(PromoteCase):
 
     def test_a_root_outside_home_is_left(self):
         outside = self.tmp / "elsewhere/sd-backups"
-        (outside / PROMOTED).mkdir(parents=True)
+        snapshot(outside / PROMOTED)
         (self.config / "cron-jobs/jobs/sd-db-backup.job").write_text(
             f'SD_DB_BACKUP_DESTINATION="{outside}"\nJOB_SCHEDULE="10 2 * * *"\nJOB_COMMAND="true"\n')
         self.handed_back()
@@ -233,14 +242,45 @@ class Undo(PromoteCase):
         self.assertTrue((db.parent / "providers.yaml").exists())
 
     def test_roots_with_only_sd_output_are_removed(self):
-        for name in ("2026-10-14.6", "2026-10-14.6.seeding", "2026-10-14.10", "2026-10-15"):
-            (self.hourly / name).mkdir()
+        for name in ("2026-10-14.6", "2026-10-14.10"):
+            snapshot(self.hourly / name)
+        (self.hourly / "2026-10-15").mkdir()  # promote's hold step: an empty folder
         (self.fixture.db.parent / "providers.yaml").unlink()
         self.handed_back()
         self.run_undo("--apply")
         self.assertFalse(self.hourly.exists())
         self.assertFalse(self.nightly.exists())
         self.assertFalse(self.fixture.db.parent.exists())
+
+    def test_dated_folders_sd_db_backup_did_not_write_stay(self):
+        """Review round 7: a dated name proves nothing; only the pack's manifest does."""
+        foreign = {
+            "2026-10-13": None,  # no manifest
+            "2026-10-12": {"format": "other-tool", "version": 1, "run_id": "a" * 32},
+            "2026-10-11": "not json",
+            "2026-10-10": {"format": "sd-db-backup", "version": 1, "run_id": "not-hex"},
+            "2026-10-09": {"format": "sd-db-backup", "version": "1", "run_id": "a" * 32},
+            "2026-10-08": "link",  # a manifest that is a symlink to a valid one
+            "2026-10-14.6.seeding": None,  # a seed promote's step 6 did not finish
+        }
+        real = snapshot(self.tmp / "elsewhere/2026-10-07")
+        for name, manifest in foreign.items():
+            folder = self.hourly / name
+            folder.mkdir()
+            (folder / "photo.jpg").write_text("mine\n")
+            if manifest == "link":
+                (folder / "backup-manifest.json").symlink_to(real / "backup-manifest.json")
+            elif manifest == "not json":
+                (folder / "backup-manifest.json").write_text("{\n")
+            elif manifest is not None:
+                (folder / "backup-manifest.json").write_text(json.dumps(manifest) + "\n")
+        self.handed_back()
+        result = self.run_undo("--apply")
+        for name in foreign:
+            with self.subTest(name=name):
+                self.assertTrue((self.hourly / name / "photo.jpg").exists(), f"undo deleted {name}")
+        self.assertFalse((self.hourly / PROMOTED).exists(), "the real sd snapshot stayed")
+        self.assertIn(f"kept    : {self.hourly} (not empty)", result.stdout)
 
     def test_a_database_folder_that_links_out_of_home_fails_the_proof(self):
         """codex: the folder's link lies under $HOME, the database behind it does not; it stays, so the proof fails."""
@@ -305,7 +345,7 @@ class Undo(PromoteCase):
 
     def test_a_root_that_climbs_out_of_home_through_dotdot_is_left(self):
         outside = self.tmp / "outside/sd-backups"
-        (outside / PROMOTED).mkdir(parents=True)
+        snapshot(outside / PROMOTED)
         self.nightly_at(f"{self.fixture.home}/../outside/sd-backups")
         self.handed_back()
         self.run_undo("--apply")
@@ -335,7 +375,7 @@ class Undo(PromoteCase):
 
     def test_a_root_with_glob_characters_deletes_that_root_only(self):
         hourly = self.fixture.home / "hub-role/backups[old]"
-        (hourly / PROMOTED).mkdir(parents=True)
+        snapshot(hourly / PROMOTED)
         other = self.fixture.home / "hub-role/backupso"
         other.mkdir()
         self.hourly_at(hourly)
@@ -346,7 +386,7 @@ class Undo(PromoteCase):
 
     def test_a_root_with_spaces_in_its_name_is_deleted(self):
         hourly = self.fixture.home / "hub-role/hourly backups"
-        (hourly / PROMOTED).mkdir(parents=True)
+        snapshot(hourly / PROMOTED)
         (self.fixture.home / "hub-role/hourly").mkdir()
         self.hourly_at(hourly)
         self.handed_back()
@@ -357,7 +397,7 @@ class Undo(PromoteCase):
     def test_a_root_with_a_newline_in_its_name_stops_the_run_before_any_delete(self):
         """Split at the newline, the name would point at another folder; a root left out would pass the proof."""
         hourly = self.fixture.home / "hub-role/hourly\nbackups"
-        (hourly / PROMOTED).mkdir(parents=True)
+        snapshot(hourly / PROMOTED)
         other = self.fixture.home / "hub-role/hourly"
         other.mkdir()
         self.hourly_at(hourly)
@@ -373,7 +413,7 @@ class Undo(PromoteCase):
     def test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left(self):
         """codex: $() strips a trailing newline from pwd -P, which then names another folder."""
         real = self.fixture.home / "records\n"
-        (real / PROMOTED).mkdir(parents=True)
+        snapshot(real / PROMOTED)
         other = self.fixture.home / "records"
         other.mkdir()
         (self.fixture.home / "alias").symlink_to(real)
@@ -398,7 +438,7 @@ class Undo(PromoteCase):
         """A failed probe is no answer: the run stops at step 4; it does not count the root gone.
         codex: the folder it cannot enter sits two levels up, so the parent's own test fails too."""
         locked = self.fixture.home / "locked"
-        (locked / "sub/hourly" / PROMOTED).mkdir(parents=True)
+        snapshot(locked / "sub/hourly" / PROMOTED)
         self.hourly_at(locked / "sub/hourly")
         self.handed_back()
         locked.chmod(0o000)

@@ -6019,23 +6019,44 @@ undo_roots() { # function
   done
 }
 
-# A snapshot folder name as `sd-db backup` gives one (the pack's
-# DATED_NAME: the day, then an unpadded .N), or as promote's seed stages one.
+# A snapshot folder name as `sd-db backup` gives one: the pack's
+# DATED_NAME, the day, then an unpadded .N.
 undo_dated() { # name
-  ud_n=${1%.seeding}
-  case "$ud_n" in
+  case "$1" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;;
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].[1-9]*)
-      case "${ud_n#*.}" in *[!0-9]*) return 1 ;; esac
+      case "${1#*.}" in *[!0-9]*) return 1 ;; esac
       return 0 ;;
   esac
   return 1
 }
 
+# A folder `sd-db backup` wrote: it holds backup-manifest.json as a regular
+# file, with the fields the pack always writes (format sd-db-backup,
+# version 1, a 32-hex run_id). A name alone proves nothing: another tool's
+# daily backups take the same names. Unreadable counts as not one: kept.
+undo_snapshot() { # folder
+  python3 -c 'import json, os, re, stat, sys
+path = os.path.join(sys.argv[1], "backup-manifest.json")
+try:
+    details = os.lstat(path)
+    if not stat.S_ISREG(details.st_mode) or details.st_size > 16 * 1024 * 1024:
+        sys.exit(1)
+    with open(path, "rb") as f:
+        value = json.loads(f.read())
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(value, dict) and value.get("format") == "sd-db-backup"
+      and type(value.get("version")) is int and value["version"] == 1
+      and isinstance(value.get("run_id"), str) and re.fullmatch(r"[0-9a-f]{32}", value["run_id"]))
+sys.exit(0 if ok else 1)' "$1"
+}
+
 # Calls $2 on each item in root $1 that undo can name as hub-role output:
 # the drill's home whole when it holds DRILL_MARK; in the database folder the
 # database and its -wal, -shm and -journal files; in a backup root each
-# snapshot folder named as above. Anything else is not undo's to delete.
+# folder with a dated name that undo_snapshot proves `sd-db backup` wrote.
+# Anything else is not undo's to delete.
 # Returns 2 when it cannot list a backup root: no answer, not none there.
 undo_named() { # root function
   if [ "$1" = "$DRILL_HOME" ]; then
@@ -6047,7 +6068,7 @@ undo_named() { # root function
   else
     { [ -r "$1" ] && [ -x "$1" ]; } || { echo "$1: cannot list it" >&2; return 2; }
     for un_e in "$1"/*; do
-      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}"; then "$2" "$un_e"; fi
+      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}" && undo_snapshot "$un_e"; then "$2" "$un_e"; fi
     done
   fi
 }
@@ -6068,6 +6089,11 @@ undo_delete() { # root
   # A root that is a link stays: rmdir takes no link, and its target is
   # where the items were.
   if [ -L "$ud_real" ]; then echo "kept    : $1 (a link)"; return 0; fi
+  # The empty folders promote's hold step left hold nothing: rmdir takes
+  # only an empty one, so any other stays.
+  for ud_e in "$ud_real"/*; do
+    if [ -d "$ud_e" ] && [ ! -L "$ud_e" ] && undo_dated "${ud_e##*/}"; then rmdir -- "$ud_e" 2>/dev/null || :; fi
+  done
   ud_held=
   for ud_e in "$ud_real"/* "$ud_real"/.[!.]* "$ud_real"/..?*; do
     if [ -e "$ud_e" ] || [ -L "$ud_e" ]; then ud_held=1; echo "  holds : $ud_e"; fi
