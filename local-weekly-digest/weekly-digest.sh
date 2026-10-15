@@ -11,6 +11,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # these are this checkout.
 CRON_LOGS="${WEEKLY_DIGEST_CRON_LOGS:-$DIR/../local-cron-jobs/logs}"
 MSETUP="${WEEKLY_DIGEST_MSETUP:-$DIR/../local-machine-setup/machine-setup.sh}"
+PACK="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}"
 
 case "${1:-}" in
   run)   REPORT=1 ;;
@@ -32,7 +33,9 @@ usage: weekly-digest.sh run|check|test
 
 contents: per-job run/failure counts for the last 7 days (from
 local-cron-jobs logs), recent failures, machine-setup drift count, pending
-brew/mas updates, root disk usage.
+brew/mas updates, root disk usage, and per Jev stage its calls and how often
+Jev differed from the fallback (a read of the judgment ledger through
+sd-db judgments compare; it asks Jev nothing).
 
 order: this week's failure lines are grouped by job, and the jobs ordered
 by failures this week, then by the newest failure, then by name; each line
@@ -47,6 +50,10 @@ environment:
                             digest reads (default: this checkout's
                             local-machine-setup; the line is left out when
                             that file does not exist)
+  SD_PACK_ROOT              the command pack whose bin/sd-db reads the
+                            judgment ledger (default:
+                            ~/repos/platypeeps/sd-ai-command-pack; the Jev
+                            block is left out when it has no bin/sd-db)
 HELPEOF
     exit 0
     ;;
@@ -67,6 +74,31 @@ NOTES="$TMPD/notes"
 cutoff=$(date -v-7d '+%Y-%m-%d' 2>/dev/null || date -d '7 days ago' '+%Y-%m-%d')
 
 note() { printf -- '%s\n' "$1" >> "$NOTES"; }
+
+# One line per stage from `sd-db judgments compare --json`: the Jev arm's
+# calls, and how often its verdict differed from the old mechanism's answer of
+# the same pair. The comparison arms (Kev, Haiku) stay in that report.
+DIVERGENCE='
+import json, sys
+lines = []
+for stage in json.load(sys.stdin)["stages"]:
+    for arm in stage["arms"]:
+        if arm["arm"] != "jev":
+            continue
+        pairs, compared = arm["old_pairs"], arm["old_compared"]
+        if compared:
+            differed = compared - arm["old_agree"]
+            tail = "differed from the fallback in %d of %d (%d%%)" % (
+                differed, compared, round(100 * differed / compared))
+            if pairs > compared:
+                tail += ", %d not comparable" % (pairs - compared)
+        elif pairs:
+            tail = "no comparable fallback answer in %d pair(s)" % pairs
+        else:
+            tail = "no fallback answer recorded"
+        lines.append("  %-28s %d call(s), %s" % (stage["stage"], arm["calls"], tail))
+print("\n".join(lines) or "  no Jev calls recorded")
+'
 
 # The lines COMMAND printed, run under a bound of SECONDS, or "unknown" when
 # it failed or timed out: a check that did not run counts nothing (sd:3536).
@@ -183,6 +215,22 @@ order_failures || note "failure order skipped: the ordering itself failed"
 
   dused=$(df -P / | awk 'NR==2 { print $5 }')
   echo "root disk used      : $dused"
+
+  # Per Jev stage, how often Jev's verdict differed from the caller's own
+  # answer, read from the judgment ledger: a read only, it asks Jev nothing
+  # (sd:3583). A read that failed is unknown, never a quiet week.
+  if [ -x "$PACK/bin/sd-db" ]; then
+    echo
+    # shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+    if ledger=$(ST_STEP_FD3=1; st_step 120 "$PACK/bin/sd-db" judgments compare \
+          --since "$cutoff" --json 3>&2 2>/dev/null < /dev/null) \
+        && divergence=$(printf '%s' "$ledger" | "${PYTHON:-python3}" -c "$DIVERGENCE"); then
+      echo "jev against the fallback, last 7 days (per stage):"
+      printf '%s\n' "$divergence"
+    else
+      echo "jev against the fallback: unknown (the judgment ledger read failed)"
+    fi
+  fi
 
   if [ -s "$NOTES" ]; then
     echo
