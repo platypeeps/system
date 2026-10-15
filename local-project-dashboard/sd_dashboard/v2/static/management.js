@@ -307,7 +307,8 @@ const chWords = v => v === null ? 'none' : CH.filter(c => v[c]).map(c => `${c}=$
 // `chStored` is all of it; `chSetting` is the publish channels alone, null when the row names none.
 const chStored = r => r.channels === 'none' || r.chProblem ? null : chParse(r.channels);
 const chSetting = r => { const v = chStored(r); return v && CH.some(c => v[c]) ? Object.fromEntries(CH.filter(c => v[c]).map(c => [c, v[c]])) : null; };
-const chInbound = r => Object.entries(chStored(r) || {}).filter(([k]) => !CH.includes(k));
+// The mail aliases (sd:4191) have their own field below, so they are not among the display-only keys.
+const chInbound = r => Object.entries(chStored(r) || {}).filter(([k]) => !CH.includes(k) && k !== 'email');
 const chDefault = (r, c) => { const n = r.path.split('/').pop(); return c === 'notion' ? n : `Briefs/${n}`; };
 function chShown(r) {
   const inbound = chInbound(r).map(([k, v]) => html`<p class="why">Inbound ${k}, display only: <code>${v && v.url || JSON.stringify(v)}</code></p>`);
@@ -342,6 +343,20 @@ function proposeChannels(r, value) {
     back: r.chProblem || (r.channels !== 'none' && !chSetting(r)) ? undefined : chStored(r),
     note: `Takes effect at the next render: run sd-research-kit render in ${r.path}, or wait for the next commit.` });
 }
+// sd:4191: the repo's mail aliases, labels of local-mail-intake's conf whose threads Today shows under this repo. The write
+// names only `email`, so the library keeps the channels and the other inbound keys. Undo writes the old setting back, which
+// replaces `email` only when that setting named it; over NULL it clears. An emptied field is no write: the library keeps
+// a key a set leaves out, so only Clear setting removes the aliases.
+const chAliases = r => chStored(r)?.email?.aliases || [];
+function proposeAliases(r, text) {
+  const labels = [...new Set(text.split(/[\s,]+/).filter(Boolean))].sort(), was = chAliases(r).join(',') || 'none';
+  if (labels.join(',') === chAliases(r).join(',')) return withdraw('mail_aliases');
+  if (!labels.length) { withdraw('mail_aliases', true); shell.toast('Not proposed: an alias field cannot be emptied alone. Clear setting removes the whole setting.'); return; }
+  addProposal({ key: 'mail_aliases', value: { email: { aliases: labels } }, shown: labels.join(','), before: r.channels, verb: 'channels', route: 'sd-db',
+    icon: 'terminal', title: `email aliases ${was} → ${labels.join(',')}`, cmd: `${SDDB} repo channels ${shq(r.path)} ${shq(`email=${labels.join(',')}`)}`,
+    back: r.channels === 'none' ? null : !r.chProblem && chAliases(r).length ? chStored(r) : undefined,
+    note: "Today shows these aliases' threads under this repo from its next read." });
+}
 
 function renderRepoPage(el) {
   const r = REPOS.find(x => x.path === repoParam);
@@ -366,6 +381,8 @@ function renderRepoPage(el) {
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
       ${setRow(html`<code>channels</code> <button class="help" type="button" aria-label="Help: channels" data-help="<b>Where this repo's briefs publish.</b> A checked channel is on; an empty folder is its default, shown greyed. <b>none</b> is no setting: each document's research.conf.py designation and the default folders, as before the setting existed. A change takes effect at the next render.">${I('circle-help')}</button>`, chShown(r), chForm(r), html` data-key="channels"`)}
+      ${setRow(html`<code>email</code> <button class="help" type="button" aria-label="Help: email aliases" data-help="<b>The mail aliases this repo owns.</b> Each is an alias label in local-mail-intake's conf; Today shows the threads that came to them and wait on you. Labels only: the addresses stay in the conf.">${I('circle-help')}</button>`, chAliases(r).join(', ') || html`<span class="no">none</span>`,
+        html`<input class="fld" type="text" data-set="mail_aliases" value="${chAliases(r).join(', ')}" placeholder="label, label" aria-label="Email aliases" autocomplete="off" spellcheck="false">`, html` data-key="mail_aliases"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
       ${setRow(html`<code>ci</code>`, r.ci, lock('sd-db repo ci'))}
       ${setRow(html`<code>pieces_source</code>`, r.pieces, lock('moves only by migration'))}
@@ -414,6 +431,7 @@ function propose(key, value) {
   const r = REPOS.find(x => x.path === repoParam), rv = r.review || {};
   let p;
   if (key === 'channels') return proposeChannels(r, value === null ? null : chRead());
+  if (key === 'mail_aliases') return proposeAliases(r, value);
   if (key === 'runner_merge' || key === 'managed' || key === 'dependabot') {
     const before = key === 'runner_merge' ? r.merge : r[key];
     if (value === before) return withdraw(key);

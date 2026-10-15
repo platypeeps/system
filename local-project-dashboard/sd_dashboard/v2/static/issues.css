@@ -1,5 +1,5 @@
 /* Your issues (sd:4628), on Today and Tasks: one ledger of each repo's Jira and GitHub issues assigned to or filed by the
- * operator. The rows are not selectable, so no row hover; the reference is the one link and opens the issue on its tracker.
+ * operator. Your mail (sd:4191) on Today is the same ledger; its subject is the link and opens the thread in Gmail. The rows are not selectable, so no row hover; the reference is the one link and opens the issue on its tracker.
  * Hallmark · component: issue row · genre: modern-minimal · theme: design.md instrument panel
  * states: default · hover (the reference link) · focus · active -- no row control; a failed read is a row naming it. */
 .issues-sec { margin-top: var(--space-xl); }
@@ -10,9 +10,9 @@
 .issues tbody tr:hover td { background: transparent; }
 .issues td { vertical-align: top; height: auto; padding-block: var(--space-xs); }
 .issues .ref, .issues .repo, .issues .why { white-space: nowrap; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); }
-.issues .ref a { color: var(--color-ink); text-decoration: none; }
-.issues .ref a:hover, .issues .ref a:active { text-decoration: underline; }
-.issues .ref a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.issues .ref a, .issues .what a { color: var(--color-ink); text-decoration: none; }
+.issues .ref a:hover, .issues .ref a:active, .issues .what a:hover, .issues .what a:active { text-decoration: underline; }
+.issues .ref a:focus-visible, .issues .what a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .issues .what { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
 .issues tr.empty td { color: var(--color-muted); padding-block: var(--space-sm); }
 @media (max-width: 899px) {
