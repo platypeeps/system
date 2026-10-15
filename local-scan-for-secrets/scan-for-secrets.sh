@@ -1378,7 +1378,7 @@ OUT=$(printf '%s\n' "$OUT" | grep -Ev "$FAKE_FIXTURE_RE" || true)
 # quote, a bracket or `,`, and before it also `=` or `:`; a backslash counts
 # only as a JSON escape (`\n`, `\"`), never after an escaped backslash. An
 # occurrence inside a URL's user info (`://` before it and `@` after it, in
-# one run without blanks or double quotes) is kept: a password may hold any of
+# one run without blanks or double quotes, backticks included) is kept: a password may hold any of
 # those. A match ending in `@` is the URL entry, delimited by its pattern. A
 # line it cannot read keeps the hit. The value reaches awk on stdin only.
 s4s_bounded() { # hit
@@ -1389,14 +1389,15 @@ s4s_bounded() { # hit
     function slashes(p,   k) { k = 0; while (p >= 1 && substr(line, p, 1) == "\\") { k++; p-- } return k }
     NR == 1 { v = $0; next }
     NR == 2 {
-      L = " \t\r\"\047`([{<,=:"; R = " \t\r\"\047`)]}>,"; STOP = " \t\r\"`"
+      L = " \t\r\"\047`([{<,=:"; R = " \t\r\"\047`)]}>,"; STOP = " \t\r\""
       line = $0; from = 0; url = (index(v, "://") > 0)
       while ((i = index(substr(line, from + 1), v)) > 0) {
         at = from + i; end = at + length(v) - 1; seen = 1
         b = substr(line, at - 1, 1); a = substr(line, end + 1, 1)
         if (!(at == 1 || index(L, b) || (index("ntr", b) && slashes(at - 2) % 2 == 1))) bad = 1
         if (!(a == "" || index(R, a) || url ||
-              (a == "\\" && index("ntr\"", substr(line, end + 2, 1)) && slashes(end + 1) == 1))) bad = 1
+              (a == "\\" && end + 2 <= length(line) && index("ntr\"", substr(line, end + 2, 1)) &&
+               slashes(end + 1) == 1))) bad = 1
         if (!url) {
           s = at; while (s > 1 && !index(STOP, substr(line, s - 1, 1))) s--
           t = end; while (t < length(line) && !index(STOP, substr(line, t + 1, 1))) t++
