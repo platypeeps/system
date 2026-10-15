@@ -72,6 +72,8 @@ section + section { margin-top: var(--space-2xl); }
 /* Details additions */
 .rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
 .details .kind { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
+/* An attention basis holds one finding per line (sd:4664): show each on its own line (sd:4681). */
+.details dd { white-space: pre-line; }
 .details h3 { font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); }
 .details .mailbody { white-space: pre-wrap; overflow-wrap: anywhere; font: 400 var(--text-xs)/1.45 var(--font-data); max-height: 22rem; overflow-y: auto; }
 .diff { margin: 0; padding: var(--space-xs) 0; font: 400 var(--text-xs)/1.45 var(--font-data); border-left: var(--rule-hair) solid var(--color-rule); max-height: 18rem; overflow-y: auto; }
