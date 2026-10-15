@@ -199,7 +199,8 @@ def report_controls(connection, row, revision):
     return tag("section", tag("h2", "Report source"),
         tag("dl", join(tag("div", tag("dt", label), tag("dd", provenance.get(key, "Not recorded")))
             for key, label in (("job", "Job"), ("started", "Started"), ("ended", "Ended"), ("exit_code", "Exit code"),
-                               ("source_path", "Source log"), ("attention_basis", "Attention evidence"))), repeated),
+                               ("source_path", "Source log"))),
+            tag("div", tag("dt", "Attention evidence"), tag("dd", _basis(provenance, repeats) or "Not recorded")), repeated),
         tag("p", "Output was truncated. The complete source remains in the log.", class_="notice") if _cut(provenance, repeats) else "",
         form(f"/api/reports/{row['id']}/acknowledge", label="Acknowledge report", command=f"sd reports acknowledge {row['id']}", revision=revision)
         if row["status"] != "done" else tag("p", "Acknowledged"), class_="control-panel")
@@ -358,6 +359,14 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
     return out
 
 
+def _basis(provenance, repeats):
+    """The open report's current finding set (sd:4664): a smaller run folds in and keeps its set in `repeats.basis`
+    (pack sd:4658); `report.attention_basis` is the first run's, read when that is absent or null, as the pack's
+    CURRENT_BASIS reads it."""
+    current = repeats.get("basis") if isinstance(repeats, dict) else None
+    return current if current is not None else provenance.get("attention_basis")
+
+
 def _cut(provenance, repeats) -> bool:
     """Whether the report's kept body is cut (sd:4652): a later whole run can replace a cut first one (pack sd:4641),
     and `repeats.body_truncated` then says so; `report.truncated` is the first run's, read only when that key is absent,
@@ -386,7 +395,7 @@ def _report(connection, row, revision, followups) -> dict:
         "attention": fields.get("attention") is True, "record": "record" in fields,
         "job": provenance.get("job") or None, "run": provenance.get("run_id"),
         "started": provenance.get("started"), "ended": provenance.get("ended"), "exit": provenance.get("exit_code"),
-        "src": provenance.get("source_path"), "basis": provenance.get("attention_basis"),
+        "src": provenance.get("source_path"), "basis": _basis(provenance, repeats),
         "truncated": _cut(provenance, repeats),
         "repeats": {"count": repeats.get("count"), "last": repeats.get("last_ended")} if repeats else None,
         "body": text[-BODY_CHARS:], "cut": len(text) > BODY_CHARS,
