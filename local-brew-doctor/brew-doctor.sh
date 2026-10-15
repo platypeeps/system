@@ -133,7 +133,7 @@ echo "Needs a decision:"
 echo
 cat "$tmp/doctor2"
 # The ingest folds a run into the open report with the same job and reason
-# and keeps that report's first body. So the reason ends in a checksum of what
+# and gives that report the newest body. So the reason ends in a checksum of what
 # brew doctor still says, not the date: the same warnings fold into one open
 # report, and a new or changed one opens its own (sd:4182). The host stays in
 # it, as every host files under the one job name.
