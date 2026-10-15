@@ -87,7 +87,7 @@ from pathlib import Path
 from sd_db import operations, progress, reads
 from sd_db.errors import SdDbError
 
-from . import active_sessions, job_failures, snooze
+from . import active_sessions, issues, job_failures, snooze
 from . import fleet as fleet_module
 from .operations_screen import _signal_name
 
@@ -418,6 +418,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     with its `until` and not in `work`; `work_error` says why the items could not be read, and is never an empty list.
     `active` is Working now (sd:3466), `active_sessions.document` over the sessions document this read already holds;
     `herdr` is its seam for the live agents.
+    `issues` is Your issues (sd:4628), `issues.document`: each repo's open issues assigned to or filed by the operator, with
+    `issues_error` saying why none could be read.
     """
     collect_area, kept = fleet or fleet_module.collect, {}
 
@@ -452,7 +454,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                                       sessions_error=sources["sessions"], herdr=herdr)
     waiting = _waiting(connection, now)
     return {"now": now, "sources": sources, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
-            "work": work, "work_error": work_error, "waiting": waiting, "attention": _attention(shown, waiting)}
+            "work": work, "work_error": work_error, "waiting": waiting, "attention": _attention(shown, waiting),
+            **issues.document(connection)}
 
 
 def _waiting(connection: sqlite3.Connection, now: str) -> int:
