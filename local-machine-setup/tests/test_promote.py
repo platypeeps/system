@@ -92,7 +92,10 @@ case "$*" in
   "gate status --json")
     # STUB_GATE_COUNT: a gate from before holds a slot for the first two reads.
     n=$(cat "$STUB_GATE_COUNT" 2>/dev/null || echo 2); echo $((n + 1)) > "${STUB_GATE_COUNT:-/dev/null}"
-    if [ "$n" -lt 2 ]; then echo '{"holders": [{"slot": 1, "pid": 7, "since": "t0"}], "waiters": []}'
+    # STUB_GATE_QUEUED: pid 9 waits at the first read, then holds the slot.
+    if [ -n "$STUB_GATE_QUEUED" ] && [ "$n" = 0 ]; then echo '{"holders": [], "waiters": [{"place": 1, "pid": 9}]}'
+    elif [ -n "$STUB_GATE_QUEUED" ] && [ "$n" = 1 ]; then echo '{"holders": [{"slot": 1, "pid": 9, "since": "t1"}], "waiters": []}'
+    elif [ "$n" -lt 2 ]; then echo '{"holders": [{"slot": 1, "pid": 7, "since": "t0"}], "waiters": []}'
     else echo '{"holders": [], "waiters": []}'; fi ;;
   *) exit 2 ;;
 esac
@@ -284,6 +287,14 @@ class Promote(unittest.TestCase):
         self.assertIn("waiting for the gate: 1 holder(s) that started before the lanes were held (pid 7)",
                       result.stdout)
         self.assertIsNone(self.marker_step())
+
+    def test_the_drain_waits_for_a_gate_queued_before_it(self):
+        """A gate queued before the drain starts after the first holder ends; the role does not move under it."""
+        count = self.tmp / "gate.count"
+        count.write_text("0\n")
+        result = self.run_promote("--apply", STUB_GATE_COUNT=count, STUB_GATE_QUEUED="1")
+        self.assertIn("(pid 9)", result.stdout)
+        self.assertEqual("3", count.read_text().strip())
 
     def test_a_held_ship_lock_stops_the_drain_and_nothing_moves(self):
         """A ship run by hand holds its satellite ship lock; the role does not move under it."""

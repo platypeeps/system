@@ -194,8 +194,9 @@ def take_locks(root, held, deadline, limit, names=()):
     return len(new)
 
 
-def gate_holders(env):
-    """The holders `sd gate status --json` lists now, as a key per holder."""
+def gate_holders(env, queued=None):
+    """The holders `sd gate status --json` lists now, as a key per holder;
+    `queued`, a set, gains the pid of each waiter."""
     try:
         out = subprocess.run(["sd", "gate", "status", "--json"], capture_output=True,
                              text=True, env=env, timeout=120)
@@ -212,22 +213,32 @@ def gate_holders(env):
             raise TypeError
     except (ValueError, KeyError, TypeError):
         raise Refused("sd gate status --json printed no holders and waiters lists", manual=True) from None
+    if queued is not None:
+        queued.update(waiter.get("pid") for waiter in waiters if isinstance(waiter, dict) and waiter.get("pid"))
     # A slot's next holder has another pid or start, so a key names one gate run.
     return {(holder.get("slot"), holder.get("pid"), holder.get("since")): holder for holder in holders}
 
 
-def wait_gate(env, deadline, limit):
-    """Wait until each gate holder present now has ended; later ones do not count."""
-    first = gate_holders(env)
+def wait_gate(env, deadline, limit, queued=False):
+    """Wait until each gate holder present now has ended; later ones do not count.
+    With `queued`, a gate waiting now counts too, until it ends: promote moves
+    the role, and a gate queued before it would start under the old one."""
+    waiting = set() if queued else None
+    first = gate_holders(env, waiting)
 
     def busy():
-        left = [first[key] for key in gate_holders(env) if key in first]
+        now = set() if queued else None
+        current = gate_holders(env, now)
+        left = [holder for key, holder in current.items()
+                if key in first or (queued and holder.get("pid") in waiting)]
+        if queued:
+            left += [{"pid": pid} for pid in sorted(now & waiting)]
         if not left:
             return None
         pids = ", ".join(f"pid {holder.get('pid') or '?'}" for holder in left)
         return f"the gate: {len(left)} holder(s) that started before the lanes were held ({pids})"
 
-    if first:
+    if first or waiting:
         wait(busy, deadline, limit)
 
 
@@ -299,7 +310,7 @@ def drain(env, names=(), gate=True, promote=False):
             break
         first = False
         if has_sd:
-            wait_gate(env, deadline, limit)
+            wait_gate(env, deadline, limit, queued=promote)
     done = "every gate from before is done" if gate else "gates not waited on: a lane gates under its lock"
     print(f"lanes held: {len(held) - ships} runner lock(s) under {root}; {done}"
           + (f"; {ships} ship lock(s) held" if promote else ""), flush=True)
