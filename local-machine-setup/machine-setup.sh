@@ -5332,47 +5332,73 @@ nas_mount() {
 print(os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT") or "")'
 }
 
-# Where a recursive delete of the absolute path $1 lands, proven before
-# any rm -rf runs. cd -P resolves `..` and every symlinked ancestor, so the
-# checks see the real path, not its spelling. Prints the real path, or
-# nothing when $1 is gone. Returns 1, the reason on stderr, when the real
-# path is not under the resolved root $2, or is on the NAS mount or holds
-# it (rm -rf crosses mounts); returns 2 when it cannot tell. A last part
-# that is a symlink stays the link: rm removes it, not its target.
-rm_target() { # path allowed-root
-  case "${1:?}" in /*) ;; *) echo "$1: not an absolute path" >&2; return 1 ;; esac
-  rt_up=${1%/*}
-  if ! rt_up=$(cd -P -- "${rt_up:-/}" 2>/dev/null && pwd -P); then
-    [ ! -e "${1%/*}" ] || { echo "$1: cannot resolve its folder" >&2; return 2; }
+# The physical path of folder $1 in rt_dir. The sentinel keeps a trailing
+# newline that $() would strip, which would name another folder.
+rt_resolve() { # folder
+  rt_dir=$(cd -P -- "$1" 2>/dev/null && pwd -P && echo .) || return 1
+  rt_dir=${rt_dir%?.}
+}
+
+# Where the absolute path $1 lies, in rt_at: its folder resolved with cd -P,
+# then its last part; a folder resolves, a symlink stays the link (rm
+# removes the link, not its target). rt_at is empty when $1 is not there.
+# Returns 2 when it cannot tell: a folder on the way it cannot enter.
+rt_locate() { # path
+  rt_at=
+  case "$1" in /*) ;; *) echo "$1: not an absolute path" >&2; return 2 ;; esac
+  rt_low=$1; rt_up=${1%/*}
+  until rt_resolve "${rt_up:-/}"; do rt_low=$rt_up; rt_up=${rt_up%/*}; done
+  if [ "$rt_low" != "$1" ]; then
+    # The first part below a folder it entered: there, so it cannot tell.
+    [ ! -d "$rt_low" ] || { echo "$1: cannot enter $rt_low" >&2; return 2; }
     return 0
   fi
   [ -e "$1" ] || [ -L "$1" ] || return 0
   if [ -d "$1" ] && [ ! -L "$1" ]; then
-    rt_real=$(cd -P -- "$1" 2>/dev/null && pwd -P) || { echo "$1: cannot resolve it" >&2; return 2; }
+    rt_resolve "$1" || { echo "$1: cannot enter it" >&2; return 2; }
+    rt_at=$rt_dir
   else
-    rt_real=${rt_up%/}/${1##*/}
+    rt_at=${rt_dir%/}/${1##*/}
   fi
-  rt_root=$(cd -P -- "${2:?}" 2>/dev/null && pwd -P) || { echo "$2: cannot resolve it" >&2; return 2; }
-  case "$rt_real" in "${rt_root%/}"/?*) ;; *) echo "$rt_real: not under $rt_root" >&2; return 1 ;; esac
+}
+
+# Where a recursive delete of the absolute path $1 lands, proven before any
+# rm -rf runs: cd -P resolves `..` and every symlinked ancestor, so the
+# checks see the real path, not its spelling. Prints the real path, or
+# nothing when $1 is gone. Returns 1, the reason on stderr, when the real
+# path holds a newline, is not under the resolved root $2, or is on the NAS
+# mount or holds it (rm -rf crosses mounts); returns 2 when it cannot tell.
+rm_target() { # path allowed-root
+  case "${1:?}" in /*) ;; *) echo "$1: not an absolute path" >&2; return 1 ;; esac
+  rt_locate "$1" || return 2
+  [ -n "$rt_at" ] || return 0
+  rt_real=$rt_at
+  case "$rt_real" in *'
+'*) echo "$1: its real path holds a newline" >&2; return 1 ;; esac
+  rt_resolve "${2:?}" || { echo "$2: cannot resolve it" >&2; return 2; }
+  case "$rt_real" in "${rt_dir%/}"/?*) ;; *) echo "$rt_real: not under $rt_dir" >&2; return 1 ;; esac
   rt_nas=$(nas_mount) || { echo "$1: could not read OFFSITE_VERIFY_ROOT" >&2; return 2; }
-  if [ -n "$rt_nas" ]; then
-    # The mount as spelled, with its folder resolved (a mount point is no
-    # link to follow), and fully resolved.
-    rt_nas=${rt_nas%/}; rt_nas_up=${rt_nas%/*}
-    rt_nas_up=$(cd -P -- "${rt_nas_up:-/}" 2>/dev/null && pwd -P) || rt_nas_up=
-    for rt_n in "$rt_nas" "${rt_nas_up:+${rt_nas_up%/}/${rt_nas##*/}}" "$(cd -P -- "$rt_nas" 2>/dev/null && pwd -P)"; do
-      [ -n "$rt_n" ] || continue
-      case "$rt_real/" in "${rt_n%/}"/*) echo "$rt_real: on the NAS ($rt_nas)" >&2; return 1 ;; esac
-      case "${rt_n%/}/" in "$rt_real"/*) echo "$rt_real: holds the NAS ($rt_nas)" >&2; return 1 ;; esac
-    done
+  [ -n "$rt_nas" ] || { printf '%s\n' "$rt_real"; return 0; }
+  # The mount where it lies (a mount point is no link to follow), and where
+  # it leads; a mount that is not there holds nothing.
+  rt_locate "$rt_nas" || return 2
+  rt_mount=$rt_at; rt_lead=
+  if [ -n "$rt_mount" ] && [ -d "$rt_nas" ]; then
+    rt_resolve "$rt_nas" || { echo "$rt_nas: cannot enter it" >&2; return 2; }
+    rt_lead=$rt_dir
   fi
+  for rt_n in "$rt_mount" "$rt_lead"; do
+    [ -n "$rt_n" ] || continue
+    case "$rt_real/" in "${rt_n%/}"/*) echo "$rt_real: on the NAS ($rt_nas)" >&2; return 1 ;; esac
+    case "${rt_n%/}/" in "$rt_real"/*) echo "$rt_real: holds the NAS ($rt_nas)" >&2; return 1 ;; esac
+  done
   printf '%s\n' "$rt_real"
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
 # job is sourced as cron-jobs.sh sources it, in a subshell. Prints nothing
-# when no file defines the job or the file names no destination, or a
-# destination with a newline: a line reader would split it into other paths.
+# when no file defines the job or the file names no destination. Fails on
+# a destination with a newline: a reader would split it into other paths.
 job_destination() { # job, variable
   jd_file=$(PYTHONPATH="$ROOT/lib" python3 -c 'import sys, system_tools_config as stc
 for d in stc.cron_job_dirs():
@@ -5386,7 +5412,7 @@ for d in stc.cron_job_dirs():
   (ROOT="$ROOT/local-cron-jobs"; eval "$2=''"; . "$jd_file" >/dev/null 2>&1; eval "jd_value=\$$2"
    case "$jd_value" in
      *'
-'*) echo "$jd_file: $2 holds a newline; ignored" >&2 ;;
+'*) echo "$jd_file: $2 holds a newline; name a folder without one" >&2; exit 1 ;;
      *) printf '%s\n' "$jd_value" ;;
    esac)
 }
@@ -5580,7 +5606,7 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
   else
     echo "  NOT-READY the cron-jobs folders could not be read"
   fi
-  hr_dest=$(hourly_destination)
+  hr_dest=$(hourly_destination) || hr_dest=
   if [ -z "$hr_dest" ]; then
     echo "  NOT-READY the hourly job file names no SD_DB_BACKUP_HOURLY_DESTINATION; on a satellite it names a local root"
   elif [ ! -d "$(dirname "$hr_dest")" ]; then
@@ -5766,7 +5792,7 @@ cmd_promote() {
     # and the additive NAS copy then writes into the NAS directories of the
     # same names. The restored snapshot in the local root continues them.
     snapshot=$(marker_get snapshot)
-    dest=$(hourly_destination)
+    dest=$(hourly_destination) || dest=
     [ -n "$dest" ] && [ -d "$(dirname "$dest")" ] ||
       promote_refuse "the hourly job file names no local root to seed; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
     seeded="$dest/$(basename "$snapshot")"
@@ -5908,7 +5934,7 @@ if want is None or got is None or tuple(got) != tuple(want):
   # hourly job may take again, and the NAS copy would overwrite them; so does
   # a snapshot the job took here while it waited. The marker stays, and
   # offsite-verify refuses the copies while it exists.
-  dest=$(hourly_destination)
+  dest=$(hourly_destination) || dest=
   [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
   # A failed read of the NAS roots is no answer, not none to hold.
   nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
@@ -5942,7 +5968,9 @@ undo_restart() { # why
 # The local roots the hub-role backup jobs wrote, the drill's home and the
 # database folder, each passed to $1 as one word: no splitting, no glob.
 undo_roots() { # function
-  for ur in "$(hourly_destination)" "$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION)" "$DRILL_HOME" "$(dirname "$SD_DB")"; do
+  uh=$(hourly_destination) && un=$(job_destination sd-db-backup SD_DB_BACKUP_DESTINATION) ||
+    promote_refuse "could not read a hub-role job's destination; fix its job file, then rerun"
+  for ur in "$uh" "$un" "$DRILL_HOME" "$(dirname "$SD_DB")"; do
     [ -z "$ur" ] || "$1" "$ur"
   done
 }

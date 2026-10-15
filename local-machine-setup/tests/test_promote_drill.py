@@ -86,6 +86,21 @@ class Drill(PromoteCase):
         self.assertIn("drill: will not delete", result.stderr)
         self.assertTrue(left.exists(), "the drill deleted a folder on the NAS")
 
+    def test_a_nas_mount_it_cannot_place_stops_the_cleanup(self):
+        """codex: a NAS mount below a folder it cannot enter is no answer, not a NAS elsewhere."""
+        keep = self.drill / "home/keep"
+        keep.mkdir(parents=True)
+        locked = self.drill / "locked"
+        (locked / "share").mkdir(parents=True)
+        locked.chmod(0o000)
+        try:
+            result = self.run_drill(expect=1, OFFSITE_VERIFY_ROOT=locked / "share")
+        finally:
+            locked.chmod(0o755)
+        self.assertIn(f"cannot enter {locked}", result.stderr)
+        self.assertIn("drill: will not delete", result.stderr)
+        self.assertTrue(keep.exists(), "the drill deleted beside a NAS mount it could not place")
+
     def test_drill_and_undo_do_not_go_together(self):
         result = self.run_drill("--undo", expect=1)
         self.assertIn("--drill and --undo do not go together", result.stderr)

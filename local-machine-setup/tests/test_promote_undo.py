@@ -256,19 +256,35 @@ class Undo(PromoteCase):
         self.assertFalse(hourly.exists())
         self.assertTrue((self.fixture.home / "hub-role/hourly").exists())
 
-    def test_a_root_with_a_newline_in_its_name_is_left_and_named(self):
-        """Split at the newline, the name would point at another folder; job_destination ignores it."""
+    def test_a_root_with_a_newline_in_its_name_stops_the_run_before_any_delete(self):
+        """Split at the newline, the name would point at another folder; a root left out would pass the proof."""
         hourly = self.fixture.home / "hub-role/hourly\nbackups"
         (hourly / PROMOTED).mkdir(parents=True)
         other = self.fixture.home / "hub-role/hourly"
         other.mkdir()
         self.hourly_at(hourly)
         self.handed_back()
-        result = self.run_undo("--apply")
+        result = self.run_undo("--apply", expect=1)
         self.assertIn("SD_DB_BACKUP_HOURLY_DESTINATION holds a newline", result.stderr)
+        self.assertIn("fix its job file", result.stderr)
+        self.assertEqual("4", self.marker_step())
         self.assertTrue(other.exists(), "the split name deleted another folder")
         self.assertTrue(hourly.exists())
-        self.assertFalse(self.nightly.exists())
+        self.assertTrue(self.nightly.exists())
+
+    def test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left(self):
+        """codex: $() strips a trailing newline from pwd -P, which then names another folder."""
+        real = self.fixture.home / "records\n"
+        (real / PROMOTED).mkdir(parents=True)
+        other = self.fixture.home / "records"
+        other.mkdir()
+        (self.fixture.home / "alias").symlink_to(real)
+        self.hourly_at(f"{self.fixture.home}/alias/")
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertIn("its real path holds a newline", result.stderr)
+        self.assertTrue(other.exists(), "the stripped newline deleted another folder")
+        self.assertTrue((real / PROMOTED).exists())
 
     def test_a_database_folder_behind_a_symlinked_ancestor_is_not_deleted(self):
         share = self.fixture.home / ".local/share"
@@ -281,10 +297,11 @@ class Undo(PromoteCase):
         self.assertTrue((elsewhere / "sd/sd.db").exists())
 
     def test_a_root_it_cannot_resolve_stops_the_run(self):
-        """A failed resolve is no answer: the run stops at step 4; it does not count the root gone."""
+        """A failed probe is no answer: the run stops at step 4; it does not count the root gone.
+        codex: the folder it cannot enter sits two levels up, so the parent's own test fails too."""
         locked = self.fixture.home / "locked"
-        (locked / "hourly" / PROMOTED).mkdir(parents=True)
-        self.hourly_at(locked / "hourly")
+        (locked / "sub/hourly" / PROMOTED).mkdir(parents=True)
+        self.hourly_at(locked / "sub/hourly")
         self.handed_back()
         locked.chmod(0o000)
         try:
@@ -292,8 +309,8 @@ class Undo(PromoteCase):
         finally:
             locked.chmod(0o755)
         self.assertEqual("4", self.marker_step())
-        self.assertTrue((locked / "hourly" / PROMOTED).exists())
-        self.assertIn(f"{locked}/hourly", result.stderr)
+        self.assertTrue((locked / "sub/hourly" / PROMOTED).exists())
+        self.assertIn(f"could not tell where {locked}/sub/hourly lies", result.stderr)
 
     # Row undo 1: the role stopped, the hand-back snapshot written.
 
