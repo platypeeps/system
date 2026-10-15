@@ -59,7 +59,10 @@ c.close()' "$STUB_PYTHONPATH" "$HOME/.local/share/sd/sd.db" "$newest"
     echo "sd-db: restored $3/$newest (checkpoint 2026-10-14T08:50:00+00:00) to $HOME/.local/share/sd"
     echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
     exit 0 ;;
-  repo) printf '%s' "$STUB_REPOS"; exit 0 ;;
+  repo)
+    # STUB_REPO_DEAD: the registry read goes to a hub that is gone.
+    if [ -n "$STUB_REPO_DEAD" ]; then echo "sd-db: hub unavailable: connection refused" >&2; exit 1; fi
+    printf '%s' "$STUB_REPOS"; exit 0 ;;
   # The drill's loopback server: the pack's own.
   serve) shift; exec "$STUB_REAL_PYTHON" -I -c 'import sys
 sys.path.insert(0, sys.argv[1])
@@ -588,6 +591,12 @@ class Promote(PromoteCase):
         out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_GH_JSON="").stdout
         self.assertIn("  --      gh api did not answer; push access not checked", out)
         self.assertNotIn("  ok      gh", out)
+
+    def test_a_repository_list_the_dead_hub_cannot_give_is_unread_not_refused(self):
+        """The gh line reads the registry from the hub promote replaces; no answer is `--`, never NOT-READY."""
+        out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_REPO_DEAD="1").stdout
+        self.assertIn("  --      the repository list was not read from the hub; gh push access not checked", out)
+        self.assertNotIn("NOT-READY gh", out)
 
     def test_hub_ready_refuses_an_unset_notify_email_channel(self):
         (self.config / "notify/.env").write_text("NOTIFY_EMAIL_TO=change-me@example.test\n")
