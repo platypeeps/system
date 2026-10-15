@@ -160,13 +160,16 @@ class FixtureFingerprints(unittest.TestCase):
         return hashlib.sha256(value.encode()).hexdigest()
 
     def test_a_listed_fixture_key_is_skipped(self) -> None:
+        """A vendor token, and a URL's user and password (its `\\s` is
+        rewritten for `grep -E`)."""
+        url = "https://fixture-user:" + "notARealSecret9@"
         for searcher, path in UrlCredentials.SEARCHERS.items():
-            with self.subTest(searcher=searcher):
-                result = self.scan(f'{{"key": "{self.FAKE}"}}\n', path, self.fingerprint(self.FAKE) + "\n")
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertNotIn("Hugging Face", result.stdout)
-                self.assertIn("skipped 1 finding whose value is a listed fixture key", result.stdout)
-                self.assertNotIn(self.FAKE, result.stdout + result.stderr)
+            for value, text in ((self.FAKE, self.FAKE), (url, url + "example.test/repo")):
+                with self.subTest(searcher=searcher, value=value[:8]):
+                    result = self.scan(f'{{"key": "{text}"}}\n', path, self.fingerprint(value) + "\n")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("skipped 1 finding whose value is a listed fixture key", result.stdout)
+                    self.assertNotIn(value, result.stdout + result.stderr)
 
     def test_an_unlisted_key_in_the_same_file_still_fails(self) -> None:
         """Blank and comment lines in the list skip nothing."""
@@ -186,6 +189,47 @@ class FixtureFingerprints(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn("session.jsonl:1:", result.stdout)
                 self.assertNotIn("listed fixture key", result.stdout)
+
+    # The class (lane review): a pattern whose match is not the whole secret.
+    # Listing a fake one's match would hide every real secret that shares it.
+
+    def test_a_listed_private_key_header_still_reports_a_key_with_another_body(self) -> None:
+        header = "-----BEGIN RSA " + "PRIVATE KEY-----"
+        key = f"{header}\nMIIEowIBAAKCAQEAuniqueRealBodyLine0123456789\n-----END RSA " + "PRIVATE KEY-----\n"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(key, path, self.fingerprint(header) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("private key material", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    def test_a_listed_authorization_match_still_reports_a_longer_value(self) -> None:
+        """The value stops at the first `=` or base64url character, so the
+        match can be a cut-short part of the real value."""
+        fake = "Authorization: Bearer " + "QmFzZTY0Rml4dHVyZVZhbHVlMDEy" + "="
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{fake}-theRestOfARealToken_xyz\n", path, self.fingerprint(fake) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+    def test_every_pattern_is_full_value_or_always_kept(self) -> None:
+        """The enumeration: each PATTERNS entry is in FULL_VALUE_PATTERNS, the
+        only ones a fingerprint may skip, or is one of the two kept ones. A new
+        pattern fails here until it is placed."""
+        text = SCRIPT.read_text()
+
+        def block(name: str) -> list[str]:
+            body = re.search(rf"^{name}='(.*?)'$", text, re.S | re.M).group(1)
+            return body.splitlines()
+
+        patterns, full = block("PATTERNS"), block("FULL_VALUE_PATTERNS")
+        self.assertLessEqual(set(full), set(patterns))
+        kept = [p for p in patterns if p not in full]
+        self.assertEqual(2, len(kept), kept)
+        self.assertTrue(kept[0].startswith("-----BEGIN"), kept)
+        self.assertTrue(kept[1].startswith("[Aa]uthorization"), kept)
 
 
 class Recorder(BaseHTTPRequestHandler):
