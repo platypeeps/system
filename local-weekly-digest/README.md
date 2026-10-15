@@ -14,7 +14,8 @@ the nightly jobs can stay quiet unless something needs a human.
 Contents: per-job run/failure counts for the last 7 days (parsed from
 local-cron-jobs logs), the week's failure log entries, machine-setup drift
 count (only when a `local-machine-setup` sibling or `WEEKLY_DIGEST_MSETUP`
-exists), pending brew/mas updates, root disk usage.
+exists), pending brew/mas updates, root disk usage, and Jev against the
+fallback (below).
 
 Unlike the other jobs this one **always needs attention**: `run` prints an
 `SD_REPORT_ATTENTION:` line with the date, so each week's digest is its own
@@ -59,6 +60,29 @@ This replaced an order that Jev computed (sd:1478). Once job names stopped
 leaving the machine (sd:1474), Jev saw only each line's time, exit code and
 weekly count. Those are the numbers this order reads, without a request.
 
+## Jev against the fallback
+
+The operator keeps Jev, measures it, then decides (sd:3583). The digest gives
+the measurement, one line per Jev stage for the last 7 days:
+
+```
+jev against the fallback, last 7 days (per stage):
+  JEV_EXAMPLE_A                4 call(s), differed from the fallback in 1 of 4 (25%)
+  JEV_EXAMPLE_B                2 call(s), no fallback answer recorded
+```
+
+The lines come from `sd-db judgments compare --since <7 days ago> --json`,
+in the command pack named by `SD_PACK_ROOT`. Every stage belongs to one
+caller. A call counts as compared when the caller recorded its own answer
+for the same decision (`--baseline` or `--shadow`). "Not
+comparable" means that answer was not a number, such as a `--fallback`
+marker. The comparison arms (Kev, Haiku) and local-only stages, which only
+Kev answers, stay in that report.
+
+It is a read: the digest asks Jev nothing. A read that fails or times out
+(120 s) prints `unknown`, never a quiet week. Without the pack's `bin/sd-db`
+the block is left out, like the drift line.
+
 ## Tests
 
 `./weekly-digest.sh test` runs `tests/test_failure_order.py` (`unittest`;
@@ -75,4 +99,8 @@ contract:
 - an unshaped line keeping the log's order with a note, a single line and a
   four-field line without the `(log: ...)` tail included.
 
-`tests/test_jev_contract.py` at the root fails if this folder calls Jev again.
+`tests/test_jev_divergence.py` writes a ledger with the pinned pack's
+`sd_db` under a temporary HOME and reads it back through the digest. It also
+covers a failed read, an absent pack, and the bound. A `jev` stub on `PATH`
+fails any test that calls it. `tests/test_jev_contract.py` lists this folder
+in `NOT_CALLERS`, because it names Jev and asks it nothing.
