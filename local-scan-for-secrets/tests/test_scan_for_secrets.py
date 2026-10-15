@@ -169,6 +169,35 @@ class HuggingFaceToken(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertIn("Hugging Face token", result.stdout)
 
+    def test_a_token_before_an_underscore_or_at_the_end_is_a_finding(self) -> None:
+        """Only a letter or digit after it makes a longer word: `\\b` counted
+        `_` as one, and Markdown emphasis hid the token (lane review)."""
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            for text in (f"*_{self.TOKEN}_*\n", f"__{self.TOKEN}__\n", f"HF_TOKEN={self.TOKEN}"):
+                with self.subTest(searcher=searcher, text=text[:4]):
+                    result = self.scan(text, path)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("Hugging Face token", result.stdout)
+
+    def test_a_token_before_a_letter_is_not_a_finding(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"id = {self.TOKEN}x\n", path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_mask_rewrites_the_token_and_not_the_character_after_it(self) -> None:
+        body = re.search(r"^PATTERNS='(.*?)'$", SCRIPT.read_text(), re.S | re.M).group(1)
+        mod = load_mask_files()
+        pats = mod.parse_patterns(body)
+        for after in (b'"', b"_", b""):
+            with self.subTest(after=after):
+                data = b'k = "x' + self.TOKEN.encode() + after
+                new, _, pcount, _ = mod.masked(data, [], pats)
+                self.assertEqual(pcount, 1)
+                self.assertEqual(new, b'k = "x' + mod.fit(mod.MARK, 37) + after)
+        new, _, pcount, _ = mod.masked(self.TOKEN.encode() + b"x", [], pats)
+        self.assertEqual(pcount, 0)
+
 
 class FixtureFingerprints(unittest.TestCase):
     """sd:4692: a pattern finding whose matched value's sha256 is listed in

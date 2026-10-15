@@ -307,11 +307,12 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # `scheme://[user[:password]@]host` matched as a credential (sd:2591).
 #
 # The Hugging Face entry is a token's fixed length, hf_ and 34 letters or
-# digits, then a word boundary: uncapped, it matched a 68-character hf_
-# identifier in a Codex log (sd:4698). It has no boundary before it, because
-# a JSON `\n` escape puts the word character `n` there. The searchers run with
-# `--no-unicode` and `LC_ALL=C`, so the boundary is ASCII: in Unicode a CJK
-# letter is a word character, and a token right before one went unreported.
+# digits, then no letter or digit: uncapped, it matched a 68-character hf_
+# identifier in a Codex log (sd:4698). `\b` is no such boundary, as it counts
+# `_` as a word character (Markdown `_hf_..._`) and, in Unicode, a CJK letter.
+# The boundary takes one character, which the pattern scan strips and
+# mask_files.py spells as a lookahead. It has no boundary before it, because
+# a JSON `\n` escape puts the letter `n` there.
 PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
 sk-[A-Za-z0-9]{40,}
@@ -324,7 +325,7 @@ AIza[0-9A-Za-z_-]{35}
 ya29\.[0-9A-Za-z_-]{30,}
 xox[baprs]-[0-9A-Za-z-]{10,}
 xapp-[0-9]-[0-9A-Za-z-]{10,}
-hf_[A-Za-z0-9]{34}\b
+hf_[A-Za-z0-9]{34}([^A-Za-z0-9]|$)
 npm_[A-Za-z0-9]{36}
 sktsec_[A-Za-z0-9_-]{20,}
 sts_[0-9a-f]{20,}
@@ -358,7 +359,7 @@ AIza[0-9A-Za-z_-]{35}
 ya29\.[0-9A-Za-z_-]{30,}
 xox[baprs]-[0-9A-Za-z-]{10,}
 xapp-[0-9]-[0-9A-Za-z-]{10,}
-hf_[A-Za-z0-9]{34}\b
+hf_[A-Za-z0-9]{34}([^A-Za-z0-9]|$)
 npm_[A-Za-z0-9]{36}
 sktsec_[A-Za-z0-9_-]{20,}
 sts_[0-9a-f]{20,}
@@ -597,7 +598,7 @@ PRUNE_EOF
     # containing regex metacharacters (+ is common in base64) went unmasked.
     MATCH_MODE=$1
     if [ "$HAVE_RG" = 1 ]; then
-      set -- --no-config --no-unicode --no-ignore --hidden -l -f -
+      set -- --no-config --no-ignore --hidden -l -f -
       [ "$MATCH_MODE" = fixed ] && set -- "$@" -F
       for d in $MASK_EXCLUDE_DIRS;  do set -- "$@" -g "!$d/"; done
       for g in $EXCLUDE_GLOBS;      do set -- "$@" -g "!$g"; done
@@ -621,7 +622,7 @@ TARGETS_EOF
     # its safe list, ~/repos among them (review, sd:1254).
     [ "$MASK_TARGET_COUNT" -gt 0 ] || return 0
     if [ "$HAVE_RG" = 1 ]; then rg "$@" 2>/dev/null || true
-    else LC_ALL=C grep "$@" 2>/dev/null || true; fi
+    else grep "$@" 2>/dev/null || true; fi
   }
   # No values, no literal pass: an empty line is an empty pattern, and an
   # empty pattern matches every file.
@@ -1273,7 +1274,7 @@ mask_tag() {
 
 rg_args() { # shared ripgrep flags: unignored + hidden (secrets live in
             # gitignored dotfiles), binaries auto-skipped, size-capped.
-  set -- --no-config --no-unicode --no-ignore --hidden --max-filesize "$MAX_SIZE" -n -o
+  set -- --no-config --no-ignore --hidden --max-filesize "$MAX_SIZE" -n -o
   for d in $EXCLUDE_DIRS;  do set -- "$@" -g "!$d/"; done
   for g in $EXCLUDE_GLOBS; do set -- "$@" -g "!$g";  done
   if [ "$SCAN_SECRETS_FILES" = 0 ]; then
@@ -1364,8 +1365,11 @@ TARGETS_EOF
   [ $# -gt 0 ] || set -- .
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
-  OUT=$(LC_ALL=C grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
+  OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
 fi
+# The Hugging Face match ends with its boundary character; the value is the
+# 37 before it. Bytes, since that character may be a multibyte one.
+OUT=$(printf '%s\n' "$OUT" | LC_ALL=C sed "s/\(${US}hf_[A-Za-z0-9]\{34\}\)[^A-Za-z0-9].*\$/\1/")
 # Known-fake fixtures: AWS docs example keys, and URL matches whose password
 # is a placeholder (${VAR}, <name>) or an obvious dev value. Matches end at
 # the "@" because rg/grep run with -o, hence the "@$" anchors.
