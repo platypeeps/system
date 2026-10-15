@@ -314,13 +314,14 @@ EXCLUDE_GLOBS="*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf *.zip *.tar *.gz *.tg
 # mask_files.py spells as a lookahead. It has no boundary before it, because
 # a JSON `\n` escape puts the letter `n` there.
 #
-# An OpenAI project key holds 124 to 156 characters after sk-proj-; the entry
-# asks for 100, so a short sk-proj- test value in an agent log is no finding
-# (sd:4707). Its class takes `_` and `-`, so the match runs to the key's end
-# and needs no boundary.
-PATTERNS='sk-proj-[A-Za-z0-9_-]{100,}
+# Every OpenAI key, project or legacy, holds T3BlbkFJ (base64 of "OpenAI")
+# between two runs of 20 or more key characters (the gitleaks openai-api-key
+# rule), so an sk-proj- or sk- test value in an agent log is no finding
+# (sd:4707). A length cut missed the older 48-character project keys. Both
+# runs are open-ended, so a match ends where the key ends.
+PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
-sk-[A-Za-z0-9]{40,}
+sk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}
 github_pat_[A-Za-z0-9_]{20,}
 gh[pousr]_[A-Za-z0-9]{36,}
 glpat-[A-Za-z0-9_-]{20,}
@@ -352,9 +353,9 @@ eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
 # the first `=` or base64url character. Listing either one's match would skip
 # every real secret that shares it. A new pattern stays out until placed;
 # tests/test_scan_for_secrets.py fails until it is.
-FULL_VALUE_PATTERNS='sk-proj-[A-Za-z0-9_-]{100,}
+FULL_VALUE_PATTERNS='sk-proj-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}
 sk-ant-[A-Za-z0-9_-]{20,}
-sk-[A-Za-z0-9]{40,}
+sk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}
 github_pat_[A-Za-z0-9_]{20,}
 gh[pousr]_[A-Za-z0-9]{36,}
 glpat-[A-Za-z0-9_-]{20,}

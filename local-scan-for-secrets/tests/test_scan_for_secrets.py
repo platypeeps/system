@@ -199,44 +199,57 @@ class HuggingFaceToken(unittest.TestCase):
         self.assertEqual(pcount, 0)
 
 
-class OpenAIProjectKey(unittest.TestCase):
-    """sd:4707: an OpenAI project key is sk-proj- and well over 100 key
-    characters; a shorter sk-proj- string in an agent log is a test value."""
+class OpenAIKey(unittest.TestCase):
+    """sd:4707: every real OpenAI key holds the marker T3BlbkFJ (base64 of
+    "OpenAI"), at any length; an sk-proj- or sk- string without it, as agent
+    logs copy from test suites, is no finding. Forms: gitleaks openai-api-key."""
 
     scan = UrlCredentials.scan
     # Joined here, so this file is not a finding of the repository scan.
-    PREFIX = "sk-" + "proj-"
-    SHORT = (PREFIX + "abcDEF12" * 4, PREFIX + "a" * 99)
-    KEY = PREFIX + "Ab3_xY9-" * 19
+    PREFIX, MARK = "sk-" + "proj-", "T3Blbk" + "FJ"
+    OLD = PREFIX + "Ab3_xY9-cD" * 2 + MARK + "eF5-gH7_iJ" * 2
+    KEY = PREFIX + "Ab3_xY9-cD" * 7 + "Ab3_" + MARK + "eF5-gH7_iJ" * 7 + "eF5A"
+    LEGACY = "sk-" + "Ab3xY9cD12" * 2 + MARK + "eF5gH7iJ34" * 2
+    UNMARKED = (PREFIX + "abcDEF12" * 4, PREFIX + "a_b-" * 28, "sk-" + "Ab3xY9cD12" * 5)
 
-    def test_a_short_sk_proj_string_is_not_a_finding(self) -> None:
-        self.assertEqual([len(s) for s in self.SHORT], [40, 107])
-        # `_` is a key character, so it counts toward the 100.
-        texts = [t for s in self.SHORT for t in (f"{s}\n", f'"{s}"\n')] + [f"{self.SHORT[0]}_\n"]
+    def test_a_string_without_the_marker_is_not_a_finding(self) -> None:
+        self.assertEqual([len(s) for s in self.UNMARKED], [40, 120, 53])
+        texts = [t for s in self.UNMARKED for t in (f"{s}\n", f'"{s}"\n', f"{s}_\n")]
         for searcher, path in UrlCredentials.SEARCHERS.items():
             for text in texts:
                 with self.subTest(searcher=searcher, text=text[:1] + str(len(text))):
                     result = self.scan(text, path)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_a_key_of_real_length_is_a_finding(self) -> None:
-        self.assertEqual(len(self.KEY), 160)
+    def test_a_key_with_the_marker_is_a_finding(self) -> None:
+        """The old 48-character project key, the current 156-character one,
+        and the legacy sk- key; plain, quoted before `_`, and at the end of a
+        file without a newline."""
+        self.assertEqual([len(self.OLD), len(self.KEY), len(self.LEGACY)], [56, 164, 51])
+        cases = [(k, label) for k, label in ((self.OLD, "OpenAI project API key"),
+                                             (self.KEY, "OpenAI project API key"),
+                                             (self.LEGACY, "OpenAI API key (legacy)"))]
         for searcher, path in UrlCredentials.SEARCHERS.items():
-            for text in (f"{self.KEY}\n", f'"{self.KEY}_"\n', self.PREFIX + "a" * 100):
-                with self.subTest(searcher=searcher, text=text[:1]):
-                    result = self.scan(text, path)
-                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                    self.assertIn("OpenAI project API key", result.stdout)
+            for key, label in cases:
+                for text in (f"{key}\n", f'"{key}_"\n', f"OPENAI_API_KEY={key}"):
+                    with self.subTest(searcher=searcher, length=len(key), text=text[:1]):
+                        result = self.scan(text, path)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn(label, result.stdout)
 
-    def test_mask_rewrites_a_key_and_not_a_short_string(self) -> None:
+    def test_mask_rewrites_a_key_and_not_an_unmarked_string(self) -> None:
         body = re.search(r"^PATTERNS='(.*?)'$", SCRIPT.read_text(), re.S | re.M).group(1)
         mod = load_mask_files()
         pats = mod.parse_patterns(body)
-        _, _, pcount, _ = mod.masked(f'k = "{self.SHORT[0]}"'.encode(), [], pats)
-        self.assertEqual(pcount, 0)
-        new, _, pcount, _ = mod.masked(f'k = "{self.KEY}"'.encode(), [], pats)
-        self.assertEqual(pcount, 1)
-        self.assertEqual(new, b'k = "' + mod.fit(mod.MARK, 160) + b'"')
+        for unmarked in self.UNMARKED:
+            with self.subTest(length=len(unmarked)):
+                _, _, pcount, _ = mod.masked(f'k = "{unmarked}"'.encode(), [], pats)
+                self.assertEqual(pcount, 0)
+        for key in (self.OLD, self.KEY, self.LEGACY):
+            with self.subTest(length=len(key)):
+                new, _, pcount, _ = mod.masked(f'k = "{key}"'.encode(), [], pats)
+                self.assertEqual(pcount, 1)
+                self.assertEqual(new, b'k = "' + mod.fit(mod.MARK, len(key)) + b'"')
 
 
 class FixtureFingerprints(unittest.TestCase):
