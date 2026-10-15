@@ -551,8 +551,8 @@ class RepoSyncTest(unittest.TestCase):
 
 
     def test_the_reason_follows_the_findings_not_the_day(self):
-        """REGRESSION (sd:4182). The ingest folds a reason it holds open and
-        keeps the first body. The same failure on two nights gives one
+        """REGRESSION (sd:4182). The ingest folds a run into the report it
+        holds open with the same reason. The same failure on two nights gives one
         reason, so one open report; another failure gives another (sd:3537:
         a checksum with digits erased made worker1 and worker2 one report),
         and so does the same repo failing for another cause."""

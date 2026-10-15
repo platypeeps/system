@@ -4791,10 +4791,11 @@ grants_push() {
   cat "$tmp/push"
 }
 
-# One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
-# every reason this run needs attention. The ingest folds a run into the open
-# report with the same job and reason and keeps that report's first body, so
-# the line ends in a checksum of the findings, not the date: $tmp/findings
+# One SD_REPORT_ATTENTION line: the ingest's reason is every distinct such line
+# of a run (pack sd:4629), so this one names every reason this run needs
+# attention. The ingest folds a run into the open report with the same job and
+# reason and gives that report the newest body, so the line ends in a
+# checksum of the findings, not the date: $tmp/findings
 # (what is left, and the output of a failed step) and the grants to redo. It
 # leaves out $tmp/changed, the update that dropped a grant: it names only the
 # night of the update, and the grant stays to redo after it. The same

@@ -424,7 +424,7 @@ esac
     # -- cases -------------------------------------------------------------
 
     def test_the_reason_follows_the_findings_not_the_day(self):
-        """sd:4182: the ingest folds an open reason and keeps its first body.
+        """sd:4182: the ingest folds a run into the open report with its reason.
         The same findings on two nights give one reason, so one open report;
         a changed finding gives another (sd:3537: a checksum with digits
         erased made worker1 and worker2 one report)."""
