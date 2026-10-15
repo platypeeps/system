@@ -40,6 +40,8 @@ case "$1" in
     exit 1 ;;
   restore)
     if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
+    # As the pack reports a root it cannot list, and goes on with the others.
+    for r in "$@"; do case $r in restore|--newest) ;; *) [ -d "$r" ] || echo "sd-db: refused $r: [Errno 2] No such file or directory" ;; esac; done
     newest=$(ls "$3" | sort | tail -1)
     mkdir -p "$HOME/.local/share/sd"
     # The row `restore` writes, which step 9 compares through the session; the pack builds the file.
@@ -230,6 +232,36 @@ class Promote(unittest.TestCase):
         result = self.run_promote("--apply", expect=1, OFFSITE_VERIFY_ROOT="")
         self.assertIn("NOT-READY no backup root", result.stdout)
         self.assertTrue(self.hub_json.exists())
+
+    def test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read(self):
+        """Round 3: one readable root with a snapshot is enough; restore --newest reports the others."""
+        import datetime
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        # The hub's USB disk: the stub restores from the first root; the hourly
+        # root holds the names its NAS copy took today.
+        usb = self.tmp / "usb" / "sd-backups"
+        (usb / "2026-10-14.7").mkdir(parents=True)
+        (usb / "2026-10-14.7" / "manifest.json").write_text("{}\n")
+        usb_hourly = self.tmp / "usb" / "sd-backups-hourly"
+        (usb_hourly / f"{today}.3").mkdir(parents=True)
+        gone = self.tmp / "nas-unmounted"
+        result = self.run_promote("--apply", "--from", str(usb), "--from", str(usb_hourly), OFFSITE_VERIFY_ROOT=gone)
+        self.assertIn(f"  --      backup root not readable now: {gone}/sd-backups-hourly", result.stdout)
+        self.assertNotIn("NOT-READY", result.stdout)
+        self.assertTrue(self.fixture.db.exists())
+        self.assertIn(f"restore --newest {usb} {usb_hourly} {gone}/sd-backups-hourly", self.calls("restore")[0])
+        self.assertIn(f"not read    : {gone}/sd-backups-hourly {gone}/sd-backups", result.stdout)
+        # The unread NAS cannot name today's snapshots; the USB root does, so they are held.
+        self.assertTrue((self.hourly / "2026-10-14.7" / "manifest.json").exists(), "the restored snapshot was not seeded")
+        self.assertEqual([], list((self.hourly / f"{today}.3").iterdir()))
+        self.assertIsNone(self.marker_step())
+
+    def test_no_readable_root_is_not_ready(self):
+        """With no root it can read, promote has no path: it refuses before anything moves."""
+        result = self.run_promote("--apply", expect=1, OFFSITE_VERIFY_ROOT=self.tmp / "nas-unmounted")
+        self.assertIn("NOT-READY backup root not readable:", result.stdout)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.calls("restore"))
 
     # The whole run.
 

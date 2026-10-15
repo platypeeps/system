@@ -5403,6 +5403,7 @@ hub_ready() {
     echo "  NOT-READY no backup root: set OFFSITE_VERIFY_ROOT in $(st_config_dir mirror-sync)/.env, or pass --from DIR"
   fi
   hr_newest=""
+  hr_unread=""
   for hr_root in $(printf '%s\n' "$hr_roots" | tr ' ' '\001'); do
     hr_root=$(printf '%s' "$hr_root" | tr '\001' ' ')
     if ls "$hr_root" >/dev/null 2>&1; then
@@ -5410,6 +5411,16 @@ hub_ready() {
       # shellcheck disable=SC2010 # dated names only, as the backup writes them
       hr_last=$(ls "$hr_root" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' | sort -t. -k1,1 -k2,2n | tail -1)
       [ -z "$hr_last" ] || [ -n "$hr_newest" ] || hr_newest="$hr_root/$hr_last"
+    else
+      hr_unread="$hr_unread$hr_root
+"
+    fi
+  done
+  # One readable root with a snapshot is a path: restore --newest reports
+  # each root it cannot read and goes on (round 3). With none, there is none.
+  printf '%s' "$hr_unread" | while IFS= read -r hr_root; do
+    if [ -n "$hr_newest" ]; then
+      echo "  --      backup root not readable now: $hr_root; restore --newest reports it and takes the newest it can read"
     else
       echo "  NOT-READY backup root not readable: $hr_root"
     fi
@@ -5543,6 +5554,11 @@ cmd_promote() {
     marker_set snapshot "$snapshot"
     marker_set taken "$taken"
     marker_set released "$(printf '%s\n' "$out" | sed -n 's/^sd-db: released .*: //p' | tail -1)"
+    unread=""
+    for pr in "$@"; do
+      ! printf '%s\n' "$out" | grep -qF "sd-db: refused $pr: " || unread="${unread:+$unread }$pr"
+    done
+    marker_set unread "$unread"
     marker_set step 6
     step=6
   fi
@@ -5676,6 +5692,8 @@ if want is None or got is None or tuple(got) != tuple(want):
   echo "  checkpoint  : $(marker_get taken); writes after this time are lost"
   echo "  not backed up, so lost: evidence/ jev-corpus/ jev-snapshots/ runner-ending/ runtime-backups/ runtimes/ ship-locks/ and the lane queues"
   echo "  leases released: $(marker_get released)"
+  [ -z "$(marker_get unread)" ] ||
+    echo "  not read    : $(marker_get unread); a newer snapshot there is not in this restore"
   echo "  hub.json    : $(marker_get moved)"
   echo "  lanes       : enqueue each NULL-host repository's open pull requests again (sd-ship lane enqueue)"
   echo "  dispatch stays paused: read this, then run sd restore resume"
