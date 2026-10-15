@@ -35,6 +35,22 @@ class Drill(PromoteCase):
         self.assertEqual([], self.calls("tailscale set") + self.calls("launchctl"))
         self.assertEqual(1, len(self.calls("serve --loopback")))
 
+    def test_a_drill_passes_on_a_usb_root_while_the_nas_cannot_be_read(self):
+        """sd:4012 round 3: the drill rehearses promote, which needs one readable root."""
+        usb = self.tmp / "usb" / "sd-backups"
+        (usb / "2026-10-14.7").mkdir(parents=True)
+        (usb / "2026-10-14.7" / "manifest.json").write_text("{}\n")
+        result = self.run_drill("--from", str(usb), OFFSITE_VERIFY_ROOT=self.tmp / "nas-unmounted")
+        self.assertIn(f"drill   : passed on {usb}/2026-10-14.7", result.stdout)
+        self.assertFalse(self.drill.exists())
+
+    def test_a_drill_with_no_readable_root_refuses(self):
+        """The monthly drill reports a NAS it cannot read: with no other root there is no path."""
+        result = self.run_drill(expect=1, OFFSITE_VERIFY_ROOT=self.tmp / "nas-unmounted")
+        self.assertIn("NOT-READY backup root not readable:", result.stdout)
+        self.assertIn("drill: a hub-ready line is not ok", result.stderr)
+        self.assertEqual([], self.calls("restore"))
+
     def test_a_drill_on_a_machine_that_is_no_satellite_refuses(self):
         self.hub_json.unlink()
         result = self.run_drill(expect=1)

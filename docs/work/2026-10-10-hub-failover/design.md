@@ -334,6 +334,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest; a root outside `$HOME` is never deleted | `test_killed_mid_delete_a_rerun_deletes_the_rest`, `test_a_root_outside_home_is_left` |
 | undo 5 | the satellite stage applied | the stage fails, or its dry run after shows drift or no proof line | the marker names step 5; the rerun runs the stage again; `status` names it | `test_a_satellite_stage_that_fails_stops_at_step_5_and_status_names_it` |
 | drill | throwaway home written | killed before cleanup | `status` names the folder; the next drill and `promote --undo` remove it first | `test_killed_before_cleanup_status_names_the_folder_and_the_next_drill_removes_it`, `test_a_hand_back_deletes_a_drill_folder_left_here` |
+| drill preflight | none | the NAS cannot be read | as promote: one readable root, such as `--from` the USB disk, passes; with none, NOT-READY and the monthly job files a miss | `test_a_drill_passes_on_a_usb_root_while_the_nas_cannot_be_read`, `test_a_drill_with_no_readable_root_refuses` |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
 ## Slices
