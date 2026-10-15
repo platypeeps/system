@@ -21,9 +21,11 @@ into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightl
   untrusted taps (trust is a security decision), kegs with no formula, and
   anything else `brew doctor` raises.
 
-The summary goes to the job log with a line `SD_REPORT_ATTENTION: brew doctor:
-<n> warning(s) on <host> [<checksum>]`. The checksum covers what brew doctor
-still says, so the same warnings each night stay one open report. The run's
+The summary goes to the job log with one line per warning, `SD_REPORT_ATTENTION:
+brew doctor on <host>: <its first line> [<checksum>]`, and one per item it
+lists, `... on <host>: <its first line>: <item>`. The checksum covers the
+warning's prose, so the same warnings each night stay one open report, and a
+night with fewer warnings or items folds into it too (pack sd:4658). The run's
 ingest maps that line to a report that
 needs attention, so Reports and Today carry it until it is acknowledged;
 nothing is mailed (sd:3454).

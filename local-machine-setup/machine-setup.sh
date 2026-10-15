@@ -4874,24 +4874,18 @@ grants_push() {
   cat "$tmp/push"
 }
 
-# One SD_REPORT_ATTENTION line: the ingest's reason is every distinct such line
-# of a run (pack sd:4629), so this one names every reason this run needs
-# attention. The ingest folds a run into the open report with the same job and
-# reason and gives that report the newest body, so the line ends in a
-# checksum of the findings, not the date: $tmp/findings
-# (what is left, and the output of a failed step) and the grants to redo. It
-# leaves out $tmp/changed, the update that dropped a grant: it names only the
-# night of the update, and the grant stays to redo after it. The same
-# findings fold into one open report, and a new or changed one opens its own
-# (sd:4182) and closes the older one on this host, with the exceptions
-# local-cron-jobs/README.md names (pack sd:4641). The host stays in it, as
-# every host files under one job name.
-upgrade_attention() { # reason...
-  [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
-  [ "$#" -gt 0 ] || return 0
-  why=$(printf '%s, ' "$@"); why=${why%, }
-  sum=$({ cat "$tmp/findings"; sed 's/^/regrant: /' "$tmp/regrant"; } | cksum | cut -d' ' -f1)
-  echo "SD_REPORT_ATTENTION: upgrade: $why on $(hostname -s) [$sum]"
+# One SD_REPORT_ATTENTION line per finding: each line of $tmp/findings (what
+# is left, and a failed step with a checksum of its output) and each grant to
+# redo, not the date. It leaves out $tmp/changed, the update that dropped a
+# grant: it names only the night of the update, and the grant stays to redo
+# after it. The ingest's reason is the run's set of lines: the same set folds
+# into the open report, a smaller one folds into it too (pack sd:4658), and a
+# new finding opens its own report and closes the older one on this host, with
+# the exceptions local-cron-jobs/README.md names (pack sd:4641). The host
+# stays in each line, as every host files under one job name.
+upgrade_attention() {
+  { cat "$tmp/findings"; sed 's/^ */TCC re-grant needed: /' "$tmp/regrant"; } |
+    awk -v p="SD_REPORT_ATTENTION: upgrade on $(hostname -s): " 'NF { print p $0 }'
 }
 
 # Cron flavor of upgrade: forces --apply, diffs the outdated lists before and
@@ -4975,25 +4969,25 @@ cmd_upgrade_report() {
     cat "$tmp/grants"
   } > "$tmp/body"
 
-  n_left=$(cat "$tmp/formula.after" "$tmp/cask.after" "$tmp/mas.after" 2>/dev/null | wc -l | tr -d ' ')
   cat "$tmp/body"
   grants_push
   # A clean upgrade is a receipt, not a problem: leftovers, a failed sweep
   # step (claude update, brew cleanup) or a failed capture need attention.
-  set --
-  [ "$n_left" -eq 0 ] || set -- "$@" "$n_left still outdated"
-  [ "$rc" -eq 0 ] || set -- "$@" "upgrade sweep failed"
-  [ "$inv_rc" -eq 0 ] || set -- "$@" "inventory capture failed"
+  # One finding per line: each package left under its list's name, and a
+  # failed step with a checksum of its output without its step lines, which
+  # carry the time of day.
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
-  [ -z "$unknown" ] || set -- "$@" "outdated list failed ($unknown)"
-  # Each list under its own name, and a failed step's output without its
-  # step lines, which carry the time of day.
   {
-    for kind in formula cask mas; do sed "s/^/$kind: /" "$tmp/$kind.after"; done
-    if [ "$rc" -ne 0 ]; then tail -30 "$tmp/out" | grep -v '^\[step ' || :; fi
-    if [ "$inv_rc" -ne 0 ]; then grep -v '^\[step ' "$tmp/inventory.out" || :; fi
+    for kind in formula cask mas; do sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"; done
+    if [ "$rc" -ne 0 ]; then
+      echo "upgrade sweep failed [$(tail -30 "$tmp/out" | grep -v '^\[step ' | cksum | cut -d' ' -f1)]"
+    fi
+    if [ "$inv_rc" -ne 0 ]; then
+      echo "inventory capture failed [$(grep -v '^\[step ' "$tmp/inventory.out" | cksum | cut -d' ' -f1)]"
+    fi
+    [ -z "$unknown" ] || echo "outdated list failed ($unknown)"
   } > "$tmp/findings"
-  upgrade_attention "$@"
+  upgrade_attention
 }
 
 # Manual new-machine steps that no stage can automate. Doctor checks the

@@ -121,7 +121,6 @@ if ! grep -q '^Warning:' "$tmp/doctor2"; then
   exit 0
 fi
 
-n=$(grep -c '^Warning:' "$tmp/doctor2")
 echo "brew doctor nightly report — $(date '+%Y-%m-%d %H:%M') on $(hostname -s)"
 echo
 if [ -n "$fixed" ]; then
@@ -132,11 +131,18 @@ fi
 echo "Needs a decision:"
 echo
 cat "$tmp/doctor2"
-# The ingest folds a run into the open report with the same job and reason
-# and gives that report the newest body. So the reason ends in a checksum of what
-# brew doctor still says, not the date: the same warnings fold into one open
-# report, and a new or changed one opens its own (sd:4182) and closes the
-# older one on this host, with the exceptions local-cron-jobs/README.md names
-# (pack sd:4641). The host stays in it, as every host files under the one job
-# name.
-echo "SD_REPORT_ATTENTION: brew doctor: $n warning(s) on $(hostname -s) [$(cksum < "$tmp/doctor2" | cut -d' ' -f1)]"
+# One line per warning, its first line and a checksum of its prose, and one
+# per item it lists (an indented line), not the date: a warning whose prose
+# changed is a new finding, and one item fixed leaves a subset. The ingest's
+# reason is the run's set of lines: the same set folds into the open report, a
+# smaller one folds into it too (pack sd:4658), and a new warning opens its own
+# report and closes the older one on this host, with the exceptions
+# local-cron-jobs/README.md names (pack sd:4641). The host stays in each line,
+# as every host files under the one job name.
+awk -v d="$tmp" '/^Warning:/ { n++ } n { print > (d "/warning." n) }' "$tmp/doctor2"
+i=1
+while [ -f "$tmp/warning.$i" ]; do
+  echo "$(head -1 "$tmp/warning.$i") [$(grep -v '^[[:space:]]' "$tmp/warning.$i" | cksum | cut -d' ' -f1)]"
+  awk 'NR == 1 { w = $0; next } /^[[:space:]]+[^[:space:]]/ { sub(/^[[:space:]]+/, ""); print w ": " $0 }' "$tmp/warning.$i"
+  i=$((i + 1))
+done | awk -v p="SD_REPORT_ATTENTION: brew doctor on $(hostname -s): " '!seen[$0]++ { print p $0 }'

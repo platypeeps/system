@@ -339,8 +339,10 @@ runs: reconcile, then sync, then `hygiene --apply`, each printing its output
 to the job log. A failed repo, a checkout that did not join, a list read from
 the snapshot or the confs, a joined or re-cloned checkout, a checkout present
 and not listed, a checkout that needs a rename, or a hygiene report that
-changed, listed or failed anything prints one `SD_REPORT_ATTENTION:` line at
-the end, so the run's report reaches Reports and Today; nothing is mailed
+changed, listed or failed anything prints `SD_REPORT_ATTENTION:` lines at
+the end, one per kind and one per finding: each failed repo, each reconcile
+entry and each hygiene line, so a night with fewer findings folds into the
+open report (pack sd:4658). The run's report reaches Reports and Today; nothing is mailed
 (sd:3454). Since #200 it exits 1 when half or more of
 the fleet failed to sync — one unreachable repo is a finding, half the fleet
 is an outage. The threshold is not "all": a dead network still lets the odd

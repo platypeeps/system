@@ -144,7 +144,8 @@ awk 'BEGIN { for (i = 0; i <= 60000; i++)
         # machine-supplied word inside a finding's shareable form.
         _stub(cls.bin, "diskutil",
               '[ -z "$SMART_STUB" ] || echo "   SMART Status: $SMART_STUB"\n')
-        _stub(cls.bin, "smartctl", "exit 0\n")
+        # Silent unless a run hands it a media error count (sd:4664).
+        _stub(cls.bin, "smartctl", '[ -z "$MEDIA_STUB" ] || echo "Media and Data Integrity Errors:    $MEDIA_STUB"\n')
         # Two labels are not loaded; every other one is loaded, holds no pid,
         # and last exited 1.
         _stub(cls.bin, "launchctl", """\
@@ -440,7 +441,10 @@ esac
         # Jev reorders the printed findings and tags each one; the reason
         # names the findings, so it does not move with that order.
         ordered = reason("day-2-ordered", "Failing on worker1", "2026-10-13", jev="1")
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        # sd:4664: one line per finding, so a smaller set is a subset the pack folds (pack sd:4658).
+        for line in first:
+            self.assertRegex(line, r"^SD_REPORT_ATTENTION: health check on \S+: \S")
+        self.assertEqual(len(first), len(set(first)))
         self.assertEqual(again, first)
         self.assertNotEqual(other, first)
         self.assertEqual(ordered, first)
@@ -465,11 +469,42 @@ esac
         self.assertIn(CRASHED_APP + "(2)", twice)
         self.assertIn("- 5-minute load average 30 on 8 cores", thirty)
         self.assertIn("- 5-minute load average 40 on 8 cores", forty)
-        self.assertEqual(len(quiet), 1, once)
-        self.assertRegex(quiet[0], r"^SD_REPORT_ATTENTION: health check: \d+ finding\(s\) on \S+ \[\d+\]$")
+        findings = once.split("\nfindings:\n", 1)[1].split("\n\nnotes:\n", 1)[0]
+        self.assertEqual(len(quiet), findings.count("\n- ") + findings.startswith("- "), once)
         self.assertEqual(crashed, quiet)
         self.assertEqual(busier, busy)
-        self.assertNotEqual(busy, quiet)
+        # sd:4664: the load finding gone, the rest is a subset of the busier night's lines (pack sd:4658).
+        self.assertLess(set(quiet), set(busy))
+        self.assertEqual([l for l in busy if l not in quiet],
+                         [l for l in busy if "5-minute load average" in l])
+
+    def test_each_crashing_app_and_panic_is_its_own_line(self):
+        """sd:4664: one line per crashing app and per panic report, so a night
+        with one of them gone is a subset the pack folds (pack sd:4658)."""
+        def run(name, files=(), env=None):
+            reports = self.tmp / ("reports-" + name)
+            reports.mkdir()
+            for f in files:
+                (reports / f).write_text("{}\n")
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports),
+                                        **(env or {})}, verb="run")["out"]
+            return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
+        both = run("two-apps", ("Other-App-2026-01-02-000000.ips", "Kernel-2026-01-01.panic", "Kernel-2026-01-02.panic"))
+        one = run("one-app", ("Kernel-2026-01-01.panic",))
+        self.assertLess(set(one), set(both))
+        self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
+
+    def test_a_growing_media_error_count_is_a_new_line(self):
+        """REGRESSION (sd:4664 review). Media errors only grow, and growth means
+        the disk is dying: 500 errors is a new finding after 3, so it cannot
+        fold into a report someone acknowledged at 3."""
+        def media(name, count):
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "MEDIA_STUB": count}, verb="run")["out"]
+            return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ") and "media" in l]
+        three, five = media("media-3", "3"), media("media-500", "500")
+        self.assertEqual(len(three), 1, three)
+        self.assertRegex(five[0], r": SSD media/data integrity errors: 500$")
+        self.assertNotEqual(three, five)
 
     def test_the_fixtures_produce_something_to_order(self):
         heads = self.headlines(self.runs["baseline"])

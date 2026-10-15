@@ -21,7 +21,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from test_repo_sync import Fixture, attention  # noqa: E402
+from test_repo_sync import Fixture, attention, findings  # noqa: E402
 
 IDENTITY = [
     "-c", "user.name=t", "-c", "user.email=t@example.invalid",
@@ -1225,8 +1225,9 @@ class NightlyHygieneTest(unittest.TestCase):
         self.assertTrue(prunes, verbs)
         self.assertLess(pulls[0], prunes[0])
         self.assertNotIn(real(wt), f.worktree_paths(repo))
-        self.assertEqual(len(attention(result)), 1, result.stdout)
-        self.assertRegex(attention(result)[0], r"^repo-sync: hygiene report on ")
+        found = findings(result)
+        self.assertEqual(found[0], "hygiene report", result.stdout)
+        self.assertTrue(found[1:] and all(f.startswith("hygiene: ") for f in found[1:]), found)
         self.assertIn(real(wt), result.stdout)
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
@@ -1264,9 +1265,34 @@ class NightlyHygieneTest(unittest.TestCase):
         listed = attention(f.run("nightly", expect=0, extra_env=env))
         self.assertIn("note: kept branch fresh ", noted.stdout)
         self.assertIn("note: kept branch fresh-too ", noted.stdout)
-        self.assertRegex(" ".join(first), r"^repo-sync: hygiene report on \S+ \[\d+\]$")
+        self.assertRegex(first[0], r"^repo-sync on \S+: hygiene report$")
         self.assertEqual(attention(noted), first)
         self.assertNotEqual(listed, first)
+        # sd:4664: one line per hygiene finding, so the first night's set is a subset of the larger one (pack sd:4658).
+        self.assertLess(set(first), set(listed))
+
+    def test_a_checkout_further_behind_keeps_its_lines(self):
+        """REGRESSION (sd:4664). A checkout that cannot fast-forward is the
+        same finding when its upstream moves on: the count of commits behind
+        stays in the report and out of the attention lines."""
+        f = self.fixture()
+        repo = f.repo()
+        other = f.tmp / "other"
+        f.git(f.tmp, "clone", "-q", "-b", "main", f.git(repo, "remote", "get-url", "origin"), str(other))
+        f.commit(repo, "local", "local\n", "local commit")
+        f.repo("a/good1")
+        f.repo("a/good2")
+
+        def night(n):
+            f.commit(other, f"up{n}", "upstream\n", f"upstream {n}")
+            f.git(other, "push", "-q", "origin", "main")
+            result = f.run("nightly", expect=0)
+            self.assertIn(f"checkout is {n} commit(s) behind", result.stdout)
+            return attention(result)
+
+        first = night(1)
+        self.assertTrue([line for line in first if ": hygiene: " in line and "behind" in line], first)
+        self.assertEqual(night(2), first)
 
     def test_nightly_is_silent_when_hygiene_finds_nothing(self):
         """NEW. Criterion 8, second half: a clean fleet reports nothing."""
@@ -1394,7 +1420,7 @@ class NightlyJevShadowTest(unittest.TestCase):
         f = self.fixture()
         out = self.nightly(f, JEV_STUB_EXIT="1").stdout
         self.assertIn("LOCAL    branch sd-2094-private-topic", out)
-        self.assertIn("SD_REPORT_ATTENTION: repo-sync: hygiene report on ", out)
+        self.assertRegex(out, r"(?m)^SD_REPORT_ATTENTION: repo-sync on \S+: hygiene report$")
         self.assertNotIn("jev", out[:out.index("SD_REPORT_ATTENTION: ")].lower())
 
     def test_the_stage_switched_off_asks_nothing(self):

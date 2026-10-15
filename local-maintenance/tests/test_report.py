@@ -63,7 +63,7 @@ exec /bin/date "$@"
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn(f"- cert: {self.tmp}/missing.pem missing", run.stdout)
         [line] = self.attention(run)
-        self.assertRegex(line, r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
+        self.assertEqual(line, f"SD_REPORT_ATTENTION: maintenance on fixturehost: cert: {self.tmp}/missing.pem missing")
         self.assertFalse(self.sent.exists(), self.sent.read_text() if self.sent.exists() else "")
 
     def test_the_reason_follows_the_findings_not_the_day(self):
@@ -74,9 +74,12 @@ exec /bin/date "$@"
         first = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\n", FAKE_DAY="2026-10-12"))
         again = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\n", FAKE_DAY="2026-10-13"))
         other = self.attention(self.maintenance(f"cert|{self.tmp}/worker2.pem|30\n", FAKE_DAY="2026-10-13"))
-        self.assertRegex(" ".join(first), r"^SD_REPORT_ATTENTION: maintenance: 1 finding\(s\) on fixturehost \[\d+\]$")
+        self.assertEqual(len(first), 1, first)
         self.assertEqual(again, first)
         self.assertNotEqual(other, first)
+        # sd:4664: one line per finding, so a night with fewer findings prints a subset (pack sd:4658 folds it).
+        both = self.attention(self.maintenance(f"cert|{self.tmp}/worker1.pem|30\ncert|{self.tmp}/worker2.pem|30\n"))
+        self.assertEqual(both, first + other)
 
     def test_a_moving_measure_keeps_the_reason(self):
         """sd:4182: low disk at 5% free one night and 4% the next is the
@@ -90,6 +93,15 @@ exec /bin/date "$@"
         self.assertEqual(self.attention(four), self.attention(five))
         self.assertEqual(len(self.attention(five)), 1, five.stdout)
         self.assertNotEqual(self.attention(other), self.attention(five))
+
+    def test_each_pending_update_is_its_own_line_under_its_finding(self):
+        """sd:4664: one line per pending update, so one update installed leaves a subset (pack sd:4658)."""
+        _stub(self.bin / "mas", 'printf "%s\\n" "1 Example App (1.0 -> 1.1)" "2 Other App (2.0 -> 2.1)"\n')
+        run = self.maintenance("# nothing to check\n")
+        self.assertEqual(self.attention(run), [
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending:",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending: 1 Example App (1.0 -> 1.1)",
+            "SD_REPORT_ATTENTION: maintenance on fixturehost: App Store updates pending: 2 Other App (2.0 -> 2.1)"])
 
     def test_a_clean_run_needs_nothing(self):
         run = self.maintenance("# nothing to check\n")

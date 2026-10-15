@@ -128,8 +128,11 @@ KEYS="$TMPD/keys"
 # finding HEADLINE FIX SHAREABLE [KEY]
 #
 # KEY is the headline without a measure that moves while the finding stays
-# the same (a load average, a crash count), so the reason's checksum does not
-# move with it (sd:4182). Omitted, it is the headline.
+# the same (a load average, a crash count), so its attention line does not
+# move with it (sd:4182). A counter that only grows as things get worse (media
+# errors) stays in it: its growth is a new finding (sd:4664). One line per item where a finding lists several (a
+# crashing app, a panic report), so one item gone leaves a subset (sd:4664).
+# Omitted, it is the headline.
 #
 # SHAREABLE is the only form of the finding Jev may see (sd:1362). The
 # headline stays on this machine: it names launchd labels, crashing apps,
@@ -234,14 +237,15 @@ done
 if [ -s "$TMPD/panics" ]; then
   finding "kernel panic report(s) in the last 7 days: $(tr '\n' ' ' < "$TMPD/panics")" \
     "open the .panic file in Console.app; recurring panics usually mean bad RAM, a kext, or failing hardware — run Apple Diagnostics (hold D at boot)" \
-    "kernel panic report(s) in the last 7 days: $(wc -l < "$TMPD/panics" | tr -d ' ')"
+    "kernel panic report(s) in the last 7 days: $(wc -l < "$TMPD/panics" | tr -d ' ')" \
+    "$(sed 's|.*/||; s/^/kernel panic report(s) in the last 7 days: /' "$TMPD/panics")"
 fi
 if [ -s "$TMPD/crashes" ]; then
   apps=$(sort "$TMPD/crashes" | uniq -c | sort -rn | awk '{ printf "%s(%s) ", $2, $1 }')
   finding "app crash report(s) in the last day: $apps" \
     "read the report in Console.app > Crash Reports; if one app repeats, update or reinstall it" \
     "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)" \
-    "app crash report(s) in the last day: $(sort -u "$TMPD/crashes" | tr '\n' ' ')"
+    "$(sort -u "$TMPD/crashes" | sed 's/^/app crash report(s) in the last day: /')"
 fi
 
 # --- launchd job health --------------------------------------------------
@@ -741,13 +745,13 @@ fi
 
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
-# The ingest folds a run into the open report with the same job and reason
-# and gives that report the newest body. So the reason ends in a checksum of the
-# findings' keys, not the date, and not of the printed list, which Jev may
-# reorder and tag: the same findings fold into one open report, and a new or
-# changed one opens its own (sd:4182) and closes the older one on this host,
-# with the exceptions local-cron-jobs/README.md names (pack sd:4641). The host
-# stays in it, as every host files under the one job name.
+# One line per finding, its key, not the date and not the printed list, which
+# Jev may reorder and tag. The ingest's reason is the run's set of lines: the
+# same set folds into the open report, a smaller one folds into it too (pack
+# sd:4658), and a new finding opens its own report and closes the older one on
+# this host, with the exceptions local-cron-jobs/README.md names (pack
+# sd:4641). The host stays in each line, as every host files under the one job
+# name.
 if [ "$REPORT" -eq 1 ] && [ -s "$FINDINGS" ]; then
-  echo "SD_REPORT_ATTENTION: health check: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(cksum < "$KEYS" | cut -d' ' -f1)]"
+  awk -v p="SD_REPORT_ATTENTION: health check on $(hostname -s): " 'NF { print p $0 }' "$KEYS"
 fi

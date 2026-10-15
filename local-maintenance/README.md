@@ -15,10 +15,11 @@ and Today show; safe fixes (log rotation, docker prune) happen automatically.
 ./maintenance.sh test    # run the unit tests
 ```
 
-With findings, `run` prints `SD_REPORT_ATTENTION: maintenance: <n> finding(s)
-on <host> [<checksum>]` and exits 0. The checksum covers the findings without
-a measure that drifts (the free-space percentage), so the same findings each
-night stay one open report, and a new or changed one opens its own and closes
+With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION:
+maintenance on <host>: <finding>`, and one per pending update under its finding,
+and exits 0. A finding leaves out a measure that drifts (the free-space
+percentage), so the same findings each night stay one open report, fewer of
+them fold into it too (pack sd:4658), and a new or changed one opens its own and closes
 the older one on that host, with the exceptions
 [`local-cron-jobs`](../local-cron-jobs/README.md) names. The cron
 run's ingest maps that line to a report that

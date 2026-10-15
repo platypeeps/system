@@ -158,6 +158,13 @@ class UpgradeStepTest(unittest.TestCase):
         return [line.split(": ", 1)[1] for line in result.stdout.splitlines()
                 if line.startswith("SD_REPORT_ATTENTION: ")]
 
+    def findings(self, result):
+        """Each attention line's finding: one line per finding, each `upgrade on <host>: ` (sd:4664)."""
+        lines = self.attention(result)
+        for line in lines:
+            self.assertRegex(line, r"^upgrade on \S+: \S")
+        return [line.split(": ", 1)[1] for line in lines]
+
     def claude_moves_to(self, old, new):
         """~/.local/bin/claude links to version OLD; `claude update` relinks it to NEW."""
         versions = self.home / ".local/share/claude/versions"
@@ -241,7 +248,10 @@ class UpgradeStepTest(unittest.TestCase):
         # stderr is the job log; the sweep's own output goes into the report.
         self.assertRegex(result.stderr, STEP.format("brew upgrade", 2))
         self.assertIn("timed out after 2s: brew upgrade", result.stdout)
-        self.assertRegex(" ".join(self.attention(result)), r"^upgrade: [1-9]\d* still outdated, upgrade sweep failed on ")
+        found = self.findings(result)
+        self.assertTrue(any(f.startswith("still outdated (") for f in found), found)
+        self.assertEqual([f for f in found if not f.startswith("still outdated (")], [found[-1]])
+        self.assertRegex(found[-1], r"^upgrade sweep failed \[\d+\]$")
         self.assertEqual(self.sends(), [])
 
     def test_the_report_carries_the_grants_result(self):
@@ -269,8 +279,8 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("  Full Disk Access: /opt/homebrew/bin/python3", result.stdout)
         self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", result.stdout)
         self.assertIn("TCC grants (dashboard.sh grants, exit 1)", result.stdout)
-        [reason] = self.attention(result)
-        self.assertRegex(reason, r"^upgrade: 1 still outdated, TCC re-grant needed on \S+ \[\d+\]$")
+        self.assertEqual(self.findings(result), ["still outdated (formula): example-formula",
+                                                 "TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
 
     def test_a_quiet_week_with_a_missing_grant_needs_attention_and_exits_0(self):
         """`claude update` runs in a quiet week too, and can drop a grant."""
@@ -291,9 +301,8 @@ class UpgradeStepTest(unittest.TestCase):
         next_night = self.run_verb("upgrade-report", BREW_QUIET="1", GRANTS_OUT=REFUSED, GRANTS_RC="1")
         self.assertIn(f"Claude Code: {versions / '1.0.0'} -> {versions / '1.0.1'}", update_night.stdout)
         self.assertNotIn(f"-> {versions / '1.0.1'}", next_night.stdout)
-        [reason] = self.attention(update_night)
-        self.assertRegex(reason, r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
-        self.assertEqual(self.attention(next_night), [reason])
+        self.assertEqual(self.findings(update_night), ["TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/python3"])
+        self.assertEqual(self.attention(next_night), self.attention(update_night))
 
     def test_another_grant_to_redo_gives_another_reason(self):
         """sd:4182 review round 1, class pass: each producer's checksum must
@@ -304,7 +313,8 @@ class UpgradeStepTest(unittest.TestCase):
                              GRANTS_OUT=REFUSED.replace("/opt/homebrew/bin/python3", "/opt/homebrew/bin/node"))
         for run in (python, node):
             self.assertNotIn("No such file", run.stderr)
-            self.assertRegex(" ".join(self.attention(run)), r"^upgrade: TCC re-grant needed on \S+ \[\d+\]$")
+            [finding] = self.findings(run)
+            self.assertRegex(finding, r"^TCC re-grant needed: Full Disk Access: /opt/homebrew/bin/\S+$")
         self.assertNotEqual(self.attention(node), self.attention(python))
 
     def test_a_failed_sweep_step_needs_attention_with_nothing_left(self):
@@ -314,8 +324,8 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("upgrade sweep exited nonzero", result.stdout)
-        [reason] = self.attention(result)
-        self.assertRegex(reason, r"^upgrade: upgrade sweep failed on ")
+        [finding] = self.findings(result)
+        self.assertRegex(finding, r"^upgrade sweep failed \[\d+\]$")
 
     def test_a_clean_sweep_needs_no_attention(self):
         result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1")
@@ -340,9 +350,9 @@ class UpgradeStepTest(unittest.TestCase):
         upgraded.unlink()
         write_exec(self.home / ".local/bin/claude", "#!/bin/sh\nexit 1\n")
         other = self.attention(self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", FAKE_DAY="2026-10-13"))
-        self.assertRegex(" ".join(first), r"^upgrade: upgrade sweep failed on \S+ \[\d+\]$")
+        self.assertRegex(" ".join(first), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
         self.assertEqual(again, first)
-        self.assertRegex(" ".join(other), r"^upgrade: upgrade sweep failed on \S+ \[\d+\]$")
+        self.assertRegex(" ".join(other), r"^upgrade on \S+: upgrade sweep failed \[\d+\]$")
         self.assertNotEqual(other, first)
 
     def test_a_formula_and_a_cask_of_one_name_are_two_findings(self):
@@ -350,9 +360,12 @@ class UpgradeStepTest(unittest.TestCase):
         formula and a cask of one name gave one reason."""
         formula = self.attention(self.run_verb("upgrade-report", BREW_OUTDATED="example-tool"))
         cask = self.attention(self.run_verb("upgrade-report", BREW_QUIET="1", BREW_GREEDY_CASK="example-tool"))
-        self.assertRegex(" ".join(formula), r"^upgrade: 1 still outdated on \S+ \[\d+\]$")
-        self.assertRegex(" ".join(cask), r"^upgrade: 1 still outdated on \S+ \[\d+\]$")
+        self.assertRegex(" ".join(formula), r"^upgrade on \S+: still outdated \(formula\): example-tool$")
+        self.assertRegex(" ".join(cask), r"^upgrade on \S+: still outdated \(cask\): example-tool$")
         self.assertNotEqual(formula, cask)
+        # sd:4664: one line per package, so one of them upgraded leaves a subset (pack sd:4658 folds it).
+        both = self.attention(self.run_verb("upgrade-report", BREW_OUTDATED="example-tool", BREW_GREEDY_CASK="example-tool"))
+        self.assertEqual(sorted(both), sorted(formula + cask))
 
     def test_an_inconclusive_probe_is_reported_and_needs_no_attention(self):
         """Exit 3 is not a missing grant: the report says so and asks nothing."""
@@ -380,7 +393,7 @@ class UpgradeStepTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("grants", self.brew_calls())
-        self.assertEqual(len(self.attention(result)), 1, result.stdout)
+        self.assertRegex(self.findings(result)[-1], r"^inventory capture failed \[\d+\]$")
         self.assertIn("ai-apps inventory capture FAILED (exit 1)", result.stdout)
 
     def test_a_quiet_week_captures_and_a_failed_capture_fails_the_job(self):
@@ -401,7 +414,7 @@ class UpgradeStepTest(unittest.TestCase):
         body = result.stdout
         self.assertIn("held (pinned):\n  python@3.14", body)
         self.assertNotIn("still outdated (formula) — held back or failed:\n  example-formula\n  python@3.14", body)
-        self.assertIn("upgrade: 1 still outdated on ", self.attention(result)[0])
+        self.assertEqual(self.findings(result), ["still outdated (formula): example-formula"])
 
     def test_a_formula_a_pin_holds_back_is_left_out_of_the_upgrade(self):
         """sd:3329: brew upgrade refused awscli while python@3.14 was pinned
@@ -424,7 +437,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("held (pinned):\n  awscli\n  python@3.14", body)
         self.assertIn("still outdated (formula) — held back or failed:\n  example-formula\n", body)
         self.assertNotIn("failed steps", body)
-        self.assertIn("upgrade: 1 still outdated on ", self.attention(result)[0])
+        self.assertEqual(self.findings(result), ["still outdated (formula): example-formula"])
 
     def test_a_pin_list_brew_cannot_give_upgrades_no_formula(self):
         """sd:3536: read as no pins, a failed list ran a bare brew upgrade,

@@ -29,6 +29,7 @@ those files and not the script.
 import ast
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -58,6 +59,14 @@ def attention(result):
     """The SD_REPORT_ATTENTION reasons a run printed for its report (sd:3454)."""
     return [line.split(": ", 1)[1] for line in result.stdout.splitlines()
             if line.startswith("SD_REPORT_ATTENTION: ")]
+
+
+def findings(result):
+    """Each attention line's finding: one line per finding, each `repo-sync on <host>: ` (sd:4664)."""
+    lines = attention(result)
+    for line in lines:
+        assert re.match(r"repo-sync on \S+: \S", line), line
+    return [line.split(": ", 1)[1] for line in lines]
 
 
 SD_STUB = """#!/bin/sh
@@ -528,7 +537,9 @@ class RepoSyncTest(unittest.TestCase):
         result = f.run("nightly", expect=1)
 
         self.assertIn("sync failed 2 of 2 repos", result.stderr)
-        self.assertIn("2 repo(s) failed", " ".join(attention(result)))
+        found = findings(result)
+        self.assertIn("repos failed", found)
+        self.assertEqual(len([f for f in found if f.startswith("failed: ")]), 2, found)
 
     def test_nightly_exits_0_when_fewer_than_half_fail(self):
         """PIN. One unreachable repo out of three is a report, not an outage:
@@ -545,8 +556,10 @@ class RepoSyncTest(unittest.TestCase):
 
         self.assertIn("failed: 1 repo(s)", result.stdout)
         self.assertNotIn("exiting 1", result.stderr)
-        [reason] = attention(result)
-        self.assertRegex(reason, r"^repo-sync: 1 repo\(s\) failed on ")
+        found = findings(result)
+        self.assertEqual(found[0], "repos failed", found)
+        [failed] = [f for f in found if f.startswith("failed: ")]
+        self.assertRegex(failed, r"^failed: refreshing owner/bad \[\d+\]$")
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
 
 
@@ -572,12 +585,31 @@ class RepoSyncTest(unittest.TestCase):
         f.checkout("a/worker2", "owner/worker2")
         f.write_conf("a owner/worker2\na owner/good1\na owner/good2\n")
         other = attention(f.run("nightly", expect=0, extra_env={"FAKE_DAY": "2026-10-13"}))
-        self.assertRegex(" ".join(first), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
+        for reasons in (first, cause, other):
+            self.assertRegex(reasons[0], r"^repo-sync on \S+: repos failed$")
+            self.assertEqual(len([line for line in reasons if re.match(r"repo-sync on \S+: failed: .* \[\d+\]$", line)]),
+                             1, reasons)
         self.assertEqual(again, first)
-        self.assertRegex(" ".join(cause), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
         self.assertNotEqual(cause, first)
-        self.assertRegex(" ".join(other), r"^repo-sync: 1 repo\(s\) failed on \S+ \[\d+\]$")
         self.assertNotEqual(other, first)
+
+    def test_each_failed_repo_is_its_own_line(self):
+        """REGRESSION (sd:4664). One line per failed repo, so a night with one
+        of two repos fixed prints a subset, which the pack folds (pack
+        sd:4658); one summary line with a count superseded the report."""
+        f = self.fixture()
+        f.write_conf("a owner/one\na owner/two\na owner/good1\na owner/good2\na owner/good3\n")
+        f.checkout("a/one", "owner/one")
+        f.checkout("a/two", "owner/two")
+        for name in ("good1", "good2", "good3"):
+            f.local_clone(f"a/{name}")
+        both = attention(f.run("nightly", expect=0))
+        shutil.rmtree(f.root / "a" / "two")
+        f.local_clone("a/two")
+        one = attention(f.run("nightly", expect=0))
+        self.assertEqual(len([line for line in both if ": failed: " in line]), 2, both)
+        self.assertEqual(len([line for line in one if ": failed: " in line]), 1, one)
+        self.assertLess(set(one), set(both))
 
     def test_each_reconcile_list_changes_the_reason_at_the_same_count(self):
         """REGRESSION (sd:4182 review round 1). The checksum read $ADDED and
@@ -616,11 +648,11 @@ class RepoSyncTest(unittest.TestCase):
             return " ".join(attention(result))
 
         shapes = {"joined": r"repo list changed", "absent": r"repo list changed",
-                  "unjoined": r"1 checkout\(s\) not joined", "unlisted": r"1 checkout\(s\) present, not listed"}
+                  "unjoined": r"checkouts not joined to the list", "unlisted": r"checkouts present, not listed"}
         for name, shape in shapes.items():
             with self.subTest(name):
                 first, other = reason(name, "a/x"), reason(name, "a/y")
-                self.assertRegex(first, f"^repo-sync: {shape}" + r" .*\[\d+\]$")
+                self.assertRegex(first, f"^repo-sync on \\S+: {shape} repo-sync on \\S+: {name}: a owner/x")
                 self.assertNotEqual(first, other)
 
     def test_nightly_names_a_locked_ssh_key_as_the_cause(self):
@@ -768,8 +800,7 @@ class DatabaseListTest(unittest.TestCase):
 
         self.assertEqual(f.snapshot_text("a owner/good\n"), f.snapshot().read_text())
         self.assertIn("lists nothing for terra", result.stderr)
-        [reason] = attention(result)
-        self.assertRegex(reason, r"^repo-sync: the database did not answer; the list came from the snapshot on ")
+        self.assertEqual(findings(result)[0], "the database did not answer; the list came from the snapshot")
         self.assertIn("pull --ff-only", " ".join(f.git_verbs()))
 
     def test_a_line_that_is_not_a_conf_line_is_unknown(self):
@@ -841,8 +872,7 @@ class DatabaseListTest(unittest.TestCase):
         self.assertIn("present, not listed for terra", result.stdout)
         self.assertIn("reconcile wrote nothing", result.stdout)
         self.assertIn("pull --ff-only", " ".join(f.git_verbs()))
-        [reason] = attention(result)
-        self.assertRegex(reason, r"^repo-sync: the database did not answer; the list came from the conf on ")
+        self.assertEqual(findings(result)[0], "the database did not answer; the list came from the conf")
 
     def test_a_join_stopped_after_add_is_reported_not_finished(self):
         """REGRESSION. Stopped between `repo add` and `repo clones +P`, the
@@ -874,8 +904,7 @@ class DatabaseListTest(unittest.TestCase):
 
         self.assertEqual(f.db_calls("repo clones"), [])
         self.assertIn("b owner/new (sd-db: database is locked)", result.stdout)
-        [reason] = attention(result)
-        self.assertRegex(reason, r"^repo-sync: 1 checkout\(s\) not joined to the list on ")
+        self.assertIn("checkouts not joined to the list", findings(result))
 
     def test_a_missing_pack_is_a_failed_read(self):
         """PIN. No sd-db to run is the database not answering, not an empty
@@ -911,8 +940,8 @@ class DatabaseListTest(unittest.TestCase):
         result = f.run("nightly", extra_env={"REPO_LIST_RC": "1"})
 
         self.assertIn("reconcile wrote nothing: sd-db repo list failed: sd-db: boom", result.stdout)
-        [reason] = attention(result)
-        self.assertRegex(reason, r"^repo-sync: reconcile could not read the repo rows on ")
+        self.assertEqual(findings(result), ["reconcile could not read the repo rows",
+                                            "rows: sd-db repo list failed: sd-db: boom"])
 
     def test_a_home_relative_row_is_a_row(self):
         """PIN. `repo list` prints a path under $HOME as `~/...`, as the

@@ -165,6 +165,19 @@ class TheDocument(ScreenCase):
                 self.connection.commit()
                 self.assertIs({r["id"]: r for r in self.doc()["reports"]}[item]["truncated"], shown)
 
+    def test_the_basis_is_the_current_set_not_the_first_run(self):
+        # sd:4664: pack sd:4658 folds a smaller set into the open report and keeps it in `repeats.basis`;
+        # `report.attention_basis` stays the first run's and is the fallback, as the pack's CURRENT_BASIS reads.
+        item = self.ids["failed"]
+        fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id = ?", (item,)).fetchone()[0])
+        fields["report"]["attention_basis"] = "a\nb"
+        for repeats, shown in (({"count": 2}, "a\nb"), ({"count": 2, "basis": "a"}, "a"), ({"count": 2, "basis": None}, "a\nb")):
+            with self.subTest(repeats=repeats):
+                fields["repeats"] = repeats
+                self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), item))
+                self.connection.commit()
+                self.assertEqual({r["id"]: r for r in self.doc()["reports"]}[item]["basis"], shown)
+
     def test_the_cadence_counts_each_local_day_from_the_log_and_the_calendar_leaves_days_out(self):
         doc = self.doc()
         self.assertEqual(doc["days"], DAYS)

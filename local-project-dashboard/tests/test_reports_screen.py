@@ -38,3 +38,17 @@ class ReportControls(ScreenCase):
                 row = self.connection.execute("SELECT * FROM item WHERE id=?", (item,)).fetchone()
                 markup = str(report_controls(self.connection, row, state["revision"]))
                 self.assertIs("Output was truncated." in markup, shown)
+
+    def test_the_attention_evidence_is_the_current_set_not_the_first_run(self):
+        # sd:4664: `repeats.basis` is the set a smaller run left (pack sd:4658); `attention_basis` is the first run's.
+        state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z",
+                                 ended="2026-09-08T00:01:00Z", exit_code=0, text="Fine", source_path="/fixture/log",
+                                 attention=True, attention_basis="finding one\nfinding two")
+        item = state["item"]["id"]
+        fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id=?", (item,)).fetchone()[0])
+        fields["repeats"] = {"count": 2, "basis": "finding one"}
+        self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), item))
+        row = self.connection.execute("SELECT * FROM item WHERE id=?", (item,)).fetchone()
+        markup = str(report_controls(self.connection, row, state["revision"]))
+        self.assertIn("<dd>finding one</dd>", markup)
+        self.assertNotIn("finding two", markup)

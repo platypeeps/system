@@ -12,10 +12,11 @@ log rotation) — this one asks "is the machine sick?", not "is it tidy?".
 ./health-check.sh test    # the status sweep's unittest suite (-v forwarded)
 ```
 
-With findings, `run` prints `SD_REPORT_ATTENTION: health check: <n> finding(s)
-on <host> [<checksum>]` and exits 0. The checksum covers the findings without
-a measure that drifts (a load average, a crash count), so the same findings
-each night stay one open report, and a new or changed one opens its own and
+With findings, `run` prints one line per finding, `SD_REPORT_ATTENTION: health
+check on <host>: <finding>`, and exits 0. A finding leaves out a measure that
+drifts (a load average, a crash count), so the same findings each night stay
+one open report, fewer of them fold into it too (pack sd:4658), and a new or
+changed one opens its own and
 closes the older one on that host, with the exceptions
 [`local-cron-jobs`](../local-cron-jobs/README.md) names. The
 cron run's ingest maps that line to a report that
@@ -98,7 +99,7 @@ question and carry its one answer, so they tie and keep the stages' order:
 ```
 
 **It orders and labels. That is all it does.** No finding is suppressed,
-dropped or reworded, the count in the attention line does not move, and no
+dropped or reworded, the attention lines do not change, and no
 exit code changes: `run` still exits 0 with findings. The marker words a stage prints are the stage's, and
 this stage never touches them.
 
