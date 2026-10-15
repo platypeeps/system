@@ -5547,9 +5547,14 @@ print(" ".join(k for k in ("NOTIFY_EMAIL_TO", "EMAIL_FROM")
   if [ -z "$hr_newest" ]; then
     echo "  NOT-READY no dated snapshot under the backup roots"
   else
-    hr_need=$(( $(du -sk "$hr_newest" | awk '{print $1}') * 2 ))
+    # A size du could not read is no answer: never a size of zero.
+    hr_size=""
+    hr_du=$(du -sk "$hr_newest" 2>/dev/null) && hr_size=$(printf '%s\n' "$hr_du" | awk '{print $1}')
     hr_free=$(df -k "$HOME" | awk 'NR == 2 {print $4}')
-    if [ "${hr_free:-0}" -gt "$hr_need" ]; then
+    case "$hr_size" in ''|*[!0-9]*) hr_size="" ;; esac
+    if [ -z "$hr_size" ]; then
+      echo "  NOT-READY could not read the size of $hr_newest (du), so the free disk is not checked"
+    elif hr_need=$((hr_size * 2)) && [ "${hr_free:-0}" -gt "$hr_need" ]; then
       echo "  ok      free disk ${hr_free} KiB, over twice $hr_newest"
     else
       echo "  NOT-READY free disk ${hr_free:-unknown} KiB, under twice $hr_newest ($hr_need KiB)"
@@ -5786,28 +5791,10 @@ for peer in (status.get("Peer") or {}).values():
     for st in sd cron agents; do
       sh "$SELF" update "$st" --apply || promote_refuse "the $st stage did not finish; rerun"
     done
-    # A stage that cannot read the fence skips the role and still exits 0,
-    # and the cron stage logs a failed bootstrap and goes on, its plist
-    # already written; so the role is checked here, by a fresh probe and by
-    # launchd for each label (round 4). Only print's 113 is "not loaded".
+    # A stage that cannot read the fence skips the role and still exits 0;
+    # so a fresh probe here, and launchd for each label below.
     HUB_HOLDER=""
     hub_holder || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
-    for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
-      if [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ]; then
-        lr=0
-        launchctl print "gui/$(id -u)/$hr_label" >/dev/null 2>&1 || lr=$?
-        case "$lr" in
-          0) continue ;;
-          113) promote_refuse "the hub role is not running: launchd has not loaded $hr_label; rerun, and the stages load it again" ;;
-          *) promote_refuse "could not ask launchd whether $hr_label is loaded (launchctl print exited $lr); rerun" ;;
-        esac
-      fi
-      # A hub profile installs what it lists; the role adds nothing to it.
-      if sd_in_profile; then
-        promote_refuse "the hub role is not installed: no $hr_label plist, and this hub profile does not list it; add it to $PROFILE.agent or $PROFILE.cron, then rerun"
-      fi
-      promote_refuse "the hub role is not installed: no $hr_label plist; rerun"
-    done
     marker_set step 9
     step=9
   fi
@@ -5816,6 +5803,28 @@ for peer in (status.get("Peer") or {}).values():
   # read this machine's own restore row, not any database a server by that name holds.
   HUB_HOLDER=""
   hub_holder || promote_refuse "this machine does not hold the hub role now (sd-db fence); rerun once it does"
+  # Each role label, by launchd and not by its plist, on every run (round 4):
+  # the cron stage writes a plist before its bootstrap and logs a failed one
+  # without failing, and a reboot after step 8 can drop one. A gap sends the
+  # marker back to step 8, whose stages load it. Only print's 113 is "not loaded".
+  for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
+    if [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ]; then
+      lr=0
+      launchctl print "gui/$(id -u)/$hr_label" >/dev/null 2>&1 || lr=$?
+      case "$lr" in
+        0) continue ;;
+        113) marker_set step 8
+             promote_refuse "the hub role is not running: launchd has not loaded $hr_label; rerun, and the stages load it again" ;;
+        *) promote_refuse "could not ask launchd whether $hr_label is loaded (launchctl print exited $lr); rerun" ;;
+      esac
+    fi
+    marker_set step 8
+    # A hub profile installs what it lists; the role adds nothing to it.
+    if sd_in_profile; then
+      promote_refuse "the hub role is not installed: no $hr_label plist, and this hub profile does not list it; add it to $PROFILE.agent or $PROFILE.cron, then rerun"
+    fi
+    promote_refuse "the hub role is not installed: no $hr_label plist; rerun"
+  done
   port=$(marker_get port)
   if ! "$SD_DB_PYTHON" -I -c 'import sys
 from pathlib import Path

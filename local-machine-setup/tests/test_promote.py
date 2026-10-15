@@ -608,11 +608,12 @@ class Promote(PromoteCase):
         self.run_promote("--apply")
         self.assertIsNone(self.marker_step())
 
-    def test_a_launchd_that_does_not_answer_stops_at_step_8(self):
-        """A failed probe is no answer, not a loaded label."""
+    def test_a_launchd_that_does_not_answer_stops_before_the_session(self):
+        """A failed probe is no answer, not a loaded label; the rerun asks again."""
         result = self.run_promote("--apply", expect=1, STUB_PRINT_RC="1")
         self.assertIn("could not ask launchd whether", result.stderr)
-        self.assertEqual("8", self.marker_step())
+        self.assertEqual("9", self.marker_step())
+        self.assertEqual([], self.calls("prove"))
 
     def test_a_fence_that_fails_during_the_stages_stops_at_step_8(self):
         """codex: the stages skip the role on an unread fence and exit 0;
@@ -676,6 +677,28 @@ class Promote(PromoteCase):
         self.assertEqual("9", self.marker_step())
         self.run_promote("--apply")
         self.assertIsNone(self.marker_step())
+
+    def test_a_label_launchd_lost_after_step_8_sends_the_rerun_back_to_step_8(self):
+        """Round 4: killed at step 9, then a reboot drops a backup job; the rerun
+        asks launchd again, not the plist, and step 8's stages load it."""
+        label = f"{PREFIX}.cron.sd-db-backup-hourly"
+        self.run_promote("--apply", expect=1, STUB_PROVE_RC="1")
+        self.assertEqual("9", self.marker_step())
+        loaded = self.tmp / "stub.log.loaded"
+        loaded.write_text("".join(f"{line}\n" for line in loaded.read_text().split() if line != label))
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn(f"launchd has not loaded {label}", result.stderr)
+        self.assertEqual("8", self.marker_step())
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+        self.assertIn(label, loaded.read_text().split())
+
+    def test_a_snapshot_size_du_cannot_read_is_not_ready(self):
+        """A failed probe is no answer, named as such; an empty size once ended the run on an arithmetic error."""
+        write_stub(self.fixture.stubs, "du", "exit 1\n")
+        out = self.run_promote().stdout
+        self.assertIn("NOT-READY could not read the size of", out)
+        self.assertNotIn("ok      free disk", out)
 
     def test_a_rerun_at_step_9_asks_the_fence_again(self):
         """codex pass: a rerun at step 9 follows a change of holder; it proves nothing for another hub."""
