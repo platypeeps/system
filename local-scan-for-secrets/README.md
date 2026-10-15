@@ -267,6 +267,18 @@ docs `...EXAMPLE` keys, URLs whose password is a `${VAR}`/`<name>`
 placeholder or an obvious dev value like `*_dev_password` — see
 `FAKE_FIXTURE_RE`).
 
+A repository's own fake test keys are skipped by value (sd:4692): a Codex
+review copies them into its session log, where the weekly `critical` scan
+finds them. Copy `fixture-fingerprints.example` to
+`<config>/scan-for-secrets/fixture-fingerprints` and list the sha256 of each
+fake value, one per line. The value is the text the pattern matched, for a
+vendor key the whole token. Get the fingerprint with
+`read -r v; printf %s "$v" | shasum -a 256 | cut -c1-64; unset v` and paste
+the value at the prompt, so it stays out of shell history. A finding is
+dropped only when its matched text hashes to a listed line, so the same key
+format with any other value still fails; the report says how many it
+skipped and never prints a value. No list changes nothing.
+
 Exit 0 = clean, exit 2 = findings (matches truncated to 8 chars — open the
 file to see the rest; the scanner never prints a full secret).
 

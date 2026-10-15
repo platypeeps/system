@@ -130,6 +130,64 @@ class UrlCredentials(unittest.TestCase):
                 self.assertIn("URL with embedded credentials", result.stdout)
 
 
+class FixtureFingerprints(unittest.TestCase):
+    """sd:4692: a pattern finding whose matched value's sha256 is listed in
+    <config>/scan-for-secrets/fixture-fingerprints is a known fake key and is
+    dropped; any other finding stands, and no list changes nothing."""
+
+    # Joined here, so this file is not a finding of the repository scan.
+    FAKE = "hf_" + "FixtureKeyForTheScanSuite0123456789"
+    OTHER = "hf_" + "UnlistedValueTheScanMustStillReport42"
+
+    def scan(self, text: str, path: str, fingerprints: str | None) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "home").mkdir()
+            (root / "tree").mkdir()
+            (root / "tree" / "session.jsonl").write_text(text, encoding="utf-8")
+            if fingerprints is not None:
+                (root / "config" / "scan-for-secrets").mkdir(parents=True)
+                (root / "config" / "scan-for-secrets" / "fixture-fingerprints").write_text(fingerprints)
+            env = dict(os.environ, HOME=str(root / "home"), SYSTEM_TOOLS_CONFIG=str(root / "config"), PATH=path,
+                       JEV_SECRET_SCAN="0")
+            env.pop("S4S_CONF", None)
+            isolate_jev(env)
+            return subprocess.run(["sh", str(SCRIPT)], cwd=root / "tree", env=env,
+                                  capture_output=True, text=True, timeout=120)
+
+    @staticmethod
+    def fingerprint(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def test_a_listed_fixture_key_is_skipped(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f'{{"key": "{self.FAKE}"}}\n', path, self.fingerprint(self.FAKE) + "\n")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Hugging Face", result.stdout)
+                self.assertIn("skipped 1 finding whose value is a listed fixture key", result.stdout)
+                self.assertNotIn(self.FAKE, result.stdout + result.stderr)
+
+    def test_an_unlisted_key_in_the_same_file_still_fails(self) -> None:
+        """Blank and comment lines in the list skip nothing."""
+        listed = f"# fixture keys\n\n{self.fingerprint(self.FAKE)}\n"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{self.FAKE}\n{self.OTHER}\n", path, listed)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:2:", result.stdout)
+                self.assertNotIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn(self.OTHER, result.stdout + result.stderr)
+
+    def test_no_list_changes_nothing(self) -> None:
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{self.FAKE}\n", path, None)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("session.jsonl:1:", result.stdout)
+                self.assertNotIn("listed fixture key", result.stdout)
+
+
 class Recorder(BaseHTTPRequestHandler):
     """A stub endpoint that answers a System One request and keeps each body."""
 

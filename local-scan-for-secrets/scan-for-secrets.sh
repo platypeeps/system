@@ -1332,6 +1332,24 @@ fi
 # the "@" because rg/grep run with -o, hence the "@$" anchors.
 FAKE_FIXTURE_RE='AKIA[0-9A-Z]*EXAMPLE|://[^@]*[<{$][^@]*@$|:[^@:]*pass(word)?[0-9]*@$|:[^@:]*[_-]test@$|:(postgres|p%40ssword|local-secret|super-secret|changeme)@$'
 OUT=$(printf '%s\n' "$OUT" | grep -Ev "$FAKE_FIXTURE_RE" || true)
+# Known-fake fixture keys by value (sd:4692): a Codex review copies a repo's
+# test keys into its session log. <config>/scan-for-secrets/fixture-fingerprints
+# lists the sha256 of each such value, one per line; a hit is dropped only when
+# its matched text hashes to a listed line, so a real key anywhere still
+# fails. A hash or a read that fails keeps the hit. The value is never printed.
+S4S_FINGERPRINTS="$(st_config_dir scan-for-secrets)/fixture-fingerprints"
+if [ -n "$OUT" ] && [ -f "$S4S_FINGERPRINTS" ]; then
+  S4S_BEFORE=$(printf '%s\n' "$OUT" | wc -l)
+  OUT=$(printf '%s\n' "$OUT" | while IFS= read -r hit; do
+    match=${hit#*"$US"}; match=${match#*"$US"}
+    fp=$(printf '%s' "$match" | shasum -a 256 2>/dev/null | cut -c1-64)
+    if [ "${#fp}" -eq 64 ] && grep -qixF -e "$fp" "$S4S_FINGERPRINTS" 2>/dev/null; then continue; fi
+    printf '%s\n' "$hit"
+  done)
+  S4S_SKIPPED=$((S4S_BEFORE - $(printf '%s' "$OUT" | grep -c '' || :)))
+  [ "$S4S_SKIPPED" -eq 0 ] ||
+    echo "  skipped $S4S_SKIPPED finding whose value is a listed fixture key ($S4S_FINGERPRINTS)"
+fi
 TRANSIENT_OUT=""
 if [ "$MODE" = critical ] && [ -n "$OUT" ]; then
   TRANSIENT_OUT=$(printf '%s\n' "$OUT" | grep -E "$TRANSIENT_PATH_RE" || true)
