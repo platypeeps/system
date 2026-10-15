@@ -5,6 +5,8 @@ retired in sd:3402; the v2 Reports page previews through `/api/reports/clean`
 (`test_v2_reports.py`), and the POST is in `test_controls_actions.py`.
 """
 
+import json
+
 from sd_db import reporting
 from sd_dashboard.reports_screen import report_controls
 
@@ -20,3 +22,19 @@ class ReportControls(ScreenCase):
         row = self.connection.execute("SELECT * FROM item WHERE id=?", (state["item"]["id"],)).fetchone()
         markup = str(report_controls(self.connection, row, state["revision"]))
         self.assertIn('action="/api/reports/', markup)
+
+    def test_the_truncation_notice_reads_the_kept_body_not_the_first_run(self):
+        # sd:4652: `repeats.body_truncated` says what the kept body is once a later run replaced it (pack sd:4641).
+        state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z",
+                                 ended="2026-09-08T00:01:00Z", exit_code=0, text="Fine", source_path="/fixture/log",
+                                 attention=False, truncated=True)
+        item = state["item"]["id"]
+        fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id=?", (item,)).fetchone()[0])
+        for first, kept, shown in ((True, None, True), (True, False, False), (False, True, True)):
+            with self.subTest(first=first, kept=kept):
+                fields["report"]["truncated"] = first
+                fields["repeats"] = {"count": 2} if kept is None else {"count": 2, "body_truncated": kept}
+                self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), item))
+                row = self.connection.execute("SELECT * FROM item WHERE id=?", (item,)).fetchone()
+                markup = str(report_controls(self.connection, row, state["revision"]))
+                self.assertIs("Output was truncated." in markup, shown)
