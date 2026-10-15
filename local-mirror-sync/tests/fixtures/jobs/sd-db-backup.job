@@ -2,13 +2,16 @@
 # The real job is local configuration; this one has the shape the tests
 # require of it. A verified snapshot to /Volumes/local, then, only if it
 # succeeded, an ADDITIVE copy of /Volumes/local/Backup to the off-machine
-# share, after offsite-verify's preflight. SD_DB_BACKUP_DESTINATION names a
-# one-off destination and skips the mount check and the off-machine copy.
+# share, after offsite-verify's preflight. SD_DB_BACKUP_DESTINATION names
+# another root and skips the mount check; the off-machine copy still runs, as
+# in the hourly job, so a promoted satellite's snapshot leaves it (sd:4048).
+# An empty SD_DB_BACKUP_NAS_FOLDER takes the snapshot only, for a one-off.
 JOB_SCHEDULE="10 2 * * *"
 SD_DB_BACKUP_MOUNT=""
 [ -n "${SD_DB_BACKUP_DESTINATION:-}" ] || SD_DB_BACKUP_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_DESTINATION:-/Volumes/local/Backup/sd-backups}\"$SD_DB_BACKUP_MOUNT --keep 14"
-SD_DB_BACKUP_NAS="\"${SD_DB_PYTHON:-python3}\" \"$HOME/repos/system/local-mirror-sync/offsite-verify.py\" --preflight-only --destination /Volumes/Offsite/Backup && MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system/local-mirror-sync/mirror-sync.sh\" sync"
+SD_DB_BACKUP_NAS_FOLDER="${SD_DB_BACKUP_NAS_FOLDER-/Volumes/Offsite/Backup}"
+SD_DB_BACKUP_NAS="\"${SD_DB_PYTHON:-python3}\" \"$HOME/repos/system/local-mirror-sync/offsite-verify.py\" --preflight-only --destination $SD_DB_BACKUP_NAS_FOLDER && MIRROR_SYNC_CONF=mirrors-nas.conf MIRROR_SYNC_ADDITIVE=1 sh \"$HOME/repos/system/local-mirror-sync/mirror-sync.sh\" sync"
 JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT && $SD_DB_BACKUP_NAS"
-[ -z "${SD_DB_BACKUP_DESTINATION:-}" ] || JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT"
-unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS
+[ -n "$SD_DB_BACKUP_NAS_FOLDER" ] || JOB_COMMAND="$SD_DB_BACKUP_SNAPSHOT"
+unset SD_DB_BACKUP_MOUNT SD_DB_BACKUP_SNAPSHOT SD_DB_BACKUP_NAS SD_DB_BACKUP_NAS_FOLDER

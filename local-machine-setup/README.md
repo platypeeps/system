@@ -363,6 +363,7 @@ Get the standby ready, once:
 1. On the hub, run `sd config set sd.hub_name <hub MagicDNS name>`: the name in every satellite's `hub.json`.
 2. On the standby, write its own hub-role job files: `sd-db-backup`, `sd-db-backup-hourly`, `offsite-verify` and `shadow-sync-nightly`.
    The hourly job sets `SD_DB_BACKUP_HOURLY_DESTINATION` to a folder on this machine; the nightly job sets `SD_DB_BACKUP_DESTINATION` the same way.
+   Both keep their NAS copy: `mirrors-nas-hourly.conf` names the hourly folder as its source, and `mirrors-nas.conf` names the parent of the nightly `sd-backups` folder; without it, offsite-verify fails the promoted hub's nightly check after 36 h.
 3. Set `OFFSITE_VERIFY_ROOT` in `<config>/mirror-sync/.env`: promote restores from its `sd-backups-hourly` and `sd-backups` folders.
 4. Run `machine-setup.sh promote` (a dry run) or `status`, and read the `hub-ready` block.
    Each line reads `ok`, `--` (cannot be read now) or `NOT-READY`; it is not counted as drift.

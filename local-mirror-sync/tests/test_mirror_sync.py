@@ -2460,8 +2460,16 @@ class WriterPreflight(unittest.TestCase):
 
         self.assertNotIn("--require-mount", command)
         self.assertIn("/tmp/somewhere", command)
-        # A run that names one snapshot's destination is a one-off or a test;
-        # it does not copy the USB disk to the NAS.
+        # A promoted satellite names its own root (sd:4048); its nightly
+        # snapshot still has to leave the machine, as the hourly one does.
+        self.assertIn("--preflight-only", command)
+        self.assertIn("mirror-sync.sh", command)
+
+    def test_an_empty_nas_folder_takes_the_snapshot_only(self) -> None:
+        # A one-off or a test says so with an empty NAS folder, as the hourly job does.
+        command = self.command("sd-db-backup", SD_DB_BACKUP_DESTINATION="/tmp/somewhere", SD_DB_BACKUP_NAS_FOLDER="")
+
+        self.assertIn("/tmp/somewhere", command)
         self.assertNotIn("mirror-sync.sh", command)
         self.assertNotIn("--preflight-only", command)
 
