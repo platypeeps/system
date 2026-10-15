@@ -982,6 +982,42 @@ propose('channels', 'on'); C.run(cmd('sddb.run'), pending[0]); await flush(); aw
         plain = self.run_page("R.page = ELS['view-repos'].html;", search=f"?repo={path}")["R"]["page"]
         self.assertNotIn("Inbound", plain)
 
+    def test_the_email_aliases_field_proposes_the_verb_posts_only_email_and_undoes(self):
+        """sd:4191: the repo's mail aliases are their own field. The write names only `email`, so the library keeps the
+        channels and the other inbound keys; Undo writes the whole old setting back; an unchanged or emptied field
+        proposes nothing, since only Clear setting removes the key."""
+        path = self.ids["checkout"]
+        old = '{"drive":{},"email":{"aliases":["acme"]}}'
+        new = '{"drive":{},"email":{"aliases":["acme","kiln"]}}'
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('mail_aliases', 'kiln, acme'); R.cmd = pending[0].cmd;
+R.title = pending[0].title; C.run(cmd('sddb.run'), pending[0]); await flush(); await lastToast().undo(); await flush();
+propose('mail_aliases', 'acme'); R.same = pending.length; propose('mail_aliases', ''); R.empty = pending.length;""",
+                            doc=self.stored_doc(old), search=f"?repo={path}", answer="(p, b) => [200, { value: " + json.dumps(new) + " }]")
+        page = out["R"]["page"]
+        self.assertIn('data-key="mail_aliases"', page)
+        self.assertIn('data-set="mail_aliases" value="acme"', page)
+        self.assertNotIn("Inbound email", page)
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo channels '{path}' 'email=acme,kiln'")
+        self.assertEqual(out["R"]["title"], "email aliases acme → acme,kiln")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/channels", {"path": path, "value": {"email": {"aliases": ["acme", "kiln"]}}, "before": old}),
+                          ("/api/repos/channels", {"path": path, "value": json.loads(old), "before": new})])
+        self.assertEqual((out["R"]["same"], out["R"]["empty"]), (0, 0))
+        self.assertEqual(out["toasts"][-1], ["Not proposed: an alias field cannot be emptied alone. Clear setting removes the whole setting.", False])
+
+    def test_aliases_on_a_row_with_no_setting_undo_to_none_and_a_row_without_aliases_has_no_undo(self):
+        """sd:4191: a set that names `email` over NULL is undone by clearing; over a setting without aliases, writing the
+        old setting back would keep the new aliases, so that write offers no Undo."""
+        path = self.ids["checkout"]
+        out = self.run_page("""propose('mail_aliases', 'acme'); C.run(cmd('sddb.run'), pending[0]); await flush();
+await lastToast().undo(); await flush();""", search=f"?repo={path}", answer="(p, b) => [200, { value: '{\"email\":{\"aliases\":[\"acme\"]}}' }]")
+        self.assertEqual([b["value"] for _, b, _ in out["posts"]], [{"email": {"aliases": ["acme"]}}, None])
+        out = self.run_page("""propose('mail_aliases', 'acme'); C.run(cmd('sddb.run'), pending[0]); await flush();
+await lastToast().undo(); await flush();""", doc=self.stored_doc('{"drive":{}}'), search=f"?repo={path}",
+                            answer="(p, b) => [200, { value: '{}' }]")
+        self.assertEqual(len(out["posts"]), 1)
+        self.assertIn("nothing to reverse", out["toasts"][-1][0])
+
     def test_a_channels_value_the_library_refuses_shows_why_and_clear_writes_none_without_an_undo(self):
         # sd:3465: such a value is not read as the defaults; it cannot be written back, so the clear has no Undo.
         path = self.ids["checkout"]

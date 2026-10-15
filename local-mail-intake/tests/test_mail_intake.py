@@ -369,6 +369,18 @@ class TestStateSurvivesAPartialRun(unittest.TestCase):
         row = mi.read_thread_rows(self.path)["t1"]
         self.assertEqual(row[1], "m5")
 
+    def test_an_arrival_that_cannot_be_written_leaves_its_thread_unrecorded(self):
+        """sd:4191: a fetch writes the arrival before the thread state. A thread recorded without its arrival would
+        never report it, and Today would keep showing the older arrival; unrecorded, the next fetch tries again."""
+        state, conf = Path(self.tmp.name) / "state", Path(self.tmp.name) / "mail-intake.conf"
+        conf.write_text(CONF, encoding="utf-8")
+        mi.write_threads(state / "threads.csv", {"t1": self.make("m1", "t1", 1)}, "then")
+        with mock.patch.object(mi, "gather", return_value=([self.make("m5", "t1", 5)], [])), \
+                mock.patch.object(mi, "append_arrivals", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                mi.cmd_fetch(conf, state, "http://127.0.0.1:9/mcp", io.StringIO())
+        self.assertEqual(mi.read_threads(state / "threads.csv"), {"t1": "m1"})
+
 
 if __name__ == "__main__":
     unittest.main()

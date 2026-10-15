@@ -102,6 +102,8 @@ Priorities (ntfy): `min|low|default|high|urgent`. Also linked as `notify` in
   sends the body as HTML (obsidian-review uses this for its action
   buttons — the other channels always get the body as-is). Used by
   the nightly report jobs (brew-doctor, repo-sync, obsidian-review).
+  This is the email channel's outbound half, and its only sender;
+  `local-mail-intake` is the inbound half (sd:4191).
 
 Configuration comes from exported variables or `<config>/notify/.env`,
 outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default
