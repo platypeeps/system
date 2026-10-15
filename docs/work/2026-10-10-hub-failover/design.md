@@ -41,25 +41,31 @@ Each section below answers one exploration point of the item.
 
 `machine-setup.sh promote [--from DIR] [--apply]`. A dry run prints the plan and the candidate snapshot, as every machine-setup verb does.
 
-1. **Preflight, no writes.** This machine is a satellite (`hub.json` exists).
-   The hub does not answer on its serve port within 30 s.
-   The readiness lines (below) all read `ok`.
-   The newest candidate's schema is at or below this machine's library (`SchemaTooNew` otherwise).
-2. **Drain.** Hold this machine's lane locks and wait for its gates, through `refresh_drain.py`, as `follow` does.
+1. **Preflight, no writes.** This machine is a satellite (`hub.json` exists) with no local `sd.db`.
+   The hub does not answer on its serve port within 30 s, name lookup included.
+   No readiness line (below) reads `NOT-READY`.
+   The newest candidate's schema is at or below this machine's library: `restore --newest` stops on a newer one before it writes.
+   `sd.hub_name` cannot be read here: it lives in the dead hub's database. Step 7 reads it from the restored one.
+2. **Drain.** Hold this machine's lane locks and ship locks and wait for its gates from before, through `refresh_drain.py`. The lane root comes from this machine's config, never through `sd`, which may reach the dead hub.
    A lane this satellite hosts keeps its ship lock under `$XDG_STATE_HOME/sd/ship-locks/`; after step 4 the lock lives beside the database, so no ship may run across the move.
 3. **Intent marker.** Write `${XDG_STATE_HOME:-~/.local/state}/sd/promote-intent` atomically, as `follow-intent` does (sd:3100).
    It names the step reached and, after step 5, the snapshot chosen.
 4. **Leave the satellite role.** Move `~/.config/sd/hub.json` to `hub.json.promoted-<UTC stamp>`.
    `restore` refuses with `HubOnly` while the file exists, so this step comes first.
-5. **Restore.** `sd-db.sh restore --newest <roots>`: a new option on the existing verb.
+5. **Restore.** `sd-db restore --newest <roots>`: a new option on the existing verb.
+   A restore that installs nothing puts `hub.json` back and deletes the marker.
    It lists every dated directory under the roots, orders them by the manifest's checkpoint time, not by name, and tries the newest first.
    It copies a candidate off the share (as `offsite-verify.py` does), then runs the whole `restore`.
    A refused candidate prints its reason, and the next one is tried.
    `restore` already migrates the staged copy, blocks queued and running assignments, and leaves the `restore` hold row open.
 6. **Settle stale rows.** In one transaction, release each open `runner_lease` and note its run `abandoned at promotion`.
    A lease names a supervisor pid on the dead hub; a pid check on this machine could match an unrelated process.
-7. **Take the hub's name.** If no tailnet peer holds the hub's name, run `tailscale set --hostname=<hub name>`.
-   If the dead node still holds it, stop and print the one console step: rename or remove that node in the Tailscale admin console.
+   `restore --newest` does this itself (slice 3), so the marker's step 6 is the seed instead:
+   copy the restored snapshot into the hourly job's local root (`SD_DB_BACKUP_HOURLY_DESTINATION`), so the next hourly run numbers after it.
+   With an empty root the day's names restart, and the additive NAS copy writes into the NAS folders of the same names (sd:4012 note).
+7. **Take the hub's name.** First, `sd-db fence` must not read `off`: the restored database must hold `sd.hub_name`, else promote refuses and names `sd config set` (decision on sd:4044).
+   If no tailnet peer holds the hub's name, run `tailscale set --hostname=<hub name>`.
+   If the dead node still holds it, stop and print the steps: stop that node (power off, or unload its `sd-serve` and lane agents; if unreachable, remove it in the Tailscale admin console), then rename or remove it there. The runbook asks for the stop before every promote; the fence's `Self.Online` check is the first guard (sd:4044).
    A rerun continues here. The step ends only when the fence reads "holder".
 8. **Install the hub role.** Run the `sd`, `cron` and `agents` stages with the hub role on (see "Hub role" below).
    They add the hub-role labels only when the fence reads "holder", so this step must follow step 7; a rerun from the marker keeps that order.
@@ -119,8 +125,9 @@ Its lane run would merge from a stale queue, its backup chain would copy stale s
 and a later `refresh` would push `hub-pin`.
 
 The fence (D5): a machine holds the hub role only while its own tailnet name equals the hub's name.
-The hub's name is one per-machine setting, `sd.hub_name` in the pack's machine config (`sd config set sd.hub_name hub.example.test`).
+The hub's name is one fleet setting, `sd.hub_name`, held in the hub's database (`sd config set sd.hub_name hub.example.test`).
 After the console step, the old node is named something else, or is logged out. Its check reads "not the holder" or "unknown".
+With the setting unset the fence reads "off": every caller runs as before, `sd-db fence` reports it, and `promote` refuses (decision on sd:4044).
 
 | Caller | Holder | Not holder | Unknown (Tailscale does not answer) |
 | --- | --- | --- | --- |
@@ -177,7 +184,11 @@ Lane logs follow `sd.bulk_storage_root`, which is already per machine.
 
 ### Satellite readiness
 
-The standby is the work satellite (D4). `machine-setup.sh status` there prints one `hub-ready` block, read-only. Each line is `ok` or a drift word:
+The standby is the work satellite (D4). `machine-setup.sh status` there prints one `hub-ready` block, read-only.
+Each line is `ok`, `--` (cannot be read now, such as `sd.hub_name` with the hub down) or `NOT-READY`.
+`NOT-READY` is not a drift word: a satellite that is no standby has not drifted, so the nightly drift job leaves the block out.
+Slice 4 checks `hub.json`, `sd.hub_name`, the backup roots, the hub-role plists and job files, the hourly job's local root and free disk.
+The pins, `gh` push access and notify lines follow with `--undo` (sd:4048). The lines:
 
 - the system and pack checkouts at the hub's `hub-pin` (what `follow` keeps), and the pack's `sd_db` matches the hub's build (the satellite stage's proof line);
 - the NAS share mounted, and both backup roots readable;
@@ -279,26 +290,51 @@ the NULL-host repositories and their open pull requests; the leases released in 
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
-| 1 preflight | nothing | the hub answers, a readiness line fails, or the snapshot is newer than the library | refuse; nothing moved | promote test with a fake hub that answers; with a schema-27 snapshot |
-| 2 drain | lane locks held | a lane or gate does not finish in 45 min | refuse; locks released; nothing moved | reuse `refresh_drain` tests with a held lock |
-| 3 marker | marker written | killed after the write | next run reads the marker and continues at step 4 | kill test between 3 and 4 |
-| 4 role | `hub.json` moved aside | killed after the move | next run continues from the marker; `status` reports the moved file and the marker | kill test between 4 and 5 |
-| 5 restore | `sd.db` installed, hold row open | a candidate is refused | try the next; none left: put `hub.json` back, delete the marker, exit 1 | restore test with a corrupt newest and a good second; with all corrupt |
+| 1 preflight | nothing | the hub answers, a readiness line fails, or the snapshot is newer than the library | refuse; nothing moved | `test_step_1_refuses_while_the_hub_answers`; `test_step_1_refuses_a_hub_ready_line_that_is_not_ok`; the schema stop is the pack's `restore --newest` test |
+| 1 preflight | none | a backup root cannot be read, such as the NAS while `--from` names the USB disk | one readable root with a snapshot is a path: the others read `--`; with none readable, NOT-READY and refuse | `test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read`, `test_no_readable_root_is_not_ready` |
+| 5 restore, 9 report | `sd.db` installed | `restore --newest` could not read a root, which may hold a newer snapshot | the pack reports it and restores the newest it can read; the report names each root not read | `test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read` |
+| 6 seed | empty folders | the NAS hourly root cannot be read, so its names of today are unknown | every readable root's names of today are held; the hold step lists the NAS again | `test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read` |
+| hold, after 9 | marker at `step=hold` | a NAS root still cannot be listed after the report, so a name of today there is not held and the NAS copy could overwrite it | the hub serves; the marker stays, hub-ready reads NOT-READY, exit 1; the rerun lists the NAS again, holds its names and removes the marker | `test_a_usb_snapshot_promotes_while_the_nas_roots_cannot_be_read`, `test_a_paused_promotion_holds_the_nas_names_once_the_nas_is_back`, `test_a_paused_promotion_stays_paused_while_the_nas_cannot_be_listed` |
+| hold, rerun | marker at `step=hold` | the hourly job took a snapshot here while its NAS copy waited, under a name the NAS hourly root holds | each hold also compares `backup-manifest.json`, which `sd-db backup` writes last, for snapshots of any day, with the NAS hourly root's (`sd-backups-hourly`) of that name, whatever the local root is called; one that differs keeps the hold and names the folder to move aside; the nightly root is no pair | `test_a_snapshot_taken_while_paused_under_a_nas_name_keeps_the_pause`, `test_a_paused_promotion_holds_the_nas_names_once_the_nas_is_back` |
+| hold, rerun | marker at `step=hold` | the read of `OFFSITE_VERIFY_ROOT` fails, so no NAS root is named | a failed read refuses and the marker stays; it is not a NAS with nothing to hold | `test_a_paused_promotion_that_cannot_read_the_nas_setting_stays_paused` |
+| hold, rerun | marker at `step=hold` | an hourly backup made its folder under a NAS name and has written nothing yet when the rerun looks | not closed: the window is between `sd-db backup`'s `mkdir` and its first write, once an hour, while the operator reruns by hand; a backup that loses the race to the hold fails its `mkdir` and writes nothing | none; named here |
+| hold, NAS copies | none | the nightly or hourly NAS copy runs while the promotion is unfinished | `offsite-verify.py --preflight-only` refuses while the promote marker exists, at any step, so no copy writes | `test_an_unfinished_promotion_writes_no_backup` |
+| 2 drain | lane locks held | a lane or gate does not finish in 45 min | refuse; locks released; nothing moved | `refresh_drain` tests with a held lock; `test_an_apply_holds_the_lanes_first` |
+| 2 drain | none | the hub is dead, and an `sd` that reaches it cannot read `sd.lane_root` | the promote drain reads the setting from this machine's pack config through the pack's `file_setting`, never through `sd`; a failed read refuses, nothing moved | `test_the_drain_reads_the_lane_root_here_while_sd_cannot_reach_the_dead_hub`, `test_a_lane_root_that_cannot_be_read_here_refuses_and_nothing_moves` |
+| 2 drain | ship locks held | a ship or gate run by hand holds no lane lock | the drain waits for the gates from before, holders and those queued then, and takes every satellite ship lock, held through the role move; past 45 min it refuses, nothing moved | `test_the_drain_waits_for_a_gate_from_before`, `test_the_drain_waits_for_a_gate_queued_before_it`, `test_a_held_ship_lock_stops_the_drain_and_nothing_moves` |
+| 1 preflight | none | `sd config get sd.hub_name` goes to the dead hub | bounded at 30 s; no answer reads `--`, not NOT-READY; step 7 reads the restored copy | `test_a_hub_name_the_dead_hub_cannot_give_is_unread_not_refused` |
+| 3 marker | marker written | killed after the write | next run reads the marker and continues at step 4 | `test_killed_after_the_marker_a_rerun_moves_hub_json_and_goes_on` |
+| 3 marker | marker written | killed mid-write | one write and a rename, so a marker always names its step; a marker with no step is deleted and step 1 runs again | `test_killed_inside_step_3_a_marker_with_no_step_starts_again` |
+| 4 role | `hub.json` moved aside | killed after the move | next run continues from the marker; `status` reports the moved file and the marker | `test_killed_after_the_move_a_rerun_restores`; after the restore, `test_killed_after_the_restore_a_rerun_seeds_without_a_second_restore` |
+| 5 restore | `sd.db` installed, hold row open | a candidate is refused | try the next; none left: put `hub.json` back, delete the marker, exit 1 | pack `restore --newest` tests; `test_a_restore_that_restores_nothing_puts_hub_json_back` |
 | 5 restore | SQLite copy in progress | killed mid-copy | SQLite's backup API rolls back; the marker names the candidate; the rerun restores it again | kill test inside `_install_restore` (existing pattern) |
 | 6 settle | leases released | killed before commit | one transaction; the rerun releases them | test with an open lease in the snapshot |
-| 7 name | tailnet name set | a peer holds the name | stop and print the console step; no hub-role service is installed; the rerun continues at step 7 | test with a `tailscale status` double that lists the name on a peer |
-| 8 role install | agents and jobs installed | a stage fails part way | stages converge; the rerun installs the rest | promote rerun test after a failed `agents` stage double |
-| 7 to 8 order | none | the stages run before the fence reads "holder" | they add no hub-role label; step 8 refuses until step 7 passes | test that step 8 with a "not holder" fence double installs nothing |
-| 9 prove | marker deleted | the session fails | exit 1, the marker stays; the rerun proves again | test with `serve` not started |
-| fence | old hub returns | demoted, or Tailscale logged out | serve, NULL-host lanes, NAS copies and the `hub-pin` push refuse | one test per caller with a holder, a non-holder and an unknown `tailscale` double |
-| older state | a machine with no `sd.hub_name` | the fence cannot name the holder | reads unknown: serve and NULL-host lanes refuse, and `status` names the missing setting | fence test with no setting |
-| older state | the hub before slice 2 lands its setting | the hub's own lanes stop | slice 2 sets `sd.hub_name` on the hub in the same rollout, and its `status` checks it before the fence turns on | rollout step in the slice 2 body; status test |
+| 7 name | none | the fence prints holder but exits non-zero | a failed probe is no answer: step 7 does not pass; the rerun asks again | `test_a_fence_that_says_holder_but_fails_is_no_holder` |
+| 7 name | tailnet name set | a peer holds the name | stop and print the console step; no hub-role service is installed; the rerun continues at step 7 | `test_a_peer_holding_the_name_stops_at_step_7_with_the_console_step` |
+| 8 role install | none | the fence cannot be read during the stages, which skip the role and exit 0 | step 8 probes the fence again and checks each role plist before it moves the marker; the rerun installs the role | `test_a_fence_that_fails_during_the_stages_stops_at_step_8` |
+| 8 role install | plists written | a bootstrap fails: the cron stage logs it and exits 0, with the plist already written | every run at step 9 asks `launchctl print` for each role label before the session; 113 sends the marker back to step 8, whose cron stage loads it (UNLOADED); any other exit is no answer, refuses and leaves step 9 to ask again | `test_a_backup_job_launchd_did_not_load_stops_at_step_8`, `test_a_launchd_that_does_not_answer_stops_before_the_session` |
+| 9 rerun | marker at 9 or `hold` | killed after step 8, then a reboot drops a role label | the same check runs on every run, so the rerun goes back to step 8 | `test_a_label_launchd_lost_after_step_8_sends_the_rerun_back_to_step_8` |
+| 1 preflight | none | `du` cannot read the newest snapshot's size | NOT-READY, named; the old arithmetic ended the run on an empty size | `test_a_snapshot_size_du_cannot_read_is_not_ready` |
+| 8 role install | agents and jobs installed | a stage fails part way | stages converge; the rerun installs the rest | `test_a_stage_that_fails_part_way_stops_at_step_8_and_a_rerun_installs_the_rest` |
+| 7 to 8 order | none | the stages run before the fence reads "holder" | they add no hub-role label; step 8 refuses until step 7 passes | `HubRole.test_no_hub_role_label_goes_in_before_the_fence_reads_holder` |
+| 9 prove | marker deleted | the session fails | exit 1, the marker stays; the rerun proves again | `test_a_failed_session_keeps_the_marker_and_a_rerun_proves_again` |
+| 9 prove | none | a rerun at step 9 after another machine took the name; or a server by that name that is not this machine | step 9 asks the fence again on every run, and the session must read this machine's own restore row | `test_a_rerun_at_step_9_asks_the_fence_again`, `test_step_9_refuses_a_session_that_reaches_another_database` |
+| fence | old hub returns | demoted, or Tailscale logged out | serve, NULL-host lanes, NAS copies and the `hub-pin` push refuse | pack fence tests per caller; `test_a_fenced_hub_publishes_no_pins`; `test_a_fenced_machine_writes_no_backup` |
+| older state | a machine with no `sd.hub_name` | the fence cannot name the holder | reads off: serve, lanes, NAS copies and `hub-pin` run as before; `sd-db fence` reports it; promote refuses at step 7 and no hub-role label goes in | pack fence test with no setting; `test_an_unset_hub_name_in_the_restored_database_refuses_before_the_name`; `HubRole.test_no_hub_role_label_goes_in_before_the_fence_reads_holder` |
+| older state | a pack without `sd-db fence` | the verb exits 2 | NAS copies and `hub-pin` refuse: no answer is not a pass; the pin moves with this change | `test_a_fenced_machine_writes_no_backup` (exit 2); `test_a_fence_that_cannot_run_refuses_the_preflight` |
+| 6 seed | empty folders in the hourly root | the NAS holds earlier names of the same UTC day, and `sd-db backup` takes the first free name | each NAS name of today or later is held by an empty folder, which the additive copy and retention leave alone | `test_the_seed_holds_every_nas_name_of_the_day` |
+| 6 seed | snapshot copied into the hourly root | killed mid-copy | the copy goes to `<name>.seeding` first; the rerun removes it and copies again | `test_a_seed_cut_short_is_copied_again` |
 | hourly copy | NAS gains a directory | a promoted hub with a nearly empty local root copies | additive: the NAS history stays; only the prune deletes, by checkpoint age | mirror test with a one-directory source and a seven-directory NAS root |
-| hand-back entry | old `sd.db` moved aside, `hub.json` copied | the operator skips the copy | step 1 refuses: no `hub.json`; nothing moved | promote test on a machine with a local `sd.db` and no `hub.json` |
-| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | undo test with a failing backup double |
-| undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | undo test with a `restore` row naming an older snapshot |
-| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | kill test between 4 and 5 |
-| undo 5 | `hub.json` back | the satellite stage fails | the rerun runs the stage again; `status` names it | undo rerun test after a failed stage double |
+| hand-back entry | old `sd.db` moved aside, `hub.json` copied | the operator skips the copy | step 1 refuses: no `hub.json`; nothing moved | `test_step_1_refuses_an_old_hub_with_no_hub_json` |
+| demoted, before take-back | none | the sd stage reads the hub profile, calls `hub.json` EXTRA ("remove it") and builds a database, which stops the take-back at step 1 | a hub profile with `hub.json` and no database reads `DIFFERS ... demoted` and builds none; rejoining for good takes a satellite profile (README) | `test_a_demoted_hub_profile_says_so_and_builds_no_database` |
+| hand-back 8 role install | agents and jobs installed | the repaired hub keeps its hub profile, so the role check keyed on the profile never reads holder | ownership (`hub_holder`: no `hub.json`, the database here, the fence reads holder) is apart from the extra labels (`hub_role`, a profile with no sd agent); steps 8 and 9 and hub-ready ask ownership | `test_a_hub_profile_takes_the_role_back`, `test_a_hub_profile_stopped_at_step_9_reads_as_the_holder` |
+| hand-back 8 role install | none | the hub profile lacks a role label | it installs only what it lists; step 8 stops and names the profile file | `test_a_hub_profile_that_lacks_a_role_label_names_the_profile` |
+| hand-back 8 role install | agents and jobs installed | the hub profile also names a satellite | the agents and cron stages skip hub-only labels only for a satellite that does not hold the role | `test_a_hub_profile_that_rejoined_as_a_satellite_takes_the_role_back` |
+| any stage, the live hub | none | asking the fence on a hub profile with no satellite | the stages ask it only off such a hub, once per run | `test_the_live_hub_asks_no_fence` |
+| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | `--undo`, sd:4048 |
+| undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | `--undo`, sd:4048 |
+| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | `--undo`, sd:4048 |
+| undo 5 | `hub.json` back | the satellite stage fails | the rerun runs the stage again; `status` names it | `--undo`, sd:4048 |
 | drill | throwaway home written | killed before cleanup | the next drill and `status` remove the folder first | kill test inside the drill |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
@@ -312,7 +348,8 @@ the NULL-host repositories and their open pull requests; the leases released in 
    Leaves working: the hub as today; a demoted machine fenced.
 3. **Restore picks the newest (pack, `sd_db`).** `restore --newest ROOT...` and the lease settling.
    Leaves working: `restore DIR` unchanged.
-4. **Promote (system).** The hub role as a state, the `promote` verb with `--undo`, the `hub-ready` block and the README runbook, demotion included.
+4. **Promote (system).** The hub role as a state, the `promote` verb, the `hub-ready` block and the README runbook, demotion included.
+   `--undo` is in the runbook as hand steps; the verb, its readiness lines (pins, `gh` push access, notify) and the promoted satellite's nightly NAS copy follow as sd:4048.
    Leaves working: satellites as today; a promotion is possible.
 5. **Drill (system and config).** `promote --drill`, the monthly job example, and the first timed run quoted in the PR body.
 

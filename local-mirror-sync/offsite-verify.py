@@ -47,7 +47,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import system_tools_config  # noqa: E402
 
-sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser() / "lib"))
+#: The command pack checkout: its lib/ holds sd_db, its bin/sd-db the fence.
+PACK_ROOT = Path(os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack").expanduser()
+sys.path.insert(0, str(PACK_ROOT / "lib"))
 
 #: This tool's settings file, `<config>/mirror-sync/.env`, outside the checkout.
 ENV_FILE = system_tools_config.config_dir("mirror-sync") / ".env"
@@ -644,6 +646,49 @@ def _writable_destination(destination: Path, root: Path, report: Report) -> bool
     return True
 
 
+def _hub_fence(report: Report) -> bool:
+    """Only the machine that holds the hub role writes the hub's backups.
+
+    A returning old hub still has these jobs, and its NAS copy would land
+    beside the promoted hub's under the same names (sd:4010). `sd-db fence`
+    exits 0 for the holder, or with no sd.hub_name set; 1 for another
+    holder or an unreadable answer. Any other exit, a pack without the verb
+    or a hung call included, is not an answer, so it refuses too.
+    """
+    sd_db = PACK_ROOT / "bin" / "sd-db"
+    try:
+        result = subprocess.run([str(sd_db), "fence"], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        report.fail(f"cannot ask {sd_db} fence whether this machine is the hub: {error}")
+        return False
+    said = (result.stdout.strip() or result.stderr.strip()).splitlines()
+    line = said[-1] if said else "no answer"
+    if result.returncode != 0:
+        report.fail(f"this machine may not be the hub, so it writes no backup:"
+                    f" sd-db fence exited {result.returncode}: {line}")
+        return False
+    report.ok(f"sd-db fence: {line}")
+    return True
+
+
+def _no_unfinished_promotion(report: Report) -> bool:
+    """No copy while `machine-setup.sh promote --apply` has not finished.
+
+    Its marker stays at the hold step while a NAS root cannot be listed, so
+    the NAS's snapshot names of today are not held locally; the additive
+    copy could then overwrite one (sd:4012). The rerun lists it and removes
+    the marker. A marker at any other step is a promotion cut short.
+    """
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    marker = Path(state) / "sd" / "promote-intent"
+    if marker.exists():
+        report.fail(f"a promotion has not finished: {marker} exists;"
+                    " rerun machine-setup.sh promote --apply")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
@@ -722,6 +767,8 @@ def main(argv: list[str] | None = None) -> int:
     # Mac. One preflight answers for both, so the two sides cannot drift into
     # disagreeing about what off-machine means.
     if arguments.preflight_only:
+        _hub_fence(report)
+        _no_unfinished_promotion(report)
         for destination in arguments.destination:
             _writable_destination(destination, root, report)
         for line in report.lines:

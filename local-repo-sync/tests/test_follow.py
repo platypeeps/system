@@ -73,6 +73,14 @@ PROMPT_DIFFERS = ("echo '  DIFFERS claude /home/.claude/CLAUDE.md — block edit
                   "echo \"          'capture claude --apply', or discard it with 'refresh --force'\"")
 
 
+# The pack's `bin/sd-db fence` (sd:4010): logs each call to FENCE_LOG,
+# prints FENCE_LINE, and exits FENCE_RC (0, the holder, when unset).
+FENCE_STUB = ('#!/bin/sh\n[ "$1" = fence ] || exit 2\n'
+              '[ -z "${FENCE_LOG:-}" ] || echo fence >> "$FENCE_LOG"\n'
+              'echo "${FENCE_LINE:-holder: this machine holds the hub role}"\n'
+              'exit "${FENCE_RC:-0}"\n')
+
+
 class FollowFixture(DrainFixture):
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
@@ -95,6 +103,11 @@ class FollowFixture(DrainFixture):
         pack = self.repo(rel)
         (pack / "bin").mkdir()
         self.commit(pack, "bin/sd_install.py", "", "installer")
+        # `sd-db fence` (sd:4010): FENCE_RC, 0 when unset, with its line.
+        self.commit(pack, "bin/sd-db", FENCE_STUB, "sd-db fence")
+        (pack / "bin" / "sd-db").chmod(0o755)
+        self.git(pack, "add", "bin/sd-db")
+        self.git(pack, "commit", "-q", "-m", "sd-db mode")
         self.git(pack, "push", "-q", "origin", "main")
         return pack
 
@@ -227,6 +240,35 @@ class HubPushTest(unittest.TestCase):
 
         self.assertIn("satellites keep the old pins; run refresh again", result.stdout)
         self.assertIsNone(f.hub_pin(system))
+
+    def test_a_fenced_hub_publishes_no_pins(self):
+        """NEW (sd:4010). A returning old hub, which `sd-db fence` answers
+        elsewhere or unknown for, pushes no hub-pin: the refresh exits 1, names
+        the fence's own line, and the old tag stays."""
+        f = self.fixture()
+        system, _ = self.pinned_pair(f)
+        log = f.tmp / "fence.log"
+
+        result = f.run("refresh", expect=1, extra_env={
+            "FENCE_RC": "1", "FENCE_LOG": str(log),
+            "FENCE_LINE": "elsewhere: sd.hub_name names hub.example.test; this machine is old.example.test"})
+
+        self.assertIn("!!! refused: hub-pin not published: this machine may not be the hub: "
+                      "elsewhere: sd.hub_name names hub.example.test", result.stdout)
+        self.assertIsNone(f.hub_pin(system))
+        self.assertEqual("fence\n", log.read_text())
+
+    def test_the_fence_holder_publishes_the_pins(self):
+        """PIN. The holder, or a machine with no sd.hub_name, which the
+        fence answers 0 for, pushes as before, after one fence call."""
+        f = self.fixture()
+        system, pack = self.pinned_pair(f)
+        log = f.tmp / "fence.log"
+
+        f.run("refresh", expect=0, extra_env={"FENCE_LOG": str(log)})
+
+        self.assertEqual((f.head(system), f.head(pack)), f.hub_pin(system))
+        self.assertEqual("fence\n", log.read_text())
 
     def test_a_pinned_system_without_a_pinned_pack_publishes_nothing(self):
         """NEW (round 1). A pair the hub cannot name is not published: the
