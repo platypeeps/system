@@ -76,6 +76,10 @@ pass is how the snapshot leaves the machine. It runs additive, like
 an exact mirror would delete. It keeps no overwrite store: a file the pass
 overwrites on the NAS is gone (operator decision, 2026-09-26). The only thing this
 folder checks on the NAS is that snapshot (see `offsite-verify.py` below).
+A machine that moves the snapshot root with `SD_DB_BACKUP_DESTINATION`, such
+as a promoted satellite, still copies, as the hourly job does (sd:4048): the
+pair list's source must name that root's parent. An empty
+`SD_DB_BACKUP_NAS_FOLDER` takes the snapshot only, for a one-off.
 
 **A detached drive fails loudly.** It looks like a missing destination
 parent, which the safety rails already refuse, so the pass exits 1 and raises

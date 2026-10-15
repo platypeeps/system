@@ -223,18 +223,21 @@ No hub config folder, no hub secret and no hub host job is copied.
 As a satellite it already reads every record over the wire and holds the hub's `providers.yaml`; promotion adds the records at rest.
 
 **The drill touches the records too.** The monthly drill restores a copy into a throwaway home under the system disk and deletes it when the run ends, pass or fail, as `offsite-verify` does.
-A drill killed before its cleanup leaves the folder; the next drill and `status` remove it first and name it.
+A drill killed before its cleanup leaves the folder; `status` names it, and the next drill and `promote --undo` remove it. `status` stays read-only.
 
 **How the records leave.** The role goes back to a hub on a personal machine as soon as one is ready; the work satellite is a stopgap.
 `machine-setup.sh promote --undo` on the work satellite, in order:
 
 1. Stop the hub-role agents and jobs, then write one last snapshot to the NAS hourly root. Its checkpoint id is the hand-back point.
-2. The repaired or replacement hub runs `promote` from that snapshot, and takes the tailnet name back.
-3. `--undo` continues only when three checks pass: the fence reads "not holder"; the new hub answers a session;
-   and the new hub's open `restore` row names the hand-back snapshot. That last check ties the deletion to the one snapshot that carries every record written here.
-4. Delete `~/.local/share/sd/`, the local backup root the hub-role jobs wrote, and any drill folder left behind.
-5. Put `hub.json` back, then run `update satellite --apply`.
-6. Prove it: `status` shows no local `sd.db`, no hub-role backup root and no `promote-intent` marker.
+   Put `hub.json` back and give the tailnet name back to this machine's own: beside the database, `hub.json` makes every `sd` command refuse, so no write lands after the hand-back point.
+2. The repaired or replacement hub runs `promote`, which restores that snapshot, the newest, and takes the tailnet name back.
+3. `--undo` continues only when three checks pass: the fence, read from the local database, reads "elsewhere"; the new hub answers a session;
+   and the new hub's newest `restore` row names the hand-back snapshot and it holds that snapshot's checkpoint. That last check ties the deletion to the one snapshot that carries every record written here.
+   The newest row, open or not: the operator may run `sd restore resume` on the new hub first.
+4. Delete only what undo can name as hub-role output, under `$HOME` and off the NAS: `sd.db` and its `-wal`, `-shm` and `-journal` files; each folder in the hub-role jobs' local roots named as `sd-db backup` names one (`YYYY-MM-DD` or `YYYY-MM-DD.N`) that holds its `backup-manifest.json` as a regular file, with `format` `sd-db-backup`, `version` 1 and a 32-hex `run_id`, and whose files match the manifest's `entries` by sha256; a drill home that holds the drill's marker.
+   Then remove the empty dated folders promote's hold step left, and each root that is empty. A root that holds anything else stays, and the run lists what it holds.
+5. Run `update satellite --apply`, and prove it by the stage's dry run, as `follow` does.
+6. Prove it: none of the named items is left, and no `promote-intent` marker. The report names each root still there, which holds what undo cannot name as its own.
 
 The NAS copies stay on the NAS, which is where every hub keeps them.
 
@@ -324,6 +327,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | older state | a pack without `sd-db fence` | the verb exits 2 | NAS copies and `hub-pin` refuse: no answer is not a pass; the pin moves with this change | `test_a_fenced_machine_writes_no_backup` (exit 2); `test_a_fence_that_cannot_run_refuses_the_preflight` |
 | 6 seed | empty folders in the hourly root | the NAS holds earlier names of the same UTC day, and `sd-db backup` takes the first free name | each NAS name of today or later is held by an empty folder, which the additive copy and retention leave alone | `test_the_seed_holds_every_nas_name_of_the_day` |
 | 6 seed | snapshot copied into the hourly root | killed mid-copy | the copy goes to `<name>.seeding` first; the rerun removes it and copies again | `test_a_seed_cut_short_is_copied_again` |
+| 6 seed | stale `<name>.seeding` removed | the hourly root leads onto the NAS | `rm_target` keeps it; promote stops at step 6 and names it | `test_a_seed_left_on_the_nas_is_not_deleted` |
 | hourly copy | NAS gains a directory | a promoted hub with a nearly empty local root copies | additive: the NAS history stays; only the prune deletes, by checkpoint age | mirror test with a one-directory source and a seven-directory NAS root |
 | hand-back entry | old `sd.db` moved aside, `hub.json` copied | the operator skips the copy | step 1 refuses: no `hub.json`; nothing moved | `test_step_1_refuses_an_old_hub_with_no_hub_json` |
 | demoted, before take-back | none | the sd stage reads the hub profile, calls `hub.json` EXTRA ("remove it") and builds a database, which stops the take-back at step 1 | a hub profile with `hub.json` and no database reads `DIFFERS ... demoted` and builds none; rejoining for good takes a satellite profile (README) | `test_a_demoted_hub_profile_says_so_and_builds_no_database` |
@@ -331,11 +335,30 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | hand-back 8 role install | none | the hub profile lacks a role label | it installs only what it lists; step 8 stops and names the profile file | `test_a_hub_profile_that_lacks_a_role_label_names_the_profile` |
 | hand-back 8 role install | agents and jobs installed | the hub profile also names a satellite | the agents and cron stages skip hub-only labels only for a satellite that does not hold the role | `test_a_hub_profile_that_rejoined_as_a_satellite_takes_the_role_back` |
 | any stage, the live hub | none | asking the fence on a hub profile with no satellite | the stages ask it only off such a hub, once per run | `test_the_live_hub_asks_no_fence` |
-| undo 1 | role stopped, hand-back snapshot written | the snapshot fails | the role restarts; nothing deleted; exit 1 | `--undo`, sd:4048 |
-| undo 3 | nothing | the new hub restored another snapshot, or does not answer | refuse; nothing deleted; the records stay until the checks pass | `--undo`, sd:4048 |
-| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest | `--undo`, sd:4048 |
-| undo 5 | `hub.json` back | the satellite stage fails | the rerun runs the stage again; `status` names it | `--undo`, sd:4048 |
-| drill | throwaway home written | killed before cleanup | the next drill and `status` remove the folder first | kill test inside the drill |
+| undo entry | none | a hub profile holds the role (the repaired hub after take-back) | refuse with the demotion step; nothing moved | `test_a_hub_profile_that_holds_the_role_refuses` |
+| undo 1 | role stopped, hand-back snapshot written, `hub.json` back | the snapshot fails | the role restarts; nothing deleted; exit 1 | `test_a_snapshot_that_fails_starts_the_role_again_and_deletes_nothing`; killed between the stop and the snapshot, `test_killed_after_the_stop_a_rerun_writes_the_snapshot` |
+| undo 1 | role stopped | a bootout fails: `cron-jobs.sh uninstall` removes the plist and exits 0 | launchd, not the plist, says each role label stopped; a label still loaded, or a print that is not 113, takes no snapshot and restarts the role | `test_a_job_launchd_still_runs_takes_no_snapshot_and_the_role_starts_again`, `test_a_launchd_that_does_not_answer_takes_no_snapshot` |
+| undo 1 | role stopped | the satellite profile lists a role label, which step 1 skipped | every role label is hub-only, so each stops and is asked whatever the profile lists | `test_a_role_label_the_satellite_profile_lists_stops_too` |
+| undo 1 | role stopped | a label is loaded but its plist is gone | it is booted out by label before the snapshot | `test_a_loaded_agent_with_no_plist_is_stopped_before_the_snapshot` |
+| undo 1 restart | role restarted | a stage logs a failed bootstrap and exits 0 | launchd is asked for each role label; one not loaded is named with the stage to run | `test_a_role_that_does_not_start_again_is_named` |
+| undo 1 | `hub.json` back | killed after the move | the rerun keeps the snapshot: every `sd` command refuses beside the database (HubConflict), so no write followed it | `test_killed_after_hub_json_went_back_in_step_1_a_rerun_keeps_the_snapshot` |
+| undo 1 | snapshot written, `hub.json` still aside | killed before the move, or `hub.json` aside again before step 4 | writes may follow the snapshot: the marker goes back to step 1 and a new snapshot is taken | `test_killed_before_hub_json_went_back_a_rerun_writes_a_new_snapshot` |
+| undo 2 | tailnet name given up | killed, or `tailscale set` fails | the marker names step 2; the rerun gives up the name | `test_killed_after_hub_json_went_back_a_rerun_gives_up_the_name` |
+| undo 3 | nothing | the new hub restored another snapshot, lacks the hand-back checkpoint, or does not answer; this machine still holds the name; the session reaches this machine | refuse; nothing deleted; the records stay until the checks pass | `test_a_new_hub_that_does_not_answer_deletes_nothing`, `test_a_new_hub_that_restored_another_snapshot_deletes_nothing`, `test_a_new_hub_without_the_hand_back_checkpoint_deletes_nothing`, `test_a_machine_that_still_holds_the_name_deletes_nothing`, `test_a_session_that_reaches_this_machine_deletes_nothing` |
+| undo 4 | records deleted | killed mid-delete | the marker names step 4; the rerun deletes the rest; a root outside `$HOME` is never deleted | `test_killed_mid_delete_a_rerun_deletes_the_rest`, `test_a_root_outside_home_is_left` |
+| undo 4 delete | each root, the drill home and the database folder | a root spelled with `..`, or behind a symlinked ancestor, lands outside `$HOME` or on the NAS | `rm_target` resolves the path with `cd -P` first; a real path not under the resolved `$HOME`, on the NAS mount or holding it, is kept and named | `test_a_root_that_climbs_out_of_home_through_dotdot_is_left`, `test_a_root_behind_a_symlinked_ancestor_on_the_nas_is_left`, `test_a_root_that_holds_the_nas_mount_is_left`, `test_a_database_folder_behind_a_symlinked_ancestor_is_not_deleted` |
+| undo 4 delete | each root | a name with glob characters, spaces or a newline expands or splits into other paths, or a real path ends in a newline that `$()` strips | each root is one quoted word, never a field-split substitution; a destination with a newline stops the run before any delete; resolution keeps a trailing newline and a real path with one is kept | `test_a_root_with_glob_characters_deletes_that_root_only`, `test_a_root_with_spaces_in_its_name_is_deleted`, `test_a_root_with_a_newline_in_its_name_stops_the_run_before_any_delete`, `test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left` |
+| undo 4 delete | each root | a folder on the way it cannot enter, at any depth | no answer, not gone: the run stops at step 4 and names the root | `test_a_root_it_cannot_resolve_stops_the_run` |
+| undo 5 | the satellite stage applied | the stage fails, or its dry run after shows drift or no proof line | the marker names step 5; the rerun runs the stage again; `status` names it | `test_a_satellite_stage_that_fails_stops_at_step_5_and_status_names_it` |
+| undo 4 named | snapshot folders, the database files, a marked drill home | a root also holds unrelated files, near-miss names (`2026-10-14.5.old`, `2026-10-14.05`), or a file named like a snapshot | only named items go; the root stays and the run lists what it holds; a root with only named items is removed | `test_unrelated_files_and_near_miss_names_in_each_root_stay`, `test_the_database_folder_keeps_what_is_not_the_database`, `test_roots_with_only_sd_output_are_removed` |
+| undo 4 named | named items deleted | a root that is a link; a root it cannot list; the database behind a folder link that leads out of `$HOME` | a linked root keeps its link once its items are gone; a root it cannot list stops step 4 and fails the step-6 proof; step 6 checks each database file by name, wherever it lies, so a kept database fails the proof | `test_a_root_that_is_a_link_loses_its_snapshots_and_stays`, `test_a_root_it_cannot_list_stops_the_delete_and_fails_the_proof`, `test_a_database_folder_that_links_out_of_home_fails_the_proof` |
+| undo 4 named | named items deleted | a dated folder another tool wrote, or one with no manifest, a foreign or invalid one, or a manifest that is a link; a `.seeding` folder | kept and listed; only a folder with the pack's manifest goes, and an empty dated folder goes by `rmdir` | `test_dated_folders_sd_db_backup_did_not_write_stay`, `test_roots_with_only_sd_output_are_removed` |
+| undo 4 named | named items deleted | a real snapshot with a file added since; a snapshot a killed backup left before its manifest | the folder's files must match the manifest's `entries`, so it is kept; the report names each root still there for the operator to check | `test_a_snapshot_with_a_file_added_since_stays`, `test_dated_folders_sd_db_backup_did_not_write_stay` |
+| undo 4 named | none | a drill folder without the drill's marker, such as one a drill before this change left | kept and listed; removed by hand | `test_a_drill_folder_without_the_drill_marker_is_kept` |
+| drill | throwaway home written | killed before cleanup | `status` names the folder; the next drill and `promote --undo` remove it first | `test_killed_before_cleanup_status_names_the_folder_and_the_next_drill_removes_it`, `test_a_hand_back_deletes_a_drill_folder_left_here` |
+| drill cleanup | throwaway home deleted | the state folder leads onto the NAS through a symlinked ancestor, or the NAS mount sits below a folder it cannot enter | `rm_target` keeps a home not under the resolved state folder, on the NAS or holding it, and one whose NAS mount it cannot place; the next drill refuses and names it | `test_a_leftover_home_behind_a_symlinked_ancestor_on_the_nas_stays`, `test_a_nas_mount_it_cannot_place_stops_the_cleanup` |
+| drill cleanup | throwaway home deleted | a leftover home without the drill's marker (the drill writes it first, so one killed before it is empty) | an empty home goes by `rmdir`; any other stays and the drill refuses | `test_a_leftover_home_without_the_drill_marker_stays_and_the_drill_refuses` |
+| drill preflight | none | the NAS cannot be read | as promote: one readable root, such as `--from` the USB disk, passes; with none, NOT-READY and the monthly job files a miss | `test_a_drill_passes_on_a_usb_root_while_the_nas_cannot_be_read`, `test_a_drill_with_no_readable_root_refuses` |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 
 ## Slices
@@ -349,7 +372,7 @@ the NULL-host repositories and their open pull requests; the leases released in 
 3. **Restore picks the newest (pack, `sd_db`).** `restore --newest ROOT...` and the lease settling.
    Leaves working: `restore DIR` unchanged.
 4. **Promote (system).** The hub role as a state, the `promote` verb, the `hub-ready` block and the README runbook, demotion included.
-   `--undo` is in the runbook as hand steps; the verb, its readiness lines (pins, `gh` push access, notify) and the promoted satellite's nightly NAS copy follow as sd:4048.
+   `--undo`, its readiness lines (pins, `gh` push access, notify) and the promoted satellite's nightly NAS copy follow as sd:4048.
    Leaves working: satellites as today; a promotion is possible.
 5. **Drill (system and config).** `promote --drill`, the monthly job example, and the first timed run quoted in the PR body.
 

@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import sys
@@ -65,6 +66,22 @@ c.close()' "$STUB_PYTHONPATH" "$HOME/.local/share/sd/sd.db" "$newest"
     echo "sd-db: restored $3/$newest (checkpoint 2026-10-14T08:50:00+00:00) to $HOME/.local/share/sd"
     echo "sd-db: released 1 lease(s) abandoned at promotion: run-7"
     exit 0 ;;
+  repo)
+    # STUB_REPO_DEAD: the registry read goes to a hub that is gone.
+    if [ -n "$STUB_REPO_DEAD" ]; then echo "sd-db: hub unavailable: connection refused" >&2; exit 1; fi
+    printf '%s' "$STUB_REPOS"; exit 0 ;;
+  # The drill's loopback server: the pack's own.
+  serve) shift; exec "$STUB_REAL_PYTHON" -I -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from sd_db import serve
+sys.exit(serve.main(sys.argv[2:]))' "$STUB_PYTHONPATH" "$@" ;;
+  backup)
+    if [ -n "$STUB_BACKUP_RC" ]; then echo "sd-db backup: fixture failure" >&2; exit "$STUB_BACKUP_RC"; fi
+    name=${STUB_BACKUP_NAME:-2026-10-14.6}
+    mkdir -p "$3/$name"
+    echo '{"run_id": "run-handback"}' > "$3/$name/backup-manifest.json"
+    echo "sd-db backup: $3/$name — 3 row(s) across 1 table(s), restored and compared; fixture; row prune skipped (--no-row-prune)"
+    exit 0 ;;
 esac
 exit 2
 '''
@@ -109,12 +126,34 @@ case "$*" in
 esac
 '''
 
-# The step-9 session: the pack's interpreter, asked to connect.
-PROVE_STUB = 'shift 3\necho "prove $*" >> "$STUB_LOG"\nexit "${STUB_PROVE_RC:-0}"\n'
+# The step-9 session: the pack's interpreter, asked to connect. Asked for the
+# satellite check, it prints STUB_SATELLITE_LINE, the proof line by default.
+SATELLITE_CASE = """case "$5" in sd_db.satellite)
+  line=${STUB_SATELLITE_LINE-ok}
+  [ "$line" != ok ] || line="  ok      sd_db fixture build 1 matches the hub's"
+  echo "$line"; exit 0 ;;
+esac
+"""
+PROVE_STUB = SATELLITE_CASE + 'shift 3\necho "prove $*" >> "$STUB_LOG"\nexit "${STUB_PROVE_RC:-0}"\n'
+
+# git: the hub-pin tag and the two checkouts' heads; anything else is the real git.
+GIT_STUB = r'''
+case "$*" in
+  *"rev-parse -q --verify refs/tags/hub-pin^{commit}") [ -n "$STUB_PIN" ] || exit 1; echo "$STUB_PIN" ;;
+  *"tag -l --format=%(contents) hub-pin") printf 'hub-pin\n\npack=%s\n' "$STUB_PIN_PACK" ;;
+  "-C $SD_PACK_ROOT rev-parse HEAD") echo "$STUB_PACK_HEAD" ;;
+  *"rev-parse HEAD") echo "$STUB_SYSTEM_HEAD" ;;
+  *) exec "$STUB_REAL_GIT" "$@" ;;
+esac
+'''
+
+# gh: `api graphql` prints STUB_GH_JSON and logs the query.
+GH_STUB = 'echo "gh $*" >> "$STUB_LOG"\nprintf "%s" "$STUB_GH_JSON"\n[ -n "$STUB_GH_JSON" ] || exit 1\n'
 
 # launchd: a bootstrap loads its label, a bootout unloads it, and print finds
 # a loaded label (113, launchd's "no such service", otherwise). STUB_BOOTSTRAP_FAIL
-# names one label whose bootstrap fails after its plist is written.
+# names one label whose bootstrap fails after its plist is written;
+# STUB_BOOTOUT_FAIL one that stays loaded.
 LAUNCHCTL_STUB = r'''echo "launchctl $*" >> "$STUB_LOG"
 loaded="$STUB_LOG.loaded"
 case "$1" in
@@ -126,13 +165,16 @@ case "$1" in
              [ "${STUB_BOOTSTRAP_RC:-0}" = 0 ] || exit "$STUB_BOOTSTRAP_RC"
              echo "$label" >> "$loaded" ;;
   bootout) label=${2##*/}; [ -z "${3:-}" ] || label=$(basename "$3" .plist)
+           [ "$label" != "${STUB_BOOTOUT_FAIL:-}" ] || exit 5
            [ ! -f "$loaded" ] || { grep -vxF "$label" "$loaded" > "$loaded.new" || :; mv "$loaded.new" "$loaded"; } ;;
 esac
 exit 0
 '''
 
 
-class Promote(unittest.TestCase):
+class PromoteCase(unittest.TestCase):
+    """A satellite of a dead hub, ready to be promoted; no tests of its own."""
+
     def setUp(self):
         self.fixture = Fixture()
         self.addCleanup(self.fixture.destroy)
@@ -147,6 +189,10 @@ class Promote(unittest.TestCase):
         write_stub(f.stubs, "sd", SD_STUB)
         write_stub(f.stubs, "launchctl", LAUNCHCTL_STUB)
         self.prove = write_stub(f.stubs, "prove-python", PROVE_STUB)
+        write_stub(f.stubs, "git", GIT_STUB)
+        write_stub(f.stubs, "gh", GH_STUB)
+        write_stub(f.stubs, "notify", "exit 0\n")
+        write_stub(f.stubs, "jev", "exit 0\n")
         fixture_config.seal(self, f.stubs)
         (f.pack / "bin").mkdir()
         # The pack's settings reader, which the drain imports; a link, never written.
@@ -181,6 +227,11 @@ class Promote(unittest.TestCase):
         self.marker = f.home / ".local/state/sd/promote-intent"
         self.lanes = self.tmp / "lanes"
         self.lanes.mkdir()
+        (self.config / "notify").mkdir(exist_ok=True)
+        (self.config / "notify/.env").write_text("NOTIFY_EMAIL_TO=ops@example.test\nEMAIL_FROM=ops@example.test\n")
+        # The satellite stage's Jev step finds its shadow file.
+        (f.home / ".config/jev").mkdir(parents=True)
+        (f.home / ".config/jev/shadow").write_text("on\n")
 
     @staticmethod
     def closed_port():
@@ -192,7 +243,9 @@ class Promote(unittest.TestCase):
         env = {**fixture_config.env(self.config), "STUB_LOG": self.log, "STUB_FENCE": self.fence,
                "OFFSITE_VERIFY_ROOT": self.nas, "SD_DB_PYTHON": self.prove,
                "XDG_STATE_HOME": self.fixture.home / ".local/state", "SD_LANE_ROOT": self.lanes,
-               "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, **extra}
+               "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, "STUB_REAL_GIT": shutil.which("git"),
+               "STUB_PIN": "a" * 40, "STUB_SYSTEM_HEAD": "a" * 40, "STUB_PIN_PACK": "b" * 40,
+               "STUB_PACK_HEAD": "b" * 40, **extra}
         result = self.fixture.run("promote", *args, **env)
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
         return result
@@ -212,6 +265,9 @@ class Promote(unittest.TestCase):
     def moved(self):
         return sorted(self.hub_json.parent.glob("hub.json.promoted-*"))
 
+
+
+class Promote(PromoteCase):
     # Dry run and step 1.
 
     def test_a_dry_run_prints_hub_ready_and_moves_nothing(self):
@@ -489,6 +545,24 @@ class Promote(unittest.TestCase):
         self.run_promote("--apply")
         self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
         self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
+
+    def test_a_seed_left_on_the_nas_is_not_deleted(self):
+        """Review round 5: an hourly root that leads onto the NAS keeps what is there; promote stops."""
+        moved = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.hub_json.rename(moved)
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        (self.tmp / "nas-link").symlink_to(self.nas)
+        (self.config / "cron-jobs/jobs/sd-db-backup-hourly.job").write_text(
+            f'SD_DB_BACKUP_HOURLY_DESTINATION="{self.tmp}/nas-link/sd-backups-hourly"\n'
+            'JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
+        on_nas = self.nas / "sd-backups-hourly/2026-10-13.1.seeding"
+        on_nas.mkdir()
+        self.write_marker(step=6, moved=moved, snapshot=self.nas / "sd-backups/2026-10-13.1")
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("on the NAS", result.stderr)
+        self.assertTrue(on_nas.exists(), "promote deleted a folder on the NAS")
+        self.assertEqual("6", self.marker_step())
 
     def test_killed_inside_step_3_a_marker_with_no_step_starts_again(self):
         """codex: a marker cut short before its step names nothing moved."""
@@ -782,6 +856,63 @@ class Promote(unittest.TestCase):
         self.assertIn("NOT-READY promote stopped before its end", out)
         self.assertIn("names step 7", out)
 
+    # The readiness lines --undo's slice adds (sd:4048).
+
+    def test_hub_ready_refuses_checkouts_off_the_hub_pin(self):
+        result = self.run_promote("--apply", expect=1, STUB_PACK_HEAD="c" * 40)
+        self.assertIn(f"NOT-READY system at {'a' * 40} and pack at {'c' * 40}, not hub-pin's", result.stdout)
+        self.assertIn("a hub-ready line is not ok; nothing moved", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+
+    def test_hub_ready_names_a_missing_hub_pin_tag(self):
+        self.assertIn("NOT-READY no hub-pin tag", self.run_promote(STUB_PIN="").stdout)
+
+    def test_hub_ready_names_a_build_the_hub_refuses(self):
+        out = self.run_promote(STUB_SATELLITE_LINE="  DIFFERS sd_db build: satellite 1, hub 2 — follow").stdout
+        self.assertIn("NOT-READY sd_db build: satellite 1, hub 2", out)
+
+    def test_a_dead_hub_leaves_the_build_unread_not_ok(self):
+        out = self.run_promote(STUB_SATELLITE_LINE="  SKIP    sd hub did not answer").stdout
+        self.assertIn("  --      the hub did not answer; the sd_db build was not compared", out)
+        self.assertNotIn("sd_db build matches", out)
+
+    def lane_repos(self):
+        host = subprocess.run(["hostname", "-s"], capture_output=True, text=True, check=True).stdout.strip().lower()
+        return ("sd-db: ~/repos/a  git@github.com:owner-a/one.git  yes  local  hub  auto\n"
+                f"sd-db: ~/repos/b b  https://github.com/owner-b/two  yes  local  {host}  auto\n"
+                "sd-db: ~/repos/c  https://github.com/owner-c/three  yes  local  other-host  auto\n")
+
+    def test_hub_ready_names_lane_repositories_the_gh_login_cannot_push(self):
+        data = {"data": {"viewer": {"login": "fixture"}, "r0": {"viewerPermission": "WRITE"}, "r1": None}}
+        result = self.run_promote("--apply", expect=1, STUB_REPOS=self.lane_repos(), STUB_GH_JSON=json.dumps(data))
+        self.assertIn("NOT-READY gh login fixture cannot push to 1 lane repositories: owner-b/two", result.stdout)
+        query = self.calls("gh api graphql")[0]
+        self.assertIn('owner: "owner-a", name: "one"', query)
+        self.assertNotIn("owner-c", query, "another machine's lane was asked for")
+
+    def test_hub_ready_reads_push_access_for_every_lane_repository(self):
+        data = {"data": {"viewer": {"login": "fixture"}, "r0": {"viewerPermission": "ADMIN"},
+                         "r1": {"viewerPermission": "WRITE"}}}
+        out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_GH_JSON=json.dumps(data)).stdout
+        self.assertIn("  ok      gh login fixture pushes to all 2 lane repositories", out)
+
+    def test_a_gh_that_does_not_answer_is_not_ok(self):
+        out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_GH_JSON="").stdout
+        self.assertIn("  --      gh api did not answer; push access not checked", out)
+        self.assertNotIn("  ok      gh", out)
+
+    def test_a_repository_list_the_dead_hub_cannot_give_is_unread_not_refused(self):
+        """The gh line reads the registry from the hub promote replaces; no answer is `--`, never NOT-READY."""
+        out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_REPO_DEAD="1").stdout
+        self.assertIn("  --      the repository list was not read from the hub; gh push access not checked", out)
+        self.assertNotIn("NOT-READY gh", out)
+
+    def test_hub_ready_refuses_an_unset_notify_email_channel(self):
+        (self.config / "notify/.env").write_text("NOTIFY_EMAIL_TO=change-me@example.test\n")
+        result = self.run_promote("--apply", expect=1)
+        self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", result.stdout)
+        self.assertTrue(self.hub_json.exists())
+
 
 class HubRole(unittest.TestCase):
     """The agents and cron stages add the hub-role labels only for the holder."""
@@ -857,6 +988,16 @@ class HubRole(unittest.TestCase):
         self.assertNotIn("remove it", out)
         self.assertEqual([], [line for line in self.log.read_text().splitlines() if line == "init"]
                          if self.log.exists() else [])
+
+    def test_doctor_checks_the_sd_pieces_on_a_promoted_satellite(self):
+        """sd:4648: the holder, not the profile, decides; a satellite still skips them."""
+        env = dict(**fixture_config.env(self.config), STUB_LOG=self.log, STUB_FENCE=self.fence)
+        self.fence.write_text("holder\n")
+        out = self.fixture.run("doctor", "sd", **env).stdout
+        self.assertNotIn("sd pieces not checked", out)
+        self.assertIn(f"database {self.fixture.db}", out)
+        self.fence.write_text("elsewhere\n")
+        self.assertIn("sd pieces not checked", self.fixture.run("doctor", "sd", **env).stdout)
 
     def test_a_satellite_profile_still_holds_the_role_once_promoted(self):
         """A `<profile>.satellite` file keeps is_satellite true after hub.json moved."""
