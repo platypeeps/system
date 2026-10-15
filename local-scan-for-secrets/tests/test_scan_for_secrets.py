@@ -227,6 +227,8 @@ class FixtureFingerprints(unittest.TestCase):
                  (f'{{"text": "a = 1\\n{self.FAKE}\\n"}}\n', 0),
                  (f"password={self.FAKE}\\\n", 2),
                  (f"https://u:{self.FAKE},`tail@db.example.test\n", 2),
+                 (f'url=postgres://user:"{self.FAKE}"suffix@db.example.test/app\n', 2),
+                 (f'secret=prefix"{self.FAKE}"\n', 2),
                  (f"key = '{self.FAKE}'\n", 0)]
         for searcher, path in UrlCredentials.SEARCHERS.items():
             for text, code in cases:
