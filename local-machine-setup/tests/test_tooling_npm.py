@@ -11,7 +11,8 @@ prints a path. Not by exit code: npm 10 exits 0 on a miss, and npm 11 exits 1
 for a package that is present in a tree with problems elsewhere.
 
 The script runs from a copy of this folder. `brew --prefix` names a folder in
-the case's temporary root, and the npm stub there logs its arguments.
+the case's temporary root. Its keg's npm is an `env node` script, as
+Homebrew's is, and the keg's node stub logs the arguments it gets.
 """
 
 import pathlib
@@ -30,9 +31,13 @@ LIB = FOLDER.parent / "lib"
 PRESENT = "@example/present-cli"
 ABSENT = "@example/absent-cli"
 
-# `ls` prints a path for each package in $NPM_HAVE and exits $NPM_LS_RC;
-# every call is logged.
-NPM_STUB = r"""#!/bin/sh
+# Homebrew's npm is a script that `env` hands to the first node on PATH.
+NPM_SCRIPT = "#!/usr/bin/env node\n// npm-cli.js\n"
+
+# The keg's node, running that script: `ls` prints a path for each package in
+# $NPM_HAVE and exits $NPM_LS_RC; every call is logged.
+NODE_STUB = r"""#!/bin/sh
+shift
 echo "$*" >> "$NPM_LOG"
 case "$1" in
   ls)
@@ -70,7 +75,8 @@ class ToolingNpmTest(unittest.TestCase):
         (self.state / "profile").write_text("personal\n")
         self.prefix = base / "brew-prefix"
         self.npm = self.prefix / "opt/node@22/bin/npm"
-        write_exec(self.npm, NPM_STUB)
+        write_exec(self.npm, NPM_SCRIPT)
+        write_exec(self.npm.parent / "node", NODE_STUB)
         self.npm_log = base / "npm.log"
         self.stubs = base / "stubs"
         write_exec(self.stubs / "brew", f'#!/bin/sh\n[ "$*" = --prefix ] && echo "{self.prefix}"\nexit 0\n')
@@ -112,7 +118,7 @@ class ToolingNpmTest(unittest.TestCase):
 
         self.assertIn(f"  ok      npm {PRESENT}", out)
         self.assertIn(f"  MISSING npm {ABSENT}", out)
-        self.assertIn(f"  [dry-run] {self.npm} install -g {ABSENT}", out)
+        self.assertIn(f"  [dry-run] npm install -g {ABSENT}", out)
         self.assertEqual(self.installs(), [])
 
     def test_apply_installs_only_the_missing_package_and_passes_a_version_through(self):
@@ -121,6 +127,18 @@ class ToolingNpmTest(unittest.TestCase):
         out = self.tooling("--apply")
 
         self.assertEqual(self.installs(), [f"install -g {ABSENT}@1.2.3"], out)
+
+    def test_npm_runs_on_the_node_of_its_own_keg(self):
+        """node@22 is keg-only: `env node` must not find fnm's node, or none."""
+        wrong = self.stubs.parent / "wrong-node.log"
+        write_exec(self.stubs / "node", f'#!/bin/sh\necho "$*" >> "{wrong}"\nexit 1\n')
+        (self.profiles / "personal.npm").write_text(f"{PRESENT}\n{ABSENT}\n")
+
+        out = self.tooling("--apply")
+
+        self.assertFalse(wrong.exists(), out)
+        self.assertIn(f"  ok      npm {PRESENT}", out)
+        self.assertEqual(self.installs(), [f"install -g {ABSENT}"], out)
 
     def test_a_present_package_counts_by_its_path_not_the_exit_code(self):
         """npm 11 exits 1 for a present package when the tree has problems."""

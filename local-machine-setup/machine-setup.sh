@@ -453,15 +453,16 @@ node_versions() {
 24}"
 }
 
-# The npm that installs the .npm CLIs: Homebrew's, of the first node formula
-# the brew manifest lists. Every Homebrew node keeps its globals under
-# $(brew --prefix), whose bin is on PATH in every shell; an fnm node keeps
-# them per version, so the npm first on PATH depends on the shell (sd:4739).
-brew_npm() {
+# The bin folder of the node that installs the .npm CLIs: Homebrew's, of the
+# first node formula the brew manifest lists. Every Homebrew node keeps its
+# globals under $(brew --prefix), whose bin is on PATH in every shell; an fnm
+# node keeps them per version, so the npm first on PATH depends on the shell
+# (sd:4739).
+brew_node_bin() {
   bn=$(manifest brew | grep -xE 'node(@[0-9]+)?' | head -1)
   [ -n "$bn" ] && command -v brew >/dev/null 2>&1 || return 1
-  bn="$(bound_step 60 brew --prefix)/opt/$bn/bin/npm"
-  [ -x "$bn" ] && echo "$bn"
+  bn="$(bound_step 60 brew --prefix)/opt/$bn/bin"
+  [ -x "$bn/npm" ] && [ -x "$bn/node" ] && echo "$bn"
 }
 
 # The bundle id that answers mailto: links: the first line of <profile>.mailto,
@@ -1579,21 +1580,26 @@ stage_tooling() {
   npm_pkgs=$(manifest npm)
   if [ -z "$npm_pkgs" ]; then
     :
-  elif ! np=$(brew_npm); then
+  elif ! nb=$(brew_node_bin); then
     echo "  MISSING npm (none from a Homebrew node formula in the brew manifest; the brew stage installs it)"
   else
-    for p in $npm_pkgs; do
-      np_rc=0
-      np_out=$(bound_step 60 "$np" ls -g --depth=0 --parseable "$p" 2>/dev/null) || np_rc=$?
-      if [ "$np_rc" -gt 1 ]; then
-        note_failure "npm ls -g $p: presence unknown, nothing installed" "$np_rc"
-      elif printf '%s\n' "$np_out" | grep -q .; then
-        echo "  ok      npm $p"
-      else
-        echo "  MISSING npm $p"
-        run bound_step 600 "$np" install -g "$p"
-      fi
-    done
+    # The keg's bin first, in a subshell: npm is a `#!/usr/bin/env node`
+    # script, and node@22 is keg-only, so `env` would find fnm's node or none.
+    (
+      PATH="$nb:$PATH"
+      for p in $npm_pkgs; do
+        np_rc=0
+        np_out=$(bound_step 60 npm ls -g --depth=0 --parseable "$p" 2>/dev/null) || np_rc=$?
+        if [ "$np_rc" -gt 1 ]; then
+          note_failure "npm ls -g $p: presence unknown, nothing installed" "$np_rc"
+        elif printf '%s\n' "$np_out" | grep -q .; then
+          echo "  ok      npm $p"
+        else
+          echo "  MISSING npm $p"
+          run bound_step 600 npm install -g "$p"
+        fi
+      done
+    )
   fi
   if command -v rtk >/dev/null 2>&1; then
     if [ -f "$HOME/.claude/settings.json" ] && grep -q 'rtk' "$HOME/.claude/settings.json" 2>/dev/null; then
