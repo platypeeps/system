@@ -360,9 +360,10 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
 
 def _cut(provenance, repeats) -> bool:
     """Whether the report's kept body is cut (sd:4652): a later whole run can replace a cut first one (pack sd:4641),
-    and `repeats.body_truncated` then says so; `report.truncated` is the first run's, read only when that is absent."""
-    kept = repeats.get("body_truncated") if isinstance(repeats, dict) else None
-    return (provenance.get("truncated") if kept is None else kept) is True
+    and `repeats.body_truncated` then says so; `report.truncated` is the first run's, read only when that key is absent,
+    as the pack's `reporting._kept_cut` reads it."""
+    repeats = repeats if isinstance(repeats, dict) else {}
+    return repeats.get("body_truncated", provenance.get("truncated")) is True
 
 
 def _report(connection, row, revision, followups) -> dict:

@@ -114,6 +114,9 @@ def seed(case):
     return ids
 
 
+ABSENT = object()
+
+
 class TheDocument(ScreenCase):
     """`reports_screen.document` gives every source the page reads, each guarded on its own."""
 
@@ -152,10 +155,12 @@ class TheDocument(ScreenCase):
         # what the kept body is; `report.truncated` stays the first run's and is only the fallback.
         item = self.ids["failed"]
         fields = json.loads(self.connection.execute("SELECT fields FROM item WHERE id = ?", (item,)).fetchone()[0])
-        for first, kept, shown in ((True, None, True), (True, False, False), (False, True, True), (False, None, False)):
+        # ABSENT: no `body_truncated` key; a null one is the pack's `_kept_cut` reading, not a fallback.
+        for first, kept, shown in ((True, ABSENT, True), (True, False, False), (False, True, True), (False, ABSENT, False),
+                                   (True, None, False)):
             with self.subTest(first=first, kept=kept):
                 fields["report"]["truncated"] = first
-                fields["repeats"] = {"count": 2} if kept is None else {"count": 2, "body_truncated": kept}
+                fields["repeats"] = {"count": 2} if kept is ABSENT else {"count": 2, "body_truncated": kept}
                 self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), item))
                 self.connection.commit()
                 self.assertIs({r["id"]: r for r in self.doc()["reports"]}[item]["truncated"], shown)
