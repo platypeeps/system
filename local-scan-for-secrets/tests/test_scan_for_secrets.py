@@ -235,6 +235,16 @@ class FixtureFingerprints(unittest.TestCase):
                     self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                     self.assertNotIn(self.FAKE, result.stdout + result.stderr)
 
+    def test_a_listed_url_credential_with_a_later_at_sign_is_still_reported(self) -> None:
+        """The URL entry ends at the first `@`; a raw `@` after it in the same
+        run can extend the password."""
+        url = "https://alice:" + "fixtureSecret9@"
+        for searcher, path in UrlCredentials.SEARCHERS.items():
+            with self.subTest(searcher=searcher):
+                result = self.scan(f"{url}remaining@example.test/repo\n", path, self.fingerprint(url) + "\n")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertNotIn("listed fixture key", result.stdout)
+
     def test_every_pattern_is_full_value_or_always_kept(self) -> None:
         """The enumeration: each PATTERNS entry is in FULL_VALUE_PATTERNS, the
         only ones a fingerprint may skip, or is one of the two kept ones. A new

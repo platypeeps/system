@@ -1379,7 +1379,8 @@ OUT=$(printf '%s\n' "$OUT" | grep -Ev "$FAKE_FIXTURE_RE" || true)
 # only as a JSON escape (`\n`, `\"`), never after an escaped backslash. An
 # occurrence inside a URL's user info (`://` before it and `@` after it, in
 # one run without blanks or double quotes, backticks included) is kept: a password may hold any of
-# those. A match ending in `@` is the URL entry, delimited by its pattern. A
+# those. A match ending in `@` is the URL entry, delimited by its pattern
+# unless another `@` follows in the same run, which can extend the password. A
 # line it cannot read keeps the hit. The value reaches awk on stdin only.
 s4s_bounded() { # hit
   b_path=${1%%"$US"*}; b_rest=${1#*"$US"}; b_line=${b_rest%%"$US"*}; b_match=${b_rest#*"$US"}
@@ -1398,11 +1399,10 @@ s4s_bounded() { # hit
         if (!(a == "" || index(R, a) || url ||
               (a == "\\" && end + 2 <= length(line) && index("ntr\"", substr(line, end + 2, 1)) &&
                slashes(end + 1) == 1))) bad = 1
-        if (!url) {
-          s = at; while (s > 1 && !index(STOP, substr(line, s - 1, 1))) s--
-          t = end; while (t < length(line) && !index(STOP, substr(line, t + 1, 1))) t++
-          if (index(substr(line, s, at - s), "://") && index(substr(line, end + 1, t - end), "@")) bad = 1
-        }
+        s = at; while (s > 1 && !index(STOP, substr(line, s - 1, 1))) s--
+        t = end; while (t < length(line) && !index(STOP, substr(line, t + 1, 1))) t++
+        after = index(substr(line, end + 1, t - end), "@")
+        if ((url || index(substr(line, s, at - s), "://")) && after) bad = 1
         from = at
       }
     }
