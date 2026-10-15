@@ -2340,7 +2340,8 @@ case "$1" in
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     SYNC_FAILED=0
-    # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
+    # One SD_REPORT_ATTENTION line at the end: the ingest's reason is every
+    # distinct such line of a run (pack sd:4629), so one line names it once.
     ATTENTION=""
 
     load_list
@@ -2404,7 +2405,7 @@ case "$1" in
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
     # The ingest folds a run into the open report with the same job and
-    # reason and keeps that report's first body. So the reason ends in a
+    # reason and gives that report the newest body. So the reason ends in a
     # checksum of what the report names, not the date: where the list came
     # from and why, and reconcile's lists (sd:3983), each line under the name
     # of its list, a failed join with its error; each failed repo's section
