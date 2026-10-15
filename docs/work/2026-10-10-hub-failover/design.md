@@ -234,9 +234,10 @@ A drill killed before its cleanup leaves the folder; `status` names it, and the 
 3. `--undo` continues only when three checks pass: the fence, read from the local database, reads "elsewhere"; the new hub answers a session;
    and the new hub's newest `restore` row names the hand-back snapshot and it holds that snapshot's checkpoint. That last check ties the deletion to the one snapshot that carries every record written here.
    The newest row, open or not: the operator may run `sd restore resume` on the new hub first.
-4. Delete `~/.local/share/sd/`, the local backup roots under `$HOME` the hub-role jobs wrote, and any drill folder left behind.
+4. Delete only what undo can name as hub-role output, under `$HOME` and off the NAS: `sd.db` and its `-wal`, `-shm` and `-journal` files; each snapshot folder in the hub-role jobs' local roots named as `sd-db backup` names one (`YYYY-MM-DD` or `YYYY-MM-DD.N`), or as the seed stages one (`.seeding`); a drill home that holds the drill's marker.
+   Then remove each root that is empty. A root that holds anything else stays, and the run lists what it holds.
 5. Run `update satellite --apply`, and prove it by the stage's dry run, as `follow` does.
-6. Prove it: `status` shows no local `sd.db`, no hub-role backup root and no `promote-intent` marker.
+6. Prove it: none of the named items is left, and no `promote-intent` marker.
 
 The NAS copies stay on the NAS, which is where every hub keeps them.
 
@@ -349,8 +350,11 @@ the NULL-host repositories and their open pull requests; the leases released in 
 | undo 4 delete | each root | a name with glob characters, spaces or a newline expands or splits into other paths, or a real path ends in a newline that `$()` strips | each root is one quoted word, never a field-split substitution; a destination with a newline stops the run before any delete; resolution keeps a trailing newline and a real path with one is kept | `test_a_root_with_glob_characters_deletes_that_root_only`, `test_a_root_with_spaces_in_its_name_is_deleted`, `test_a_root_with_a_newline_in_its_name_stops_the_run_before_any_delete`, `test_a_root_that_leads_to_a_folder_ending_in_a_newline_is_left` |
 | undo 4 delete | each root | a folder on the way it cannot enter, at any depth | no answer, not gone: the run stops at step 4 and names the root | `test_a_root_it_cannot_resolve_stops_the_run` |
 | undo 5 | the satellite stage applied | the stage fails, or its dry run after shows drift or no proof line | the marker names step 5; the rerun runs the stage again; `status` names it | `test_a_satellite_stage_that_fails_stops_at_step_5_and_status_names_it` |
+| undo 4 named | snapshot folders, the database files, a marked drill home | a root also holds unrelated files, near-miss names (`2026-10-14.5.old`, `2026-10-14.05`), or a file named like a snapshot | only named items go; the root stays and the run lists what it holds; a root with only named items is removed | `test_unrelated_files_and_near_miss_names_in_each_root_stay`, `test_the_database_folder_keeps_what_is_not_the_database`, `test_roots_with_only_sd_output_are_removed` |
+| undo 4 named | none | a drill folder without the drill's marker, such as one a drill before this change left | kept and listed; removed by hand | `test_a_drill_folder_without_the_drill_marker_is_kept` |
 | drill | throwaway home written | killed before cleanup | `status` names the folder; the next drill and `promote --undo` remove it first | `test_killed_before_cleanup_status_names_the_folder_and_the_next_drill_removes_it`, `test_a_hand_back_deletes_a_drill_folder_left_here` |
 | drill cleanup | throwaway home deleted | the state folder leads onto the NAS through a symlinked ancestor, or the NAS mount sits below a folder it cannot enter | `rm_target` keeps a home not under the resolved state folder, on the NAS or holding it, and one whose NAS mount it cannot place; the next drill refuses and names it | `test_a_leftover_home_behind_a_symlinked_ancestor_on_the_nas_stays`, `test_a_nas_mount_it_cannot_place_stops_the_cleanup` |
+| drill cleanup | throwaway home deleted | a leftover home without the drill's marker (the drill writes it first, so one killed before it is empty) | an empty home goes by `rmdir`; any other stays and the drill refuses | `test_a_leftover_home_without_the_drill_marker_stays_and_the_drill_refuses` |
 | drill preflight | none | the NAS cannot be read | as promote: one readable root, such as `--from` the USB disk, passes; with none, NOT-READY and the monthly job files a miss | `test_a_drill_passes_on_a_usb_root_while_the_nas_cannot_be_read`, `test_a_drill_with_no_readable_root_refuses` |
 | rollback | system reverted below the promote slice | marker and moved `hub.json` left | the old code ignores the marker; the machine runs as a hub without the role overlay; `status` shows `hub.json` missing on a satellite profile | none new; named here |
 

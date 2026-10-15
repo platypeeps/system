@@ -67,6 +67,7 @@ class Drill(PromoteCase):
         left = self.drill / "home/.local/share/sd"
         left.mkdir(parents=True)
         (left / "sd.db").write_text("records\n")
+        (self.drill / ".sd-promote-drill").write_text("")
         shown = self.run_promote(SD_DB_PYTHON=self.python)
         self.assertIn(f"NOT-READY a drill did not finish and left the records in {self.drill}", shown.stdout)
         result = self.run_drill()
@@ -100,6 +101,15 @@ class Drill(PromoteCase):
         self.assertIn(f"cannot enter {locked}", result.stderr)
         self.assertIn("drill: will not delete", result.stderr)
         self.assertTrue(keep.exists(), "the drill deleted beside a NAS mount it could not place")
+
+    def test_a_leftover_home_without_the_drill_marker_stays_and_the_drill_refuses(self):
+        """Review round 6: only a home that holds the drill's marker is the drill's to delete."""
+        (self.drill / "home").mkdir(parents=True)
+        (self.drill / "notes.txt").write_text("mine\n")
+        result = self.run_drill(expect=1)
+        self.assertIn("not a drill's home", result.stderr)
+        self.assertTrue((self.drill / "notes.txt").exists())
+        self.assertEqual([], self.calls("restore"))
 
     def test_drill_and_undo_do_not_go_together(self):
         result = self.run_drill("--undo", expect=1)

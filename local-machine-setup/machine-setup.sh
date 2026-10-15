@@ -5303,6 +5303,9 @@ PROMOTE_DRILL=0
 # The drill's throwaway home, on the system disk; it holds a restored copy of
 # the records only while a drill runs.
 DRILL_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/sd/promote-drill"
+# The file a drill writes into its home first: only a home that holds it is
+# deleted whole, by the drill or by undo.
+DRILL_MARK=".sd-promote-drill"
 
 marker_get() { # key
   [ ! -f "$PROMOTE_MARKER" ] || sed -n "s/^$1=//p" "$PROMOTE_MARKER" | tail -1
@@ -5458,7 +5461,7 @@ hub_ready() {
     echo "  NOT-READY promote --undo stopped before its end: $UNDO_MARKER names step $(PROMOTE_MARKER=$UNDO_MARKER; marker_get step); rerun: $(basename "$SELF") promote --undo --apply"
   fi
   if [ -e "$DRILL_HOME" ]; then
-    echo "  NOT-READY a drill did not finish and left the records in $DRILL_HOME; remove it (rm -rf), or the next promote --drill does"
+    echo "  NOT-READY a drill did not finish and left the records in $DRILL_HOME; remove it (rm -rf), or the next promote --drill does if it holds $DRILL_MARK"
   fi
   if hub_holder; then
     echo "  ok      this machine holds the hub role (promoted)"
@@ -6016,25 +6019,92 @@ undo_roots() { # function
   done
 }
 
-# Step 4 deletes a root only where rm_target proves it lies under $HOME and
-# off the NAS: the NAS copies stay. A root it cannot place stops the run.
+# A snapshot folder name as `sd-db backup` gives one (the pack's
+# DATED_NAME: the day, then an unpadded .N), or as promote's seed stages one.
+undo_dated() { # name
+  ud_n=${1%.seeding}
+  case "$ud_n" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].[1-9]*)
+      case "${ud_n#*.}" in *[!0-9]*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+# Calls $2 on each item in root $1 that undo can name as hub-role output:
+# the drill's home whole when it holds DRILL_MARK; in the database folder the
+# database and its -wal, -shm and -journal files; in a backup root each
+# snapshot folder named as above. Anything else is not undo's to delete.
+undo_named() { # root function
+  if [ "$1" = "$DRILL_HOME" ]; then
+    [ ! -f "$1/$DRILL_MARK" ] || "$2" "$1"
+  elif [ "$1" = "$(dirname "$SD_DB")" ]; then
+    for un_e in "$SD_DB" "$SD_DB-wal" "$SD_DB-shm" "$SD_DB-journal"; do
+      if [ -e "$un_e" ] || [ -L "$un_e" ]; then "$2" "$un_e"; fi
+    done
+  else
+    for un_e in "$1"/*; do
+      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}"; then "$2" "$un_e"; fi
+    done
+  fi
+}
+
+# Step 4 deletes only what undo_named names, each where rm_target proves it
+# lies under $HOME and off the NAS: the NAS copies stay. Then the root goes
+# if it is empty; one that is not is kept with what it holds. A path it
+# cannot place stops the run.
 undo_delete() { # root
   ud_rc=0; ud_real=$(rm_target "$1" "$HOME") || ud_rc=$?
   case $ud_rc in
-    0) if [ -n "$ud_real" ]; then
-         rm -rf -- "${ud_real:?}" || promote_refuse "could not delete $ud_real; rerun"
-         echo "deleted : $ud_real"
+    0) [ -n "$ud_real" ] || return 0 ;;
+    1) echo "kept    : $1"; return 0 ;;
+    *) promote_refuse "could not tell where $1 lies; rerun" ;;
+  esac
+  undo_named "$1" undo_rm
+  [ -e "$1" ] || return 0
+  ud_held=
+  for ud_e in "$ud_real"/* "$ud_real"/.[!.]* "$ud_real"/..?*; do
+    if [ -e "$ud_e" ] || [ -L "$ud_e" ]; then ud_held=1; echo "  holds : $ud_e"; fi
+  done
+  if [ -n "$ud_held" ]; then
+    echo "kept    : $1 (not empty)"
+  else
+    rmdir -- "${ud_real:?}" || promote_refuse "could not remove the empty $ud_real; rerun"
+    echo "deleted : $ud_real"
+  fi
+}
+
+undo_rm() { # item
+  ur_rc=0; ur_real=$(rm_target "$1" "$HOME") || ur_rc=$?
+  case $ur_rc in
+    0) if [ -n "$ur_real" ]; then
+         rm -rf -- "${ur_real:?}" || promote_refuse "could not delete $ur_real; rerun"
+         echo "deleted : $ur_real"
        fi ;;
     1) echo "kept    : $1" ;;
     *) promote_refuse "could not tell where $1 lies; rerun" ;;
   esac
 }
 
-# Step 6 names a root step 4 should have deleted and is still there.
+# Step 6 names an item step 4 should have deleted and is still there. The
+# database is never left, wherever its folder lies: this machine would still
+# hold the records.
 undo_left() { # root
   ul_rc=0; ul_real=$(rm_target "$1" "$HOME" 2>/dev/null) || ul_rc=$?
   case $ul_rc in
-    0) [ -z "$ul_real" ] || printf '%s\n' "$1" ;;
+    0) [ -z "$ul_real" ] || undo_named "$1" undo_left_item ;;
+    1) [ "$1" != "$(dirname "$SD_DB")" ] || undo_named "$1" undo_print ;;
+    *) printf '%s\n' "$1 (cannot tell)" ;;
+  esac
+}
+
+undo_print() { printf '%s\n' "$1"; }
+
+undo_left_item() { # item
+  uli_rc=0; uli_real=$(rm_target "$1" "$HOME" 2>/dev/null) || uli_rc=$?
+  case $uli_rc in
+    0) [ -z "$uli_real" ] || printf '%s\n' "$1" ;;
     1) ;;
     *) printf '%s\n' "$1 (cannot tell)" ;;
   esac
@@ -6188,14 +6258,14 @@ if held is None:
     marker_set step 6
   fi
   # Step 6: the proof the design names.
-  left=$(find "$(dirname "$SD_DB")" -name 'sd.db*' 2>/dev/null || :; undo_roots undo_left)
+  left=$(undo_roots undo_left)
   [ -z "$left" ] || promote_refuse "still here after the delete: $left; rerun"
   rm -f "$PROMOTE_MARKER"
   echo
   echo "hand-back report"
   echo "  snapshot    : $snapshot"
   echo "  hub         : $hub:$port serves it"
-  echo "  deleted     : $(dirname "$SD_DB") and the hub-role backup roots here; the NAS copies stay"
+  echo "  deleted     : the records and hub-role snapshots here; anything else stays, and so do the NAS copies"
   echo "  this machine: a satellite of $hub again"
 }
 
@@ -6208,10 +6278,15 @@ drill_cleanup() {
 }
 
 # The home goes only where rm_target proves it lies under the state folder
-# and off the NAS.
+# and off the NAS, and whole only when it holds DRILL_MARK; else only empty.
 drill_remove() {
   dr_real=$(rm_target "$DRILL_HOME" "${XDG_STATE_HOME:-$HOME/.local/state}") || return 1
-  [ -z "$dr_real" ] || rm -rf -- "${dr_real:?}"
+  [ -n "$dr_real" ] || return 0
+  if [ -f "$dr_real/$DRILL_MARK" ]; then
+    rm -rf -- "${dr_real:?}"
+  else
+    rmdir -- "${dr_real:?}" 2>/dev/null || { echo "$DRILL_HOME: no $DRILL_MARK, so not a drill's home" >&2; return 1; }
+  fi
 }
 
 drill_time() { # label start
@@ -6230,6 +6305,9 @@ promote_drill() {
   ! printf '%s\n' "$ready" | grep -q 'NOT-READY' || promote_refuse "drill: a hub-ready line is not ok"
   drill_time "step 1  : preflight" "$began"
   at=$(date +%s)
+  # The marker first: a home killed before it is empty, and goes by rmdir.
+  mkdir -p "$DRILL_HOME"
+  : > "$DRILL_HOME/$DRILL_MARK"
   mkdir -p "$DRILL_HOME/home"
   # A signal exits, and so runs EXIT, as trap_tmp does.
   trap drill_cleanup EXIT

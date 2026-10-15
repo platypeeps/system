@@ -20,6 +20,9 @@ from sd_db import database, writes  # noqa: E402
 from sd_db.migrate import initialise  # noqa: E402
 
 PROMOTED = "2026-10-14.5"
+DRILL_MARK = ".sd-promote-drill"
+# Names a backup root may hold that are not snapshot folders `sd-db backup` names.
+NEAR_MISSES = ("2026-10-14.5.old", "2026-10-14-copy", "2026-10-14.05", "2026-10-14.0", "2026-1-14", "x2026-10-14")
 HANDBACK = "2026-10-14.6"
 
 # The pack's interpreter: the step-3 checks run for real, with `remote.connect`
@@ -168,7 +171,8 @@ class Undo(PromoteCase):
         result = self.run_undo("--apply")
 
         self.assertEqual([], self.records_here())
-        self.assertFalse(self.fixture.db.parent.exists())
+        # The restored configuration is not undo's to delete: the folder stays with it.
+        self.assertTrue((self.fixture.db.parent / "providers.yaml").exists())
         self.assertFalse(self.hourly.exists())
         self.assertFalse(self.nightly.exists())
         self.assertTrue((self.nas / "sd-backups-hourly" / "2026-10-14.4").exists(), "a NAS copy was deleted")
@@ -180,6 +184,7 @@ class Undo(PromoteCase):
         drill = self.fixture.home / ".local/state/sd/promote-drill/home/.local/share/sd"
         drill.mkdir(parents=True)
         (drill / "sd.db").write_text("records\n")
+        (drill.parents[3] / DRILL_MARK).write_text("")
         self.handed_back()
         self.run_undo("--apply")
         self.assertFalse(drill.parents[3].exists())
@@ -193,6 +198,58 @@ class Undo(PromoteCase):
         self.run_undo("--apply")
         self.assertTrue(outside.exists())
         self.assertFalse(self.hourly.exists())
+
+    # Review round 6: undo deletes only what it can name as hub-role output,
+    # then removes a root only when it is empty.
+
+    def test_unrelated_files_and_near_miss_names_in_each_root_stay(self):
+        for root in (self.hourly, self.nightly):
+            (root / "notes.txt").write_text("mine\n")
+            (root / "photos").mkdir()
+            (root / "2026-10-14.7").write_text("a file, not a snapshot folder\n")
+            for name in NEAR_MISSES:
+                (root / name).mkdir()
+        self.handed_back()
+        result = self.run_undo("--apply")
+        for root in (self.hourly, self.nightly):
+            self.assertFalse((root / PROMOTED).exists())
+            self.assertTrue((root / "notes.txt").exists(), f"undo deleted an unrelated file in {root}")
+            self.assertTrue((root / "photos").is_dir())
+            self.assertTrue((root / "2026-10-14.7").is_file())
+            for name in NEAR_MISSES:
+                self.assertTrue((root / name).is_dir(), f"undo deleted the near miss {name}")
+            self.assertIn(f"kept    : {root} (not empty)", result.stdout)
+
+    def test_the_database_folder_keeps_what_is_not_the_database(self):
+        db = self.fixture.db
+        for suffix in ("-wal", "-shm"):
+            db.with_name(db.name + suffix).write_text("")
+        db.with_name("sd.db.old").write_text("mine\n")
+        (db.parent / "notes").mkdir()
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertEqual(["sd.db.old"], self.records_here())
+        self.assertTrue((db.parent / "notes").is_dir())
+        self.assertTrue((db.parent / "providers.yaml").exists())
+
+    def test_roots_with_only_sd_output_are_removed(self):
+        for name in ("2026-10-14.6", "2026-10-14.6.seeding", "2026-10-14.10", "2026-10-15"):
+            (self.hourly / name).mkdir()
+        (self.fixture.db.parent / "providers.yaml").unlink()
+        self.handed_back()
+        self.run_undo("--apply")
+        self.assertFalse(self.hourly.exists())
+        self.assertFalse(self.nightly.exists())
+        self.assertFalse(self.fixture.db.parent.exists())
+
+    def test_a_drill_folder_without_the_drill_marker_is_kept(self):
+        drill = self.fixture.home / ".local/state/sd/promote-drill"
+        (drill / "home").mkdir(parents=True)
+        (drill / "notes.txt").write_text("mine\n")
+        self.handed_back()
+        result = self.run_undo("--apply")
+        self.assertTrue((drill / "notes.txt").exists())
+        self.assertIn(f"kept    : {drill} (not empty)", result.stdout)
 
     # Review round 5: a recursive delete proves its target first. The real
     # path (cd -P) lies under $HOME, off the NAS, and each root is one word.

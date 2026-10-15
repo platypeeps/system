@@ -395,7 +395,7 @@ Rehearse it, on the standby:
 
 - Run `machine-setup.sh promote --drill`. It runs promote's steps 1, 5, 6 and 9 against a throwaway home, `~/.local/state/sd/promote-drill`: the preflight, the restore of the newest snapshot, and one session on a loopback server.
   It prints each step's seconds and the total, and deletes the home, pass or fail. `hub.json`, launchd and Tailscale stay as they are.
-- A drill killed before its cleanup leaves the home; `status` names it in its `hub-ready` block, and the next drill or `promote --undo` deletes it.
+- A drill killed before its cleanup leaves the home; `status` names it in its `hub-ready` block, and the next drill or `promote --undo` deletes it if it holds the drill's marker, `.sd-promote-drill`.
 - `local-cron-jobs/examples/promote-drill-monthly.job` runs it on the 1st; a miss files a failure report.
 
 Hand the role back to a personal machine:
@@ -407,7 +407,7 @@ Hand the role back to a personal machine:
 2. On the repaired or new hub, make it a satellite (below), then run `promote --apply`: the hand-back snapshot is the newest in the NAS hourly root.
    Its hub profile stays as it is: the fence, not the profile, says it holds the role, and it installs the role's agents and jobs from its own lists.
 3. On the standby, run `promote --undo --apply` again. It deletes nothing until the local fence reads `elsewhere`, a session on the hub's name answers, and that hub's newest restore names the hand-back snapshot and holds its checkpoint.
-4. It then deletes `~/.local/share/sd/` and the hub-role backup roots under `$HOME`, runs `update satellite --apply`, and checks the stage's dry run.
+4. It then deletes the database files in `~/.local/share/sd/` and the snapshot folders in the hub-role backup roots under `$HOME`, then each root left empty. It keeps anything else and lists it. It runs `update satellite --apply` and checks the stage's dry run.
 
 A run that stops leaves `~/.local/state/sd/promote-undo`, which names the next step; `status` names it in its `hub-ready` block.
 If the snapshot fails, the hub role starts again and nothing is deleted.
