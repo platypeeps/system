@@ -16,7 +16,8 @@ With findings, `run` prints `SD_REPORT_ATTENTION: health check: <n> finding(s)
 on <host> [<checksum>]` and exits 0. The checksum covers the findings without
 a measure that drifts (a load average, a crash count), so the same findings
 each night stay one open report, and a new or changed one opens its own and
-closes the older one on that host. The
+closes the older one on that host, with the exceptions
+[`local-cron-jobs`](../local-cron-jobs/README.md) names. The
 cron run's ingest maps that line to a report that
 needs attention, so Reports and Today carry it until it is acknowledged;
 nothing is mailed (sd:3454). A clean run prints no such line.

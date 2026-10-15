@@ -19,7 +19,8 @@ With findings, `run` prints `SD_REPORT_ATTENTION: maintenance: <n> finding(s)
 on <host> [<checksum>]` and exits 0. The checksum covers the findings without
 a measure that drifts (the free-space percentage), so the same findings each
 night stay one open report, and a new or changed one opens its own and closes
-the older one on that host. The cron
+the older one on that host, with the exceptions
+[`local-cron-jobs`](../local-cron-jobs/README.md) names. The cron
 run's ingest maps that line to a report that
 needs attention, so Reports and Today carry the findings until the report is
 acknowledged; nothing is mailed (sd:3454).
