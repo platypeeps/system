@@ -783,6 +783,16 @@ CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.
         self.assertIn("Since the previous report", out["R"]["clean"])
         self.assertIn('class="del">old', out["R"]["clean"])
 
+    def test_details_show_a_multi_line_basis_as_lines(self):
+        # sd:4681: since sd:4664 a basis holds one finding per line; the details keep each newline, and the page's
+        # CSS shows them as lines, not one run-on line.
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["reports"] if r["id"] == self.ids["failed"])["basis"] = "finding one\nfinding two"
+        out = self.run_page(f"open('r{self.ids['failed']}'); R.det = ELS.details.html;", doc=doc)
+        self.assertIn("<dt>Attention evidence</dt><dd>finding one\nfinding two</dd>", out["R"]["det"])
+        css = (V2 / "static" / "reports.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"(?m)^\.details dd \{[^}]*white-space: pre-line;")
+
     def test_details_of_a_report_whose_fields_cannot_be_read_name_the_action_before_the_line(self):
         # sd:3716, after pack sd:3503: the sentence names what to do and why the page withholds it; the line is the copy.
         doc = json.loads(json.dumps(self.doc))
