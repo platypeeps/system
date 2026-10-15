@@ -432,10 +432,11 @@ fi
 # The report above is the job log; this line makes the run's report one that
 # needs attention, so Reports and Today carry the findings (sd:3454).
 # The ingest folds a run into the open report with the same job and reason
-# and keeps that report's first body. So the reason ends in a checksum of the
+# and gives that report the newest body. So the reason ends in a checksum of the
 # findings' keys, not the date: the same findings fold into one open report,
-# and a new or changed one opens its own (sd:4182). The host stays in it, as
-# every host files under the one job name.
+# and a new or changed one opens its own (sd:4182) and closes the older one on
+# this host, with the exceptions local-cron-jobs/README.md names (pack
+# sd:4641). The host stays in it, as every host files under the one job name.
 if [ "$APPLY" -eq 1 ] && [ -s "$FINDINGS" ]; then
   echo "SD_REPORT_ATTENTION: maintenance: $(grep -c '^- ' "$FINDINGS" | tr -d ' ') finding(s) on $(hostname -s) [$(cksum < "$KEYS" | cut -d' ' -f1)]"
 fi

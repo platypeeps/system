@@ -791,6 +791,42 @@ change('det-p', '1'); change('det-p', '1'); await flush();""", self.ECHO)
         self.assertNotIn('href="javascript', html)
         self.assertNotIn("<h3>Published ", out["R"]["ask"])
 
+    def test_the_experiments_field_posts_the_values_sd_task_edit_takes(self):
+        # sd:4639: the designation control writes what `sd task edit N --experiment` takes, through the same
+        # `projection.designate`; clearing a pinned row is `new`. A designation the page cannot read turns it off.
+        plan, ask, port = self.ids["plan"], self.ids["ask"], self.ids["port"]
+        self.details[str(plan)]["experiment"] = {"value": None, "row": None, "reason": None,
+                                                 "choices": [{"value": "of:7", "label": "task of #7 An experiment"}]}
+        self.details[str(ask)]["experiment"] = {"value": "yes", "row": "3c9f52b1-5782-81a7-a466-fb0e2df4d928",
+                                                "choices": [], "reason": None}
+        self.details[str(port)]["experiment"] = {"value": None, "row": None, "choices": [],
+                                                 "reason": "this sd_db has no projection; update the command pack"}
+        out = self.run_page(self.CHANGE + f"""open({plan}); await flush(); R.plan = ELS.details.html;
+change('det-exp', 'of:7'); await flush(); change('det-exp', ''); await flush();
+open({ask}); await flush(); R.ask = ELS.details.html;
+change('det-exp-row', ' https://example.test/3cff52b15782806aacb0ca0c8f41524b '); await flush();
+change('det-exp-row', ''); await flush(); change('det-exp', 'off'); await flush();
+open({port}); await flush(); R.port = ELS.details.html;""", self.ECHO)
+        html = out["R"]["plan"]
+        self.assertIn('<h3><label for="det-exp">Experiments</label> ', html)
+        self.assertIn('<select id="det-exp" class="fld"><option value="" selected>not projected</option>'
+                      '<option value="yes">experiment</option><option value="of:7">task of #7 An experiment</option></select>', html)
+        self.assertNotIn('id="det-exp-row"', html)
+        self.assertIn('<option value="yes" selected>experiment</option><option value="off">off, keep the row</option>', out["R"]["ask"])
+        self.assertIn('<input id="det-exp-row" class="fld" value="3c9f52b1-5782-81a7-a466-fb0e2df4d928" placeholder="a page id or URL">',
+                      out["R"]["ask"])
+        self.assertIn('<select id="det-exp" class="fld" disabled aria-describedby="det-exp-off">', out["R"]["port"])
+        self.assertIn('<p class="why" id="det-exp-off">this sd_db has no projection; update the command pack.</p>', out["R"]["port"])
+        bodies = [(p[0], {k: v for k, v in p[1].items() if k != "revision"}) for p in out["posts"]]
+        self.assertEqual(bodies, [
+            (f"/api/items/{plan}/experiment", {"experiment": ["of:7"]}),
+            (f"/api/items/{ask}/experiment", {"experiment": ["row:https://example.test/3cff52b15782806aacb0ca0c8f41524b"]}),
+            (f"/api/items/{ask}/experiment", {"experiment": ["new"]}),
+            (f"/api/items/{ask}/experiment", {"experiment": ["off"]})])
+        msgs = [t[0] for t in out["toasts"]]
+        self.assertIn(f"#{plan} experiments → of:7 · sd task edit {plan} --experiment 'of:7'", msgs)
+        self.assertIn(f"#{ask} experiments → new · sd task edit {ask} --experiment 'new'", msgs)
+
     def test_the_title_and_description_edit_in_place_with_undo(self):
         # sd:3467: the v2 Details lost the classic item page's Details textarea; the title and body are fields again.
         plan = self.ids["plan"]

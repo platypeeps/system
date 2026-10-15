@@ -32,6 +32,10 @@ A base row's Details show its stage select, declared fields, body and a link to 
 `POST /api/items/<id>/stage` and `POST /api/items/<id>` send a base row to `records.edit_row` under its kind's rules;
 every other row keeps its handler. The toast says when the render after the write failed.
 
+An item's Experiments field (sd:4639) shows its designation for the team experiments database (pack sd:3982).
+`POST /api/items/<id>/experiment` sends the values `sd task edit <id> --experiment` takes to `projection.designate`;
+a pack without the projection turns the field off. Published links the row once a drain records its URL.
+
 A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
 Tasks filters on. v1's screen and its run selection were deleted in sd:2622;

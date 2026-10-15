@@ -2641,7 +2641,7 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("STALE   demo (never finished a run, installed 72h ago)", run.stdout)
 
     def test_the_reason_follows_the_stale_runs_not_the_day(self):
-        """sd:4182: the ingest folds an open reason and keeps its first body.
+        """sd:4182: the ingest folds a run into the open report with its reason.
         A job still stale a night later gives the same reason though its age
         grew; a new stale state gives another (sd:3537: a checksum of job
         names alone made "never finished" and "cannot read its time" for one

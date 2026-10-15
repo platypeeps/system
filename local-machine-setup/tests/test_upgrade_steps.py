@@ -324,7 +324,7 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(self.attention(result), [])
 
     def test_the_reason_follows_the_findings_not_the_day(self):
-        """sd:4182: the ingest folds an open reason and keeps its first body.
+        """sd:4182: the ingest folds a run into the open report with its reason.
         The same failed step on two nights gives one reason, so one open
         report; another failed step gives another (sd:3537: a checksum of
         "upgrade sweep failed" made a failed cleanup and a failed claude
