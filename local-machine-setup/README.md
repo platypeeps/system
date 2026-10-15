@@ -37,7 +37,7 @@ change I made on this machine back into its profile*.
                                        # names the deleted local-sd-db is a FAIL
 ./machine-setup.sh doctor sd           # those sd checks alone
 ./machine-setup.sh test                # unittest suite in tests/ (CI runs it)
-./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy), claude update, brew cleanup + mas upgrade
+./machine-setup.sh upgrade --apply     # brew update/upgrade (casks --greedy, Claude Code among them), brew cleanup + mas upgrade
                                        # unattended (stdin not a terminal, as
                                        # under cron), each brew, mas, curl and
                                        # remote git call of every verb is logged
@@ -68,11 +68,11 @@ It also runs the `ai-apps.sh capture` the retired ai-apps-nightly job ran, and
 prints its diff. The `macos` stage turns self-update off in every cask that
 updates itself, where the app documents a switch. Both machines then move once a
 week, and grants are re-granted in one sitting. After the sweep, and in a quiet
-week after `claude update`, it runs `local-project-dashboard/dashboard.sh
+week too, it runs `local-project-dashboard/dashboard.sh
 grants` and puts the result in the report. The cron job runs under launchd, where
 the probe's answer is the binary's own. A binary that lost Full Disk Access is named
-with its path, beside a new Claude Code binary or python Cellar path, the two
-known grant droppers. Leftovers or a missing grant print an
+with its path, beside a new Claude Code Caskroom binary (the `claude-code@latest`
+cask, sd:4738) or python Cellar path, the two known grant droppers. Leftovers or a missing grant print an
 `SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
 nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
 
@@ -158,7 +158,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |
@@ -171,7 +171,7 @@ Run in order. Pass one as the second argument to run it alone.
 | `agents` | install captured LaunchAgent plists, rendering `@LABEL@`, `@HOME@` and `@ROOT@`. While `~/.config/sd/hub.json` exists, each hub-only label in `SD_HUB_ONLY_AGENTS` is `SKIP` | — |
 | `services` | start docker services | each `local-*/<name>.sh start` |
 | `macos` | turn self-update off in installed apps that hold a TCC grant, set the screen saver idle time to 0 on every profile (`defaults -currentHost`, no manifest line), then apply `defaults` settings | `python3` |
-| `tooling` | fnm node versions, rtk hooks, the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), the mailto handler; node versions and the handler come from `.node` and `.mailto` | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
+| `tooling` | fnm node versions, rtk hooks, a missing `claude` as `MISSING` naming the `claude-code@latest` cask (sd:4738), the Claude Code HUD (claude-hud plugin, `local-statusline` as `statusLine`, and a seeded display config when none exists), the `claude_settings.py` baseline merged into `~/.claude/settings.json` and its secret-read denies into opencode's `opencode.json` (adds missing entries only, after a backup), the mailto handler; node versions and the handler come from `.node` and `.mailto` | `fnm`, `rtk`, `claude`, `opencode`, `duti` |
 | `system` | useLS, sudo grace period, firewall + stealth (needs sudo once), 700 on the credential dirs, Spotlight privacy exclusions from `<profile>.spotlight` | `plutil`, `PlistBuddy`, `launchctl` |
 | `obsidian` | report vault plugins vs `<profile>.obsidian` (report-only) | `python3` |
 | `iterm2` | point iTerm2 at the synced prefs folder in `<profile>.iterm2` | — |

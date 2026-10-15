@@ -386,6 +386,21 @@ class PromptJobDebugFileTest(unittest.TestCase):
             self.agent_line(result),
             rf"^\[nightly\] \S+ agent: {re.escape(str(link))} -> {re.escape(os.path.realpath(self.fx.claude))}$")
 
+    def test_the_cask_binary_wins_over_a_native_install_left_behind(self):
+        # sd:4738: Claude Code is the claude-code@latest cask, so with no
+        # CLAUDE_BIN and none on PATH the brew prefix's claude comes before
+        # the native installer's ~/.local/bin/claude. HOMEBREW_PREFIX, brew's
+        # own variable, points the prefix at this fixture.
+        brew = self.fx.tmp / "brew"
+        for path in (brew / "bin/claude", self.fx.home / ".local/bin/claude"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(self.fx.claude, path)
+        self.fx.write_job("nightly", PROMPT_JOB)
+        result = self.fx.exec_job("nightly", {"CLAUDE_BIN": "", "PATH": f"{self.fx.quiet}:/usr/bin:/bin",
+                                              "HOMEBREW_PREFIX": str(brew)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(self.agent_line(result), rf"^\[nightly\] \S+ agent: {re.escape(str(brew / 'bin/claude'))} ->")
+
     def test_the_log_falls_back_to_the_binary_path_when_readlink_fails(self):
         # PIN (sd:972). `readlink -f` is not on every platform's readlink; a
         # binary that cannot be resolved is still named, as itself.

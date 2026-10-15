@@ -71,14 +71,19 @@ before the job's own work begins.
 6. **Reports**, always — see below.
 
 For a prompt job, the agent binary is resolved in a fixed order: an explicit
-`CLAUDE_BIN`, then `PATH`, then `~/.local/bin/claude`. If none exists, that is
+`CLAUDE_BIN`, then `PATH`, then `/opt/homebrew/bin/claude` (the
+`claude-code@latest` cask), then `~/.local/bin/claude` (the native installer,
+kept for a machine without the cask yet). If none exists, that is
 *this job's* failure — it reaches the log, the failure log and the report
 like any other non-zero exit, rather than killing the script before the lock
 and the log mirror are in place.
 
-The log also records what the binary resolved to, because `~/.local/bin/claude`
-is a symlink the installer moves. A version flip between two runs is then
-readable from the log rather than inferred.
+The log also records what the binary resolved to, because the cask's `claude`
+is a symlink into a versioned Caskroom folder that each upgrade moves. A
+version flip between two runs is then readable from the log rather than
+inferred. macOS attributes a privacy grant to that versioned binary, so after
+the move to the cask, and after a cask upgrade, the operator may need to
+re-grant Full Disk Access to the new binary (`.claude/rules/macos-tcc.md`).
 
 Prompt jobs run with `SD_HANDOFF_RESTORE=0` on that one command. A session-start
 hook restores a pending handoff packet into whatever session starts in that
