@@ -649,6 +649,12 @@ addEventListener('DOMContentLoaded', () => {
       write(t.key, x => `/api/items/${x.id}/stage`, { stage: v }).then(out => toast(`${label(t)} stage → ${v}${out.mirror && !out.mirror.ok
         ? ` · mirror not updated: ${out.mirror.reason || 'see Health'}` : ''}`), err => { failed(label(t), err); err.status === 409 ? refused() : redrawDet(t.id); });
       return true; }
+    if (id === 'det-exp' || id === 'det-exp-row') { const x = detOf(t)?.experiment, r = v.trim();
+      const spec = id === 'det-exp' ? (v && v !== x?.value ? v : null) : r === (x?.row || '') ? null : r ? `row:${r}` : 'new';
+      if (!spec) return false;
+      write(t.key, y => `/api/items/${y.id}/experiment`, { experiment: [spec] }).then(() => toast(`${label(t)} experiments → ${spec} · sd task edit ${t.id} --experiment ${window.shell.shq(spec)}`),
+        err => { failed(label(t), err); err.status === 409 ? refused() : redrawDet(t.id); });
+      return true; }
     if (id === 'det-q') return v !== quadOf(t) && toQuad(t.key, v);
     if (id === 'det-p') { const n = v ? +v : null; if (n === t.p) return false;
       commitEdit(t, { p: n }, `priority ${t.p ? 'P' + t.p : 'unset'} → ${n ? 'P' + n : 'unset'}`, { check: r => r.p !== n || `it is already ${n ? 'P' + n : 'unset'}` }); return true; }
@@ -681,6 +687,7 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Documents ${src('Documents', `/api/tasks/${t.id} · the item's path and work folder, docs/work files naming sd:${t.id}, paths its notes name`)}</h3>
       ${docs.length ? html`<ol class="rec">${docs.map(x => html`<li><span>${x.url ? html`<a class="ext" href="${x.url}" target="_blank" rel="noopener noreferrer">${x.path}</a>` : html`<code>${x.path}</code>`} <small>${x.why}</small></span></li>`)}</ol>` : html`<p class="why">No design or document names this item.</p>`}
       ${published(t, d.published || [])}
+      ${experiment(t, d.experiment)}
       <h3>Status history ${src('Status history', `sd task show ${t.id} --json · notes of kind status_change`)}</h3>
       ${d.history.length ? html`<ol class="rec">${d.history.map(n => html`<li><time class="rel" datetime="${n.at}"></time><span>${n.body}</span></li>`)}</ol>` : html`<p class="why">This item has never changed status.</p>`}
       <h3>Notes <span class="n">${plural(d.notes.length, 'note')} · ${open} open ${plural.word(open, 'followup')}</span> ${src('Notes', `sd task show ${t.id} --json · every other note kind`)}</h3>
@@ -699,6 +706,19 @@ addEventListener('DOMContentLoaded', () => {
     if (!list.length) return '';
     return html`<h3>Published ${src('Published', `/api/tasks/${t.id} · fields.published, fields.writing.published_urls, publication claims`)}</h3>
       <ol class="rec">${list.map(p => html`<li><span><b>${p.title}</b> <small>${p.where}</small>${p.links.map(l => html`<br>${l.channel} ${l.href ? html`<a class="ext" href="${l.href}" target="_blank" rel="noopener noreferrer">${l.url}</a>` : html`<code>${l.url}</code>`}`)}</span></li>`)}</ol>`;
+  }
+  // sd:4639: the item's row in the team experiments database (pack sd:3982). The select and the row field post what
+  // `sd task edit N --experiment` takes (fieldChange); clearing a pinned row is `new`, so the next drain creates one.
+  // `off` keeps the row and is offered once the item is designated; a designation the page cannot read turns both off.
+  function experiment(t, x) {
+    if (!x) return '';
+    const off = x.reason ? html` disabled aria-describedby="det-exp-off"` : live(t.key) ? '' : html` disabled`;
+    const opt = (value, name) => html`<option value="${value}"${value === x.value ? html` selected` : ''}>${name}</option>`;
+    const lost = x.value && x.value.startsWith('of:') && !x.choices.some(c => c.value === x.value);
+    return html`<h3><label for="det-exp">Experiments</label> ${src('Experiments', `sd task edit ${t.id} --experiment · fields.experiments; the row's link shows under Published once a drain records it`)}</h3>
+      <select id="det-exp" class="fld"${off}>${x.value ? '' : html`<option value="" selected>not projected</option>`}${opt('yes', 'experiment')}${x.choices.map(c => opt(c.value, c.label))}${lost ? opt(x.value, `task of #${x.value.slice(3)}`) : ''}${x.value ? opt('off', 'off, keep the row') : ''}</select>
+      ${x.value ? html`<dl class="fields"><dt><label for="det-exp-row">Row</label></dt><dd><input id="det-exp-row" class="fld" value="${x.row || ''}" placeholder="a page id or URL"${off}></dd></dl>` : ''}
+      ${x.reason ? html`<p class="why" id="det-exp-off">${x.reason}.</p>` : ''}`;
   }
   // build (sd:3977): a vault base row's stage, declared fields, body and its section of the vault mirror page.
   // The stage select is the row's own write: edit_item's refusal of an idea's other fields does not turn it off.

@@ -4874,15 +4874,18 @@ grants_push() {
   cat "$tmp/push"
 }
 
-# One SD_REPORT_ATTENTION line, as the ingest reads only the first. It names
-# every reason this run needs attention. The ingest folds a run into the open
-# report with the same job and reason and keeps that report's first body, so
-# the line ends in a checksum of the findings, not the date: $tmp/findings
+# One SD_REPORT_ATTENTION line: the ingest's reason is every distinct such line
+# of a run (pack sd:4629), so this one names every reason this run needs
+# attention. The ingest folds a run into the open report with the same job and
+# reason and gives that report the newest body, so the line ends in a
+# checksum of the findings, not the date: $tmp/findings
 # (what is left, and the output of a failed step) and the grants to redo. It
 # leaves out $tmp/changed, the update that dropped a grant: it names only the
 # night of the update, and the grant stays to redo after it. The same
 # findings fold into one open report, and a new or changed one opens its own
-# (sd:4182). The host stays in it, as every host files under one job name.
+# (sd:4182) and closes the older one on this host, with the exceptions
+# local-cron-jobs/README.md names (pack sd:4641). The host stays in it, as
+# every host files under one job name.
 upgrade_attention() { # reason...
   [ -s "$tmp/regrant" ] && set -- "$@" "TCC re-grant needed"
   [ "$#" -gt 0 ] || return 0
@@ -5784,11 +5787,21 @@ for peer in (status.get("Peer") or {}).values():
       sh "$SELF" update "$st" --apply || promote_refuse "the $st stage did not finish; rerun"
     done
     # A stage that cannot read the fence skips the role and still exits 0,
-    # so the role is checked here, by a fresh probe and by its plists.
+    # and the cron stage logs a failed bootstrap and goes on, its plist
+    # already written; so the role is checked here, by a fresh probe and by
+    # launchd for each label (round 4). Only print's 113 is "not loaded".
     HUB_HOLDER=""
     hub_holder || promote_refuse "the hub role is not installed: sd-db fence does not read holder now; rerun"
     for hr_label in $(hub_role_labels agent) $(hub_role_labels cron | sed "s/^/$LABEL_PREFIX.cron./"); do
-      [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ] && continue
+      if [ -f "$HOME/Library/LaunchAgents/$hr_label.plist" ]; then
+        lr=0
+        launchctl print "gui/$(id -u)/$hr_label" >/dev/null 2>&1 || lr=$?
+        case "$lr" in
+          0) continue ;;
+          113) promote_refuse "the hub role is not running: launchd has not loaded $hr_label; rerun, and the stages load it again" ;;
+          *) promote_refuse "could not ask launchd whether $hr_label is loaded (launchctl print exited $lr); rerun" ;;
+        esac
+      fi
       # A hub profile installs what it lists; the role adds nothing to it.
       if sd_in_profile; then
         promote_refuse "the hub role is not installed: no $hr_label plist, and this hub profile does not list it; add it to $PROFILE.agent or $PROFILE.cron, then rerun"

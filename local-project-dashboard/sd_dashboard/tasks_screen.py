@@ -260,6 +260,7 @@ def details(connection, item: int, *, now: str) -> dict:
         # (`progress.work_controls`), for a work item; None for any other kind (sd:2200).
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
         "base": _base(state),
+        "experiment": _experiment(connection, state),
     }
 
 
@@ -287,6 +288,14 @@ def _published(connection, state) -> list[dict]:
     if isinstance(urls, dict) and urls:
         out.append({"title": "Writing piece", "where": "writing targets",
                     "links": [link(str(target), str(url)) for target, url in urls.items()]})
+    # sd:4639: the row a drain recorded in the team experiments database (pack sd:3982); sd owns its Status there
+    # until `off`, which keeps the row and drops its database.
+    experiments = fields.get("experiments")
+    if isinstance(experiments, dict) and experiments.get("url"):
+        where = {"experiment": "experiments database · sd keeps Status", "task": "tasks database · sd keeps Status"}.get(
+            experiments.get("as"), "projection off · sd no longer writes it")
+        out.append({"title": "Experiments row", "where": where,
+                    "links": [link("notion-row", str(experiments["url"]))]})
     # A publication claim belongs to a writing piece; `writing.piece_state` reads them. A read that fails says so.
     item = state["item"]
     if item["kind"] == "idea" and item["piece"]:
@@ -299,6 +308,30 @@ def _published(connection, state) -> list[dict]:
         out += [{"title": f"Publication claim {claim['id'][:8]}", "where": str(claim["phase"] or ""),
                  "links": [link("claim", str(claim["url"]))]} for claim in claims if claim["url"]]
     return out
+
+
+def _experiment(connection, state) -> dict:
+    """The item's experiments designation (sd:4639, pack sd:3982), as `sd task edit --experiment` spells it.
+
+    `value` is `yes`, `of:<m>`, `off` or None; `choices` are the `of:<m>` values for each other designated experiment,
+    none for an experiment with tasks (one level). A pack without the projection, or a designation that cannot be read,
+    is `reason`, never read as no designation.
+    """
+    item = state["item"]
+    try:
+        import sd_db.projection as projection
+    except ImportError:
+        return {"value": None, "row": None, "choices": [], "reason": "this sd_db has no projection; update the command pack"}
+    try:
+        held = projection.designation(json.loads(item["fields"] or "{}"), item["id"])
+        designated = projection.designated_rows(connection)
+    except (projection.ProjectionRefusal, ValueError) as error:
+        return {"value": None, "row": None, "choices": [], "reason": f"the designation cannot be read: {error}"}
+    value = None if held is None else {"experiment": "yes", "off": "off"}.get(held["as"], f"of:{held.get('of')}")
+    parent = any(other.get("of") == item["id"] and other["as"] == "task" for _, other in designated)
+    choices = [] if parent else [{"value": f"of:{row['id']}", "label": f"task of #{row['id']} {row['title']}"}
+                                 for row, other in designated if other["as"] == "experiment" and row["id"] != item["id"]]
+    return {"value": value, "row": None if held is None else held.get("row"), "choices": choices, "reason": None}
 
 
 def _base(state) -> dict | None:

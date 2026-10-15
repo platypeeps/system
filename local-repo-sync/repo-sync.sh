@@ -2347,7 +2347,8 @@ case "$1" in
     KEPTLOG="$TMPD/keptlog"; : > "$KEPTLOG"
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     SYNC_FAILED=0
-    # One SD_REPORT_ATTENTION line at the end: the ingest reads the first.
+    # One SD_REPORT_ATTENTION line at the end: the ingest's reason is every
+    # distinct such line of a run (pack sd:4629), so one line names it once.
     ATTENTION=""
 
     load_list
@@ -2411,15 +2412,16 @@ case "$1" in
       ATTENTION="repo-sync: hygiene report on $(hostname -s)"
     fi
     # The ingest folds a run into the open report with the same job and
-    # reason and keeps that report's first body. So the reason ends in a
+    # reason and gives that report the newest body. So the reason ends in a
     # checksum of what the report names, not the date: where the list came
     # from and why, and reconcile's lists (sd:3983), each line under the name
     # of its list, a failed join with its error; each failed repo's section
     # of the sync output, its step lines left out; and hygiene's lines, its
     # notes left out with the header of a section that holds only notes. The
     # same findings fold into one open report, and a new or changed one opens
-    # its own (sd:4182). The host stays in it, as every host files under one
-    # job name. No 2>/dev/null: an input missing here is a bug to see in the
+    # its own (sd:4182) and closes the older one on this host, with the
+    # exceptions local-cron-jobs/README.md names (pack sd:4641). The host
+    # stays in it, as every host files under one job name. No 2>/dev/null: an input missing here is a bug to see in the
     # log, not an empty list (review round 1).
     if [ -n "$ATTENTION" ]; then
       sum=$({ printf 'source: %s %s\nrows: %s\n' "$LIST_SOURCE" "$LIST_WHY" "$r_why"

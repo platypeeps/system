@@ -1530,11 +1530,13 @@ cmd_logs() {
 # (sd:3538). With no such line, the age is the install time (plist mtime).
 #
 # The ingest folds a run into the open report with the same job and reason
-# and keeps that report's first body. So the reason ends in a checksum of
+# and gives that report the newest body. So the reason ends in a checksum of
 # each stale job's name and the run or install it is stale since, not of its
 # age and not the date: a job still stale a night later folds into the open
 # report, and a new stale job, or one that ran and stopped again, opens its
-# own (sd:4182). The host stays in it, as every host files under one job name.
+# own (sd:4182) and closes the older one on this host, with the exceptions
+# the README names (pack sd:4641). The host stays in it, as every host files
+# under one job name.
 cmd_watchdog() {
   local job dom dow max log age ref now stale last at since=""
   now=$(date +%s)

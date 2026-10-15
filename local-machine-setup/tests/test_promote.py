@@ -150,8 +150,24 @@ esac
 # gh: `api graphql` prints STUB_GH_JSON and logs the query.
 GH_STUB = 'echo "gh $*" >> "$STUB_LOG"\nprintf "%s" "$STUB_GH_JSON"\n[ -n "$STUB_GH_JSON" ] || exit 1\n'
 
-LAUNCHCTL_STUB = ('echo "launchctl $*" >> "$STUB_LOG"\n'
-                  'case "$1" in print) exit 113 ;; bootstrap) exit "${STUB_BOOTSTRAP_RC:-0}" ;; esac\nexit 0\n')
+# launchd: a bootstrap loads its label, a bootout unloads it, and print finds
+# a loaded label (113, launchd's "no such service", otherwise). STUB_BOOTSTRAP_FAIL
+# names one label whose bootstrap fails after its plist is written.
+LAUNCHCTL_STUB = r'''echo "launchctl $*" >> "$STUB_LOG"
+loaded="$STUB_LOG.loaded"
+case "$1" in
+  print) [ -z "${STUB_PRINT_RC:-}" ] || exit "$STUB_PRINT_RC"
+         grep -qxF "${2##*/}" "$loaded" 2>/dev/null || exit 113
+         echo "	stdout path = /nonexistent/launchd.log" ;;
+  bootstrap) label=$(basename "$3" .plist)
+             [ "$label" != "${STUB_BOOTSTRAP_FAIL:-}" ] || exit 5
+             [ "${STUB_BOOTSTRAP_RC:-0}" = 0 ] || exit "$STUB_BOOTSTRAP_RC"
+             echo "$label" >> "$loaded" ;;
+  bootout) label=${2##*/}; [ -z "${3:-}" ] || label=$(basename "$3" .plist)
+           [ ! -f "$loaded" ] || { grep -vxF "$label" "$loaded" > "$loaded.new" || :; mv "$loaded.new" "$loaded"; } ;;
+esac
+exit 0
+'''
 
 
 class PromoteCase(unittest.TestCase):
@@ -577,6 +593,24 @@ class Promote(PromoteCase):
         self.run_promote("--apply")
         self.assertIsNone(self.marker_step())
         self.assertEqual(sorted(ROLE_AGENTS + [f"{PREFIX}.cron.{j}" for j in ROLE_JOBS]), self.installed())
+
+    def test_a_backup_job_launchd_did_not_load_stops_at_step_8(self):
+        """Round 4: the cron stage logs a failed bootstrap and exits 0, and the
+        plist is written first; step 8 asks launchd for each role label."""
+        label = f"{PREFIX}.cron.sd-db-backup-hourly"
+        result = self.run_promote("--apply", expect=1, STUB_BOOTSTRAP_FAIL=label)
+        self.assertIn(label, self.installed(), "the plist was not written before the bootstrap")
+        self.assertIn(f"the hub role is not running: launchd has not loaded {label}; rerun", result.stderr)
+        self.assertEqual("8", self.marker_step())
+        self.assertEqual([], self.calls("prove"))
+        self.run_promote("--apply")
+        self.assertIsNone(self.marker_step())
+
+    def test_a_launchd_that_does_not_answer_stops_at_step_8(self):
+        """A failed probe is no answer, not a loaded label."""
+        result = self.run_promote("--apply", expect=1, STUB_PRINT_RC="1")
+        self.assertIn("could not ask launchd whether", result.stderr)
+        self.assertEqual("8", self.marker_step())
 
     def test_a_fence_that_fails_during_the_stages_stops_at_step_8(self):
         """codex: the stages skip the role on an unread fence and exit 0;
