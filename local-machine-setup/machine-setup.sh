@@ -4044,8 +4044,9 @@ plist_env_value() { # plist, key
 # might itself be broken: sqlite3 on the database file, tailscale for the
 # route and curl for the answer.
 doctor_sd() {
-  if [ -z "${PROFILE:-}" ] || ! sd_in_profile; then
-    echo "  SKIP    sd pieces not checked (no sd agent in this profile)"
+  # A promoted satellite holds the role with no sd agent in its profile (sd:4648).
+  if [ -z "${PROFILE:-}" ] || { ! sd_in_profile && ! hub_holder; }; then
+    echo "  SKIP    sd pieces not checked (no sd agent in this profile, and no hub role held)"
     return 0
   fi
   # Not a SKIP: every profile with an sd agent is a Mac, macOS ships
@@ -4075,7 +4076,7 @@ doctor_sd() {
 $(sd_database_elsewhere)
 EOF
 
-  if manifest agent | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
+  if role_agents | grep -qxF "$LABEL_PREFIX.sd-dashboard"; then
     if ! command -v tailscale >/dev/null 2>&1 || ! tailscale status >/dev/null 2>&1; then
       echo "  SKIP    dashboard route and HTTPS answer not checked (tailscale not installed, not running or not logged in)"
     else

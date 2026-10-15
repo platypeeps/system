@@ -723,6 +723,16 @@ class HubRole(unittest.TestCase):
         self.assertEqual([], [line for line in self.log.read_text().splitlines() if line == "init"]
                          if self.log.exists() else [])
 
+    def test_doctor_checks_the_sd_pieces_on_a_promoted_satellite(self):
+        """sd:4648: the holder, not the profile, decides; a satellite still skips them."""
+        env = dict(**fixture_config.env(self.config), STUB_LOG=self.log, STUB_FENCE=self.fence)
+        self.fence.write_text("holder\n")
+        out = self.fixture.run("doctor", "sd", **env).stdout
+        self.assertNotIn("sd pieces not checked", out)
+        self.assertIn(f"database {self.fixture.db}", out)
+        self.fence.write_text("elsewhere\n")
+        self.assertIn("sd pieces not checked", self.fixture.run("doctor", "sd", **env).stdout)
+
     def test_a_satellite_profile_still_holds_the_role_once_promoted(self):
         """A `<profile>.satellite` file keeps is_satellite true after hub.json moved."""
         (self.config / "machine-setup/profiles/work.satellite").write_text(f"{HUB}:8769\n")
