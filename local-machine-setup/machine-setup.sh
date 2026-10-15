@@ -5560,7 +5560,7 @@ cmd_promote() {
   if [ "$APPLY" -ne 1 ] && [ "$PROMOTE_UNDO" = 1 ]; then
     echo "mode    : DRY RUN — nothing will change; re-run with --apply"
     if [ -n "$step" ]; then echo "marker  : $PROMOTE_MARKER, at step $step"; fi
-    if hub_role; then echo "role    : this machine holds the hub role"; else echo "role    : this machine does not hold the hub role"; fi
+    if hub_holder; then echo "role    : this machine holds the hub role"; else echo "role    : this machine does not hold the hub role"; fi
     echo "steps   : 1 stop the hub role and write the hand-back snapshot, 2 hub.json back and the tailnet name given up,"
     echo "          3 the new hub serves that snapshot, 4 delete the local records, 5 update satellite, 6 prove"
     return 0
@@ -5809,7 +5809,9 @@ promote_undo() { # marker step
   step=$1
   if [ -z "$step" ]; then
     rm -f "$PROMOTE_MARKER"
-    hub_role || promote_refuse "this machine does not hold the hub role: no hub.json, $SD_DB here and sd-db fence reading holder; nothing to hand back"
+    hub_holder || promote_refuse "this machine does not hold the hub role: no hub.json, $SD_DB here and sd-db fence reading holder; nothing to hand back"
+    # Undo hands a standby's role back; a hub profile runs the role as its own.
+    ! sd_in_profile || promote_refuse "this hub profile holds the role as the hub, not as a promoted standby; demote it instead: README, 'Hub failover'"
     # shellcheck disable=SC2012 # the stamp sorts; the newest promotion is the one held
     moved=$(ls -d "$SD_HUB_CONFIG".promoted-* 2>/dev/null | sort | tail -1)
     [ -n "$moved" ] || promote_refuse "no $SD_HUB_CONFIG.promoted-* to put back"

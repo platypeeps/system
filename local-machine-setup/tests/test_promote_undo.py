@@ -122,6 +122,16 @@ class Undo(PromoteCase):
         self.assertIsNone(self.marker_step())
         self.assertEqual([], self.calls("backup --destination"))
 
+    def test_a_hub_profile_that_holds_the_role_refuses(self):
+        """Undo hands a standby's role back; a hub profile holds it as the hub, and is demoted by the README."""
+        profiles = self.config / "machine-setup/profiles"
+        (profiles / "personal.agent").write_text(f"{PREFIX}.sd-dashboard\n{PREFIX}.sd-serve\n")
+        (self.fixture.state / "profile").write_text("personal\n")
+        result = self.run_undo("--apply", expect=1)
+        self.assertIn("this hub profile holds the role as the hub", result.stderr)
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.calls("backup --destination"))
+
     def test_an_unfinished_promotion_refuses(self):
         (self.fixture.home / ".local/state/sd/promote-intent").parent.mkdir(parents=True, exist_ok=True)
         (self.fixture.home / ".local/state/sd/promote-intent").write_text("hub=x\nstep=9\n")
