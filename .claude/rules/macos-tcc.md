@@ -17,7 +17,8 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
 - **TCC attributes a read to the executing binary, not the job's shell.**
 - **User FDA grants for Apple platform CLI binaries are not honored under launchd.**
   - Xcode's `/usr/bin/python3` fails as `Python.app`, as the inner binary, toggled, and after `tccutil reset`.
-  - Non-Apple binaries (Homebrew `Python.app`, `~/.local/bin/claude`) hold their grants.
+  - Non-Apple binaries (Homebrew `Python.app`, the `claude-code@latest` cask's `/opt/homebrew/bin/claude`) hold their grants.
+    - The cask links to a versioned Caskroom binary; moving from the native `~/.local/bin/claude` to it, or a cask upgrade, needs a fresh grant for the new binary.
 - **The vault interpreter is Homebrew python by elimination**, and each binary needs its own grant:
   - `DASHBOARD_PYTHON` in `<config>/project-dashboard/.env`, for `dashboard.sh tile` and `queue-open` from a shell;
   - `SD_DASHBOARD_PYTHON` in the LaunchAgent, for the server and the tiles it runs as children;

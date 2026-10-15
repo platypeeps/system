@@ -1354,14 +1354,17 @@ FOLLOW_PROOF_satellite='^  ok +sd_db .* matches the hub'
 # Queues checkout $3 ($1, system or pack) to move to sha $2 when it is not
 # already there and is clean, or a pack at $2 for `make setup` while the
 # intent marker is left; counts a dirty one in f_failed. Fields split on
-# $US, so a path with spaces stays whole.
+# $US, so a path with spaces stays whole. Its status lines wait in
+# $TMPD/says: a pass that drains runs follow again as its own child, and the
+# child prints them, so printing them in both passes showed each twice and
+# lost the pack line behind them (sd:4721).
 follow_want() {
   if is_pinned "$3" && [ "$(git -C "$3" rev-parse HEAD)" = "$2" ]; then
     if [ "$1" = pack ] && [ -e "$FOLLOW_INTENT" ]; then
-      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished, or its machine-setup update failed ($FOLLOW_INTENT); setting up again"
+      echo "follow: pack at the hub's pin, but a follow stopped before its make setup finished, or its machine-setup update failed ($FOLLOW_INTENT); setting up again" >> "$TMPD/says"
       printf '%s\n' "setup$US$2$US$3" >> "$TMPD/moves"
     else
-      echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)"
+      echo "follow: $1 already at the hub's pin $(git -C "$3" rev-parse --short HEAD)" >> "$TMPD/says"
     fi
   elif [ -n "$(git -C "$3" status --porcelain --untracked-files=no 2>/dev/null || echo unreadable)" ]; then
     flag "!!! refused: $3 has uncommitted changes; commit or stash them"
@@ -1427,11 +1430,12 @@ follow() {
     return 1
   fi
   : > "$TMPD/moves"
+  : > "$TMPD/says"
   f_failed=0
   follow_want system "$f_sys_sha" "$f_sys"
   f_pack=$(hub_dir pack)
   if [ -z "$f_pack" ]; then
-    echo "follow: no pack checkout in the conf; skipped"
+    echo "follow: no pack checkout in the conf; skipped" >> "$TMPD/says"
   elif ! git -C "$f_pack" cat-file -e "$f_pack_sha^{commit}" 2>/dev/null \
       && ! bound_step 300 git -C "$f_pack" fetch -q origin "$f_pack_sha" < /dev/null 2> "$TMPD/err"; then
     flag "!!! refused: cannot fetch the hub's pack pin $f_pack_sha in $f_pack: $(grep -v '^\[step ' "$TMPD/err" | tail -1)"
@@ -1440,18 +1444,20 @@ follow() {
     follow_want pack "$f_pack_sha" "$f_pack"
   fi
   if [ "$f_failed" -gt 0 ]; then
+    cat "$TMPD/says"
     echo "follow  : refused, nothing moved"
     return 1
   fi
   if [ ! -s "$TMPD/moves" ]; then
     # Nothing to move or set up (no pack in the conf). A marker left is still
     # an update not proven, so it runs the stages again.
-    [ -e "$FOLLOW_INTENT" ] || return 0
-    echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again"
+    [ -e "$FOLLOW_INTENT" ] || { cat "$TMPD/says"; return 0; }
+    echo "follow: at the hub's pin, but a follow's update was not proven ($FOLLOW_INTENT); updating again" >> "$TMPD/says"
   fi
   if [ "${REPO_SYNC_LANES_HELD:-}" != 1 ]; then
     drain_exec follow
   fi
+  cat "$TMPD/says"
   # A marker left means an earlier run may have moved system past a
   # shared.md change and stopped before its refresh: refresh again.
   f_prompt=0
