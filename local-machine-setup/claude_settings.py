@@ -4,7 +4,8 @@
 file lacks; `claude_settings.py merge SETTINGS` adds those entries in place.
 `opencode-missing` and `opencode-merge` do the same for opencode.json.
 Only missing entries are added: an entry the operator set, to any value, is
-left alone, and nothing is removed. The stage backs the file up first.
+left alone. The one removal is a rule the baseline itself retired
+(RETIRED_DENY), reported as STALE. The stage backs the file up first.
 
 `local-missing FILE` and `local-merge FILE` do the same for the shared keys of
 a repo's CLAUDE.local.md block (the repos stage, sd:3030). Here the source
@@ -47,16 +48,19 @@ SECRET_READ_DENY = [
     "Read(~/.config/gh/hosts.yml)",
 ]
 #: Work is tracked in sd, not GitHub issues or claude-mem work state.
+#: mcp__github__issue_write is not here: a user deny beats any project allow, so the pack's
+#: sd-issue-guard gates it per repo instead (sd:4810: a github_issues-on repo closes its issues).
 TOOL_DENY = [
     "Bash(gh issue create:*)",
     "Bash(gh issue transfer:*)",
     "Bash(gh api *repos/*/issues --method POST*)",
     "Bash(gh api *repos/*/issues -X POST*)",
-    "mcp__github__issue_write",
     "mcp__github__sub_issue_write",
     "mcp__plugin_claude-mem_mcp-search__work_state_write",
     "mcp__plugin_claude-mem_mcp-search__work_state_read",
 ]
+#: Rules an older baseline added and this one takes back out.
+RETIRED_DENY = ["mcp__github__issue_write"]
 SESSION_START = "sd today 2>/dev/null | head -40"
 #: Claude Code updates in the weekly upgrade only (sd:3033); this stops its background updater.
 ENV = {"DISABLE_AUTOUPDATER": "1"}
@@ -90,6 +94,7 @@ def session_start_commands(settings):
 def missing(settings):
     deny = settings.get("permissions", {}).get("deny", [])
     gaps = [f"permissions.deny {rule}" for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
+    gaps += [f"STALE permissions.deny {rule} (retired)" for rule in RETIRED_DENY if rule in deny]
     gaps += [f"attribution.{key}" for key in ("commit", "pr") if key not in settings.get("attribution", {})]
     if "includeCoAuthoredBy" not in settings:
         gaps.append("includeCoAuthoredBy")
@@ -101,6 +106,7 @@ def missing(settings):
 
 def merge(settings):
     deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+    deny[:] = [rule for rule in deny if rule not in RETIRED_DENY]
     deny += [rule for rule in SECRET_READ_DENY + TOOL_DENY if rule not in deny]
     attribution = settings.setdefault("attribution", {})
     attribution.setdefault("commit", "")

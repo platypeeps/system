@@ -1672,13 +1672,14 @@ stage_tooling() {
     # attribution lines, the `sd today` hook, and DISABLE_AUTOUPDATER (the
     # weekly `brew upgrade --cask --greedy` moves the claude-code@latest
     # cask). It adds missing entries after a
-    # backup and never touches the operator's own.
+    # backup and never touches the operator's own; a STALE line is a rule an
+    # older baseline added, which merge takes back out (RETIRED_DENY).
     if [ -f "$HOME/.claude/settings.json" ]; then
       if gaps=$(python3 "$DIR/claude_settings.py" missing "$HOME/.claude/settings.json" 2>/dev/null); then
         if [ -z "$gaps" ]; then
           echo "  ok      settings.json baseline"
         else
-          printf '%s\n' "$gaps" | sed 's/^/  MISSING settings.json /'
+          printf '%s\n' "$gaps" | sed -e 's/^STALE /  STALE   settings.json /' -e t -e 's/^/  MISSING settings.json /'
           if run_ok backup_file "$HOME/.claude/settings.json"; then
             run python3 "$DIR/claude_settings.py" merge "$HOME/.claude/settings.json"
           fi
