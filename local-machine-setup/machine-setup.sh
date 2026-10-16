@@ -4656,7 +4656,11 @@ cmd_doctor() {
     jobs=$( { manifest cron; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
       | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
-      if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      # The cron and agents stages' guard: a satellite never loads these, so
+      # not loaded is the wanted state, not a warning (sd:4797).
+      if sd_hub_only "$label" && is_satellite && ! hub_holder; then
+        echo "  SKIP    $label — hub only, and this machine is a satellite"
+      elif launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         echo "  ok      loaded: $label"
       else
         echo "  WARN    not loaded: $label"
