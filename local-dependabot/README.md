@@ -64,6 +64,12 @@ which GitHub reports `CLEAN`. Never merges a major, a Docker image digest, or
 anything in a repository with no CI configured — "no checks reported" is not
 "checks passed".
 
+A repository whose CI is the local gate (`local` in `sd-db repo list`) has no
+check on a Dependabot head until `sd-ship` runs the gate. There the sweep lands
+each admitted PR through the itemless `sd-ship` review, prepare and merge,
+whose gate and exact-head merge prove the same two things. A blocking review
+becomes a hold comment on the PR that carries the findings.
+
 Two gates decide which repositories it touches at all, and they are different
 questions. Write access says a merge would *succeed*; the owner gate says one
 is *wanted*. Both must pass. The owner gate is a written deny list, the

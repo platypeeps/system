@@ -23,7 +23,8 @@
 # with open Dependabot PRs, nine failed the first gate and one the second.
 #
 # Merges only patch and minor bumps whose checks are proven to have actually
-# run, and only when GitHub reports the PR CLEAN. Majors are never
+# run, and only when GitHub reports the PR CLEAN; on a local-gate repository
+# sd-ship's gate and exact-head merge prove both. Majors are never
 # auto-merged -- a breaking change is the owner's call. Nor are Docker image
 # digest bumps, which carry no version arithmetic that could call them safe. A
 # repository with no CI configured gets its PRs listed and never merged: "no

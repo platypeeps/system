@@ -781,5 +781,97 @@ class HelpNeedsNoPython(unittest.TestCase):
         self.assertIn("/nonexistent/python3 is too old", done.stderr)
 
 
+def routine_section(heading):
+    """The ROUTINE.md text under `## heading`, up to the next heading of level one or two.
+
+    Whitespace runs collapse to one space, so a command the prose wraps
+    across lines still reads as one string.
+    """
+    text = (FOLDER / "ROUTINE.md").read_text(encoding="utf-8")
+    found = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^#{{1,2}} )", text, re.MULTILINE | re.DOTALL)
+    return " ".join(found.group(1).split()) if found else ""
+
+
+class LocalGateLanding(unittest.TestCase):
+    """sd:4752. A `local` CI row lands through itemless sd-ship; every other repository keeps gh pr merge.
+
+    The daily sweep is prompt-driven, so the choice is ROUTINE.md prose, and
+    these tests hold the prose to the operator's ruling the way the owner-gate
+    test holds the deny list.
+    """
+
+    def test_the_ci_column_picks_the_path_and_gh_merge_stays_for_the_rest(self):
+        merged = routine_section("What may be merged")
+        self.assertIn("sd-db repo list", merged)
+        self.assertIn("reads `local`", merged)
+        self.assertIn("gh pr merge <N> --repo <slug> --squash --delete-branch", merged)
+        self.assertIn("Every other repository", merged)
+        # Conditions 3 and 4 are met by construction on the sd-ship path, and said so where they are stated.
+        self.assertIn("met by construction", merged)
+        self.assertIn("sd/local-gate", merged)
+
+    def test_the_local_gate_section_runs_the_itemless_sequence_in_order(self):
+        landing = routine_section("Landing on a local-gate repository")
+        # Closing a record is one defined command, used by name in the steps.
+        self.assertIn("review --no-item --review-id <ID> --close-record", landing)
+        numbered = landing[landing.index("**Make the worktree.**"):landing.index("**A hold.**")]
+        steps = ["git -C <checkout> worktree add --track -b <branch> <dir> origin/<branch>",
+                 "review --no-item --create-record --assert-new-work",
+                 "prepare --no-item --review-id <ID> --catch-up",
+                 "merge --no-item --review-id <ID> --manual --expected-head <reviewed_head>",
+                 "reconcile --no-item --review-id <ID>",
+                 "close the record with the reason `Dependabot #<N> merged`"]
+        places = [numbered.find(step) for step in steps]
+        self.assertNotIn(-1, places, dict(zip(steps, places)))
+        self.assertEqual(places, sorted(places))
+        self.assertIn("st_step", landing)
+        self.assertIn("$HOME/worktrees/", landing)
+        self.assertIn("One PR at a time per repository", landing)
+
+    def test_any_phase_but_ready_to_send_is_a_hold_carrying_the_blocking_findings(self):
+        landing = routine_section("Landing on a local-gate repository")
+        self.assertIn('Only `"phase": "ready_to_send"` goes on', landing)
+        self.assertIn("adjudicate --no-item --review-id <ID> --expected-head", landing)
+        self.assertIn("sd-ship hold #<N> at <head>", landing)
+        self.assertIn("summary", landing)
+        # Dependabot acts on an @dependabot mention, so a hold comment that names one would lift itself.
+        self.assertIn("Never write an `@dependabot` mention", landing)
+        # The ship lock is the merge lane's, not the PR's fault: never a hold, never --wait.
+        self.assertIn("another ship operation owns this repository", landing)
+        self.assertIn("Never pass `--wait`", landing)
+
+    def test_a_dead_run_is_finished_by_the_next_and_no_head_is_held_or_merged_unread(self):
+        """The adversarial review of the first draft: each step's leftover has a finisher (sd:4752)."""
+        landing = routine_section("Landing on a local-gate repository")
+        # The head merged is the head classified: a replacement after the read is new work.
+        self.assertIn("SKIP head moved since it was read", landing)
+        # A local branch outside this job's worktree with commits origin lacks is somebody's work.
+        self.assertIn("rev-list origin/<branch>..<branch>", landing)
+        # The ID is in the log before anything can die, so a run that dies after its merge is finished.
+        self.assertIn("RECORD <slug> #<N> <ID>", landing)
+        self.assertIn("whose PR is not open", landing)
+        # A reprepare that reconciles an earlier merge goes to the close-out, not to a hold.
+        self.assertIn('`"phase": "merged"` from prepare', landing)
+        # The hold names its record and is posted before the record closes; the next run closes it.
+        self.assertIn("sd-ship hold #<N> at <head>, record <ID>", landing)
+        hold = landing[landing.index("**A hold.**"):]
+        self.assertLess(hold.index("post one comment"), hold.index("close the record"))
+        self.assertIn("closes the record it names", landing)
+        # The held head is the head this run worked on, never one read afterwards.
+        self.assertNotIn("reads it now", landing)
+
+    def test_recovery_reads_the_log_not_the_worktrees_and_the_worktrees_are_the_jobs_own(self):
+        """The second adversarial pass: reconcile can remove the worktree, and a repository can run out of PRs."""
+        landing = routine_section("Landing on a local-gate repository")
+        # A folder only this job writes: a builder's `<repo>-<branch>` worktree can never match it.
+        self.assertIn("$HOME/worktrees/dependabot-daily/<owner>-<name>-<N>", landing)
+        # Every close leaves a line, so an unclosed RECORD is found from the log alone.
+        self.assertIn("CLOSED <slug> <ID>", landing)
+        self.assertIn("RECORD line with no later CLOSED line", landing)
+        # Recovery runs before the fan-out, over every record, not only repositories with open PRs.
+        self.assertIn("before the fan-out", landing)
+        self.assertIn("whether or not it still has open PRs", landing)
+
+
 if __name__ == "__main__":
     unittest.main()
