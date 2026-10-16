@@ -154,6 +154,26 @@ claude_binary() {
   return 1
 }
 
+# A quarantined cask claude waits on a Gatekeeper prompt that no one answers
+# under launchd, so each agent job sat to its 2 h limit: a cask installed by
+# hand stays quarantined until machine-setup's nightly clears it (sd:4815).
+# lib/claude_quarantine.sh clears the flag only when the binary's checks
+# pass; when one fails or does not answer, the job fails now and its log
+# names the check. Nothing to clear logs nothing. Sourced on first use: a
+# JOB_COMMAND job never needs it. Each check's step line reaches the job log
+# through fd 5, since the check's own stderr is read or discarded.
+# shellcheck disable=SC2034 # read by st_step in lib/bounded.sh
+cq_check() { (ST_STEP_FD3=1; st_step "$@" 3>&5); }
+cq_clear() { xattr -d com.apple.quarantine "$1"; }
+agent_quarantine() { # job binary
+  local out rc=0
+  # shellcheck source=/dev/null
+  command -v st_claude_quarantine >/dev/null 2>&1 || . "$ROOT/../lib/claude_quarantine.sh"
+  out="$(st_claude_quarantine "$2" 5>&2)" || rc=$?
+  printf '%s\n' "$out" | sed -n "s/^  DIFFERS /[$1] $(date '+%Y-%m-%dT%H:%M:%S%z') /p"
+  return "$rc"
+}
+
 # A prompt job's `claude -p` writes its runtime trace to
 # logs/<job>.debug.<run>.log (sd:972: "error: An unknown error occurred
 # (Unexpected)" is the Bun runtime's, printed before any session exists, and
@@ -1209,7 +1229,9 @@ cmd_exec() { # invoked by launchd (and by `run`)
     # after the agent exits, so such a job's log fills at the end, not live.
     local reply="$LOG_DIR/.$job.reply"
     # shellcheck disable=SC2086 # word-splitting of extra args is deliberate
-    if [ -n "$JOB_RESULT_OK" ]; then
+    if ! agent_quarantine "$job" "$claude_bin"; then
+      rc=1
+    elif [ -n "$JOB_RESULT_OK" ]; then
       run_bounded "$job" "$JOB_TIMEOUT_SECONDS" \
         env SD_HANDOFF_RESTORE=0 "$claude_bin" -p "$JOB_PROMPT" \
         --dangerously-skip-permissions \

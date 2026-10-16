@@ -46,6 +46,7 @@ CRON_LABEL_ARM_EOL = re.compile(r"[^\s(]*\.cron\.\*\)\n")
 SCRIPT = pathlib.Path(os.environ.get("CRON_JOBS_TEST_SCRIPT") or FOLDER / "cron-jobs.sh")
 LIB_CONFIG = FOLDER.parent / "lib" / "config.sh"
 LIB_BOUNDED = FOLDER.parent / "lib" / "bounded.sh"
+LIB_QUARANTINE = FOLDER.parent / "lib" / "claude_quarantine.sh"
 
 # The fake agent: one file for argv and one for the environment it was
 # started with, NUL-separated so a value holding a newline cannot split. It
@@ -82,6 +83,7 @@ class Fixture:
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB_CONFIG, self.tmp / "lib" / "config.sh")
         shutil.copy(LIB_BOUNDED, self.tmp / "lib" / "bounded.sh")
+        shutil.copy(LIB_QUARANTINE, self.tmp / "lib" / "claude_quarantine.sh")
         self.config = self.tmp / "config"
         self.conf_dir = self.config / "cron-jobs"
         self.jobs = self.conf_dir / "jobs"
@@ -456,6 +458,155 @@ class PromptJobDebugFileTest(unittest.TestCase):
         result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.debug_files(), sorted(older[1:]))
+
+
+# The quarantine stubs record each call in $CALLS. A file's quarantine is a
+# file beside it, `<path>.quarantine`; XATTR_FAIL fails the read of the
+# names. Every check passes only for the path in GOOD; BAD_SIGNATURE fails the
+# verify.
+QUARANTINE_STUBS = {
+    "xattr": r"""#!/bin/sh
+echo "xattr $*" >> "$CALLS"
+case $1 in
+  -d) [ "$2" = com.apple.quarantine ] && rm "$3.quarantine" ;;
+  -*) exit 2 ;;
+  *) [ -z "$XATTR_FAIL" ] || exit 1
+     [ ! -e "$1.quarantine" ] || echo com.apple.quarantine ;;
+esac
+""",
+    "codesign": r"""#!/bin/sh
+echo "codesign $*" >> "$CALLS"
+for last; do :; done
+[ "$last" = "$GOOD" ] || exit 1
+case $1 in
+  --verify) [ -z "$BAD_SIGNATURE" ] ;;
+  -dv) echo "TeamIdentifier=Q6L2SF6YDW" >&2 ;;
+  *) exit 2 ;;
+esac
+""",
+    "spctl": r"""#!/bin/sh
+echo "spctl $*" >> "$CALLS"
+for last; do :; done
+[ "$last" = "$GOOD" ] || exit 3
+echo "source=Notarized Developer ID" >&2
+""",
+}
+
+# The cask's claude: it records whether its quarantine was still there when
+# it started, which is what Gatekeeper would have asked about. It starts
+# through the link, so $0 is the link.
+CASK_CLAUDE = r"""#!/bin/sh
+if [ -e "$(readlink "$0").quarantine" ]; then echo "claude ran quarantined" >> "$CALLS"
+else echo "claude ran" >> "$CALLS"; fi
+"""
+
+
+class AgentQuarantineTest(unittest.TestCase):
+    """The runner starts no quarantined cask claude (sd:4815).
+
+    A cask installed by hand kept com.apple.quarantine until machine-setup's
+    nightly, and six agent jobs before it each waited 2 h on a Gatekeeper
+    prompt. The runner now runs lib/claude_quarantine.sh first: it clears a
+    flag whose checks pass, and a failed check fails the job at once.
+    CLAUDE_BIN links into a Caskroom, as the cask's bin/claude does.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.stubs = self.fx.tmp / "stubs"
+        self.stubs.mkdir()
+        for name, body in QUARANTINE_STUBS.items():
+            stub = self.stubs / name
+            stub.write_text(body)
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        caskroom = self.fx.tmp / "Caskroom/claude-code@latest"
+        self.old = caskroom / "2.1.300/claude"
+        self.cask = caskroom / "2.1.301/claude"
+        for binary in (self.old, self.cask):
+            binary.parent.mkdir(parents=True)
+            binary.write_text(CASK_CLAUDE)
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+        self.link = self.fx.tmp / "brew-bin/claude"
+        self.link.parent.mkdir()
+        self.link.symlink_to(self.cask)
+        self.quarantine = pathlib.Path(f"{self.cask}.quarantine")
+        self.quarantine.touch()
+        self.calls = self.fx.tmp / "calls.log"
+        self.fx.write_job("nightly", PROMPT_JOB)
+
+    def run_job(self, **extra):
+        env = {"PATH": self.fx.path(self.stubs), "CALLS": str(self.calls),
+               "CLAUDE_BIN": str(self.link), "GOOD": str(self.cask), **extra}
+        started = time.monotonic()
+        result = self.fx.exec_job("nightly", env)
+        self.elapsed = time.monotonic() - started
+        self.log = (self.fx.folder / "logs/nightly.log").read_text()
+        return result
+
+    def calls_of(self, tool):
+        lines = self.calls.read_text().splitlines() if self.calls.exists() else []
+        return [line for line in lines if line.split(" ", 1)[0] == tool]
+
+    def assert_refused(self, result, why):
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.calls_of("claude"), [], self.log)
+        self.assertTrue(self.quarantine.exists(), self.log)
+        self.assertNotIn(f"xattr -d com.apple.quarantine {self.cask}", self.calls_of("xattr"))
+        self.assertRegex(self.log, rf"\[nightly\] \S+ claude quarantine {why}")
+        self.assertRegex(self.log, r"\[nightly\] \S+ FAILED rc=1")
+        # Fails at once, not at the job's 2 h limit.
+        self.assertLess(self.elapsed, 30)
+
+    def test_a_verified_quarantine_is_cleared_before_the_agent_runs(self):
+        # REGRESSION (sd:4815). The runner started the quarantined binary.
+        result = self.run_job()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls_of("claude"), ["claude ran"], self.log)
+        self.assertFalse(self.quarantine.exists(), self.log)
+        self.assertRegex(self.log, r"\[nightly\] \S+ claude quarantined; signed, notarized, "
+                                   r"team Q6L2SF6YDW: clearing")
+        # Each check's step line reaches the job log.
+        self.assertRegex(self.log, r"\[step [\d:]+\] spctl --assess .*\(bound 120s\)")
+
+    def test_a_failed_check_fails_the_job_at_once(self):
+        # REGRESSION (sd:4815). The runner started the quarantined binary.
+        result = self.run_job(BAD_SIGNATURE="1")
+
+        self.assert_refused(result, f"kept on {re.escape(str(self.cask))}: the signature does not verify")
+
+    def test_checks_that_pass_for_another_version_fail_the_job(self):
+        # REGRESSION (sd:4815). Evidence: the checks are of the linked binary.
+        result = self.run_job(GOOD=str(self.old))
+
+        self.assert_refused(result, f"kept on {re.escape(str(self.cask))}: the signature does not verify")
+
+    def test_an_unreadable_flag_fails_the_job(self):
+        # REGRESSION (sd:4815). An xattr that cannot read is unknown, not clear.
+        result = self.run_job(XATTR_FAIL="1")
+
+        self.assert_refused(result, f"unknown: xattr could not read {re.escape(str(self.cask))}")
+        self.assertEqual(self.calls_of("codesign"), [])
+
+    def test_no_quarantine_runs_no_check_and_logs_nothing(self):
+        # PIN. Nothing to clear changes nothing and says nothing.
+        self.quarantine.unlink()
+        result = self.run_job()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls_of("claude"), ["claude ran"])
+        self.assertEqual(self.calls_of("codesign") + self.calls_of("spctl"), [])
+        self.assertNotIn("quarantin", self.log)
+
+    def test_a_claude_outside_the_cask_is_left_alone(self):
+        # PIN. Only the cask's binary is checked; the fixture's fake is not one.
+        result = self.run_job(CLAUDE_BIN=str(self.fx.claude))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.fx.claude_was_called())
+        self.assertEqual(self.calls_of("xattr") + self.calls_of("codesign") + self.calls_of("spctl"), [])
+        self.assertNotIn("quarantin", self.log)
 
 
 # A tee that misses the EOF of its first FIFO, as tee on macOS did in sd:773:
