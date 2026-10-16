@@ -20,6 +20,8 @@ into `<config>/cron-jobs/jobs/` and run `cron-jobs.sh install brew-doctor-nightl
 - **Report-only**: deprecated/disabled formulae and casks,
   untrusted taps (trust is a security decision), kegs with no formula, and
   anything else `brew doctor` raises.
+- **Ignored**: Homebrew's Intel x86_64 platform warning; it repeats every
+  night on an Intel Mac and nothing here can clear it (sd:4785).
 
 The summary goes to the job log with one line per warning, `SD_REPORT_ATTENTION:
 brew doctor on <host>: <its first line> [<checksum>]`, and one per item it

@@ -34,6 +34,10 @@ esac
 exit 0
 """
 
+# Homebrew's text on an Intel Mac since September 2026, shortened.
+INTEL_WARNING = ("Warning: You are using macOS on Intel x86_64.\n"
+                 "We do not provide support for this platform.\n\n"
+                 "This is a Tier 3 configuration:\n  https://docs.brew.sh/Support-Tiers#tier-3\n\n")
 
 class BrewDoctorTest(unittest.TestCase):
     def setUp(self):
@@ -82,6 +86,21 @@ class BrewDoctorTest(unittest.TestCase):
         recheck = self.run_doctor(BREW_RECHECK="Warning: partial\n", BREW_RECHECK_RC="124")
         self.assertEqual(recheck.returncode, 1, recheck.stdout + recheck.stderr)
         self.assertIn("brew doctor re-check FAILED (exit 124)", recheck.stderr)
+
+    def test_the_intel_platform_warning_alone_is_clean(self):
+        """Homebrew warns every night on an Intel Mac; no fix clears it (sd:4785)."""
+        run = self.run_doctor(BREW_RECHECK=INTEL_WARNING, BREW_RECHECK_RC="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("brew doctor: clean after auto-fixes", run.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
+
+    def test_the_intel_platform_warning_leaves_other_warnings_reported(self):
+        run = self.run_doctor(BREW_RECHECK=INTEL_WARNING + "Warning: Some taps are not trusted.\n  example/tap\n",
+                              BREW_RECHECK_RC="1")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("SD_REPORT_ATTENTION: brew doctor on", run.stdout)
+        self.assertIn("Some taps are not trusted.", run.stdout)
+        self.assertNotIn("Intel", run.stdout)
 
     def test_a_keg_whose_info_did_not_answer_is_not_called_an_orphan(self):
         run = self.run_doctor(BREW_INFO_RC="term")
