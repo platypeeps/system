@@ -69,6 +69,20 @@ Its output goes to `logs/kev.log` and `logs/kev.err.log` in this folder.
 The agent runs `kev.sh serve`, so a change to `.env` takes effect at the next
 restart: `agent-install` again.
 
+## Label review
+
+Label a Kev label file on the dashboard's Review page, not in the review app under `kev/tools/review`.
+File it as a batch, label it with the digits, then export Kev's `reviews.jsonl` shape:
+
+```sh
+sd-db review file --kev labels.jsonl --batch aura-names --blind
+sd-db review export <item> --out reviews.jsonl --format reviews
+```
+
+The last option of every question is `(drop)`.
+In an open batch, Details marks the proposed label; its digit accepts it.
+A blind batch shows no proposal, so every label is a relabel.
+
 ## Status
 
 `status` asks `GET /v1/models`. An answer with a model list is healthy (0).

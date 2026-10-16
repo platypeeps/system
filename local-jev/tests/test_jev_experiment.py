@@ -2064,7 +2064,10 @@ class TheReplay(CompareCase):
                          (2, {"pool": 2, "drawn": 2, "strata": 2},
                           {"jev": {"pool": 0, "drawn": 0, "rate": None},
                            "kev": {"pool": 2, "drawn": 2, "rate": 1.0}}))
-        key = sheet_rows(self.folder / "labels" / "key-C1.csv")
+        # No key file: the analysis recomputes the key from the sealed inputs (sd:4789).
+        self.assertFalse((self.folder / "labels" / "key-C1.csv").exists())
+        _sheet, key, _summary = experiment.drawn_sheet(self.folder, "C1")
+        self.assertEqual(filed_batch(self.db)["open"], 2)
         self.assertEqual(sorted((k["commit"], k["hosted"], k["jev"], k["kev"], k["pattern"])
                                 for k in key),
                          [(sha(0), "1", "standard", "skip", "RRRSR"),
@@ -2074,10 +2077,27 @@ class TheReplay(CompareCase):
                          .hexdigest())
 
 
-def sheet_rows(path):
-    import csv
-    with path.open(newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+def filed_batch(db, population="C1"):
+    """The Review batch `labels sheet` filed for `population`, or None."""
+    review, writes = experiment.sd_db_module("review"), experiment.sd_db_module("writes")
+    with contextlib.closing(connect(db)) as connection:
+        held = writes.item_by_external(connection, review.REF_SOURCE, f"review:{experiment.SHEET_QUEUE}:{population}")
+        return None if held is None else review.read(connection, held["id"])
+
+
+def label_rows(db, item, option="cheap", leave=0):
+    """Label every open row but the last `leave`, as the Review page does."""
+    review, workflow = experiment.sd_db_module("review"), experiment.sd_db_module("workflow")
+    with contextlib.closing(connect(db)) as connection:
+        questions = review.read(connection, item)["questions"]
+        for question in questions[:len(questions) - leave]:
+            revision = workflow.item_state(connection, item)["revision"]
+            review.rule(connection, item, question["note"], option, expected_revision=revision, who="tester")
+
+
+def candidates_of(text):
+    return set(next(line for line in text.splitlines()
+                    if line.startswith("Candidates: "))[len("Candidates: "):].split(", "))
 
 
 #: A routing reason, a path and an alias that name no arm.
@@ -2118,7 +2138,7 @@ def kit_answers(heads, kev=(), jev=(), haiku=(), hosted=None, **lines):
 
 
 class TheLabelSheet(unittest.TestCase):
-    """Step 8: the blinded hand-label sheet, its Markdown copy and its key."""
+    """Step 8: the blinded hand-label sheet, filed as one blind Review batch (sd:4789)."""
 
     def setUp(self):
         self.out = Path(tempfile.mkdtemp()) / "experiment"
@@ -2158,40 +2178,45 @@ class TheLabelSheet(unittest.TestCase):
                                         side_effect=AssertionError("read a checkpoint")):
             code, printed = self.sheet(db=db)
         self.assertEqual(code, 0, printed)
-        labels = self.out / "labels"
-        csv_text = (labels / "sheet-C1.csv").read_text()
-        markdown = (labels / "sheet-C1.md").read_text()
-        self.assertEqual(csv_text.splitlines()[0], ",".join(experiment.SHEET_COLUMNS))
-        for text in (csv_text, markdown):
+        found = filed_batch(db)
+        self.assertEqual((found["header"]["mode"], len(found["questions"]), found["open"]), ("blind", 4, 4))
+        for question in found["questions"]:
+            self.assertEqual((question["options"], question["evidence"]), (list(experiment.TIERS), []))
             for arm in experiment.ARMS:
-                self.assertNotIn(arm, text.lower())
-            self.assertNotIn("FINDING", text)
-            self.assertNotIn("blocking", text)
-        found = sheet_rows(labels / "sheet-C1.csv")
-        self.assertEqual(len(found), 4)
-        self.assertEqual({(r["label"], r["sure"], r["note"]) for r in found}, {("", "", "")})
-        self.assertTrue(all(set(r["candidates"].split(", ")) <= set(experiment.TIERS)
-                            for r in found))
+                self.assertNotIn(arm, question["text"].lower())
+                # Details shows the queue, title and source of a blind batch too (codex, final review).
+                for shown in (found["header"]["queue"], found["item"]["title"], found["header"]["source"]):
+                    self.assertNotIn(arm, shown.lower())
+            self.assertNotIn("FINDING", question["text"])
+            self.assertNotIn("blocking", question["text"])
+            self.assertLessEqual(candidates_of(question["text"]), set(experiment.TIERS))
+        # No CSV, Markdown copy or key: the batch is the one label source.
+        self.assertEqual(sorted(p.name for p in (self.out / "labels").iterdir()), ["C1.jsonl", "sheet-C1.json"])
+        self.assertEqual(json.loads(printed)["open"], 4)
 
     def test_the_key_maps_every_row(self):
         heads = range(8)
         rows = [kit_row(n) for n in heads]
         self.write(rows, kit_answers(heads, kev=(0, 1, 5), jev=(1, 2), haiku=(3, 7)))
-        self.assertEqual(self.sheet()[0], 0)
-        labels = self.out / "labels"
-        sheet = sheet_rows(labels / "sheet-C1.csv")
-        key = sheet_rows(labels / "key-C1.csv")
-        self.assertEqual([r["row"] for r in sheet], [str(n) for n in range(1, len(sheet) + 1)])
-        self.assertEqual([(k["row"], k["commit"], k["repo"]) for k in key],
-                         [(r["row"], r["commit"], r["repo"]) for r in sheet])
+        db = checkpoint_db([])
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        questions = filed_batch(db)["questions"]
+        _sheet, key, summary = experiment.drawn_sheet(self.out, "C1")
+        self.assertEqual([q["subject"] for q in questions], [f"C1-{n:03d}" for n in range(1, len(key) + 1)])
+        self.assertEqual([k["row"] for k in key], [str(n) for n in range(1, len(key) + 1)])
+        for question, row in zip(questions, key):
+            self.assertIn(f"Commit: {row['commit']}", question["text"])
+            self.assertEqual(candidates_of(question["text"]), {row[arm] for arm in experiment.ARMS} - {""})
+        # The summary binds the recomputed key to this sheet.
+        written = json.loads((self.out / "labels" / "sheet-C1.json").read_text())
+        self.assertEqual(written["key_sha256"], summary["key_sha256"])
+        self.assertEqual(summary["key_sha256"],
+                         hashlib.sha256(experiment.csv_bytes(experiment.KEY_COLUMNS, key)).hexdigest())
         by_commit = {k["commit"]: k for k in key}
         self.assertEqual({c: (k["rules"], k["kev"], k["jev"], k["haiku"])
                           for c, k in by_commit.items() if c in (sha(1), sha(7))},
                          {sha(1): ("standard", "skip", "skip", "standard"),
                           sha(7): ("standard", "standard", "standard", "skip")})
-        for row in sheet:
-            given = {by_commit[row["commit"]][arm] for arm in experiment.ARMS} - {""}
-            self.assertEqual(set(row["candidates"].split(", ")), given)
 
     def test_the_order_is_stable_for_the_seed(self):
         heads = range(40)
@@ -2306,31 +2331,115 @@ class TheLabelSheet(unittest.TestCase):
         with self.assertRaises(experiment.Refused):
             self.kit(rows, kit_answers(range(2), kev=(0, 1)))
 
-    def test_a_stopped_run_finishes_and_a_filled_sheet_is_never_overwritten(self):
+    def six(self):
         heads = range(6)
         self.write([kit_row(n) for n in heads], kit_answers(heads, kev=(0, 1), jev=(2,)))
-        real, calls = experiment.os.replace, []
+        return checkpoint_db([])
 
-        def stop_second(*args):
+    def test_a_stop_inside_the_filing_files_nothing_and_the_rerun_files_the_batch(self):
+        db, review = self.six(), experiment.sd_db_module("review")
+        real, calls = review.add_note, []
+
+        def stop_third(*args, **kwargs):
             calls.append(args)
-            if len(calls) == 2:
-                raise KeyboardInterrupt("stopped between two files")
-            return real(*args)
-        with unittest.mock.patch.object(experiment.os, "replace", stop_second):
-            with self.assertRaises(KeyboardInterrupt):
-                self.sheet()
-        code, printed = self.sheet()
+            if len(calls) == 3:
+                raise KeyboardInterrupt("stopped inside the filing")
+            return real(*args, **kwargs)
+        with unittest.mock.patch.object(review, "add_note", stop_third), self.assertRaises(KeyboardInterrupt):
+            self.sheet(db=db)
+        self.assertIsNone(filed_batch(db))
+        self.assertFalse((self.out / "labels" / "sheet-C1.json").exists())
+        code, printed = self.sheet(db=db)
         self.assertEqual(code, 0, printed)
-        labels = self.out / "labels"
-        names = sorted(p.name for p in labels.iterdir())
-        self.assertEqual(names, ["key-C1.csv", "sheet-C1.csv", "sheet-C1.json", "sheet-C1.md"])
-        written = {p.name: p.read_bytes() for p in labels.iterdir()}
-        self.assertEqual(self.sheet(), (code, printed))           # the same bytes again
-        filled = (labels / "sheet-C1.csv").read_text().replace(",,,\n", ",skip,3,\n", 1)
-        (labels / "sheet-C1.csv").write_text(filled)
-        self.assertEqual(self.sheet()[0], 2)
-        self.assertEqual((labels / "sheet-C1.csv").read_text(), filled)
-        self.assertEqual((labels / "key-C1.csv").read_bytes(), written["key-C1.csv"])
+        self.assertEqual(filed_batch(db)["open"], json.loads(printed)["rows"])
+
+    def test_a_stop_between_the_batch_and_its_summary_finishes_on_the_rerun(self):
+        db = self.six()
+        with unittest.mock.patch.object(experiment.os, "replace", side_effect=KeyboardInterrupt("stopped")), \
+                self.assertRaises(KeyboardInterrupt):
+            self.sheet(db=db)
+        item = filed_batch(db)["item"]["id"]
+        self.assertFalse((self.out / "labels" / "sheet-C1.json").exists())
+        code, printed = self.sheet(db=db)
+        self.assertEqual(code, 0, printed)
+        written = json.loads((self.out / "labels" / "sheet-C1.json").read_text())
+        self.assertEqual(written["batch"], {"item": item, "ref": "review:entry-2-hand-labels:C1"})
+        self.assertEqual(self.sheet(db=db), (code, printed))       # the same batch, nothing new
+
+    def test_an_open_row_writes_nothing_and_prints_the_open_count(self):
+        db = self.six()
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        label_rows(db, filed_batch(db)["item"]["id"], leave=1)
+        code, printed = self.sheet(db=db)
+        self.assertEqual((code, json.loads(printed)["open"]), (0, 1))
+        self.assertNotIn("hand", json.loads(printed))
+        self.assertIsNone(filed_batch(db)["closed"])
+        self.assertFalse((self.out / "labels" / "hand-C1.jsonl").exists())
+
+    def test_a_stop_after_the_close_refuses_labels_and_the_rerun_writes_the_hand_file_once(self):
+        db = self.six()
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        item = filed_batch(db)["item"]["id"]
+        label_rows(db, item)
+        with unittest.mock.patch.object(experiment.os, "replace", side_effect=KeyboardInterrupt("stopped")), \
+                self.assertRaises(KeyboardInterrupt):
+            self.sheet(db=db)
+        found = filed_batch(db)
+        self.assertIsNotNone(found["closed"])
+        review, workflow = experiment.sd_db_module("review"), experiment.sd_db_module("workflow")
+        with contextlib.closing(connect(db)) as connection:
+            revision = workflow.item_state(connection, item)["revision"]
+            with self.assertRaises(review.ReviewError):
+                review.withdraw(connection, item, found["questions"][0]["ruling"],
+                                expected_revision=revision, who="tester")
+        hand = self.out / "labels" / "hand-C1.jsonl"
+        self.assertFalse(hand.exists())
+        code, printed = self.sheet(db=db)
+        self.assertEqual(code, 0, printed)
+        lines = [json.loads(line) for line in hand.read_text().splitlines()]
+        self.assertEqual([(line["row"], line["label"], line["comments"]) for line in lines],
+                         [(n, "cheap", []) for n in range(1, len(found["questions"]) + 1)])
+        self.assertEqual(set(lines[0]), {"row", "label", "ruling", "ruled_at", "comments"})
+        self.assertEqual(json.loads(printed)["hand"]["sha256"], hashlib.sha256(hand.read_bytes()).hexdigest())
+        # No export time: a later run writes the same bytes, and other bytes refuse.
+        first = hand.read_bytes()
+        hand.unlink()
+        self.assertEqual(self.sheet(db=db), (code, printed))
+        self.assertEqual(hand.read_bytes(), first)
+        hand.write_bytes(first.replace(b'"cheap"', b'"deep"', 1))
+        self.assertEqual(self.sheet(db=db)[0], 2)
+        self.assertNotEqual(hand.read_bytes(), first)
+
+    def test_a_hand_file_with_other_bytes_refuses_before_the_close(self):
+        # Codex, final review: the close came first, so the refusal left the batch closed and Undo gone.
+        db = self.six()
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        label_rows(db, filed_batch(db)["item"]["id"])
+        (self.out / "labels" / "hand-C1.jsonl").write_text("{}\n")
+        self.assertEqual(self.sheet(db=db)[0], 2)
+        self.assertIsNone(filed_batch(db)["closed"])
+        self.assertEqual((self.out / "labels" / "hand-C1.jsonl").read_text(), "{}\n")
+
+    def test_a_batch_closed_with_an_unlabelled_row_refuses(self):
+        db = self.six()
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        item = filed_batch(db)["item"]["id"]
+        label_rows(db, item, leave=1)
+        workflow = experiment.sd_db_module("workflow")
+        with contextlib.closing(connect(db)) as connection:
+            workflow.change_status(connection, item, "done", who="tester", reason="closed by hand")
+        self.assertEqual(self.sheet(db=db)[0], 2)
+        self.assertFalse((self.out / "labels" / "hand-C1.jsonl").exists())
+
+    def test_an_old_sheet_or_key_file_refuses_and_files_nothing(self):
+        for name in ("sheet-C1.csv", "key-C1.csv"):
+            with self.subTest(name):
+                db = self.six()
+                (self.out / "labels").mkdir(exist_ok=True)
+                (self.out / "labels" / name).write_text("row\n1\n")
+                self.assertEqual(self.sheet(db=db)[0], 2)
+                self.assertIsNone(filed_batch(db))
+                (self.out / "labels" / name).unlink()
 
     def test_each_population_draws_from_its_own_stream(self):
         # Review round 2, class pass: one seed string for every population

@@ -80,9 +80,11 @@
     }
     const b = B.get(q.item) || {};
     const blind = b.mode === 'blind' || b.mode === 'sealed';
+    // A Kev file's proposal is an evidence line (sd:4789); its digit is the accept. A blind batch shows none.
+    const proposed = blind ? null : ((q.evidence || []).find(e => e.startsWith('Proposed label: ')) || '').slice(16) || null;
     put(d, html`<p class="kind"><span class="g-caution" aria-hidden="true">${G.caution}</span> Question · note #${q.note} · <a href="${window.shell.itemHref(q.item)}">sd:${q.item}</a></p>
       <h2 class="ask">${q.text}</h2>
-      <div class="options" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet opt" data-i="${i}"><kbd>${i + 1}</kbd><span>${o}</span></button>`)}</div>
+      <div class="options" role="group" aria-label="${`Label note ${q.note}`}">${q.options.map((o, i) => html`<button type="button" class="btn quiet opt" data-i="${i}"><kbd>${i + 1}</kbd><span>${o}</span>${o === proposed ? html`<span class="tag">proposed</span>` : ''}</button>`)}</div>
       ${blind ? html`<p class="why">A ${b.mode} batch: its subject and evidence stay hidden until it is exported.</p>` : ''}
       <dl>${q.subject ? html`<dt>Subject</dt><dd>${q.subject}</dd>` : ''}${(q.evidence || []).map(e => html`<dt>Evidence</dt><dd>${e}</dd>`)}
         <dt>Batch</dt><dd>${b.title || `sd:${q.item}`}</dd><dt>Queue</dt><dd>${b.queue || '—'} · ${b.mode || '—'}</dd>
