@@ -168,6 +168,57 @@ def capture_followup(connection, *, followup_of=None, who, **values):
         return workflow.item_state(connection, item)
 
 
+def _acknowledge_report(connection, item, *, expected_revision):
+    """The Reports page's Acknowledge: the ingest's own followup goes with the report, a person's refuses (sd:3533, sd:4755).
+
+    The pack's `resolve_followups=True` resolves every open followup since sd:4722, and its `reopen` opens none
+    again, so a one-click call would close a person's work for good. The ingest's followup is the one whose
+    `session` is `INGEST_SESSION` and whose text `_ingest_followup_for` derives from the report's own fields,
+    the rule the pack's `resolve_ingest_followups` used before sd:4722. One transaction holds the check and the
+    acknowledge, so a followup written between them cannot slip through.
+    """
+    from sd_db import reporting
+
+    with workflow.transaction(connection):
+        state = workflow._checked_state(connection, item, expected_revision)
+        ingests = reporting._ingest_followup_for(state["item"]["fields"])
+        blocking = [note["id"] for note in state["notes"] if note["kind"] == "followup" and not note["resolved_at"]
+                    and (note["session"] != reporting.INGEST_SESSION or note["body"] != ingests)]
+        if blocking:
+            raise workflow.WorkflowError("resolve the report's followups before acknowledging it: "
+                                         + "; ".join(f"resolve followup {note}" for note in blocking))
+        return reporting.acknowledge(connection, item, expected_revision=expected_revision, who="dashboard",
+                                     resolve_followups=True)
+
+
+#: The reason `reporting.acknowledge` writes on its `<status> -> done by <who>` note: `resolved followup(s) <ids>`
+#: since sd:4722, `resolved the ingest's followup(s) <ids>` before it, so a report an older pack acknowledged undoes too.
+_ACKNOWLEDGED_FOLLOWUPS = re.compile(r"\w+ -> done by .*?: resolved (?:the ingest's )?followups? ([0-9]+(?:, [0-9]+)*)")
+
+
+def _reopen_report(connection, item, *, expected_revision):
+    """The Reports page's Undo: the report's status, then the followups its acknowledgement resolved (sd:2395, sd:4755).
+
+    The pack's `reopen` restores the status and leaves those followups resolved. The newest `<status> -> done`
+    note, the one `reopen` reads its target from, names them; only this report's resolved followups reopen.
+    """
+    from sd_db import reporting, writes
+
+    with workflow.transaction(connection):
+        was_done = workflow.item_state(connection, item)["item"]["status"] == "done"
+        state = reporting.reopen(connection, item, expected_revision=expected_revision, who="dashboard")
+        if not was_done:
+            return state
+        acknowledged = next((note["body"] for note in reversed(state["notes"])
+                             if note["kind"] == "status_change" and re.match(r"\w+ -> done by ", note["body"])), "")
+        named = _ACKNOWLEDGED_FOLLOWUPS.fullmatch(acknowledged)
+        resolved = {int(note) for note in named[1].split(", ")} if named else set()
+        for note in state["notes"]:
+            if note["id"] in resolved and note["kind"] == "followup" and note["resolved_at"]:
+                writes.reopen_note(connection, note["id"])
+        return workflow.item_state(connection, item)
+
+
 def _base_kind(connection, item):
     """The base kind of a vault base row (sd:3977), or None: the item routes send such a row to `records.edit_row`."""
     from sd_db.sources.vault import SOURCE
@@ -288,21 +339,15 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         return lambda connection: skills_catalog.apply_proposals(connection, int(match[1]), values["notes"], expected_revision=values["revision"], who="dashboard")
     match = re.fullmatch(r"/api/reports/([1-9][0-9]*)/acknowledge", path)
     if match:
-        from sd_db import reporting
-
         if set(values) != {"revision"}:
             raise ValueError("Provide the current report revision.")
-        # The ingest's own followup goes with the report (sd:3533); one a person wrote still refuses.
-        return lambda connection: reporting.acknowledge(connection, int(match[1]), expected_revision=values["revision"], who="dashboard",
-                                                        resolve_ingest_followups=True)
+        return lambda connection: _acknowledge_report(connection, int(match[1]), expected_revision=values["revision"])
     # The Reports page's Undo (sd:2395): it posts the revision its acknowledge answered, so a report changed since is stale.
     match = re.fullmatch(r"/api/reports/([1-9][0-9]*)/reopen", path)
     if match:
-        from sd_db import reporting
-
         if set(values) != {"revision"}:
             raise ValueError("Provide the revision the acknowledgement answered.")
-        return lambda connection: reporting.reopen(connection, int(match[1]), expected_revision=values["revision"], who="dashboard")
+        return lambda connection: _reopen_report(connection, int(match[1]), expected_revision=values["revision"])
     if path == "/api/reports/acknowledge-clean":
         from sd_db import reporting
 

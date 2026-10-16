@@ -502,12 +502,7 @@ body[data-only-new] [data-changed]:not([data-new]) { display: none; }
 
 /* ---------- Annunciator and ledger: one of each on every page that draws one (sd:2588, sd:2680) ---------- */
 /* The lamps are the foundation's <annunciator-strip> (annunciator-strip.css, a copy pinned by tests/test_v2_foundation.py,
- * sd:3588); markup.cells draws them. One override stays here: a lit lamp keeps its state colour under the pointer
- * (sd:2530, operator ruling 2026-10-13). The strip dims it 4%; the shell cancels that and draws a ring in the lamp's own ink
- * token. A pressed lamp keeps its accent ring; a lamp that is not a control does not answer the pointer. */
-annunciator-strip .annunciator :is(a, button).cell:is([data-state="caution"], [data-state="warning"], [data-state="unknown"]):hover { filter: none; }
-:is(a, button).cell[data-state="caution"]:not([aria-pressed="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-caution-lamp-ink); }
-:is(a, button).cell[data-state="warning"]:not([aria-pressed="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-warning-ink); }
+ * sd:3588); markup.cells draws them, hover ring included (sd:3743). */
 
 /* The ledger: the browser's auto table layout, so a title wraps and no column clips (foundation principles: truncation
  * hides the fact). A page keeps its own cell styles and its narrow-screen card grid. */

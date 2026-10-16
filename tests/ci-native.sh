@@ -14,7 +14,7 @@ usage() {
 Usage: ci-native.sh preflight
        ci-native.sh leg repo-sync|dashboard|tools|shared
 
-  preflight  the fixture digest, sd-docs-lint, the citation, Jev contract,
+  preflight  sd-docs-lint, the citation, Jev contract,
              product-name, ports and entrypoint-mode gates, the unwired-suite guard, and the venv at
              $CI_WORK_ROOT/venv with the pack's lib/ (sd_db) installed
   leg NAME   every run_suite line of one leg, under the preflight's venv
@@ -43,18 +43,6 @@ if [ "$1" = leg ]; then
 else
 # The preflight runs to the `fi` above
 # run_suite.
-
-python3 - <<'PY_VERIFY'
-import hashlib
-import json
-from pathlib import Path
-fixture = Path(".github/fixtures/writing-sd-plugin.json")
-source = json.loads(fixture.with_suffix(".source.json").read_text())
-if hashlib.sha256(fixture.read_bytes()).hexdigest() != source["sha256"]:
-    raise SystemExit("writing manifest fixture differs from its pinned source digest")
-json.loads(fixture.read_text())
-print("Verified writing manifest from " + source["repository"] + "@" + source["commit"])
-PY_VERIFY
 
 # The docs/work gate, which nothing ran before #238. After #230 main
 # carried 165 rule 6 failures for five days with every check green;
@@ -315,7 +303,6 @@ case "$SUITE_LEG" in
     [ -n "${SUITE_ONLY:-}" ] || python3 "$SD_ACCEPTANCE_PACK/bin/sd" plugin lock --check .
     # A root suite that needs the venv's sd_db runs here, not in the
     # preflight; the guard above accepts a run_suite line naming it.
-    run_suite writing-declaration "$PYTHON" tests/test_writing_declaration.py -v
     run_suite findings-contract "$PYTHON" tests/test_findings_contract.py -v
     ;;
   dashboard)

@@ -417,6 +417,69 @@ class ThePage(BrowserSession):
         self.assertIn("done -> planning by dashboard: reopened",
                       [note["body"] for note in workflow.item_state(self.connection, item)["notes"]])
 
+    def test_undo_reopens_the_followups_the_acknowledgement_resolved(self):
+        """sd:4755: the pack's `reopen` restores the status only, so Undo also opens again the followups the
+        acknowledgement's status note names, and no other: not one a person closed first, not another report's."""
+        from sd_db.writes import add_note, resolve_note
+
+        def failure(run):
+            state = reporting.ingest(self.connection, job=f"fixture-{run}", run_id=run, started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z",
+                                     exit_code=1, text="Failed", source_path=f"/fixture/{run}", attention=True, host=run)
+            return state["item"]["id"]
+
+        def followups(item):
+            return {note["id"]: note["resolved_at"] is None for note in workflow.item_state(self.connection, item)["notes"] if note["kind"] == "followup"}
+
+        item, other = failure("one"), failure("two")
+        (ingest,) = followups(item)
+        closed = add_note(self.connection, item, "followup", "done already", session="operator")
+        resolve_note(self.connection, closed)
+        listed = [row["id"] for row in reporting.reports(self.connection)]
+        status, _, body = self.post(f"/api/reports/{item}/acknowledge", {"revision": workflow.item_state(self.connection, item)["revision"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(followups(item), {ingest: False, closed: False})
+        status, _, body = self.post(f"/api/reports/{item}/reopen", {"revision": body["revision"]})
+        self.assertEqual((status, body["item"]["status"]), (200, "planning"))
+        self.assertEqual(followups(item), {ingest: True, closed: False})
+        # `updated_at` keeps the Undo's stamp, not the old one; the list orders by `created_at`, so the report keeps its place.
+        self.assertEqual([row["id"] for row in reporting.reports(self.connection)], listed)
+        # Another subject: a status note that names another report's followup reopens nothing there.
+        status, _, body = self.post(f"/api/reports/{other}/acknowledge", {"revision": workflow.item_state(self.connection, other)["revision"]})
+        (theirs,) = followups(other)
+        reporting.transition(self.connection, item, "done", who="fixture", reason=f"resolved followup {theirs}")
+        self.assertEqual(self.post(f"/api/reports/{item}/reopen", {"revision": workflow.item_state(self.connection, item)["revision"]})[0], 200)
+        self.assertEqual(followups(other), {theirs: False})
+
+    def test_an_undo_that_fails_between_its_steps_moves_nothing(self):
+        """Steps: the status moves first and the followups after, in one transaction, so a failed reopen of a
+        followup leaves the report done with its followup resolved, and the same Undo then finishes."""
+        from sd_db import writes
+
+        state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z",
+                                 exit_code=1, text="Failed", source_path="/fixture/one", attention=True)
+        item = state["item"]["id"]
+        status, _, body = self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})
+        self.assertEqual(status, 200)
+        before = self.snapshot()
+        with mock.patch.object(writes, "reopen_note", side_effect=OSError("disk full")):
+            self.assertGreaterEqual(self.post(f"/api/reports/{item}/reopen", {"revision": body["revision"]})[0], 500)
+        self.assertEqual(self.snapshot(), before)
+        status, _, reopened = self.post(f"/api/reports/{item}/reopen", {"revision": body["revision"]})
+        self.assertEqual((status, reopened["item"]["status"]), (200, "planning"))
+        self.assertEqual([note["resolved_at"] for note in reopened["notes"] if note["kind"] == "followup"], [None])
+
+    def test_undo_reopens_a_followup_the_older_wording_names(self):
+        """Older state: a report the dashboard acknowledged before sd:4722 names `resolved the ingest's followup <id>`."""
+        state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z",
+                                 exit_code=1, text="Failed", source_path="/fixture/one", attention=True)
+        item = state["item"]["id"]
+        (ingest,) = [note["id"] for note in state["notes"] if note["kind"] == "followup"]
+        reporting.resolve_note(self.connection, ingest)
+        reporting.transition(self.connection, item, "done", who="dashboard", reason=f"resolved the ingest's followup {ingest}")
+        status, _, body = self.post(f"/api/reports/{item}/reopen", {"revision": workflow.item_state(self.connection, item)["revision"]})
+        self.assertEqual((status, body["item"]["status"]), (200, "planning"))
+        self.assertEqual([note["resolved_at"] for note in body["notes"] if note["id"] == ingest], [None])
+
     def report(self):
         from sd_db import create_item
 

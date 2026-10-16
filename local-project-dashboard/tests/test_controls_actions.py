@@ -276,14 +276,20 @@ class WorkflowControls(BrowserSession):
         self.assertNotIn("$0.00", page)
 
     def test_report_followups_gate_acknowledgement(self):
-        """A followup a person wrote still refuses the acknowledge; the
-        ingest's own followup does not (sd:3533)."""
+        """A followup a person wrote still refuses the dashboard's acknowledge, named in the error, and the
+        ingest's own followup stays open with it (sd:3533, sd:4755). The pack's `resolve_followups` would close
+        both, so the one-click route checks first and never resolves a person's work."""
         state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z", exit_code=1, text="Failed", source_path="/fixture/log", attention=True)
         item = state["item"]["id"]
-        add_note(self.connection, item, "followup", "look at this first", session="operator")
+        person = add_note(self.connection, item, "followup", "look at this first", session="operator")
+        # Another subject: `session` alone is not the ingest's mark, so a note that only claims "cron" refuses too.
+        forged = add_note(self.connection, item, "followup", "claims the ingest's session", session="cron")
         state = workflow.item_state(self.connection, item)
         before = self.snapshot()
-        self.assertEqual(self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})[0], 400)
+        status, _, body = self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})
+        self.assertEqual(status, 400)
+        self.assertIn(f"resolve followup {person}", json.dumps(body))
+        self.assertIn(f"resolve followup {forged}", json.dumps(body))
         self.assertEqual(before, self.snapshot())
         self.assertIn("Report source", self.request(f"/item/{item}")[2])
 
