@@ -17,6 +17,12 @@ through GitHub's merge button, only on a Dependabot PR, and only after the four
 conditions below all hold. If a bump needs a code change to
 land, that is a finding to report, not work to do.
 
+On a local-gate repository (below) the merge goes through `sd-ship`, which
+presses the same button on the exact reviewed head. There the job also keeps
+one worktree outside `~/repos` while it lands a PR, pushes one merge of the
+default branch onto the PR's branch (`--catch-up`: never a rebase, never a
+force push), and posts one hold comment per PR head that sd-ship holds.
+
 ## The fleet, enumerated
 
     find "$HOME/repos" -mindepth 2 -maxdepth 3 -name .git
@@ -186,9 +192,160 @@ All four must hold. Any one failing means report, not merge.
    `gh pr view <N> --json mergeStateStatus`. Anything else — `BLOCKED`,
    `DIRTY`, `BEHIND`, `UNKNOWN` — is reported with the status named.
 
-Merge with:
+**Where the merge happens depends on the repository's CI.** Run
+`$SD_PACK_ROOT/bin/sd-db repo list` once, before the fan-out (default pack
+root `~/repos/platypeeps/sd-ai-command-pack`). It prints one row per checkout:
+path, remote, Dependabot, CI, and two more fields. A repository with a row
+whose CI field reads `local` is a **local-gate repository**. Its required
+check is `sd/local-gate`, which only `sd-ship` posts, so a Dependabot head
+there carries no check until sd-ship runs the gate. Land its PRs as
+"Landing on a local-gate repository" says, after conditions 1 and 2.
+Conditions 3 and 4 are met by construction on that path: `prepare` runs the
+repository gate on the exact head, and `merge` runs it again, posts
+`sd/local-gate`, and refuses unless GitHub confirms every required merge
+rule on the head it names. Do not read checks or `mergeStateStatus` there
+first: they say nothing until sd-ship runs.
+
+Every other repository merges with:
 
     gh pr merge <N> --repo <slug> --squash --delete-branch
+
+That covers no row, a row reading `github`, and a list that cannot be read.
+It is the fail-closed direction, the one `sd-ship` takes for the same
+misread: the GitHub path asks for checks a local-gate repository never
+produces, so a misread holds a PR and never waives a check. Name an
+unreadable list in the log, `ci list unknown: <reason>`.
+
+## Landing on a local-gate repository
+
+One PR at a time per repository, in ascending PR number, as everywhere.
+`<checkout>` is the checkout whose row reads `local`. `<dir>` is
+`$HOME/worktrees/dependabot-daily/<owner>-<name>-<N>`: outside `~/repos`,
+because repo-sync reads every folder there, and in a folder only this job
+writes, so whatever is in it is this job's. `<branch>` is the PR's head
+branch. `<head>` is the head you classified: `headRefOid`, read with the body
+(`gh pr view <N> --repo <slug> --json body,headRefOid`).
+
+Bound every sd-ship call and every remote git call with `st_step` from
+`lib/bounded.sh`, beside this folder (`. <system>/lib/bounded.sh; st_step
+<seconds> <command>`), and see each step exit before the next starts. A step
+you did not see exit has an unknown outcome, never a pass. A bound longer
+than your shell tool's own limit runs in the background, and you wait for
+its exit.
+
+The job log, `<system>/local-cron-jobs/logs/dependabot-daily.log`, carries
+two lines per record, appended from the shell (`echo ... >> <log>`), because
+only the lead agent's text reaches the log: `RECORD <slug> #<N> <ID>` the
+moment the record exists, and `CLOSED <slug> <ID>` when it closes.
+**Closing a record** always means `st_step 120 sd-ship -C <checkout> review
+--no-item --review-id <ID> --close-record "<reason>" --json`, then the
+`CLOSED` line. A record already closed stays closed, and gets its line all
+the same.
+
+**Finish what a dead run left, before the fan-out.** The lead agent does
+this once, serially, over every local-gate repository, whether or not it
+still has open PRs:
+
+- each RECORD line with no later CLOSED line for its ID, whose PR is not
+  open (`gh pr view <N> --repo <slug> --json state` reads `MERGED` or
+  `CLOSED`): on `MERGED`, run `st_step 120 sd-ship -C <checkout> reconcile
+  --no-item --review-id <ID> --json`; then close the record, remove `<dir>`
+  as in step 2, and report `LEFTOVER #<N> <slug>, record <ID> closed`;
+- each folder in `$HOME/worktrees/dependabot-daily/` whose PR is not open:
+  remove it as in step 2.
+
+A state that cannot be read leaves the record for the next run. An open PR's
+record needs nothing here: step 3 resumes it.
+
+1. **Skip a PR held at its current head.** If a comment on the PR by this
+   account (`gh api user --jq .login`) opens `sd-ship hold #<N> at <head>,
+   record <ID>`, and `<head>` is the PR's current head SHA, close the record
+   it names, remove `<dir>` as in step 2, report `SKIP held at <head12>,
+   sd-ship`, and touch nothing else. A new head -- Dependabot's rebase, or a
+   recreate -- is new work and goes on. Comments that cannot be read are
+   unknown, not "no hold": report `SKIP comments unreadable: <error>` and
+   touch nothing.
+2. **Make the worktree.** `st_step 300 git -C <checkout> fetch origin
+   <branch>`. `origin/<branch>` must still be `<head>`: a replacement after
+   you read it is new work that nobody classified, so report `SKIP head
+   moved since it was read` and leave it for the next run. Then remove what
+   an earlier run left. When `<dir>` is a worktree, `git -C <checkout>
+   worktree remove --force <dir>`, then `git -C <checkout> worktree prune`,
+   and delete the branch it had checked out with `git -C <checkout> branch
+   -D <branch>`: both were this job's. A local `<branch>` with no worktree
+   at `<dir>` is deleted only when `git -C <checkout> rev-list
+   origin/<branch>..<branch>` prints nothing. Commits `origin` lacks, or a
+   branch checked out elsewhere (`branch -D` refuses it), are somebody's
+   work: report `SKIP <branch> has local work` and leave it. Then:
+
+       git -C <checkout> worktree add --track -b <branch> <dir> origin/<branch>
+
+   Any other failure here is reported `SKIP worktree: <error>`, and the PR
+   is left alone.
+3. **Allocate the record.** `st_step 120 sd-ship -C <dir> review --no-item
+   --create-record --assert-new-work --json`, then the RECORD line with its
+   `review_id`, at once, before anything can die. A refusal naming an
+   existing no-item record is an earlier run's record of this PR: write its
+   RECORD line, use that ID, and go on, never a fresh one. Any other refusal
+   means sd-ship cannot run here: remove `<dir>`, report `SKIP sd-ship
+   unavailable: <error>`, and stop this repository for the run.
+4. **Prepare.** `st_step 1800 sd-ship -C <dir> prepare --no-item --review-id
+   <ID> --catch-up --json`. It merges `origin/<base>` into the branch when
+   the branch is behind, then reviews, runs the gate, pushes, and binds the
+   PR. Only `"phase": "ready_to_send"` goes on, with its `reviewed_head`, and
+   only when its `pull_request.number` is `<N>`. Any other number is a pull
+   request prepare opened because `<N>` closed meanwhile: close it with `gh
+   pr close <M> --repo <slug> --delete-branch`, close the record, remove
+   `<dir>`, and report `SKIP closed during the run`. `"phase": "merged"`
+   from prepare is an earlier run's merge it reconciled: go to step 6.
+   Anything else is a hold.
+5. **Merge.** `st_step 1800 sd-ship -C <dir> merge --no-item --review-id
+   <ID> --manual --expected-head <reviewed_head> --json`. Only `"phase":
+   "merged"` goes on; anything else is a hold, except an outcome you did not
+   see. On exit 124, or output that is not JSON, read `gh pr view <N> --repo
+   <slug> --json state`: `MERGED` goes on; anything else is reported `SKIP
+   merge outcome unknown, record <ID>`, the record stays as it is, and the
+   next run resumes it through step 3.
+6. **Close out from the main checkout.** `st_step 120 sd-ship -C <checkout>
+   reconcile --no-item --review-id <ID> --json`, then close the record with
+   the reason `Dependabot #<N> merged`. Reconcile may already have removed
+   `<dir>` and its branch; remove whatever remains, as in step 2. Report
+   `MERGED (sd-ship)` with the review ID. The merge stands when a close-out
+   step fails: report its error with the review ID, and the next run's
+   recovery finishes it from the RECORD line.
+
+**A hold.** Read the blocking findings first: `st_step 120 sd-ship -C <dir>
+adjudicate --no-item --review-id <ID> --expected-head <worktree HEAD>
+--json`, with `git -C <dir> rev-parse HEAD` as the head. Each finding's
+`raw_finding` carries `severity`, `path`, `line` and `summary`. No findings,
+or a refusal, means the step's own `error` is the reason. The held head is
+the head this run worked on, never one read afterwards: `<head>` for a hold
+at steps 3 and 4, `<reviewed_head>` for one at step 5, which prepare pushed.
+Then, in this order:
+
+1. post one comment on the PR. Its first line is `sd-ship hold #<N> at
+   <held head>, record <ID>: <reason, first line>`. Then one line per
+   blocking finding, `- <severity> <path>:<line> <summary>`, and a last
+   line: `A new head gets a fresh review; ask Dependabot to recreate this PR
+   for one.` Never write an `@dependabot` mention in it: Dependabot reads
+   one as a command. Write `~` for the home directory in anything you post;
+2. close the record with the reason `held at <held head, 12 characters>:
+   <reason>`, so a new Dependabot head gets a record of its own. A run that
+   dies before this step leaves the comment, and step 1 of the next run
+   closes the record it names;
+3. remove `<dir>` and the branch as in step 2;
+4. report `SKIP held, sd-ship: <reason>`, a prose hold in the count.
+
+A conflict while merging `origin/<base>` is the case "After a merge" names:
+request the rebase there as well.
+
+**Not a hold: the ship lock.** A refusal at any step reading `another ship
+operation owns this repository` means the merge lane or another ship holds the
+repository; it says nothing about the PR. Leave the record as it is, remove
+`<dir>`, report `SKIP repository busy, record <ID>`, and stop this
+repository for the run. The next run resumes the record through step 3.
+Never pass `--wait`, and never retry in the same run: both jump the lane's
+order.
 
 ## Classifying a grouped bump
 
@@ -209,6 +366,8 @@ Later PRs in the same repository may go stale or conflicted. Comment
 `@dependabot rebase` on them and report that you did. **Do not resolve a
 dependency conflict by hand** — a hand-edited lockfile in an unattended job is
 how a broken dependency tree reaches main at 06:00 with nobody watching.
+On a local-gate repository a PR that is only behind needs no rebase:
+`--catch-up` merges the base into it. Ask only for a conflicted one.
 
 ## A hold with a named blocker is a record, not a paragraph
 
@@ -326,7 +485,9 @@ The log is the whole product — nobody is watching this run. Print, in order:
   with the specific reason ("major bump", "2 of 6 checks failing",
   "no CI configured", "mergeStateStatus=DIRTY"); a hold that carries an
   `sd-hold:` block says so -- `held, watched` for a live record, `lifted
-  <date>, awaiting owner` for one the watcher has already lifted;
+  <date>, awaiting owner` for one the watcher has already lifted; on a
+  local-gate repository, `MERGED (sd-ship)` or the `SKIP` reason
+  "Landing on a local-gate repository" names, with the review ID;
 - a final total: PRs seen, merged, held back -- **prose holds and record
   holds counted separately**, "5 held (2 watched, 3 prose)", so a reader
   can see how many holds the watcher is not watching -- repositories
