@@ -19,9 +19,11 @@ file holds the steps built so far:
   the same redacted payload, under the stopping rule: registration guard,
   frozen heuristic, ledger isolation, public-pool scope, one retry, spend cap,
   Kev outage.
-* `labels sheet --population C1` (step 8) draws the blinded hand-label sheet,
-  its Markdown copy and its key from one population's sealed answer files;
-  it reads no finding, and refuses C2 until step 15 seals it.
+* `labels sheet --population C1` (step 8) draws the blinded hand-label sheet
+  from one population's sealed answer files and files it as one blind Review
+  batch (sd:4789); once every row has a label, a rerun closes the batch and
+  writes `labels/hand-C1.jsonl` once. It writes no key: the analysis draws
+  it again. It reads no finding, and refuses C2 until step 15 seals it.
 * `scanner generate|run [--form caller|draft]` (steps 10 and 10b) writes the
   scanner corpus once, from no environment variable and no file, then asks
   the local Kev alone about each hit, with no hosted key in its process, in
@@ -29,9 +31,10 @@ file holds the steps built so far:
 * `injection build|run --arm A` (step 11) writes the injection items once, from
   public E heads and findings, then asks one model arm about each.
 
-**It reads the workflow database read-only.** Every query opens it through
-`sd_db`'s `connect(write=False)`, which is `mode=ro` and `query_only`;
-nothing here writes a checkpoint or a live ledger row.
+**It reads the workflow database read-only, but for the sheet.** Every query
+opens it through `sd_db`'s `connect(write=False)`, which is `mode=ro` and
+`query_only`. `labels sheet` alone writes it, through `sd_db.review` (the
+batch, its close); nothing here writes a checkpoint or a live ledger row.
 
 **It never writes the live ledger.** A Jev call runs `jev.sh` with
 `JEV_METER_DB` pointed at the experiment database, both comparison switches
@@ -157,13 +160,17 @@ def open_ro(path: str | Path):
     # here: the caller's path is already the one its identity check judged,
     # and resolving it again strips nothing. The pack's `lib/` is the
     # fallback, as in `jev_meter`'s tests.
+    return sd_db_module("database").connect(Path(path), write=False)
+
+
+def sd_db_module(name: str):
+    """`sd_db.<name>`, with the pack's `lib/` as the fallback, as in `jev_meter`'s tests."""
     try:
-        from sd_db.database import connect
+        return importlib.import_module(f"sd_db.{name}")
     except ImportError:
         sys.path.insert(0, str(Path(os.environ.get("SD_PACK_ROOT")
                                      or Path.home() / "repos/platypeeps/sd-ai-command-pack") / "lib"))
-        from sd_db.database import connect
-    return connect(Path(path), write=False)
+        return importlib.import_module(f"sd_db.{name}")
 
 
 def checkpoints(db, since: str, until: str):
@@ -1902,8 +1909,10 @@ SKIP_CAP = 300
 SKIP_ARMS = ("jev", "kev")
 #: The paths a sheet row shows before `+n more` (design.md, "Sheet").
 SHEET_PATHS = 10
-SHEET_COLUMNS = ("row", "repo", "commit", "paths", "path_count", "lines_moved",
-                 "routing_said", "candidates", "label", "sure", "note")
+#: The Review queue the sheet files under, one blind batch per population
+#: (sd:4789); `sheet_text` holds the fields the CSV sheet held.
+SHEET_QUEUE = "jev-entry-2"
+SHEET_WHO = "jev-experiment"
 KEY_COLUMNS = ("row", "repo", "commit", "population", "hosted", *ARMS,
                "jev_raw", "kev_raw", "haiku_raw",
                "jev_confidence", "kev_confidence", "haiku_confidence",
@@ -2026,7 +2035,7 @@ def label_kit(rows: list[dict], answers: dict, heuristic, seed: int = SEED):
                       "paths": "; ".join(shown) + (f" +{more} more" if more else ""),
                       "path_count": state["path_count"], "lines_moved": state["lines_moved"],
                       "routing_said": state["deterministic_routing_said"],
-                      "candidates": ", ".join(candidates), "label": "", "sure": "", "note": ""})
+                      "candidates": ", ".join(candidates)})
         keys.append({
             "row": number, "repo": row["alias"], "commit": row["head"],
             "population": row["population"], "hosted": int(lines["jev"] is not None),
@@ -2080,20 +2089,49 @@ def csv_bytes(columns, rows) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def sheet_markdown(name: str, sheet: list[dict]) -> bytes:
-    """The sheet's reading copy: one section per row, in the sheet's order."""
-    out = [f"# Hand-label sheet {name}", "",
-           f"Fill `label` (skip, cheap, standard or deep) and `sure` (1 guess, 2 fairly sure,"
-           f" 3 sure) in `sheet-{name}.csv`; this copy is for reading.",
-           "Read each commit's diff in the local clone. The candidates are the tiers given"
-           " for it, in no order.", ""]
-    for row in sheet:
-        out += [f"## Row {row['row']}", "",
-                f"- Repository: {row['repo']}", f"- Commit: `{row['commit']}`",
-                f"- Paths ({row['path_count']}, {row['lines_moved']} lines moved): {row['paths']}",
-                f"- Routing said: {row['routing_said']}",
-                f"- Candidates: {row['candidates']}", ""]
-    return "\n".join(out).encode("utf-8")
+def sheet_text(row: dict) -> str:
+    """One sheet row as a Review question: what the CSV sheet showed, and no arm name."""
+    return "\n".join([
+        f"Row {row['row']}: which review tier fits {row['repo']} {row['commit'][:12]}?",
+        "Read the commit's diff in the local clone. The candidates are the tiers given for it, in no order.",
+        f"Commit: {row['commit']}",
+        f"Paths ({row['path_count']}, {row['lines_moved']} lines moved): {row['paths']}",
+        f"Routing said: {row['routing_said']}",
+        f"Candidates: {row['candidates']}"])
+
+
+def write_once(target: Path, data: bytes) -> None:
+    """`data` at `target` through `.part` and a rename, once: the same bytes
+    again write nothing, and other bytes refuse."""
+    if target.exists():
+        if target.read_bytes() != data:
+            raise Refused(f"labels/{target.name} exists with other contents; it is written once")
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    part.write_bytes(data)
+    os.replace(part, target)
+
+
+def drawn_sheet(folder: Path, population: str):
+    """The sheet's rows, the key's rows and the summary, drawn from the sealed
+    answer files in `folder`. The key is never written: the analysis calls
+    this again, and the summary's `key_sha256` binds its key to the sheet."""
+    heuristic = frozen_heuristic()
+    inputs, answers = {}, {}
+    for name in ("population.jsonl", *(f"replay/{arm}.jsonl" for arm in MODEL_ARMS)):
+        data = (folder / name).read_bytes()
+        inputs[name] = hashlib.sha256(data).hexdigest()
+        lines = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
+        if name == "population.jsonl":
+            rows = [r for r in lines if r["population"] == population]
+        else:
+            answers[name[len("replay/"):-len(".jsonl")]] = {
+                (line["repository"], line["head"]): line for line in lines}
+    sheet, key, summary = label_kit(rows, answers, heuristic)
+    summary.update(population=population, seed=SEED, inputs=inputs,
+                   key_sha256=hashlib.sha256(csv_bytes(KEY_COLUMNS, key)).hexdigest())
+    return sheet, key, summary
 
 
 def cmd_sheet(args, out, env) -> int:
@@ -2105,41 +2143,51 @@ def cmd_sheet(args, out, env) -> int:
     unsealed = sealed(db, args.out, env.get("HOME"))
     if unsealed:
         raise Refused("C1 is not sealed: " + "; ".join(unsealed) + "; nothing was read")
-    heuristic = frozen_heuristic()
-    inputs, answers = {}, {}
-    for name in ("population.jsonl", *(f"replay/{arm}.jsonl" for arm in MODEL_ARMS)):
-        data = (args.out / name).read_bytes()
-        inputs[name] = hashlib.sha256(data).hexdigest()
-        lines = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
-        if name == "population.jsonl":
-            rows = [r for r in lines if r["population"] == args.population]
-        else:
-            answers[name[len("replay/"):-len(".jsonl")]] = {
-                (line["repository"], line["head"]): line for line in lines}
-    sheet, key, summary = label_kit(rows, answers, heuristic)
-    tag = args.population
-    files = {f"sheet-{tag}.csv": csv_bytes(SHEET_COLUMNS, sheet),
-             f"sheet-{tag}.md": sheet_markdown(tag, sheet),
-             f"key-{tag}.csv": csv_bytes(KEY_COLUMNS, key)}
-    summary.update(population=tag, seed=SEED, inputs=inputs,
-                   files={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
-    files[f"sheet-{tag}.json"] = (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode()
-    # Written once: a file that holds other bytes, a filled sheet among them,
-    # refuses the run before anything is written. The same bytes are kept, so
-    # a run stopped between two files finishes on the next.
-    labels = args.out / "labels"
-    other = [name for name, data in files.items()
-             if (labels / name).exists() and (labels / name).read_bytes() != data]
-    if other:
-        raise Refused(f"labels/{other[0]} exists with other contents; a sheet is written once")
-    labels.mkdir(parents=True, exist_ok=True)
-    for name, data in files.items():
-        target = labels / name
-        if not target.exists():
-            part = target.with_name(name + ".part")
-            part.write_bytes(data)
-            os.replace(part, target)
-    json.dump(summary, out, indent=2, sort_keys=True)
+    tag, labels = args.population, args.out / "labels"
+    # The old sheet's files would be a second label source beside the batch.
+    old = [name for name in (f"sheet-{tag}.csv", f"key-{tag}.csv") if (labels / name).exists()]
+    if old:
+        raise Refused(f"labels/{old[0]} is the old sheet's; the sheet is a Review batch now (sd:4789), "
+                      "so move it aside first; nothing was filed")
+    sheet, _key, summary = drawn_sheet(args.out, tag)
+    batch = {"schema": 1, "queue": SHEET_QUEUE, "batch": tag, "title": f"Label: {tag} review tiers",
+             "source": f"hand-label sheet {tag}, seed {SEED}", "mode": "blind",
+             "questions": [{"subject": f"{tag}-{int(row['row']):03d}", "text": sheet_text(row),
+                            "options": list(TIERS)} for row in sheet]}
+    review, database = sd_db_module("review"), sd_db_module("database")
+    with contextlib.closing(database.connect(Path(db))) as connection:
+        # One transaction: a stop files nothing. The same batch again (its
+        # digest) writes nothing, so a rerun finishes the steps after it.
+        try:
+            filed = review.file(connection, batch, who=SHEET_WHO)
+        except review.ReviewError as failure:
+            raise Refused(f"the sheet was not filed: {failure}") from None
+        if filed["item"] is None or filed["filed"] != len(sheet) or filed["dropped"]:
+            raise Refused(f"{filed['ref']} holds {filed['filed']} of {len(sheet)} rows; nothing more was written")
+        item = filed["item"]
+        summary["batch"] = {"item": item, "ref": filed["ref"]}
+        write_once(labels / f"sheet-{tag}.json", (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode())
+        # Closed in its own transaction before the hand file, so no label or
+        # Undo lands after the file is written.
+        with database.transaction(connection):
+            found = review.read(connection, item)
+            if not found["open"] and found["closed"] is None:
+                sd_db_module("workflow").change_status(connection, item, "done", who=SHEET_WHO,
+                                                       reason="every row has a label")
+        found = review.read(connection, item)
+    printed = dict(summary, open=found["open"])
+    if found["closed"] is not None:
+        rows = [(n, q) for n, q in enumerate(found["questions"], 1)]
+        if any(q["label"] is None or q["subject"] != f"{tag}-{n:03d}" for n, q in rows):
+            raise Refused(f"sd:{item} closed with a row that has no label; nothing was written")
+        # No export time: a rerun on the closed batch writes the same bytes.
+        hand = "".join(json.dumps({"row": n, "label": q["label"], "ruling": q["ruling"],
+                                   "ruled_at": q["ruled_at"],
+                                   "comments": [c["text"] for c in q["comments"]]}, sort_keys=True) + "\n"
+                       for n, q in rows).encode("utf-8")
+        write_once(labels / f"hand-{tag}.jsonl", hand)
+        printed["hand"] = {"file": f"labels/hand-{tag}.jsonl", "sha256": hashlib.sha256(hand).hexdigest()}
+    json.dump(printed, out, indent=2, sort_keys=True)
     out.write("\n")
     return 0
 
@@ -2745,7 +2793,7 @@ def build_parser() -> argparse.ArgumentParser:
     obj.add_argument("--db", type=db_path, help="default: the live workflow database")
     obj.add_argument("--out", type=Path, required=True,
                      help="the experiment data folder, holding population.jsonl")
-    sht = kinds.add_parser("sheet", help="step 8: the blinded hand-label sheet and its key")
+    sht = kinds.add_parser("sheet", help="step 8: the blinded hand-label sheet, as a blind Review batch")
     sht.add_argument("--population", choices=("C1", "C2"), required=True,
                      help="the sealed population to draw from; each gets its own sheet")
     sht.add_argument("--db", type=db_path, help="default: the live workflow database")
