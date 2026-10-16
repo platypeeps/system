@@ -2,6 +2,7 @@
 title: Kev label files and the Jev hand-label sheet go through the Review queue; Kev's review app retires
 created: 2026-10-16
 item: sd:4789
+branch: sd4789-labels-screen
 ---
 
 # Design: sd4789-labels-screen
