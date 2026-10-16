@@ -597,6 +597,9 @@ stage_brew() {
       run bound_step 1800 brew install --cask --adopt "$c"
     fi
   done
+  # Every run, not only after an install: the nightly update clears a cask
+  # moved by hand, or before this check existed.
+  claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
 
   if ! unpinned=$(unpinned_formulae); then
     note_failure "brew stage: brew could not list its pins; none changed" 1
@@ -4740,6 +4743,42 @@ run_step() { # seconds, command...
   fi
 }
 
+# Gatekeeper asks before the first run of a quarantined binary, and under
+# launchd with the screen locked no one answers: a new claude-code@latest
+# cask version held every agent job for 4.5 h (sd:4787). The operator's
+# ruling: the flag goes only when the signature verifies, Gatekeeper calls the
+# binary notarized and its team is Anthropic's, each checked on the path whose
+# flag goes. A check that fails or does not answer keeps the flag and
+# returns 1, so the caller reports it. A `claude` outside the cask is not ours.
+CLAUDE_TEAM=Q6L2SF6YDW
+claude_quarantine() {
+  _cq=$(readlink "$(command -v claude 2>/dev/null)" 2>/dev/null) || return 0
+  case $_cq in */Caskroom/claude-code@latest/*) ;; *) return 0 ;; esac
+  if ! _cq_names=$(xattr "$_cq" 2>/dev/null); then
+    echo "  DIFFERS claude quarantine unknown: xattr could not read $_cq"
+    return 1
+  fi
+  if ! printf '%s\n' "$_cq_names" | grep -qx com.apple.quarantine; then
+    echo "  ok      claude not quarantined"
+    return 0
+  fi
+  if ! bound_step 120 codesign --verify --strict "$_cq" >/dev/null 2>&1; then
+    _cq_why="the signature does not verify"
+  elif ! _cq_out=$(bound_step 120 spctl --assess --type open --context context:primary-signature -v "$_cq" 2>&1) \
+      || ! printf '%s\n' "$_cq_out" | grep -qx 'source=Notarized Developer ID'; then
+    _cq_why="Gatekeeper did not say it is notarized"
+  elif ! _cq_out=$(bound_step 120 codesign -dv "$_cq" 2>&1) \
+      || ! printf '%s\n' "$_cq_out" | grep -qx "TeamIdentifier=$CLAUDE_TEAM"; then
+    _cq_why="its team is not $CLAUDE_TEAM"
+  else
+    echo "  DIFFERS claude quarantined; signed, notarized, team $CLAUDE_TEAM: clearing"
+    try_run xattr -d com.apple.quarantine "$_cq" && return 0
+    _cq_why="xattr could not clear it"
+  fi
+  echo "  DIFFERS claude quarantine kept on $_cq: $_cq_why"
+  return 1
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -4777,6 +4816,7 @@ cmd_upgrade() {
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
     run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
+    claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
@@ -5622,16 +5662,40 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   fi
   hr_newest=""
   hr_unread=""
+  hr_stalled=""
+  hr_answered=""
+  # Every probe of a backup root or a NAS pair runs bounded: a stalled SMB
+  # share hung the nightly run 2 h on one ls (sd:4786). 10 s for a listing or
+  # a test, as the shares answer in 1 s when they answer; a timeout (124) is
+  # no answer: never ok, an empty folder or a size. It is NOT-READY where
+  # promote needs the answer (the hourly root's parent, the snapshot's size,
+  # a snapshot from some root) and `--` where a read failure was before: one
+  # root while another has a snapshot, and a NAS pair.
   for hr_root in $(printf '%s\n' "$hr_roots" | tr ' ' '\001'); do
     hr_root=$(printf '%s' "$hr_root" | tr '\001' ' ')
-    if ls "$hr_root" >/dev/null 2>&1; then
+    hr_rc=0
+    hr_names=$(bound_step 10 ls "$hr_root" 2>/dev/null) || hr_rc=$?
+    if [ "$hr_rc" -eq 0 ]; then
+      hr_answered=1
       echo "  ok      backup root readable: $hr_root"
-      # shellcheck disable=SC2010 # dated names only, as the backup writes them
-      hr_last=$(ls "$hr_root" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' | sort -t. -k1,1 -k2,2n | tail -1)
+      # dated names only, as the backup writes them
+      hr_last=$(printf '%s\n' "$hr_names" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' | sort -t. -k1,1 -k2,2n | tail -1)
       [ -z "$hr_last" ] || [ -n "$hr_newest" ] || hr_newest="$hr_root/$hr_last"
+    elif [ "$hr_rc" -eq 124 ]; then
+      hr_stalled="$hr_stalled$hr_root
+"
     else
       hr_unread="$hr_unread$hr_root
 "
+    fi
+  done
+  # A stalled root is an unreadable one: `--` while another root has a
+  # snapshot, NOT-READY when none has, so promote and the drill refuse.
+  printf '%s' "$hr_stalled" | while IFS= read -r hr_root; do
+    if [ -n "$hr_newest" ]; then
+      echo "  --      backup root not readable now: $hr_root; its listing timed out"
+    else
+      echo "  NOT-READY backup root not readable: $hr_root; its listing timed out"
     fi
   done
   # One readable root with a snapshot is a path: restore --newest reports
@@ -5666,10 +5730,16 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     echo "  NOT-READY the cron-jobs folders could not be read"
   fi
   hr_dest=$(hourly_destination) || hr_dest=
+  hr_rc=0
+  [ -z "$hr_dest" ] || bound_step 10 test -d "$(dirname "$hr_dest")" 2>/dev/null || hr_rc=$?
   if [ -z "$hr_dest" ]; then
     echo "  NOT-READY the hourly job file names no SD_DB_BACKUP_HOURLY_DESTINATION; on a satellite it names a local root"
-  elif [ ! -d "$(dirname "$hr_dest")" ]; then
+  elif [ "$hr_rc" -eq 1 ]; then
     echo "  NOT-READY the hourly backup root's parent is missing: $hr_dest"
+  elif [ "$hr_rc" -eq 124 ]; then
+    echo "  NOT-READY the hourly backup root's parent not readable: $hr_dest; its test timed out"
+  elif [ "$hr_rc" -ne 0 ]; then
+    echo "  NOT-READY the hourly backup root's parent not readable: $hr_dest; its test exited $hr_rc"
   else
     echo "  ok      hourly backup root: $hr_dest"
   fi
@@ -5682,19 +5752,27 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     [ -f "$hr_conf" ] || continue
     sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$hr_conf" | grep -v '^$' |
       while IFS='|' read -r hr_src hr_dst _; do
-        # A listing that fails is no answer, not an empty folder.
-        if ! hr_names=$(ls -A "$hr_dst" 2>/dev/null); then
+        # A listing that fails or times out is no answer, not an empty folder.
+        # ls -p marks each folder, so no stat of a name runs outside a bound.
+        if ! hr_names=$(bound_step 10 ls -Ap "$hr_dst" 2>/dev/null); then
           echo "  --      $hr_list: $hr_dst not readable now; its folders were not compared"
           continue
         fi
-        if ! ls -A "$hr_src" >/dev/null 2>&1; then
+        if ! bound_step 10 ls -A "$hr_src" >/dev/null 2>&1; then
           echo "  --      $hr_list: $hr_src not readable now; its folders were not compared"
           continue
         fi
-        hr_extra=$(printf '%s\n' "$hr_names" | grep -Ev '^([0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?)?$' |
-          while IFS= read -r hr_n; do
-            if [ -d "$hr_dst/$hr_n" ] && [ ! -e "$hr_src/$hr_n" ]; then printf '%s\n' "$hr_n"; fi
-          done | awk 'NR > 1 {printf ", "} {printf "%s", $0}')
+        hr_cand=$(printf '%s\n' "$hr_names" | sed -n 's|/$||p' | grep -Ev '^([0-9]{4}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?)?$') || :
+        # The folders the source lacks, in one bounded probe. -e follows a
+        # link: a dangling one is lacking, as the pass puts the link where
+        # the folder was.
+        # shellcheck disable=SC2016 # the inner script expands its own arguments
+        if ! hr_lack=$(bound_step 10 sh -c 'printf "%s\n" "$2" | while IFS= read -r n; do
+            [ -z "$n" ] || [ -e "$1/$n" ] || printf "%s\n" "$n"; done' sh "$hr_src" "$hr_cand" 2>/dev/null); then
+          echo "  --      $hr_list: $hr_src not readable now; its folders were not compared"
+          continue
+        fi
+        hr_extra=$(printf '%s' "$hr_lack" | awk 'NR > 1 {printf ", "} {printf "%s", $0}')
         if [ -n "$hr_extra" ]; then
           echo "  NOT-READY $hr_list: $hr_dst holds $hr_extra, which $hr_src lacks; a pass with --delete deletes them: pair the sd-backups folder itself"
         else
@@ -5702,15 +5780,22 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
         fi
       done
   done
-  if [ -z "$hr_newest" ]; then
+  if [ -z "$hr_newest" ] && [ -n "$hr_stalled" ] && [ -z "$hr_answered" ]; then
+    echo "  NOT-READY no backup root answered in ${MACHINE_SETUP_STEP_TIMEOUT:-10}s; no dated snapshot read"
+  elif [ -z "$hr_newest" ]; then
     echo "  NOT-READY no dated snapshot under the backup roots"
   else
-    # A size du could not read is no answer: never a size of zero.
+    # A size du could not read is no answer: never a size of zero. du walks
+    # the whole snapshot, so it gets 60 s where a listing gets 10.
     hr_size=""
-    hr_du=$(du -sk "$hr_newest" 2>/dev/null) && hr_size=$(printf '%s\n' "$hr_du" | awk '{print $1}')
+    hr_rc=0
+    hr_du=$(bound_step 60 du -sk "$hr_newest" 2>/dev/null) || hr_rc=$?
+    [ "$hr_rc" -ne 0 ] || hr_size=$(printf '%s\n' "$hr_du" | awk '{print $1}')
     hr_free=$(df -k "$HOME" | awk 'NR == 2 {print $4}')
     case "$hr_size" in ''|*[!0-9]*) hr_size="" ;; esac
-    if [ -z "$hr_size" ]; then
+    if [ "$hr_rc" -eq 124 ]; then
+      echo "  NOT-READY the size of $hr_newest was not read in time (du timed out), so the free disk is not checked"
+    elif [ -z "$hr_size" ]; then
       echo "  NOT-READY could not read the size of $hr_newest (du), so the free disk is not checked"
     elif hr_need=$((hr_size * 2)) && [ "${hr_free:-0}" -gt "$hr_need" ]; then
       echo "  ok      free disk ${hr_free} KiB, over twice $hr_newest"

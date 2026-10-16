@@ -18,7 +18,7 @@ import sys
 import unittest
 
 from tests import fixture_config
-from tests.test_backbone import PACK, ROOT, ROUTE_PRESENT, Fixture, write_stub
+from tests.test_backbone import PACK, ROOT, ROUTE_PRESENT, SCRIPT, Fixture, write_stub
 
 PREFIX = fixture_config.LABEL_PREFIX
 HUB = "hub.example.test"
@@ -239,14 +239,16 @@ class PromoteCase(unittest.TestCase):
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
 
+    def promote_env(self, **extra):
+        return {**fixture_config.env(self.config), "STUB_LOG": self.log, "STUB_FENCE": self.fence,
+                "OFFSITE_VERIFY_ROOT": self.nas, "SD_DB_PYTHON": self.prove,
+                "XDG_STATE_HOME": self.fixture.home / ".local/state", "SD_LANE_ROOT": self.lanes,
+                "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, "STUB_REAL_GIT": shutil.which("git"),
+                "STUB_PIN": "a" * 40, "STUB_SYSTEM_HEAD": "a" * 40, "STUB_PIN_PACK": "b" * 40,
+                "STUB_PACK_HEAD": "b" * 40, **extra}
+
     def run_promote(self, *args, expect=0, **extra):
-        env = {**fixture_config.env(self.config), "STUB_LOG": self.log, "STUB_FENCE": self.fence,
-               "OFFSITE_VERIFY_ROOT": self.nas, "SD_DB_PYTHON": self.prove,
-               "XDG_STATE_HOME": self.fixture.home / ".local/state", "SD_LANE_ROOT": self.lanes,
-               "PROMOTE_PROBE_SECONDS": "1", "STUB_HUB_NAME": HUB, "STUB_REAL_GIT": shutil.which("git"),
-               "STUB_PIN": "a" * 40, "STUB_SYSTEM_HEAD": "a" * 40, "STUB_PIN_PACK": "b" * 40,
-               "STUB_PACK_HEAD": "b" * 40, **extra}
-        result = self.fixture.run("promote", *args, **env)
+        result = self.fixture.run("promote", *args, **self.promote_env(**extra))
         self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
         return result
 
@@ -481,6 +483,12 @@ class Promote(PromoteCase):
         (locked / "sd-backups").mkdir(parents=True)
         locked.chmod(0)
         self.addCleanup(locked.chmod, 0o755)
+        # A dangling link is no folder: a pass with --delete puts the link where the folder was.
+        dangling = self.tmp / "dangling"
+        dangling.mkdir()
+        (dangling / "Photos").symlink_to(self.tmp / "missing")
+        (dangling / "Tax records").mkdir()
+        (dangling / "sd-backups").mkdir()
         lists = self.config / "mirror-sync"
         lists.mkdir(exist_ok=True)
         cases = [(f"{local}|{share}\n",
@@ -491,7 +499,10 @@ class Promote(PromoteCase):
                  (f"{local}|{self.tmp}/unmounted\n",
                   f"  --      mirrors-nas.conf: {self.tmp}/unmounted not readable now; its folders were not compared"),
                  (f"{locked}/sd-backups|{share}\n",
-                  f"  --      mirrors-nas.conf: {locked}/sd-backups not readable now; its folders were not compared")]
+                  f"  --      mirrors-nas.conf: {locked}/sd-backups not readable now; its folders were not compared"),
+                 (f"{dangling}|{share}\n",
+                  f"  NOT-READY mirrors-nas.conf: {share} holds Photos, which {dangling} lacks; "
+                  "a pass with --delete deletes them: pair the sd-backups folder itself")]
         for conf, line in cases:
             with self.subTest(conf=conf):
                 (lists / "mirrors-nas.conf").write_text(conf)
@@ -970,6 +981,115 @@ class Promote(PromoteCase):
         out = self.run_promote().stdout
         self.assertIn("NOT-READY notify's email channel lacks NOTIFY_EMAIL_TO EMAIL_FROM", out)
         self.assertNotIn("by ntfy", out)
+
+
+# A share that stalls: ls, du and test hang on any path under $STUB_STALL, as
+# an SMB root did for 2 h in machine-setup-update-nightly (sd:4786); every
+# other path gets the real command. test runs as the shell's builtin here.
+STALL = 'case "$*" in *"$STUB_STALL"*) exec sleep 120 ;; esac\n'
+STALL_STUBS = {"ls": STALL + 'exec "$STUB_REAL_LS" "$@"\n',
+               "du": STALL + 'exec "$STUB_REAL_DU" "$@"\n',
+               "test": STALL + 'test "$@"\n'}
+
+
+class StalledShare(PromoteCase):
+    """Every hub-ready probe of a backup root or a NAS pair ends within its
+    bound in an unattended run, and a stall is no answer: never ok, an empty
+    folder or a size of zero. A stall of a probe promote needs is NOT-READY,
+    so promote and the drill refuse; elsewhere it reads `--`, as a read
+    failure did before (sd:4786 review round 1)."""
+
+    def setUp(self):
+        super().setUp()
+        for name, body in STALL_STUBS.items():
+            write_stub(self.fixture.stubs, name, body)
+
+    def hub_ready(self, stall, **extra):
+        """promote's dry run, which prints hub-ready, unattended: stdin is no terminal."""
+        env = self.fixture.env(**self.promote_env(
+            STUB_STALL=stall, STUB_REAL_LS=shutil.which("ls"), STUB_REAL_DU=shutil.which("du"),
+            MACHINE_SETUP_STEP_TIMEOUT="1", ST_BOUNDED_GRACE="1", **extra))
+        try:
+            result = subprocess.run([str(SCRIPT), "promote"], env=env, capture_output=True, text=True,
+                                    cwd=str(self.tmp), stdin=subprocess.DEVNULL, timeout=60)
+        except subprocess.TimeoutExpired:
+            self.fail(f"hub-ready did not end within its bound while {stall} stalls")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_a_stalled_backup_root_reads_not_readable_now(self):
+        hourly = self.nas / "sd-backups-hourly"
+        out = self.hub_ready(str(hourly))
+        self.assertIn(f"  --      backup root not readable now: {hourly}; its listing timed out\n", out)
+        self.assertNotIn(f"ok      backup root readable: {hourly}", out)
+        self.assertIn(f"  ok      backup root readable: {self.nas}/sd-backups\n", out)
+        self.assertNotIn("NOT-READY", out)
+
+    def test_every_backup_root_stalled_is_not_ready(self):
+        """No root answered, so there is no snapshot to restore: promote and the
+        drill refuse before they move anything, as for a root that cannot be read."""
+        out = self.hub_ready(str(self.nas))
+        for root in ("sd-backups-hourly", "sd-backups"):
+            self.assertIn(f"  NOT-READY backup root not readable: {self.nas}/{root}; its listing timed out\n", out)
+        self.assertIn("  NOT-READY no backup root answered in 1s; no dated snapshot read\n", out)
+        self.assertNotIn("ok      backup root readable", out)
+        self.assertNotIn("ok      free disk", out)
+
+    def test_a_stalled_nas_pair_is_not_compared(self):
+        share = self.tmp / "share"
+        (share / "sd-backups/2026-10-13.1").mkdir(parents=True)
+        (share / "Photos").mkdir()
+        local = self.tmp / "local-nightly"
+        (local / "sd-backups").mkdir(parents=True)
+        (self.config / "mirror-sync").mkdir(exist_ok=True)
+        conf = self.config / "mirror-sync/mirrors-nas.conf"
+        for pair, stall, side in ((f"{local}|{share}", share, share), (f"{share}|{local}", share, share)):
+            with self.subTest(pair=pair):
+                conf.write_text(pair + "\n")
+                out = self.hub_ready(str(stall))
+                self.assertIn(f"  --      mirrors-nas.conf: {side} not readable now; its folders were not compared\n", out)
+                self.assertNotIn("ok      mirrors-nas.conf", out)
+                self.assertNotIn("NOT-READY", out)
+
+    def test_a_stalled_existence_probe_is_not_compared(self):
+        """Both listings answer; the source's -e probe of each name stalls."""
+        share = self.tmp / "share"
+        (share / "Photos").mkdir(parents=True)
+        local = self.tmp / "local-nightly"
+        local.mkdir()
+        (self.config / "mirror-sync").mkdir(exist_ok=True)
+        (self.config / "mirror-sync/mirrors-nas.conf").write_text(f"{local}|{share}\n")
+        write_stub(self.fixture.stubs, "sh", 'case "$*" in *"$STUB_STALL_SH"*) exec sleep 120 ;; esac\nexec /bin/sh "$@"\n')
+        out = self.hub_ready(str(self.tmp / "nothing-stalls-here"), STUB_STALL_SH=str(local))
+        self.assertIn(f"  --      mirrors-nas.conf: {local} not readable now; its folders were not compared\n", out)
+        self.assertNotIn("mirrors-nas.conf: " + str(share) + " holds", out)
+        self.assertNotIn("NOT-READY", out)
+
+    def test_a_stalled_du_is_not_ready(self):
+        """Without the size the free disk is unchecked: restore could fill it."""
+        newest = self.nas / "sd-backups-hourly" / "2026-10-14.5"
+        out = self.hub_ready(str(newest))
+        self.assertIn(f"  NOT-READY the size of {newest} was not read in time (du timed out), so the free disk is not checked\n", out)
+        self.assertNotIn("ok      free disk", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
+
+    def test_a_stalled_hourly_root_parent_is_not_ready(self):
+        """Promote seeds the hourly root at step 6, after the restore."""
+        parent = self.hourly.parent
+        out = self.hub_ready(str(parent))
+        self.assertIn(f"  NOT-READY the hourly backup root's parent not readable: {self.hourly}; its test timed out\n", out)
+        self.assertNotIn("ok      hourly backup root", out)
+        self.assertNotIn("parent is missing", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
+
+    def test_a_parent_test_that_fails_otherwise_is_not_ready(self):
+        """Only exit 1 says missing; another failure of the probe is no
+        answer, and promote needs the answer."""
+        write_stub(self.fixture.stubs, "test", 'case "$*" in *"$STUB_STALL"*) exit 2 ;; esac\ntest "$@"\n')
+        out = self.hub_ready(str(self.hourly.parent))
+        self.assertIn(f"  NOT-READY the hourly backup root's parent not readable: {self.hourly}; its test exited 2\n", out)
+        self.assertNotIn("parent is missing", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
 
 
 class HubRole(unittest.TestCase):
