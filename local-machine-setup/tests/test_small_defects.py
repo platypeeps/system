@@ -177,6 +177,18 @@ class Obsidian(Case):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"  SKIP    vault not found or unreadable: {self.vault}", result.stdout)
 
+    def test_a_vault_that_does_not_answer_is_no_answer_not_skipped(self):
+        # sd:4816. The read ran unbounded, so a vault on a stalled share hung
+        # the nightly update; bounded, a timeout is no answer, never no vault.
+        stall = self.base / "stall-python"
+        write_exec(stall, "#!/bin/sh\nexec sleep 30\n")
+        result = self.run_script("update", "obsidian", OBSIDIAN_VAULT=str(self.vault),
+                                 MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT="1",
+                                 ST_BOUNDED_GRACE="1")
+        self.assertIn(f"  FAILED  the vault did not answer in time: {self.vault}; its plugins were not checked",
+                      result.stdout)
+        self.assertNotIn("SKIP", result.stdout)
+
 
 class CaptureApps(Case):
     def test_capture_lists_standalone_apps_without_a_cask_search(self):

@@ -31,7 +31,8 @@ ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sy
 
 # The pack's bin/sd-db: `fence` prints the state in $STUB_FENCE (a file, so
 # `tailscale set` can move it), `restore --newest` installs a database named
-# after the first root's newest folder, or fails with STUB_RESTORE_RC.
+# after the first root's newest folder, or fails with STUB_RESTORE_RC, or
+# never answers with STUB_RESTORE_HANG.
 SD_DB_STUB = r'''
 echo "$*" >> "$STUB_LOG"
 case "$1" in
@@ -45,6 +46,7 @@ case "$1" in
     case "$state" in holder|off) exit 0 ;; esac
     exit 1 ;;
   restore)
+    [ -z "$STUB_RESTORE_HANG" ] || exec sleep 120
     if [ -n "$STUB_RESTORE_RC" ]; then echo "sd-db: refused: fixture" >&2; exit "$STUB_RESTORE_RC"; fi
     # As the pack reports a root it cannot list, and goes on with the others.
     for r in "$@"; do case $r in restore|--newest) ;; *) [ -d "$r" ] || echo "sd-db: refused $r: [Errno 2] No such file or directory" ;; esac; done
@@ -1090,6 +1092,129 @@ class StalledShare(PromoteCase):
         self.assertIn(f"  NOT-READY the hourly backup root's parent not readable: {self.hourly}; its test exited 2\n", out)
         self.assertNotIn("parent is missing", out)
         self.assertEqual(1, out.count("NOT-READY"), out)
+
+
+
+# A probe outside hub-ready that stalls: each stub hangs when its arguments
+# hold the path in its own variable, and passes every other call to the real
+# command. `test` runs as the shell's builtin; `sh` stalls rm_target's child;
+# python3 stalls hold_names, from the STUB_STALL_PY_FROM-th matching call on
+# (the first by default).
+STEP_STALL_STUBS = {
+    "test": 'case "$*" in *"${STUB_STALL_TEST:-//}"*) exec sleep 120 ;; esac\ntest "$@"\n',
+    "cp": 'case "$*" in *"${STUB_STALL_CP:-//}"*) exec sleep 120 ;; esac\nexec /bin/cp "$@"\n',
+    "sh": 'case "$*" in *"${STUB_STALL_SH:-//}"*) exec sleep 120 ;; esac\nexec /bin/sh "$@"\n',
+    "python3": 'case "$*" in *"${STUB_STALL_PY:-//}"*)\n'
+               '  n=$(( $(cat "$STUB_LOG.py" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_LOG.py"\n'
+               '  [ "$n" -lt "${STUB_STALL_PY_FROM:-1}" ] || exec sleep 120 ;;\nesac\n'
+               'exec "$STUB_REAL_PYTHON3" "$@"\n',
+}
+
+
+def stall_steps(case):
+    """Put STEP_STALL_STUBS on the case's PATH."""
+    for name, body in STEP_STALL_STUBS.items():
+        write_stub(case.fixture.stubs, name, body)
+
+
+def run_stalled(case, *args, expect=1, **extra):
+    """promote, unattended (stdin is no terminal), with every bound at 3 s.
+    A run that outlives 40 s did not end at its bound."""
+    env = case.fixture.env(**case.promote_env(
+        MACHINE_SETUP_STEP_TIMEOUT="3", ST_BOUNDED_GRACE="1", STUB_REAL_PYTHON3=REAL_PYTHON3, **extra))
+    try:
+        result = subprocess.run([str(SCRIPT), "promote", *args], env=env, capture_output=True, text=True,
+                                cwd=str(case.tmp), stdin=subprocess.DEVNULL, timeout=40)
+    except subprocess.TimeoutExpired:
+        case.fail("promote did not end within its bound while a share stalls")
+    case.assertEqual(expect, result.returncode, result.stdout + result.stderr)
+    return result
+
+
+REAL_PYTHON3 = shutil.which("python3")
+
+
+class StalledShareInSteps(PromoteCase):
+    """Every share probe in promote's steps ends within its bound in an
+    unattended run, and a timeout refuses and moves nothing more: never an
+    empty folder, a path that is not there or a restore (sd:4816)."""
+
+    def setUp(self):
+        super().setUp()
+        stall_steps(self)
+        self.aside = self.hub_json.parent / "hub.json.promoted-20261014T090000Z"
+        self.snapshot = self.nas / "sd-backups-hourly/2026-10-14.5"
+
+    def write_marker(self, **fields):
+        self.marker.parent.mkdir(parents=True, exist_ok=True)
+        base = {"hub": HUB, "port": self.port}
+        self.marker.write_text("".join(f"{k}={v}\n" for k, v in {**base, **fields}.items()))
+
+    def restored(self):
+        """Killed after step 5: hub.json aside, the database here, the marker at 6."""
+        self.hub_json.rename(self.aside)
+        self.fixture.db.parent.mkdir(parents=True)
+        self.fixture.db.write_text("")
+        self.write_marker(step=6, moved=self.aside, snapshot=self.snapshot)
+
+    def test_a_stalled_restore_restores_nothing_and_puts_hub_json_back(self):
+        self.write_marker(step=4)
+        result = run_stalled(self, "--apply", STUB_RESTORE_HANG="1")
+        self.assertIn("restore --newest failed (exit 124); nothing restored", result.stderr)
+        self.assertTrue(self.hub_json.exists())
+        self.assertEqual([], self.moved())
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.installed())
+
+    def test_a_stalled_hourly_parent_seeds_nothing(self):
+        self.restored()
+        result = run_stalled(self, "--apply", STUB_STALL_TEST=str(self.hourly.parent))
+        self.assertIn(f"the hourly backup root's parent did not answer (exit 124): {self.hourly}", result.stderr)
+        self.assertNotIn("names no local root", result.stderr)
+        self.assertEqual("6", self.marker_step())
+        self.assertFalse(self.hourly.exists())
+
+    def test_a_stalled_seed_target_deletes_and_copies_nothing(self):
+        self.restored()
+        self.hourly.mkdir()
+        part = self.hourly / "2026-10-14.5.seeding"
+        part.mkdir()
+        result = run_stalled(self, "--apply", STUB_STALL_SH=str(part))
+        self.assertIn(f"{part}: where it lies was not read in time (exit 124)", result.stderr)
+        self.assertIn(f"will not delete {part}", result.stderr)
+        self.assertTrue(part.exists())
+        self.assertFalse((self.hourly / "2026-10-14.5").exists())
+        self.assertEqual("6", self.marker_step())
+
+    def test_a_stalled_seed_copy_stops_and_a_rerun_copies_again(self):
+        self.restored()
+        result = run_stalled(self, "--apply", STUB_STALL_CP=str(self.snapshot))
+        self.assertIn("could not copy", result.stderr)
+        self.assertFalse((self.hourly / "2026-10-14.5").exists())
+        self.assertEqual("6", self.marker_step())
+        # The share answers again: the part copy goes and the seed is whole.
+        run_stalled(self, "--apply", expect=0)
+        self.assertTrue((self.hourly / "2026-10-14.5" / "backup-manifest.json").exists())
+        self.assertFalse((self.hourly / "2026-10-14.5.seeding").exists())
+        self.assertIsNone(self.marker_step())
+
+    def test_a_stalled_hold_at_the_seed_stops_at_step_6(self):
+        self.restored()
+        result = run_stalled(self, "--apply", STUB_STALL_PY=str(self.nas))
+        self.assertIn("could not hold the NAS snapshot names", result.stderr)
+        self.assertIn("(exit 124)", result.stderr)
+        self.assertEqual("6", self.marker_step())
+        self.assertEqual([], self.installed())
+
+    def test_a_stalled_hold_after_the_report_keeps_the_marker(self):
+        """The hold step lists the NAS again after the report: no answer is
+        no hold, so the marker stays and the NAS copies keep refusing."""
+        self.restored()
+        result = run_stalled(self, "--apply", STUB_STALL_PY=str(self.nas), STUB_STALL_PY_FROM="2")
+        self.assertIn("hub failover report", result.stdout)
+        self.assertIn("could not hold the NAS snapshot names", result.stderr)
+        self.assertIn("(exit 124)", result.stderr)
+        self.assertIsNotNone(self.marker_step())
 
 
 class HubRole(unittest.TestCase):
