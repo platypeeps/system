@@ -5622,8 +5622,9 @@ hub_ready() {
   # "One GitHub login for both sets").
   if hr_repos=$(bound_step 60 "$SD_PACK_ROOT/bin/sd-db" repo list --managed 2>/dev/null); then
     hr_host=$(hostname -s | tr '[:upper:]' '[:lower:]')
-    # sd-db repo list: path, remote, managed, ci, lane host, merge; two spaces apart.
-    printf '%s\n' "$hr_repos" | awk -F '  ' -v host="$hr_host" 'NF >= 6 && ($(NF-1) == "hub" || $(NF-1) == host) {print $(NF-4)}' |
+    # sd-db repo list: path, remote, managed, ci, [further fields,] lane host, merge; two spaces apart.
+    # The remote is always field 2; the lane host and merge stay the last two.
+    printf '%s\n' "$hr_repos" | awk -F '  ' -v host="$hr_host" 'NF >= 6 && ($(NF-1) == "hub" || $(NF-1) == host) {print $2}' |
       while read -r hr_remote; do github_slug "$hr_remote" || :; done | python3 -c 'import json, subprocess, sys
 # A remote with several clones is one repository.
 want = list(dict.fromkeys(tuple(line.split("/")) for line in sys.stdin.read().split()))

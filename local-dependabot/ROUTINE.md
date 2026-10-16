@@ -195,7 +195,7 @@ All four must hold. Any one failing means report, not merge.
 **Where the merge happens depends on the repository's CI.** Run
 `$SD_PACK_ROOT/bin/sd-db repo list` once, before the fan-out (default pack
 root `~/repos/platypeeps/sd-ai-command-pack`). It prints one row per checkout:
-path, remote, Dependabot, CI, and two more fields. A repository with a row
+path, remote, Dependabot, CI, and further fields. A repository with a row
 whose CI field reads `local` is a **local-gate repository**. Its required
 check is `sd/local-gate`, which only `sd-ship` posts, so a Dependabot head
 there carries no check until sd-ship runs the gate. Land its PRs as
