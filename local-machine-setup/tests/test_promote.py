@@ -994,8 +994,10 @@ STALL_STUBS = {"ls": STALL + 'exec "$STUB_REAL_LS" "$@"\n',
 
 class StalledShare(PromoteCase):
     """Every hub-ready probe of a backup root or a NAS pair ends within its
-    bound in an unattended run, and a stall reads `--`: not ok, not NOT-READY,
-    not an empty folder or a size of zero."""
+    bound in an unattended run, and a stall is no answer: never ok, an empty
+    folder or a size of zero. A stall of a probe promote needs is NOT-READY,
+    so promote and the drill refuse; elsewhere it reads `--`, as a read
+    failure did before (sd:4786 review round 1)."""
 
     def setUp(self):
         super().setUp()
@@ -1063,26 +1065,31 @@ class StalledShare(PromoteCase):
         self.assertNotIn("mirrors-nas.conf: " + str(share) + " holds", out)
         self.assertNotIn("NOT-READY", out)
 
-    def test_a_stalled_du_is_no_size(self):
+    def test_a_stalled_du_is_not_ready(self):
+        """Without the size the free disk is unchecked: restore could fill it."""
         newest = self.nas / "sd-backups-hourly" / "2026-10-14.5"
         out = self.hub_ready(str(newest))
-        self.assertIn(f"  --      the size of {newest} was not read in time (du timed out), so the free disk is not checked\n", out)
+        self.assertIn(f"  NOT-READY the size of {newest} was not read in time (du timed out), so the free disk is not checked\n", out)
         self.assertNotIn("ok      free disk", out)
-        self.assertNotIn("NOT-READY", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
 
-    def test_a_stalled_hourly_root_parent_is_no_answer(self):
+    def test_a_stalled_hourly_root_parent_is_not_ready(self):
+        """Promote seeds the hourly root at step 6, after the restore."""
         parent = self.hourly.parent
         out = self.hub_ready(str(parent))
-        self.assertIn(f"  --      the hourly backup root's parent not readable now: {self.hourly}; its test timed out\n", out)
+        self.assertIn(f"  NOT-READY the hourly backup root's parent not readable: {self.hourly}; its test timed out\n", out)
         self.assertNotIn("ok      hourly backup root", out)
-        self.assertNotIn("NOT-READY", out)
+        self.assertNotIn("parent is missing", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
 
-    def test_a_parent_test_that_fails_otherwise_is_no_answer(self):
-        """Only exit 1 says missing; another failure of the probe is no answer."""
+    def test_a_parent_test_that_fails_otherwise_is_not_ready(self):
+        """Only exit 1 says missing; another failure of the probe is no
+        answer, and promote needs the answer."""
         write_stub(self.fixture.stubs, "test", 'case "$*" in *"$STUB_STALL"*) exit 2 ;; esac\ntest "$@"\n')
         out = self.hub_ready(str(self.hourly.parent))
-        self.assertIn(f"  --      the hourly backup root's parent not readable now: {self.hourly}; its test exited 2\n", out)
-        self.assertNotIn("NOT-READY", out)
+        self.assertIn(f"  NOT-READY the hourly backup root's parent not readable: {self.hourly}; its test exited 2\n", out)
+        self.assertNotIn("parent is missing", out)
+        self.assertEqual(1, out.count("NOT-READY"), out)
 
 
 class HubRole(unittest.TestCase):

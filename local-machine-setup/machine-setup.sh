@@ -5667,8 +5667,10 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   # Every probe of a backup root or a NAS pair runs bounded: a stalled SMB
   # share hung the nightly run 2 h on one ls (sd:4786). 10 s for a listing or
   # a test, as the shares answer in 1 s when they answer; a timeout (124) is
-  # no answer: never ok, an empty folder or a size, and `--` but where no
-  # backup root answers at all.
+  # no answer: never ok, an empty folder or a size. It is NOT-READY where
+  # promote needs the answer (the hourly root's parent, the snapshot's size,
+  # a snapshot from some root) and `--` where a read failure was before: one
+  # root while another has a snapshot, and a NAS pair.
   for hr_root in $(printf '%s\n' "$hr_roots" | tr ' ' '\001'); do
     hr_root=$(printf '%s' "$hr_root" | tr '\001' ' ')
     hr_rc=0
@@ -5735,9 +5737,9 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
   elif [ "$hr_rc" -eq 1 ]; then
     echo "  NOT-READY the hourly backup root's parent is missing: $hr_dest"
   elif [ "$hr_rc" -eq 124 ]; then
-    echo "  --      the hourly backup root's parent not readable now: $hr_dest; its test timed out"
+    echo "  NOT-READY the hourly backup root's parent not readable: $hr_dest; its test timed out"
   elif [ "$hr_rc" -ne 0 ]; then
-    echo "  --      the hourly backup root's parent not readable now: $hr_dest; its test exited $hr_rc"
+    echo "  NOT-READY the hourly backup root's parent not readable: $hr_dest; its test exited $hr_rc"
   else
     echo "  ok      hourly backup root: $hr_dest"
   fi
@@ -5792,7 +5794,7 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     hr_free=$(df -k "$HOME" | awk 'NR == 2 {print $4}')
     case "$hr_size" in ''|*[!0-9]*) hr_size="" ;; esac
     if [ "$hr_rc" -eq 124 ]; then
-      echo "  --      the size of $hr_newest was not read in time (du timed out), so the free disk is not checked"
+      echo "  NOT-READY the size of $hr_newest was not read in time (du timed out), so the free disk is not checked"
     elif [ -z "$hr_size" ]; then
       echo "  NOT-READY could not read the size of $hr_newest (du), so the free disk is not checked"
     elif hr_need=$((hr_size * 2)) && [ "${hr_free:-0}" -gt "$hr_need" ]; then
