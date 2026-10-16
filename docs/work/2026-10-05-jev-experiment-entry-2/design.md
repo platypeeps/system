@@ -247,23 +247,22 @@ Before review round 2, the two draws used one seed string in every population, s
 Each population now has its own streams; on C1 every pool is under its cap, so C1's sheet and key are unchanged.
 Order is shuffled with the same seed.
 
-**Sheet.** `labels/sheet-<population>.csv` in the raw data folder, such as `sheet-C1.csv`, with a Markdown copy for reading:
+**Sheet** (sd:4789). One blind Review batch per population, `review:entry-2-hand-labels:<population>`, labelled on the dashboard's Review page.
+Its queue, title and source name no arm: Details shows them in a blind batch too.
+Each row is one question, subject `<population>-<row>`, options `skip`, `cheap`, `standard` and `deep`; its text holds:
 
-| Column | Content |
+| Field | Content |
 |---|---|
-| `row` | 1..n, the shuffled order |
-| `repo` | an alias, `R01`..`Rnn` |
-| `commit` | the head SHA, so the labeller can read the diff in the local clone |
-| `paths` | the first 10 paths, then `+n more` |
-| `path_count`, `lines_moved` | from the state |
-| `routing_said` | the reason text |
-| `candidates` | the distinct tiers the arms gave, shuffled, unattributed |
-| `label` | blank: `skip`, `cheap`, `standard` or `deep` |
-| `sure` | blank: 1 guess, 2 fairly sure, 3 sure |
-| `note` | blank |
+| row | 1..n, the shuffled order |
+| repository | an alias, `R01`..`Rnn` |
+| commit | the head SHA, so the labeller can read the diff in the local clone |
+| paths | the first 10 paths, then `+n more`, with the path count and lines moved |
+| routing said | the reason text |
+| candidates | the distinct tiers the arms gave, shuffled, unattributed |
 
-The key, `labels/key-<population>.csv`, maps `row` to each arm's answer and draw weights; `sheet-<population>.json` holds the counts and the input files' SHA-256.
-It stays closed until the labels are complete; the SHA-256 of the filled sheet goes on sd:2764 before the key opens.
+A comment (`n`) is the row's note; no row carries a confidence score.
+No key file is written: the analysis draws the key again from the sealed inputs, and `sheet-<population>.json` holds the counts, the input files' SHA-256, the key's SHA-256 and the batch.
+Once every row has a label, a rerun closes the batch and writes `labels/hand-<population>.jsonl` once; its SHA-256 goes on sd:2764 before the key is drawn again.
 The sheet shows no review finding, so the two label sources stay independent.
 
 **Known leaks of the blind.** The operator read the 28 `skip` commits for entry 1.
@@ -377,7 +376,7 @@ Expected hosted spend for the replay of 2,222 heads is under $5, nearly all of i
 | `population.jsonl` | one state per head, with alias, base, head, routed tier, blocking@head |
 | `replay/<arm>.jsonl` | one answer per head: tier, distribution, tokens, cost, wait |
 | `experiment.db` | the experiment ledger, through `JEV_METER_DB` (see Ledger isolation) |
-| `labels/` | `sheet-<population>.csv`, `.md` and `.json`, `key-<population>.csv`, the filled sheet |
+| `labels/` | `sheet-<population>.json` and `hand-<population>.jsonl`; the sheet itself is a Review batch in sd.db |
 | `injection/`, `scanner/` | inputs, answers |
 | `results.md` | each hypothesis, its number, its query |
 

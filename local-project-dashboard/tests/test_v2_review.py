@@ -268,6 +268,16 @@ class TheScript(unittest.TestCase):
         self.assertIn('data-i="2"><kbd>3</kbd><span>Later &lt;b&gt;</span>', out["R"]["details"])
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · read ")
 
+    def test_details_marks_the_proposed_option_in_an_open_batch_only(self):
+        # A Kev file's proposal is an evidence line (sd:4789); its digit is the accept.
+        for mode, marked in (("open", True), ("blind", False)):
+            doc = doc_with(1, mode=mode)
+            doc["questions"][0]["evidence"] = ["Proposed label: Reject"]
+            out = self.run_page("R.details = ELS.details.html;", "(path, body) => [200, DOC]", doc=doc)
+            with self.subTest(mode):
+                self.assertEqual('<span>Reject</span><span class="tag">proposed</span>' in out["R"]["details"], marked)
+                self.assertEqual(out["R"]["details"].count('class="tag">proposed'), int(marked))
+
     def test_ten_digits_write_ten_labels_in_turn_and_u_withdraws_the_last(self):
         doc = doc_with(10)
         out = self.run_page("for (const k of '1212121212') { key(k); } await flush(); R.rows = ELS.rows.html;"
