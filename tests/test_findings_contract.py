@@ -223,7 +223,7 @@ class EndToEndTest(unittest.TestCase):
         _, first = self.doctor_run("r1", "2026-10-10")
         with closing(connect(self.database)) as connection:
             reporting.acknowledge(connection, first["item"]["id"], expected_revision=first["revision"],
-                                  who="test", resolve_ingest_followups=True)
+                                  who="test", resolve_followups=True)
         _, second = self.doctor_run("r2", "2026-10-11")
         self.assertEqual((second["recorded"], second["item"]["id"]), ("folded", first["item"]["id"]), second)
         self.assertEqual(second["item"]["status"], "done", second)
@@ -235,7 +235,7 @@ class EndToEndTest(unittest.TestCase):
         _, first = self.doctor_run("r1", "2026-10-10")
         with closing(connect(self.database)) as connection:
             reporting.acknowledge(connection, first["item"]["id"], expected_revision=first["revision"],
-                                  who="test", resolve_ingest_followups=True)
+                                  who="test", resolve_followups=True)
         warnings = self.doctor.read_text()
         self.doctor.write_text("")
         self.doctor_rc.write_text("0\n")
