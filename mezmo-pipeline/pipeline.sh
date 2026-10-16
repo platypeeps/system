@@ -38,7 +38,7 @@ holds, because these commands mutate a live account.
 environment (<config>/mezmo-pipeline/.env or exported; <config> is
 SYSTEM_TOOLS_CONFIG, default ~/.config/system; see .env.example):
   MEZMO_API_BASE             API host (default https://api.mezmo.com)
-  MEZMO_PIPELINE_SERVICE_KEY required by everything
+  MEZMO_SERVICE_KEY required by everything
   MEZMO_PIPELINE_ID          required by everything
   MEZMO_PIPELINE_STATE_ID    required by `state`
   MEZMO_SOURCE_ID            required by `source`
@@ -84,7 +84,7 @@ read_state() {
 }
 
 state_cmd() {
-  mz_require MEZMO_PIPELINE_SERVICE_KEY MEZMO_PIPELINE_ID MEZMO_PIPELINE_STATE_ID
+  mz_require MEZMO_SERVICE_KEY MEZMO_PIPELINE_ID MEZMO_PIPELINE_STATE_ID
   need_jq "state"
   case "$1" in
     get)
@@ -119,7 +119,7 @@ state_cmd() {
 # from what the server currently holds is the fix: fields this tool does not
 # care about survive untouched because they are never retyped.
 source_webhook() {
-  mz_require MEZMO_PIPELINE_SERVICE_KEY MEZMO_PIPELINE_ID \
+  mz_require MEZMO_SERVICE_KEY MEZMO_PIPELINE_ID \
              MEZMO_SOURCE_ID MEZMO_ACCOUNT_ID
   need_jq "source webhook"
 
@@ -170,7 +170,7 @@ source_webhook() {
 # machine that has no Mezmo credentials does not report a nightly finding it
 # could never act on.
 status_cmd() {
-  if ! mz_require MEZMO_PIPELINE_SERVICE_KEY MEZMO_PIPELINE_ID \
+  if ! mz_require MEZMO_SERVICE_KEY MEZMO_PIPELINE_ID \
                   MEZMO_PIPELINE_STATE_ID 2>/dev/null; then
     echo "mezmo-pipeline: SKIP — not configured on this machine"
     exit 3
@@ -180,7 +180,7 @@ status_cmd() {
     # health check used to carry these two hints for every tool it swept,
     # which was right here and nonsense anywhere else.
     case "${MZ_CODE:-}" in
-      401) why="the service key was rotated — replace MEZMO_PIPELINE_SERVICE_KEY" ;;
+      401) why="the service key was rotated — replace MEZMO_SERVICE_KEY" ;;
       # read_state sends MEZMO_PIPELINE_ID only; the state id is used by the PUT.
       404) why="the pipeline id moved — check MEZMO_PIPELINE_ID" ;;
       '')  why="network, DNS or TLS — curl could not complete the request" ;;

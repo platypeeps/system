@@ -49,7 +49,7 @@ runp() {
   env -i PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP" TMPDIR="$TMP" \
     MZ_SKIP_ENV_FILE=1 MZ_STUB_DIR="$sd" \
     MZ_STUB_DEFAULT_CODE="${E_CODE:-200}" \
-    MEZMO_PIPELINE_SERVICE_KEY="${E_KEY-sts_realkey}" \
+    MEZMO_SERVICE_KEY="${E_KEY-sts_realkey}" \
     MEZMO_PIPELINE_ID="${E_PID-11111111-1111-1111-1111-111111111111}" \
     MEZMO_PIPELINE_STATE_ID="${E_STID-22222222-2222-2222-2222-222222222222}" \
     MEZMO_SOURCE_ID="${E_SRC-33333333-3333-3333-3333-333333333333}" \
@@ -116,7 +116,7 @@ echo "required variables"
 out=$(E_KEY=""; runp "$(newstub)" state get 2>&1); rc=$?
 [ $rc -ne 0 ] && pass "missing key fails" || fail "missing key fails"
 case "$out" in
-  *MEZMO_PIPELINE_SERVICE_KEY*) pass "missing key is named in the error" ;;
+  *MEZMO_SERVICE_KEY*) pass "missing key is named in the error" ;;
   *) fail "missing key is named in the error" "got: $out" ;;
 esac
 
@@ -156,7 +156,7 @@ esac
 
 mkdir -p "$TMP/config/mezmo-pipeline"
 cat > "$TMP/config/mezmo-pipeline/.env" <<'ENVEOF'
-MEZMO_PIPELINE_SERVICE_KEY=sts_fromconfig
+MEZMO_SERVICE_KEY=sts_fromconfig
 MEZMO_PIPELINE_ID=11111111-1111-1111-1111-111111111111
 MEZMO_PIPELINE_STATE_ID=22222222-2222-2222-2222-222222222222
 ENVEOF
