@@ -105,10 +105,40 @@ class ClaudeSettingsBaseline(SyntheticHome):
         deny = json.loads(self.settings.read_text())["permissions"]["deny"]
         for rule in ("Bash(gh issue create:*)", "Bash(gh issue transfer:*)",
                      "Bash(gh api *repos/*/issues --method POST*)", "Bash(gh api *repos/*/issues -X POST*)",
-                     "mcp__github__issue_write", "mcp__github__sub_issue_write",
+                     "mcp__github__sub_issue_write",
                      "mcp__plugin_claude-mem_mcp-search__work_state_write",
                      "mcp__plugin_claude-mem_mcp-search__work_state_read"):
             self.assertIn(rule, deny)
+
+    def test_a_fresh_baseline_leaves_issue_updates_to_the_pack_guard(self):
+        """sd:4810: a user deny beats any project allow, so the pack's sd-issue-guard gates issue_write per repo."""
+        self.settings.write_text("{}\n")
+        self.run_tooling("--apply")
+
+        self.assertNotIn("mcp__github__issue_write", json.loads(self.settings.read_text())["permissions"]["deny"])
+
+    def test_apply_drops_the_retired_issue_write_deny_and_keeps_the_operators(self):
+        """A machine set up before sd:4810 carries the old rule; the baseline takes it back out."""
+        old = {**OPERATOR, "permissions": {"deny": [*OPERATOR["permissions"]["deny"], "mcp__github__issue_write"]}}
+        self.settings.write_text(json.dumps(old) + "\n")
+
+        out = self.run_tooling()
+
+        self.assertIn("STALE   settings.json permissions.deny mcp__github__issue_write (retired)", out)
+        self.assertEqual(json.loads(self.settings.read_text()), old)
+
+        self.run_tooling("--apply")
+
+        deny = json.loads(self.settings.read_text())["permissions"]["deny"]
+        self.assertNotIn("mcp__github__issue_write", deny)
+        self.assertEqual(deny[:2], OPERATOR["permissions"]["deny"])
+        self.assertIn("mcp__github__sub_issue_write", deny)
+        [backup] = self.backups()
+        self.assertEqual(json.loads(backup.read_text()), old)
+
+        out = self.run_tooling("--apply")
+
+        self.assertIn("ok      settings.json baseline", out)
 
     def test_a_fresh_baseline_turns_off_the_background_updater(self):
         """sd:3033: Claude Code updates in the weekly upgrade only."""
