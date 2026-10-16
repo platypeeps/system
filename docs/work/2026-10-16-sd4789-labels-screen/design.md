@@ -105,23 +105,23 @@ Its removal is the operator's call: see the item's question note. This change ma
 
 | Step | State moved | Failure | Recovery | Test |
 | --- | --- | --- | --- | --- |
-| Import a Kev file | Item, header note and question notes, one transaction (`review.file`) | A line is malformed, duplicated or over a limit | Refused before any write, naming the line; nothing filed | `TheKevImport`: a bad line in the middle files no item and no note |
-| Import again | Nothing | Same file, same batch name | `review.file` finds the batch by digest and writes nothing | `TheKevImport`: filing twice returns one item |
-| Import again | Nothing | Other content under the same batch name | Refused, naming the first difference | Existing `test_a_changed_option_is_refused...` |
+| Import a Kev file | Item, header note and question notes, one transaction (`review.file`) | A line is malformed, duplicated or over a limit | Refused before any write, naming the line; nothing filed | `test_a_bad_line_refuses_the_file_naming_it_and_files_nothing` |
+| Import again | Nothing | Same file, same batch name | `review.file` finds the batch by digest and writes nothing | `test_filing_the_same_file_twice_returns_one_item` |
+| Import again | Nothing | Other content under the same batch name | Refused, naming the first difference | Existing `test_a_changed_option_is_refused_naming_it_and_the_batch_is_unchanged` |
 | Label, drop or accept | Ruling note and resolved question, one transaction | Stale revision | 409; the page rereads | Existing `LabelAndWithdraw` and dashboard stale test |
 | Undo | Withdrawal note and reopened question, one transaction | Ruling withdrawn already | Refused; nothing moves | Existing `LabelAndWithdraw` |
-| Export as reviews | `<out>.part`, then the rename | The process stops before the rename | No `<out>`; the same command writes it again | `TheReviewsExport`: a failed write leaves no `<out>` |
-| Export as reviews | Nothing | A blind batch's verdict | `relabel`, never `accept` | `TheReviewsExport` |
-| Jev sheet: file | As "Import a Kev file" | The process stops before the commit | Nothing filed; the rerun files the batch | `test_jev_experiment`: a refused file leaves no batch, the rerun files one |
-| Jev sheet: file | `sheet-<population>.json` after the batch commit | The process stops between the two | The rerun finds the batch by digest and writes the summary | `test_jev_experiment`: a stop after the file, then a rerun |
-| Jev sheet: read back | Nothing | Questions still open | Nothing written; it prints the open count and exits 0 | `test_jev_experiment` |
-| Jev sheet: close | Batch status done, one transaction | The process stops after the close, before the file | The rerun finds the batch closed and writes the file; a ruling or Undo between is refused | `test_jev_experiment`: a stop after the close, a refused ruling, then the rerun |
-| Jev sheet: write | `hand-<population>.jsonl` through `.part` and a rename | The process stops before the rename | The rerun writes the same bytes: the lines hold no export time | `test_jev_experiment`: two runs a second apart write equal bytes |
+| Export as reviews | `<out>.part`, then the rename | The process stops before the rename | No `<out>`; the same command writes it again | `test_a_stop_before_the_rename_leaves_no_file_and_the_rerun_writes_it` |
+| Export as reviews | Nothing | A blind batch's verdict | `relabel`, never `accept` | `test_a_blind_batch_never_reads_accept` |
+| Jev sheet: file | As "Import a Kev file" | The process stops before the commit | Nothing filed; the rerun files the batch | `test_a_stop_inside_the_filing_files_nothing_and_the_rerun_files_the_batch` |
+| Jev sheet: file | `sheet-<population>.json` after the batch commit | The process stops between the two | The rerun finds the batch by digest and writes the summary | `test_a_stop_between_the_batch_and_its_summary_finishes_on_the_rerun` |
+| Jev sheet: read back | Nothing | Questions still open | Nothing written; it prints the open count and exits 0 | `test_an_open_row_writes_nothing_and_prints_the_open_count` |
+| Jev sheet: close | Batch status done, one transaction | The process stops after the close, before the file | The rerun finds the batch closed and writes the file; a ruling or Undo between is refused | `test_a_stop_after_the_close_refuses_labels_and_the_rerun_writes_the_hand_file_once` |
+| Jev sheet: write | `hand-<population>.jsonl` through `.part` and a rename | The process stops before the rename | The rerun writes the same bytes: the lines hold no export time | `test_a_stop_after_the_close_refuses_labels_and_the_rerun_writes_the_hand_file_once`: a rerun after the file is gone writes equal bytes |
 | Jev sheet: close | Nothing | `hand-<population>.jsonl` holds other bytes | Refused inside the close transaction, so the batch stays open and Undo works | `test_a_hand_file_with_other_bytes_refuses_before_the_close` |
 | Jev sheet: read back | Nothing | A batch closed by hand with a row unlabelled | Refused; no hand file | `test_a_batch_closed_with_an_unlabelled_row_refuses` |
-| Older state | Nothing | Batches filed before this change | Read as today; `reviews` reads a batch with no proposal as `proposed_label: ""` | `TheReviewsExport` on a plain batch |
-| Older state | Nothing | A sheet CSV or key CSV written by the old code | Refused before filing, naming the file | `test_jev_experiment`: an old `key-C1.csv` refuses and files nothing |
-| Import | Nothing | A Kev subject a `Reject` label in the same queue would suppress | Not suppressed: the import passes `suppress=False` | `TheKevImport`: a second batch reusing a rejected subject files every question |
+| Older state | Nothing | Batches filed before this change | Read as today; `reviews` reads a batch with no proposal as `proposed_label: ""` | `test_a_plain_batch_reads_with_no_proposal` |
+| Older state | Nothing | A sheet CSV or key CSV written by the old code | Refused before filing, naming the file | `test_an_old_sheet_or_key_file_refuses_and_files_nothing` |
+| Import | Nothing | A Kev subject a `Reject` label in the same queue would suppress | Not suppressed: the import passes `suppress=False` | `test_a_rejected_subject_in_the_queue_does_not_drop_a_kev_question` |
 | Rollback | Nothing | The pack rolls back | Kev batches stay readable as plain batches; `--kev` and `--format` are gone | Covered by the old code's tests |
 
 ## Slices
