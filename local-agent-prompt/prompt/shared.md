@@ -43,7 +43,7 @@ Read merge state with `pull_request_read` `get`: `list_pull_requests` reports `m
 Use `gh` only when no MCP tool covers the action or the MCP server is down (`claude mcp list`, `codex mcp list`, `opencode mcp list`); use Git for local state.
 The server needs a classic PAT with `repo` scope: a fine-grained one 404s on other organizations' private repos.
 A token change needs an agent restart: the server reads the token at launch. `search_repositories("is:private")` returning `total_count: 0` means a stale or under-scoped token.
-Do not use GitHub issues: track work with `sd task add|note|status`; never open, search or cite an issue as the record.
+Do not use GitHub issues: track work with `sd task add|note|status`; never open, search or cite an issue as the record. Exception: a repo whose CLAUDE.md accepts third-party issues follows its own rule there.
 If no `sd today` output is in context, run `sd today | head -40` before the first task.
 
 # Verification

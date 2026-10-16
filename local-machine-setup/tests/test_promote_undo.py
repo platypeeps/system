@@ -14,7 +14,8 @@ import subprocess
 import sys
 
 from tests.test_backbone import write_stub
-from tests.test_promote import HUB, PREFIX, ROLE_AGENTS, ROLE_JOBS, SATELLITE_CASE, PromoteCase
+from tests.test_promote import (HUB, PREFIX, ROLE_AGENTS, ROLE_JOBS, SATELLITE_CASE, PromoteCase,
+                                run_stalled, stall_steps)
 
 # test_backbone puts the pinned pack's lib/ on the path.
 from sd_db import database, writes  # noqa: E402
@@ -637,3 +638,70 @@ class Undo(PromoteCase):
         self.assertIn("names step 5", out)
         self.run_undo("--apply")
         self.assertIsNone(self.marker_step())
+
+
+    # Stalled shares (sd:4816): each probe ends within its bound in an
+    # unattended run, and a timeout refuses: nothing is deleted on no answer.
+
+    def run_stalled_undo(self, *args, expect=1, **extra):
+        env = {"SD_DB_PYTHON": self.python, "STUB_REMOTE_DB": self.new_hub,
+               "STUB_TAILNET_NAME": "work-satellite.tailnet.example.test", **extra}
+        return run_stalled(self, "--undo", *args, expect=expect, **env)
+
+    def test_a_stalled_nas_root_refuses_before_step_1(self):
+        stall_steps(self)
+        nas = self.nas / "sd-backups-hourly"
+        result = self.run_stalled_undo("--apply", STUB_STALL_TEST=str(nas))
+        self.assertIn(f"the NAS hourly root {nas} did not answer (exit 124)", result.stderr)
+        self.assertNotIn("is not there", result.stderr)
+        self.assertIsNone(self.marker_step())
+        self.assertEqual([], self.calls("backup --destination"))
+        self.assertTrue(self.fixture.db.exists())
+
+    def test_a_stalled_manifest_starts_the_role_again(self):
+        stall_steps(self)
+        snapshot = self.nas / "sd-backups-hourly" / HANDBACK
+        result = self.run_stalled_undo("--apply", STUB_STALL_TEST=str(snapshot))
+        self.assertIn(f"manifest did not answer (exit 124): {snapshot}", result.stderr)
+        self.assertIn("the hub role starts again, nothing was deleted", result.stderr)
+        self.assertFalse(self.hub_json.exists(), "hub.json went back without a hand-back snapshot")
+        self.assertIsNone(self.marker_step())
+        self.assertTrue(self.fixture.db.exists())
+
+    def test_stalled_hand_back_checks_delete_nothing(self):
+        self.handed_back()
+        stall_steps(self)
+        hang = write_stub(self.fixture.stubs, "hang-python",
+                          f'case "$*" in *"hand-back point"*) exec sleep 120 ;; esac\nexec "{self.python}" "$@"\n')
+        result = self.run_stalled_undo("--apply", SD_DB_PYTHON=hang)
+        self.assertIn("the hand-back checks did not answer in time; nothing deleted", result.stderr)
+        self.assertEqual("3", self.marker_step())
+        self.assertNotEqual([], self.records_here())
+        self.assertTrue((self.hourly / PROMOTED).exists())
+
+    def test_a_stalled_delete_target_deletes_nothing(self):
+        self.handed_back()
+        stall_steps(self)
+        result = self.run_stalled_undo("--apply", STUB_STALL_SH=str(self.hourly / PROMOTED))
+        self.assertIn("where it lies was not read in time (exit 124)", result.stderr)
+        self.assertEqual("4", self.marker_step())
+        self.assertTrue((self.hourly / PROMOTED).exists())
+
+    def test_a_backup_root_that_does_not_list_deletes_nothing(self):
+        """A root that stalls is no listing, not an empty root. rm_target
+        reads the root first, so the stub stalls the listing by its text."""
+        self.handed_back()
+        stall_steps(self)
+        result = self.run_stalled_undo("--apply", STUB_STALL_SH='for e in "$1"/*')
+        self.assertIn(f"{self.hourly}: cannot list it (exit 124)", result.stderr)
+        self.assertIn(f"could not list {self.hourly}; rerun", result.stderr)
+        self.assertEqual("4", self.marker_step())
+        self.assertTrue((self.hourly / PROMOTED).exists())
+
+    def test_a_snapshot_proof_that_does_not_end_keeps_the_folder(self):
+        """A proof past its bound is unreadable, and unreadable is kept."""
+        self.handed_back()
+        stall_steps(self)
+        result = self.run_stalled_undo("--apply", expect=0, STUB_STALL_PY=str(self.hourly / PROMOTED))
+        self.assertTrue((self.hourly / PROMOTED).exists(), result.stdout + result.stderr)
+

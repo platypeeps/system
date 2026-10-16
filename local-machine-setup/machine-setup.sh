@@ -2345,9 +2345,11 @@ stage_obsidian() {
   fi
   py="${MACHINE_SETUP_PYTHON:-python3}"
   # Exit 1 is no vault; a vault with no plugins yet lists none. An empty
-  # list used to read as no vault (sd:3548).
-  if ! installed=$("$py" - "$vault" 2>/dev/null <<'PYEOF'
-import pathlib, sys
+  # list used to read as no vault (sd:3548). Bounded: the vault may sit on a
+  # synced or network folder that stalls (sd:4816); a timeout is no answer,
+  # not a vault that is not there.
+  ob_rc=0
+  installed=$(bound_step 30 "$py" -c 'import pathlib, sys
 vault = pathlib.Path(sys.argv[1]) / ".obsidian"
 d = vault / "plugins"
 try:
@@ -2356,9 +2358,11 @@ try:
     names = sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
 except OSError:
     sys.exit(1)
-print("\n".join(names))
-PYEOF
-  ); then
+print("\n".join(names))' "$vault" 2>/dev/null) || ob_rc=$?
+  if [ "$ob_rc" -eq 124 ]; then
+    echo "  FAILED  the vault did not answer in time: $vault; its plugins were not checked"
+    return 0
+  elif [ "$ob_rc" -ne 0 ]; then
     echo "  SKIP    vault not found or unreadable: $vault (set OBSIDIAN_VAULT)"
     return 0
   fi
@@ -4652,7 +4656,11 @@ cmd_doctor() {
     jobs=$( { manifest cron; printf '%s\n' "$dr_host"; } | awk 'NF && !seen[$0]++' \
       | { grep -vxF "$(retired_cron_jobs)" || :; } | awk -v p="$LABEL_PREFIX.cron." '{ print p $0 }')
     for label in $labels $jobs; do
-      if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+      # The cron and agents stages' guard: a satellite never loads these, so
+      # not loaded is the wanted state, not a warning (sd:4797).
+      if sd_hub_only "$label" && is_satellite && ! hub_holder; then
+        echo "  SKIP    $label — hub only, and this machine is a satellite"
+      elif launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         echo "  ok      loaded: $label"
       else
         echo "  WARN    not loaded: $label"
@@ -4743,40 +4751,16 @@ run_step() { # seconds, command...
   fi
 }
 
-# Gatekeeper asks before the first run of a quarantined binary, and under
-# launchd with the screen locked no one answers: a new claude-code@latest
-# cask version held every agent job for 4.5 h (sd:4787). The operator's
-# ruling: the flag goes only when the signature verifies, Gatekeeper calls the
-# binary notarized and its team is Anthropic's, each checked on the path whose
-# flag goes. A check that fails or does not answer keeps the flag and
-# returns 1, so the caller reports it. A `claude` outside the cask is not ours.
-CLAUDE_TEAM=Q6L2SF6YDW
+# The cask claude keeps no Gatekeeper quarantine that a launchd job would wait
+# on, cleared only when its checks pass: lib/claude_quarantine.sh (sd:4787),
+# which the cron runner runs too (sd:4815). Sourced on first use like
+# lib/bounded.sh. A check runs bounded and the clear keeps the dry run.
+cq_check() { bound_step "$@"; }
+cq_clear() { try_run xattr -d com.apple.quarantine "$1"; }
 claude_quarantine() {
-  _cq=$(readlink "$(command -v claude 2>/dev/null)" 2>/dev/null) || return 0
-  case $_cq in */Caskroom/claude-code@latest/*) ;; *) return 0 ;; esac
-  if ! _cq_names=$(xattr "$_cq" 2>/dev/null); then
-    echo "  DIFFERS claude quarantine unknown: xattr could not read $_cq"
-    return 1
-  fi
-  if ! printf '%s\n' "$_cq_names" | grep -qx com.apple.quarantine; then
-    echo "  ok      claude not quarantined"
-    return 0
-  fi
-  if ! bound_step 120 codesign --verify --strict "$_cq" >/dev/null 2>&1; then
-    _cq_why="the signature does not verify"
-  elif ! _cq_out=$(bound_step 120 spctl --assess --type open --context context:primary-signature -v "$_cq" 2>&1) \
-      || ! printf '%s\n' "$_cq_out" | grep -qx 'source=Notarized Developer ID'; then
-    _cq_why="Gatekeeper did not say it is notarized"
-  elif ! _cq_out=$(bound_step 120 codesign -dv "$_cq" 2>&1) \
-      || ! printf '%s\n' "$_cq_out" | grep -qx "TeamIdentifier=$CLAUDE_TEAM"; then
-    _cq_why="its team is not $CLAUDE_TEAM"
-  else
-    echo "  DIFFERS claude quarantined; signed, notarized, team $CLAUDE_TEAM: clearing"
-    try_run xattr -d com.apple.quarantine "$_cq" && return 0
-    _cq_why="xattr could not clear it"
-  fi
-  echo "  DIFFERS claude quarantine kept on $_cq: $_cq_why"
-  return 1
+  # shellcheck source=/dev/null
+  command -v st_claude_quarantine >/dev/null 2>&1 || . "$ROOT/lib/claude_quarantine.sh"
+  st_claude_quarantine "$(command -v claude 2>/dev/null)"
 }
 
 # Maintenance sweep: refresh what is already installed. Dry run by default
@@ -5405,6 +5389,14 @@ nas_roots() {
   nr=$(nas_mount) || return 1
   [ -z "$nr" ] || printf '%s\n' "${nr%/}/sd-backups-hourly" "${nr%/}/sd-backups"
 }
+# nas_mount and rm_target's helpers, kept as text: this shell defines them,
+# and rm_target runs them in a child shell under a bound, since each path
+# they resolve may lie on a share, and a stalled SMB share hung a cd -P or a
+# test of its mount point (sd:4816). A quoted here-document, so the text is
+# the functions as written; printed by a function, as bash 3.2 misreads a
+# case pattern in a here-document inside $().
+rt_sh() {
+  cat <<'RTEOF'
 nas_mount() {
   PYTHONPATH="$ROOT/lib" python3 -c 'import os, system_tools_config as stc
 print(os.environ.get("OFFSITE_VERIFY_ROOT") or stc.read_env("mirror-sync").get("OFFSITE_VERIFY_ROOT") or "")'
@@ -5446,7 +5438,7 @@ rt_locate() { # path
 # nothing when $1 is gone. Returns 1, the reason on stderr, when the real
 # path holds a newline, is not under the resolved root $2, or is on the NAS
 # mount or holds it (rm -rf crosses mounts); returns 2 when it cannot tell.
-rm_target() { # path allowed-root
+rt_target() { # path allowed-root
   case "${1:?}" in /*) ;; *) echo "$1: not an absolute path" >&2; return 1 ;; esac
   rt_locate "$1" || return 2
   [ -n "$rt_at" ] || return 0
@@ -5471,6 +5463,28 @@ rm_target() { # path allowed-root
     case "${rt_n%/}/" in "$rt_real"/*) echo "$rt_real: holds the NAS ($rt_nas)" >&2; return 1 ;; esac
   done
   printf '%s\n' "$rt_real"
+}
+RTEOF
+}
+# Exported, so the child reads the text from its environment, and the step
+# line names the call, not the functions.
+RT_SH=$(rt_sh)
+export RT_SH
+eval "$RT_SH"
+
+# rt_target in a child shell, bounded as a listing is: its exit and its
+# output, or 2, cannot tell, when it did not answer in time. A timeout is
+# never a path that is not there.
+rm_target() { # path allowed-root
+  rm_rc=0
+  # shellcheck disable=SC2016 # the child expands its own arguments
+  rm_out=$(bound_step 30 sh -c 'eval "$RT_SH"; ROOT=$1; shift; rt_target "$@"' sh "$ROOT" "$@") || rm_rc=$?
+  case $rm_rc in
+    0) [ -z "$rm_out" ] || printf '%s\n' "$rm_out" ;;
+    1|2) ;;
+    *) echo "$1: where it lies was not read in time (exit $rm_rc)" >&2; rm_rc=2 ;;
+  esac
+  return "$rm_rc"
 }
 
 # The local root a hub-role backup job writes, from that job's own file: the
@@ -5813,9 +5827,12 @@ promote_refuse() { echo "promote: refused: $*" >&2; exit 1; }
 # Prints each NAS root ($2, one per line) it cannot list, as today's names
 # there are not held, and each snapshot in $1, of any day, that differs from
 # the one of its name in the NAS hourly root, where the hourly copy would
-# overwrite it. `sd-db backup` writes its manifest last.
-hold_names() {
-  python3 -c 'import datetime, os, re, sys
+# overwrite it. `sd-db backup` writes its manifest last. The roots are $3,
+# one per line, not stdin: bound_step gives the command /dev/null. Bounded, as
+# it lists the NAS roots and reads manifests there; a timeout is a failure,
+# never a root with nothing to hold (sd:4816).
+hold_names() { # dest nas-roots roots
+  bound_step 60 python3 -c 'import datetime, os, re, sys
 dest, nas = sys.argv[1], sys.argv[2].splitlines()
 today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 def manifest(folder):
@@ -5824,7 +5841,7 @@ def manifest(folder):
             return f.read()
     except OSError:
         return None
-for root in filter(None, sys.stdin.read().splitlines()):
+for root in filter(None, sys.argv[3].splitlines()):
     try:
         names = os.listdir(root)
     except OSError:
@@ -5840,7 +5857,7 @@ for root in filter(None, sys.stdin.read().splitlines()):
         pair = root in nas and os.path.basename(root) == "sd-backups-hourly"
         if pair and os.path.isdir(held) and os.listdir(held) and (
                 manifest(held) is None or manifest(held) != manifest(os.path.join(root, name))):
-            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$2"
+            print(held + " is not the snapshot of that name in " + root + "; move it aside")' "$1" "$2" "$3"
 }
 
 # Step 4, 5 and the seed are the ones that move files; each first records what
@@ -5933,7 +5950,10 @@ cmd_promote() {
     set --
     for pr in $(promote_roots | tr ' ' '\001'); do set -- "$@" "$(printf '%s' "$pr" | tr '\001' ' ')"; done
     rc=0
-    out=$("$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1 </dev/null) || rc=$?
+    # Bounded: it reads the snapshot off the NAS, and a stalled share would
+    # hold the run (sd:4816). A copy gets 30 min where a listing gets 10 s;
+    # a timeout is a failed restore, handled as one.
+    out=$(bound_step 1800 "$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1) || rc=$?
     printf '%s\n' "$out"
     if [ "$rc" -ne 0 ]; then
       if [ ! -e "$SD_DB" ]; then
@@ -5966,22 +5986,37 @@ cmd_promote() {
     # same names. The restored snapshot in the local root continues them.
     snapshot=$(marker_get snapshot)
     dest=$(hourly_destination) || dest=
-    [ -n "$dest" ] && [ -d "$(dirname "$dest")" ] ||
+    # As hub-ready probes it: only exit 1 says missing; a timeout or another
+    # failure is no answer.
+    dest_rc=0
+    [ -z "$dest" ] || bound_step 10 test -d "$(dirname "$dest")" || dest_rc=$?
+    if [ -z "$dest" ] || [ "$dest_rc" -eq 1 ]; then
       promote_refuse "the hourly job file names no local root to seed; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
+    elif [ "$dest_rc" -ne 0 ]; then
+      promote_refuse "the hourly backup root's parent did not answer (exit $dest_rc): $dest; rerun"
+    fi
     seeded="$dest/$(basename "$snapshot")"
-    if [ ! -d "$seeded" ]; then
-      mkdir -p "$dest"
+    seed_rc=0
+    bound_step 10 test -d "$seeded" || seed_rc=$?
+    case $seed_rc in
+      0|1) ;;
+      *) promote_refuse "the seed $seeded did not answer (exit $seed_rc); rerun" ;;
+    esac
+    if [ "$seed_rc" -eq 1 ]; then
+      bound_step 10 mkdir -p "$dest" || promote_refuse "could not make $dest (exit $?); rerun"
       stale=$(rm_target "$seeded.seeding" "$dest") ||
         promote_refuse "will not delete $seeded.seeding; the hourly root must be a local folder off the NAS"
       [ -z "$stale" ] || rm -rf -- "${stale:?}"
-      if ! cp -R "$snapshot" "$seeded.seeding" || ! mv "$seeded.seeding" "$seeded"; then
+      # The snapshot is on the NAS: a stalled share ends at the bound, and
+      # the rerun deletes the part copy.
+      if ! bound_step 1800 cp -R "$snapshot" "$seeded.seeding" || ! mv "$seeded.seeding" "$seeded"; then
         promote_refuse "could not copy $snapshot into $dest; rerun"
       fi
     fi
     # A NAS root it cannot list now is listed again after the report.
     nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
-    { printf '%s' "$PROMOTE_FROM"; printf '%s\n' "$nas"; } | hold_names "$dest" "$nas" >/dev/null ||
-      promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
+    hold_names "$dest" "$nas" "$PROMOTE_FROM$nas" >/dev/null ||
+      promote_refuse "could not hold the NAS snapshot names in $dest (exit $?); rerun"
     echo "seed    : $seeded"
     marker_set step 7
     step=7
@@ -6152,8 +6187,8 @@ if want is None or got is None or tuple(got) != tuple(want):
   [ -n "$dest" ] || promote_refuse "the hourly job file names no local root; set SD_DB_BACKUP_HOURLY_DESTINATION there, then rerun"
   # A failed read of the NAS roots is no answer, not none to hold.
   nas=$(nas_roots) || promote_refuse "could not read OFFSITE_VERIFY_ROOT for the NAS roots; rerun"
-  unheld=$(printf '%s\n' "$nas" | hold_names "$dest" "$nas") ||
-    promote_refuse "could not hold the NAS snapshot names in $dest; rerun"
+  unheld=$(hold_names "$dest" "$nas" "$nas") ||
+    promote_refuse "could not hold the NAS snapshot names in $dest (exit $?); rerun"
   if [ -n "$unheld" ]; then
     marker_set step hold
     echo "promote: paused: the hub serves; the NAS copies wait until promote --apply runs again after this:" >&2
@@ -6207,9 +6242,10 @@ undo_dated() { # name
 # match the folder as the pack's _check_backup reads it: every file by
 # sha256, every folder, no link, nothing on another device; Finder's
 # metadata a copy picks up is left out. A name alone proves nothing, and a
-# file added later is not the pack's. Unreadable counts as not one: kept.
+# file added later is not the pack's. Unreadable counts as not one: kept;
+# so does a proof that does not end in its bound (sd:4816).
 undo_snapshot() { # folder
-  python3 -c 'import hashlib, json, os, re, stat, sys
+  bound_step 120 python3 -c 'import hashlib, json, os, re, stat, sys
 folder = sys.argv[1]
 path = os.path.join(folder, "backup-manifest.json")
 try:
@@ -6262,9 +6298,17 @@ undo_named() { # root function
       if [ -e "$un_e" ] || [ -L "$un_e" ]; then "$2" "$un_e"; fi
     done
   else
-    { [ -r "$1" ] && [ -x "$1" ]; } || { echo "$1: cannot list it" >&2; return 2; }
-    for un_e in "$1"/*; do
-      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}" && undo_snapshot "$un_e"; then "$2" "$un_e"; fi
+    # The folders in a bounded child: a root that leads onto a stalled share
+    # ends at the bound, and no answer is no listing, not an empty root
+    # (sd:4816). A name with a newline is no dated name, so one per line.
+    # shellcheck disable=SC2016 # the child expands its own arguments
+    un_list=$(bound_step 30 sh -c '{ [ -r "$1" ] && [ -x "$1" ]; } || exit 3
+      for e in "$1"/*; do if [ -d "$e" ] && [ ! -L "$e" ]; then printf "%s\n" "${e##*/}"; fi; done' sh "$1") ||
+      { echo "$1: cannot list it (exit $?)" >&2; return 2; }
+    # In this shell, not a pipeline: a refusal in $2 must end the run. Only
+    # digits, dashes and dots pass the grep, so the words neither split nor glob.
+    for un_n in $(printf '%s\n' "$un_list" | grep -E '^[0-9][0-9.-]*$'); do
+      if undo_dated "$un_n" && undo_snapshot "$1/$un_n"; then "$2" "$1/$un_n"; fi
     done
   fi
 }
@@ -6365,7 +6409,15 @@ promote_undo() { # marker step
     nas=$(PROMOTE_FROM=""; promote_roots | sed -n 1p)
     [ -n "$nas" ] || promote_refuse "no NAS hourly root: set OFFSITE_VERIFY_ROOT in $(st_config_dir mirror-sync)/.env"
     # Never created here: a share that is not mounted has no such folder.
-    [ -d "$nas" ] || promote_refuse "the NAS hourly root $nas is not there; mount the share, then rerun"
+    # Bounded, as hub-ready's probes are: only exit 1 says it is not there;
+    # a stalled share is no answer (sd:4816).
+    un_rc=0
+    bound_step 10 test -d "$nas" || un_rc=$?
+    case $un_rc in
+      0) ;;
+      1) promote_refuse "the NAS hourly root $nas is not there; mount the share, then rerun" ;;
+      *) promote_refuse "the NAS hourly root $nas did not answer (exit $un_rc); rerun once the share answers" ;;
+    esac
     mkdir -p "$(dirname "$PROMOTE_MARKER")"
     printf 'hub=%s\nport=%s\nmoved=%s\nnas=%s\nstep=1\n' "$1" "$2" "$moved" "$nas" > "$PROMOTE_MARKER.new"
     mv "$PROMOTE_MARKER.new" "$PROMOTE_MARKER"
@@ -6415,7 +6467,14 @@ promote_undo() { # marker step
       undo_restart "the hand-back snapshot failed: $out"
     printf '%s\n' "$out"
     snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db backup: \(.*\) — .*/\1/p' | tail -1)
-    [ -f "$snapshot/backup-manifest.json" ] || undo_restart "the backup named no snapshot with a manifest: $out"
+    # The snapshot is on the NAS: a manifest test that does not answer is no manifest.
+    un_rc=0
+    [ -z "$snapshot" ] || bound_step 10 test -f "$snapshot/backup-manifest.json" || un_rc=$?
+    case $un_rc in
+      0) [ -n "$snapshot" ] || undo_restart "the backup named no snapshot with a manifest: $out" ;;
+      1) undo_restart "the backup named no snapshot with a manifest: $out" ;;
+      *) undo_restart "the hand-back snapshot's manifest did not answer (exit $un_rc): $snapshot" ;;
+    esac
     marker_set snapshot "$snapshot"
     # hub.json beside the database makes every sd command here refuse
     # (HubConflict) until step 4 deletes it, so no write follows the snapshot.
@@ -6437,8 +6496,10 @@ promote_undo() { # marker step
   if [ "$step" = 3 ]; then
     # Step 3: three checks, and nothing is deleted unless each passes. The
     # fence reads the local database, opened as step 9 opens it: sd's own
-    # open refuses it beside hub.json.
-    if ! "$SD_DB_PYTHON" -I -c 'import json, sys
+    # open refuses it beside hub.json. Bounded: it reads the snapshot's
+    # manifest off the NAS (sd:4816); a timeout deletes nothing.
+    un_rc=0
+    bound_step 120 "$SD_DB_PYTHON" -I -c 'import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from sd_db import database, hub, remote
@@ -6467,7 +6528,10 @@ if last != snapshot.name:
     sys.exit(f"the new hub last restored {last}, not the hand-back snapshot {snapshot.name}")
 if held is None:
     sys.exit(f"the new hub holds no checkpoint {run_id}, the hand-back point")' \
-      "$SD_PACK_ROOT/lib" "$SD_DB" "$hub" "$port" "$snapshot" </dev/null; then
+      "$SD_PACK_ROOT/lib" "$SD_DB" "$hub" "$port" "$snapshot" || un_rc=$?
+    if [ "$un_rc" -eq 124 ]; then
+      promote_refuse "the hand-back checks did not answer in time; nothing deleted; rerun"
+    elif [ "$un_rc" -ne 0 ]; then
       echo "promote --undo: refused; nothing deleted. On the new hub, as a satellite of $hub, run" >&2
       echo "  $(basename "$SELF") promote --apply: $snapshot is the newest snapshot there" >&2
       echo "  then rerun here: $(basename "$SELF") promote --undo --apply" >&2
@@ -6558,9 +6622,9 @@ promote_drill() {
   set --
   for pr in $(promote_roots | tr ' ' '\001'); do set -- "$@" "$(printf '%s' "$pr" | tr '\001' ' ')"; done
   # The live state and config folders stay out: the throwaway home is the
-  # only place the restore writes.
-  out=$(env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
-    "$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1 </dev/null) || promote_refuse "drill: restore --newest failed: $out"
+  # only place the restore writes. Bounded as promote's step 5 (sd:4816).
+  out=$(bound_step 1800 env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$DRILL_HOME/home" \
+    "$SD_PACK_ROOT/bin/sd-db" restore --newest "$@" 2>&1) || promote_refuse "drill: restore --newest failed (exit $?): $out"
   printf '%s\n' "$out"
   snapshot=$(printf '%s\n' "$out" | sed -n 's/^sd-db: restored \(.*\) (checkpoint .*) to .*/\1/p' | tail -1)
   [ -n "$snapshot" ] || promote_refuse "drill: restore --newest named no snapshot"

@@ -8,7 +8,7 @@ the pinned pack's own, so the drill's one session is real.
 import sys
 
 from tests.test_backbone import write_stub
-from tests.test_promote import SATELLITE_CASE, PromoteCase
+from tests.test_promote import SATELLITE_CASE, PromoteCase, run_stalled, stall_steps
 
 NEWEST = "2026-10-14.5"
 
@@ -114,3 +114,25 @@ class Drill(PromoteCase):
     def test_drill_and_undo_do_not_go_together(self):
         result = self.run_drill("--undo", expect=1)
         self.assertIn("--drill and --undo do not go together", result.stderr)
+
+
+    # Stalled shares (sd:4816): each probe ends within its bound in an
+    # unattended run, and a timeout fails the drill; never a pass.
+
+    def test_a_stalled_restore_fails_the_drill_and_deletes_the_home(self):
+        stall_steps(self)
+        result = run_stalled(self, "--drill", STUB_RESTORE_HANG="1", SD_DB_PYTHON=self.python)
+        self.assertIn("drill: restore --newest failed (exit 124)", result.stderr)
+        self.assertNotIn("drill   : passed", result.stdout)
+        self.assertFalse(self.drill.exists())
+
+    def test_a_leftover_home_that_does_not_answer_stays(self):
+        stall_steps(self)
+        (self.drill / "home").mkdir(parents=True)
+        (self.drill / ".sd-promote-drill").write_text("")
+        result = run_stalled(self, "--drill", STUB_STALL_SH=str(self.drill), SD_DB_PYTHON=self.python)
+        self.assertIn("where it lies was not read in time (exit 124)", result.stderr)
+        self.assertIn("drill: will not delete", result.stderr)
+        self.assertTrue((self.drill / ".sd-promote-drill").exists())
+        self.assertEqual([], self.calls("restore"))
+

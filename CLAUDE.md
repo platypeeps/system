@@ -49,7 +49,7 @@ Area rules load from `.claude/rules/` when you touch matching files (index at th
 - `local-*` folders run local services or tools; `network-testing` is iperf3/ping tooling.
 - `mezmo-*` folders are helpers for the Mezmo API and its test data; only they may name that product.
   - `tests/test_product_name.py` enforces it in the `make check` preflight; its `ALLOWED` entries carry their reasons.
-- `lib/` holds the shared config resolver (`lib/config.sh` for shell, `lib/system_tools_config.py` for Python) and `lib/bounded.sh`, the bounded step for unattended jobs (`st_bounded`, `st_step`).
+- `lib/` holds the shared config resolver (`lib/config.sh` for shell, `lib/system_tools_config.py` for Python), `lib/bounded.sh`, the bounded step for unattended jobs (`st_bounded`, `st_step`), and `lib/claude_quarantine.sh`, the cask claude's verify-then-clear.
   - Code a cron job runs calls brew, mas, softwareupdate and remote git only through `st_step`, and curl with `--max-time`; `lib/tests/test_bounded.py` fails a bare call (sd:3536).
 
 ## Conventions — keep these when adding or changing anything

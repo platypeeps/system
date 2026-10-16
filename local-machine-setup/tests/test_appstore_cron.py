@@ -231,6 +231,31 @@ class CronSatelliteTest(CronTest):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("sd-db-backup", self.cron_log.read_text())
 
+    def run_doctor(self):
+        # Nothing is loaded; iTerm2 has no prefs folder set.
+        write_exec(self.stubs / "launchctl", "#!/bin/sh\nexit 1\n")
+        write_exec(self.stubs / "defaults", "#!/bin/sh\nexit 1\n")
+        env = {"HOME": str(self.home), "MACHINE_SETUP_STATE": str(self.state),
+               "PATH": f"{self.stubs}:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
+               **fixture_config.env(self.config_root),
+               "SYSTEM_TOOLS_LABEL_PREFIX": fixture_config.LABEL_PREFIX, "CRON_JOBS_HOST": HOST}
+        return subprocess.run([str(self.folder / "machine-setup.sh"), "doctor"], env=env,
+                              capture_output=True, text=True, cwd=self.tmp.name,
+                              stdin=subprocess.DEVNULL, timeout=120).stdout
+
+    def test_doctor_does_not_warn_for_a_hub_only_job_on_a_satellite(self):
+        """sd:4797: doctor warned not loaded for the jobs the cron stage skips."""
+        (self.profiles / "personal.satellite").write_text("hub.example.test\n")
+        out = self.run_doctor()
+        label = f"{fixture_config.LABEL_PREFIX}.cron.sd-db-backup"
+        self.assertIn(f"  SKIP    {label} — hub only, and this machine is a satellite", out)
+        self.assertNotIn(f"not loaded: {label}", out)
+        self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.shared-job", out)
+
+    def test_doctor_on_the_hub_still_warns_for_it(self):
+        out = self.run_doctor()
+        self.assertIn(f"  WARN    not loaded: {fixture_config.LABEL_PREFIX}.cron.sd-db-backup", out)
+
     def test_the_hub_installs_it(self):
         result = self.run_stage("cron", "--apply")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
