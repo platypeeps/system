@@ -75,6 +75,9 @@ with its path, beside a new Claude Code Caskroom binary (the `claude-code@latest
 cask, sd:4738) or python Cellar path, the two known grant droppers. Leftovers or a missing grant print an
 `SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
 nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
+After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
+a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
+with the screen locked (sd:4787).
 
 ## Configuration
 
@@ -159,7 +162,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed) | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |

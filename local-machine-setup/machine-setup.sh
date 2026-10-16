@@ -597,6 +597,9 @@ stage_brew() {
       run bound_step 1800 brew install --cask --adopt "$c"
     fi
   done
+  # Every run, not only after an install: the nightly update clears a cask
+  # moved by hand, or before this check existed.
+  claude_quarantine || note_failure "brew stage: claude keeps com.apple.quarantine; launchd jobs would wait on a Gatekeeper prompt" 1
 
   if ! unpinned=$(unpinned_formulae); then
     note_failure "brew stage: brew could not list its pins; none changed" 1
@@ -4740,6 +4743,42 @@ run_step() { # seconds, command...
   fi
 }
 
+# Gatekeeper asks before the first run of a quarantined binary, and under
+# launchd with the screen locked no one answers: a new claude-code@latest
+# cask version held every agent job for 4.5 h (sd:4787). The operator's
+# ruling: the flag goes only when the signature verifies, Gatekeeper calls the
+# binary notarized and its team is Anthropic's, each checked on the path whose
+# flag goes. A check that fails or does not answer keeps the flag and
+# returns 1, so the caller reports it. A `claude` outside the cask is not ours.
+CLAUDE_TEAM=Q6L2SF6YDW
+claude_quarantine() {
+  _cq=$(readlink "$(command -v claude 2>/dev/null)" 2>/dev/null) || return 0
+  case $_cq in */Caskroom/claude-code@latest/*) ;; *) return 0 ;; esac
+  if ! _cq_names=$(xattr "$_cq" 2>/dev/null); then
+    echo "  DIFFERS claude quarantine unknown: xattr could not read $_cq"
+    return 1
+  fi
+  if ! printf '%s\n' "$_cq_names" | grep -qx com.apple.quarantine; then
+    echo "  ok      claude not quarantined"
+    return 0
+  fi
+  if ! bound_step 120 codesign --verify --strict "$_cq" >/dev/null 2>&1; then
+    _cq_why="the signature does not verify"
+  elif ! _cq_out=$(bound_step 120 spctl --assess --type open --context context:primary-signature -v "$_cq" 2>&1) \
+      || ! printf '%s\n' "$_cq_out" | grep -qx 'source=Notarized Developer ID'; then
+    _cq_why="Gatekeeper did not say it is notarized"
+  elif ! _cq_out=$(bound_step 120 codesign -dv "$_cq" 2>&1) \
+      || ! printf '%s\n' "$_cq_out" | grep -qx "TeamIdentifier=$CLAUDE_TEAM"; then
+    _cq_why="its team is not $CLAUDE_TEAM"
+  else
+    echo "  DIFFERS claude quarantined; signed, notarized, team $CLAUDE_TEAM: clearing"
+    try_run xattr -d com.apple.quarantine "$_cq" && return 0
+    _cq_why="xattr could not clear it"
+  fi
+  echo "  DIFFERS claude quarantine kept on $_cq: $_cq_why"
+  return 1
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
@@ -4777,6 +4816,7 @@ cmd_upgrade() {
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
     run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
+    claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
