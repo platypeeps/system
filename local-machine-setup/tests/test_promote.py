@@ -1174,6 +1174,15 @@ class StalledShareInSteps(PromoteCase):
         self.assertEqual("6", self.marker_step())
         self.assertFalse(self.hourly.exists())
 
+    def test_a_stalled_seed_probe_copies_nothing(self):
+        self.restored()
+        self.hourly.mkdir()
+        seeded = self.hourly / "2026-10-14.5"
+        result = run_stalled(self, "--apply", STUB_STALL_TEST=str(seeded))
+        self.assertIn(f"the seed {seeded} did not answer (exit 124); rerun", result.stderr)
+        self.assertFalse(seeded.exists())
+        self.assertEqual("6", self.marker_step())
+
     def test_a_stalled_seed_target_deletes_and_copies_nothing(self):
         self.restored()
         self.hourly.mkdir()
@@ -1205,6 +1214,9 @@ class StalledShareInSteps(PromoteCase):
         self.assertIn("(exit 124)", result.stderr)
         self.assertEqual("6", self.marker_step())
         self.assertEqual([], self.installed())
+        # Names held before the bound are empty folders the rerun makes anyway.
+        run_stalled(self, "--apply", expect=0)
+        self.assertIsNone(self.marker_step())
 
     def test_a_stalled_hold_after_the_report_keeps_the_marker(self):
         """The hold step lists the NAS again after the report: no answer is

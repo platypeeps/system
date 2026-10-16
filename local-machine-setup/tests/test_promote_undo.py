@@ -682,9 +682,26 @@ class Undo(PromoteCase):
     def test_a_stalled_delete_target_deletes_nothing(self):
         self.handed_back()
         stall_steps(self)
-        result = self.run_stalled_undo("--apply", STUB_STALL_SH=str(self.hourly))
+        result = self.run_stalled_undo("--apply", STUB_STALL_SH=str(self.hourly / PROMOTED))
         self.assertIn("where it lies was not read in time (exit 124)", result.stderr)
-        self.assertIn(f"could not tell where {self.hourly} lies", result.stderr)
         self.assertEqual("4", self.marker_step())
         self.assertTrue((self.hourly / PROMOTED).exists())
+
+    def test_a_backup_root_that_does_not_list_deletes_nothing(self):
+        """A root that stalls is no listing, not an empty root. rm_target
+        reads the root first, so the stub stalls the listing by its text."""
+        self.handed_back()
+        stall_steps(self)
+        result = self.run_stalled_undo("--apply", STUB_STALL_SH='for e in "$1"/*')
+        self.assertIn(f"{self.hourly}: cannot list it (exit 124)", result.stderr)
+        self.assertIn(f"could not list {self.hourly}; rerun", result.stderr)
+        self.assertEqual("4", self.marker_step())
+        self.assertTrue((self.hourly / PROMOTED).exists())
+
+    def test_a_snapshot_proof_that_does_not_end_keeps_the_folder(self):
+        """A proof past its bound is unreadable, and unreadable is kept."""
+        self.handed_back()
+        stall_steps(self)
+        result = self.run_stalled_undo("--apply", expect=0, STUB_STALL_PY=str(self.hourly / PROMOTED))
+        self.assertTrue((self.hourly / PROMOTED).exists(), result.stdout + result.stderr)
 

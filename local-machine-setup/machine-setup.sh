@@ -5992,8 +5992,14 @@ cmd_promote() {
       promote_refuse "the hourly backup root's parent did not answer (exit $dest_rc): $dest; rerun"
     fi
     seeded="$dest/$(basename "$snapshot")"
-    if [ ! -d "$seeded" ]; then
-      mkdir -p "$dest"
+    seed_rc=0
+    bound_step 10 test -d "$seeded" || seed_rc=$?
+    case $seed_rc in
+      0|1) ;;
+      *) promote_refuse "the seed $seeded did not answer (exit $seed_rc); rerun" ;;
+    esac
+    if [ "$seed_rc" -eq 1 ]; then
+      bound_step 10 mkdir -p "$dest" || promote_refuse "could not make $dest (exit $?); rerun"
       stale=$(rm_target "$seeded.seeding" "$dest") ||
         promote_refuse "will not delete $seeded.seeding; the hourly root must be a local folder off the NAS"
       [ -z "$stale" ] || rm -rf -- "${stale:?}"
@@ -6232,9 +6238,10 @@ undo_dated() { # name
 # match the folder as the pack's _check_backup reads it: every file by
 # sha256, every folder, no link, nothing on another device; Finder's
 # metadata a copy picks up is left out. A name alone proves nothing, and a
-# file added later is not the pack's. Unreadable counts as not one: kept.
+# file added later is not the pack's. Unreadable counts as not one: kept;
+# so does a proof that does not end in its bound (sd:4816).
 undo_snapshot() { # folder
-  python3 -c 'import hashlib, json, os, re, stat, sys
+  bound_step 120 python3 -c 'import hashlib, json, os, re, stat, sys
 folder = sys.argv[1]
 path = os.path.join(folder, "backup-manifest.json")
 try:
@@ -6287,9 +6294,17 @@ undo_named() { # root function
       if [ -e "$un_e" ] || [ -L "$un_e" ]; then "$2" "$un_e"; fi
     done
   else
-    { [ -r "$1" ] && [ -x "$1" ]; } || { echo "$1: cannot list it" >&2; return 2; }
-    for un_e in "$1"/*; do
-      if [ -d "$un_e" ] && [ ! -L "$un_e" ] && undo_dated "${un_e##*/}" && undo_snapshot "$un_e"; then "$2" "$un_e"; fi
+    # The folders in a bounded child: a root that leads onto a stalled share
+    # ends at the bound, and no answer is no listing, not an empty root
+    # (sd:4816). A name with a newline is no dated name, so one per line.
+    # shellcheck disable=SC2016 # the child expands its own arguments
+    un_list=$(bound_step 30 sh -c '{ [ -r "$1" ] && [ -x "$1" ]; } || exit 3
+      for e in "$1"/*; do if [ -d "$e" ] && [ ! -L "$e" ]; then printf "%s\n" "${e##*/}"; fi; done' sh "$1") ||
+      { echo "$1: cannot list it (exit $?)" >&2; return 2; }
+    # In this shell, not a pipeline: a refusal in $2 must end the run. Only
+    # digits, dashes and dots pass the grep, so the words neither split nor glob.
+    for un_n in $(printf '%s\n' "$un_list" | grep -E '^[0-9][0-9.-]*$'); do
+      if undo_dated "$un_n" && undo_snapshot "$1/$un_n"; then "$2" "$1/$un_n"; fi
     done
   fi
 }
