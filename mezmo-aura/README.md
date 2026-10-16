@@ -71,7 +71,7 @@ Private values live outside the checkout, in `<config>/mezmo-aura/`.
 
 | File | Holds |
 |---|---|
-| `.env` | `OPENAI_API_KEY`, `MEZMO_API_KEY`, `AURA_REPO`; `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` for the experiment. Copy `.env.example`. |
+| `.env` | `OPENAI_API_KEY`, `MEZMO_SERVICE_KEY`, `AURA_REPO`; `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` for the experiment. Copy `.env.example`. |
 | `config.toml` | Optional. Replaces `config.toml` beside the script. |
 
 Values already exported win over `.env`.

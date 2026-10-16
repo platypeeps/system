@@ -73,7 +73,7 @@ class FromCheckout(unittest.TestCase):
             HOME=str(self.home),
             SYSTEM_TOOLS_CONFIG=str(root / "config"),
             AURA_REPO=str(self.repo), STUB_LOG=str(self.log),
-            OPENAI_API_KEY="k", MEZMO_API_KEY="k",
+            OPENAI_API_KEY="k", MEZMO_SERVICE_KEY="k",
         )
 
     def run_aura(self, *args):

@@ -33,7 +33,7 @@ esac
 # values already exported win over every one of them.
 st_source_env "$TOOL"
 [ -n "${OPENAI_API_KEY:-}" ] && export OPENAI_API_KEY
-[ -n "${MEZMO_API_KEY:-}" ] && export MEZMO_API_KEY
+[ -n "${MEZMO_SERVICE_KEY:-}" ] && export MEZMO_SERVICE_KEY
 
 # A config.toml in <config>/mezmo-aura/ replaces the one beside this script.
 if [ -f "$CONF/config.toml" ]; then
@@ -44,7 +44,7 @@ fi
 
 # The server cannot start without either key, so say which is missing first.
 need_keys() {
-  for var in OPENAI_API_KEY MEZMO_API_KEY; do
+  for var in OPENAI_API_KEY MEZMO_SERVICE_KEY; do
     eval "value=\${$var:-}"
     if [ -z "$value" ]; then
       st_missing "$var" "$TOOL" .env "$TOOL"
@@ -292,7 +292,7 @@ traces: server, server-repo and the experiment export OTLP to
   prompts and answers; for a server, export OTEL_RECORD_CONTENT=true.
 
 config:
-  <config>/mezmo-aura/.env         OPENAI_API_KEY, MEZMO_API_KEY, AURA_REPO, and
+  <config>/mezmo-aura/.env         OPENAI_API_KEY, MEZMO_SERVICE_KEY, AURA_REPO, and
                                    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY for the
                                    experiment; copy .env.example. Exported
                                    values win.
