@@ -335,26 +335,27 @@ class TheCells(unittest.TestCase):
 
 
 class TheLampHover(unittest.TestCase):
-    """sd:2530: a lit lamp keeps its state colour under the pointer. The foundation strip (sd:3588) dims it 4%; the
-    operator ruled for the ring (2026-10-13), so shell.css cancels the dim and draws the ring."""
+    """sd:2530: a lit lamp keeps its state colour under the pointer. The operator ruled for a ring (2026-10-13); the
+    foundation strip draws it since ui-design sd:3743 (sd:4750), so no stylesheet here dims or rings a lamp."""
+
+    STRIP = (STATIC / "annunciator-strip.css").read_text(encoding="utf-8")
 
     def test_no_state_hover_shifts_brightness(self):
-        for name, css in {**PAGE_CSS, "shell.css": SHELL_CSS}.items():
+        for name, css in {**PAGE_CSS, "shell.css": SHELL_CSS, "annunciator-strip.css": self.STRIP}.items():
             with self.subTest(name):
-                self.assertNotRegex(css, r'data-state="(caution|warning)"\][^{]*:hover[^{]*\{[^}]*filter:(?!\s*none\b)')
+                self.assertNotRegex(css, r'data-state="(caution|warning|unknown)"\][^{]*:hover[^{]*\{[^}]*filter:(?!\s*none\b)')
 
-    def test_the_shell_cancels_the_strips_dim(self):
-        strip = (STATIC / "annunciator-strip.css").read_text(encoding="utf-8")
-        self.assertIn('.annunciator :is(button, a).cell:is([data-state="caution"], [data-state="warning"], [data-state="unknown"])'
-                      ':is(:hover, .is-hover) { filter: brightness(0.96); }', strip)
-        # One more element in the selector than the strip's rule, so it wins although shell.css loads first.
-        self.assertIn('annunciator-strip .annunciator :is(a, button).cell:is([data-state="caution"], [data-state="warning"],'
-                      ' [data-state="unknown"]):hover { filter: none; }', SHELL_CSS)
+    def test_the_strip_no_longer_dims(self):
+        self.assertNotIn("brightness(", self.STRIP)
 
-    def test_the_hover_ring_is_drawn_in_the_lamps_ink_token(self):
-        for state, ink in (("caution", "--color-caution-lamp-ink"), ("warning", "--color-warning-ink")):
-            self.assertIn(f':is(a, button).cell[data-state="{state}"]:not([aria-pressed="true"]):hover {{ box-shadow: inset 0 0 0 1px var({ink}); }}',
-                          SHELL_CSS)
+    def test_the_strip_draws_the_hover_ring_in_the_lamps_ink_token(self):
+        for state, ink in (("caution", "--color-caution-lamp-ink"), ("warning", "--color-warning-ink"), ("unknown", "--color-ink-2")):
+            self.assertIn(f'.cell[data-state="{state}"]:not([aria-pressed="true"]):is(:hover, .is-hover) '
+                          f'{{ box-shadow: inset 0 0 0 1px var({ink}); }}', self.STRIP)
+
+    def test_the_shell_neither_cancels_the_dim_nor_draws_a_ring(self):
+        self.assertNotIn("filter:", SHELL_CSS.split("Annunciator and ledger")[1].split("The ledger")[0])
+        self.assertNotRegex(SHELL_CSS, r'\.cell\[data-state="(caution|warning|unknown)"\][^{]*\{[^}]*box-shadow')
 
 
 class TheSortHeader(unittest.TestCase):
