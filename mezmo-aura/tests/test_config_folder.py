@@ -38,7 +38,7 @@ class ConfigFolder(unittest.TestCase):
         self.old = self.config / "aura"
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("OTEL_", "AURA_", "GENAI_TRACES_", "LLM_"))
-                    and k not in ("OPENAI_API_KEY", "MEZMO_API_KEY", "CONFIG_PATH")}
+                    and k not in ("OPENAI_API_KEY", "MEZMO_SERVICE_KEY", "CONFIG_PATH")}
         self.env.update(PATH=f"{root / 'bin'}:{os.environ['PATH']}", SYSTEM_TOOLS_CONFIG=str(self.config),
                         AURA_TRACES="0")
 
@@ -48,7 +48,7 @@ class ConfigFolder(unittest.TestCase):
 
     def keys(self, folder):
         folder.mkdir(parents=True)
-        (folder / ".env").write_text("OPENAI_API_KEY=k\nMEZMO_API_KEY=k\n", encoding="utf-8")
+        (folder / ".env").write_text("OPENAI_API_KEY=k\nMEZMO_SERVICE_KEY=k\n", encoding="utf-8")
 
     def test_the_env_file_and_config_toml_are_read_from_the_mezmo_aura_folder(self):
         self.keys(self.new)

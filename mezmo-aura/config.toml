@@ -152,7 +152,7 @@ description = "Mezmo MCP server"
 
 # Static headers sent with every request.
 [mcp.servers.mezmo.headers]
-Authorization = "Bearer {{ env.MEZMO_API_KEY }}"
+Authorization = "Bearer {{ env.MEZMO_SERVICE_KEY }}"
 
 # ─── Orchestration ──────────────────────────────────────────────
 

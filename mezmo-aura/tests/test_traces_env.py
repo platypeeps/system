@@ -43,7 +43,7 @@ class ServerEnvironment(unittest.TestCase):
             PATH=f"{root / 'bin'}:{os.environ['PATH']}",
             # Never read the operator's real config directory.
             SYSTEM_TOOLS_CONFIG=str(root / "config"),
-            OPENAI_API_KEY="k", MEZMO_API_KEY="k",
+            OPENAI_API_KEY="k", MEZMO_SERVICE_KEY="k",
         )
 
     def otel(self, **extra):
