@@ -955,6 +955,15 @@ class Promote(PromoteCase):
         out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_GH_JSON=json.dumps(data)).stdout
         self.assertIn("  ok      gh login fixture pushes to all 2 lane repositories", out)
 
+    def test_hub_ready_reads_the_remote_of_a_row_with_a_field_between_ci_and_the_lane_host(self):
+        """The remote is field 2 whatever the row's length: a github_issues field must not move it."""
+        rows = ("sd-db: ~/repos/a  git@github.com:owner-a/one.git  yes  local  no  hub  auto\n"
+                "sd-db: ~/repos/c  https://github.com/owner-c/three  yes  local  no  other-host  auto\n")
+        data = {"data": {"viewer": {"login": "fixture"}, "r0": {"viewerPermission": "WRITE"}}}
+        out = self.run_promote(STUB_REPOS=rows, STUB_GH_JSON=json.dumps(data)).stdout
+        self.assertIn("  ok      gh login fixture pushes to all 1 lane repositories", out)
+        self.assertIn('owner: "owner-a", name: "one"', self.calls("gh api graphql")[0])
+
     def test_a_gh_that_does_not_answer_is_not_ok(self):
         out = self.run_promote(STUB_REPOS=self.lane_repos(), STUB_GH_JSON="").stdout
         self.assertIn("  --      gh api did not answer; push access not checked", out)
