@@ -51,7 +51,10 @@
 # one-off.
 JOB_SCHEDULE="50 * * * *"
 # Inside the hour, so a hung backup or copy frees its lock before the next slot.
-JOB_TIMEOUT="20m"
+# 45m, not 20m: the NAS copy of an 885 MB snapshot takes about a minute alone,
+# but 8 to 20 minutes while nas-full-copy writes to the same share (23:00 to
+# 05:00, sd:2268); two runs hit 20m in two nights (sd:4758).
+JOB_TIMEOUT="45m"
 SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
