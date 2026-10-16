@@ -1910,8 +1910,9 @@ SKIP_ARMS = ("jev", "kev")
 #: The paths a sheet row shows before `+n more` (design.md, "Sheet").
 SHEET_PATHS = 10
 #: The Review queue the sheet files under, one blind batch per population
-#: (sd:4789); `sheet_text` holds the fields the CSV sheet held.
-SHEET_QUEUE = "jev-entry-2"
+#: (sd:4789); `sheet_text` holds the fields the CSV sheet held. Details shows
+#: a blind batch's queue, title and source, so none names an arm.
+SHEET_QUEUE = "entry-2-hand-labels"
 SHEET_WHO = "jev-experiment"
 KEY_COLUMNS = ("row", "repo", "commit", "population", "hosted", *ARMS,
                "jev_raw", "kev_raw", "haiku_raw",
@@ -2113,6 +2114,26 @@ def write_once(target: Path, data: bytes) -> None:
     os.replace(part, target)
 
 
+def hand_file(labels: Path, tag: str, item: int, found: dict, *, check_only: bool = False) -> dict:
+    """Write `labels/hand-<tag>.jsonl` once from a batch with every row
+    labelled: one line per row, with no export time, so a rerun on the
+    closed batch writes the same bytes. `check_only` refuses what the write
+    would refuse, and writes nothing."""
+    rows = list(enumerate(found["questions"], 1))
+    if any(q["label"] is None or q["subject"] != f"{tag}-{n:03d}" for n, q in rows):
+        raise Refused(f"sd:{item} closed with a row that has no label; nothing was written")
+    hand = "".join(json.dumps({"row": n, "label": q["label"], "ruling": q["ruling"], "ruled_at": q["ruled_at"],
+                               "comments": [c["text"] for c in q["comments"]]}, sort_keys=True) + "\n"
+                   for n, q in rows).encode("utf-8")
+    target = labels / f"hand-{tag}.jsonl"
+    if check_only:
+        if target.exists() and target.read_bytes() != hand:
+            raise Refused(f"labels/{target.name} exists with other contents; the batch stays open")
+    else:
+        write_once(target, hand)
+    return {"file": f"labels/{target.name}", "sha256": hashlib.sha256(hand).hexdigest()}
+
+
 def drawn_sheet(folder: Path, population: str):
     """The sheet's rows, the key's rows and the summary, drawn from the sealed
     answer files in `folder`. The key is never written: the analysis calls
@@ -2168,25 +2189,18 @@ def cmd_sheet(args, out, env) -> int:
         summary["batch"] = {"item": item, "ref": filed["ref"]}
         write_once(labels / f"sheet-{tag}.json", (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode())
         # Closed in its own transaction before the hand file, so no label or
-        # Undo lands after the file is written.
+        # Undo lands after the file is written. The file is checked inside
+        # it: a refusal rolls the close back and leaves Undo open.
         with database.transaction(connection):
             found = review.read(connection, item)
             if not found["open"] and found["closed"] is None:
+                hand_file(labels, tag, item, found, check_only=True)
                 sd_db_module("workflow").change_status(connection, item, "done", who=SHEET_WHO,
                                                        reason="every row has a label")
         found = review.read(connection, item)
     printed = dict(summary, open=found["open"])
     if found["closed"] is not None:
-        rows = [(n, q) for n, q in enumerate(found["questions"], 1)]
-        if any(q["label"] is None or q["subject"] != f"{tag}-{n:03d}" for n, q in rows):
-            raise Refused(f"sd:{item} closed with a row that has no label; nothing was written")
-        # No export time: a rerun on the closed batch writes the same bytes.
-        hand = "".join(json.dumps({"row": n, "label": q["label"], "ruling": q["ruling"],
-                                   "ruled_at": q["ruled_at"],
-                                   "comments": [c["text"] for c in q["comments"]]}, sort_keys=True) + "\n"
-                       for n, q in rows).encode("utf-8")
-        write_once(labels / f"hand-{tag}.jsonl", hand)
-        printed["hand"] = {"file": f"labels/hand-{tag}.jsonl", "sha256": hashlib.sha256(hand).hexdigest()}
+        printed["hand"] = hand_file(labels, tag, item, found)
     json.dump(printed, out, indent=2, sort_keys=True)
     out.write("\n")
     return 0

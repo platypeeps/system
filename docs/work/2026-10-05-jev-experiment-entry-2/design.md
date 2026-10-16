@@ -247,7 +247,8 @@ Before review round 2, the two draws used one seed string in every population, s
 Each population now has its own streams; on C1 every pool is under its cap, so C1's sheet and key are unchanged.
 Order is shuffled with the same seed.
 
-**Sheet** (sd:4789). One blind Review batch per population, `review:jev-entry-2:<population>`, labelled on the dashboard's Review page.
+**Sheet** (sd:4789). One blind Review batch per population, `review:entry-2-hand-labels:<population>`, labelled on the dashboard's Review page.
+Its queue, title and source name no arm: Details shows them in a blind batch too.
 Each row is one question, subject `<population>-<row>`, options `skip`, `cheap`, `standard` and `deep`; its text holds:
 
 | Field | Content |

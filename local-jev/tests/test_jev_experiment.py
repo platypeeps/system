@@ -2081,7 +2081,7 @@ def filed_batch(db, population="C1"):
     """The Review batch `labels sheet` filed for `population`, or None."""
     review, writes = experiment.sd_db_module("review"), experiment.sd_db_module("writes")
     with contextlib.closing(connect(db)) as connection:
-        held = writes.item_by_external(connection, review.REF_SOURCE, f"review:jev-entry-2:{population}")
+        held = writes.item_by_external(connection, review.REF_SOURCE, f"review:{experiment.SHEET_QUEUE}:{population}")
         return None if held is None else review.read(connection, held["id"])
 
 
@@ -2184,6 +2184,9 @@ class TheLabelSheet(unittest.TestCase):
             self.assertEqual((question["options"], question["evidence"]), (list(experiment.TIERS), []))
             for arm in experiment.ARMS:
                 self.assertNotIn(arm, question["text"].lower())
+                # Details shows the queue, title and source of a blind batch too (codex, final review).
+                for shown in (found["header"]["queue"], found["item"]["title"], found["header"]["source"]):
+                    self.assertNotIn(arm, shown.lower())
             self.assertNotIn("FINDING", question["text"])
             self.assertNotIn("blocking", question["text"])
             self.assertLessEqual(candidates_of(question["text"]), set(experiment.TIERS))
@@ -2360,7 +2363,7 @@ class TheLabelSheet(unittest.TestCase):
         code, printed = self.sheet(db=db)
         self.assertEqual(code, 0, printed)
         written = json.loads((self.out / "labels" / "sheet-C1.json").read_text())
-        self.assertEqual(written["batch"], {"item": item, "ref": "review:jev-entry-2:C1"})
+        self.assertEqual(written["batch"], {"item": item, "ref": "review:entry-2-hand-labels:C1"})
         self.assertEqual(self.sheet(db=db), (code, printed))       # the same batch, nothing new
 
     def test_an_open_row_writes_nothing_and_prints_the_open_count(self):
@@ -2406,6 +2409,16 @@ class TheLabelSheet(unittest.TestCase):
         hand.write_bytes(first.replace(b'"cheap"', b'"deep"', 1))
         self.assertEqual(self.sheet(db=db)[0], 2)
         self.assertNotEqual(hand.read_bytes(), first)
+
+    def test_a_hand_file_with_other_bytes_refuses_before_the_close(self):
+        # Codex, final review: the close came first, so the refusal left the batch closed and Undo gone.
+        db = self.six()
+        self.assertEqual(self.sheet(db=db)[0], 0)
+        label_rows(db, filed_batch(db)["item"]["id"])
+        (self.out / "labels" / "hand-C1.jsonl").write_text("{}\n")
+        self.assertEqual(self.sheet(db=db)[0], 2)
+        self.assertIsNone(filed_batch(db)["closed"])
+        self.assertEqual((self.out / "labels" / "hand-C1.jsonl").read_text(), "{}\n")
 
     def test_a_batch_closed_with_an_unlabelled_row_refuses(self):
         db = self.six()

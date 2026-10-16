@@ -67,13 +67,15 @@ This replaces the item's literal `x` and `Enter` keys with the design source's k
 
 - Dashboard: Details marks the proposed option in an open batch, read from its `Proposed label:` evidence line. A blind or sealed batch sends no evidence, so nothing is marked.
   No route, write or key is added: filing stays in the CLI, labels use `/api/review/rule` and `/api/review/withdraw`, as today.
-- `jev_experiment.py labels sheet --population C1` files the sheet as one blind Review batch, `review:jev-entry-2:<population>`, through `sd_db.review.file` (operator decision, 2026-10-16).
+- `jev_experiment.py labels sheet --population C1` files the sheet as one blind Review batch, `review:entry-2-hand-labels:<population>`, through `sd_db.review.file` (operator decision, 2026-10-16).
+    Its queue, title and source name no arm, since Details shows them in a blind batch.
   - Options `skip`, `cheap`, `standard`, `deep`; the text holds what the CSV held (repository alias, commit, paths, size, routing reason, candidates), and no arm name.
   - The draw is unchanged: `label_kit` still runs with the same seed. Its key is not written: the analysis recomputes it from the sealed inputs whose SHA-256 the summary records.
     So no key file exists while labels are open.
   - `sheet-<population>.json` keeps the counts and input hashes, and adds the batch item and ref.
   - A rerun finds the same batch (same digest) and writes nothing new. While a question is open it prints the open count.
   - Once every question has a label, the rerun closes the batch (status done, its own transaction), so no ruling or withdrawal can land after it.
+    The same transaction first checks an existing hand file, so a refusal leaves the batch open.
     Then it writes `labels/hand-<population>.jsonl` once: one line per question, `{row, label, ruling, ruled_at, comments}`, from `review.read`, with no export time, so a rerun on the closed batch writes the same bytes. It prints the file's SHA-256 for sd:2764.
   - It refuses before filing when `labels/sheet-<population>.csv` or `labels/key-<population>.csv` exists: the old sheet's files would be a second, unsynced label source. None exists today (C1's `labels/` holds `C1.jsonl` only).
   - `sure` goes: the Review design records the operator's ruling that a label carries no confidence score until an experiment needs one, and the pre-registration's analysis reads none. A labeller who wants to note doubt uses `n`.
@@ -114,7 +116,8 @@ Its removal is the operator's call: see the item's question note. This change ma
 | Jev sheet: read back | Nothing | Questions still open | Nothing written; it prints the open count and exits 0 | `test_jev_experiment` |
 | Jev sheet: close | Batch status done, one transaction | The process stops after the close, before the file | The rerun finds the batch closed and writes the file; a ruling or Undo between is refused | `test_jev_experiment`: a stop after the close, a refused ruling, then the rerun |
 | Jev sheet: write | `hand-<population>.jsonl` through `.part` and a rename | The process stops before the rename | The rerun writes the same bytes: the lines hold no export time | `test_jev_experiment`: two runs a second apart write equal bytes |
-| Jev sheet: read back | Nothing | `hand-<population>.jsonl` holds other bytes | Refused; it is written once | `test_jev_experiment` |
+| Jev sheet: close | Nothing | `hand-<population>.jsonl` holds other bytes | Refused inside the close transaction, so the batch stays open and Undo works | `test_a_hand_file_with_other_bytes_refuses_before_the_close` |
+| Jev sheet: read back | Nothing | A batch closed by hand with a row unlabelled | Refused; no hand file | `test_a_batch_closed_with_an_unlabelled_row_refuses` |
 | Older state | Nothing | Batches filed before this change | Read as today; `reviews` reads a batch with no proposal as `proposed_label: ""` | `TheReviewsExport` on a plain batch |
 | Older state | Nothing | A sheet CSV or key CSV written by the old code | Refused before filing, naming the file | `test_jev_experiment`: an old `key-C1.csv` refuses and files nothing |
 | Import | Nothing | A Kev subject a `Reject` label in the same queue would suppress | Not suppressed: the import passes `suppress=False` | `TheKevImport`: a second batch reusing a rejected subject files every question |
@@ -124,7 +127,7 @@ Its removal is the operator's call: see the item's question note. This change ma
 
 1. Pack PR: `from_kev`, `reviews`, the two CLI options, tests. No schema change, so no migration and no dashboard schema move.
 2. System PR: Details marks the proposed option; the Jev sheet files a blind batch; README lines; this page.
-   The Jev sheet uses only `review.file`, `review.read` and `review.export`, which the pinned pack already has, so this PR needs no pin move.
+   The Jev sheet uses only `review.file`, `review.read`, `database.transaction` and `workflow.change_status`, which the pinned pack already has, so this PR needs no pin move.
 
 ## Acceptance criteria
 
