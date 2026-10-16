@@ -275,17 +275,18 @@ class WorkflowControls(BrowserSession):
         self.assertIn("not recorded", page)
         self.assertNotIn("$0.00", page)
 
-    def test_report_followups_gate_acknowledgement(self):
-        """A followup a person wrote still refuses the acknowledge; the
-        ingest's own followup does not (sd:3533)."""
+    def test_acknowledge_resolves_a_followup_a_person_wrote_too(self):
+        """sd:4722, sd:4755: one rule across the CLI and the dashboard. Acknowledge is the operator's say-so, so it
+        resolves every open followup the report owns, a person's included, in the same transaction."""
         state = reporting.ingest(self.connection, job="fixture", run_id="one", started="2026-09-08T00:00:00Z", ended="2026-09-08T00:01:00Z", exit_code=1, text="Failed", source_path="/fixture/log", attention=True)
         item = state["item"]["id"]
         add_note(self.connection, item, "followup", "look at this first", session="operator")
         state = workflow.item_state(self.connection, item)
-        before = self.snapshot()
-        self.assertEqual(self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})[0], 400)
-        self.assertEqual(before, self.snapshot())
-        self.assertIn("Report source", self.request(f"/item/{item}")[2])
+        self.assertEqual(self.post(f"/api/reports/{item}/acknowledge", {"revision": state["revision"]})[0], 200)
+        after = workflow.item_state(self.connection, item)
+        self.assertEqual(after["item"]["status"], "done")
+        self.assertEqual([(note["session"], note["resolved_at"] is not None) for note in after["notes"] if note["kind"] == "followup"],
+                         [("cron", True), ("operator", True)])
 
     def test_acknowledge_finishes_a_failure_report_and_its_ingest_followup(self):
         """sd:3533: every failure report is born with the ingest's followup, so
