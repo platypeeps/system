@@ -98,6 +98,8 @@ SPOTLIGHT_PLIST="${MACHINE_SETUP_SPOTLIGHT_PLIST:-/System/Volumes/Data/.Spotligh
 SPOTLIGHT_SUDOERS="${MACHINE_SETUP_SPOTLIGHT_SUDOERS:-/etc/sudoers.d/machine-setup-spotlight-read}"
 # The sudo grace-period drop-in; the override exists for the tests too.
 TIMEOUT_SUDOERS="${MACHINE_SETUP_TIMEOUT_SUDOERS:-/etc/sudoers.d/timestamp-timeout}"
+# The SMB client's defaults; the override exists for the tests too.
+NSMB_CONF="${MACHINE_SETUP_NSMB_CONF:-/etc/nsmb.conf}"
 # The PlistBuddy override exists for the tests too: CI runs on Linux, which
 # has no PlistBuddy, and the tests put a stand-in there.
 PLISTBUDDY="${MACHINE_SETUP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
@@ -2144,7 +2146,86 @@ stage_system() {
         sudo ln -s "$(basename "$HOME")" "$alias_path"
     done
   fi
+  system_nsmb
   system_spotlight
+}
+
+# Soft SMB mounts: a dead NAS session hung shutdown twice in smbfs_unmount,
+# waiting on a reconnect that never came (sd:4843). soft=yes lets a request
+# to a gone server fail instead of waiting; kloglevel=1 logs the kernel side.
+# Both apply to the next mount, not to one already up.
+NSMB_WANT="soft=yes kloglevel=1"
+
+# Prints one line per wanted key that [default] lacks ("missing soft=yes") or
+# sets another way ("differs soft=no"), and "nosection" when there is no
+# [default]. A file that does not exist reads as empty.
+nsmb_scan() { # file
+  [ -e "$1" ] || set -- /dev/null
+  awk -v want="$NSMB_WANT" '
+    BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) { split(w[i], kv, "="); k[i] = kv[1]; v[i] = kv[2] } }
+    { l = $0; gsub(/^[ \t]+|[ \t\r]+$/, "", l) }
+    l == "" || l ~ /^[#;]/ { next }
+    l ~ /^\[.*\]$/ { sec = tolower(l); if (sec == "[default]") seen = 1; next }
+    sec == "[default]" && index(l, "=") {
+      key = substr(l, 1, index(l, "=") - 1); val = substr(l, index(l, "=") + 1)
+      gsub(/[ \t]/, "", key); gsub(/^[ \t]+/, "", val)
+      for (i = 1; i <= n; i++) if (key == k[i]) have[i] = val
+    }
+    END {
+      if (!seen) print "nosection"
+      for (i = 1; i <= n; i++)
+        if (!(i in have)) print "missing " w[i]
+        else if (have[i] != v[i]) print "differs " k[i] "=" have[i]
+    }' "$1"
+}
+
+# The file with each of $2 added under the first [default], or a new
+# [default] at the end. Every line already there is kept as it was.
+nsmb_merge() { # file, "key=value ..."
+  [ -e "$1" ] || set -- /dev/null "$2"
+  awk -v add="$2" '
+    BEGIN { n = split(add, a, " ") }
+    { print; l = $0; gsub(/^[ \t]+|[ \t\r]+$/, "", l)
+      if (!done && tolower(l) == "[default]") { for (i = 1; i <= n; i++) print a[i]; done = 1 } }
+    END { if (!done) { if (NR) print ""; print "[default]"; for (i = 1; i <= n; i++) print a[i] } }' "$1"
+}
+
+system_nsmb() {
+  # A failed read is unknown, not clean, so it counts as drift.
+  if ! nc_scan=$(nsmb_scan "$NSMB_CONF" 2>&1); then
+    echo "  DIFFERS nsmb.conf soft mounts: cannot read $NSMB_CONF, state unknown"
+    return 0
+  fi
+  nc_add=$(printf '%s\n' "$nc_scan" | sed -n 's/^missing //p' | tr '\n' ' ' | sed 's/ $//')
+  nc_differs=$(printf '%s\n' "$nc_scan" | sed -n 's/^differs //p' | tr '\n' ' ' | sed 's/ $//')
+  if [ -z "$nc_add" ] && [ -z "$nc_differs" ]; then
+    echo "  ok      nsmb.conf soft mounts"
+    return 0
+  fi
+  # The operator's own value stays: only a missing key is added.
+  [ -z "$nc_differs" ] ||
+    echo "  DIFFERS nsmb.conf soft mounts: [default] has $nc_differs in $NSMB_CONF; want $NSMB_WANT, edit by hand"
+  [ -n "$nc_add" ] || return 0
+  if [ -e "$NSMB_CONF" ]; then
+    echo "  MISSING nsmb.conf soft mounts: $nc_add under [default] (applies at the next mount: eject and reconnect, or reboot)"
+  else
+    echo "  MISSING nsmb.conf soft mounts: no $NSMB_CONF (applies at the next mount: eject and reconnect, or reboot)"
+  fi
+  # Built as this user, then copied in by root beside the target and moved
+  # over it, after a dated copy of the old file: a stop at any point leaves
+  # the old file or the new one, and the next run finishes the job.
+  nc_tmp=""
+  if [ "$APPLY" -eq 1 ]; then
+    if ! { nc_tmp=$(mktemp) && nsmb_merge "$NSMB_CONF" "$nc_add" > "$nc_tmp"; }; then
+      note_failure "build the new $NSMB_CONF" 1
+      [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
+      return 0
+    fi
+  fi
+  nc_new="$(dirname "$NSMB_CONF")/.$(basename "$NSMB_CONF").tmp"
+  nc_cmd="{ [ ! -e $NSMB_CONF ] || cp -p $NSMB_CONF $NSMB_CONF.bak-$(date +%Y%m%d%H%M%S); } && cp $nc_tmp $nc_new && chmod 644 $nc_new && mv $nc_new $NSMB_CONF || { rm -f $nc_new; exit 1; }"
+  sudo_run "add $nc_add under [default] in $NSMB_CONF" sh -c "$nc_cmd"
+  [ -z "$nc_tmp" ] || rm -f "$nc_tmp"
 }
 
 # The paths <profile>.spotlight wants kept out of the index, one per line.
@@ -5067,7 +5148,7 @@ accounts and cloud
   - cloud drive sync and browser logins, extensions and flags
   - password manager: login, add browser integration
 
-system  (useLS, firewall/stealth, sudo grace period and the mailto handler
+system  (useLS, firewall/stealth, sudo grace period, soft SMB mounts and the mailto handler
 are the `system` and `tooling` stages — run `update system --apply` /
 `update tooling --apply` instead of doing them by hand)
   - login shell: the `shell` stage converges zsh -> brew bash (installs
@@ -6886,6 +6967,7 @@ environment:
   MACHINE_SETUP_PLISTBUDDY  tests only: the PlistBuddy that edits it
   MACHINE_SETUP_SPOTLIGHT_SUDOERS  tests only: the Spotlight read drop-in
   MACHINE_SETUP_TIMEOUT_SUDOERS  tests only: the sudo grace-period drop-in
+  MACHINE_SETUP_NSMB_CONF  tests only: the file that stands in for /etc/nsmb.conf
   MACHINE_SETUP_APPLICATIONS_DIR  tests only: the folder the apps scan reads
 HELPEOF
       exit 0
