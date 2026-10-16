@@ -434,12 +434,15 @@ class ThePage(BrowserSession):
         (ingest,) = followups(item)
         closed = add_note(self.connection, item, "followup", "done already", session="operator")
         resolve_note(self.connection, closed)
+        listed = [row["id"] for row in reporting.reports(self.connection)]
         status, _, body = self.post(f"/api/reports/{item}/acknowledge", {"revision": workflow.item_state(self.connection, item)["revision"]})
         self.assertEqual(status, 200)
         self.assertEqual(followups(item), {ingest: False, closed: False})
         status, _, body = self.post(f"/api/reports/{item}/reopen", {"revision": body["revision"]})
         self.assertEqual((status, body["item"]["status"]), (200, "planning"))
         self.assertEqual(followups(item), {ingest: True, closed: False})
+        # `updated_at` keeps the Undo's stamp, not the old one; the list orders by `created_at`, so the report keeps its place.
+        self.assertEqual([row["id"] for row in reporting.reports(self.connection)], listed)
         # Another subject: a status note that names another report's followup reopens nothing there.
         status, _, body = self.post(f"/api/reports/{other}/acknowledge", {"revision": workflow.item_state(self.connection, other)["revision"]})
         (theirs,) = followups(other)
