@@ -14,12 +14,18 @@ it adds no asset pipeline and changes nothing about how `static/` is served.
 
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 from pathlib import Path
 
-__all__ = ["__version__", "pack_library"]
+__all__ = ["PACK_MODULES", "__version__", "pack_bin", "pack_library", "pack_module"]
 
 __version__ = "0.1.0"
+
+#: The pack `bin/` modules this process imports: `sd_lane`, for the Queue's read, and what it imports in turn.
+#: `runtime.build_digests` hashes each, so a pack update to one restarts the server like a library update.
+PACK_MODULES = ("sd_lane", "sd_lib", "sd_ship_workflow")
 
 
 def pack_library():
@@ -33,3 +39,26 @@ def pack_library():
     """
     root = os.environ.get("SD_PACK_ROOT") or Path.home() / "repos/platypeeps/sd-ai-command-pack"
     return Path(root).expanduser().resolve() / "lib"
+
+
+def pack_bin(library_root=None) -> Path:
+    """The pack checkout's `bin/`, beside the `lib/` whose `sd_db` this process loaded, so the two match."""
+    if library_root is None:
+        import sd_db
+
+        library_root = Path(sd_db.__file__).resolve().parent
+    return Path(library_root).parent.parent / "bin"
+
+
+def pack_module(name: str):
+    """One of `PACK_MODULES`, imported from `pack_bin()` (sd:TBD): the read a pack command makes, without its process.
+
+    The folder goes last on `sys.path`, so it shadows neither this package nor `sd_db`. `ImportError` when the folder
+    or the module is missing, as in an installed copy outside a checkout; the caller runs the command instead.
+    """
+    if name not in PACK_MODULES:
+        raise ImportError(f"{name} is not one of the pack modules the build digest covers")
+    folder = str(pack_bin())
+    if folder not in sys.path:
+        sys.path.append(folder)
+    return importlib.import_module(name)

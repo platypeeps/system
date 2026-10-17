@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -324,6 +325,22 @@ class TheRows(Lane, ScreenCase):
     def test_landed_today_carries_the_pull_request_and_merge_commit(self):
         landed = self.doc()["lanes"][0]["rows"][-1]
         self.assertEqual((landed["pr"], landed["commit"]), ("161", self.merged[:12]))
+
+    def test_a_merge_commits_pull_request_is_read_from_git_once(self):
+        # A commit's subject never changes, so the next read asks git nothing for it.
+        run = subprocess.run
+        with mock.patch.object(queue_screen.subprocess, "run", side_effect=run) as runs:
+            first, second = self.doc(), self.doc()
+        logs = [call for call in runs.call_args_list if call.args[0][:1] == ["git"] and "log" in call.args[0]]
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(first["lanes"][0]["rows"][-1]["pr"], second["lanes"][0]["rows"][-1]["pr"])
+
+    def test_a_subject_git_could_not_read_is_asked_again(self):
+        missing = str(Path(self.tmp.name) / "no-checkout")
+        run = subprocess.run
+        with mock.patch.object(queue_screen.subprocess, "run", side_effect=run) as runs:
+            self.assertEqual((queue_screen._pr(missing, self.merged), queue_screen._pr(missing, self.merged)), (None, None))
+        self.assertEqual(len(runs.call_args_list), 2)
 
     def test_the_header_reads_load_and_gate_slots(self):
         doc = self.doc()
@@ -816,6 +833,89 @@ class TheRealRelease(RealLane):
         self.assertEqual(status, 400, answer)
         self.assertIn("not stuck", answer["error"])
         self.assertEqual(self.entries(), before)
+
+
+class TheInProcessRead(RealLane):
+    """The page reads each lane in-process through the pinned pack's own `sd_lane` (sd:TBD): no `lane list` runs per
+    repository, and what it reads is what `lane list` prints -- the queue path, the revision and every entry."""
+
+    def seeds(self):
+        pending = super().seeds()
+        return [*pending,
+                {**pending[0], "id": "seed-run", "item": 4, "status": "running", "step": "merge", "position": 0,
+                 "started_at": "2026-09-06T11:50:00Z", "lease_until": "2026-09-06T13:00:00Z", "body": "the body",
+                 "holder": {"host": "build-2", "pid": 77, "token": "claim-token"}},
+                {**pending[0], "id": "seed-merged", "item": 5, "status": "merged", "position": 5,
+                 "merge_commit": "f" * 40, "finished_at": "2026-09-06T10:00:00Z"},
+                {**pending[0], "id": "seed-failed", "item": 6, "status": "failed", "step": "prepare", "position": 6,
+                 "reason": "gate failed", "finished_at": "2026-09-06T09:00:00Z"},
+                {**pending[0], "id": "seed-again", "item": 6, "status": "cancelled", "position": -1,
+                 "finished_at": "2026-09-06T09:30:00Z"}]
+
+    def listed(self):
+        """What the pinned pack's `sd-ship lane list` prints for the checkout, its exit status aside."""
+        answer = queue_screen.lane_list(str(self.checkout))
+        self.assertEqual(answer.pop("exit"), 0, answer)
+        return answer
+
+    def test_the_in_process_read_is_what_lane_list_prints(self):
+        self.store([{**self.seeds()[0], "held": True}])
+        read = queue_screen.in_process(self.connection, str(self.checkout), "https://github.com/example/system.git")
+        self.assertEqual(read, self.listed())
+        self.assertEqual([entry["item"] for entry in read["entries"]], [6, 4, 1, 2, 3, 5, 6])
+
+    def test_the_page_runs_no_lane_list(self):
+        with mock.patch.object(queue_screen, "lane_list", side_effect=AssertionError("lane list ran")):
+            doc = queue_screen.document(self.connection, now=NOW)
+        lane = doc["lanes"][0]
+        self.assertEqual(doc["problems"], [])
+        self.assertEqual([(row["state"], row.get("item")) for row in lane["rows"]],
+                         [("merging", 4), ("next", 1), ("next", 2), ("next", 3), ("cancelled", 6), ("landed", 5)])
+        self.assertEqual(lane["revision"], queue_screen.revision(self.entries()))
+        self.assertEqual(Path(lane["lane"]), Path(self.listed()["queue"]).parent.parent)
+
+    def test_a_lane_hosted_on_a_satellite_reads_the_same_entries(self):
+        # Pack sd:3003: the queue sits in the hub database whichever machine runs the lane.
+        hub = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        self.connection.execute("UPDATE repo SET lane_host = 'build-2' WHERE path = ?", (str(self.checkout),))
+        self.connection.commit()
+        with mock.patch.object(queue_screen, "lane_list", side_effect=AssertionError("lane list ran")):
+            satellite = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        self.assertEqual(satellite["host"], "build-2")
+        self.assertEqual(satellite, {**hub, "host": "build-2"})
+
+    def test_a_queue_file_an_earlier_version_left_is_read_by_lane_list(self):
+        # `lane list` imports an earlier version's queue file into the database once; the page lets it.
+        queue = Path(os.environ["SD_LANE_ROOT"]) / "system" / "lane" / "queue" / "queue.json"
+        queue.write_text(json.dumps({"entries": []}))
+        with mock.patch.object(queue_screen, "lane_list", wraps=queue_screen.lane_list) as listing:
+            lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        listing.assert_called_once_with(str(self.checkout))
+        self.assertEqual(len(lane["rows"]), 6)
+
+    def test_without_the_packs_bin_lane_list_answers(self):
+        with mock.patch.object(queue_screen, "pack_module", side_effect=ImportError("no bin")), \
+                mock.patch.object(queue_screen, "lane_list", wraps=queue_screen.lane_list) as listing:
+            lane = queue_screen.document(self.connection, now=NOW)["lanes"][0]
+        listing.assert_called_once_with(str(self.checkout))
+        self.assertEqual(len(lane["rows"]), 6)
+
+    def test_a_pack_without_item_rounds_answers_through_lane_list(self):
+        # An earlier pack (before sd:3483) has no `item_rounds`; its own `lane list` prints what it has.
+        lane_module = queue_screen.pack_module("sd_lane")
+        with mock.patch.object(lane_module, "item_rounds", None), \
+                mock.patch.object(queue_screen, "lane_list", return_value={"ok": False, "error": "listed"}) as listing:
+            doc = queue_screen.document(self.connection, now=NOW)
+        listing.assert_called_once_with(str(self.checkout))
+        self.assertEqual(doc["problems"], [{"repo": str(self.checkout), "error": "listed"}])
+
+    def test_a_failed_read_is_a_named_problem_not_an_empty_lane(self):
+        lane_module = queue_screen.pack_module("sd_lane")
+        with mock.patch.object(lane_module, "stored", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = queue_screen.document(self.connection, now=NOW)
+        self.assertEqual(doc["lanes"], [])
+        self.assertEqual([problem["repo"] for problem in doc["problems"]], [str(self.checkout)])
+        self.assertIn("database is locked", doc["problems"][0]["error"])
 
 
 class TheScript(Lane, ScreenCase):

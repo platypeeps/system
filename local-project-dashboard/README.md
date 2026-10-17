@@ -156,10 +156,11 @@ Then what each browser keeps for the dashboard (sd:3438): the theme and the sect
 
 **Queue** at `/queue` shows each managed repository's `sd-ship lane` queue (sd:2585), with the host that runs it.
 The queue lives in the hub database, so a lane hosted on another machine shows too, folder or not (sd:3284); lanes with no row share one Idle line.
+The page reads each lane in-process with the pack's own `sd_lane`, the read `lane list` makes, and runs `lane list` only where that read could differ (sd:TBD).
 The header shows load5 with its 1- and 15-minute neighbours, and the gate slots in use against `sd gate status`'s cap.
 Each item is one row: merging (step, holder host, claim age, lease end; a passed lease lights caution), next (order, gate, head), building, blocked (status, step, the reason's first line, who acts), cancelled (when, head), or landed today (pull request, merge commit).
 Blocked and cancelled entries show for three days; older ones drop off.
-Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names; set `sd.lane_root` where builders write them.
+Building rows are the builder gate logs, `gate-*.log`, in the lane folder `lane list` names, `<lane root>/<checkout name>/lane`; set `sd.lane_root` where builders write them.
 Up, down, top, hold, release and cancel run `sd-ship lane move|hold|release|cancel` and nothing else.
 Cancel asks first. A cancelled row offers Re-queue (sd:3398): `lane retry <item> --expected-head <head>` queues the cancelled entry again, last, at the head the row showed (pack sd:3389).
 It acts only on an item whose newest entry is that cancelled one: the page re-queues a cancel and enqueues nothing new.

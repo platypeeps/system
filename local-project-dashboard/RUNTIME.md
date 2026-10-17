@@ -40,7 +40,8 @@ fingerprint:
 
 Changes to the configuration, library bytes, dashboard package or
 launcher bytes, loaded status, old plist, or Serve configuration invalidate the
-plan. Build digests enumerate the library's regular source/data files
+plan. Build digests enumerate the library's regular source/data files,
+the pack `bin/` modules the Queue imports (`PACK_MODULES`, sd:TBD),
 and the dashboard package, including static assets, plus the fixed Ports
 dependencies `collectors.py` and `../local-machine-setup/machine-setup.sh`,
 and Notes' mail client `../local-mail-intake/mail_intake.py` (sd:3425);
