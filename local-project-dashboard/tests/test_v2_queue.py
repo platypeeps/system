@@ -34,7 +34,7 @@ from sd_db import upsert_repo
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
-from test_v2_registry import Registers
+from test_v2_registry import GROUP_BLOCK, Registers
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
 from test_workflow_actions import BrowserSession
@@ -1084,6 +1084,12 @@ class TheScript(Lane, ScreenCase):
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "queue", "Queue", "/queue", ("/api/queue", "/api/queue/move")
+
+    def test_queue_follows_review_in_now_and_has_left_fleet(self):
+        now = re.search(r"\['Now',\s*\[(.*?)\]\],", GROUP_BLOCK).group(1)
+        fleet = re.search(r"\['Fleet',\s*\[(.*?)\]\],", GROUP_BLOCK).group(1)
+        self.assertIn("['Review', 'list-checks', 'l'], ['Queue', 'git-merge', 'u']", now)
+        self.assertNotIn("'Queue'", fleet)
 
 
 if __name__ == "__main__":
