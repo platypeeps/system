@@ -277,6 +277,16 @@ class TheDocument(ScreenCase):
                 management_screen.set_repo(self.connection, "dependabot", checkout, "no", "yes")
         self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["dependabot"], "yes")
 
+    def test_a_repo_carries_its_github_issues_setting_and_the_verb_flips_it(self):
+        """sd:4840: `repo.github_issues` reads on or off and `repos.set_github_issues` writes it, refusing a stale before."""
+        checkout = self.ids["checkout"]
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["github_issues"], "off")
+        got = management_screen.set_repo(self.connection, "github-issues", checkout, "on", "off")
+        self.assertEqual((got["field"], got["value"], got["before"]), ("github_issues", "on", "off"))
+        with self.assertRaises(workflow.StaleItem):
+            management_screen.set_repo(self.connection, "github-issues", checkout, "on", "off")
+        self.assertEqual({row["path"]: row for row in self.document()["repos"]}[checkout]["github_issues"], "on")
+
     def test_the_lane_host_reads_hub_and_moves_refusing_a_stale_before_a_bad_name_and_an_unknown_path(self):
         """sd:3075, acceptances 2 and 3. NULL reads `hub`; a move writes the name."""
         checkout = self.ids["checkout"]
@@ -618,6 +628,14 @@ class ThePage(BrowserSession):
         self.assertEqual((status, got["field"], got["value"], got["before"]), (200, "dependabot", "yes", "no"))
         self.assertEqual(self.post("/api/repos/dependabot", body)[0], 409)
         self.assertEqual(self.post("/api/repos/dependabot", {**body, "value": "always", "before": "yes"})[0], 400)
+
+    def test_the_github_issues_route_flips_once_and_refuses_a_stale_before_and_a_bad_word(self):
+        """sd:4840: `/api/repos/github-issues` takes on or off and the value the page showed."""
+        body = {"path": self.ids["checkout"], "value": "on", "before": "off"}
+        status, _, got = self.post("/api/repos/github-issues", body)
+        self.assertEqual((status, got["field"], got["value"], got["before"]), (200, "github_issues", "on", "off"))
+        self.assertEqual(self.post("/api/repos/github-issues", body)[0], 409)
+        self.assertEqual(self.post("/api/repos/github-issues", {**body, "value": "yes", "before": "on"})[0], 400)
 
     def test_the_lane_host_route_moves_once_and_refuses_a_stale_before_and_a_bad_name(self):
         """sd:3075, acceptance 2: `Build_2` is a 400 naming the rule; a repeated move is a stale 409."""
@@ -1035,6 +1053,25 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/repos/channels", {"path": path, "value": None, "before": '{"site":{}}'})])
         self.assertEqual(out["R"]["toast"], 'Ran locally · channels {"site":{}} → none')
         self.assertEqual(out["toasts"][-1], ['Run not undone · channels {"site":{}} → none: nothing to reverse', False])
+
+    def test_the_repo_page_shows_github_issues_and_the_toggle_runs_the_verb_and_undoes(self):
+        """sd:4840: on or off, written through `sd-db repo github-issues`; an unread setting shows no toggle."""
+        path = self.ids["checkout"]
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('github_issues', 'on'); R.cmd = pending[0].cmd;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        self.assertIn('data-set="github_issues"', out["R"]["page"])
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo github-issues '{path}' on")
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/github-issues", {"path": path, "value": "on", "before": "off"}),
+                          ("/api/repos/github-issues", {"path": path, "value": "off", "before": "on"})])
+        self.assertEqual(out["R"]["toast"], "Ran locally · github_issues off → on")
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["github_issues"] = None
+        page = self.run_page("R.page = ELS['view-repos'].html;", doc=doc, search=f"?repo={path}")["R"]["page"]
+        cell = page.split('data-key="github_issues"')[1].split('<div class="row"')[0]
+        self.assertIn("not read", cell)
+        self.assertNotIn('data-set="github_issues"', cell)
 
     def test_the_repo_page_shows_dependabot_and_the_toggle_runs_the_verb_and_undoes(self):
         """sd:3984: yes or no for a repo outside the owner rule; an owner's or a denied repo shows the rule and no toggle."""

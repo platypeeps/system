@@ -190,6 +190,53 @@ class Obsidian(Case):
         self.assertNotIn("SKIP", result.stdout)
 
 
+class ITerm2(Case):
+    def setUp(self):
+        super().setUp()
+        self.prefs = self.base / "drive/iterm2"
+        (self.profiles / "personal.iterm2").write_text(f"{self.prefs}\n")
+        self.apps = self.base / "Applications"
+        (self.apps / "iTerm.app").mkdir(parents=True)
+
+    def run_stage(self, **extra):
+        return self.run_script("update", "iterm2", MACHINE_SETUP_APPLICATIONS_DIR=str(self.apps), **extra)
+
+    def test_a_folder_with_its_plist_is_present(self):
+        self.prefs.mkdir(parents=True)
+        (self.prefs / "com.googlecode.iterm2.plist").write_text("")
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  ok      com.googlecode.iterm2.plist present", result.stdout)
+
+    def test_no_folder_and_an_empty_folder_are_missing(self):
+        result = self.run_stage()
+        self.assertIn(f"  MISSING prefs folder {self.prefs} — not synced down yet", result.stdout)
+        self.prefs.mkdir(parents=True)
+        result = self.run_stage()
+        self.assertIn(f"  MISSING {self.prefs}/com.googlecode.iterm2.plist — folder is empty", result.stdout)
+
+    def test_a_folder_that_does_not_answer_is_state_unknown_not_missing(self):
+        # sd:4832. Bare [ -d ] and [ -f ] hung the run on a stalled Drive
+        # mount; bounded, a timeout is no answer, never no folder, and
+        # iTerm2 is not repointed.
+        stall = self.base / "stall-python"
+        write_exec(stall, "#!/bin/sh\nexec sleep 30\n")
+        result = self.run_stage(MACHINE_SETUP_PYTHON=str(stall), MACHINE_SETUP_STEP_TIMEOUT="1",
+                                ST_BOUNDED_GRACE="1")
+        self.assertIn(f"  DIFFERS prefs folder {self.prefs} did not answer in time, state unknown",
+                      result.stdout)
+        self.assertNotIn("MISSING", result.stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith("defaults")], [])
+
+    def test_a_folder_that_cannot_be_read_is_state_unknown_not_missing(self):
+        broken = self.base / "broken-python"
+        write_exec(broken, "#!/bin/sh\nexit 1\n")
+        result = self.run_stage(MACHINE_SETUP_PYTHON=str(broken))
+        self.assertIn(f"  DIFFERS prefs folder {self.prefs} could not be read, state unknown", result.stdout)
+        self.assertNotIn("MISSING", result.stdout)
+        self.assertEqual([c for c in self.calls() if c.startswith("defaults")], [])
+
+
 class CaptureApps(Case):
     def test_capture_lists_standalone_apps_without_a_cask_search(self):
         # brew lists nothing and answers; no mas, so no App Store list.
