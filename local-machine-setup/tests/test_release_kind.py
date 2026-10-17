@@ -493,26 +493,59 @@ class ReleaseStage(Case):
         again = self.run_verb("update", "release")
         self.assertIn("  ok      release example v1.2.3\n", again.stdout, self.out(again))
 
-    def test_two_lines_of_one_name_fail_and_install_the_first_alone(self):
+    def test_two_lines_of_one_name_fail_and_install_neither(self):
         """sd:4942: common's line and the profile's own, with no `!name`,
-        read each other's record, so each run would install both."""
-        (self.profiles / "common.release").write_text(f"example {REPO} example-{{version}}-aarch64.tar.gz\n")
+        conflict. Neither installs, so the working bin and its record stay
+        until the profile says which one it means."""
         (self.profiles / "personal.release").write_text(f"example {REPO} example-{{version}}-x86_64.tar.gz\n")
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example"))
+        first = self.run_verb("update", "release", "--apply")
+        self.assertEqual(first.returncode, 0, self.out(first))
+        self.curl_log.unlink()
+        (self.profiles / "common.release").write_text(f"example {REPO} example-{{version}}-aarch64.tar.gz\n")
         self.release("v1.2.3", "example-1.2.3-aarch64.tar.gz", self.tools("arm", "example"))
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn(f"  FAILED  release: 2 lines take example ('example {REPO} example-{{version}}-aarch64.tar.gz'"
+                      f" and 'example {REPO} example-{{version}}-x86_64.tar.gz'); keep one, with a !<name> line",
+                      result.stdout)
+        self.assertNotIn("installed release", result.stdout)
+        self.assertEqual(self.urls(), [])
+        self.assertEqual(self.installed("example"), TOOL.format("1.2.3"))
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}-x86_64.tar.gz")
+
+    def test_a_conflicting_pinned_line_installs_neither_line(self):
+        """A tag on one line settles nothing: the stage cannot tell which
+        line the profile means."""
+        (self.profiles / "common.release").write_text(f"example {REPO} example-{{version}}-x86_64.tar.gz v1.0.0\n")
         self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example"))
 
         result = self.run_verb("update", "release", "--apply")
 
         self.assertEqual(result.returncode, 1, self.out(result))
-        self.assertIn(f"  FAILED  release: two lines name example ('example {REPO} example-{{version}}-aarch64.tar.gz'"
-                      f" and 'example {REPO} example-{{version}}-x86_64.tar.gz'); add !example", result.stdout)
-        self.assertEqual(len([u for u in self.urls() if "/download/" in u]), 2, self.urls())  # archive, .sha256
+        self.assertIn("  FAILED  release: 2 lines take example (", result.stdout)
+        self.assertNotIn("lines take example-helper", result.stdout)
+        self.assertEqual(self.urls(), [])
+        self.assertIsNone(self.installed("example"))
+        self.assertIsNone(self.record_line())
 
-        again = self.run_verb("update", "release", "--apply")
+    def test_two_entries_that_take_one_bin_install_neither(self):
+        """Two names, one bin: each install would overwrite the other's."""
+        (self.profiles / "common.release").write_text(f"other,example-helper {PINNED_REPO} other-{{version}}.tar.gz\n")
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        self.release("v1.0.0", "other-1.0.0.tar.gz", self.tools("other", "other", "example-helper"), repo=PINNED_REPO)
 
-        self.assertIn("  ok      release example v1.2.3", again.stdout, self.out(again))
-        self.assertNotIn("DIFFERS", again.stdout)
-        self.assertEqual(len([u for u in self.urls() if "/download/" in u]), 2, self.urls())
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("  FAILED  release: 2 lines take example-helper (", result.stdout)
+        self.assertEqual(result.stdout.count("  FAILED  release: "), 1, self.out(result))
+        self.assertEqual(self.urls(), [])
+        self.assertIsNone(self.installed("example-helper"))
+        self.assertIsNone(self.record_line())
+        self.assertIsNone(self.record_line("other"))
 
     def test_a_profile_without_release_entries_installs_nothing(self):
         (self.profiles / "personal.release").unlink()
@@ -561,6 +594,31 @@ class ReleaseUpgrade(Case):
         self.assertEqual(result.returncode, 1, self.out(result))
         self.assertIn("failed steps: release example", result.stdout)
         self.assertEqual(self.installed("example"), TOOL.format("1.2.3"))
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}.tar.gz")
+
+    def test_the_sweep_moves_no_line_of_a_conflicting_name_to_a_new_tag(self):
+        """An upgrade is available for the first line in sorted order; it
+        stays, as does its record, until the conflict is settled."""
+        (self.profiles / "common.release").write_text(f"example {MOVED_REPO} example-{{version}}.tar.gz\n")
+        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("1.3.0", "example"))
+        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("moved", "example"), repo=MOVED_REPO)
+
+        result = self.run_verb("upgrade", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("failed steps: release example", result.stdout)
+        self.assertNotIn("upgraded release example", result.stdout)
+        self.assertFalse([u for u in self.urls() if "/download/" in u], self.urls())
+        self.assertEqual(self.installed("example"), TOOL.format("1.2.3"))
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}.tar.gz")
+
+    def test_the_report_names_a_conflicting_name_unknown_and_moves_nothing(self):
+        (self.profiles / "common.release").write_text(f"example {MOVED_REPO} example-{{version}}.tar.gz\n")
+        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("1.3.0", "example"))
+
+        result = self.run_verb("upgrade-report")
+
+        self.assertIn("outdated (release): unknown", result.stdout, self.out(result))
         self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}.tar.gz")
 
     def test_the_sweep_leaves_an_entry_already_at_the_latest_tag(self):
