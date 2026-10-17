@@ -792,7 +792,7 @@ class TheEditor(TheScript):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "home", "Home", "/home", ("/api/home", "/api/home/tiles", "/api/home/issues",
+    page, section, route, api = "home", "Home", "/home", ("/api/home", "/api/home/tiles", "/api/home/tasks",
                                                      "/api/home/briefs", "/api/home/reports")
 
 

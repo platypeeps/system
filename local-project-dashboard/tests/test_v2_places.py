@@ -1,8 +1,8 @@
-"""The HOA and Home sub-views (Issues, Briefs, Reports) and Tasks' HOA and Home views.
+"""The HOA and Home sub-views (Tasks, Briefs, Reports) and Tasks' HOA and Home views.
 
 What this slice promises: one rule places a row in an area (`places.area_of`): an item of the hoa checkout is HOA, an
-item with no repo is Home, and a report is in neither, since an area's Reports view holds it. The place pages' Issues
-views and the Tasks rows' `area` both come from that rule, so Tasks' HOA and Home views hold the Issues views' rows.
+item with no repo is Home, and a report is in neither, since an area's Reports view holds it. The place pages' Tasks
+views (HOA's from `hoa_screen`'s items) and the Tasks rows' `area` all come from that rule, so they hold the same rows.
 Briefs are the area's when their repo is the area's checkout or their series names a job of the area's report family;
 Reports are the reports of the family's jobs. The family list is `report-families.conf`; a missing family is unknown
 with the file it was looked for in, never an empty list.
@@ -20,7 +20,7 @@ from unittest import mock
 
 from sd_db import reporting, routine_briefs
 
-from sd_dashboard import places, reports_screen, tasks_screen, v2
+from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
 
 import test_v2_tasks
 from support import NOW, ScreenCase
@@ -75,29 +75,32 @@ class Fixture(ScreenCase):
         return sorted(row["item"] if "item" in row else row["id"] for row in doc["rows"])
 
 
-class Issues(Fixture):
-    def test_hoa_issues_are_the_open_items_of_the_hoa_checkout(self):
-        doc = places.issues(self.connection, "hoa", now=NOW)
+class Tasks(Fixture):
+    def test_hoa_tasks_are_the_open_items_of_the_hoa_checkout(self):
+        doc = places.tasks(self.connection, "hoa", now=NOW)
         self.assertEqual((doc["state"], self.ids(doc)), ("read", [self.hoa_item]))
 
-    def test_home_issues_are_the_open_items_with_no_repo_and_no_report(self):
-        doc = places.issues(self.connection, "home", now=NOW)
+    def test_home_tasks_are_the_open_items_with_no_repo_and_no_report(self):
+        doc = places.tasks(self.connection, "home", now=NOW)
         self.assertEqual((doc["state"], self.ids(doc)), ("read", [self.home_item]))
 
-    def test_without_a_registered_hoa_checkout_hoa_issues_are_unknown_with_the_reason(self):
+    def test_without_a_registered_hoa_checkout_hoa_tasks_are_unknown_with_the_reason(self):
         bare = ScreenCase()
         bare.setUp()
         self.addCleanup(bare.doCleanups)
         bare.repo("/repos/system")
-        doc = places.issues(bare.connection, "hoa", now=NOW)
+        doc = places.tasks(bare.connection, "hoa", now=NOW)
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("no repo named hoa", doc["reason"])
 
-    def test_tasks_hoa_and_home_views_hold_the_issues_views_rows(self):
+    def test_tasks_hoa_and_home_views_hold_the_place_pages_tasks_rows(self):
         rows = tasks_screen.document(self.connection, now=NOW)["rows"]
         for area in places.AREAS:
             tasks = sorted(r["id"] for r in rows if r["area"] == area and r["status"] != "done" and not r["parked"])
-            self.assertEqual(tasks, self.ids(places.issues(self.connection, area, now=NOW)), area)
+            self.assertEqual(tasks, self.ids(places.tasks(self.connection, area, now=NOW)), area)
+        # The HOA page draws its Tasks view from /api/hoa's items: the same rows, in urgency order.
+        hoa = sorted(r["item"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
+        self.assertEqual(hoa, self.ids(places.tasks(self.connection, "hoa", now=NOW)))
         self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
 
 
@@ -145,8 +148,10 @@ class TheRoutes(BrowserSession):
     def test_each_view_is_its_own_route_that_needs_a_session(self):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch.object(reports_screen, "FAMILIES_CONFIG", Path(folder) / "report-families.conf"):
+            # HOA's Tasks view is /api/hoa's items, so HOA has no tasks read of its own.
+            self.assertEqual(self.request("/api/hoa/tasks", headers={"Cookie": self.cookie})[0], 404)
             for area in places.AREAS:
-                for view in ("issues", "briefs", "reports"):
+                for view in ("tasks", "briefs", "reports") if area == "home" else ("briefs", "reports"):
                     path = f"/api/{area}/{view}"
                     self.assertEqual(self.request(path)[0], 403, path)
                     status, _, body = self.request(path, headers={"Cookie": self.cookie})
@@ -154,22 +159,26 @@ class TheRoutes(BrowserSession):
                     doc = json.loads(body)
                     self.assertEqual(doc["area"], area, path)
                     # The fixture registers no hoa checkout and the folder holds no family file: unknown, with why.
-                    if (area, view) != ("home", "issues"):
+                    if (area, view) != ("home", "tasks"):
                         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []), path)
                         self.assertTrue(doc["reason"], path)
 
 
 class ThePlaceScript(Fixture):
-    """places.js on the HOA page: the switch, and each view reading its own document only when shown."""
+    """places.js on the HOA and Home pages: the switch, and each view reading its own document only when shown."""
 
-    def run_page(self, body, docs):
+    #: The views each page's markup declares: [id, label, api]. HOA's Tasks is drawn by hoa.js, so it reads nothing here.
+    VIEWS = {"hoa": [["overview", "Overview", None], ["tasks", "Tasks", None], ["briefs", "Briefs", "/api/hoa/briefs"], ["reports", "Reports", "/api/hoa/reports"]],
+             "home": [["overview", "Overview", None], ["tasks", "Tasks", "/api/home/tasks"], ["briefs", "Briefs", "/api/home/briefs"], ["reports", "Reports", "/api/home/reports"]]}
+
+    def run_page(self, body, docs, place="hoa"):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
-                  + f"\nconst DOCS = {json.dumps(docs)};\n"
+                  + f"\nconst DOCS = {json.dumps(docs)}, PLACE = {json.dumps(place)}, VIEWS = {json.dumps(self.VIEWS[place])};\n"
                   + """ANSWER = path => path in DOCS ? DOCS[path] : [404, { error: 'no answer' }];
 location.hash = '';
-document.body.dataset.place = 'hoa';
+document.body.dataset.place = PLACE;
 document.documentElement = { hasAttribute: () => false };
-const SECTIONS = ['overview', 'issues', 'briefs', 'reports'].map(v => Object.assign(El('view-' + v), { dataset: { placeView: v } }));
+const SECTIONS = VIEWS.map(([v, label, api]) => Object.assign(El('view-' + v), { dataset: Object.assign({ placeView: v, label }, api ? { api } : {}) }));
 document.querySelectorAll = sel => sel === '[data-place-view]' ? SECTIONS : [];
 const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView);
 const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); };
@@ -183,22 +192,28 @@ const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []
         self.assertIsNone(out["error"])
         return out
 
-    def docs(self):
-        return {f"/api/hoa/{view}": [200, getattr(places, view)(self.connection, "hoa", now=NOW, **({} if view == "issues" else {"config": self.config}))]
-                for view in ("issues", "briefs", "reports")}
+    def docs(self, area="hoa"):
+        return {f"/api/{area}/{view}": [200, getattr(places, view)(self.connection, area, now=NOW, **({} if view == "tasks" else {"config": self.config}))]
+                for view in ("tasks", "briefs", "reports")}
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.sw = ELS['place-views'].html; R.first = shown(); R.gets0 = OUT.gets.slice();
-await go('#view=issues'); R.issues = ELS['issues-rows'].html; R.tally = ELS['issues-tally'].html; R.second = shown();
+await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();
 await go('#view=reports'); R.reports = ELS['reports-rows'].html; R.third = shown();""", self.docs())
         r = out["R"]
-        self.assertEqual([r["gets0"], r["first"], r["second"], r["third"]], [[], ["overview"], ["issues"], ["reports"]])
-        self.assertEqual(out["gets"], ["/api/hoa/issues", "/api/hoa/reports"])
-        self.assertEqual(re.findall(r'data-switch="(\w+)"', r["sw"]), ["overview", "issues", "briefs", "reports"])
-        self.assertIn(f'href="/tasks?row={self.hoa_item}">#{self.hoa_item}</a>', r["issues"])
-        self.assertNotIn("Clean the gutters", r["issues"])
-        self.assertIn("1 open item", r["tally"])
+        self.assertEqual([r["gets0"], r["first"], r["second"], r["gets1"], r["third"]], [[], ["overview"], ["tasks"], [], ["reports"]])
+        self.assertEqual(out["gets"], ["/api/hoa/reports"])
+        self.assertEqual(re.findall(r'data-switch="(\w+)" aria-pressed="\w+">(\w+)<', r["sw"]),
+                         [("overview", "Overview"), ("tasks", "Tasks"), ("briefs", "Briefs"), ("reports", "Reports")])
         self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
+
+    def test_home_tasks_read_their_own_document_when_shown(self):
+        out = self.run_page("""await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html; R.tally = ELS['tasks-tally'].html;""",
+                            self.docs("home"), place="home")
+        self.assertEqual(out["gets"], ["/api/home/tasks"])
+        self.assertIn(f'href="/tasks?row={self.home_item}">sd:{self.home_item}</a>', out["R"]["tasks"])
+        self.assertNotIn("Fix the valve log", out["R"]["tasks"])
+        self.assertIn("1 open item", out["R"]["tally"])
 
     def test_a_view_that_did_not_read_is_unknown_with_its_reason_never_an_empty_table(self):
         docs = self.docs()
@@ -232,12 +247,12 @@ for (const v of ['hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LIS
 
 class ThePages(unittest.TestCase):
     def test_the_overviews_read_state_shows_with_the_overview_only(self):
-        # The page's #state names the Overview's read (/api/hoa, /api/home); on Issues it would describe another read.
+        # The page's #state names the Overview's read (/api/hoa, /api/home); on Briefs it would describe another read.
         for page in ("hoa", "home"):
             text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
-            overview, state, issues = (text.index(mark) for mark in ('data-place-view="overview"', 'id="state"', 'data-place-view="issues"'))
+            overview, state, other = (text.index(mark) for mark in ('data-place-view="overview"', 'id="state"', 'data-place-view="tasks"'))
             self.assertLess(overview, state, page)
-            self.assertLess(state, issues, page)
+            self.assertLess(state, other, page)
 
 
 class TheRule(unittest.TestCase):

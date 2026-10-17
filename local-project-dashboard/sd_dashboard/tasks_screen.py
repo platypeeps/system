@@ -127,7 +127,7 @@ def _document(connection, *, now: str) -> dict:
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(row),
             "parked": row["parked_at"],
-            # The place Tasks' HOA and Home views filter on: the HOA and Home pages' Issues rule (`places.area_of`).
+            # The place Tasks' HOA and Home views filter on: the HOA and Home pages' Tasks rule (`places.area_of`).
             "area": area_of(row["repo"], row["kind"], hoa),
             **_base_fields(state["item"]),
         })

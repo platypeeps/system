@@ -1,5 +1,5 @@
 // HOA (sd:2116): the design source's products/system/designs/pages/hoa.js, ported. Each change from the reference is marked
-// "build:". The data is /api/hoa (hoa_screen.py): the asset map, the Mission export and the open followups of the checkout
+// "build:". The data is /api/hoa (hoa_screen.py): the asset map, the Mission export and the open items of the checkout
 // the repo table's hoa folder names, never sample data. A part that did not read is unknown with its reason.
 // build: no Leaflet. The design vendored Leaflet 1.9.4; this page draws the same vectors as one SVG with Fit, zoom and drag,
 // so the dashboard ships no third-party script. Clusters and the aerial button are not built (docs/pages/hoa.md).
@@ -21,9 +21,9 @@
 
   // ---------- Annunciator ----------
   // build: every cell is a reading of the document or unknown with its reason; the design's mail-only facts (the 05:50 fault,
-  // "9 overdue") have no reader, so Water is unknown and Followups counts the checkout's open followup notes.
+  // "9 overdue") have no reader, so Water is unknown and Tasks counts the checkout's open items (sd:4959: every kind).
   function readCells() {
-    const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.followups;
+    const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.items;
     const why = m.error || 'no rows in the export';
     const out = [{ id: 'water', label: 'Water', state: 'unknown', val: html`<b>—</b> not read`, small: 'no live reader: the export holds daily rows, not the pump now' }];
     out.push(la && num(la.tank_ft_mean) ? { id: 'tank', label: 'Tank level', state: 'ok', open: `day:${la.date}`, val: html`<b>${(+la.tank_ft_mean).toFixed(1)}</b> ft mean`, small: `${la.tank_ft_min}–${la.tank_ft_max} · ${day(la.date)} (latest row)` }
@@ -36,9 +36,9 @@
     out.push(at.count == null ? { id: 'alarms', label: 'Alarms today', state: 'unknown', open: AL[0]?.id, val: html`<b>—</b> ${at.reason}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` }
       : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
-    out.push(f.error ? { id: 'followups', label: 'Followups', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
-      : late ? { id: 'followups', label: 'Followups', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
-      : { id: 'followups', label: 'Followups', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
+    out.push(f.error ? { id: 'tasks', label: 'Tasks', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
+      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
+      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
     out.push(m.latest ? { id: 'mission', label: 'Mission data', state: m.stale ? 'caution' : 'ok', open: 'source:mission', val: html`<b>${m.age_days} d</b> old`, small: `newest row ${m.latest}${m.error ? ' · a file did not read' : ''}` }
       : { id: 'mission', label: 'Mission data', state: 'unknown', open: m.dir ? 'source:mission' : null, val: html`<b>—</b> not read`, small: why });
     return out;
@@ -140,8 +140,8 @@
   function selectOb(id, open) {
     const o = OB.find(x => x.id === id); if (!o) return;
     selected = id; mark(); drawMap();
-    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">Followup · sd:${o.item}</span></div>
-      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', 'sd item, kind followup']])}
+    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">${o.kind[0].toUpperCase()}${o.kind.slice(1)} · sd:${o.item}</span></div>
+      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', `sd item, kind ${o.kind}`]])}
       <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
       <p class="why">Drafting asks the HOA chat for an email. Nothing is sent: the HOA rule is no external action without your approval.</p>`, id, open);
   }
@@ -173,7 +173,7 @@
   function select(id, open) {
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
-    else if (id.startsWith('followup:')) selectOb(id, open);
+    else if (id.startsWith('item:')) selectOb(id, open);
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
@@ -216,18 +216,38 @@
   const drawTrends = () => put($('trend-list'), html`${SERIES.map(spark)}`);
   const daysOf = sc => rowsOf(SERIES.find(x => x.key === sc.dataset.series)).map(r => r.date);
 
-  // ---------- Ledgers ----------
-  // build: the obligations are the checkout's open followup items (hoa_screen ranks them: overdue, due within a week, the rest).
-  // Every row is real; the design's sample rows are gone.
-  function drawLedgers() {
-    const C = window.shell.commands, f = DOC?.followups;
-    put($('ob-body'), f?.error ? html`<tr><td colspan="5">${unknownBlock(f.error)}</td></tr>`
-      : OB.length ? html`${OB.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
-        <td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
-        <td class="what"><button type="button">${o.title}</button> <span class="tag real">${o.priority == null ? '' : `P${o.priority} `}#${o.item}</span><div class="detail">${dueText(o)}</div></td>
-        <td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
+  // ---------- Tasks (sd:4959) ----------
+  // build: one table of every open item of the checkout, followups, tasks and work, where the design had followups alone.
+  // hoa_screen ranks them: overdue, due within a week, the rest. The id is its own first column; every column with data sorts
+  // through shell.list, and a third click on the sorted header returns to the rank. Kind narrows the rows; the default is all.
+  const KINDS = ['followup', 'task', 'work'], OB_ST = { sort: '', dir: 1 };
+  let kind = 'all';
+  const OB_COLS = [['item', 'ID', 'num'], ['rank', html`<span class="sr">Urgency</span>`], ['title', 'What'], ['kind', 'Kind', 'hide-sm'],
+    ['due', 'Due', 'hide-sm'], ['status', 'Status', 'hide-sm'], ['', html`<span class="sr">Actions</span>`]];
+  const OB_BY = { item: o => o.item, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
+  function obRows() {
+    const rows = OB.filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
+    return by ? rows.sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * OB_ST.dir; }) : rows;
+  }
+  function drawTasks() {
+    const C = window.shell.commands, f = DOC?.items, n = k => OB.filter(o => o.kind === k).length;
+    const kinds = [...new Set([...KINDS, ...OB.map(o => o.kind)])].filter(n);
+    if (!kinds.includes(kind)) kind = 'all';
+    put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? OB.length : n(k)}</b></button>`)}`);
+    put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
+    const rows = obRows();
+    put($('tasks-tally'), DOC && !f.error ? html`<span>${plural(rows.length, 'open item')}</span>` : html``);
+    put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
+      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
+        <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
+        <td class="what"><button type="button">${o.title}</button>${o.priority == null ? '' : html` <span class="tag real">P${o.priority}</span>`}<div class="detail">${dueText(o)}</div></td>
+        <td class="hide-sm">${o.kind}</td><td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
         <td class="act">${C.rowActions(o.id)}</td></tr>`)}`
-      : html`<tr><td colspan="5" class="why">No open followup item in the checkout.</td></tr>`);
+      : html`<tr><td colspan="7" class="why">No open item in the checkout.</td></tr>`);
+  }
+
+  // ---------- Alarm ledger ----------
+  function drawLedgers() {
     const m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
     put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="6">${unknownBlock(alErr)}</td></tr>`
       : AL.length ? html`${AL.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button></td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td></tr>`)}`
@@ -235,7 +255,7 @@
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawMap(); legend(); drawTrends(); drawLedgers(); }
+  function draw() { lamps(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
@@ -245,15 +265,15 @@
     adopt: doc => {
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
-      OB = doc.followups.rows;
+      OB = doc.items.rows;
       AL = M.alarms.slice().reverse().map((a, i) => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime}:${i}`, st, why }; });
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, doc.followups.error && `Followups: ${doc.followups.error}`].filter(Boolean);
+      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
+        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
         ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
@@ -271,7 +291,7 @@
     current: () => selected,
     first: () => OB[0]?.id,
     select: (id, opened) => select(id, opened),
-    unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a followup, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
+    unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };
 
   window.PAGE_COMMANDS = [
@@ -288,9 +308,9 @@
     // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
     const openItem = o => S.openItem(o.item);
     C.register(
-      { id: 'followup.draft', on: 'followup', label: 'Draft followup', key: 'd', risk: 'safe', primary: () => true,
+      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },
-      { id: 'followup.open', on: 'followup', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
+      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
@@ -348,12 +368,22 @@
       $('range').querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x === c ? 'true' : 'false'));
       drawTrends();
     });
+    // sortBy flips a sorted header; a third click, on a descending one, returns to the rank instead.
+    $('ob-head').addEventListener('click', e => {
+      const b = e.target.closest?.('button[data-sort]');
+      if (b && OB_ST.sort === b.dataset.sort && OB_ST.dir < 0) { OB_ST.sort = ''; S.list.keepFocus(e, drawTasks); }
+      else if (S.list.sortBy(e, OB_ST)) S.list.keepFocus(e, drawTasks);
+    });
+    $('ob-kinds').addEventListener('click', e => {
+      const b = e.target.closest('button[data-kind]'); if (!b) return;
+      kind = b.dataset.kind; drawTasks();
+    });
     ['ob-body', 'al-body'].forEach(b => $(b).addEventListener('click', e => {
       if (e.target.closest('.rowact')) return;
       const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));
     document.addEventListener('shell:open', e => select(e.detail, true));
-    S.suggest(['Which HOA followup is most overdue, and who is it waiting on?', 'How did A2 pump runtime change over the last 30 days?', 'Which assets are not in service?']);
+    S.suggest(['Which HOA task is most overdue, and who is it waiting on?', 'How did A2 pump runtime change over the last 30 days?', 'Which assets are not in service?']);
     load();
   });
 })();

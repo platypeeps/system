@@ -17,6 +17,7 @@ PAGE = Page(
     routes=("/hoa",),
     html="hoa.html",
     item="sd:2116",
-    api=(Api("/api/hoa", _read), *place_views("hoa")),
+    # HOA's Tasks view is /api/hoa's items (hoa.js draws it), so it has no read of its own.
+    api=(Api("/api/hoa", _read), *place_views("hoa", ("briefs", "reports"))),
     count="/api/hoa",
 )

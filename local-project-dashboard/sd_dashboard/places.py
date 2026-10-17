@@ -1,13 +1,15 @@
-"""Places: the HOA and Home pages' Issues, Briefs and Reports views, and the area rule Tasks' HOA and Home views share.
+"""Places: the HOA and Home pages' Tasks, Briefs and Reports views, and the area rule Tasks' HOA and Home views share.
 
-Each view reads its own document: `/api/<area>/issues`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
-from readers that already exist, with no store or config file of its own.
+Each view reads its own document: `/api/<area>/tasks`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
+from readers that already exist, with no store or config file of its own. HOA's Tasks is the exception: its rows are
+`/api/hoa`'s items (`hoa_screen`, ranked by urgency), which the page reads anyway for its annunciator and badge.
 
 **Which rows are an area's.**
 
 - An item is HOA when its repo is the hoa checkout (`hoa_screen.checkout`), and Home when it has no repo: the
   operator files personal and home items without one. A report is in neither: its family's Reports view holds it.
-  `area_of` is that rule, and Tasks' rows carry its answer as `area`, so Tasks' HOA and Home views are the Issues views.
+  `area_of` is that rule, and Tasks' rows carry its answer as `area`, so Tasks' HOA and Home views hold the place
+  pages' Tasks rows.
 - A brief is the area's when its repo is the area's checkout, or its series, lower-cased with spaces as hyphens, is a
   job of the area's report family (`series_job`): briefs always name a registered repo, so Home has only the second.
 - A report is the area's when its job is in the area's report family. The family is the `report-families.conf` line
@@ -24,7 +26,7 @@ from pathlib import Path
 
 from sd_db import reads
 
-__all__ = ["AREAS", "area_of", "briefs", "issues", "reports", "series_job"]
+__all__ = ["AREAS", "area_of", "briefs", "reports", "series_job", "tasks"]
 
 #: The places, by family key, and their labels.
 AREAS = {"hoa": "HOA", "home": "Home"}
@@ -33,7 +35,7 @@ AREAS = {"hoa": "HOA", "home": "Home"}
 def area_of(repo: str | None, kind: str, hoa: str | None) -> str | None:
     """The area an item belongs to: `hoa` for the hoa checkout's, `home` for one with no repo, else None.
 
-    A report is in no area's Issues: the area's Reports view lists it by its job.
+    A report is in no area's Tasks: the area's Reports view lists it by its job.
     """
     if kind == "report":
         return None
@@ -77,7 +79,7 @@ def _unknown(now: str, area: str, reason: str, **more) -> dict:
     return {"read": now, "area": area, "state": "unknown", "reason": reason, "rows": [], **more}
 
 
-def issues(connection, area: str, *, now: str) -> dict:
+def tasks(connection, area: str, *, now: str) -> dict:
     """The area's open items: `reads.backlog_items`' unparked open rows `area_of` places in it."""
     hoa, why = _hoa(connection)
     if area == "hoa" and hoa is None:

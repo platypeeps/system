@@ -43,5 +43,5 @@ Tasks filters on. v1's screen and its run selection were deleted in sd:2622;
 
 All | HOA | Home (`places.js`) narrows every view to the rows of one place. Each
 row carries `area` from `places.area_of`, the rule the HOA and Home pages'
-Issues views use: the hoa checkout's items, or items with no repo. A report is
+Tasks views use: the hoa checkout's items, or items with no repo. A report is
 in neither. The address keeps the choice as `#view=<id>`.

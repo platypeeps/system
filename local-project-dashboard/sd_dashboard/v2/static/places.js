@@ -1,8 +1,9 @@
-// Places: the HOA and Home pages' views (Overview | Issues | Briefs | Reports) and Tasks' All | HOA | Home.
-// Data: each place view reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py); Overview is
-// the page's own read. Which rows are a place's is decided there, once (places.area_of): Tasks' HOA and Home views filter on
-// the `area` each /api/tasks row carries, so they hold the Issues views' rows. A view that did not read is unknown with its
-// reason, never an empty list. Nothing here writes. Markup is html`…` from markup.js: every value is escaped.
+// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports) and Tasks' All | HOA | Home.
+// Data: a place view with data-api reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py).
+// Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
+// read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
+// /api/tasks row carries, so they hold the place pages' Tasks rows. A view that did not read is unknown with its reason, never
+// an empty list. Nothing here writes. Markup is html`…` from markup.js: every value is escaped.
 //
 // Adapter: viewSwitch(views, show) is the one place a page meets the shell's view switch. Until the shell carries one
 // (shell.viewSwitch), it draws a segmented control into #place-views and keeps the view as #view=<id> in the address.
@@ -37,10 +38,10 @@
 
   // Each place view: its table head, one row, the empty text and the tally. The rows open where their page acts on them.
   const DRAW = {
-    issues: (doc, place) => [table([['#'], ['What'], ['Kind', 'hide-sm'], ['Status'], ['Due', 'hide-sm']],
-      doc.rows.map(r => html`<tr><td class="ref"><a href="${window.shell.itemHref(r.id)}">#${r.id}</a></td><td class="what">${r.title}</td>
+    tasks: doc => [table([['ID', 'num'], ['What'], ['Kind', 'hide-sm'], ['Status'], ['Due', 'hide-sm']],
+      doc.rows.map(r => html`<tr><td class="ref num"><a href="${window.shell.itemHref(r.id)}">sd:${r.id}</a></td><td class="what">${r.title}</td>
         <td class="hide-sm">${r.kind}</td><td>${r.status}</td><td class="hide-sm">${day(r.due) || '—'}</td></tr>`),
-      place === 'home' ? 'No open item without a repo.' : 'No open item in the hoa checkout.'), `${plural(doc.rows.length, 'open item')}`],
+      'No open item without a repo.'), `${plural(doc.rows.length, 'open item')}`],
     briefs: doc => [table([['Day'], ['Brief'], ['Words', 'num hide-sm'], ['Lead', 'hide-sm']],
       doc.rows.map(r => html`<tr><td class="when">${r.day}</td><td class="what"><a href="/briefs?row=${encodeURIComponent(r.id)}">${r.subj}</a></td>
         <td class="num hide-sm">${r.words}</td><td class="lead hide-sm">${r.lead}</td></tr>`),
@@ -55,27 +56,29 @@
   };
 
   const seen = {};
-  async function load(place, view) {
+  async function load({ id: view, api }) {
     const box = $(`${view}-rows`), tally = $(`${view}-tally`), mine = seen[view] = (seen[view] || 0) + 1;
     put(box, html`<p class="note">Reading ${view}…</p>`); put(tally, html``);
     let doc;
-    try { doc = await window.shell.getJSON(`/api/${place}/${view}`); } catch (e) { doc = { state: 'unknown', reason: `/api/${place}/${view} did not answer: ${e.message}`, rows: [] }; }
+    try { doc = await window.shell.getJSON(api); } catch (e) { doc = { state: 'unknown', reason: `${api} did not answer: ${e.message}`, rows: [] }; }
     if (mine !== seen[view]) return;
     if (doc.state !== 'read') { put(box, unknown(doc.reason)); return; }
-    const [body, count] = DRAW[view](doc, place);
+    const [body, count] = DRAW[view](doc);
     put(box, html`${doc.reason ? html`<p class="note">${doc.reason}</p>` : ''}${body}`);
     put(tally, html`<span>${count}</span>`);
   }
 
-  // A place page: <body data-place="hoa|home">, an Overview block and one section per view, each [data-place-view].
-  // The wall display (html[data-kiosk], home-kiosk.js) stays on the Overview: it has no switch.
+  // A place page: <body data-place="hoa|home"> and one block per view, each [data-place-view] with its data-label, and
+  // data-api when the view reads its own document. The wall display (html[data-kiosk], home-kiosk.js) stays on the
+  // Overview: it has no switch.
   function place() {
     if (document.documentElement.hasAttribute('data-kiosk')) return;
-    const id = document.body.dataset.place;
-    const views = [{ id: 'overview', label: 'Overview' }, ...['issues', 'briefs', 'reports'].map(v => ({ id: v, label: v[0].toUpperCase() + v.slice(1), api: `/api/${id}/${v}` }))];
-    viewSwitch(views, view => {
-      document.querySelectorAll('[data-place-view]').forEach(s => { s.hidden = s.dataset.placeView !== view; });
-      if (view !== 'overview') load(id, view);
+    const blocks = [...document.querySelectorAll('[data-place-view]')];
+    const views = blocks.map(b => ({ id: b.dataset.placeView, label: b.dataset.label, api: b.dataset.api }));
+    viewSwitch(views, id => {
+      blocks.forEach(b => { b.hidden = b.dataset.placeView !== id; });
+      const v = views.find(x => x.id === id);
+      if (v?.api) load(v);
     });
   }
 

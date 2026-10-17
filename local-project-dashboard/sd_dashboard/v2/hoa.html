@@ -1,11 +1,11 @@
 <!doctype html>
 <!--
   HOA (sd:2116), at /hoa. Built from the design source's products/system/designs/pages/hoa.{html,css,js}, with design.md and
-  commands.md. Data: /api/hoa (hoa_screen.document: the asset map, the Mission export and the open followups of the checkout
+  commands.md. Data: /api/hoa (hoa_screen.document: the asset map, the Mission export and the open items of the checkout
   the repo table holds under the folder name hoa), read when the page opens and on Refresh. A part that did not read is unknown
   with its reason. The map is one SVG of the files' vectors: no Leaflet and no tiles. Writes: none; email is never sent.
   Nothing here is sample data.
-  Views (places.js): Overview is the above; Issues, Briefs and Reports each read /api/hoa/<view> (places.py) when shown.
+  Views (places.js): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Briefs and Reports each read /api/hoa/<view> (places.py) when shown.
 -->
 <html lang="en">
 <head>
@@ -34,7 +34,7 @@
   </header>
   <nav class="place-switch" id="place-views" data-label="HOA views" aria-label="HOA views"></nav>
 
-  <div data-place-view="overview">
+  <div id="view-overview" data-place-view="overview" data-label="Overview">
   <div id="state" hidden></div>
   <h2 class="sr">Readings</h2>
   <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul></annunciator-strip>
@@ -66,16 +66,6 @@
     <div class="trends" id="trend-list"></div>
   </section>
 
-  <section class="panel" id="obligations" aria-labelledby="ob-h">
-    <div class="panel-head">
-      <div><h2 id="ob-h">Obligations and followups</h2><p>The checkout's open followup items, ranked by urgency. Drafts go to chat; you send.</p></div>
-    </div>
-    <table class="ledger" id="ob-table" aria-labelledby="ob-h">
-      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">What</th><th scope="col" class="hide-sm">Due</th><th scope="col" class="hide-sm">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
-      <tbody id="ob-body"></tbody>
-    </table>
-  </section>
-
   <section class="panel" id="alarms" aria-labelledby="al-h">
     <div class="panel-head">
       <div><h2 id="al-h">Alarm events</h2><p>From <code>alarm-events.csv</code>, the last 30 days of the export, newest first.</p></div>
@@ -87,15 +77,19 @@
   </section>
   </div>
 
-  <section class="place-view" id="view-issues" data-place-view="issues" aria-labelledby="issues-h" hidden>
-    <div class="sec-head"><div><h2 id="issues-h">Issues</h2><p>Open items whose repo is the hoa checkout.</p></div><p class="tally" id="issues-tally"></p></div>
-    <div id="issues-rows"></div>
+  <section class="place-view" id="view-tasks" data-place-view="tasks" data-label="Tasks" aria-labelledby="tasks-h" hidden>
+    <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Drafts go to chat; you send.</p></div><p class="tally" id="tasks-tally"></p></div>
+    <div class="range" id="ob-kinds" role="group" aria-label="Kind"></div>
+    <table class="ledger" id="ob-table" aria-labelledby="tasks-h">
+      <thead id="ob-head"></thead>
+      <tbody id="ob-body"></tbody>
+    </table>
   </section>
-  <section class="place-view" id="view-briefs" data-place-view="briefs" aria-labelledby="briefs-h" hidden>
+  <section class="place-view" id="view-briefs" data-place-view="briefs" data-label="Briefs" data-api="/api/hoa/briefs" aria-labelledby="briefs-h" hidden>
     <div class="sec-head"><div><h2 id="briefs-h">Briefs</h2><p>Briefs filed under the hoa checkout, or whose series names a job of the hoa report family.</p></div><p class="tally" id="briefs-tally"></p></div>
     <div id="briefs-rows"></div>
   </section>
-  <section class="place-view" id="view-reports" data-place-view="reports" aria-labelledby="reports-h" hidden>
+  <section class="place-view" id="view-reports" data-place-view="reports" data-label="Reports" data-api="/api/hoa/reports" aria-labelledby="reports-h" hidden>
     <div class="sec-head"><div><h2 id="reports-h">Reports</h2><p>Reports of the jobs in the hoa report family (<code>report-families.conf</code>), from the newest 200.</p></div><p class="tally" id="reports-tally"></p></div>
     <div id="reports-rows"></div>
   </section>

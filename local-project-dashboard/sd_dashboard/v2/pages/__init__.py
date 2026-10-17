@@ -97,8 +97,8 @@ def attention(states, what: dict[str, str]) -> dict:
     return {"state": state, "n": warning or caution, "what": what.get(state, what["caution"])}
 
 
-def place_views(area: str) -> tuple[Api, ...]:
-    """A place page's Issues, Briefs and Reports reads (`places`), at `/api/<area>/<view>`: each view its own document."""
+def place_views(area: str, kinds=("tasks", "briefs", "reports")) -> tuple[Api, ...]:
+    """A place page's Tasks, Briefs and Reports reads (`places`), at `/api/<area>/<view>`: each view its own document."""
 
     def view(kind: str) -> Api:
         def read(read: Read):
@@ -108,7 +108,7 @@ def place_views(area: str) -> tuple[Api, ...]:
 
         return Api(f"/api/{area}/{kind}", read)
 
-    return tuple(view(kind) for kind in ("issues", "briefs", "reports"))
+    return tuple(view(kind) for kind in kinds)
 
 
 def collect(paths, package: str) -> tuple[Page, ...]:
