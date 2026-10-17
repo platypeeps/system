@@ -127,6 +127,7 @@ function renderCad() {
     put(byId('cad-head'), html``);
     put(byId('cad-body'), html`<tr><td class="m unk">The run cadence was not read: ${why('cadence') || 'no reason given'}.</td></tr>`);
     put(byId('cad-tally'), html``); byId('cad-more').hidden = true;
+    window.shell.view.count('cadence', null);
     return;
   }
   put(byId('cad-head'), html`<tr><th scope="col">Job</th>${DAYS.map(d => html`<th scope="col"><abbr title="${d}">${dayName(d)}</abbr></th>`)}</tr>`);
@@ -142,9 +143,10 @@ function renderCad() {
   const counts = { warning: 0, caution: 0 };
   CAD_JOBS.forEach(([, j]) => { const s = lastState(j); if (s in counts) counts[s]++; });
   put(byId('cad-tally'), html`<span class="g-warning">■ ${counts.warning} failed last run</span><span class="g-caution">▲ ${counts.caution} partial</span><span>${list.length} of ${CAD_JOBS.length} shown</span>`);
+  window.shell.view.count('cadence', CAD_JOBS.length);
 }
 byId('cad-more').addEventListener('click', () => { cadAll = !cadAll; renderCad(); });
-byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); byId('led-h').scrollIntoView?.({ block: 'start' }); });
+byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); window.shell.view.show('reports'); byId('led-h').scrollIntoView?.({ block: 'start' }); });
 
 // Filters.
 const F = { job: '', status: '', day: '', act: false, fam: '', q: '' };
@@ -167,7 +169,7 @@ byId('annunciator').addEventListener('click', e => {
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
   F.fam = F.fam === c.dataset.fam ? '' : c.dataset.fam;
   document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam)));
-  L.page = 1; renderRows();
+  L.page = 1; renderRows(); window.shell.view.show('reports'); // a lamp filters the list, so it shows the list
 });
 
 // Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
@@ -224,6 +226,7 @@ function renderRows(read) {
   window.PAGE_ATTENTION = DOC.reports && DOC.attention || { state: 'unknown', n: 0, what: 'reports not read' }; window.shell?.attention?.();
   const list = window.shell.list;
   shown = ROWS.filter(matches).sort(order);
+  window.shell.view.count('reports', DOC.reports ? shown.length : null);
   const slice = list.pageOf(shown, L);
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
@@ -358,6 +361,9 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === '/') { e.preventDefault(); input.focus(); }
 });
+// The shell's view switch (shell.js, view block): the list first, the run table second. Both read /api/reports, so neither
+// names an api of its own.
+window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence' }];
 // The shell walks these rows on j / k.
 window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };

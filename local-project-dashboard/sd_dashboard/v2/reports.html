@@ -7,6 +7,8 @@
   read through shell.read (read.js, sd:2487) when the page opens and after a write. Writes: report acknowledge and job
   retry, each through the route v1 posts, and Acknowledge's Undo through /api/reports/<n>/reopen (sd:2395). Nothing here
   is sample data.
+  Views: the shell's view switch (shell.js, view block) shows one panel, #view-reports (the list, first) or #view-cadence
+  (the run table), under the lamps; reports.js declares them in window.PAGE_VIEWS.
 -->
 <html lang="en">
 <head>
@@ -54,28 +56,7 @@
     <h2 class="sr">Job families</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
-    <section aria-labelledby="cad-h">
-      <div class="sec-head">
-        <h2 id="cad-h">Run cadence <button class="help" type="button" aria-label="Help: Run cadence" data-help="<b>One mark per local day.</b> Read from each job's log. A quiet day, when a job ran but mailed nothing, is a gap, not a fault. The watchdog decides whether silence is a fault. A day the job's calendar leaves out is not scheduled. Tap a job to filter the reports below.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="cad-tally"></p>
-      </div>
-      <table class="cad" id="cad">
-        <caption id="cad-caption">Local time. Tap a job to see its reports.</caption>
-        <thead id="cad-head"></thead>
-        <tbody id="cad-body"></tbody>
-      </table>
-      <ul class="legend" aria-label="Legend">
-        <li><span class="g-ok">●</span> ran clean</li>
-        <li><span class="g-caution">▲</span> some runs failed, or none ran</li>
-        <li><span class="g-warning">■</span> every run failed</li>
-        <li><span class="g-unknown">▨</span> no log yet</li>
-        <li>· not scheduled, or not yet today</li>
-      </ul>
-      <button class="btn quiet sm more-jobs" type="button" id="cad-more" aria-expanded="false">Show all jobs</button>
-    </section>
-
-    <section aria-labelledby="led-h">
+    <section id="view-reports" aria-labelledby="led-h">
       <div class="sec-head">
         <h2 id="led-h">Reports <button class="help" type="button" aria-label="Help: Reports" data-help="<b>Newest first.</b> Database reports come from sd-db, one per failed or reporting run; a repeated failure folds into one row with a count. Acknowledge closes a database report, and its Undo reopens it. Neither touches the job.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
@@ -94,6 +75,27 @@
         <tbody id="rows"></tbody>
       </table>
       <div id="pager"></div>
+    </section>
+
+    <section id="view-cadence" aria-labelledby="cad-h">
+      <div class="sec-head">
+        <h2 id="cad-h">Run cadence <button class="help" type="button" aria-label="Help: Run cadence" data-help="<b>One mark per local day.</b> Read from each job's log. A quiet day, when a job ran but mailed nothing, is a gap, not a fault. The watchdog decides whether silence is a fault. A day the job's calendar leaves out is not scheduled. Tap a job to see its reports in the Reports view.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="cad-tally"></p>
+      </div>
+      <table class="cad" id="cad">
+        <caption id="cad-caption">Local time. Tap a job to see its reports.</caption>
+        <thead id="cad-head"></thead>
+        <tbody id="cad-body"></tbody>
+      </table>
+      <ul class="legend" aria-label="Legend">
+        <li><span class="g-ok">●</span> ran clean</li>
+        <li><span class="g-caution">▲</span> some runs failed, or none ran</li>
+        <li><span class="g-warning">■</span> every run failed</li>
+        <li><span class="g-unknown">▨</span> no log yet</li>
+        <li>· not scheduled, or not yet today</li>
+      </ul>
+      <button class="btn quiet sm more-jobs" type="button" id="cad-more" aria-expanded="false">Show all jobs</button>
     </section>
 
   </main>

@@ -2,7 +2,10 @@
 
 Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
 per job, the report ledger with filters and saved views, and Details with a
-line diff against the job's previous report. `GET /api/reports`
+line diff against the job's previous report. The shell's view switch, under
+the lamps, shows the Reports view (the ledger, the default) or the Cadence view
+(`#view=cadence`); a family lamp or a cadence row shows the Reports view.
+`GET /api/reports`
 (`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
 jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
 day the job's calendar leaves out is not scheduled. The families come from

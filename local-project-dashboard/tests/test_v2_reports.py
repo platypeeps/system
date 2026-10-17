@@ -430,6 +430,8 @@ SHELL_MORE = r"""
 OUT.urls = []; window.shell.url = q => OUT.urls.push(q); window.shell.setContext = () => {}; OUT.picks = [];
 window.shell.commands.pick = id => OUT.picks.push(id); window.shell.commands.list = () => REG;
 window.shell.row = () => new URLSearchParams(location.search).get('row');
+OUT.views = []; OUT.counts = {};
+window.shell.view = { show: id => { OUT.views.push(id); return true; }, count: (id, n) => { OUT.counts[id] = n; }, current: () => 'reports' };
 """
 
 
@@ -708,6 +710,25 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertNotIn("caution", out["R"]["marks"])
         self.assertNotIn("warning", out["R"]["marks"])
         self.assertEqual((out["R"]["listed"], out["R"]["quiet"]), (True, False))
+
+    def test_the_page_declares_its_views_and_a_family_lamp_or_a_cadence_row_shows_the_reports(self):
+        """The shell's view switch: Reports (the list) first, Cadence (the run table) second. A lamp and a cadence row
+        filter the list, so each shows the Reports view; the segments count the rows shown and the jobs listed."""
+        lamp = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { fam: 'sync' } } : null } });"
+        row = "ELS['cad-body'].listeners.click[0]({ target: { closest: s => s === 'tr[data-job]' ? { dataset: { job: 'weekly-scan' } } : null } });"
+        doc = json.loads(json.dumps(self.doc))
+        doc["families"]["list"] = [{"key": "sync", "label": "Sync", "icon": "bot", "jobs": ["nightly-sync"]}]
+        out = self.run_page(f"R.decl = window.PAGE_VIEWS || null; R.before = OUT.views.slice(); {lamp} R.lamp = [OUT.views.slice(), F.fam, shown.length];"
+                            f" {row} R.row = [OUT.views.slice(), F.job, shown.length]; R.counts = OUT.counts; R.jobs = CAD_JOBS.length;", doc=doc)
+        self.assertEqual(out["R"]["decl"], [{"id": "reports", "label": "Reports"}, {"id": "cadence", "label": "Cadence"}])
+        self.assertEqual(out["R"]["before"], [])
+        self.assertEqual(out["R"]["lamp"], [["reports"], "sync", 1])
+        self.assertEqual(out["R"]["row"], [["reports", "reports"], "weekly-scan", 0])
+        self.assertEqual(out["R"]["counts"], {"reports": 0, "cadence": out["R"]["jobs"]})
+        page = (V2 / "reports.html").read_text(encoding="utf-8")
+        # The lamps sit above the switch, which goes before the first panel; the list is the first view.
+        self.assertLess(page.index('id="annunciator"'), page.index('id="view-reports"'))
+        self.assertLess(page.index('id="view-reports"'), page.index('id="view-cadence"'))
 
     def test_a_reading_retires_the_reports_and_jobs_it_no_longer_lists(self):
         clean, failed = self.ids["clean"], self.ids["failed"]

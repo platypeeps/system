@@ -309,6 +309,7 @@ so no page anywhere may frame the dashboard.
 `tokens.css`, `theme.js` and the `<annunciator-strip>` component.
 `tests/test_v2_foundation.py` pins each copy by digest to one foundation
 commit. Change the foundation first, then copy the file and move the pin.
+A top-level page shows its sub-sections through the shell's one view switch, declared in `window.PAGE_VIEWS`; the contract sits at the `view:start` block of `sd_dashboard/v2/static/shell.js`.
 
 Writes are JSON POSTs under `/api/items`, `/api/notes`, `/api/jobs`,
 `/api/assignments` and `/api/services`; GET and HEAD never
