@@ -64,7 +64,8 @@ STATE_DIR="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
 STATE_FILE="$STATE_DIR/profile"
 
 # The .release kind's tools: their bins go here, and the tag each entry has
-# installed goes in RELEASE_STATE/<name>.tag (sd:4853). The base URL's
+# installed goes in RELEASE_STATE/<name>.tag (sd:4853), with the repo and
+# asset it came from (sd:4916). The base URL's
 # override exists for the tests, which stub curl on PATH.
 RELEASE_BIN="${MACHINE_SETUP_RELEASE_BIN:-$HOME/.local/bin}"
 RELEASE_STATE="$STATE_DIR/release"
@@ -436,13 +437,22 @@ missing_home_aliases() {
       done
 }
 
-# Entries of one profile file, comments and blanks stripped. `|| :` matters:
-# under set -e a comment-only file makes grep exit 1, which aborted the
+# Entries of one profile file, comments, blanks and `!name` lines stripped:
+# a `!` line drops an entry and is none (sd:4916). `|| :` matters: under
+# set -e a comment-only file makes grep exit 1, which aborted the
 # assigned-list builder mid-loop and mislabeled everything as unassigned.
 profile_entries() {
   f="$PROFILE_DIR/$1.$2"
   if [ -f "$f" ]; then
-    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | grep -v '^$' || :
+    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | grep -v -e '^$' -e '^!' || :
+  fi
+}
+
+# The names the `!name` lines of one profile file drop (sd:4853).
+profile_drops() {
+  f="$PROFILE_DIR/$1.$2"
+  if [ -f "$f" ]; then
+    sed -n -e 's/#.*//' -e 's/^[[:space:]]*![[:space:]]*//p' "$f"
   fi
 }
 
@@ -452,10 +462,10 @@ profile_entries() {
 # output.
 manifest() {
   kind="$1"
-  mf_neg=$(profile_entries "$PROFILE" "$kind" | sed -n 's/^![[:space:]]*//p')
+  mf_neg=$(profile_drops "$PROFILE" "$kind")
   { profile_entries common "$kind" | drop_negated "$mf_neg"
     profile_entries "$PROFILE" "$kind"
-  } | grep -v '^!' | sort -u
+  } | sort -u
 }
 
 # Copies stdin less each entry a name in $1 (one per line) drops. An entry's
@@ -650,7 +660,9 @@ stage_brew() {
 # executables to take from the archive, the first naming the entry; <asset>
 # the archive's name, where {version} is the tag less a leading v and {tag}
 # the tag; <tag> pins the entry, and the upgrade sweep moves only unpinned
-# ones. An entry is ok when each bin is in RELEASE_BIN and its tag is recorded.
+# ones. An entry is ok when each bin is in RELEASE_BIN and its record names
+# its tag, owner/repo and asset. A record an older version wrote holds the
+# tag alone, so that entry reinstalls once (sd:4916).
 stage_release() {
   echo "== release"
   rel=$(manifest release)
@@ -663,7 +675,9 @@ stage_release() {
       note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip> [<tag>])" 1
       continue
     fi
-    rs_have=$(release_record "$rl_name")
+    read -r rs_have rs_src <<EOF
+$(release_record "$rl_name")
+EOF
     rs_gone=$(release_missing_bins "$rl_bins")
     if [ -n "$rs_gone" ]; then
       echo "  MISSING release $rl_name (no $rs_gone in $RELEASE_BIN)"
@@ -671,6 +685,8 @@ stage_release() {
       echo "  MISSING release $rl_name (no tag recorded)"
     elif [ -n "$rl_tag" ] && [ "$rs_have" != "$rl_tag" ]; then
       echo "  DIFFERS release $rl_name $rs_have, pinned $rl_tag"
+    elif [ "$rs_src" != "$rl_repo $rl_asset" ]; then
+      echo "  DIFFERS release $rl_name $rs_have from ${rs_src:-no recorded source}, now $rl_repo $rl_asset"
     else
       echo "  ok      release $rl_name $rs_have"
       continue
@@ -699,7 +715,7 @@ release_tag_ok() { # tag
   case "$1" in ''|.|..|*[!A-Za-z0-9._+-]*) return 1 ;; esac
 }
 
-# The tag recorded for an entry, or nothing.
+# The record of an entry, `<tag> <owner/repo> <asset>`, or nothing.
 release_record() { # name
   cat "$RELEASE_STATE/$1.tag" 2>/dev/null || :
 }
@@ -722,7 +738,7 @@ release_latest() { # owner/repo
 }
 
 # Installs an entry's bins at TAG, else at the latest tag, then records the
-# tag. Run through run_ok or a condition, where set -e is off, so each step
+# tag, owner/repo and asset. Run through run_ok or a condition, where set -e is off, so each step
 # checks its own result. No bin moves into RELEASE_BIN before every bin is
 # found and copied beside its place; the old record goes before the first
 # move and the new one comes last, so a run that stops between them leaves
@@ -815,7 +831,7 @@ release_fetch() { # name, bins, owner/repo, asset, tag (into $ri_tmp)
       return 1
     fi
   done
-  { mkdir -p "$RELEASE_STATE" && printf '%s\n' "$5" > "$RELEASE_STATE/$1.tag.new" \
+  { mkdir -p "$RELEASE_STATE" && printf '%s %s %s\n' "$5" "$3" "$4" > "$RELEASE_STATE/$1.tag.new" \
       && mv -f "$RELEASE_STATE/$1.tag.new" "$RELEASE_STATE/$1.tag"; } || return 1
   echo "  installed release $1 $5"
 }
@@ -847,6 +863,7 @@ release_outdated() {
       printf '%s unknown\n' "$rl_name"; rlo_rc=1; continue
     fi
     rlo_have=$(release_record "$rl_name")
+    rlo_have=${rlo_have%% *}
     [ "$rlo_new" = "$rlo_have" ] || printf '%s %s %s %s\n' "$rl_name" "${rlo_have:-none}" "$rlo_new" "$rlo_line"
   done <<EOF
 $rlo_rel
@@ -3524,8 +3541,8 @@ review_hint() {
 # Common's entries this profile keeps: capture subtracts these, so an entry a
 # `!` line drops is the machine's to record again (sd:4853).
 common_manifest() {
-  cm_neg=$(profile_entries "$PROFILE" "$1" | sed -n 's/^![[:space:]]*//p')
-  profile_entries common "$1" | grep -v '^!' | sort | drop_negated "$cm_neg"
+  cm_neg=$(profile_drops "$PROFILE" "$1")
+  profile_entries common "$1" | sort | drop_negated "$cm_neg"
 }
 
 # A dotfile is only copied in after it passes a credential scan, so a key
