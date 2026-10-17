@@ -506,9 +506,11 @@ brew_node_bin() {
 
 # The bundle id that answers mailto: links: the first line of <profile>.mailto,
 # else of common.mailto, else Chrome, the handler before it moved (sd:3966).
+# A profile `!id` line drops common's id, as in every other kind (sd:4942).
 mailto_handler() {
   mh=$(profile_entries "$PROFILE" mailto | head -1)
-  [ -n "$mh" ] || mh=$(profile_entries common mailto | head -1)
+  [ -n "$mh" ] || mh=$(profile_entries common mailto \
+    | drop_negated "$(profile_drops "$PROFILE" mailto)" | head -1)
   echo "${mh:-com.google.Chrome}"
 }
 
@@ -670,11 +672,19 @@ stage_release() {
     echo "  no release tools in this profile"
     return 0
   fi
+  rs_seen=""
   printf '%s\n' "$rel" | while IFS= read -r line; do
     if ! release_parse "$line"; then
       note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip> [<tag>])" 1
       continue
     fi
+    rs_prev=$(release_seen "$rs_seen" "$rl_name")
+    if [ -n "$rs_prev" ]; then
+      note_failure "release: two lines name $rl_name ('$rs_prev' and '$line'); add !$rl_name to the profile's .release to drop common's, or remove one" 1
+      continue
+    fi
+    rs_seen="$rs_seen
+$rl_name $line"
     read -r rs_have rs_src <<EOF
 $(release_record "$rl_name")
 EOF
@@ -693,6 +703,13 @@ EOF
     fi
     run release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rl_tag"
   done
+}
+
+# The earlier .release line of an entry name, from lines `<name> <line>`, or
+# nothing. A second line of one name would read the first one's record and
+# install over it on every run, so the stage and the sweep fail it instead.
+release_seen() { # seen, name
+  printf '%s\n' "$1" | awk -v n="$2" '$1 == n { sub(/^[^ ]+ /, ""); print; exit }'
 }
 
 # Splits one .release line into rl_bins, rl_repo, rl_asset, rl_tag and
@@ -851,13 +868,18 @@ release_profile() {
 # there was one of those. A here-document, not a pipe, so $rlo_rc survives.
 release_outdated() {
   release_profile || return 0
-  rlo_rc=0
+  rlo_rc=0; rlo_seen=""
   rlo_rel=$(manifest release)
   [ -n "$rlo_rel" ] || return 0
   while IFS= read -r rlo_line; do
     if ! release_parse "$rlo_line"; then
       printf '%s unknown\n' "${rlo_line%%[[:space:]]*}"; rlo_rc=1; continue
     fi
+    if [ -n "$(release_seen "$rlo_seen" "$rl_name")" ]; then
+      printf '%s unknown\n' "$rl_name"; rlo_rc=1; continue
+    fi
+    rlo_seen="$rlo_seen
+$rl_name $rlo_line"
     [ -z "$rl_tag" ] || continue
     if ! rlo_new=$(release_latest "$rl_repo"); then
       printf '%s unknown\n' "$rl_name"; rlo_rc=1; continue
@@ -896,7 +918,7 @@ release_sweep() {
   [ -n "$rsw" ] || return 0
   while read -r rsw_name rsw_old rsw_new rsw_line; do
     if [ "$rsw_old" = unknown ]; then
-      echo "  FAILED  release $rsw_name: no latest release tag, or a line of another shape"
+      echo "  FAILED  release $rsw_name: no latest release tag, a line of another shape, or a second line of that name"
       failed="$failed, release $rsw_name"
     elif release_parse "$rsw_line" \
         && release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rsw_new" </dev/null; then

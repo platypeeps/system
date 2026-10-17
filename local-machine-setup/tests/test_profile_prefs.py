@@ -167,6 +167,14 @@ class MailtoHandler(Case):
         self.update_tooling(fnm_have="18 20 24", ls_mailto="com.example.common")
         self.assertEqual(self.calls("duti"), ["duti -s com.example.mail mailto:"])
 
+    def test_a_bang_line_alone_drops_common_s_handler_for_chrome(self):
+        """sd:4942: `!id` drops common's id, as it drops any other kind's
+        entry; skipping it alone let common's handler win."""
+        (self.profiles / "common.mailto").write_text("com.example.common\n")
+        (self.profiles / "personal.mailto").write_text("!com.example.common\n")
+        self.update_tooling(fnm_have="18 20 24", ls_mailto="com.example.common")
+        self.assertEqual(self.calls("duti"), ["duti -s com.google.Chrome mailto:"])
+
     def test_no_mailto_file_keeps_chrome(self):
         out = self.update_tooling(fnm_have="18 20 24")
         self.assertIn("  ok      mailto handler is com.google.Chrome", out)

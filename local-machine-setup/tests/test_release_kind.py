@@ -39,6 +39,7 @@ LIB = FOLDER.parent / "lib"
 BASE = "https://releases.example.test"
 REPO = "example-owner/example"
 PINNED_REPO = "example-owner/pinned"
+MOVED_REPO = "example-owner/moved"
 
 # Serves $ASSETS/<owner>/<repo>/<tag>/<asset> for a download URL, the tag in
 # $ASSETS/<owner>/<repo>/LATEST for the latest-release redirect, and answers
@@ -492,6 +493,27 @@ class ReleaseStage(Case):
         again = self.run_verb("update", "release")
         self.assertIn("  ok      release example v1.2.3\n", again.stdout, self.out(again))
 
+    def test_two_lines_of_one_name_fail_and_install_the_first_alone(self):
+        """sd:4942: common's line and the profile's own, with no `!name`,
+        read each other's record, so each run would install both."""
+        (self.profiles / "common.release").write_text(f"example {REPO} example-{{version}}-aarch64.tar.gz\n")
+        (self.profiles / "personal.release").write_text(f"example {REPO} example-{{version}}-x86_64.tar.gz\n")
+        self.release("v1.2.3", "example-1.2.3-aarch64.tar.gz", self.tools("arm", "example"))
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example"))
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn(f"  FAILED  release: two lines name example ('example {REPO} example-{{version}}-aarch64.tar.gz'"
+                      f" and 'example {REPO} example-{{version}}-x86_64.tar.gz'); add !example", result.stdout)
+        self.assertEqual(len([u for u in self.urls() if "/download/" in u]), 2, self.urls())  # archive, .sha256
+
+        again = self.run_verb("update", "release", "--apply")
+
+        self.assertIn("  ok      release example v1.2.3", again.stdout, self.out(again))
+        self.assertNotIn("DIFFERS", again.stdout)
+        self.assertEqual(len([u for u in self.urls() if "/download/" in u]), 2, self.urls())
+
     def test_a_profile_without_release_entries_installs_nothing(self):
         (self.profiles / "personal.release").unlink()
 
@@ -529,6 +551,17 @@ class ReleaseUpgrade(Case):
         self.assertEqual(self.record(), "v1.3.0")
         self.assertEqual(self.record("pinned"), "v1.0.0")
         self.assertFalse([u for u in self.urls() if PINNED_REPO in u], self.urls())
+
+    def test_the_sweep_fails_a_second_line_of_one_name(self):
+        (self.profiles / "common.release").write_text(f"example {MOVED_REPO} example-{{version}}.tar.gz\n")
+        self.release("v1.2.3", "example-1.2.3.tar.gz", self.tools("moved", "example"), repo=MOVED_REPO)
+
+        result = self.run_verb("upgrade", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("failed steps: release example", result.stdout)
+        self.assertEqual(self.installed("example"), TOOL.format("1.2.3"))
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}.tar.gz")
 
     def test_the_sweep_leaves_an_entry_already_at_the_latest_tag(self):
         result = self.run_verb("upgrade", "--apply")
@@ -832,6 +865,17 @@ class NodeLink(Case):
 
         self.assertEqual(result.returncode, 0, self.out(result))
         self.assertEqual(sorted(p.name for p in self.bin.iterdir()), ["node", "npm", "npx"])
+
+    def test_a_version_folder_without_node_links_nothing(self):
+        """fnm names a node that is not there: no link moves (sd:4942)."""
+        (self.base / "fnm/node-versions/v26.1.0/installation/bin/node").unlink()
+
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("node link 26: fnm names no node for v26.1.0; no link changed", result.stdout)
+        self.assertIn("fnm exec --using=v26.1.0 -- sh -c command -v node", self.urls())
+        self.assertFalse(self.bin.exists())
 
     def test_a_file_that_is_not_a_link_is_left_alone(self):
         write_exec(self.bin / "node", "#!/bin/sh\necho mine\n")
