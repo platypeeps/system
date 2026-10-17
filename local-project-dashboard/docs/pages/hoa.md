@@ -31,6 +31,14 @@ behind the Show acknowledged chip and leave the Alarms today lamp. The write
 reads the export again, so an event it no longer holds is refused (409) by
 name. Nothing reaches the Mission portal.
 
+Data sources (sd:4965) shows one age lamp each for the Mission export and
+Vantaca, from the checkout's `python3 tools/source-ages.py --json`, run with a
+10-second bound (`SOURCE_SECONDS`). A script that is missing, times out, exits
+past 1 or prints no source list makes the panel unknown with that reason.
+Vantaca's row hides after its `ends` date. Refresh now gives the source's
+refresh line to copy: the dashboard does not start either command yet, pending
+the run-route decision on sd:4965.
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

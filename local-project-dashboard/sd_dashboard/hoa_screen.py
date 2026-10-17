@@ -23,6 +23,8 @@ import csv
 import json
 import math
 import os
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -30,7 +32,7 @@ from sd_db import reads, repos, workflow, writes
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["ALARM_ROOT", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+__all__ = ["ALARM_ROOT", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
            "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
@@ -61,6 +63,16 @@ THRESHOLDS = _config_dir() / "hoa-thresholds.conf"
 
 #: The trend series a level may name: `hoa.js` SERIES keys.
 SERIES = ("tank", "runtime", "aquifer")
+
+#: The hoa checkout's one read of each source's age (hoa sd:4965), run from the checkout; `--json` is what the lamps read.
+SOURCE_AGES = "tools/source-ages.py"
+
+#: Its ceiling: one Python start and a few small CSV reads.
+SOURCE_SECONDS = 10.0
+
+#: The sources the Overview lamps show, and the fields of each that the page reads.
+LAMPS = ("mission", "vantaca")
+SOURCE_KEYS = ("source", "label", "latest", "age_days", "allowed_days", "state", "ends", "refresh", "todo", "error")
 
 ASSET_KEYS = ("id", "type", "name", "status", "accuracy", "source", "notes", "updated")
 BASE_KEYS = ("kind", "ain", "label", "luc", "acres")
@@ -168,6 +180,44 @@ def thresholds(path: Path | None = None) -> dict:
             out["problems"].append(f"line {number}: {fields[0]} has a level already")
         else:
             out["levels"][fields[0]] = {"dir": fields[1], "value": value}
+    return out
+
+
+def sources(place: Path | None) -> dict:
+    """The Mission export's and Vantaca's age, from `SOURCE_AGES --json` (sd:4965), within `SOURCE_SECONDS`.
+
+    The script exits 1 when a source did not read and still prints every row, so its rows are kept and the failed one is
+    `unknown` with its `error`; any other failure, a timeout or a script the checkout lacks, is this part's `error`.
+    """
+    out = {"error": "", "rows": [], "command": f"python3 {SOURCE_AGES} --json", "repo": str(place or "")}
+    if place is None:
+        out["error"] = "no checkout: no repo named hoa is registered"
+        return out
+    script = place / SOURCE_AGES
+    if not script.is_file():
+        out["error"] = f"{SOURCE_AGES} is not in the checkout"
+        return out
+    try:
+        done = subprocess.run([sys.executable, str(script), "--json"], cwd=place, capture_output=True, text=True,
+                              timeout=SOURCE_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        out["error"] = f"{SOURCE_AGES} ran past its {SOURCE_SECONDS:g} seconds"
+        return out
+    except OSError as error:
+        out["error"] = f"{SOURCE_AGES} did not start: {error}"
+        return out
+    said = (done.stderr.strip().splitlines() or [""])[0]
+    try:
+        rows = json.loads(done.stdout)["sources"] if done.returncode in (0, 1) else None
+        if rows is not None and not all(isinstance(row, dict) for row in rows):
+            raise TypeError("a source is not an object")
+    except (ValueError, KeyError, TypeError) as error:
+        out["error"] = f"{SOURCE_AGES} printed no source list: {error}"
+        return out
+    if rows is None:
+        out["error"] = f"{SOURCE_AGES} exited {done.returncode}" + (f": {said}" if said else "")
+        return out
+    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} for row in rows if row.get("source") in LAMPS]
     return out
 
 
@@ -297,6 +347,7 @@ def document(connection, *, now: str) -> dict:
         "base": _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []},
         "followups": followups,
         "thresholds": thresholds(),
+        "sources": sources(place) if not problems else {"error": problems[0], "rows": [], "command": "", "repo": ""},
         "attention": _attention(mission, followups),
     }
 

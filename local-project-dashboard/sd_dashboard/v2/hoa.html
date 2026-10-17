@@ -40,6 +40,16 @@
   <h2 class="sr">Readings</h2>
   <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul></annunciator-strip>
 
+  <section class="panel" id="sources" aria-labelledby="src-h">
+    <div class="panel-head">
+      <div><h2 id="src-h">Data sources</h2><p>How old the Mission export and the Vantaca pull are, from the checkout's <code>tools/source-ages.py</code>.</p></div>
+    </div>
+    <table class="ledger" id="src-table" aria-labelledby="src-h">
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+      <tbody id="src-body"></tbody>
+    </table>
+  </section>
+
   <section class="panel" id="map-panel" aria-labelledby="map-h">
     <div class="panel-head">
       <div><h2 id="map-h">Map</h2><p>Lots, tracts and plats from <code>base.geojson</code>; assets from <code>assets.geojson</code>.</p></div>

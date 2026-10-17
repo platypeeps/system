@@ -13,6 +13,11 @@
   let selected = null, range = 7, selDay = null, zoom = 1, center = null, P = null;
   // sd:4967: acknowledged alarm events hide unless Show acknowledged is on; ACKS is why Acknowledge is off, or ''.
   let showAcked = false, ACKS = '';
+  // sd:4965: the age lamps, tools/source-ages.py's rows for the Mission export and Vantaca. A source past its end date
+  // (Vantaca after 2026-10-31) is retired and not drawn.
+  let SRC = [];
+  const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
+  const srcOf = key => SRC.find(r => r.source === key);
   const hidden = new Set();
 
   const dl = pairs => html`<dl>${pairs.filter(p => p[1] !== '' && p[1] != null).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>`;
@@ -155,6 +160,16 @@
       <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
       <p class="why">Acknowledge marks the event on this dashboard only. Nothing reaches the Mission portal.</p>`, id, open);
   }
+  // The source-ages row for Details: its lamp state, age and what to do.
+  const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
+    ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : '']])}`;
+  function selectVantaca(open) {
+    const r = srcOf('vantaca'); if (!r) return;
+    selected = 'source:vantaca'; mark();
+    show(html`<div class="kind"><span class="g-${SRC_STATE[r.state]}" aria-hidden="true">${GLYPH[SRC_STATE[r.state]]}</span><span class="label">Source · Vantaca</span></div>
+      <h2>${r.label}</h2>${ageBlock(r)}
+      <h3 class="label">Act</h3>${window.shell.commands.bar('source:vantaca')}`, 'source:vantaca', open);
+  }
   function selectSource(open) {
     const m = DOC.mission;
     selected = 'source:mission'; mark();
@@ -162,7 +177,8 @@
       <h2>Mission telemetry export</h2>
       ${dl([['Path', m.dir], ['Cadence', 'daily export, one row per day'], ['State', m.latest ? `${m.stale ? 'stale' : 'current'} · newest row ${m.latest} · ${m.age_days} d old` : 'not read']])}
       <h3 class="label">Files in this page</h3>${dl(m.files.map(f => [f.name, f.error ? `not read: ${f.error}` : `${f.rows} rows · latest ${f.latest.slice(0, 10)}`]))}
-      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>`, 'source:mission', open);
+      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>
+      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}`, 'source:mission', open);
   }
   function selectDay(d, open, series) {
     const m = DOC.mission, a = m.analog.find(r => r.date === d), p = m.pump.find(r => r.date === d);
@@ -181,6 +197,7 @@
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
+    else if (id === 'source:vantaca') selectVantaca(open);
   }
 
   // ---------- Trends ----------
@@ -251,6 +268,16 @@
   // ---------- Ledgers ----------
   // build: the obligations are the checkout's open followup items (hoa_screen ranks them: overdue, due within a week, the rest).
   // Every row is real; the design's sample rows are gone.
+  function drawSources() {
+    const C = window.shell.commands, sr = DOC?.sources;
+    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="4">${unknownBlock(sr.error)}</td></tr>`
+      : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
+        return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
+        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td>
+        <td class="act">${C.rowActions(id)}</td></tr>`; })}`
+      : html`<tr><td colspan="4" class="why">tools/source-ages.py lists neither source.</td></tr>`);
+  }
   function drawLedgers() {
     const C = window.shell.commands, f = DOC?.followups;
     put($('ob-body'), f?.error ? html`<tr><td colspan="5">${unknownBlock(f.error)}</td></tr>`
@@ -270,7 +297,7 @@
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawMap(); legend(); drawTrends(); drawLedgers(); }
+  function draw() { lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
@@ -284,6 +311,9 @@
       // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
       AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
       ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
+      // The end date is the site's calendar day, so the read's time is compared in the browser's zone, not UTC.
+      const today = new Date(doc.read).toLocaleDateString('en-CA');
+      SRC = (doc.sources?.rows || []).filter(r => r.state !== 'retired' && !(r.ends && r.ends < today));
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
@@ -292,14 +322,15 @@
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
-        ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
+        ...(M.dir || srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
+        ...(srcOf('vantaca') ? [{ id: 'source:vantaca', type: 'source', label: 'Vantaca invoices', source: 'vantaca' }] : [])];
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = [];
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = [];
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -398,12 +429,23 @@
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
     );
+    // ---------- Refresh a source (sd:4965) ----------
+    // The command is the one tools/source-ages.py names for the source (`refresh`), run from the checkout. build: copy only
+    // until the run route is settled (sd:4965 question); the line is what a run would start.
+    const refreshCli = o => { const r = srcOf(o.source); return r?.refresh ? `cd ${S.shq(DOC.sources.repo)} && ${r.refresh}` : ''; };
+    C.register(
+      { id: 'source.refresh', on: 'source', label: 'Refresh now', key: 'e', risk: 'safe', executes: false, primary: o => srcOf(o.source)?.state === 'stale',
+        does: o => o.source === 'vantaca' ? 'Pulls the Vantaca invoices once, read only, and lands them. Nothing to undo; a second run pulls again.'
+          : 'Exports the Mission telemetry from the portal and imports it. Nothing to undo; a second run exports again.',
+        when: o => refreshCli(o) ? true : srcOf(o.source) ? 'tools/source-ages.py names no refresh command for it' : 'tools/source-ages.py did not list it',
+        cli: refreshCli, run: o => `Copy the line into a terminal: the dashboard does not start ${o.label} yet` },
+    );
     $('al-show').addEventListener('click', e => {
       if (!e.target.closest('.chip')) return;
       showAcked = !showAcked; drawLedgers();
     });
     document.addEventListener('shell:picked', e => $('al-body').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
-    ['ob-body', 'al-body'].forEach(b => $(b).addEventListener('click', e => {
+    ['ob-body', 'al-body', 'src-body'].forEach(b => $(b).addEventListener('click', e => {
       if (e.target.closest('.rowact')) return;
       const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));

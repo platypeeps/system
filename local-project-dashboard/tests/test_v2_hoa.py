@@ -270,6 +270,7 @@ class TheScript(Fixture):
             ["asset.ask", "asset", "safe", "a"],
             ["alarm.ack", "alarm", "undo", "a"],
             ["alarm.unack", "alarm", "undo", "a"],
+            ["source.refresh", "source", "safe", "e"],
         ])
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
@@ -607,6 +608,111 @@ class TheAcknowledgeRoute(BrowserSession):
         self.assertEqual((status, body["key"], body["hidden"]), (200, TANK_LOW, True))
         status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
         self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
+
+
+def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None):
+    """One row as hoa's tools/source-ages.py --json prints it."""
+    return {"source": source, "label": label, "latest": latest, "age_days": age, "allowed_days": allowed, "state": state,
+            "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error}
+
+
+#: NOW is 2026-09-06: the Mission export is current, Vantaca stale, CORE a source the lamps do not show.
+SOURCES = [source_row("mission", "Mission export", "2026-09-05", 1, 14, "ok", refresh="sh tools/mission/mission.sh export"),
+           source_row("core", "CORE bills", "2026-08-01", 36, 40, "ok"),
+           source_row("vantaca", "Vantaca invoices", "2026-08-20", 17, 14, "stale", ends="2026-10-31",
+                      refresh="python3 tools/vantaca-pull.py")]
+
+
+class TheSourceAges(Fixture):
+    """sd:4965: the Overview's age lamps, from the checkout's tools/source-ages.py --json, run bounded."""
+
+    run_page = TheScript.run_page
+
+    def script(self, rows=SOURCES, *, code=0, stderr="", body=None):
+        """A stand-in tools/source-ages.py: prints `rows` as the real one does, says `stderr`, exits `code`."""
+        tools = self.hoa / "tools"
+        tools.mkdir(exist_ok=True)
+        text = body or (f"import json, sys\nprint(json.dumps({{'repo': '.', 'today': '2026-09-06', 'sources': {rows!r}}}))\n"
+                        f"sys.stderr.write({stderr!r})\nsys.exit({code})\n")
+        (tools / "source-ages.py").write_text(text, encoding="utf-8")
+
+    def test_the_lamps_are_the_mission_and_vantaca_rows_of_the_script(self):
+        self.script()
+        got = self.doc()["sources"]
+        self.assertEqual(got["error"], "")
+        self.assertEqual(got["command"], "python3 tools/source-ages.py --json")
+        self.assertEqual([(r["source"], r["state"], r["age_days"]) for r in got["rows"]], [("mission", "ok", 1), ("vantaca", "stale", 17)])
+        self.assertEqual(set(got["rows"][0]), set(hoa_screen.SOURCE_KEYS))
+
+    def test_a_source_that_did_not_read_is_unknown_and_the_others_still_answer(self):
+        rows = [source_row("mission", "Mission export", None, None, 14, "unknown", error="cannot read analog-daily.csv"), SOURCES[2]]
+        self.script(rows, code=1)
+        got = self.doc()["sources"]
+        self.assertEqual(got["error"], "")
+        self.assertEqual([(r["source"], r["state"], r["error"]) for r in got["rows"]],
+                         [("mission", "unknown", "cannot read analog-daily.csv"), ("vantaca", "stale", None)])
+
+    def test_a_checkout_without_the_script_names_it(self):
+        self.assertEqual(self.doc()["sources"]["error"], "tools/source-ages.py is not in the checkout")
+
+    def test_any_other_exit_is_the_parts_error_with_the_first_stderr_line(self):
+        self.script(code=3, stderr="no export folder\nmore\n")
+        self.assertEqual(self.doc()["sources"], {"error": "tools/source-ages.py exited 3: no export folder", "rows": [],
+                                                 "command": "python3 tools/source-ages.py --json", "repo": str(self.hoa)})
+
+    def test_output_that_is_not_a_source_list_is_the_parts_error(self):
+        self.script(body="print('not json')\n")
+        self.assertIn("tools/source-ages.py printed no source list", self.doc()["sources"]["error"])
+        self.script(body="print('{\"sources\": [1]}')\n")
+        self.assertIn("a source is not an object", self.doc()["sources"]["error"])
+
+    def test_a_script_past_its_ceiling_is_stopped_and_named(self):
+        self.script(body="import time\ntime.sleep(5)\n")
+        with mock.patch.object(hoa_screen, "SOURCE_SECONDS", 0.5):
+            self.assertEqual(self.doc()["sources"]["error"], "tools/source-ages.py ran past its 0.5 seconds")
+
+    def test_no_checkout_reads_no_script(self):
+        self.assertEqual(self.bare("/work/other")["sources"]["error"], "no checkout: no repo named hoa is registered")
+
+    def test_the_page_draws_a_lamp_per_source_and_hides_a_retired_one(self):
+        self.script()
+        out = self.run_page("R.src = ELS['src-body'].html; document.dispatchEvent(new CustomEvent('shell:open', { detail: 'source:vantaca' })); R.det = ELS.details.html;")
+        src = out["R"]["src"]
+        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', src), ["mission", "vantaca"])
+        self.assertRegex(src, re.compile(r'data-id="source:mission".*?g g-ok" aria-label="ok">●.*?newest 2026-09-05 · 1 d old', re.S))
+        self.assertRegex(src, re.compile(r'data-id="source:vantaca".*?g g-caution" aria-label="caution">▲.*?newest 2026-08-20 · 17 d old', re.S))
+        self.assertIn("refresh vantaca", out["R"]["det"])
+        retired = [SOURCES[0], dict(SOURCES[2], state="retired", refresh=None)]
+        self.script(retired)
+        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', self.run_page("R.src = ELS['src-body'].html;")["R"]["src"]), ["mission"])
+
+    def test_vantaca_hides_after_its_end_date_whatever_the_script_says(self):
+        self.script([SOURCES[0], dict(SOURCES[2], ends="2026-09-05")])
+        out = self.run_page("R.src = ELS['src-body'].html; R.obj = !!OBJ.get('source:vantaca');")
+        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', out["R"]["src"]), ["mission"])
+        self.assertFalse(out["R"]["obj"])
+        # On its end date it still shows: the day is compared as YYYY-MM-DD in the browser's zone.
+        self.script([SOURCES[0], dict(SOURCES[2], ends="2026-09-06")])
+        out = self.run_page("R.src = ELS['src-body'].html;")
+        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', out["R"]["src"]), ["mission", "vantaca"])
+
+    def test_refresh_is_the_line_the_script_names_run_from_the_checkout(self):
+        self.script()
+        out = self.run_page("""const c = cmd('source.refresh'), m = OBJ.get('source:mission'), v = OBJ.get('source:vantaca');
+R.cli = [c.cli(m), c.cli(v)]; R.primary = [c.primary(m), c.primary(v)]; R.does = c.does(v); R.run = c.run(m);""")
+        self.assertEqual(out["R"]["cli"], [f"cd '{self.hoa}' && sh tools/mission/mission.sh export", f"cd '{self.hoa}' && python3 tools/vantaca-pull.py"])
+        self.assertEqual(out["R"]["primary"], [False, True])
+        self.assertIn("Vantaca", out["R"]["does"])
+        self.assertIn("does not start Mission export yet", out["R"]["run"])
+
+    def test_a_source_with_no_refresh_command_turns_refresh_off(self):
+        self.script([dict(SOURCES[0], refresh=None)])
+        out = self.run_page("R.when = cmd('source.refresh').when(OBJ.get('source:mission'));")
+        self.assertEqual(out["R"]["when"], "tools/source-ages.py names no refresh command for it")
+
+    def test_a_script_that_did_not_answer_is_unknown_with_its_reason(self):
+        out = self.run_page("R.src = ELS['src-body'].html;")
+        self.assertIn("<b>▨ Not read.</b> tools/source-ages.py is not in the checkout", out["R"]["src"])
 
 
 class TheRegistration(Registers, unittest.TestCase):
