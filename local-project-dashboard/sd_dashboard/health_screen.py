@@ -1,8 +1,11 @@
 """Health: the rows behind the default UI's Health page (sd:2115).
 
-The page is `v2/health.html`; it holds no rows. It reads one JSON document,
-`/api/health`, built here from the readers the dashboard already has, so the
-port adds no collector:
+The page is `v2/health.html`; it holds no rows. It reads `summary`, every
+area's lamp and the rail badge without waiting on a walker, and `part`, the
+areas of one of `VIEWS`, each its own request, so a slow or failing view holds
+up and takes down no other. `document` is every area at once, `/api/health`.
+Each is built here from the readers the dashboard already has, so the port
+adds no collector:
 
 - Worktrees: `fleet.collect("sessions")`, the child Operations > Sessions and
   Today's Now read. A registration whose directory is gone is a row per
@@ -55,6 +58,7 @@ import os
 import shlex
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -71,7 +75,7 @@ from . import fleet as fleet_module
 from . import health_collectors, ports_screen, runtime, snooze
 from .protection_screen import APPLICABLE, FLAGS, GAPS, ORDER
 
-__all__ = ["AREAS", "document"]
+__all__ = ["AREAS", "VIEWS", "document", "part", "summary"]
 
 #: The design's areas, in its order: id, name, the reader's source line, and what no reader covers yet.
 AREAS = (
@@ -90,6 +94,18 @@ AREAS = (
      "sd reports brief render → state heartbeat brief-copies", ()),
     ("doc", "Doctor", "machine-setup.sh doctor · its ok, WARN and FAIL lines", ()),
 )
+#: The page's views, by the operator's task (sd:2115): id, name and the areas each reads, in AREAS' order within it.
+#: Machine is this Mac (its disks, services, ports and doctor); Checkouts the local git cleanups; GitHub what the nightly
+#: sync stored; Jobs the heartbeats unattended jobs leave. Each is one request, `/api/health/<view>`.
+VIEWS = (
+    ("checkouts", "Checkouts", ("wt", "br")),
+    ("machine", "Machine", ("disk", "svc", "ports", "doc")),
+    ("github", "GitHub", ("prot", "dep", "sec")),
+    ("jobs", "Jobs", ("cred", "mir")),
+)
+VIEW_AREAS = {view: keys for view, _, keys in VIEWS}
+VIEW_NAMES = {view: name for view, name, _ in VIEWS}
+VIEW_OF = {key: view for view, _, keys in VIEWS for key in keys}
 #: The matrix lines, in the design's order: v1's gap columns, then its merge-setting flags.
 CHECKS = GAPS + FLAGS
 LISTENER = {"listening": "Listening", "not_listening": "No listener observed",
@@ -834,6 +850,8 @@ class _Scans:
         self.lock = threading.Lock()
         self.running: dict[str, tuple[str, Future]] = {}
         self.last: dict[str, tuple[str, object]] = {}
+        #: Each area as a read last settled it, before the snooze split, for `summary`.
+        self.areas: dict[str, dict] = {}
 
     def start(self, key: str, read, *, now: str, fresh: float | None = None) -> tuple[str, Future, bool]:
         """The area's scan, the time it started and whether it was already running.
@@ -869,10 +887,29 @@ class _Scans:
         threading.Thread(target=scan, name=f"health-{key}", daemon=True).start()
         return now, future, False
 
+    def keep(self, area: dict) -> None:
+        """Keep `area` as settled; an area that failed or was not re-read keeps it too, so its lamp says so."""
+        with self.lock:
+            self.areas[area["id"]] = {**area, "rows": list(area["rows"]), "extra": dict(area["extra"])}
+
+    def kept(self, key: str) -> dict | None:
+        """The area's newest answer: what a read settled, or a scan that finished after it, settled now."""
+        with self.lock:
+            area, last = self.areas.get(key), self.last.get(key)
+        # A scan that started after the kept read, or as it did when that read was cut short, is newer; a failed scan
+        # keeps no answer, so a failure is never replaced by the success before it.
+        if last and (area is None or last[0] > (area["at"] or "")
+                     or ((area["error"] or area["stale"]) and last[0] >= (area["at"] or ""))):
+            name, source, missing = next((name, source, missing) for one, name, source, missing in AREAS if one == key)
+            fresh = _area(key, name, source, missing, at=last[0])
+            _settle(fresh, name, lambda: last[1])
+            return fresh
+        return area
+
     def clear(self) -> None:
         """Forget every scan and answer; a scan still running writes only into what it started with."""
         with self.lock:
-            self.running, self.last = {}, {}
+            self.running, self.last, self.areas = {}, {}, {}
 
 
 _SCANS = _Scans()
@@ -894,33 +931,9 @@ def _settle(area: dict, name: str, read) -> None:
         area["error"] = str(failure) or f"the {name} reader failed without a reason"
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
-             disk=None, branches=None, credentials=None, doctor=None, services=None, served_commit=None) -> dict:
-    """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
-
-    `fleet` is `fleet.collect`'s shape, `area -> document`, `ports`
-    `collect_ports`' (no argument) and
-    `protection` `protection.rows`', and `disk` and `branches`
-    `health_collectors.disk_scan`'s and `branch_scan`'s, and `credentials`
-    `read_credentials`', and `services` the service backend `read_services` hands
-    `sd_db.services` (`served_commit` is the commit this process started on); each is a seam a test fills. Each reader
-    is guarded on its own, so one failure is its area's `error` and the
-    others still answer. A reader returns its rows, or its rows and what the
-    page draws above them (`extra`).
-
-    **The walkers run at once.** Each waits on subprocesses inside its own
-    budget, so in series the budgets add up (Disk's and Branches' 8, the
-    fleet's 12) and at once the slowest decides.
-    A sqlite connection belongs to the thread that opened it, so the
-    registry the default walkers need is read here first and handed to them
-    as paths; Protection, which reads only the database, stays on this
-    thread. `PAGE_SECONDS` bounds the whole document: a reader still running
-    at it is left to stop at its own budget, not waited on. While it runs, a
-    later request starts no second scan of that area (`_Scans`); the area
-    shows its last answer marked `stale`, or is its error if it has none.
-    A row the operator snoozed (sd:1896) is in its area's `snoozed`, with its
-    `until`, and not in `rows`; `snooze_error` says why none could be read.
-    """
+def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None, disk=None,
+             branches=None, credentials=None, doctor=None, services=None, served_commit=None) -> dict:
+    """Each area's reader, by id; `document` says what each seam is."""
     try:
         known: list[str] | Exception = [row["path"] for row in repos.registered(connection)]
     except (SdDbError, sqlite3.Error) as failure:
@@ -938,7 +951,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
     scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
     read_doctor = doctor or (lambda: health_collectors.doctor_scan())
-    readers = {
+    return {
         "disk": lambda: _disk_rows(scan_disk(connection)),
         "wt": lambda: _worktree_rows(read_fleet("sessions")),
         "br": lambda: _branch_rows(scan_branches(connection)),
@@ -952,14 +965,56 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                                  _brief_copies_row(lambda: read_brief_copies(connection), now=now)),
         "doc": lambda: _doctor_rows(read_doctor()),
     }
+
+
+def _area(key: str, name: str, source: str, missing, *, at) -> dict:
+    return {"id": key, "name": name, "view": VIEW_OF[key], "source": source, "read": True, "error": "", "stale": "",
+            "rows": [], "missing": list(missing), "at": at, "extra": {}}
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
+             disk=None, branches=None, credentials=None, doctor=None, services=None, served_commit=None,
+             view: str | None = None) -> dict:
+    """Every area of the design, each with its rows, the reason it was not read, and what no reader covers.
+
+    `fleet` is `fleet.collect`'s shape, `area -> document`, `ports`
+    `collect_ports`' (no argument) and
+    `protection` `protection.rows`', and `disk` and `branches`
+    `health_collectors.disk_scan`'s and `branch_scan`'s, and `credentials`
+    `read_credentials`', and `services` the service backend `read_services` hands
+    `sd_db.services` (`served_commit` is the commit this process started on); each is a seam a test fills. Each reader
+    is guarded on its own, so one failure is its area's `error` and the
+    others still answer. A reader returns its rows, or its rows and what the
+    page draws above them (`extra`). `view`, one of `VIEWS`, reads only that
+    view's areas (`part`); none reads them all, for `/api/health`.
+
+    **The walkers run at once.** Each waits on subprocesses inside its own
+    budget, so in series the budgets add up (Disk's and Branches' 8, the
+    fleet's 12) and at once the slowest decides.
+    A sqlite connection belongs to the thread that opened it, so the
+    registry the default walkers need is read here first and handed to them
+    as paths; Protection, which reads only the database, stays on this
+    thread. `PAGE_SECONDS` bounds the whole document: a reader still running
+    at it is left to stop at its own budget, not waited on. While it runs, a
+    later request starts no second scan of that area (`_Scans`); the area
+    shows its last answer marked `stale`, or is its error if it has none.
+    A row the operator snoozed (sd:1896) is in its area's `snoozed`, with its
+    `until`, and not in `rows`; `snooze_error` says why none could be read.
+    Each area as settled, before the snooze split, is kept for `summary`.
+    """
+    keys = set(VIEW_AREAS[view]) if view else {key for key, *_ in AREAS}
+    readers = _readers(connection, now=now, fleet=fleet, ports=ports, protection=protection, disk=disk,
+                       branches=branches, credentials=credentials, doctor=doctor, services=services,
+                       served_commit=served_commit)
     snoozes, snooze_error = snooze.held(connection, now=now)
     running = {key: _SCANS.start(key, readers[key], now=now, fresh=DOCTOR_FRESH_SECONDS if key == "doc" else None)
-               for key in POOLED}
+               for key in POOLED if key in keys}
     stop = time.monotonic() + PAGE_SECONDS
     areas = []
     for key, name, source, missing in AREAS:
-        area = {"id": key, "name": name, "source": source, "read": key in readers, "error": "", "stale": "",
-                "rows": [], "missing": list(missing), "at": now if key in readers else None, "extra": {}}
+        if key not in keys:
+            continue
+        area = _area(key, name, source, missing, at=now)
         if key in running:
             since, scan, joined = running[key]
             # The doctor is last in AREAS: the page has waited on the others, and gives it only a short wait more.
@@ -978,17 +1033,122 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                     area["stale"], area["at"] = f"{why}; these rows are the read of {kept[0]}", kept[0]
                     _settle(area, name, lambda: kept[1])
                 else:
-                    area["error"] = why
+                    area["error"], area["at"] = why, since
             except BaseException:  # noqa: BLE001 - the reader's own error is settled below
                 pass
             if not area["error"] and not area["stale"]:
                 area["at"] = since
                 _settle(area, name, scan.result)
-        elif key in readers:
+        else:
             _settle(area, name, readers[key])
+        _SCANS.keep(area)
         area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
         areas.append(area)
-    return {"read": now, "areas": areas, "snooze_error": snooze_error, "attention": _attention(areas)}
+    found = {"read": now, "areas": areas, "snooze_error": snooze_error, "attention": _attention(areas)}
+    return {**found, "view": view} if view else found
+
+
+def part(connection: sqlite3.Connection, view: str, *, now: str, **seams) -> dict:
+    """One view's areas (`VIEWS`), read alone, for `/api/health/<view>`.
+
+    A failure the areas' own guards do not catch stays in this view: each of its areas is unknown with the reason,
+    and no other view's read is touched, since each view is its own request.
+    """
+    try:
+        return document(connection, now=now, view=view, **seams)
+    except Exception as failure:  # noqa: BLE001 - one view's failure must not take the page with it
+        why = f"the {VIEW_NAMES[view]} read failed: {failure!r}"
+        areas = [{**_area(key, name, source, missing, at=None), "error": why, "snoozed": []}
+                 for key, name, source, missing in AREAS if key in VIEW_AREAS[view]]
+        return {"read": now, "view": view, "areas": areas, "snooze_error": "", "attention": _attention(areas)}
+
+
+#: How long a walker's answer stands for `summary`, which starts a scan in the background past it.
+SUMMARY_FRESH_SECONDS = 60.0
+#: Areas `summary` reads afresh: they read only the database. Every other area shows its last answer.
+CHEAP = ("prot", "dep", "sec", "cred", "mir")
+RANK = {"warning": 0, "caution": 1, "unknown": 2, "queued": 3, "ok": 4}
+
+
+def _lamp(area: dict) -> dict:
+    """One area's lamp: its state, and the short value the strip shows under its name, as phrases (`b` is bold)."""
+    rows = area["rows"]
+    if not area["read"] or area["error"]:
+        return {"id": area["id"], "name": area["name"], "view": area["view"], "state": "unknown", "at": area["at"],
+                "error": area["error"], "stale": area["stale"], "n": None, "value": [{"b": "", "t": "not read"}]}
+    loudest = min((row["state"] for row in rows), key=lambda state: RANK.get(state, 2), default="ok")
+    state = "ok" if loudest == "queued" else loudest if loudest in RANK else "unknown"
+
+    def total(key: str) -> int:
+        return sum(int(row.get("facts", {}).get(key) or 0) for row in rows
+                   if str(row.get("facts", {}).get(key) or "0").isdigit())
+    key, extra = area["id"], area["extra"]
+    if key == "wt":
+        value = [{"b": str(total("Registered")), "t": "dir gone"}]
+    elif key == "disk":
+        fullest = max(extra.get("volumes") or [], key=lambda volume: volume["capacity"], default=None)
+        value = ([{"b": f"{fullest['capacity']}%", "t": "fullest"}, {"b": "", "t": fullest["name"]}] if fullest
+                 else [{"b": "", "t": "no volume"}])
+    elif key == "br":
+        value = [{"b": str(total("Merged")), "t": "merged, not deleted"}]
+    elif key in ("dep", "sec"):
+        unread = [row for row in rows if row["state"] == "unknown"]
+        if rows and len(unread) == len(rows):
+            value = [{"b": "", "t": "not read"}]
+        else:
+            more = "+" if any(str(row.get("facts", {}).get("Shown") or "").endswith("+") for row in rows) else ""
+            value = [{"b": f"{total('Open')}{more}", "t": "open alerts"}] + [{"b": "", "t": "not all read"}] * bool(unread)
+    elif key == "ports":
+        counts = extra.get("counts") or {}
+        value = [{"b": str(counts.get("unknown", 0)), "t": "unknown"}, {"b": "", "t": f"{counts.get('listening', 0)} listening"}]
+    elif key == "prot":
+        counts = extra.get("counts") or {}
+        value = [{"b": str(counts.get("unprotected", 0)), "t": "unprotected"}, {"b": "", "t": f"{counts.get('unknown', 0)} unknown"}]
+    else:
+        value = [{"b": str(sum(row["state"] in ("warning", "caution") for row in rows)), "t": "need you"}]
+    return {"id": key, "name": area["name"], "view": area["view"], "state": state, "at": area["at"], "error": "",
+            "stale": area["stale"], "n": sum(row["state"] in ("warning", "caution", "unknown") for row in rows), "value": value}
+
+
+def summary(connection: sqlite3.Connection, *, now: str, **seams) -> dict:
+    """Every area's lamp and the rail badge, without waiting on a walker: `/api/health/summary`, Health's count.
+
+    The database-only areas (`CHEAP`) are read now, each under its own guard. Every other area shows the last answer
+    a view read, or a scan, left (`_Scans.areas`, `_Scans.last`), with its time; an area no read has answered since the
+    server started is unknown and says which view reads it. A walker with no answer younger than
+    `SUMMARY_FRESH_SECONDS` (the doctor's ten minutes) gets a scan started in the background, joined by the view that
+    reads it next, so the next summary has it; this read never waits on one.
+    """
+    readers = _readers(connection, now=now, **seams)
+    for key in POOLED:
+        try:
+            _SCANS.start(key, readers[key], now=now, fresh=DOCTOR_FRESH_SECONDS if key == "doc" else SUMMARY_FRESH_SECONDS)
+        except Exception as failure:  # noqa: BLE001 - a scan that could not start leaves the area's last answer
+            print(f"health summary: the {key} scan did not start: {failure!r}", file=sys.stderr)
+    snoozes, snooze_error = snooze.held(connection, now=now)
+    areas = []
+    for key, name, source, missing in AREAS:
+        area = _area(key, name, source, missing, at=now)
+        if key in CHEAP:
+            try:
+                _settle(area, name, readers[key])
+            except Exception as failure:  # noqa: BLE001 - one area's failure stays in its lamp
+                area["error"] = str(failure) or f"the {name} reader failed without a reason"
+            _SCANS.keep(area)
+        else:
+            kept = _SCANS.kept(key)
+            if kept is None:
+                running = _SCANS.running.get(key)
+                area["at"] = None
+                area["error"] = (f"being read since {running[0]}; read Health again for its answer"
+                                 if running and not running[1].done() else
+                                 f"not read since the dashboard started; the {VIEW_NAMES[VIEW_OF[key]]} view reads it")
+            else:
+                area = {**kept, "rows": list(kept["rows"]), "extra": dict(kept["extra"])}
+        area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
+        areas.append(area)
+    return {"read": now, "views": [{"id": view, "name": name, "areas": list(keys)} for view, name, keys in VIEWS],
+            "lamps": [_lamp(area) for area in areas], "snooze_error": snooze_error, "attention": _attention(areas)}
 
 
 def _attention(areas) -> dict:

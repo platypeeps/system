@@ -10,21 +10,25 @@
 .sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-xs); }
 .sec-head h2 > .i { color: var(--color-muted); }
 .tally { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
-.src-line { margin: 0 0 var(--space-sm); font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-muted); }
+.quiet { margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-muted); }
+
+/* Views: the page's own switch until the shell's lands (health.js, drawViews); the chip grammar, one pressed at a time. */
+.viewswitch { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin: var(--space-md) 0 var(--space-sm); }
+.viewswitch:empty { display: none; }
 
 /* Ledger with a fix column */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
 .ledger .what { padding-top: var(--space-xs); padding-bottom: var(--space-xs); }
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; overflow-wrap: anywhere; }
 .ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
-.ledger .detail { display: block; margin-top: var(--space-3xs); color: var(--color-ink-2); font: 400 var(--text-xs)/1.4 var(--font-data); overflow-wrap: anywhere; }
+.ledger .detail { display: block; margin-top: var(--space-3xs); color: var(--color-ink-2); font: 400 var(--text-xs)/1.4 var(--font-data); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1; overflow: hidden; }
+/* Density: a finding's detail is one line here; Details carries the row's facts in full. */
 .ledger .fix { text-align: right; }
 .fixes { display: inline-flex; align-items: center; gap: var(--space-2xs); justify-content: flex-end; max-width: 100%; }
 .fixes .btn.sm { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; display: inline-block; line-height: 2rem; }
 .ledger tr[hidden] { display: none; }
 .area[hidden] { display: none; }
 .filtered { margin: 0 0 var(--space-md); font-size: var(--text-xs); color: var(--color-muted); }
-.filtered[hidden] { display: none; }
 
 /* Filters: Tasks' chip grammar. Chips in one group widen, groups narrow; a lamp sets the Area group to its area. */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-sm) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-md); }
