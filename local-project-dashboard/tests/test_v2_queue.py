@@ -821,9 +821,10 @@ class TheRealRelease(RealLane):
 class TheScript(Lane, ScreenCase):
     """queue.js against the document `queue_screen` builds from the fixture."""
 
-    def run_page(self, body, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."})):
+    def run_page(self, body, move=(200, {"ok": True, "edits": "Edits take effect at the next item boundary."}), search="?show=all"):
+        """`search` is the page's address; most tests read every row, so it defaults to Show: all."""
         doc = queue_screen.document(self.connection, now=NOW)
-        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + READ_SHELL
+        script = (STAND_IN + f"location.search = {json.dumps(search)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, MOVE = {json.dumps(list(move))};\n"
                   + "ANSWER = (path, body) => path === '/api/queue' ? [200, DOC] : path === '/api/queue/move' ? MOVE : [404, { error: 'no answer' }];\n"
                   + QUEUE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
@@ -845,6 +846,38 @@ class TheScript(Lane, ScreenCase):
             ("cancelled", "queued", "◌", "CANCELLED"), ("landed", "ok", "●", "LANDED")])
         self.assertIn("<b>operator acts</b>", lanes)
         self.assertIn("PR #161", lanes)
+
+    # Tuning: Show draws the active rows by default: merging, next (held too), building and blocked; All adds the ended
+    # ones, cancelled and landed. The badge and each lane's counts read every row, whatever Show draws.
+    SHOW_ALL = "ELS.show.listeners.click[0]({ target: { closest: s => s === 'button[data-show]' ? { dataset: { show: 'all' } } : null } });"
+
+    def test_show_defaults_to_the_active_rows_and_all_adds_the_ended_ones(self):
+        out = self.run_page("window.shell.url = q => OUT.urls.push(q); OUT.urls = []; R.lanes = ELS.lanes.html; R.show = ELS.show.html;"
+                            f" {self.SHOW_ALL} R.all = ELS.lanes.html; R.show2 = ELS.show.html;", search="")
+        states = lambda lanes: re.findall(r'<li class="qrow" data-state="(\w+)"', lanes)
+        self.assertEqual(states(out["R"]["lanes"]), ["merging", "next", "next", "building", "building", "blocked", "blocked"])
+        self.assertEqual(states(out["R"]["all"]), ["merging", "next", "next", "building", "building", "blocked", "blocked", "cancelled", "landed"])
+        chips = r'data-show="(\w+)" aria-pressed="(\w+)">\w+ <span class="n">(\d+)</span>'
+        self.assertEqual(re.findall(chips, out["R"]["show"]), [("active", "true", "7"), ("all", "false", "9")])
+        self.assertEqual(re.findall(chips, out["R"]["show2"]), [("active", "false", "7"), ("all", "true", "9")])
+        self.assertEqual(out["urls"], [{"show": "all"}])
+
+    def test_show_all_comes_from_the_address(self):
+        lanes = self.run_page("R.lanes = ELS.lanes.html;", search="?show=all")["R"]["lanes"]
+        self.assertEqual(len(re.findall(r'<li class="qrow"', lanes)), 9)
+
+    def test_the_badge_and_the_lane_counts_read_every_row_whatever_show_draws(self):
+        out = self.run_page("R.lanes = ELS.lanes.html;", search="")
+        self.assertIn("1 merging · 2 next · 2 blocked · 1 landed today", out["R"]["lanes"])
+        self.assertEqual(out["attention"][-1], {"state": "caution", "n": 2, "what": "blocked"})
+
+    def test_a_lane_with_only_ended_rows_joins_the_idle_line_under_active(self):
+        self.list([entry for entry in self.entries() if entry["status"] in ("merged", "cancelled")])
+        for log in self.lane.glob("gate-*.log"):
+            log.unlink()
+        lanes = self.run_page("R.lanes = ELS.lanes.html;", search="")["R"]["lanes"]
+        self.assertNotIn('<li class="qrow"', lanes)
+        self.assertIn('<p class="idle">Idle: <code>system</code>', lanes)
 
     def test_the_merging_row_names_step_host_claim_age_and_lease(self):
         lanes = self.run_page("R.lanes = ELS.lanes.html;")["R"]["lanes"]
