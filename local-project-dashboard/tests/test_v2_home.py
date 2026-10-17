@@ -756,6 +756,13 @@ shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();""")
         self.assertEqual(set(out["R"]["act"]), {'<div class="act"></div>'}, "no tile offers a command while writes are off")
         self.assertEqual((out["posts"], out["gets"], out["confirms"]), ([], ["/api/home"], []))
 
+    def test_every_does_line_keeps_the_shared_word_limit(self):
+        # The factories pass does by position, which test_v2_commands' scan cannot read, so the limit is checked here.
+        from test_v2_commands import WORDS
+        out = self.run_page("R.d = REG.map(c => [c.id, c.does]);")
+        long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
+        self.assertEqual(long, [], f"a does line over {WORDS} words")
+
     def test_each_command_carries_a_does_line_and_the_rest_call_through_home_assistant(self):
         out = self.run_page("R.c = REG.map(c => [c.id, typeof c.does, c.executes, c.cli({ id: 'x.y' })]);")
         for command, does, executes, line in out["R"]["c"]:

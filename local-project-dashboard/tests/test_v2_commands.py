@@ -119,7 +119,7 @@ def declarations(text):
 
 # The pages whose commands do not say yet what they do: other branches own these scripts now (sd:4963). Each leaves this
 # list when its texts land; once it is empty, every page's commands are held to the rule.
-NOT_YET = {"hoa.js", "home.js", "tasks.js"}
+NOT_YET = {"hoa.js", "tasks.js"}
 # `does: '…'`, or `does: o => …` for a text that differs per row: each text a person reads is about 12 words at most.
 DOES = re.compile(r"\bdoes:\s*")
 TEXT = re.compile(r"'((?:[^'\\]|\\.)*)'|`([^`]*)`")
