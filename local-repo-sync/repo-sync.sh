@@ -1610,7 +1610,9 @@ follow() {
 # A field separator that is not whitespace, so `read` keeps empty fields.
 US=$(printf '\037')
 
-hyg_act()    { echo "  $*"; echo x >> "$HYG_TMP/acted"; }
+# acted holds each action's line, so nightly can leave them out of its
+# attention lines (sd:4914); the other files count lines only.
+hyg_act()    { echo "  $*"; echo "  $*" >> "$HYG_TMP/acted"; }
 hyg_found()  { echo "  would $*"; echo x >> "$HYG_TMP/found"; }
 hyg_list()   { echo "  $*"; echo x >> "$HYG_TMP/listed"; }
 hyg_fail()   { echo "  FAILED $*"; echo x >> "$HYG_TMP/failed"; }
@@ -2431,14 +2433,16 @@ case "$1" in
     fi
 
     # Hygiene after sync, so it sees the fleet as sync left it. Its report
-    # needs attention when it changed anything, failed, or lists something
-    # for the operator, like the reconcile diff; a clean sweep stays silent.
-    # Its own failures are in the report and do not fail the job.
+    # needs attention when it failed or lists something for the operator,
+    # like the reconcile diff. Its actions (prunes, landed branches, old lane
+    # files) are routine: the log names each one with its restore line, and
+    # they alone report nothing (sd:4914). Its own failures are in the report
+    # and do not fail the job.
     HYG_TMP="$TMPD/hygiene"; mkdir -p "$HYG_TMP"
     HYG_OUT="$TMPD/hygiene.out"
     ( hygiene --apply ) > "$HYG_OUT" 2>&1 || true
     cat "$HYG_OUT"
-    if [ -s "$HYG_TMP/acted" ] || [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; then
+    if [ -s "$HYG_TMP/listed" ] || [ -s "$HYG_TMP/failed" ]; then
       echo "hygiene report" >> "$KINDS"
     fi
     # One SD_REPORT_ATTENTION line per kind and per finding, not the date:
@@ -2473,7 +2477,10 @@ case "$1" in
           echo "failed: $(head -1 "$fs" | sed 's/^=== //') [$(cksum < "$fs" | cut -d' ' -f1)]"
         done
         # A checkout further behind is the same finding: its counts are left out.
-        awk '/^=== /{ h = substr($0, 5); next } /^  note: /||/^$/{ next } /^---/{ h = ""; next }
+        # An action's line is left out too (sd:4914).
+        awk -v acted="$HYG_TMP/acted" 'BEGIN { while ((getline l < acted) > 0) done[l] = 1 }
+             /^=== /{ h = substr($0, 5); next } /^  note: /||/^$/{ next } /^---/{ h = ""; next }
+             $0 in done { next }
              h != "" { sub(/is [0-9]+ commit\(s\) behind/, "is behind"); sub(/\([0-9]+ local commit\(s\)\)/, "(local commits)")
                        print "hygiene: " h ": " $0 }' "$HYG_OUT"
       } | awk -v p="SD_REPORT_ATTENTION: repo-sync on $(hostname -s): " 'NF && !seen[$0]++ { print p $0 }'
