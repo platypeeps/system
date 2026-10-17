@@ -63,15 +63,24 @@ DS_USERS=/Users
 STATE_DIR="${MACHINE_SETUP_STATE:-$HOME/.config/machine-setup}"
 STATE_FILE="$STATE_DIR/profile"
 
+# The .release kind's tools: their bins go here, and the tag each entry has
+# installed goes in RELEASE_STATE/<name>.tag (sd:4853). The base URL's
+# override exists for the tests, which stub curl on PATH.
+RELEASE_BIN="${MACHINE_SETUP_RELEASE_BIN:-$HOME/.local/bin}"
+RELEASE_STATE="$STATE_DIR/release"
+RELEASE_BASE="${MACHINE_SETUP_RELEASE_BASE:-https://github.com}"
+
+# `release` runs right after `brew`: later stages may run what it installs,
+# such as the fnm the tooling stage asks for node.
 # `sd` runs before `agents`: the dashboard opens the
 # database at startup, so an agent bootstrapped first restarts against a
 # file that does not exist yet. `satellite` sits beside it: a machine runs
 # one of the two, and neither loads an agent the other needs.
-STAGES="brew shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
+STAGES="brew release shell appstore bin dotfiles envs prompts repos cron sd satellite agents services macos tooling system obsidian iterm2"
 # The verbs dispatch accepts, in help's order. Help and the no-arg usage print
 # this list; three hand copies of it disagreed (sd:3548).
 VERBS="setup update capture status doctor test upgrade upgrade-report checklist decommission compare report profiles triage candidates apps adopt promote"
-KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto"
+KINDS="tap brew cask mas service cron agent macos app obsidian iterm2 spotlight satellite node npm mailto release"
 
 # Directories that hold credentials in the clear and are created world-readable
 # by the tools that own them. Codex snapshots the whole shell environment —
@@ -437,19 +446,37 @@ profile_entries() {
   fi
 }
 
-# Strips comments and blank lines from a manifest.
+# Strips comments and blank lines from a manifest. A `!name` line in the
+# profile's file drops the entry common lists as name (sd:4853), so a machine
+# can do without one, or list its own spelling of it; no `!` line reaches the
+# output.
 manifest() {
   kind="$1"
-  for p in common "$PROFILE"; do
-    f="$PROFILE_DIR/$p.$kind"
-    [ -f "$f" ] && sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f"
-  done | grep -v '^$' | sort -u
+  mf_neg=$(profile_entries "$PROFILE" "$kind" | sed -n 's/^![[:space:]]*//p')
+  { profile_entries common "$kind" | drop_negated "$mf_neg"
+    profile_entries "$PROFILE" "$kind"
+  } | grep -v '^!' | sort -u
 }
 
-# The node majors fnm keeps: common.node and <profile>.node, one per line.
-# With neither file, the three every machine had before they moved (sd:3966).
+# Copies stdin less each entry a name in $1 (one per line) drops. An entry's
+# name is its first word up to a comma, a .release line's first bin; `!name`
+# drops that name and its tap-qualified `<tap>/name` too, or with `exact`
+# that name alone. Through ENVIRON: a newline in an awk -v value is an error
+# in macOS awk.
+drop_negated() { # names, [exact]
+  DN_NEG="$1" awk -v exact="${2:-}" '
+    function key(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]].*/, "", s); sub(/,.*/, "", s); return s }
+    function bare(s) { sub(/.*\//, "", s); return s }
+    BEGIN { n = split(ENVIRON["DN_NEG"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") drop[key(a[i])] = 1 }
+    { k = key($0); if (!(k in drop) && (exact != "" || !(bare(k) in drop))) print }'
+}
+
+# The node majors fnm keeps: common.node and <profile>.node, one per line,
+# without a line's `link` field, each once: common's `26` and a profile's
+# `26 link` are two manifest lines. With neither file, the three every
+# machine had before they moved (sd:3966).
 node_versions() {
-  nv=$(manifest node)
+  nv=$(manifest node | awk '!seen[$1]++ { print $1 }')
   printf '%s\n' "${nv:-18
 20
 24}"
@@ -615,6 +642,254 @@ stage_brew() {
       echo "  ok      pinned $f"
     fi
   done
+}
+
+# Tools from an upstream GitHub release archive, for a machine where brew
+# builds them from source (sd:4853). A .release line is
+# `<bins> <owner/repo> <asset> [<tag>]`: <bins> a comma list of the
+# executables to take from the archive, the first naming the entry; <asset>
+# the archive's name, where {version} is the tag less a leading v and {tag}
+# the tag; <tag> pins the entry, and the upgrade sweep moves only unpinned
+# ones. An entry is ok when each bin is in RELEASE_BIN and its tag is recorded.
+stage_release() {
+  echo "== release"
+  rel=$(manifest release)
+  if [ -z "$rel" ]; then
+    echo "  no release tools in this profile"
+    return 0
+  fi
+  printf '%s\n' "$rel" | while IFS= read -r line; do
+    if ! release_parse "$line"; then
+      note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip> [<tag>])" 1
+      continue
+    fi
+    rs_have=$(release_record "$rl_name")
+    rs_gone=$(release_missing_bins "$rl_bins")
+    if [ -n "$rs_gone" ]; then
+      echo "  MISSING release $rl_name (no $rs_gone in $RELEASE_BIN)"
+    elif [ -z "$rs_have" ]; then
+      echo "  MISSING release $rl_name (no tag recorded)"
+    elif [ -n "$rl_tag" ] && [ "$rs_have" != "$rl_tag" ]; then
+      echo "  DIFFERS release $rl_name $rs_have, pinned $rl_tag"
+    else
+      echo "  ok      release $rl_name $rs_have"
+      continue
+    fi
+    run release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rl_tag"
+  done
+}
+
+# Splits one .release line into rl_bins, rl_repo, rl_asset, rl_tag and
+# rl_name, or fails on a line of another shape. Each part lands in a path, a
+# URL or a sed replacement, so each keeps to characters those take as written.
+release_parse() { # line
+  rl_tag=""; rl_extra=""
+  read -r rl_bins rl_repo rl_asset rl_tag rl_extra <<EOF
+$1
+EOF
+  rl_name=${rl_bins%%,*}
+  [ -n "$rl_asset" ] && [ -z "$rl_extra" ] || return 1
+  case ",$rl_bins," in *,,*|*,.,*|*,..,*|*[!A-Za-z0-9._,-]*) return 1 ;; esac
+  case "$rl_repo" in */*/*|/*|*/|.*|*/.*|*[!A-Za-z0-9._/-]*) return 1 ;; ?*/?*) ;; *) return 1 ;; esac
+  case "$rl_asset" in *[!A-Za-z0-9._{}+-]*) return 1 ;; *.tar.gz|*.tgz|*.zip) ;; *) return 1 ;; esac
+  [ -z "$rl_tag" ] || release_tag_ok "$rl_tag"
+}
+
+release_tag_ok() { # tag
+  case "$1" in ''|.|..|*[!A-Za-z0-9._+-]*) return 1 ;; esac
+}
+
+# The tag recorded for an entry, or nothing.
+release_record() { # name
+  cat "$RELEASE_STATE/$1.tag" 2>/dev/null || :
+}
+
+# The bins of a comma list that are not an executable file in RELEASE_BIN.
+release_missing_bins() { # bins
+  for rb_b in $(printf '%s\n' "$1" | tr ',' ' '); do
+    [ -f "$RELEASE_BIN/$rb_b" ] && [ -x "$RELEASE_BIN/$rb_b" ] || printf '%s\n' "$rb_b"
+  done | tr '\n' ' ' | sed 's/ $//'
+}
+
+# The tag GitHub's latest-release redirect names. An answer that names no
+# release tag is unknown, not a tag, and fails.
+release_latest() { # owner/repo
+  rlt_url=$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "$RELEASE_BASE/$1/releases/latest" </dev/null) || return 1
+  case "$rlt_url" in */releases/tag/?*) ;; *) return 1 ;; esac
+  rlt_tag=${rlt_url##*/releases/tag/}
+  release_tag_ok "$rlt_tag" || return 1
+  printf '%s\n' "$rlt_tag"
+}
+
+# Installs an entry's bins at TAG, else at the latest tag, then records the
+# tag. Run through run_ok or a condition, where set -e is off, so each step
+# checks its own result. No bin moves into RELEASE_BIN before every bin is
+# found and copied beside its place; the old record goes before the first
+# move and the new one comes last, so a run that stops between them leaves
+# the entry MISSING for the next run.
+release_install() { # name, bins, owner/repo, asset, [tag]
+  ri_tag=$5
+  if [ -z "$ri_tag" ] && ! ri_tag=$(release_latest "$3"); then
+    echo "  release $1: no latest release tag at $RELEASE_BASE/$3/releases/latest"
+    return 1
+  fi
+  ri_tmp=$(mktemp -d) || return 1
+  ri_rc=0
+  release_fetch "$1" "$2" "$3" "$4" "$ri_tag" || ri_rc=$?
+  rm -rf "$ri_tmp"
+  return "$ri_rc"
+}
+
+release_fetch() { # name, bins, owner/repo, asset, tag (into $ri_tmp)
+  rf_asset=$(printf '%s\n' "$4" | sed -e "s/{version}/${5#v}/g" -e "s/{tag}/$5/g")
+  rf_url="$RELEASE_BASE/$3/releases/download/$5/$rf_asset"
+  if ! curl -fsSL --max-time 600 -o "$ri_tmp/$rf_asset" "$rf_url" </dev/null; then
+    echo "  release $1: cannot download $rf_url"
+    return 1
+  fi
+  # A checksum file that is not there is a release that publishes none; one
+  # that could not be read is unknown, and installs nothing.
+  if ! rf_code=$(curl -sSL --max-time 60 -o "$ri_tmp/sum" -w '%{http_code}' "$rf_url.sha256" </dev/null); then
+    echo "  release $1: cannot read $rf_url.sha256; not installed"
+    return 1
+  fi
+  case "$rf_code" in
+    200)
+      rf_want=$(awk 'NR == 1 { print tolower($1) }' "$ri_tmp/sum")
+      rf_have=$(shasum -a 256 "$ri_tmp/$rf_asset" | awk '{ print $1 }')
+      if [ "${#rf_want}" -ne 64 ] || [ "$rf_want" != "$rf_have" ]; then
+        echo "  release $1: checksum mismatch for $rf_asset (got $rf_have, published ${rf_want:-nothing}); not installed"
+        return 1
+      fi ;;
+    404) echo "  release $1: no checksum published for $rf_asset; not verified" ;;
+    *)
+      echo "  release $1: $rf_url.sha256 answered $rf_code; not installed"
+      return 1 ;;
+  esac
+  mkdir "$ri_tmp/x" || return 1
+  case "$rf_asset" in
+    *.zip)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$ri_tmp/$rf_asset" -d "$ri_tmp/x" </dev/null
+      else
+        ditto -x -k "$ri_tmp/$rf_asset" "$ri_tmp/x"
+      fi ;;
+    *) tar -xzf "$ri_tmp/$rf_asset" -C "$ri_tmp/x" ;;
+  esac || { echo "  release $1: cannot unpack $rf_asset"; return 1; }
+  rf_bins=$(printf '%s\n' "$2" | tr ',' ' ')
+  for rf_b in $rf_bins; do
+    find "$ri_tmp/x" -type f -name "$rf_b" -perm -100 > "$ri_tmp/path.$rf_b" || return 1
+    rf_n=$(grep -c '^' "$ri_tmp/path.$rf_b" || :)
+    if [ "$rf_n" -ne 1 ]; then
+      echo "  release $1: $rf_asset holds $rf_n executable file(s) named $rf_b; want 1"
+      return 1
+    fi
+    if [ -d "$RELEASE_BIN/$rf_b" ]; then
+      echo "  release $1: $RELEASE_BIN/$rf_b is a folder; not replaced"
+      return 1
+    fi
+  done
+  mkdir -p "$RELEASE_BIN" || return 1
+  # A copy an interrupted run left beside its place goes first.
+  for rf_b in $rf_bins; do
+    rm -f "$RELEASE_BIN/.$rf_b.release."*
+    if ! cp "$(cat "$ri_tmp/path.$rf_b")" "$RELEASE_BIN/.$rf_b.release.$$" \
+        || ! chmod 755 "$RELEASE_BIN/.$rf_b.release.$$"; then
+      for rf_c in $rf_bins; do rm -f "$RELEASE_BIN/.$rf_c.release.$$"; done
+      echo "  release $1: cannot copy $rf_b into $RELEASE_BIN"
+      return 1
+    fi
+  done
+  # The record goes before the first bin moves: a run that stops between two
+  # moves, or before the record, leaves the entry MISSING, never ok over a
+  # mix of two tags' bins, pinned or not (sd:4853, lane round 1).
+  if ! rm -f "$RELEASE_STATE/$1.tag"; then
+    for rf_c in $rf_bins; do rm -f "$RELEASE_BIN/.$rf_c.release.$$"; done
+    echo "  release $1: cannot remove its tag record; nothing moved"
+    return 1
+  fi
+  for rf_b in $rf_bins; do
+    if ! mv -f "$RELEASE_BIN/.$rf_b.release.$$" "$RELEASE_BIN/$rf_b"; then
+      for rf_c in $rf_bins; do rm -f "$RELEASE_BIN/.$rf_c.release.$$"; done
+      echo "  release $1: cannot move $rf_b into place; no tag recorded"
+      return 1
+    fi
+  done
+  { mkdir -p "$RELEASE_STATE" && printf '%s\n' "$5" > "$RELEASE_STATE/$1.tag.new" \
+      && mv -f "$RELEASE_STATE/$1.tag.new" "$RELEASE_STATE/$1.tag"; } || return 1
+  echo "  installed release $1 $5"
+}
+
+# The profile the upgrade sweep reads the .release entries of: resolved as
+# doctor does, without load_profile's exit, so a machine with no usable
+# profile still gets its brew and App Store sweep.
+release_profile() {
+  [ -d "$PROFILE_DIR" ] || return 1
+  doctor_profile
+  [ -n "$PROFILE" ] && known_profiles | grep -qxF "$PROFILE"
+}
+
+# Each unpinned entry whose latest tag is not the one recorded, as
+# `<name> <recorded> <latest> <line>`, and each whose latest tag could not be
+# read, or whose line could not be, as `<name> unknown`; then fails when
+# there was one of those. A here-document, not a pipe, so $rlo_rc survives.
+release_outdated() {
+  release_profile || return 0
+  rlo_rc=0
+  rlo_rel=$(manifest release)
+  [ -n "$rlo_rel" ] || return 0
+  while IFS= read -r rlo_line; do
+    if ! release_parse "$rlo_line"; then
+      printf '%s unknown\n' "${rlo_line%%[[:space:]]*}"; rlo_rc=1; continue
+    fi
+    [ -z "$rl_tag" ] || continue
+    if ! rlo_new=$(release_latest "$rl_repo"); then
+      printf '%s unknown\n' "$rl_name"; rlo_rc=1; continue
+    fi
+    rlo_have=$(release_record "$rl_name")
+    [ "$rlo_new" = "$rlo_have" ] || printf '%s %s %s %s\n' "$rl_name" "${rlo_have:-none}" "$rlo_new" "$rlo_line"
+  done <<EOF
+$rlo_rel
+EOF
+  return "$rlo_rc"
+}
+
+# The names of the unpinned .release entries, space-separated; nothing read
+# from the network.
+release_unpinned() {
+  release_profile || return 0
+  manifest release | while IFS= read -r ru_line; do
+    if release_parse "$ru_line"; then
+      [ -n "$rl_tag" ] || printf '%s\n' "$rl_name"
+    fi
+  done | tr '\n' ' ' | sed 's/ $//'
+}
+
+# The upgrade sweep's .release half: each unpinned entry moves to its latest
+# tag. Adds `release <name>` to $failed for a tag it could not read or install.
+# A dry run reads no tag, as the brew half reads nothing: it names the
+# entries it would check.
+release_sweep() {
+  if [ "$APPLY" -ne 1 ]; then
+    rsw=$(release_unpinned)
+    [ -z "$rsw" ] || echo "  [dry-run] release: check the latest tag of $rsw"
+    return 0
+  fi
+  rsw=$(release_outdated) || :
+  [ -n "$rsw" ] || return 0
+  while read -r rsw_name rsw_old rsw_new rsw_line; do
+    if [ "$rsw_old" = unknown ]; then
+      echo "  FAILED  release $rsw_name: no latest release tag, or a line of another shape"
+      failed="$failed, release $rsw_name"
+    elif release_parse "$rsw_line" \
+        && release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rsw_new" </dev/null; then
+      echo "  upgraded release $rsw_name $rsw_old -> $rsw_new"
+    else
+      failed="$failed, release $rsw_name"
+    fi
+  done <<EOF
+$rsw
+EOF
 }
 
 # Converge the login shell from macOS's default zsh to Homebrew bash. The
@@ -1560,6 +1835,69 @@ stage_services() {
 
 # ----------------------------------------------------------------- verbs ----
 
+# A .node line may carry `link` (sd:4853): RELEASE_BIN's node, npm and npx
+# then point at fnm's newest installed node of that major, where launchd and
+# cron jobs find it (cron-jobs.sh puts ~/.local/bin on JOB_PATH). One line
+# may; with two, no link changes. A file there that is not a link stays.
+node_link() {
+  nl_major=$(manifest node | awk '$2 == "link" { print $1 }')
+  [ -n "$nl_major" ] || return 0
+  nl_n=$(printf '%s\n' "$nl_major" | grep -c '^')
+  if [ "$nl_n" -gt 1 ]; then
+    note_failure "node: $nl_n .node lines carry link; one may, so no link changed" 1
+    return 0
+  fi
+  case "$nl_major" in *[!0-9]*)
+    note_failure "node: '$nl_major link' names no major; no link changed" 1
+    return 0 ;;
+  esac
+  nl_v=$(fnm ls 2>/dev/null | awk -v m="$nl_major" '
+    { for (i = 1; i <= NF; i++) if ($i ~ ("^v" m "\\.[0-9]+\\.[0-9]+$")) {
+        split(substr($i, 2), p, ".")
+        if (best == "" || p[2] + 0 > b2 || (p[2] + 0 == b2 && p[3] + 0 > b3)) { best = $i; b2 = p[2] + 0; b3 = p[3] + 0 }
+      } }
+    END { if (best != "") print best }' || :)
+  if [ -z "$nl_v" ]; then
+    echo "  MISSING node link $nl_major: fnm has no v$nl_major"
+    return 0
+  fi
+  nl_node=$(fnm exec --using="$nl_v" -- sh -c 'command -v node' 2>/dev/null </dev/null || :)
+  nl_dir=${nl_node%/node}
+  if [ "$nl_dir" = "$nl_node" ] || [ ! -x "$nl_node" ]; then
+    note_failure "node link $nl_major: fnm names no node for $nl_v; no link changed" 1
+    return 0
+  fi
+  nl_ok=1
+  for nl_b in node npm npx; do
+    nl_dst="$RELEASE_BIN/$nl_b"
+    if [ ! -e "$nl_dir/$nl_b" ]; then
+      nl_ok=0
+      note_failure "node link $nl_major: no $nl_b in $nl_dir; $nl_dst not changed" 1
+    elif [ -L "$nl_dst" ] && [ "$(readlink "$nl_dst")" = "$nl_dir/$nl_b" ]; then
+      :
+    elif [ -d "$nl_dst" ] || { [ -e "$nl_dst" ] && [ ! -L "$nl_dst" ]; }; then
+      nl_ok=0
+      echo "  DIFFERS node link $nl_major: $nl_dst is not a symlink; left alone"
+    else
+      nl_ok=0
+      if [ -L "$nl_dst" ]; then
+        echo "  DIFFERS node link $nl_major: $nl_dst -> $(readlink "$nl_dst"), not $nl_v"
+      else
+        echo "  MISSING node link $nl_major: $nl_dst -> $nl_dir/$nl_b"
+      fi
+      run node_link_one "$nl_dir/$nl_b" "$nl_dst"
+    fi
+  done
+  [ "$nl_ok" -eq 0 ] || echo "  ok      node link $nl_major -> $nl_v"
+}
+
+# ln -s beside the link, then mv over it: the link is never absent. A
+# temporary link an interrupted run left goes first.
+node_link_one() { # target, link
+  rm -f "$2.link."*
+  { mkdir -p "${2%/*}" && ln -s "$1" "$2.link.$$" && mv -f "$2.link.$$" "$2"; } || { rm -f "$2.link.$$"; return 1; }
+}
+
 # Developer tooling that doctor already checks for: fnm node versions,
 # rtk hooks, and the mailto handler (via duti, in common.brew). Also the
 # global npm CLIs of the .npm files, which status reports through this stage.
@@ -1577,6 +1915,7 @@ stage_tooling() {
           ;;
       esac
     done
+    node_link
   else
     echo "  SKIP    fnm not installed (brew stage provides it)"
   fi
@@ -2929,6 +3268,18 @@ manifest_entries() {
 write_manifest() { # target, body-file, header-line...
   wm_target="$1"; wm_body="$2"; shift 2
 
+  # A `!name` line is the operator's, not the machine's: capture keeps each
+  # one first, and writes no entry it names back as wanted (sd:4853). A
+  # formula still installed under a `!` line stays drift that status names;
+  # the profile's own `<tap>/name` stays an entry.
+  wm_neg=$(manifest_entries "$wm_target" | grep '^!' || :)
+  if [ -n "$wm_neg" ]; then
+    { printf '%s\n' "$wm_neg"
+      drop_negated "$(printf '%s\n' "$wm_neg" | sed 's/^![[:space:]]*//')" exact < "$wm_body"
+    } > "$wm_body.neg" || die "capture: cannot keep the ! lines of $wm_target; not written"
+    wm_body="$wm_body.neg"
+  fi
+
   # Additive mode refuses to write a manifest that lost an entry.
   #
   # Capture is a mirror: the roster is rebuilt from what is installed right
@@ -2973,8 +3324,10 @@ write_manifest() { # target, body-file, header-line...
   # A roster that had entries is never written empty (sd:3106): capture read
   # "manifest: 0 label(s)" on a machine whose agents were all installed, and
   # the next update would have removed every one. An empty roster is a hand edit.
-  if [ ! -s "$wm_body" ] && [ -n "$(manifest_entries "$wm_target")" ]; then
-    echo "    REFUSED $(basename "$wm_target") — capture found no entries where it lists $(manifest_entries "$wm_target" | grep -c .); not written"
+  # The kept `!` lines are no entry here: a body of those alone is empty.
+  if [ -z "$(manifest_entries "$wm_body" | grep -v '^!' || :)" ] \
+      && [ -n "$(manifest_entries "$wm_target" | grep -v '^!' || :)" ]; then
+    echo "    REFUSED $(basename "$wm_target") — capture found no entries where it lists $(manifest_entries "$wm_target" | grep -vc '^!'); not written"
     ADDITIVE_HELD=$((ADDITIVE_HELD + 1))
     return 0
   fi
@@ -3168,11 +3521,11 @@ review_hint() {
   fi
 }
 
+# Common's entries this profile keeps: capture subtracts these, so an entry a
+# `!` line drops is the machine's to record again (sd:4853).
 common_manifest() {
-  f="$PROFILE_DIR/common.$1"
-  if [ -f "$f" ]; then
-    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | grep -v '^$' | sort
-  fi
+  cm_neg=$(profile_entries "$PROFILE" "$1" | sed -n 's/^![[:space:]]*//p')
+  profile_entries common "$1" | grep -v '^!' | sort | drop_negated "$cm_neg"
 }
 
 # A dotfile is only copied in after it passes a credential scan, so a key
@@ -4933,7 +5286,7 @@ claude_quarantine() {
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
 cmd_upgrade() {
-  echo "upgrade : brew + App Store maintenance sweep"
+  echo "upgrade : brew, App Store and .release maintenance sweep"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
   echo
   failed=""
@@ -4976,6 +5329,7 @@ cmd_upgrade() {
   else
     echo "  mas MISSING (brew install mas)"
   fi
+  release_sweep
   echo
   echo "  afterwards: $(basename "$0") status   # drift check"
   if [ -n "$failed" ]; then
@@ -5027,6 +5381,9 @@ outdated_lists() {
     run_step 300 mas outdated > "$tmp/raw" 2>/dev/null || echo mas >> "$tmp/unknown.$1"
     sort "$tmp/raw" > "$tmp/mas.$1"
   fi
+  # The .release entries whose latest tag is not the one installed (sd:4853).
+  release_outdated > "$tmp/raw" || echo release >> "$tmp/unknown.$1"
+  awk '$2 != "unknown" { print $1 }' "$tmp/raw" | sort > "$tmp/release.$1"
 }
 
 # held_section before|after: the pinned formulae a newer version waits for.
@@ -5149,7 +5506,8 @@ cmd_upgrade_report() {
   grant_paths before
 
   if [ ! -s "$tmp/formula.before" ] && [ ! -s "$tmp/cask.before" ] \
-      && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/unknown.before" ]; then
+      && [ ! -s "$tmp/mas.before" ] && [ ! -s "$tmp/release.before" ] \
+      && [ ! -s "$tmp/unknown.before" ]; then
     rc=0
     echo "nothing outdated — no upgrade"
     held_section before
@@ -5176,7 +5534,7 @@ cmd_upgrade_report() {
     printf 'machine-setup upgrade report — %s on %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$(hostname -s)"
     held_section after
-    for kind in formula cask mas; do
+    for kind in formula cask mas release; do
       # A list that did not answer, before or after, has no upgraded diff.
       if grep -qx "$kind" "$tmp/unknown.before" "$tmp/unknown.after"; then
         printf '\noutdated (%s): unknown, the list did not answer\n' "$kind"
@@ -5209,7 +5567,7 @@ cmd_upgrade_report() {
   # carry the time of day.
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
   {
-    for kind in formula cask mas; do sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"; done
+    for kind in formula cask mas release; do sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"; done
     if [ "$rc" -ne 0 ]; then
       echo "upgrade sweep failed [$(tail -30 "$tmp/out" | grep -v '^\[step ' | cksum | cut -d' ' -f1)]"
     fi
@@ -6926,8 +7284,9 @@ for a in "$@"; do
   test             run the unittest suite in tests/ (extra args go to unittest)
   upgrade          maintenance sweep: brew update/upgrade (casks with
                    --greedy, so self-updating ones move too, Claude Code's
-                   claude-code@latest among them), brew cleanup + mas
-                   upgrade (dry run without --apply, like everything else);
+                   claude-code@latest among them), brew cleanup, mas
+                   upgrade, and each unpinned .release entry to its latest
+                   tag (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
                    runs the rest, and exits 1 naming the steps that failed
@@ -6994,13 +7353,18 @@ HELPEOF
   for the terminal; without them it prints DEFER and goes on. --apply adds
   each missing path, then restarts mds once. It never removes a path.)
 
-Profiles layer: common.<kind> applies everywhere, <profile>.<kind> adds to it.
+Profiles layer: common.<kind> applies everywhere, <profile>.<kind> adds to it;
+a "!name" line in <profile>.<kind> drops common's entry name (or <tap>/name).
 Kinds are tap, brew, cask, mas, service, cron, agent, macos, app, obsidian, iterm2,
-spotlight, satellite, node, npm, mailto — plain lists with # comments. macos lines are
+spotlight, satellite, node, npm, mailto, release — plain lists with # comments. macos lines are
 "<domain> <key> <type> <value>"; only keys listed there are ever touched or captured.
 iterm2 holds a single folder path.
 spotlight holds absolute paths; a leading ~ is this account's home.
-node lists the node majors fnm keeps (none listed anywhere: 18, 20, 24). npm lists
+node lists the node majors fnm keeps (none listed anywhere: 18, 20, 24); one line
+may add "link" ("26 link") to point ~/.local/bin/node, npm and npx at fnm's newest
+node of that major. release lines are "<bins> <owner/repo> <asset> [<tag>]": the
+release stage puts each comma-listed bin of that GitHub release archive in
+~/.local/bin; {version} and {tag} in <asset> take the tag; a <tag> pins it. npm lists
 global npm CLIs (pkg or pkg@version) the tooling stage installs with the npm of
 the brew manifest's node formula. mailto holds one bundle id, the profile's
 before common's (neither: com.google.Chrome).
@@ -7037,6 +7401,8 @@ environment:
                           (shared.env or the environment)
   MACHINE_SETUP_PYTHON    the python3 the obsidian stage reads the vault with
   MACHINE_SETUP_STEP_TIMEOUT  upgrade: one bound, in seconds, for every step
+  MACHINE_SETUP_RELEASE_BIN  release: where the bins go (default ~/.local/bin)
+  MACHINE_SETUP_RELEASE_BASE  tests only: the URL that stands in for https://github.com
   SD_PACK_ROOT            the command pack checkout
                           (default ~/repos/platypeeps/sd-ai-command-pack)
   SD_DB_PYTHON            satellite: the interpreter sd_db runs under
