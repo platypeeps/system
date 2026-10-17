@@ -1,5 +1,9 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
-// Rows: /api/health, the document health_screen.document builds from the fleet child (worktree registrations),
+// Views: one at a time, Machine, Checkouts, GitHub and Jobs, each its own read, /api/health/<view> (health_screen.part);
+// #view=<id> names it, else the view of the loudest lamp. The lamps and the badge are /api/health/summary, read first and
+// again once the view answers; it waits on no walker, so the strip draws before any view's rows. Show draws the rows
+// that want something (warning, caution, unknown) by default; All adds the ok and queued ones, and ?show=all keeps it.
+// Rows: the areas health_screen.document builds from the fleet child (worktree registrations),
 // Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
 // health_collectors (disk and merged branches, sd:2202 and sd:2204, and the machine-setup doctor, sd:3393).
@@ -37,64 +41,84 @@
   const $ = id => document.getElementById(id);
 
   let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], selected = null, query = '';
+  let SUMMARY = null, VIEW = null, showing = 'findings';
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
+  // Show: the rows that want something, or all of them. A filter on ok or queued names those rows, so it shows them.
+  const QUIET = new Set(['ok', 'queued']);
+  const drawn = r => showing === 'all' || !QUIET.has(r.state) || F.state.has(r.state);
+  const views = () => SUMMARY ? SUMMARY.views : [];
+  const viewOf = area => views().find(v => v.areas.includes(area))?.id;
 
-  // An area with no reader, or whose reader failed, is unknown; queued rows light nothing (Today's grammar).
-  const areaState = a => {
-    if (!a.read || a.error) return 'unknown';
-    const w = a.rows.reduce((s, r) => RANK[r.state] < RANK[s] ? r.state : s, 'ok');
-    return w === 'queued' ? 'ok' : w;
-  };
   // The design's size wording, from a count of KiB.
   const size = kb => kb >= 1024 ** 3 ? `${(kb / 1024 ** 3).toFixed(2)} TiB` : kb >= 1024 ** 2 ? `${(kb / 1024 ** 2).toFixed(1)} GiB` : `${Math.round(kb / 1024)} MiB`;
-  const fullest = a => { const v = (a.extra.volumes || []).reduce((w, x) => !w || x.capacity > w.capacity ? x : w, null);
-    return v ? html`<span class="ph"><b>${v.capacity}%</b> fullest</span> <span class="ph">${v.name}</span>` : html`<span class="ph">no volume</span>`; };
-  const sumFact = (a, key) => a.rows.reduce((s, r) => s + (+(r.facts?.[key]) || 0), 0);
-  // An unread repo is not zero alerts, and a list cut at its page size is "N+", as in the rows' Shown fact.
-  const alerts = a => {
-    const unread = a.rows.some(r => r.state === 'unknown');
-    if (unread && a.rows.every(r => r.state === 'unknown')) return html`<span class="ph">not read</span>`;
-    const more = a.rows.some(r => String(r.facts?.Shown || '').endsWith('+')) ? '+' : '';
-    return html`<span class="ph"><b>${sumFact(a, 'Open')}${more}</b> open alerts</span>${unread ? html` · <span class="ph">not all read</span>` : ''}`;
-  };
-  const lampValue = a => !a.read ? html`<span class="ph">no reader</span>`
-    : a.error ? html`<span class="ph">not read</span>`
-    : a.id === 'wt' ? html`<span class="ph"><b>${sumFact(a, 'Registered')}</b> dir gone</span>`
-    : a.id === 'disk' ? fullest(a)
-    : a.id === 'br' ? html`<span class="ph"><b>${sumFact(a, 'Merged')}</b> merged</span> <span class="ph">not deleted</span>`
-    : a.id === 'dep' || a.id === 'sec' ? alerts(a)
-    : a.id === 'cred' || a.id === 'doc' || a.id === 'mir' ? html`<span class="ph"><b>${a.rows.filter(r => r.state === 'warning' || r.state === 'caution').length}</b> need you</span>`
-    : a.id === 'ports' ? html`<span class="ph"><b>${a.extra.counts.unknown}</b> unknown</span> · <span class="ph">${a.extra.counts.listening} listening</span>`
-    : html`<span class="ph"><b>${a.rows.length}</b> rows</span>`;
+  // A lamp's value is the summary's phrases (health_screen._lamp): `b` bold, then `t`.
+  const lampValue = l => l.value.map((v, i) => html`${i ? ' · ' : ''}<span class="ph">${v.b ? html`<b>${v.b}</b> ` : ''}${v.t}</span>`);
 
   // The box says "repo, path, branch": a path can sit only in a row's facts (a checkout) or its list (registered worktrees).
   const text = r => [r.what, r.detail, r.kind, ...Object.values(r.facts || {}), ...(r.list || [])].join(' ').toLowerCase();
-  const passes = r => (!F.state.size || F.state.has(r.state)) && (!F.area.size || F.area.has(r.area))
+  const passes = r => drawn(r) && (!F.state.size || F.state.has(r.state)) && (!F.area.size || F.area.has(r.area))
     && (!query || text(r).includes(query));
   const filtering = () => !!(F.state.size || F.area.size || query);
+  const quiet = a => a.rows.filter(r => !drawn(r)).length;
   // An area stays on the page while it has a row the filters pass, or when only the Area filter names it: a lamp for an area
   // with no reader then shows what that area does not read.
   const areaShown = a => a.rows.some(passes) || (!F.state.size && !query && (!F.area.size || F.area.has(a.id)));
+  const loud = { warning: 0, caution: 1, unknown: 2 };
 
+  // Every area's lamp, from the summary: pressing one opens its view with its area alone, or toggles it in this view.
   function lamps() {
-    put($('annunciator'), cells([...AREAS.filter(a => !NO_LAMP.has(a.id)).map(a => { const s = areaState(a); return { button: true, state: s, pressed: F.area.has(a.id),
-      attrs: html` data-area="${a.id}"`, label: a.name, mark: I(LOOK[a.id]?.[0] || 'circle-help'), val: lampValue(a), sr: `state ${s} · shows only ${a.name} rows` }; }),
+    const L = SUMMARY ? SUMMARY.lamps : [];
+    put($('annunciator'), cells([...L.filter(l => !NO_LAMP.has(l.id)).map(l => ({ button: true, state: l.state, pressed: F.area.has(l.id),
+      attrs: html` data-area="${l.id}"`, label: l.name, mark: I(LOOK[l.id]?.[0] || 'circle-help'), val: lampValue(l),
+      sr: `state ${l.state} · ${l.view === VIEW ? `shows only ${l.name} rows` : `opens ${views().find(v => v.id === l.view)?.name}`}` })),
       { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'),
-        val: html`<span class="ph">${DOC ? html`<b>${new Date(DOC.read).toISOString().slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` }]));
+        val: html`<span class="ph">${SUMMARY ? html`<b>${new Date(SUMMARY.read).toISOString().slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` }]));
+    drawViews();
+  }
+
+  // ---------- Views ----------
+  // The shell's view switch (a segmented control, #view=<id>, rail sub-entries, a lazily read api per view) when shell.js
+  // carries it as shell.viewSwitch; until then the page draws the same contract itself in #viewswitch. A view's state is
+  // the loudest of its lamps, so the switch says where the findings are before a view is opened.
+  const viewState = v => (SUMMARY ? SUMMARY.lamps : []).filter(l => l.view === v.id)
+    .reduce((s, l) => (loud[l.state] ?? 9) < (loud[s] ?? 9) ? l.state : s, 'ok');
+  const hashView = () => (/(?:^#|&)view=([a-z]+)/.exec(location.hash || '') || [])[1];
+  function drawViews() {
+    const list = views().map(v => ({ id: v.id, label: v.name, state: viewState(v), api: `/api/health/${v.id}` }));
+    if (window.shell.viewSwitch) return window.shell.viewSwitch({ views: list, current: VIEW, change: id => setView(id) });
+    put($('viewswitch'), html`${list.map(v => html`<button type="button" role="tab" class="chip" data-view="${v.id}" aria-selected="${String(v.id === VIEW)}"><span class="g-${v.state}" aria-hidden="true">${GLYPH[v.state]}</span> ${v.label}<span class="sr"> · ${v.state}</span></button>`)}`);
+  }
+  // The view to open: #view=, else the view of an ?area= the address names, else the loudest view, else the first.
+  function pickView() {
+    const ids = views().map(v => v.id), asked = hashView();
+    if (ids.includes(asked)) return asked;
+    const area = [...F.area].map(viewOf).find(Boolean);
+    if (area) return area;
+    return views().reduce((w, v) => !w || (loud[viewState(v)] ?? 9) < (loud[viewState(w)] ?? 9) ? v : w, null)?.id || null;
+  }
+  // A switch keeps only the Area values of the new view, writes #view= and reads that view alone.
+  function setView(id, read = true) {
+    if (!id || (id === VIEW && !read)) return;
+    VIEW = id;
+    const keep = views().find(v => v.id === id)?.areas || [];
+    [...F.area].forEach(a => { if (!keep.includes(a)) F.area.delete(a); });
+    if (!window.shell.viewSwitch && location.hash !== `#view=${id}` && typeof history !== 'undefined') history.replaceState(null, '', `${location.pathname}${location.search}#view=${id}`);
+    drawViews();
+    if (read) load();
   }
 
   function renderFilters() {
     const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
-    put($('filters'), html`${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length]))}`);
+    const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
+    put($('filters'), html`<div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}`);
   }
 
   function renderAreas() {
     const count = (a, s) => a.rows.filter(r => r.state === s).length;
     put($('areas'), html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
       <div class="sec-head"><h2 id="h-${a.id}">${I(LOOK[a.id]?.[0] || 'circle-help')}${a.name}<button class="help" type="button" aria-label="Help: ${a.name}" data-help="${LOOK[a.id]?.[1] || ''}">${I('circle-help')}</button></h2>
-        <p class="tally">${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}</p></div>
-      ${a.read ? html`<p class="src-line">${a.source} · ${a.at ? html`read <time class="rel" datetime="${a.at}"></time>` : 'never observed'}</p>` : ''}
+        <p class="tally">${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
       ${!a.read ? html`<p class="unread"><b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: ${a.missing.join(', ')}.</p>`
         : a.error ? html`<p class="unread"><b>Not read:</b> ${a.error}</p>`
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
@@ -106,6 +130,7 @@
           <td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>
           <td class="what"><button type="button">${r.what}</button><span class="detail">${r.detail}</span></td>
           <td class="fix">${shell.commands.rowActions(r.id)}</td></tr>`)}</tbody></table>` : ''}
+      ${a.read && !a.error && quiet(a) && !filtering() ? html`<p class="quiet">${rows.length ? '' : 'Nothing wants you here. '}${plural(quiet(a), 'ok or queued row')} not shown: Show all lists ${quiet(a) === 1 ? 'it' : 'them'}.</p>` : ''}
     </section>`; })}`);
   }
 
@@ -145,7 +170,7 @@
     const a = AREAS.find(x => x.id === r.area);
     put($('details'), html`<p class="kind"><span class="g-${r.state}" aria-hidden="true">${GLYPH[r.state]}</span> ${r.kind} · ${r.state}</p>
       <h2>${r.what}</h2>
-      <dl>${Object.entries(r.facts || {}).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Source</dt><dd>${a.source}</dd><dt>Read</dt><dd><time class="rel" data-long datetime="${DOC.read}"></time></dd></dl>
+      <dl>${Object.entries(r.facts || {}).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Source</dt><dd>${a.source}</dd><dt>Read</dt><dd><time class="rel" data-long datetime="${a.at || DOC.read}"></time></dd></dl>
       ${r.type === 'branch protection' ? (r.status === 'unknown' ? html`<h3>Checks</h3><p class="why">No cell is shown: ${r.reason}.</p>`
         : html`<h3>Checks</h3>${r.sentence ? html`<p class="why">${r.sentence}</p>` : ''}<dl class="checks">${r.cells.map(c => html`<dt>${c[0]}</dt><dd class="c-${c[1]}">${cellText(c)}</dd>`)}</dl>`) : ''}
       ${r.slug ? html`<p><a class="ext" href="https://github.com/${r.slug}/settings/branches" target="_blank" rel="noopener noreferrer">${r.slug} · settings/branches${I('arrow-up-right')}</a></p>` : ''}
@@ -167,35 +192,45 @@
     const q = new URLSearchParams();
     ['state', 'area'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
     if (query) q.set('q', query);
+    if (showing === 'all') q.set('show', 'all');
     shell.url(q); // the shell keeps ?row=
   }
   function apply() {
     renderFilters(); renderAreas();
     const on = filtering(), shown = ROWS.filter(passes).length;
     const what = [F.area.size ? `${AREAS.filter(a => F.area.has(a.id)).map(a => a.name).join(', ')} only` : '', [...F.state].join(' or '), query ? `“${query}”` : ''].filter(Boolean).join(' · ');
+    const total = ROWS.filter(drawn).length;
     $('filtered').hidden = !on;
-    put($('filtered'), on ? html`${shown ? `Filtered to ${what}: ${shown} of ${ROWS.length} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" id="clear-f">Show all rows</button>` : html``);
+    put($('filtered'), on ? html`${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" id="clear-f">Show all rows</button>` : html``);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
-      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.length ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
+      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
     writeURL();
   }
   function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; $('q').value = ''; lamps(); apply(); return had; }
 
-  // The badge is the read's own (sd:3446, health_screen._attention); the subhead counts both states.
+  // The badge is the summary's (sd:3446, health_screen._attention over every area); the subhead says it in words.
   function attention() {
-    window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'rows' };
+    window.PAGE_ATTENTION = SUMMARY && SUMMARY.attention || { state: 'unknown', n: 0, what: 'rows' };
     shell.attention(window.PAGE_ATTENTION);
-    return ['warning', 'caution'].map(s => ROWS.filter(r => r.state === s).length);
+    const a = window.PAGE_ATTENTION, failed = SUMMARY ? SUMMARY.lamps.filter(l => l.error).length : 0;
+    put($('subhead'), SUMMARY ? html`${plural(views().length, 'view')} · ${a.n ? `${a.n} ${a.state} ${a.n === 1 ? 'row wants' : 'rows want'} you` : 'no row wants you'}${failed ? ` · ${plural(failed, 'area')} not read` : ''} · read <time class="rel" datetime="${SUMMARY.read}"></time>`
+      : html`Health's summary could not be read.`);
   }
+  // The summary: every lamp and the badge, read before the view and again once it answered. A failed one clears the strip.
+  const readSummary = () => shell.getJSON('/api/health/summary').then(doc => { SUMMARY = doc; }, () => { SUMMARY = null; })
+    .then(() => { attention(); lamps(); });
 
   // The reader (read.js, sd:2418) holds the guards: of overlapping re-reads only the newest draws, a row the read no longer
   // lists runs no command and loses its pick, and a failed read leaves no row, lamp or command from the last one. It is
   // built on DOMContentLoaded, once shell.js has made shell.read.
   let health = null;
-  const load = () => health.load();
+  // A load reads the summary first when there is none yet (it picks the view), then the view, then the summary again.
+  const load = () => (SUMMARY ? Promise.resolve() : readSummary())
+    .then(() => { if (!VIEW) setView(pickView(), false); return VIEW ? health.load() : null; })
+    .then(() => readSummary());
   const spec = {
-    source: '/api/health', what: 'the Health rows',
+    source: () => `/api/health/${VIEW}`, what: 'the Health rows',
     adopt: doc => {
       DOC = doc; AREAS = doc.areas;
       // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
@@ -203,20 +238,15 @@
       ROWS = AREAS.flatMap(a => a.rows);
       SNOOZED = AREAS.flatMap(a => a.snoozed);
       document.body.dataset.observed = doc.read;
-      const failed = AREAS.filter(a => a.error || a.stale);
-      const [w, c] = attention(), unread = AREAS.filter(a => !a.read).length;
-      const want = [w ? `${w} warning` : '', c ? `${c} caution` : ''].filter(Boolean).join(', ') || 'no';
-      put($('subhead'), html`${AREAS.length} areas · ${want} ${w + c === 1 ? 'row wants' : 'rows want'} you${unread ? ` · ${plural(unread, 'area')} with no reader yet` : ''} · read <time class="rel" datetime="${doc.read}"></time>`);
+      const failed = AREAS.filter(a => a.error || a.stale), source = `/api/health/${doc.view}`;
       return { objects: [...ROWS.map(r => ({ ...r, label: r.what })), ...SNOOZED.map(window.snooze.object)],
-        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source: '/api/health' }
-          : doc.snooze_error ? window.snooze.unread(doc.snooze_error, '/api/health') : null };
+        state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source }
+          : doc.snooze_error ? window.snooze.unread(doc.snooze_error, source) : null };
     },
     // Nothing from the last read stays on screen: rows, lamps, the observed time and the badge.
     clear: () => {
       DOC = null; AREAS = []; ROWS = []; SNOOZED = [];
       delete document.body.dataset.observed;
-      put($('subhead'), html`Health could not be read.`);
-      shell.attention({ state: 'unknown', n: 0, what: 'rows' });
     },
     draw: () => { lamps(); window.snooze.draw($('snoozed'), SNOOZED); },
     current: () => selected,
@@ -342,6 +372,7 @@
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
     query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
+    showing = u.get('show') === 'all' ? 'all' : 'findings';
 
     $('areas').addEventListener('click', e => {
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
@@ -349,6 +380,8 @@
       const tr = e.target.closest('tbody tr[data-id]'); if (tr) select(tr.dataset.id, true);
     });
     $('filters').addEventListener('click', e => {
+      const b = e.target.closest('[data-show]');
+      if (b) { if (b.dataset.show !== showing) { showing = b.dataset.show; apply(); } return; }
       const c = e.target.closest('[data-f]'); if (!c) return;
       const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v);
       lamps(); apply();
@@ -358,10 +391,13 @@
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();
-      const id = c.dataset.area;
+      const id = c.dataset.area, lamp = SUMMARY?.lamps.find(l => l.id === id);
+      if (lamp && lamp.view !== VIEW) { F.area.clear(); F.area.add(id); setView(lamp.view); lamps(); return; }
       F.area.has(id) ? F.area.delete(id) : F.area.add(id);
       lamps(); apply();
     });
+    $('viewswitch').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b && b.dataset.view !== VIEW) setView(b.dataset.view); });
+    addEventListener('hashchange', () => { const id = hashView(); if (id && id !== VIEW && views().some(v => v.id === id)) setView(id); });
     $('q').addEventListener('input', () => { query = $('q').value.trim().toLowerCase(); apply(); });
     $('q').addEventListener('keydown', e => { if (e.key === 'Escape' && $('q').value) { e.stopPropagation(); $('q').value = ''; query = ''; apply(); } });
     document.addEventListener('keydown', e => {

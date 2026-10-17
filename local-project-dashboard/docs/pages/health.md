@@ -21,6 +21,13 @@ than 60 seconds (the doctor's 10 minutes) gets a scan started in the background,
 which the next view read joins. `GET /api/health` is still every area in one
 document.
 
+The view switch under the lamps marks each view with its loudest lamp; it
+writes `#view=<id>`. With no view named the page opens the view an `?area=`
+value names, else the loudest one. A lamp of another view opens that view with
+its area alone. Show findings (the default) leaves out ok and queued rows and
+says how many; Show all (`?show=all`) lists them. A finding's detail is one line
+in the table; Details carries the row in full.
+
 Dependencies, Security and Credentials read rows nightly jobs stored; the page
 calls no service and reads no credential.
 
