@@ -43,7 +43,9 @@
 # share, so it runs under lib/bounded.sh's st_step at 300 s: a slow share once
 # held it until JOB_TIMEOUT, and the log did not name the step (sd:4690). At
 # the bound the step exits 124 and the job log names it; the snapshot and the
-# copy before it are done.
+# copy before it are done. --prune-unmanifested also deletes a dated folder
+# with no manifest, a copy stopped partway, once its name is more than 14
+# days old; it refuses the run if any manifest names this root (sd:4917).
 #
 # SD_DB_BACKUP_HOURLY_DESTINATION moves the local root, as a promoted
 # satellite does (sd:4009 design, "Bulk storage and paths"); an operator who
@@ -65,7 +67,7 @@ SD_DB_BACKUP_HOURLY_MOUNT=""
 [ -n "${SD_DB_BACKUP_HOURLY_DESTINATION:-}" ] || SD_DB_BACKUP_HOURLY_MOUNT=" --require-mount /Volumes/local"
 SD_DB_BACKUP_HOURLY_SNAPSHOT="\"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --destination \"${SD_DB_BACKUP_HOURLY_DESTINATION:-/Volumes/local/Backup Local/sd-backups}\"$SD_DB_BACKUP_HOURLY_MOUNT --keep 24 --no-row-prune"
 SD_DB_BACKUP_HOURLY_NAS_FOLDER="${SD_DB_BACKUP_HOURLY_NAS_FOLDER-/Volumes/change-me-nas-share/Backup/sd-backups-hourly}"
-SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" && . \"$ROOT/../lib/bounded.sh\" && st_step 2700 env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && st_step 300 \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" --keep-days 7"
+SD_DB_BACKUP_HOURLY_NAS="\"\${SD_DB_PYTHON:-python3}\" \"$ROOT/../local-mirror-sync/offsite-verify.py\" --preflight-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" && . \"$ROOT/../lib/bounded.sh\" && st_step 2700 env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh \"$ROOT/../local-mirror-sync/mirror-sync.sh\" sync && st_step 300 \"$HOME/repos/platypeeps/sd-ai-command-pack/bin/sd-db\" backup --prune-only --destination \"$SD_DB_BACKUP_HOURLY_NAS_FOLDER\" --keep-days 7 --prune-unmanifested"
 JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT && $SD_DB_BACKUP_HOURLY_NAS"
 [ -n "$SD_DB_BACKUP_HOURLY_NAS_FOLDER" ] || JOB_COMMAND="$SD_DB_BACKUP_HOURLY_SNAPSHOT"
 unset SD_DB_BACKUP_HOURLY_MOUNT SD_DB_BACKUP_HOURLY_SNAPSHOT SD_DB_BACKUP_HOURLY_NAS SD_DB_BACKUP_HOURLY_NAS_FOLDER

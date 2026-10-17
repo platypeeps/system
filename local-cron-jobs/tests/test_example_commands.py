@@ -223,7 +223,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         self.assertTrue(calls[1].startswith("python "), calls)
         self.assertTrue(calls[1].endswith(f"offsite-verify.py --preflight-only --destination {self.NAS}"), calls)
         self.assertEqual(calls[2], "mirror mirrors-nas-hourly.conf 1 sync")
-        self.assertEqual(calls[3], f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7")
+        self.assertEqual(calls[3], f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7 --prune-unmanifested")
 
     def test_a_failed_copy_prunes_nothing(self):
         result, calls = self.run_job(MIRROR_RC="1")
@@ -252,7 +252,7 @@ class HourlyBackupJobTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls[0], "sd-db backup --destination /tmp/somewhere --keep 24 --no-row-prune")
         self.assertEqual(calls[2:], ["mirror mirrors-nas-hourly.conf 1 sync",
-                                     f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7"])
+                                     f"sd-db backup --prune-only --destination {self.NAS} --keep-days 7 --prune-unmanifested"])
 
     def test_an_empty_nas_folder_takes_the_snapshot_only(self):
         # A one-off or a test switches the copy off by name, not by moving the root.
