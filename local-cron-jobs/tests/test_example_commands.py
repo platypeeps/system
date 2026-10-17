@@ -264,5 +264,34 @@ class NightlyReviewJobTest(unittest.TestCase):
                 self.assertEqual(calls, ["run"], result.stdout + result.stderr)
                 self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
 
+
+class MailIntakeDailyTest(unittest.TestCase):
+    """The mail fetch runs on its own job, since the morning digest no longer fetches mail (sd:4869).
+
+    `fetch` exits 3 on a quiet day, and cron-jobs counts every non-zero code as
+    a failure, so the job turns 3 into 0 and keeps 1 a failure.
+    """
+
+    JOB = EXAMPLES / "mail-intake-daily.job"
+
+    def run_job(self, fetch_rc):
+        fx = Fixture()
+        self.addCleanup(fx.destroy)
+        script = fx.tmp / "local-mail-intake" / "mail-intake.sh"
+        script.parent.mkdir()
+        script.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MAIL_MARKER"\nexit "$FETCH_RC"\n')
+        marker = fx.tmp / "mail-calls"
+        fx.write_job(self.JOB.stem, self.JOB.read_text())
+        result = fx.exec_job(self.JOB.stem, extra_env={"MAIL_MARKER": str(marker), "FETCH_RC": str(fetch_rc)})
+        return result, marker.read_text().splitlines() if marker.exists() else []
+
+    def test_a_quiet_day_passes_and_an_error_fails(self):
+        for fetch_rc, job_rc in ((0, 0), (3, 0), (1, 1)):
+            with self.subTest(fetch=fetch_rc):
+                result, calls = self.run_job(fetch_rc)
+                self.assertEqual(calls, ["fetch"], result.stdout + result.stderr)
+                self.assertEqual(result.returncode, job_rc, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

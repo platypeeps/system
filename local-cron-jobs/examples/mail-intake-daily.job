@@ -1,0 +1,12 @@
+# Daily mail fetch for the dashboard's Today, which is the one mail surface
+# (sd:4651). The morning digest no longer fetches mail (sd:4869); Today reads
+# local-mail-intake's state files and shows "mail not read" once the last fetch
+# is over 36 hours old, so a stopped job shows there.
+#
+# Install it only on the machine that runs the workspace MCP server.
+# `fetch` exits 3 when nothing changed; cron-jobs counts any non-zero code as a
+# failure, so the command turns 3 into 0. 1 stays a failure.
+JOB_SCHEDULE="30 6 * * *"
+# A run takes about 10 s; Gmail retries back off for under a minute.
+JOB_TIMEOUT="5m"
+JOB_COMMAND="sh \"$ROOT/../local-mail-intake/mail-intake.sh\" fetch || [ \$? -eq 3 ]"

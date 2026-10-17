@@ -58,7 +58,7 @@ or the server answers 406.
 
 This is not a detail. On 2026-09-19 the Claude CLI OAuth session expired and
 **13 cron jobs failed in one morning** — every one of them a `JOB_PROMPT` job.
-The 21 `JOB_COMMAND` jobs were untouched. The morning digest reads mail through
+The 21 `JOB_COMMAND` jobs were untouched. The daily fetch job reads mail through
 this path, so it keeps working through an outage that stops the agent jobs.
 
 ## How it decides what is new
@@ -224,8 +224,15 @@ into the digest the day after you clear it.
 
 ## Where it fits
 
-Third section of the morning digest, after what is due and what arrived in
-Drive. The digest script, in a separate private repository, runs a `fetch`, reads the
+The dashboard's Today is the one mail surface (sd:4651). A daily job runs
+`fetch` so Today has fresh state: copy
+`local-cron-jobs/examples/mail-intake-daily.job` to
+`<config>/cron-jobs/jobs/` on the machine that runs the workspace MCP server,
+then `cron-jobs.sh install mail-intake-daily`. The job turns `fetch`'s quiet-day
+3 into 0, because cron-jobs counts any other non-zero code as a failure.
+
+Until the morning digest drops its mail section (sd:4878), mail is also its
+third section, after what is due and what arrived in Drive. The digest script, in a separate private repository, runs a `fetch`, reads the
 undelivered rows, and stamps them only after the mail is actually sent — the
 same two-phase delivery the Drive half uses, with its own cutoff file so one
 half cannot stamp the other's rows.
