@@ -60,11 +60,6 @@ def dark_fleet(area):
     raise ValueError("fleet collection was stopped at its budget")
 
 
-#: `sd config get sd.assistant_merge` stand-in: exit code, stdout, stderr (sd:1629).
-GRANTED = lambda: (0, "controlled\n", "")  # noqa: E731
-UNSET = (1, "", "sd: sd.assistant_merge is not set (controlled: merge ...). Run:\n    sd config set sd.assistant_merge <value>\n")
-
-
 def stamp(backend, name, text):
     """The cron-jobs wrapper's `logs/.<job>.stamp` for `name` (sd:2210)."""
     (backend.cron_root / "logs" / f".{name}.stamp").write_text(text)
@@ -97,14 +92,13 @@ class TheDocument(ScreenCase):
         self.ids = seed(self)
         self.jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
 
-    def document(self, read=fleet, grant=GRANTED):
-        return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices(),
-                                          grant=grant)
+    def document(self, read=fleet):
+        return management_screen.document(self.connection, now=NOW, fleet=read, jobs=self.jobs, services=NoServices())
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
-        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services", "jobs",
-                                                          "grant")})
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services",
+                                                          "jobs")})
         self.assertEqual(doc["read"], NOW)
         # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
         self.assertNotIn("archive", doc)
@@ -174,12 +168,12 @@ class TheDocument(ScreenCase):
                 return subprocess.CompletedProcess([], 0, "", "")
 
         backend = Sends(self.tmp.name, jobs=[("running-fixture", "running", None, None)])
-        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices(), grant=GRANTED)
+        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices())
         running = next(job for job in doc["jobs"] if job["name"] == "running-fixture")
         self.assertIsNone(running["last_request"])
         self.assertTrue(running["capabilities"]["cancel"]["allowed"])
         operations.cancel_job(self.connection, "running-fixture", expected_revision=running["revision"], who="dashboard", backend=backend)
-        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices(), grant=GRANTED)
+        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=backend, services=NoServices())
         request = next(job for job in doc["jobs"] if job["name"] == "running-fixture")["last_request"]
         self.assertEqual((request["action"], request["status"], request["who"]), ("cancel", "accepted", "dashboard"))
         self.assertEqual(backend.calls, [("cancel", "fixture/running-fixture")])
@@ -247,6 +241,15 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["sources"]["git"], "fleet collection was stopped at its budget")
         self.assertEqual(doc["sources"]["repos"], "")
         self.assertTrue(doc["repos"])
+
+    def test_a_snapshot_section_carries_when_it_was_observed_and_why_it_is_stale(self):
+        def kept(area):
+            return dict(fleet(area), observed="2026-09-06T11:52:00Z", **({"stale": "git did not answer"} if area == "sessions" else {}))
+
+        doc = self.document(read=kept)
+        self.assertEqual((doc["git"]["observed"], doc["git"]["stale"]), ("2026-09-06T11:52:00Z", None))
+        self.assertEqual((doc["sessions"]["observed"], doc["sessions"]["stale"]), ("2026-09-06T11:52:00Z", "git did not answer"))
+        self.assertNotIn("observed", self.document()["git"])
 
     def test_the_repo_verb_writes_and_refuses_a_stale_before(self):
         got = management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
@@ -500,37 +503,13 @@ class TheDocument(ScreenCase):
         self.assertEqual(review["error"], "severity_floor is not a string; copilot_review.automatic_deep is not true or false")
         self.assertEqual((guarded["required"], guarded["required_error"]), (None, "a required check is not a name"))
 
-    def test_the_machine_merge_grant_is_what_sd_config_answers(self):
-        """sd:1629: sd.assistant_merge is machine-wide, so the document carries it once; unset is a reading, not a failure."""
-        self.assertEqual(self.document()["grant"], {"assistant_merge": "controlled"})
-        doc = self.document(grant=lambda: UNSET)
-        self.assertEqual((doc["grant"], doc["sources"]["grant"]), ({"assistant_merge": None}, ""))
-        for answer, reason in (((2, "", "sd: invalid sd.assistant_merge policy\n"),
-                                "sd config get sd.assistant_merge exited 2: sd: invalid sd.assistant_merge policy"),
-                               ((0, "sometimes\n", ""), "sd config get sd.assistant_merge printed sometimes, not controlled or ask")):
-            with self.subTest(reason=reason):
-                doc = self.document(grant=lambda answer=answer: answer)
-                self.assertIsNone(doc["grant"])
-                self.assertEqual(doc["sources"]["grant"], reason)
-                self.assertEqual(doc["sources"]["repos"], "")
-
-    def test_assistant_merge_runs_sd_config_get_within_its_ceiling(self):
-        calls = []
-
-        def ran(argv, **options):
-            calls.append((argv, options.get("timeout")))
-            return subprocess.CompletedProcess(argv, 0, "ask\n", "")
-
-        with patch.object(management_screen.subprocess, "run", ran):
-            self.assertEqual(management_screen.assistant_merge(), (0, "ask\n", ""))
-        self.assertEqual(calls, [(["sd", "config", "get", "sd.assistant_merge"], management_screen.SD_SECONDS)])
-
-        def missing(argv, **options):
-            raise FileNotFoundError(argv[0])
-
-        with patch.object(management_screen.subprocess, "run", missing):
-            doc = self.document(grant=management_screen.assistant_merge)
-        self.assertEqual(doc["sources"]["grant"], "sd is not on the dashboard's PATH, so the machine merge grant was not read")
+    def test_the_document_reads_no_retired_merge_grant(self):
+        """sd:TBD: the pack retired `sd.assistant_merge` (pack sd:3013); `repo.runner_merge` is the one merge setting, so
+        the page runs no `sd config get` and carries no grant source."""
+        with patch("subprocess.run", side_effect=AssertionError("a process ran")):
+            doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=self.jobs, services=NoServices())
+        self.assertNotIn("grant", doc)
+        self.assertNotIn("grant", doc["sources"])
 
     def test_a_satellite_refuses_the_repo_verb_and_writes_nothing(self):
         """sd:1629: the repo settings change on the hub; a satellite's dashboard refuses before it reads or writes the row."""
@@ -582,9 +561,6 @@ class ThePage(BrowserSession):
         patcher = patch("sd_db.services.ServiceBackend", NoServices)
         patcher.start()
         self.addCleanup(patcher.stop)
-        grant = patch.object(management_screen, "assistant_merge", GRANTED)
-        grant.start()
-        self.addCleanup(grant.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.backend = JobsBackend(self.tmp.name, jobs=[("quiet", "idle", 0, None)])
@@ -712,8 +688,7 @@ class PageScript(ScreenCase):
         self.ids = seed(self)
         jobs = JobsBackend(self.tmp.name, jobs=[("nightly-sync", "failed", 7, None), ("quiet", "idle", 0, None)])
         stamp(jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
-        self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(),
-                                              grant=GRANTED)
+        self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
 
     def run_page(self, body, answer="null", doc=None, search="", extra=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
@@ -835,7 +810,7 @@ class TheScript(PageScript):
         self.assertEqual(re.findall(r"<code>([^<]+)</code>", cells["checks"]), ["ci", "sd/local-gate"])
         self.assertIn("3.14", cells["python"])
         self.assertIn("not pinned", cells["node"])
-        self.assertIn("machine merge grant <b>controlled</b>", repos)
+        self.assertNotIn("merge grant", repos)
         self.assertIn("change through a pull request", repos)
         self.assertNotIn("data-set=", repos)
         self.assertNotIn("<select", repos)
@@ -850,16 +825,13 @@ class TheScript(PageScript):
         self.assertNotIn('data-k="floor"', out["R"]["b"])
         self.assertEqual(out["qs"][-2:], ["view=repos&cols=settings", "view=repos"])
 
-    def test_a_grant_or_a_reading_that_failed_is_unknown_with_its_reason(self):
+    def test_a_reading_that_failed_is_unknown_with_its_reason(self):
         doc = self.settings_doc()
-        doc["grant"] = None
-        doc["sources"]["grant"] = "sd is not on the dashboard's PATH"
         row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
         row["protection"] = dict(row["protection"], status="unknown", reason="not yet observed", required=None)
         row["runtimes"] = {"python": {"error": "pyproject.toml is not valid TOML"}, "node": None}
         out = self.run_page("R.repos = ELS['view-repos'].html;", doc=doc, search="?view=repos&cols=settings&managed=yes")
         repos = out["R"]["repos"]
-        self.assertIn("machine merge grant not read: sd is not on the dashboard&#39;s PATH", repos)
         cells = dict(re.findall(r'data-k="(\w+)">(.*?)</td>', repos))
         self.assertIn("▨", cells["checks"])
         self.assertIn("not yet observed", cells["checks"])
@@ -872,6 +844,16 @@ class TheScript(PageScript):
         self.assertIn("git, sessions", out["states"][-1]["text"])
         self.assertIn("git state not read: stopped at its budget", out["R"]["repos"])
         self.assertIn("Sessions were not read", out["R"]["sess"])
+
+    def test_a_snapshot_section_says_when_it_was_observed_and_a_stale_one_is_not_green(self):
+        git = dict(self.doc["git"], observed="2026-09-06T11:52:00Z", stale=None)
+        sess = dict(self.doc["sessions"], observed="2026-09-06T11:31:00Z", stale="git did not answer")
+        out = self.run_page("""R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;
+R.lamp = ELS['sv-sessions'].dataset.state;""", doc=dict(self.doc, git=git, sessions=sess))
+        self.assertIn("git read 11:52 UTC", out["R"]["repos"])
+        self.assertNotIn("stale", out["R"]["repos"])
+        self.assertIn("fleet · 11:31 UTC · <span class=\"g-unknown\">▨</span> stale: git did not answer", out["R"]["sess"])
+        self.assertEqual(out["R"]["lamp"], "unknown")
 
     def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
         path = self.ids["checkout"]
@@ -1396,7 +1378,7 @@ class TheJobLogAndCancel(PageScript):
     def running_doc(self):
         jobs = JobsBackend(self.tmp.name, jobs=[("busy", "running", None, None), ("quiet", "idle", 0, None)])
         (jobs.cron_root / "logs" / "busy.log").write_text("[busy] started\nstep 2 <of> 3\n")
-        return management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices(), grant=GRANTED)
+        return management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
 
     CANCEL = "C.run(cmd('jobs.cancel'), C.get('cron:busy')); await flush();"
 

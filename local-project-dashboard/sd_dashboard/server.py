@@ -998,6 +998,10 @@ class Dashboard(BaseHTTPRequestHandler):
                     reporting.observed_action(connection, path.path)
             finally:
                 connection.close()
+                # Any write may have changed what the fleet snapshot shows: the next read waits for a new one (sd:TBD).
+                invalidate = getattr(self.fleet_backend, "invalidate", None)
+                if invalidate is not None:
+                    invalidate()
         except (workflow.MissingItem, workflow.MissingNote) as problem:
             return self._json(404, {"error": str(problem)})
         except workflow.StaleItem as problem:
@@ -1297,6 +1301,10 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
         options = {"frontdoor": frontdoor, "frontdoor_check": private_frontdoor_unchanged}
     # Only the served dashboard asks Jev; every test build passes no command.
     options["jev"] = runtime.jev_command()
+    # Only the served dashboard keeps the fleet's slow reads in a snapshot (sd:TBD); a test build reads its own seam.
+    from .snapshot import Fleet
+
+    options["fleet_backend"] = Fleet()
     server = build(arguments.database, port=arguments.port, bind=serve, **options)
     if not serve:
         server.server_close()

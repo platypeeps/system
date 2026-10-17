@@ -40,7 +40,8 @@ fingerprint:
 
 Changes to the configuration, library bytes, dashboard package or
 launcher bytes, loaded status, old plist, or Serve configuration invalidate the
-plan. Build digests enumerate the library's regular source/data files
+plan. Build digests enumerate the library's regular source/data files,
+the pack `bin/` modules the Queue imports (`PACK_MODULES`, sd:TBD),
 and the dashboard package, including static assets, plus the fixed Ports
 dependencies `collectors.py` and `../local-machine-setup/machine-setup.sh`,
 and Notes' mail client `../local-mail-intake/mail_intake.py` (sd:3425);
@@ -78,9 +79,13 @@ Services rows (sd:3707) act only on eligible user LaunchAgents; system daemons a
 dashboard/access services remain read-only. Health's dashboard row shows the
 kickstart line to copy when the served commit is not the checkout's. See [README.md](README.md) for the Operations tabs, one per entry of
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet
-child (both areas), the shadow table and the launchd jobs on each `/api/now`
+(both areas), the shadow table and the launchd jobs on each `/api/now`
 request a page makes, not on the page render; a fleet child or a jobs read that
-fails is a row on Now.
+fails is a row on Now. The served process keeps each fleet area in memory
+(`snapshot.Fleet`): a request gets the last reading with its `observed` time, a
+reading past 45 seconds starts one background refresh, any write the server answers
+makes the next read wait for a fresh one, and a failed refresh keeps the last
+reading marked `stale` with its reason. A restart reads again.
 
 ## Private front door
 

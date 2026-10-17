@@ -1,10 +1,12 @@
 """Queue (sd:2585): each repository's `sd-ship lane` queue, one row per item in one of six states, and its reorder.
 
-Reads, per request: `sd-ship -C <repo> lane list` for each managed repository, `READERS` at a time, the builder gate
-logs (`gate-*.log`) in its lane folder, `sd gate status --json` for the gate slots, and `os.getloadavg()` (macOS
-`vm.loadavg`). The queue lives in the hub database (pack sd:3282), so a lane hosted on another machine has entries but
-no folder here; every managed repository gets its section (sd:3284). The pack owns the lane root; one `lane list`
-names it, as its `queue` path `<root>/<repo>/lane/queue/queue.json`, so this file repeats no rule for where lanes live.
+Reads, per request: each managed repository's lane, what `sd-ship -C <repo> lane list` prints, read in-process
+through the pack's own `sd_lane` on the request's connection (`in_process`, sd:TBD; `lane list` itself, `READERS` at a
+time, where that read could differ), the builder gate logs (`gate-*.log`) in its lane folder, `sd gate status --json`
+for the gate slots, and `os.getloadavg()` (macOS `vm.loadavg`). The queue lives in the hub database (pack sd:3282), so
+a lane hosted on another machine has entries but no folder here; every managed repository gets its section (sd:3284).
+The pack owns the lane root (`sd_lane.lane_root`); the lane folder is `<root>/<checkout name>/lane`, as its `queue`
+path `<lane>/queue/queue.json` says, and a test holds that path to the one `lane list` prints.
 
 The six states, from each entry's `status`:
 
@@ -60,14 +62,19 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sd_db.errors import SdDbError
+
+from . import pack_module
+
 LIST_SECONDS = 20
-#: `lane list` calls at once: each is one short process, and the page reads every managed repository.
+#: `lane list` calls at once, for the lanes `in_process` leaves to it, beside `sd gate status` and the retry probe.
 READERS = 8
 WRITE_SECONDS = 30
 GIT_SECONDS = 5
@@ -129,6 +136,52 @@ def lane_list(path: str) -> dict:
     return _run([command("sd-ship"), "-C", path, "lane", "list"], LIST_SECONDS)
 
 
+#: The `sd_lane` functions `lane list` reads with; a pack without one of them answers through `lane list`.
+LANE_READS = ("lane_root", "stored", "enqueue_order", "item_rounds", "shown", "queue_revision")
+#: What an in-process lane read can raise: the database's faults, and a stored body `lane list` could not print either.
+READ_FAILURES = (sqlite3.Error, SdDbError, OSError, EOFError, ValueError, TypeError, KeyError)
+
+
+def in_process(connection, path: str, remote: str | None) -> dict | None:
+    """`lane list`'s answer for the checkout at `path`, read on `connection` with the pack's own `sd_lane` (sd:TBD).
+
+    The functions `sd-ship lane list` calls -- `stored`, then `enqueue_order`, `item_rounds`, `shown` and
+    `queue_revision` -- with no process per repository. Two inputs come without git: the repository is the registered
+    `remote`'s GitHub name, which the pack reads from the checkout's origin, and the lane folder is named after the
+    registered checkout, the main one. None where either could differ or `lane list` does more than read: a remote
+    that names no GitHub repository, a `.git` that is not a folder, an earlier version's queue file, which `lane list`
+    imports, or no pack `bin/` beside the library. The caller runs `lane list` for those. A failed read is
+    `{"ok": False, "error": ...}`, never an empty lane.
+    """
+    from sd_db.protection import github_slug
+
+    found = github_slug(remote)
+    if found is None or not os.path.isdir(os.path.join(path, ".git")):
+        return None
+    try:
+        lane = pack_module("sd_lane")
+    except ImportError:
+        return None
+    if not all(callable(getattr(lane, name, None)) for name in LANE_READS):
+        return None  # an earlier pack: its `lane list` prints what it has
+    try:
+        queue = lane.lane_root(dict(os.environ)) / Path(path).resolve().name / "lane" / "queue" / "queue.json"
+    except lane.sd_lib.ConfigError as error:
+        return {"ok": False, "error": f"the lane root was not read: {error}"}
+    if queue.exists():
+        return None
+    repository = "/".join(found).lower()
+    try:
+        # `stored` first: an entry written between the two reads is then in the order, never missing from it.
+        entries = lane.stored(connection, repository)
+        order = lane.enqueue_order(connection, repository)
+        rounds = lane.item_rounds(entries, order)
+        listed = [{**lane.shown(row), "enqueue_seq": order[row["id"]], "round": rounds[row["id"]]} for row in entries]
+    except READ_FAILURES as error:
+        return {"ok": False, "error": f"the lane was not read: {type(error).__name__}: {error}"}
+    return {"ok": True, "queue": str(queue), "revision": lane.queue_revision(entries), "entries": listed}
+
+
 def retry_help() -> dict:
     """What the installed pack's `lane retry` takes, from its `--help`: `retry` when it names `--expected-head` (sd:3254,
     sd:3268), `requeue` when it also names a cancelled entry (pack sd:3389). A failed probe offers neither; `requeue_off`
@@ -180,14 +233,26 @@ def _when(stamp: str | None) -> float | None:
         return None
 
 
+#: Each `(checkout, commit)`'s pull request, or None, from a git that answered: a commit's subject never changes.
+_PULLS: dict[tuple[str, str], str | None] = {}
+#: The most `_PULLS` keeps before it starts again: a day lands tens of commits.
+PULLS_KEPT = 4096
+
+
 def _pr(path: str, commit: str) -> str | None:
-    """The pull request a squash commit's subject names, `(#161)`, or None."""
+    """The pull request a squash commit's subject names, `(#161)`, or None; git is asked once per commit it answers."""
+    if (path, commit) in _PULLS:
+        return _PULLS[(path, commit)]
     try:
         done = subprocess.run(["git", "-C", path, "log", "-1", "--format=%s", commit], capture_output=True, text=True,
                               timeout=GIT_SECONDS, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     found = re.search(r"\(#([0-9]+)\)\s*$", done.stdout.strip())
+    if done.returncode == 0:
+        if len(_PULLS) >= PULLS_KEPT:
+            _PULLS.clear()
+        _PULLS[(path, commit)] = found[1] if found else None
     return found[1] if found else None
 
 
@@ -286,9 +351,14 @@ def document(connection, *, now: str = "") -> dict:
     # A checkout missing here leaves its lane unread: `sd-ship -C` needs one. Named, never dropped.
     problems = [{"repo": path, "error": "no checkout on this machine"} for path in managed if path not in here]
     with ThreadPoolExecutor(max_workers=READERS) as pool:
-        answers = list(pool.map(lane_list, here))
+        # The two probes run beside the reads; the request's connection stays on this thread.
+        gates, probe = pool.submit(_gates), pool.submit(retry_help)
+        answers = {path: in_process(connection, path, managed[path]["remote"]) for path in here}
+        left = [path for path, answer in answers.items() if answer is None]
+        answers.update(zip(left, pool.map(lane_list, left)))
+        gates, probe = gates.result(), probe.result()
     lanes, root = [], None
-    for path, answer in zip(here, answers):
+    for path, answer in answers.items():
         if not answer.get("ok") or not isinstance(answer.get("queue"), str):
             problems.append({"repo": path, "error": answer.get("error") or "lane list named no queue"})
             continue
@@ -298,10 +368,10 @@ def document(connection, *, now: str = "") -> dict:
         lanes.append({"repo": Path(path).name, "path": path, "lane": str(lane), "revision": revision(entries),
                       "runner_merge": managed[path]["runner_merge"], "host": managed[path]["lane_host"] or "hub",
                       "rows": rows(entries, path=path, lane=lane, now=clock)})
-    return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": _gates(),
+    return {"read": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock)), "load": _load(), "gates": gates,
             "lanes": lanes, "problems": problems, "root": str(root) if root else None, "edits": EDITS,
             "managed": len(managed), "attention": _attention(lanes),
-            **(retry_help() if lanes else {"retry": False, "requeue": False, "requeue_off": None})}
+            **(probe if lanes else {"retry": False, "requeue": False, "requeue_off": None})}
 
 
 def _attention(lanes) -> dict:
