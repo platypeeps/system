@@ -18,12 +18,8 @@ the revision the acknowledge answered; `reporting.reopen` moves the report back
 to the status it was acknowledged from (sd:2395). The page reads
 `/api/reports` through the shared reader, `read.js` (sd:2487). The Job filter
 lists every job the reading names, with or without a report (sd:2430).
-Select clean reads `GET /api/reports/clean?before=<date>`,
-v1's preview, and the bulk bar acknowledges the picked reports one by one.
-The preview's Acknowledge is the attributed batch (`--all-clean --who`,
-sd:3386): it asks who, then posts `/api/reports/acknowledge-clean` with the
-preview's cutoff and plan. It moves every selected report or none; a report that
-changed since the preview refuses the batch, and the page previews again.
-Retry posts the job route, as Management does. No status mail is read: the
-dashboard holds no message store. The old Reports area was retired in sd:3402;
-the Resources views stay in the palette as Resources (classic).
+The bulk bar acknowledges picked reports one by one. A clean run files no
+report since the quiet-run rule, so the page has no clean preview or batch;
+`sd reports acknowledge --all-clean` stays a CLI verb.
+Retry posts the job route, as Management does. The old Reports area was
+retired in sd:3402; the Resources views stay in the palette as Resources (classic).
