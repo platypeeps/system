@@ -2,8 +2,9 @@
 // Designs (sd:2126). Built from the design source's products/system/designs/pages/designs.js at 2729265.
 // build: the ledger comes from /api/designs through shell.read, not from data/designs-data.js; links open /designs/<path>.
 // build (sd:3447): Hide and Unhide post /api/designs/view, the workflow database's view state that Documents' Hide writes.
-// A hidden row leaves the ledger, its lamps and the badge; the Hidden lamp shows only the hidden rows. An unread store hides
-// nothing and turns both commands off with its reason.
+// A hidden row leaves the ledger, its lamps and the badge. Show picks unhidden (the default) or hidden rows; ?show=hidden keeps
+// it, and an older ?f=hidden link lands there. The lamps count the rows Show draws, and a lamp narrows them further. An
+// unread store hides nothing and turns both commands off with its reason.
 const { html, put, cells } = window.markup;
 const I = (n, cls = '') => html`<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
@@ -33,12 +34,10 @@ const FILTERS = {
   noshot:  { lbl: 'No screenshot', icon: 'eye-off', test: r => r.type === 'page' && !r.shots.length, warn: true },
   dirty:   { lbl: 'Uncommitted', icon: 'pen-line', test: r => r.dirty, warn: true },
   brief:   { lbl: 'Brief only', icon: 'file-text', test: r => r.type === 'brief' },
-  hidden:  { lbl: 'Hidden', icon: 'eye-off', test: r => r.hidden },
 };
-// Every lamp but Hidden counts and shows the rows that are not hidden; Hidden shows only the hidden ones.
-const shown = r => (F.f === 'hidden') === r.hidden;
+const shown = r => F.hidden === r.hidden;
 const tbody = document.getElementById('rows'), details = document.getElementById('details');
-let selected = null, F = { f: '', q: '' };
+let selected = null, F = { f: '', q: '', hidden: false };
 let pickedIds = new Set();
 const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
 // Order: product, then the header's column (sd:3455) inside it. Page, the default, is the design's order: the drawn pages
@@ -58,13 +57,18 @@ const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time
 
 function renderAnnunciator() {
   // No "all pages" lamp: the head counts the pages and the view row's All chip clears a filter.
-  const n = k => ROWS.filter(r => (k === 'hidden' || !r.hidden) && FILTERS[k].test(r)).length;
+  const n = k => ROWS.filter(r => shown(r) && FILTERS[k].test(r)).length;
   const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl,
     mark: state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon), val });
   const [hh, day] = [D.read.slice(11, 16), `${+D.read.slice(8, 10)} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[+D.read.slice(5, 7) - 1]}`];
   // build: Observed rereads /api/designs instead of reloading the page.
-  put(document.getElementById('annunciator'), cells([...Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : k === 'hidden' ? 'row' : 'page')}`); }),
+  put(document.getElementById('annunciator'), cells([...Object.keys(FILTERS).map(k => { const c = n(k); return cell(k, FILTERS[k].warn && c ? 'caution' : 'ok', html`<b>${c}</b> ${markup.plural.word(c, k === 'brief' ? 'product' : 'page')}`); }),
     { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: html`<span class="ph"><b>${hh}</b> UTC</span> · <span class="ph">${day} · ${D.head || 'no commit'}</span>` }]));
+}
+function renderShow() {
+  const chip = (v, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(F.hidden === (v === 'hidden'))}">${v} <span class="n">${String(n)}</span></button>`;
+  const hid = ROWS.filter(r => r.hidden).length;
+  put(document.getElementById('show'), html`<span class="label">Show</span><div class="chips">${chip('unhidden', ROWS.length - hid)}${chip('hidden', hid)}</div>`);
 }
 function renderRows() {
   const rows = ranked();
@@ -83,7 +87,7 @@ function renderRows() {
     <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`;
   })}`);
   const empty = document.getElementById('empty');
-  empty.hidden = rows.length > 0; empty.textContent = F.f === 'hidden' && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
+  empty.hidden = rows.length > 0; empty.textContent = F.hidden && !F.f && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
   document.getElementById('tally').textContent = `${rows.length} of ${ROWS.length} rows`;
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
@@ -137,11 +141,11 @@ const VIEWS = ['stale', 'recent'].map(k => ({ name: FILTERS[k].lbl, params: { f:
 // The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
 function writeFilter() {
   const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
-  shell.url({ ...(F.f && { f: F.f }), ...(input.value.trim() && { q: input.value.trim() }), ...sort }); shell.views(VIEWS);
+  shell.url({ ...(F.f && { f: F.f }), ...(F.hidden && { show: 'hidden' }), ...(input.value.trim() && { q: input.value.trim() }), ...sort }); shell.views(VIEWS);
 }
 function update() {
   if (!D) return;
-  renderAnnunciator(); renderRows(); reconcile();
+  renderAnnunciator(); renderShow(); renderRows(); reconcile();
 }
 
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
@@ -152,7 +156,7 @@ const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }
 // One Hide and one Unhide for each row type, a page and a brief-only product.
 const hiding = on => [
   { id: 'design.hide', on, label: 'Hide', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : STORE || true,
-    cli: () => NO_CLI, run: o => view(o, true).then(() => `Hidden: ${o.label}. The Hidden lamp shows it.`), undo: o => view(o, false) },
+    cli: () => NO_CLI, run: o => view(o, true).then(() => `Hidden: ${o.label}. Show hidden lists it.`), undo: o => view(o, false) },
   { id: 'design.unhide', on, label: 'Unhide', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : STORE || true,
     cli: () => NO_CLI, run: o => view(o, false).then(() => `Unhidden: ${o.label}`), undo: o => view(o, true) },
 ];
@@ -179,6 +183,7 @@ document.addEventListener('click', e => {
     if (cell.id === 'refresh') return reading?.load();
     const k = cell.dataset.filter; F.f = F.f === k ? '' : k; writeFilter(); update(); return;
   }
+  const sh = e.target.closest?.('.chip[data-show]'); if (sh) { F.hidden = sh.dataset.show === 'hidden'; writeFilter(); update(); return; }
   const tr = e.target.closest?.('tr[data-id]'); if (tr && !e.target.closest('button, a, time')) select(tr.dataset.id, false);
 });
 const input = document.getElementById('shift');
@@ -220,7 +225,7 @@ function adopt(doc) {
 }
 function clear() {
   D = null; ROWS = []; PRODUCTS = []; STORE = ''; delete document.body.dataset.observed;
-  put(document.getElementById('annunciator'), html``); put(tbody, html``);
+  put(document.getElementById('annunciator'), html``); put(document.getElementById('show'), html``); put(tbody, html``);
   document.getElementById('tally').textContent = '';
   document.getElementById('sub').textContent = 'Not read';
   document.getElementById('src').textContent = 'ui-design';
@@ -231,12 +236,13 @@ document.addEventListener('DOMContentLoaded', () => {
   shell.views(VIEWS);
   const p = new URLSearchParams(location.search);
   F.f = FILTERS[p.get('f')] ? p.get('f') : '';
+  F.hidden = p.get('show') === 'hidden' || p.get('f') === 'hidden'; // ?f=hidden: a link from before Show replaced the Hidden lamp
   if (p.get('q')) { input.value = p.get('q'); F.q = p.get('q').trim().toLowerCase(); }
   shell.list.listParams(p, L, { sorts: Object.keys(BY), size: LIST.size });
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   reading = shell.read({
     source: '/api/designs', what: 'the designs', adopt, clear,
-    draw: () => { if (D) { renderAnnunciator(); renderRows(); } attention(); },
+    draw: () => { if (D) { renderAnnunciator(); renderShow(); renderRows(); } attention(); },
     current: () => selected,
     first: () => ranked()[0]?.id ?? null,
     select: id => (ranked().some(r => r.id === id) ? select(id, false) : reconcile()),
