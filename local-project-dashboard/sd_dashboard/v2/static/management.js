@@ -76,7 +76,8 @@ function nextOf(e, from) {
   return null;
 }
 function human(schedule) {
-  if (!Array.isArray(schedule) || !schedule.length) return 'no calendar';
+  // build (sd:4965): no calendar is a manual job, JOB_SCHEDULE="manual"; launchd starts it only on Run now.
+  if (!Array.isArray(schedule) || !schedule.length) return 'manual';
   const W = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const two = n => String(n).padStart(2, '0');
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

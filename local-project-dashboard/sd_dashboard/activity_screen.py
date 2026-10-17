@@ -203,7 +203,7 @@ def jobs(connection, backend, start: datetime, end: datetime) -> tuple[list[dict
                 else f"{name} ran ({job['state']})")
         out.append({"id": f"job:{name}", "k": "run", "at": _iso(logged), "s": state, "repo": None,
                     "what": what, "interrupted": interrupted,
-                    "detail": f"launchd job · {job.get('schedule') or 'no schedule'}", "ref": name, "job": name,
+                    "detail": f"launchd job · {job.get('schedule') or 'manual'}", "ref": name, "job": name,
                     "service": job.get("service"), "failed": failed or interrupted, "rc": outcome, "exit": code, "revision": job["revision"],
                     "retry": job["capabilities"]["retry"], "src": "launchd jobs and their cron-jobs.sh log time"})
     return out, undated

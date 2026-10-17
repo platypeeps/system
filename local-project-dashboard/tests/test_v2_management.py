@@ -1332,6 +1332,11 @@ class TheMinuteMarks(PageScript):
   human([{ Minute: 30 }, { Minute: 0 }]), human([{ Minute: 0 }, { Minute: 20 }, { Minute: 40 }]), human([{ Minute: 10 }, { Minute: 10 }])];""")
         self.assertEqual(out["R"]["got"], ["hourly at :05, :30", "hourly at :00, :15, :45", "every 30 min", "every 20 min", "hourly at :10"])
 
+    def test_a_job_with_no_calendar_is_manual(self):
+        """sd:4965: `JOB_SCHEDULE="manual"` installs a plist with no StartCalendarInterval; it runs only when started."""
+        out = self.run_page("R.got = [human([]), nextRun([])];")
+        self.assertEqual(out["R"]["got"], ["manual", ""])
+
 
 class TheLastRun(PageScript):
     """sd:2210 and sd:2209: Schedules shows each job's stamped last run; the lane strip shows the archive refresh."""

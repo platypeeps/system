@@ -63,14 +63,15 @@ COMMANDS = [
 
 
 class Jobs(JobsBackend):
-    """`JobsBackend` with a launchd calendar per job, and a log written line by line."""
+    """`JobsBackend` with a launchd calendar per job, daily at 02:15 unless `schedules` names another, and a log written
+    line by line. An empty calendar is a manual job (sd:4965)."""
 
     def __init__(self, root, jobs=(), schedules=None, refuse=""):
         super().__init__(root, jobs=jobs, refuse=refuse)
         self.schedules = schedules or {}
 
     def inspect(self, name):
-        return super().inspect(name) | {"schedule": self.schedules.get(name, [])}
+        return super().inspect(name) | {"schedule": self.schedules.get(name, [{"Hour": 2, "Minute": 15}])}
 
     def write(self, name, lines):
         (self.cron_root / "logs" / f"{name}.log").write_text("".join(line + "\n" for line in lines), encoding="utf-8")
@@ -182,8 +183,8 @@ class TheDocument(ScreenCase):
         self.assertEqual(sync["scheduled"], [True] * 7)
         # Weekday 0 is Sunday: 2026-09-06 only.
         self.assertEqual(doc["cadence"]["weekly-scan"]["scheduled"], [d == "2026-09-06" for d in DAYS])
-        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}, "scheduled": [True] * 7,
-                                                       "last": {"day": DAYS[5], "read": False, "runs": [0, 0]}})
+        self.assertEqual(doc["cadence"]["quiet-one"], {"log": False, "from": None, "read_from": None, "cut": False, "runs": {}, "manual": False,
+                                                       "scheduled": [True] * 7, "last": {"day": DAYS[5], "read": False, "runs": [0, 0]}})
         # The last scheduled day before today, whatever the cadence, and whether the log holds it.
         self.assertEqual(sync["last"], {"day": DAYS[5], "read": True, "runs": [1, 0]})
         self.assertEqual(doc["cadence"]["weekly-scan"]["last"], {"day": "2026-09-06", "read": True, "runs": [1, 0]})
@@ -208,6 +209,15 @@ class TheDocument(ScreenCase):
         self.assertNotIn("2026-09-01", got["monthly"]["runs"])
         with mock.patch.object(reports_screen, "TAIL_BYTES", 60):
             self.assertEqual(reports_screen.cadence(jobs[:1], logs, DAYS)["monthly"]["last"]["read"], False)
+
+    def test_a_manual_job_is_never_due_and_its_runs_still_count(self):
+        """sd:4965: `JOB_SCHEDULE="manual"` installs no calendar; a day without a run is no gap, and a run still counts."""
+        logs = self.jobs.cron_root / "logs"
+        (logs / "by-hand.log").write_text("\n".join(run_lines("by-hand", DAYS[3])) + "\n", encoding="utf-8")
+        got = reports_screen.cadence([{"name": "by-hand", "schedule": []}], logs, DAYS)["by-hand"]
+        self.assertEqual((got["manual"], got["scheduled"], got["last"]), (True, [False] * 7, {"day": None, "read": False, "runs": [0, 0]}))
+        self.assertEqual(got["runs"][DAYS[3]], [1, 0])
+        self.assertIs(reports_screen.cadence([{"name": "by-hand", "schedule": [{"Hour": 1}]}], logs, DAYS)["by-hand"]["manual"], False)
 
     def test_an_outcome_marker_after_job_output_with_no_newline_still_counts(self):
         # cron-jobs.sh's own example: `JOB_COMMAND='printf error; exit 7'` writes `error[demo] ... FAILED rc=7`.
@@ -575,6 +585,13 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
         self.assertIn("■ 1 failed last run", out["R"]["tally"])
         self.assertEqual(out["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
 
+    def test_a_manual_job_marks_its_runs_and_no_gap(self):
+        """sd:4965: a manual job's day without a run says manual, not "no run logged"; a day it ran says so."""
+        self.jobs.schedules["quiet-one"] = []
+        self.jobs.write("quiet-one", run_lines("quiet-one", DAYS[3]))
+        out = self.run_page("R.marks = DAYS.map(d => mark('quiet-one', d).join(' '));", doc=self.served())
+        self.assertEqual(out["R"]["marks"][2:5], ["none · manual: runs when started", "ok ● ran", "none · manual: runs when started"])
+
     def test_a_family_lamp_without_evidence_for_a_job_is_unknown_not_all_clear(self):
         def lamps(doc, jobs=("weekly-scan",)):
             doc["families"]["list"] = [{"key": "scan", "label": "Scan", "icon": "bot", "jobs": list(jobs)}]
@@ -611,6 +628,10 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
         self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 1]}), r'data-fam="scan"[^>]*data-state="caution"')
         self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [0, 0]}), r'data-fam="scan"[^>]*data-state="caution"')
         self.assertRegex(monthly({"day": "2026-09-01", "read": True, "runs": [1, 0]}), r'data-fam="scan"[^>]*data-state="ok"')
+        # A manual job (sd:4965) is never due: no run is no gap, so it leaves the lamp as the other jobs set it.
+        self.jobs.schedules["quiet-one"] = []
+        manual = self.served()
+        self.assertRegex(lamps(manual, ("quiet-one",)), r'data-fam="scan"[^>]*data-state="ok"')
         # With every job's log read and no failure, the lamp is still all clear.
         self.assertRegex(lamps(json.loads(json.dumps(self.doc))), r'data-fam="scan"[^>]*data-state="ok"')
 

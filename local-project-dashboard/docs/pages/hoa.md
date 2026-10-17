@@ -27,6 +27,32 @@ stale lot data makes the read partial and each lot unknown, naming the script.
 The data names homeowners, so it is read at request time and never copied; this
 repo's tests use synthetic names.
 
+Each trend shows its window's min (lowest daily low), median (of the daily
+values) and max (highest daily high), with faint marks at the min and max
+(sd:4969). A problem level is a dashed line, and a day beyond it is a warning.
+The levels are per machine, in `<config>/project-dashboard/hoa-thresholds.conf`
+(template `hoa-thresholds.conf.example`): the hoa checkout states its levels in
+prose only. Without the file a trend says "no problem level set".
+
+Acknowledge on an alarm event (sd:4967) posts `/api/hoa/alarm`, the workflow
+database's `view` state that Designs' Hide writes, keyed
+`hoa-alarm/<datetime> <event>`. Undo writes it back. Acknowledged events hide
+behind the Show acknowledged chip and leave the Alarms today lamp. The write
+reads the export again, so an event it no longer holds is refused (409) by
+name. Nothing reaches the Mission portal.
+
+Data sources (sd:4965) shows one age lamp per source the checkout's
+`python3 tools/source-ages.py --json` lists (Mission export, CORE, Vantaca,
+TMT), run with a 10-second bound (`SOURCE_SECONDS`). A script that is missing,
+times out, exits past 1 or prints no source list makes the panel unknown with
+that reason. A row hides after its `ends` date. Refresh now starts the source's
+manual cron job (`hoa_screen.REFRESH_JOBS`: `hoa-mission-export`,
+`hoa-vantaca-pull`, each `JOB_SCHEDULE="manual"`) through `/api/jobs/<name>/retry`
+with the job's revision, the route Management's Retry posts. The jobs
+inventory gives the job's state, its off reason (not installed, running, or a
+start launchd refuses) and the last line of its log; while it runs, the page
+reads again every 15 seconds (`SRC_POLL`).
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

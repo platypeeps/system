@@ -119,7 +119,7 @@ sibling tool from any checkout.
 Drop `<config>/cron-jobs/jobs/<name>.job` (or `jobs/<host>/<name>.job` for this machine only, or a file in a `CRON_JOBS_EXTRA_DIRS` directory; shell vars) and `./cron-jobs.sh install <name>`:
 
 ```sh
-JOB_SCHEDULE="0 7 * * 1"     # 5-field cron, LOCAL time; supports * N a,b,c */N
+JOB_SCHEDULE="0 7 * * 1"     # 5-field cron, LOCAL time; supports * N a,b,c */N; or "manual"
 JOB_DIR=""                   # optional working directory (default $HOME)
 JOB_PROMPT="/some-skill or any prompt"
 JOB_MODEL=""                 # optional
@@ -161,6 +161,12 @@ open a failure report (see Failure reporting below).
 entries and loads `<prefix>.cron.<name>` into `gui/$UID` (prefix from
 `SYSTEM_TOOLS_LABEL_PREFIX`, default `local.system-tools`). Re-run `install`
 after editing a job to apply changes.
+
+`JOB_SCHEDULE="manual"` installs a job with no calendar: the plist has no
+`StartCalendarInterval` and `RunAtLoad` is false, so only `launchctl kickstart`
+starts it, which is what the dashboard's Run now sends. `list`, `status` and
+Management's Schedules say `manual`, and `watchdog` skips it: it has no cadence
+to fall behind (sd:4965).
 
 A reinstall waits up to about 10 seconds after `bootout` for launchd to release
 the label: a job that is running holds it a little longer, and a `bootstrap`

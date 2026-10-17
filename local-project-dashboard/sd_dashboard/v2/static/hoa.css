@@ -55,6 +55,12 @@
 .spark .mk.sel { opacity: 1; }
 .spark .bar.sel { fill: var(--color-accent); }
 .spark .last { fill: var(--color-series-1); }
+/* sd:4969: the window's min and max as faint marks, the problem level as a dashed rule, a day beyond it in the warning state */
+.spark .ext { fill: none; stroke: var(--color-muted); stroke-width: 1; opacity: 0.6; vector-effect: non-scaling-stroke; }
+.spark .limit { stroke: var(--color-warning); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.spark .over, .spark .bar.over { fill: var(--color-warning); }
+.spark .stats, .spark .level { display: flex; flex-wrap: wrap; gap: 0 var(--space-sm); margin: var(--space-2xs) 0 0; font: 400 var(--text-2xs)/1.4 var(--font-data); color: var(--color-muted); }
+.spark .stats b { font-weight: 500; color: var(--color-ink); }
 .range { display: inline-flex; gap: var(--space-2xs); }
 .chip[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; background: transparent; border-style: dashed; }
 
@@ -68,6 +74,11 @@
 .ledger .num { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 #ob-kinds { flex-wrap: wrap; margin: var(--space-xs) 0 var(--space-sm); }
 .ledger .act { width: 1%; white-space: nowrap; text-align: right; }
+/* sd:4967: an acknowledged event (shown under Show acknowledged) reads quieter; a picked row carries the shared tick */
+#al-table tr[data-acked] .what, #al-table tr[data-acked] .src { color: var(--color-muted); font-weight: 400; }
+#al-show .chip .n { color: var(--color-muted); font-family: var(--font-data); }
+#al-table tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
+#al-table tbody tr[data-picked] .g::after { content: " ✓"; color: var(--color-accent); }
 .tag { display: inline-block; padding: 1px 5px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); font: 500 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); vertical-align: 1px; }
 .tag.real { border-color: var(--color-accent); color: var(--color-ink); }
 .foot-note { margin: var(--space-xs) 0 0; font-size: var(--text-xs); color: var(--color-muted); }

@@ -11,6 +11,20 @@
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   let DOC = null, M = null, ASSETS = [], LOTS = [], OB = [], AL = [], CELLS = [];
   let selected = null, range = 7, selDay = null, zoom = 1, center = null, P = null;
+  // sd:4967: acknowledged alarm events hide unless Show acknowledged is on; ACKS is why Acknowledge is off, or ''.
+  let showAcked = false, ACKS = '';
+  // sd:4965: the age lamps, tools/source-ages.py's rows for the Mission export and Vantaca. A source past its end date
+  // (Vantaca after 2026-10-31) is retired and not drawn.
+  let SRC = [];
+  const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
+  const srcOf = key => SRC.find(r => r.source === key);
+// A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
+const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
+  : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
+  : j.state === 'idle' ? (j.last_exit === 0 ? 'last refresh finished' : 'refresh not run yet') : `refresh job ${j.state}`;
+// While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
+const SRC_POLL = 15000;
+let polling = 0;
   const hidden = new Set();
 
   const dl = pairs => html`<dl>${pairs.filter(p => p[1] !== '' && p[1] != null).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>`;
@@ -34,7 +48,7 @@
       : { id: 'aquifer', label: 'Aquifer', state: 'unknown', val: html`<b>—</b> not read`, small: why });
     const at = m.alarms_today, real = AL.filter(a => a.st === 'warning').length, tests = AL.filter(a => a.kind === 'generator' && /Running/.test(a.event)).length;
     out.push(at.count == null ? { id: 'alarms', label: 'Alarms today', state: 'unknown', open: AL[0]?.id, val: html`<b>—</b> ${at.reason}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` }
-      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
+      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
     out.push(f.error ? { id: 'tasks', label: 'Tasks', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
       : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
@@ -164,7 +178,21 @@
     const a = AL.find(x => x.id === id); if (!a) return;
     selected = id; mark(); drawMap();
     show(html`<div class="kind"><span class="g-${a.st}" aria-hidden="true">${GLYPH[a.st]}</span><span class="label">Alarm event · ${a.kind}</span></div><h2>${a.event}</h2>
-      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Source', 'alarm-events.csv']])}`, id, open);
+      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Acknowledged', a.acked ? 'yes, on this dashboard' : 'no'], ['Source', 'alarm-events.csv']])}
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
+      <p class="why">Acknowledge marks the event on this dashboard only. Nothing reaches the Mission portal.</p>`, id, open);
+  }
+  // The source-ages row for Details: its lamp state, age and what to do.
+  const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
+    ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : ''],
+    ['Refresh job', !r.job ? '' : r.job.error || `${r.job.name} · ${refreshText(r.job)}`]])}`;
+  function selectSourceRow(id, open) {
+    const r = srcOf(id.slice(7)); if (!r) return;
+    const st = SRC_STATE[r.state] || 'unknown';
+    selected = id; mark();
+    show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Source</span></div>
+      <h2>${r.label}</h2>${ageBlock(r)}
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -173,7 +201,8 @@
       <h2>Mission telemetry export</h2>
       ${dl([['Path', m.dir], ['Cadence', 'daily export, one row per day'], ['State', m.latest ? `${m.stale ? 'stale' : 'current'} · newest row ${m.latest} · ${m.age_days} d old` : 'not read']])}
       <h3 class="label">Files in this page</h3>${dl(m.files.map(f => [f.name, f.error ? `not read: ${f.error}` : `${f.rows} rows · latest ${f.latest.slice(0, 10)}`]))}
-      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>`, 'source:mission', open);
+      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>
+      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}`, 'source:mission', open);
   }
   function selectDay(d, open, series) {
     const m = DOC.mission, a = m.analog.find(r => r.date === d), p = m.pump.find(r => r.date === d);
@@ -193,6 +222,7 @@
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
+    else if (id.startsWith('source:')) selectSourceRow(id, open);
   }
 
   // ---------- Trends ----------
@@ -203,11 +233,32 @@
   ];
   const TW = 300, TH = 72;
   const rowsOf = s => (DOC ? DOC.mission[s.file] : []).filter(r => num(r[s.y]) && (!s.lo || (num(r[s.lo]) && num(r[s.hi])))).slice(-range);
+  // sd:4969: the window's min is its lowest daily low and its max its highest daily high (the plotted value on a series with
+  // no band); the median is of the plotted daily values, the middle one or the mean of the middle two.
+  const lowOf = (s, r) => +r[s.lo || s.y], highOf = (s, r) => +r[s.hi || s.y];
+  function stats(s, rows) {
+    const ys = rows.map(r => +r[s.y]).sort((a, b) => a - b), mid = ys.length >> 1;
+    const lows = rows.map(r => lowOf(s, r)), highs = rows.map(r => highOf(s, r));
+    return { min: Math.min(...lows), median: ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2, max: Math.max(...highs),
+      at: { min: lows.indexOf(Math.min(...lows)), max: highs.indexOf(Math.max(...highs)) } };
+  }
+  // The problem level (hoa_screen.thresholds): a day is beyond it when its low is under a `below` level or its high over an
+  // `above` one.
+  const levelOf = s => DOC?.thresholds?.levels?.[s.key] || null;
+  const beyond = (s, r, lv) => lv.dir === 'below' ? lowOf(s, r) < lv.value : highOf(s, r) > lv.value;
+  function levelText(s, rows, lv) {
+    const t = DOC?.thresholds;
+    if (!lv) return t?.error ? html`<span class="g-unknown">▨ problem level not read: ${t.error}</span>` : html`no problem level set`;
+    const n = rows.filter(r => beyond(s, r, lv)).length;
+    return html`<span class="${n ? 'g-warning' : ''}">${n ? '■ ' : ''}problem level ${lv.dir} ${lv.value} ${s.unit} · ${n ? `${plural(n, 'day')} beyond` : 'no day beyond'}</span>`;
+  }
   function spark(s) {
     const rows = rowsOf(s);
     if (!rows.length) return html`<figure class="spark" data-series="${s.key}"><header><span class="label">${s.title}</span></header>${unknownBlock(DOC?.mission.error || `${s.src} has no rows`)}</figure>`;
-    const ys = rows.flatMap(r => [+r[s.y], s.lo ? +r[s.lo] : +r[s.y], s.hi ? +r[s.hi] : +r[s.y]]);
-    let min = s.zero ? 0 : Math.min(...ys), max = Math.max(...ys); if (max === min) max = min + 1;
+    const st = stats(s, rows), lv = levelOf(s), fix = v => (+v).toFixed(1);
+    let min = s.zero ? 0 : st.min, max = st.max;
+    if (lv) { min = Math.min(min, lv.value); max = Math.max(max, lv.value); }
+    if (max === min) max = min + 1;
     const n = rows.length, step = TW / n;
     const X = i => (i + 0.5) * step, Y = v => TH - ((v - min) / (max - min)) * (TH - 6) - 3;
     const marks = [];
@@ -216,22 +267,39 @@
       marks.push(html`<polyline class="ln" points="${rows.map((r, i) => `${X(i)},${Y(+r[s.y])}`).join(' ')}"/>`);
       marks.push(html`<circle class="last" cx="${X(n - 1)}" cy="${Y(+rows[n - 1][s.y])}" r="2.5"/>`);
     } else {
-      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}${lv && beyond(s, r, lv) ? ' over' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+    }
+    marks.push(html`<circle class="ext" data-ext="min" cx="${X(st.at.min)}" cy="${Y(st.min)}" r="2"/><circle class="ext" data-ext="max" cx="${X(st.at.max)}" cy="${Y(st.max)}" r="2"/>`);
+    if (lv) {
+      marks.push(html`<line class="limit" x1="0" x2="${TW}" y1="${Y(lv.value)}" y2="${Y(lv.value)}"/>`);
+      if (s.kind === 'line') marks.push(rows.map((r, i) => beyond(s, r, lv) ? html`<circle class="over" cx="${X(i)}" cy="${Y(lv.dir === 'below' ? lowOf(s, r) : highOf(s, r))}" r="3"/>` : ''));
     }
     const picked = rows.find(r => r.date === selDay);
     const hits = html`${s.kind === 'line' ? rows.map((r, i) => html`<circle class="mk${r.date === selDay ? ' sel' : ''}" cx="${X(i)}" cy="${Y(+r[s.y])}" r="3.5"/>`) : ''}<rect class="hit scrub" x="0" y="0" width="${TW}" height="${TH}" tabindex="0" role="button" data-series="${s.key}" data-n="${n}" aria-label="${s.title}, ${n} days. ${picked ? `${picked.date}: ${picked[s.y]} ${s.unit}. ` : ''}Tap a day, or use the left and right arrow keys."/>`;
     const last = rows[n - 1];
     return html`<figure class="spark" data-series="${s.key}">
-      <header><span class="label">${s.title}</span><span class="now">${(+last[s.y]).toFixed(1)} <small>${s.unit} · ${day(last.date)}</small></span></header>
+      <header><span class="label">${s.title}</span><span class="now">${fix(last[s.y])} <small>${s.unit} · ${day(last.date)}</small></span></header>
       <svg viewBox="0 0 ${TW} ${TH}" preserveAspectRatio="none" role="img" aria-label="${s.title}, ${n} days">
         <line class="grid" x1="0" x2="${TW}" y1="${TH - 3}" y2="${TH - 3}"/>${marks}${hits}</svg>
-      <div class="axis"><span>${day(rows[0].date)}</span><span>${min.toFixed(s.zero ? 0 : 1)}–${max.toFixed(1)} ${s.unit}</span><span>${day(last.date)}</span></div>
+      <div class="axis"><span>${day(rows[0].date)}</span><span>${day(last.date)}</span></div>
+      <p class="stats"><span>min <b>${fix(st.min)}</b></span><span>median <b>${fix(st.median)}</b></span><span>max <b>${fix(st.max)}</b> ${s.unit}</span></p>
+      <p class="level">${levelText(s, rows, lv)}</p>
       <div class="sr"><table><caption>${s.title} (${s.unit}), from ${s.src}</caption><tbody>${rows.map(r => html`<tr><th scope="row">${r.date}</th><td>${r[s.y]}</td></tr>`)}</tbody></table></div>
     </figure>`;
   }
   const drawTrends = () => put($('trend-list'), html`${SERIES.map(spark)}`);
   const daysOf = sc => rowsOf(SERIES.find(x => x.key === sc.dataset.series)).map(r => r.date);
 
+  function drawSources() {
+    const C = window.shell.commands, sr = DOC?.sources;
+    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
+      : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
+        return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
+        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
+        <td class="act">${C.rowActions(id)}</td></tr>`; })}`
+      : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`);
+  }
   // ---------- Tasks (sd:4959) ----------
   // build: one table of every open item of the checkout, followups, tasks and work, where the design had followups alone.
   // hoa_screen ranks them: overdue, due within a week, the rest. The id is its own first column; every column with data sorts
@@ -264,25 +332,35 @@
 
   // ---------- Alarm ledger ----------
   function drawLedgers() {
-    const m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
-    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="6">${unknownBlock(alErr)}</td></tr>`
-      : AL.length ? html`${AL.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button></td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td></tr>`)}`
-      : html`<tr><td colspan="6" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
+    const C = window.shell.commands, m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
+    const acked = AL.filter(a => a.acked).length, shown = AL.filter(a => showAcked || !a.acked);
+    put($('al-show'), DOC && !alErr ? html`<button class="chip" type="button" aria-pressed="${String(showAcked)}">Show acknowledged <span class="n">${String(acked)}</span></button>` : html``);
+    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
+      : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
+      : AL.length ? html`<tr><td colspan="7" class="why">Every alarm event in the last 30 days is acknowledged. Show acknowledged lists them.</td></tr>`
+      : html`<tr><td colspan="7" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
+  function draw() { lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // One timer at a time; each read that still sees a running job sets the next.
+  function poll() { if (!polling) polling = setTimeout(() => { polling = 0; reader.reread(); }, SRC_POLL); }
   const spec = {
     source: '/api/hoa', what: 'the HOA readings',
     adopt: doc => {
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
       OB = doc.items.rows;
-      AL = M.alarms.slice().reverse().map((a, i) => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime}:${i}`, st, why }; });
+      // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
+      AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
+      ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
+      // The end date is the site's calendar day, so the read's time is compared in the browser's zone, not UTC.
+      const today = new Date(doc.read).toLocaleDateString('en-CA');
+      SRC = (doc.sources?.rows || []).filter(r => r.state !== 'retired' && !(r.ends && r.ends < today));
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
@@ -290,15 +368,18 @@
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind })),
-        ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
-        ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
+        ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
+        ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
+        // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
+        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
+      if (SRC.some(r => r.job?.state === 'running')) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = [];
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = [];
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -396,7 +477,41 @@
       const b = e.target.closest('button[data-kind]'); if (!b) return;
       kind = b.dataset.kind; drawTasks();
     });
-    ['ob-body', 'al-body'].forEach(b => $(b).addEventListener('click', e => {
+    // ---------- Acknowledge (sd:4967) ----------
+    // The workflow database's view state, as Designs' Hide: POST /api/hoa/alarm. Undo is the same post with the old value.
+    // A 409 (the export no longer holds the event) names the event, and the shell reads again.
+    const ack = (o, acked) => S.post('/api/hoa/alarm', { key: o.key, acked }).then(v => reader.reread().then(() => v));
+    const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
+    C.register(
+      { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event on this dashboard; nothing reaches the Mission portal. Undo shows it again.',
+        key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. Show acknowledged lists it.`), undo: o => ack(o, false) },
+      { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
+        key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
+    );
+    // ---------- Refresh a source (sd:4965) ----------
+    // Each refreshable source has a manual cron job (hoa_screen.REFRESH_JOBS). Its row registers Management's shared Retry
+    // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off
+    // reason. The run's state and its last output line come back with the next read.
+    const facts = o => { const j = srcOf(o.source)?.job || {};
+      return { name: j.name, service: j.service, failed: j.state === 'failed', exit: j.last_exit,
+        capability: j.error ? { allowed: false, reason: j.error } : j.state === 'running' ? { allowed: false, reason: `${j.name} is running now` } : j.capabilities?.retry }; };
+    const refresh = o => { const j = srcOf(o.source).job;
+      return S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision })
+        .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+    C.register(
+      { ...window.commands.retry({ job: facts, run: refresh }),
+        does: o => o.source === 'vantaca' ? 'Starts the Vantaca pull once (Chrome, signed in, up to 2 h): it reads invoices and lands them. Nothing to undo.'
+          : 'Starts the Mission export once (Chrome, signed in to the portal, up to 30 min), then imports it. Nothing to undo.' },
+      window.commands.showLog({ job: facts }),
+    );
+    $('al-show').addEventListener('click', e => {
+      if (!e.target.closest('.chip')) return;
+      showAcked = !showAcked; drawLedgers();
+    });
+    document.addEventListener('shell:picked', e => $('al-body').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
+    ['ob-body', 'al-body', 'src-body'].forEach(b => $(b).addEventListener('click', e => {
       if (e.target.closest('.rowact')) return;
       const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));

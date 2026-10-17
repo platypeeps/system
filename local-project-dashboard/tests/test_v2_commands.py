@@ -46,8 +46,8 @@ class OneDeclaration(unittest.TestCase):
 
     def test_a_page_that_registers_a_shared_command_loads_the_module_before_its_script(self):
         users = sorted(name for name, body in SCRIPTS.items() if re.search(r"window\.commands\b", body) and name != SHARED)
-        self.assertEqual(users, ["activity.js", "contributions.js", "health.js", "management.js", "reports.js", "tasks.js",
-                                 "today.js"])
+        self.assertEqual(users, ["activity.js", "contributions.js", "health.js", "hoa.js", "management.js", "reports.js",
+                                 "tasks.js", "today.js"])
         for name in users:
             page = (V2 / name.replace(".js", ".html")).read_text(encoding="utf-8")
             scripts = re.findall(r'<script src="/ui/([^"]+)"', page)

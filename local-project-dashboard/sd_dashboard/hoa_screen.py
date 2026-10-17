@@ -14,9 +14,11 @@ second repo with that folder name is an error that names both, never a guess.
 
 **Each source is guarded on its own.** A file that is missing or does not
 parse is that part's `error`; the other parts still answer, and the page shows
-the failed part as unknown with the reason, never as an empty list. Nothing
-here writes, runs a command or reaches the network: the map draws the vectors
-in the files, and the page loads no tiles.
+the failed part as unknown with the reason, never as an empty list. The read
+reaches no network: the map draws the vectors in the files, and the page loads
+no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
+and reads the refresh jobs' launchd state; it starts nothing. The writes are
+Acknowledge (`acknowledge`) and the jobs route Refresh now posts.
 """
 
 from __future__ import annotations
@@ -24,13 +26,19 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import reads, repos
+from sd_db import operations, reads, repos, workflow, writes
 
-__all__ = ["SOON_DAYS", "STALE_DAYS", "TREND_DAYS", "document"]
+from .documents import _config_dir, pipe_lines
+
+__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+           "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
 FOLDER = "hoa"
@@ -57,6 +65,22 @@ FILES = {
     "pump": ("pump-daily.csv", "date", ("a2_starts", "a2_runtime_hours", "a2_gallons", "a2_flow_gpm_running", "a2_gallons_metered")),
     "alarms": ("alarm-events.csv", "datetime", ("kind", "event", "notified", "minutes")),
 }
+
+#: The trend series' problem levels (sd:4969), in this machine's config directory: the hoa checkout states its levels in
+#: prose only (the tank's fire floor), so no file there names one. The checkout ships `hoa-thresholds.conf.example`.
+THRESHOLDS = _config_dir() / "hoa-thresholds.conf"
+
+#: The trend series a level may name: `hoa.js` SERIES keys.
+SERIES = ("tank", "runtime", "aquifer")
+
+#: The hoa checkout's one read of each source's age (hoa sd:4965), run from the checkout; `--json` is what the lamps read.
+SOURCE_AGES = "tools/source-ages.py"
+
+#: Its ceiling: one Python start and a few small CSV reads.
+SOURCE_SECONDS = 10.0
+
+#: The fields of each source row that the page reads; every row the script prints is a lamp.
+SOURCE_KEYS = ("source", "label", "latest", "age_days", "allowed_days", "state", "ends", "refresh", "todo", "error")
 
 ASSET_KEYS = ("id", "type", "name", "status", "accuracy", "source", "notes", "updated")
 BASE_KEYS = ("kind", "ain", "label", "luc", "acres")
@@ -97,7 +121,7 @@ def _csv(path: Path, stamp: str, columns: tuple[str, ...]) -> list[dict]:
 
 def _mission(folder: Path | None, today: date) -> dict:
     out = {"dir": str(folder or ""), "error": "", "files": [], "latest": "", "age_days": None, "stale": False,
-           "analog": [], "pump": [], "alarms": [], "alarms_today": {"count": None, "reason": ""}}
+           "analog": [], "pump": [], "alarms": [], "alarms_today": {"count": None, "reason": "", "acked": 0}}
     if folder is None:
         out["error"] = "no export folder: no repo named hoa is registered"
         return out
@@ -128,14 +152,178 @@ def _mission(folder: Path | None, today: date) -> dict:
     alarms = next((f for f in out["files"] if f["name"] == FILES["alarms"][0]), None)
     if alarms and not alarms["error"]:
         if alarms["latest"][:10] == today.isoformat():
-            real = [row for row in out["alarms"] if row["datetime"][:10] == alarms["latest"][:10]
-                    and row["kind"] != "generator" and "Normal" not in row["event"]]
+            real = [row for row in out["alarms"] if row["datetime"][:10] == alarms["latest"][:10] and _real(row)]
             out["alarms_today"] = {"count": len(real), "reason": ""}
         else:
             out["alarms_today"]["reason"] = f"the export ends {alarms['latest'][:10] or 'with no rows'}"
     elif alarms:
         out["alarms_today"]["reason"] = alarms["error"]
     return out
+
+
+def thresholds(path: Path | None = None) -> dict:
+    """Each series' problem level, `{"dir": "below"|"above", "value"}`, from `<series>|below|<number>` lines; a line not
+    read is named in `problems`. No file is no level, which the page says; a file that does not read is `error`."""
+    path = THRESHOLDS if path is None else path
+    out = {"source": str(path), "levels": {}, "problems": [], "error": ""}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return out
+    except (OSError, UnicodeDecodeError) as error:
+        out["error"] = f"{path.name} did not read: {error}"
+        return out
+    for number, _, fields in pipe_lines(text):
+        if len(fields) != 3 or fields[0] not in SERIES or fields[1] not in ("below", "above"):
+            out["problems"].append(f"line {number}: expected <series>|below|<number> or <series>|above|<number>, "
+                                   f"series one of {', '.join(SERIES)}")
+            continue
+        try:
+            value = float(fields[2])
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            out["problems"].append(f"line {number}: {fields[2]!r} is not a number")
+        elif fields[0] in out["levels"]:
+            out["problems"].append(f"line {number}: {fields[0]} has a level already")
+        else:
+            out["levels"][fields[0]] = {"dir": fields[1], "value": value}
+    return out
+
+
+def sources(place: Path | None) -> dict:
+    """The Mission export's and Vantaca's age, from `SOURCE_AGES --json` (sd:4965), within `SOURCE_SECONDS`.
+
+    The script exits 1 when a source did not read and still prints every row, so its rows are kept and the failed one is
+    `unknown` with its `error`; any other failure, a timeout or a script the checkout lacks, is this part's `error`.
+    """
+    out = {"error": "", "rows": [], "command": f"python3 {SOURCE_AGES} --json", "repo": str(place or "")}
+    if place is None:
+        out["error"] = "no checkout: no repo named hoa is registered"
+        return out
+    script = place / SOURCE_AGES
+    if not script.is_file():
+        out["error"] = f"{SOURCE_AGES} is not in the checkout"
+        return out
+    try:
+        done = subprocess.run([sys.executable, str(script), "--json"], cwd=place, capture_output=True, text=True,
+                              timeout=SOURCE_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        out["error"] = f"{SOURCE_AGES} ran past its {SOURCE_SECONDS:g} seconds"
+        return out
+    except OSError as error:
+        out["error"] = f"{SOURCE_AGES} did not start: {error}"
+        return out
+    said = (done.stderr.strip().splitlines() or [""])[0]
+    try:
+        rows = json.loads(done.stdout)["sources"] if done.returncode in (0, 1) else None
+        if rows is not None and not all(isinstance(row, dict) for row in rows):
+            raise TypeError("a source is not an object")
+    except (ValueError, KeyError, TypeError) as error:
+        out["error"] = f"{SOURCE_AGES} printed no source list: {error}"
+        return out
+    if rows is None:
+        out["error"] = f"{SOURCE_AGES} exited {done.returncode}" + (f": {said}" if said else "")
+        return out
+    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} for row in rows]
+    return out
+
+
+#: The manual cron job (`JOB_SCHEDULE="manual"`) that refreshes each source; Refresh now starts it through the route
+#: Management's Retry posts, `/api/jobs/<name>/retry` (sd:4965). The job files are private config, installed with
+#: `cron-jobs.sh install <name>`.
+REFRESH_JOBS = {"mission": "hoa-mission-export", "vantaca": "hoa-vantaca-pull"}
+
+#: The fields of `operations.job_state` the page reads.
+JOB_KEYS = ("name", "service", "state", "last_exit", "revision", "capabilities", "last_request")
+
+
+def _said(log: dict, name: str) -> str:
+    """The last line the job's run printed, not the wrapper's own `[<job>] ...` lines: a refused run's stderr reason."""
+    lines = [line.strip() for line in log.get("text", "").splitlines()]
+    return next((line for line in reversed(lines) if line and not line.startswith(f"[{name}] ")), "")
+
+
+def _refresh_jobs(connection, rows: list[dict], backend) -> None:
+    """Give each row with a refresh job its launchd state, from the jobs inventory Management reads. A job that is not
+    installed is the row's `job.error`, with the line that installs it; the read never starts anything."""
+    from .management_screen import job_log
+
+    root = getattr(backend, "cron_root", None)
+    for row in rows:
+        name = REFRESH_JOBS.get(row["source"])
+        if not name:
+            continue
+        try:
+            job = operations.job_state(connection, name, backend=backend)
+        except workflow.WorkflowError as error:
+            row["job"] = {"name": name, "error": f"{name} is not an installed job ({error}); "
+                                                 f"local-cron-jobs/cron-jobs.sh install {name} installs it"}
+            continue
+        row["job"] = {key: job.get(key) for key in JOB_KEYS} | {"said": _said(job_log(root, name), name)}
+
+
+# ---------------------------------------------------------------------------
+# Acknowledge (sd:4967): the workflow database's `view` state, the store Designs' Hide and Documents' Pin write
+# (sd:3428, sd:3447). An acknowledged alarm event is a hidden view keyed `hoa-alarm/<datetime> <event>`: the row's own
+# fields, so the key holds across reads and across a newer export. Nothing reaches the Mission portal.
+
+#: The key prefix of an alarm event's view state.
+ALARM_ROOT = "hoa-alarm"
+
+
+def alarm_key(row: dict) -> str:
+    return f"{ALARM_ROOT}/{row['datetime']} {row['event']}"
+
+
+def _acks(connection, mission: dict) -> None:
+    """Mark each alarm row `key` and `acked`, count today's acknowledged alarms apart, and say whether the store was read.
+    A store that does not read acknowledges nothing: every row shows, and `acks.reason` says why Acknowledge is off."""
+    from .documents_screen import views
+
+    kept, unread = views(connection)
+    for row in mission["alarms"]:
+        row["key"] = alarm_key(row)
+        row["acked"] = kept.get(row["key"], {}).get("hidden", False)
+    mission["acks"] = {"available": not unread, "reason": unread}
+    today = mission["alarms_today"]
+    if today["count"] is not None:
+        day = max(row["datetime"][:10] for row in mission["alarms"])
+        real = [row for row in mission["alarms"] if row["datetime"][:10] == day and _real(row)]
+        today["acked"] = sum(row["acked"] for row in real)
+        today["count"] = len(real) - today["acked"]
+
+
+def _real(row: dict) -> bool:
+    """An alarm, not a generator test or a return to normal."""
+    return row["kind"] != "generator" and "Normal" not in row["event"]
+
+
+def acknowledge(payload: dict):
+    """`POST /api/hoa/alarm`: `{"key", "acked"}`; the write as `action_route` returns one. The write reads the export
+    again, so a key the export no longer holds is refused as stale and nothing is written."""
+    key, acked = payload.get("key"), payload.get("acked")
+    if set(payload) != {"key", "acked"} or not isinstance(key, str) or not isinstance(acked, bool) \
+            or not key.startswith(f"{ALARM_ROOT}/"):
+        raise ValueError("Send the alarm event's key and acked, true or false.")
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+
+    def write(connection):
+        _, place, problems = checkout(connection)
+        if problems or place is None:
+            raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
+        name, stamp, columns = FILES["alarms"]
+        try:
+            rows = _csv(_paths(place)["mission"] / name, stamp, columns)
+        except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
+            raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
+        if key not in {alarm_key(row) for row in rows}:
+            raise workflow.StaleItem(f"{name} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. Nothing was acknowledged. "
+                                     "Read HOA again.")
+        return {"key": key, **writes.set_view(connection, key, hidden=acked)}
+
+    return write
 
 
 def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
@@ -221,8 +409,9 @@ def _items(connection, repo: str | None, now: str, today: date) -> dict:
     return {"error": "", "rows": rows}
 
 
-def document(connection, *, now: str) -> dict:
-    """The HOA page's document: the map, the Mission export and the checkout's open items."""
+def document(connection, *, now: str, jobs=None) -> dict:
+    """The HOA page's document: the map, the Mission export, the checkout's open items and its sources' ages.
+    `jobs` is the operations backend the refresh jobs are read from, `operations.LaunchdBackend` by default."""
     recorded, place, problems = checkout(connection)
     state = "error" if problems else "read" if recorded else "missing"
     today = datetime.fromisoformat(now.replace("Z", "+00:00")).date()
@@ -230,9 +419,13 @@ def document(connection, *, now: str) -> dict:
     mission, items = _mission(paths["mission"], today), _items(connection, recorded, now, today)
     if problems:
         mission["error"], items["error"] = problems[0], problems[0]
+    _acks(connection, mission)
     base = _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []}
     lots = (_lots(paths["lots"], paths["base"], base["features"]) if not base["error"]
             else {"error": f"no lot data: {base['error']}", "source": "", "fetched_at": ""})
+    ages = sources(place) if not problems else {"error": problems[0], "rows": [], "command": "", "repo": ""}
+    if ages["rows"]:
+        _refresh_jobs(connection, ages["rows"], jobs or operations.LaunchdBackend())
     return {
         "read": now,
         "config": {"state": state, "source": "the repo table", "problems": problems},
@@ -241,6 +434,8 @@ def document(connection, *, now: str) -> dict:
         "base": base,
         "lots": lots,
         "items": items,
+        "thresholds": thresholds(),
+        "sources": ages,
         "attention": _attention(mission, items),
     }
 
