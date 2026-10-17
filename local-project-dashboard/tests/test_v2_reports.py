@@ -831,6 +831,17 @@ R.other = !!c.askFirst(C.get('job:weekly-scan')); shellRun(c, o); await flush();
         self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
         self.assertEqual(out["toasts"][-1], ["Retry started · nightly-sync", False])
 
+    def test_a_job_is_failed_by_its_state_not_by_whether_launchd_allows_a_run(self):
+        """sd:4965: the run-now pack allows a retry of an idle job too, so an allowed retry no longer means a failed run."""
+        doc = json.loads(json.dumps(self.doc))
+        jobs = {j["name"]: j for j in doc["jobs"]}
+        jobs["weekly-scan"].update(state="idle", capabilities={**jobs["weekly-scan"].get("capabilities", {}),
+                                                                "retry": {"allowed": True, "label": "Run now"}})
+        jobs["nightly-sync"].update(state="interrupted")
+        out = self.run_page("""const c = cmd('jobs.retry');
+R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.primary(C.get(id))]);""", doc=doc)
+        self.assertEqual(out["R"]["p"], [[False, False], [True, True]], "an idle job read as failed, or an interrupted one did not")
+
     def test_retry_posts_the_job_route_with_its_revision(self):
         job = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")
         out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush(); R.off = cmd('jobs.retry').when(C.get('job:weekly-scan'));",

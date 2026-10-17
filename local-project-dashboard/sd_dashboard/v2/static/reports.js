@@ -384,8 +384,9 @@ function objects() {
   return [...ROWS.map(r => Object.assign(r, { type: 'report', label: r.what })),
     // Each scheduled job is its own object; Retry acts on the job, not on the report (commands.md, one declaration per command).
     // build: the job is operations.inventory's, as Management puts it, with the revision and capability Retry posts and reads.
+    // A failed run is the job's state: a pack that runs any job now allows a retry of an idle one too (sd:4965).
     ...Object.values(JOBS).map(j => ({ id: 'job:' + j.name, type: 'job', label: j.name, job: j.name, service: j.service,
-      failed: !!j.capabilities?.retry?.allowed, exit: j.last_exit, revision: j.revision, caps: j.capabilities || {} }))];
+      failed: j.state === 'failed' || j.state === 'interrupted', exit: j.last_exit, revision: j.revision, caps: j.capabilities || {} }))];
 }
 // A write that landed rereads (the reader shares one read among a group of writes); a refused one loads, so the page never
 // says a change landed that did not.
