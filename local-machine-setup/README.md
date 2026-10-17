@@ -78,6 +78,9 @@ nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
 After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
 a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
 with the screen locked (sd:4787).
+The sweep also moves each unpinned `.release` entry to its latest tag, and the
+report lists those under `upgraded (release)`; a tag it cannot read is
+`outdated (release): unknown`, not current.
 
 ## Configuration
 
@@ -133,6 +136,10 @@ A profile is any `<name>` with a `<name>.<kind>` file in `profiles/`;
 `profiles` lists them. `MACHINE_SETUP_PROFILES` names them explicitly instead.
 They layer — `common.<kind>` applies to every machine, `<profile>.<kind>` adds
 to it. A profile with only one file is therefore almost exactly `common`.
+A `!name` line in `<profile>.<kind>` drops the entry `common.<kind>` lists as
+`name`, or as `<tap>/name`; an entry's name is its first word, and a `.release`
+entry's is its first bin. `capture` keeps `!` lines. A formula still installed
+under one is `extra` in `status`.
 
 | Kind | Contents |
 | --- | --- |
@@ -146,7 +153,8 @@ to it. A profile with only one file is therefore almost exactly `common`.
 | `.cron` | `local-cron-jobs` job names to install; this host's own jobs need no entry |
 | `.spotlight` | Spotlight privacy exclusions: absolute paths, a leading `~` is the account's home |
 | `.satellite` | the sd hub this machine reaches, as `host` or `host:port` (default 8769); one line, on a satellite only. One machine runs each profile: `personal` is the hub, and a profile with this file (`work.satellite`, `terra.satellite`) is a satellite; the hub's own is refused |
-| `.node` | node majors the `tooling` stage installs with fnm and `doctor` checks; with no `.node` file at all, 18, 20 and 24 |
+| `.node` | node majors the `tooling` stage installs with fnm and `doctor` checks; with no `.node` file at all, 18, 20 and 24. One line may add `link` (`26 link`): `~/.local/bin/node`, `npm` and `npx` then link to fnm's newest installed node of that major, where launchd and cron jobs find it |
+| `.release` | tools from an upstream GitHub release archive, as `<bins> <owner/repo> <asset> [<tag>]`. `<bins>` is a comma list of the executables to take (`uv,uvx`), the first naming the entry; `<asset>` is a `.tar.gz`, `.tgz` or `.zip` name, where `{version}` is the tag without a leading `v` and `{tag}` the tag; a `<tag>` pins the entry. The `release` stage installs the bins into `~/.local/bin` and records the tag; `upgrade` moves each unpinned entry to its latest tag. A published `<asset>.sha256` must match |
 | `.npm` | global npm CLIs the `tooling` stage installs with `npm install -g`, as `pkg` or `pkg@version`; the npm is Homebrew's, of the first `node` or `node@<major>` formula in the brew manifest, run with that keg's `bin` first on PATH so `npm`'s `env node` finds the same keg's node, so the CLIs land in `$(brew --prefix)/bin` whichever fnm node a shell uses. An npm 11 skips a package's install scripts unless `--allow-scripts` names them, and the stage passes none (`@google/gemini-cli` runs without its `@github/keytar` and `node-pty` scripts). `capture` does not write it |
 | `.mailto` | bundle id of the app that answers mailto: links, one line; the profile's wins over `common.mailto`; with neither, `com.google.Chrome` |
 
@@ -163,6 +171,7 @@ Run in order. Pass one as the second argument to run it alone.
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
 | `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
+| `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag is recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then records the tag; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
 | `dotfiles` | install `.zshrc`, `.bash_aliases`, `.gitconfig`, `.gitignore_global`, `.ssh/config`, `.config/gh/config.yml`, `.prism/.env`, `.gito/.env`, `.aws/config`, `.vale.ini` from `dotfiles/<profile>/`, falling back to `dotfiles/common/` | — |

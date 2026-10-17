@@ -1,0 +1,5 @@
+# Tools from upstream GitHub release archives, for a machine where Homebrew
+# would build them from source. One per line: <bins> <owner/repo> <asset> [<tag>].
+# {version} is the tag without a leading v; a tag at the end pins the entry.
+# Pair an entry with a `!name` line in laptop.brew when common.brew lists it.
+uv,uvx astral-sh/uv uv-x86_64-apple-darwin.tar.gz

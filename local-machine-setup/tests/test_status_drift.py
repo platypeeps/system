@@ -164,6 +164,16 @@ class StatusDrift(unittest.TestCase):
         self.assertIn(f"taps\n  missing : {TAP}\n", missing)
         self.assertEqual(self.drift(missing) - self.drift(present), 1)
 
+    def test_a_missing_release_tool_is_drift_in_its_own_section(self):
+        # sd:4853: nothing is downloaded; status only reads ~/.local/bin and
+        # the recorded tag.
+        before = self.drift(self.status().stdout)
+        (self.profiles / "personal.release").write_text(
+            "example example-owner/example example-{version}.tar.gz\n")
+        out = self.status().stdout
+        self.assertIn("== release\n  MISSING release example (no example in ", out)
+        self.assertEqual(self.drift(out) - before, 1)
+
     def test_a_missing_spotlight_sudoers_drop_in_is_drift(self):
         # Without the drop-in the Spotlight read only DEFERs, which is not a
         # drift word, so the missing drop-in was the one sign of the gap.
