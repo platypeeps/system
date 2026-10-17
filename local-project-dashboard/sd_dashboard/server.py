@@ -129,6 +129,29 @@ def route(connection: sqlite3.Connection, path: str, parameters, *, now: str, se
     raise NotFound(path)
 
 
+#: The one ref the dashboard files under (sd:4840): Today's issue intake names a GitHub issue, `github:<owner>/<repo>#N`.
+GITHUB_REF = re.compile(r"github:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[1-9][0-9]{0,9}")
+
+
+def capture_ref(connection, *, ref, who, **values):
+    """A task filed under `ref`, as `sd task add --ref` files one (sd:4840, Today's issue intake).
+
+    The pack's verb (`_capture` in its `bin/sd_work.py`) refuses a ref a row already carries, then runs
+    `workflow.capture_task` and `writes.set_item_fields(source="task-ref", external_id=ref)` in one transaction; the
+    same calls here. The intake read already leaves out an issue an item carries in any letter case, so this refusal
+    is for a second click or an agent that filed the same ref first.
+    """
+    from sd_db import writes
+
+    with workflow.transaction(connection):
+        filed = writes.item_by_external(connection, "task-ref", ref)
+        if filed is not None:
+            raise workflow.WorkflowError(f"sd:{filed['id']} ({filed['status']}) already carries --ref {ref}")
+        state = workflow.capture_task(connection, who=who, **values)
+        writes.set_item_fields(connection, state["item"]["id"], source="task-ref", external_id=ref)
+        return workflow.item_state(connection, state["item"]["id"])
+
+
 def capture_followup(connection, *, followup_of=None, who, **values):
     """A followup item, filed as `sd task add --kind followup` files one (sd:719 step 6a).
 
@@ -418,15 +441,20 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         mutation = operations.retry_job if action == "retry" else operations.cancel_job
         return lambda connection: mutation(connection, identifier, backend=operations_backend, **options)
     if path == "/api/items":
-        if set(values) - {"title", "body", "priority", "due", "repo", "kind", "followup_of"}:
+        if set(values) - {"title", "body", "priority", "due", "repo", "kind", "followup_of", "ref"}:
             raise ValueError("Unknown task field.")
         if "title" not in values:
             raise ValueError("A title is required.")
         kind = values.pop("kind", "task")
         parent = values.pop("followup_of", None)
+        ref = values.pop("ref", None)
+        if ref is not None and (kind != "task" or not isinstance(ref, str) or not GITHUB_REF.fullmatch(ref)):
+            raise ValueError("A ref files a task, and names a GitHub issue as github:<owner>/<repo>#<number>.")
         if kind == "task":
             if parent is not None:
                 raise ValueError("Only a followup item names the item it follows up.")
+            if ref is not None:
+                return lambda connection: capture_ref(connection, ref=ref, who="dashboard", **values)
             return lambda connection: workflow.capture_task(connection, who="dashboard", **values)
         if kind != "followup":
             raise ValueError("Capture files a task or a followup item.")

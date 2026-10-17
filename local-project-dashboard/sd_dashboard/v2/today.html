@@ -6,6 +6,7 @@
   Your work (sd:3271): the items `sd today` lists, from the same document (work); the Snooze control is Now's, keyed today:item:<id>.
   Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
   Your issues (sd:4628): each repo's issues assigned to or filed by the operator, from the same document (issues); issues.js draws them.
+  Issue intake (sd:4840): each github_issues repo's open third-party issues no item carries (intake); issues.js draws them, File as item posts /api/items with the ref.
   Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
@@ -114,6 +115,18 @@
       <table class="ledger issues" aria-labelledby="issues-h">
         <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
         <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="issues-sec" aria-labelledby="intake-h">
+      <div class="sec-head">
+        <h2 id="intake-h">Issue intake <button class="help" type="button" aria-label="Help: Issue intake" data-help="&lt;b&gt;Issues that need an item.&lt;/b&gt; Open GitHub issues someone else opened, in each repo with GitHub issues on (Management), that no item carries yet. File as item adds a task in that repo under &lt;code&gt;--ref github:owner/name#N&lt;/code&gt;, as &lt;code&gt;sd task add --ref&lt;/code&gt; does, and the row leaves. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="intake-tally"></p>
+      </div>
+      <table class="ledger issues" aria-labelledby="intake-h">
+        <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Opened by</th><th><span class="sr">File</span></th></tr></thead>
+        <tbody id="intake"><tr class="empty"><td colspan="5">Reading issue intake…</td></tr></tbody>
       </table>
     </section>
 
