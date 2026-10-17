@@ -82,6 +82,7 @@ local-project-dashboard/report-families.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
 local-scan-for-secrets/fixture-fingerprints
+local-scan-for-secrets/.gh-secrets-state
 local-ai-apps/profiles/*.inv
 !local-ai-apps/profiles/example.inv
 # LaunchAgent plists rendered from *.plist.template at install

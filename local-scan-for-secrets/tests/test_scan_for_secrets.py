@@ -682,6 +682,14 @@ class GithubSecretState(unittest.TestCase):
         again = self.refresh()
         self.assertIn(f"{self.NAME}: current on {self.SLUG}", again.stdout, again.stdout + again.stderr)
 
+    def test_the_old_in_checkout_state_file_is_ignored(self) -> None:
+        """sd:4926: ca030e43 moved the state out of the checkout without moving
+        old copies, and one sat untracked in a public checkout. Ignored, it can
+        never be committed."""
+        ignored = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                                  "local-scan-for-secrets/.gh-secrets-state"])
+        self.assertEqual(ignored.returncode, 0, "local-scan-for-secrets/.gh-secrets-state is not gitignored")
+
 
 class MaskRewrite(unittest.TestCase):
     """`mask --apply` masks in place, same length, same inode (sd:3042).
