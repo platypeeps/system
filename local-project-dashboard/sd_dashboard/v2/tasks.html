@@ -5,6 +5,7 @@
   statuses and age bucket), read when the page opens and after a write; /api/tasks/<id> (tasks_screen.details: the sd task show <id> JSON split into
   status history and notes, the item's assignments, and its external context), read when a task is selected.
   Your issues (sd:4628): the same document's issues, each repo's issues assigned to or filed by the operator; issues.js draws them.
+  Places (places.js): All | HOA | Home narrows the rows to the area each row carries (places.area_of), the HOA and Home pages' Issues rule.
   Writes: the v1 action routes (status, edit, note resolve, capture) and task cancel (Close, sd:3012). Nothing here is sample data.
 -->
 <html lang="en">
@@ -19,6 +20,7 @@
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/tasks.css">
 <link rel="stylesheet" href="/ui/issues.css">
+<link rel="stylesheet" href="/ui/places.css">
 </head>
 <body data-page="Tasks" data-scope="tasks">
 <script src="/ui/icons.js"></script>
@@ -49,6 +51,7 @@
   </div>
 
   <div id="state" hidden></div>
+  <nav class="place-switch" id="place-views" data-label="Place" aria-label="Place"></nav>
   <div id="views"></div>
   <div class="filters" role="group" aria-label="Filters">
     <div class="ffind">
@@ -81,6 +84,7 @@
 <script src="/ui/commands.js"></script>
 <script src="/ui/issues.js"></script>
 <script src="/ui/tasks.js"></script>
+<script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>

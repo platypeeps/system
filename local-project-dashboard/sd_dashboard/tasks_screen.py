@@ -98,12 +98,15 @@ def document(connection, *, now: str) -> dict:
 
 
 def _document(connection, *, now: str) -> dict:
+    from .hoa_screen import checkout
+    from .places import area_of
     from .screens import _repo_labels
 
     # The parked rows follow the listed ones (sd:3012): the page shows them only under its Parked chip, for Unpark.
     rows = reads.backlog_items(connection, now=now) + reads.backlog_items(connection, now=now, parked=True)
     label = _repo_labels(row["repo"] for row in rows)
     live = _assignment_states(connection, now=now)
+    hoa = checkout(connection)[0]
     out = []
     for row in rows:
         state = workflow.item_state(connection, row["id"])
@@ -124,6 +127,8 @@ def _document(connection, *, now: str) -> dict:
             "allowed": workflow.allowed_statuses(connection, row["id"], state=state),
             "edit": _edit_capability(row),
             "parked": row["parked_at"],
+            # The place Tasks' HOA and Home views filter on: the HOA and Home pages' Issues rule (`places.area_of`).
+            "area": area_of(row["repo"], row["kind"], hoa),
             **_base_fields(state["item"]),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
