@@ -18,6 +18,9 @@ Progress areas already make:
 - `controls`: the provider registry as `provider_controls.snapshot` reads it, with its `revision`, and per bill the
   one cap write the route takes (`_writes`), the read the classic Usage area's forms make (sd:3387).
 
+`usage` and `numbers` take seconds (`SLOW`): the served dashboard keeps them in a snapshot, and each then carries
+`observed`, when it was read, and `stale`, why its newest read failed (sd:4955). A stale month lights no lamp.
+
 Each part is guarded on its own: one that raises is that part's `error`, and
 the others still answer. `unread` names the design's panels no reader covers,
 with the reason, so the page shows them as unknown and never as empty.
@@ -37,7 +40,7 @@ from sd_db.errors import SdDbError
 
 from .operations_screen import BILL_NAME
 
-__all__ = ["SKILL_WEEKS", "TREND_DAYS", "UNREAD", "WINDOW", "document"]
+__all__ = ["SKILL_WEEKS", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
 
 #: The vendor window the trend draws: seven days, in minutes.
 WINDOW = 10080
@@ -57,6 +60,9 @@ UNREAD = (
 
 FAILURES = (SdDbError, sqlite3.Error, OSError, ValueError)
 
+#: The parts that take seconds, which the served dashboard keeps in a `snapshot.Kept` (sd:4955).
+SLOW = ("usage", "numbers")
+
 
 def _stamp(now: str) -> datetime:
     return datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -74,7 +80,7 @@ def _attention(spend: dict, trend: dict) -> dict:
     spend rows. An unread usage is unknown: no lamp could be read."""
     from .v2.pages import attention
 
-    if spend["error"]:
+    if spend["error"] or spend.get("stale"):
         return {"state": "unknown", "n": 0, "what": "readings not read"}
 
     def level(used):
@@ -159,16 +165,30 @@ def _controls(connection):
             "providers": [{key: entry[key] for key in ("name", "vendor", "enabled", "reason", "roles")} for entry in current["providers"]]}
 
 
-def document(connection, *, now: str) -> dict:
-    """The Metrics page's document: every reading, each guarded on its own, and the panels no reader covers."""
+def slow(connection, name: str, *, now: str) -> dict:
+    """One part of `SLOW`, read now; it raises what its read raised."""
+    if name == "usage":
+        return {"error": "", **usage.read(connection, month=None, now=now).document()}
+    if name == "numbers":
+        return _numbers(connection, now)
+    raise ValueError(f"{name!r} is not a slow Metrics part")
+
+
+def document(connection, *, now: str, kept=None) -> dict:
+    """The Metrics page's document: every reading, each guarded on its own, and the panels no reader covers.
+
+    `kept(name)` answers a `SLOW` part from the server's snapshot, with `observed` and `stale`; without it they are
+    read now.
+    """
     today = _stamp(now).date()
-    spend, trend = _guard(lambda: {"error": "", **usage.read(connection, month=None, now=now).document()}), _guard(lambda: _trend(connection, today))
+    read_slow = kept or (lambda name: slow(connection, name, now=now))
+    spend, trend = _guard(lambda: read_slow("usage")), _guard(lambda: _trend(connection, today))
     return {
         "read": now,
         "attention": _attention(spend, trend),
         "usage": spend,
         "trend": trend,
-        "numbers": _guard(lambda: _numbers(connection, now)),
+        "numbers": _guard(lambda: read_slow("numbers")),
         "scorecard": _guard(lambda: _scorecard(connection, now)),
         "skills": _guard(lambda: _skills(connection, today)),
         "age": _guard(lambda: _age(connection, now)),

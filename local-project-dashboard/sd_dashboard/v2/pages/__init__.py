@@ -34,6 +34,8 @@ class Read:
     jobs: Any = None
     services: Any = None
     ports: Any = None
+    #: The server's kept Metrics parts (sd:4955), `metrics_screen.SLOW` name -> document; None reads them now.
+    metrics: Any = None
     #: The checkout commit the server started on (sd:3528), for Health's dashboard row.
     served_commit: Any = None
 

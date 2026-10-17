@@ -85,6 +85,21 @@ class NotFound(Exception):
     """A path with no screen behind it."""
 
 
+def _metrics_kept(database):
+    """Metrics' slow parts kept in a snapshot (sd:4955); each read opens its own read connection, off the request's."""
+    from . import metrics_screen
+    from .snapshot import Kept
+
+    def read(name):
+        connection = sd_db.connect(database, write=False)
+        try:
+            return metrics_screen.slow(connection, name, now=_now())
+        finally:
+            connection.close()
+
+    return Kept({name: (lambda name=name: read(name)) for name in metrics_screen.SLOW})
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -548,6 +563,8 @@ class Dashboard(BaseHTTPRequestHandler):
     ports_backend = None
     #: `now_screen.document`'s fleet seam, `area -> document`; None runs the child.
     fleet_backend = None
+    #: `metrics_screen.document`'s kept slow parts, `name -> document` (sd:4955); None reads them per request.
+    metrics_backend = None
     #: `now_screen.document`'s Jev command for the failed-job shadow; None asks nothing.
     jev_command = None
     frontdoor: auth.FrontDoor | None = None
@@ -921,7 +938,7 @@ class Dashboard(BaseHTTPRequestHandler):
 
         return v2.registry.Read(connection=connection, now=self.clock(), path=path, parameters=parameters,
                                 fleet=self.fleet_backend, jobs=self.operations_backend, services=self.services_backend,
-                                ports=self.ports_backend, served_commit=self.served_commit)
+                                ports=self.ports_backend, metrics=self.metrics_backend, served_commit=self.served_commit)
 
     def _sections(self, context):
         """`/ui/sections.js`: the rail's map on every request, and each page's badge for a signed-in page (sd:3446).
@@ -998,10 +1015,11 @@ class Dashboard(BaseHTTPRequestHandler):
                     reporting.observed_action(connection, path.path)
             finally:
                 connection.close()
-                # Any write may have changed what the fleet snapshot shows: the next read waits for a new one (sd:TBD).
-                invalidate = getattr(self.fleet_backend, "invalidate", None)
-                if invalidate is not None:
-                    invalidate()
+                # Any write may have changed what a snapshot shows: the next read waits for a new one (sd:4955).
+                for kept in (self.fleet_backend, self.metrics_backend):
+                    invalidate = getattr(kept, "invalidate", None)
+                    if invalidate is not None:
+                        invalidate()
         except (workflow.MissingItem, workflow.MissingNote) as problem:
             return self._json(404, {"error": str(problem)})
         except workflow.StaleItem as problem:
@@ -1229,7 +1247,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
           services_backend=None, ports_backend=None,
-          peer_lookup=None, fleet_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
+          peer_lookup=None, fleet_backend=None, metrics_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
     """Build the loopback server and optional, separately authenticated IP socket.
 
     `bind=False` builds both without binding: the restart probe's check, while the old server holds the ports.
@@ -1251,6 +1269,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "services_backend": services_backend,
         "ports_backend": ports_backend,
         "fleet_backend": staticmethod(fleet_backend) if fleet_backend else None,
+        "metrics_backend": staticmethod(metrics_backend) if metrics_backend else None,
         "jev_command": list(jev) if jev else None,
         "frontdoor": frontdoor,
         "frontdoor_check": staticmethod(frontdoor_check) if frontdoor_check else None,
@@ -1305,6 +1324,7 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
     from .snapshot import Fleet
 
     options["fleet_backend"] = Fleet()
+    options["metrics_backend"] = _metrics_kept(arguments.database)
     server = build(arguments.database, port=arguments.port, bind=serve, **options)
     if not serve:
         server.server_close()

@@ -81,8 +81,8 @@ kickstart line to copy when the served commit is not the checkout's. See [README
 `operations_screen.AREAS`, and their scope. Today's Now section reads the fleet
 (both areas), the shadow table and the launchd jobs on each `/api/now`
 request a page makes, not on the page render; a fleet child or a jobs read that
-fails is a row on Now. The served process keeps each fleet area in memory
-(`snapshot.Fleet`): a request gets the last reading with its `observed` time, a
+fails is a row on Now. The served process keeps each fleet area (`snapshot.Fleet`)
+and Metrics' month and week numbers (`server._metrics_kept`) in memory: a request gets the last reading with its `observed` time, a
 reading past 45 seconds starts one background refresh, any write the server answers
 makes the next read wait for a fresh one, and a failed refresh keeps the last
 reading marked `stale` with its reason. A restart reads again.

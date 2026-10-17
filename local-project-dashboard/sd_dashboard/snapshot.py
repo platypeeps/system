@@ -1,7 +1,9 @@
-"""Slow reads the server keeps and refreshes in the background (sd:TBD): the fleet's Repos and Sessions.
+"""Slow reads the server keeps and refreshes in the background (sd:4955): the fleet's Repos and Sessions, and Metrics'
+month and week numbers.
 
 `fleet.collect` runs a child that reads git in every checkout, 1 to 1.5 s on the hub, and Today, Management and
 Health each waited on it per request. `Fleet` is that seam, `area -> document`, answered from one `Snapshot` per area.
+Metrics' `usage.read` (1.7 s of SQL) and `reads.weekly_numbers` (1.4 s of git) are another `Kept`, built in `server`.
 
 A `Snapshot` answers its last document at once, with `observed`, the UTC time the read that made it began, so a page
 says what it saw and when (principle 11). It waits only when it has no document, when the document is older than
@@ -21,7 +23,7 @@ import time
 
 from . import fleet as fleet_module
 
-__all__ = ["FRESH_SECONDS", "Fleet", "KEPT_SECONDS", "Snapshot"]
+__all__ = ["FRESH_SECONDS", "Fleet", "KEPT_SECONDS", "Kept", "Snapshot"]
 
 #: A document this old starts a refresh in the background.
 FRESH_SECONDS = 45.0
@@ -108,25 +110,32 @@ class Snapshot:
         self._condition.notify_all()
 
 
-class Fleet:
-    """`fleet.collect`'s seam, `area -> document`, from one `Snapshot` per area of `fleet.AREAS`.
+class Kept:
+    """`name -> document`, from one `Snapshot` per named compute.
 
     The document gains `observed`, and `stale` when the newest read failed. A copy each time: a screen may not change
     the kept one.
     """
 
-    def __init__(self, collect=fleet_module.collect, **seams):
-        self._areas = {area: Snapshot(lambda area=area: collect(area), **seams) for area in fleet_module.AREAS}
+    def __init__(self, computes, **seams):
+        self._kept = {name: Snapshot(compute, **seams) for name, compute in computes.items()}
 
-    def __call__(self, area):
-        if area not in self._areas:
-            raise ValueError("unknown fleet area")
-        document, observed, stale = self._areas[area].read()
+    def __call__(self, name):
+        if name not in self._kept:
+            raise ValueError(f"no kept read is named {name!r}")
+        document, observed, stale = self._kept[name].read()
         return {**document, "observed": observed, **({"stale": stale} if stale else {})}
 
     def invalidate(self):
-        for kept in self._areas.values():
+        for kept in self._kept.values():
             kept.invalidate()
 
     def idle(self, seconds):
-        return all(kept.idle(seconds) for kept in self._areas.values())
+        return all(kept.idle(seconds) for kept in self._kept.values())
+
+
+class Fleet(Kept):
+    """`fleet.collect`'s seam, `area -> document`, one kept read per area of `fleet.AREAS`."""
+
+    def __init__(self, collect=fleet_module.collect, **seams):
+        super().__init__({area: (lambda area=area: collect(area)) for area in fleet_module.AREAS}, **seams)

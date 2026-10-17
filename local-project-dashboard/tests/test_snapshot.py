@@ -13,7 +13,7 @@ import json
 import threading
 import unittest
 
-from sd_dashboard import fleet, now_screen, server, snapshot
+from sd_dashboard import fleet, metrics_screen, now_screen, server, snapshot
 
 from support import NOW, ScreenCase
 from test_workflow_actions import BrowserSession
@@ -187,11 +187,11 @@ class TheFleet(unittest.TestCase):
         self.assertTrue(kept.idle(10))
         self.assertEqual(kept("repos"), {"area": "repos", "observed": "2026-08-29T10:40:00Z",
                                          "stale": "fleet collection was stopped at its budget"})
-        with self.assertRaisesRegex(ValueError, "unknown fleet area"):
+        with self.assertRaisesRegex(ValueError, "no kept read is named 'health'"):
             kept("health")
 
     def test_the_areas_are_the_fleets(self):
-        self.assertEqual(tuple(snapshot.Fleet(lambda area: {})._areas), fleet.AREAS)
+        self.assertEqual(tuple(snapshot.Fleet(lambda area: {})._kept), fleet.AREAS)
 
 
 class TheToday(ScreenCase):
@@ -209,26 +209,39 @@ class TheToday(ScreenCase):
 
 
 class Spy:
-    """A fleet seam that answers nothing and counts invalidations."""
+    """A kept-read seam that answers `answer` for every name and counts invalidations."""
 
-    def __init__(self):
-        self.invalidated = 0
+    def __init__(self, answer):
+        self.invalidated, self.answer = 0, answer
 
-    def __call__(self, area):
-        return {"repos": [], "worktrees": [], "processes": []}
+    def __call__(self, name):
+        return dict(self.answer)
 
     def invalidate(self):
         self.invalidated += 1
 
 
 class TheServer(BrowserSession):
-    fleet_backend = Spy()
+    fleet_backend = Spy({"repos": [], "worktrees": [], "processes": []})
+    metrics_backend = Spy({"error": "the kept part", "observed": "2026-09-06T11:59:00Z"})
 
-    def test_a_write_invalidates_the_fleet_snapshot(self):
-        before = self.fleet_backend.invalidated
+    def test_a_write_invalidates_the_fleet_and_metrics_snapshots(self):
+        before = (self.fleet_backend.invalidated, self.metrics_backend.invalidated)
         status, _, answer = self.post("/api/items", {"title": "a new item"})
         self.assertEqual(status, 201, answer)
-        self.assertEqual(self.fleet_backend.invalidated, before + 1)
+        self.assertEqual((self.fleet_backend.invalidated, self.metrics_backend.invalidated), (before[0] + 1, before[1] + 1))
+
+    def test_metrics_reads_its_slow_parts_from_the_kept_reads(self):
+        status, _, body = self.request("/api/metrics", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        doc = json.loads(body)
+        self.assertEqual((doc["usage"], doc["numbers"]), ({"error": "the kept part", "observed": "2026-09-06T11:59:00Z"},) * 2)
+
+    def test_the_kept_metrics_read_opens_its_own_connection_and_closes_it(self):
+        kept = server._metrics_kept(self.path)
+        usage = kept("usage")
+        self.assertEqual((usage["error"], usage["month"]), ("", server._now()[:7]))
+        self.assertIn("observed", kept("numbers"))
 
     def test_main_serves_the_fleet_from_the_snapshot(self):
         built = {}
@@ -243,6 +256,8 @@ class TheServer(BrowserSession):
             with self.assertRaises(SystemExit):
                 server.main(["--port", "0"])
         self.assertIsInstance(built["fleet_backend"], snapshot.Fleet)
+        self.assertIsInstance(built["metrics_backend"], snapshot.Kept)
+        self.assertEqual(tuple(built["metrics_backend"]._kept), metrics_screen.SLOW)
 
 
 if __name__ == "__main__":
