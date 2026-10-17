@@ -37,6 +37,15 @@ shell's reader (`read.js`) when it opens, on Read again, and each minute while
 it is visible (sd:3522); the minute read draws no loading state, so the tiles
 keep their place, and a failed read draws no tile and says why.
 
+A binary sensor reads by its `device_class` (sd:4959): on is ok for
+connectivity, power, plug, running, battery charging and presence; a warning
+for problem, smoke, gas, carbon monoxide, moisture, safety, tamper, heat and
+cold; and a neutral fact, with no colour, for doors, windows, openings, motion
+and occupancy. A sensor with no class is neutral on/off. Details opens with one
+line on what the state means, from the same device class and domain tables, and
+names the entity, its last change and its source. The repo holds no text per
+entity.
+
 Views (`places.js`, `places.py`): Overview is the page above; Tasks, Briefs and
 Reports each read their own document, `GET /api/home/tasks`, `/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.

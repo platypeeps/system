@@ -610,7 +610,7 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
             "sensor.backup_last_successful_automatic_backup": "ok", "input_boolean.guest_mode": "ok",
             "binary_sensor.virtual_porch_light": "ok"})
         for entity_id, words in (("alarm_control_panel.house", "armed home"), ("lock.front_door", "locked"),
-                                 ("binary_sensor.water_leak", "detected"), ("binary_sensor.wan_degraded", "unavailable · no reading"),
+                                 ("binary_sensor.water_leak", "wet"), ("binary_sensor.wan_degraded", "unavailable · no reading"),
                                  ("binary_sensor.smoke_sensors", home_screen.NOT_LISTED), ("input_boolean.guest_mode", "off")):
             self.assertIn(f"</span>{words}</span>", tiles[entity_id], entity_id)
         # The age: each read tile carries its last change for the shell's relative-time renderer; an unread one carries none.
@@ -658,6 +658,46 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
     def test_a_configured_type_gives_the_tile_its_commands(self):
         out = self.run_page("R.t = [C.get('binary_sensor.virtual_porch_light').type, C.get('binary_sensor.water_leak').type, C.get('input_boolean.guest_mode').type];")
         self.assertEqual(out["R"]["t"], ["toggle", "sensor", "toggle"])
+
+    # sd:4959: a binary sensor reads by its Home Assistant device_class, never "detected" for every on.
+    def binary(self):
+        doc = self.live()
+        base = doc["groups"][0]["tiles"][0]
+        tile = lambda entity_id, value, device_class: dict(base, id=entity_id, name=entity_id.split(".")[1].replace("_", " ").capitalize(), type=None, error="",
+                                                           state={"value": value, "changed": "2026-09-06T11:00:00+00:00", "device_class": device_class, "unit": None})
+        doc["groups"].append({"name": "Binary", "tiles": [
+            tile("binary_sensor.house_powerwall_grid_status", "on", "power"), tile("binary_sensor.pump_fault", "on", "problem"),
+            tile("binary_sensor.side_door", "on", "door"), tile("binary_sensor.bare_switch", "on", None),
+            tile("binary_sensor.uplink", "off", "connectivity"), tile("binary_sensor.pump_fault_clear", "off", "problem")]})
+        return doc
+
+    def test_a_binary_sensor_lamp_and_words_come_from_its_device_class(self):
+        out = self.run_page("R.groups = ELS.groups.html;", answer=f"() => [200, {json.dumps(self.binary())}]")
+        tiles = dict(re.findall(r'<div class="tile" data-id="([^"]+)"(.*?)</div></li>', out["R"]["groups"], re.S))
+        got = {i: (re.search(r'data-state="(\w+)"', t).group(1), re.search(r'</span>([^<]*)</span>\s*<time', t).group(1))
+               for i, t in tiles.items() if i.startswith("binary_sensor.") and i not in ("binary_sensor.smoke_sensors", "binary_sensor.wan_degraded", "binary_sensor.virtual_porch_light")}
+        self.assertEqual(got, {
+            "binary_sensor.water_leak": ("warning", "wet"),
+            "binary_sensor.house_powerwall_grid_status": ("ok", "connected"),
+            "binary_sensor.pump_fault": ("warning", "problem"),
+            "binary_sensor.side_door": ("neutral", "open"),
+            "binary_sensor.bare_switch": ("neutral", "on"),
+            "binary_sensor.uplink": ("neutral", "disconnected"),
+            "binary_sensor.pump_fault_clear": ("ok", "clear"),
+        })
+
+    def test_details_explain_the_state_in_one_line_and_name_its_source(self):
+        out = self.run_page("open('binary_sensor.house_powerwall_grid_status'); R.grid = ELS.details.html; open('binary_sensor.bare_switch'); R.bare = ELS.details.html;"
+                            " open('lock.front_door'); R.lock = ELS.details.html;", answer=f"() => [200, {json.dumps(self.binary())}]")
+        grid = out["R"]["grid"]
+        self.assertIn('<p class="means">House powerwall grid status: on means it is connected to power.</p>', grid)
+        self.assertIn("<code>binary_sensor.house_powerwall_grid_status</code>", grid)
+        self.assertIn('<time class="rel" datetime="2026-09-06T11:00:00+00:00"', grid)
+        self.assertRegex(grid, r"<dt>Source</dt><dd>Home Assistant <code>/api/states</code>, device class <code>power</code></dd>")
+        self.assertLess(grid.index('class="means"'), grid.index(">Act<"))
+        self.assertIn("Bare switch: on or off, with no device class to judge it by.", out["R"]["bare"])
+        self.assertIn("<dt>Source</dt><dd>Home Assistant <code>/api/states</code></dd>", out["R"]["bare"])
+        self.assertIn("Front door: locked or unlocked; jammed means the lock did not finish moving.", out["R"]["lock"])
 
     def test_details_name_the_entity_and_why_it_has_no_state(self):
         out = self.run_page("open('lock.front_door'); R.det = ELS.details.html; open('no.such'); R.after = ELS.details.html;")
