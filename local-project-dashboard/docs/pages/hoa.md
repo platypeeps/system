@@ -20,3 +20,13 @@ holds daily rows, not the pump's state now.
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.
+
+Views (`places.js`, `places.py`): Overview is the page above; Issues, Briefs and
+Reports each read their own document, `GET /api/hoa/issues`, `/briefs` and
+`/reports`, only when shown, and the address keeps the view as `#view=<id>`.
+Issues are the open items whose repo is the hoa checkout; a report is in no Issues view. A brief is hoa's when its series, lower-cased with spaces as hyphens,
+names a job of the `hoa` family in `report-families.conf`, or it is filed under the hoa checkout; a report
+is hoa's when its job is in that family. A missing checkout, family or file
+makes the view unknown with the reason and the line to add, never an empty list.
+Until the shell carries a view switch, `places.js` draws its own segmented
+control (`viewSwitch`, the one adapter).

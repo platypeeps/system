@@ -1,0 +1,135 @@
+"""Places: the HOA and Home pages' Issues, Briefs and Reports views, and the area rule Tasks' HOA and Home views share.
+
+Each view reads its own document: `/api/<area>/issues`, `/api/<area>/briefs` and `/api/<area>/reports`, built here
+from readers that already exist, with no store or config file of its own.
+
+**Which rows are an area's.**
+
+- An item is HOA when its repo is the hoa checkout (`hoa_screen.checkout`), and Home when it has no repo: the
+  operator files personal and home items without one. A report is in neither: its family's Reports view holds it.
+  `area_of` is that rule, and Tasks' rows carry its answer as `area`, so Tasks' HOA and Home views are the Issues views.
+- A brief is the area's when its repo is the area's checkout, or its series, lower-cased with spaces as hyphens, is a
+  job of the area's report family (`series_job`): briefs always name a registered repo, so Home has only the second.
+- A report is the area's when its job is in the area's report family. The family is the `report-families.conf` line
+  whose key is the area's (`reports_screen.families`).
+
+**What is not read.** A missing hoa checkout, family or file makes the view `unknown` with the reason and the line to
+add, never an empty list. Nothing here writes.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from sd_db import reads
+
+__all__ = ["AREAS", "area_of", "briefs", "issues", "reports", "series_job"]
+
+#: The places, by family key, and their labels.
+AREAS = {"hoa": "HOA", "home": "Home"}
+
+
+def area_of(repo: str | None, kind: str, hoa: str | None) -> str | None:
+    """The area an item belongs to: `hoa` for the hoa checkout's, `home` for one with no repo, else None.
+
+    A report is in no area's Issues: the area's Reports view lists it by its job.
+    """
+    if kind == "report":
+        return None
+    if not repo:
+        return "home"
+    return "hoa" if hoa is not None and repo == hoa else None
+
+
+def series_job(series: str) -> str:
+    """The job name a brief series spells: lower case, runs of spaces as one hyphen."""
+    return re.sub(r"\s+", "-", series.strip().lower())
+
+
+def _hoa(connection) -> tuple[str | None, str]:
+    """The hoa checkout's recorded path, and why there is none."""
+    from .hoa_screen import checkout
+
+    recorded, _, problems = checkout(connection)
+    if problems:
+        return None, problems[0]
+    return recorded, "" if recorded else "no repo named hoa is registered"
+
+
+def _family(area: str, config: Path | None) -> tuple[list[str] | None, str]:
+    """The jobs of the area's report family, and why there are none."""
+    from .reports_screen import families
+
+    found = families(config)
+    line = f"add family|{area}|{AREAS[area]}|<icon>|<job>,<job>,... to {found['source']}"
+    if found["state"] == "missing":
+        return None, f"not configured: {found['source']} is missing; {line}"
+    if found["state"] == "error":
+        return None, f"not configured: {found['source']} was {found['problems'][0]}"
+    family = next((f for f in found["list"] if f["key"] == area), None)
+    if family is None:
+        return None, f"not configured: {found['source']} names no family {area}; {line}"
+    return family["jobs"], ""
+
+
+def _unknown(now: str, area: str, reason: str, **more) -> dict:
+    return {"read": now, "area": area, "state": "unknown", "reason": reason, "rows": [], **more}
+
+
+def issues(connection, area: str, *, now: str) -> dict:
+    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` places in it."""
+    hoa, why = _hoa(connection)
+    if area == "hoa" and hoa is None:
+        return _unknown(now, area, why)
+    from .screens import _repo_labels
+
+    found = [row for row in reads.backlog_items(connection, now=now)
+             if row["status"] != "done" and area_of(row["repo"], row["kind"], hoa) == area]
+    label = _repo_labels(row["repo"] for row in found)
+    rows = [{"id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
+             "priority": row["priority"], "due": row["due"], "repo": label(row["repo"]) if row["repo"] else None,
+             "since": row["status_since"]} for row in found]
+    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows}
+
+
+#: How many briefs are read before the area filter: every one the store holds, in practice; a page shows `ROWS`.
+BRIEF_SCAN = 100_000
+
+
+def briefs(connection, area: str, *, now: str, config: Path | None = None) -> dict:
+    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`)."""
+    from . import briefs_screen
+
+    jobs, unconfigured = _family(area, config)
+    repo = _hoa(connection)[0] if area == "hoa" else None
+    if jobs is None and repo is None:
+        return _unknown(now, area, unconfigured)
+    wanted = set(jobs or ())
+
+    def reader(conn):
+        got = briefs_screen._library().rows(conn, limit=BRIEF_SCAN)
+        return [raw for raw in got if (repo is not None and raw.get("repo") == repo)
+                or series_job(str((raw.get("brief") or {}).get("series") or "")) in wanted][:briefs_screen.ROWS + 1]
+
+    doc = briefs_screen.document(connection, now=now, reader=reader)
+    state = "error" if doc["reader"]["state"] == "error" else "read"
+    # A family not configured still leaves the checkout's briefs; the reason says what else would be read.
+    return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured,
+            "rows": doc["briefs"], "reader": doc["reader"]}
+
+
+def reports(connection, area: str, *, now: str, config: Path | None = None) -> dict:
+    """The reports of the area's family jobs, from the newest `reporting.reports` the Reports page reads."""
+    from .reports_screen import FAILURES, _reports
+
+    jobs, unconfigured = _family(area, config)
+    if jobs is None:
+        return _unknown(now, area, unconfigured, jobs=[])
+    try:
+        found = _reports(connection)
+    except FAILURES as failure:
+        return {**_unknown(now, area, f"reports not read: {failure}", jobs=jobs), "state": "error"}
+    keep = ("id", "title", "status", "at", "job", "attention", "exit", "ended", "followups")
+    rows = [{key: row[key] for key in keep} for row in found if row["job"] in jobs]
+    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows, "jobs": jobs, "limit": 200}

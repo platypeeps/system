@@ -15,6 +15,11 @@
 # heart-pulse, bot, book-open). A job belongs to one family at most; a job no
 # family names is listed under "Other jobs". A line the page cannot read is
 # named on the page and skipped.
+#
+# Two keys also name a place: the jobs of family hoa and family home are the
+# HOA and Home pages' Reports, and a brief whose series spells one of them
+# (lower case, spaces as hyphens) is in that page's Briefs. Without the line,
+# that view says "not configured" and names this file.
 
 family|backups|Backups|hard-drive-download|db-backup-nightly,offsite-verify
 family|repos|Repos & setup|git-compare|repo-sync-nightly,brew-doctor-nightly

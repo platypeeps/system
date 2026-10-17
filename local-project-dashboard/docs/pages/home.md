@@ -36,3 +36,13 @@ sends nothing to Home Assistant. Read state is copy only: its `curl` line names 
 shell's reader (`read.js`) when it opens, on Read again, and each minute while
 it is visible (sd:3522); the minute read draws no loading state, so the tiles
 keep their place, and a failed read draws no tile and says why.
+
+Views (`places.js`, `places.py`): Overview is the page above; Issues, Briefs and
+Reports each read their own document, `GET /api/home/issues`, `/briefs` and
+`/reports`, only when shown, and the address keeps the view as `#view=<id>`.
+Issues are the open items with no repo: personal and home items have none. A report is in no Issues view. A brief is home's when its series, lower-cased with spaces as hyphens,
+names a job of the `home` family in `report-families.conf`; a report
+is home's when its job is in that family. A missing checkout, family or file
+makes the view unknown with the reason and the line to add, never an empty list.
+Until the shell carries a view switch, `places.js` draws its own segmented
+control (`viewSwitch`, the one adapter).

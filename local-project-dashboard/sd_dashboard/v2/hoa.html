@@ -5,6 +5,7 @@
   the repo table holds under the folder name hoa), read when the page opens and on Refresh. A part that did not read is unknown
   with its reason. The map is one SVG of the files' vectors: no Leaflet and no tiles. Writes: none; email is never sent.
   Nothing here is sample data.
+  Views (places.js): Overview is the above; Issues, Briefs and Reports each read /api/hoa/<view> (places.py) when shown.
 -->
 <html lang="en">
 <head>
@@ -19,8 +20,9 @@
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/hoa.css">
+<link rel="stylesheet" href="/ui/places.css">
 </head>
-<body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system">
+<body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system" data-place="hoa">
 <script src="/ui/icons.js"></script>
 <div class="shell">
 <main>
@@ -30,8 +32,10 @@
       <p id="subhead">Reading the HOA water system…</p>
     </div>
   </header>
+  <nav class="place-switch" id="place-views" data-label="HOA views" aria-label="HOA views"></nav>
   <div id="state" hidden></div>
 
+  <div data-place-view="overview">
   <h2 class="sr">Readings</h2>
   <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul></annunciator-strip>
 
@@ -81,6 +85,20 @@
       <tbody id="al-body"></tbody>
     </table>
   </section>
+  </div>
+
+  <section class="place-view" id="view-issues" data-place-view="issues" aria-labelledby="issues-h" hidden>
+    <div class="sec-head"><div><h2 id="issues-h">Issues</h2><p>Open items whose repo is the hoa checkout.</p></div><p class="tally" id="issues-tally"></p></div>
+    <div id="issues-rows"></div>
+  </section>
+  <section class="place-view" id="view-briefs" data-place-view="briefs" aria-labelledby="briefs-h" hidden>
+    <div class="sec-head"><div><h2 id="briefs-h">Briefs</h2><p>Briefs filed under the hoa checkout, or whose series names a job of the hoa report family.</p></div><p class="tally" id="briefs-tally"></p></div>
+    <div id="briefs-rows"></div>
+  </section>
+  <section class="place-view" id="view-reports" data-place-view="reports" aria-labelledby="reports-h" hidden>
+    <div class="sec-head"><div><h2 id="reports-h">Reports</h2><p>Reports of the jobs in the hoa report family (<code>report-families.conf</code>), from the newest 200.</p></div><p class="tally" id="reports-tally"></p></div>
+    <div id="reports-rows"></div>
+  </section>
 </main>
 
 <div class="details" id="details"><p class="note">Reading the HOA water system…</p></div>
@@ -88,6 +106,7 @@
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/hoa.js"></script>
+<script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>
