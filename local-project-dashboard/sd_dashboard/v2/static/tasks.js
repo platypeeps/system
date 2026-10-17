@@ -38,10 +38,15 @@ addEventListener('DOMContentLoaded', () => {
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
-    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, real: true });
+    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
+  // build (places): All | HOA | Home, the switch places.js draws. A row's area is the server's (places.area_of), the rule
+  // the HOA and Home pages' Issues views use, so the HOA and Home views hold their rows.
+  let PLACE = 'all';
+  const inPlace = t => PLACE === 'all' || t.area === PLACE;
+  const placed = () => listed().filter(inPlace);
   const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
@@ -223,7 +228,7 @@ addEventListener('DOMContentLoaded', () => {
       grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
       grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
       grp('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`)}${
-      (on() ? window.shell.list.chips(activeFilters(), visible().length, listed().length) : html`<div class="fsum">${ICON('filter')}<span>${listed().length} tasks</span></div>`)}`);
+      (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
   const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
@@ -249,7 +254,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
-    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && (!Q || words(t).includes(Q));
+    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -1154,5 +1159,7 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
+  document.addEventListener('shell:ready', () => window.places.viewSwitch([{ id: 'all', label: 'All' }, { id: 'hoa', label: 'HOA' }, { id: 'home', label: 'Home' }],
+    id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) render(); }), { once: true });
   suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });

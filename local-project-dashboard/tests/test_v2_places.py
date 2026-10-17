@@ -1,8 +1,8 @@
-"""The HOA and Home sub-views (Issues, Briefs, Reports).
+"""The HOA and Home sub-views (Issues, Briefs, Reports) and Tasks' HOA and Home views.
 
 What this slice promises: one rule places a row in an area (`places.area_of`): an item of the hoa checkout is HOA, an
 item with no repo is Home, and a report is in neither, since an area's Reports view holds it. The place pages' Issues
-views come from that rule.
+views and the Tasks rows' `area` both come from that rule, so Tasks' HOA and Home views hold the Issues views' rows.
 Briefs are the area's when their repo is the area's checkout or their series names a job of the area's report family;
 Reports are the reports of the family's jobs. The family list is `report-families.conf`; a missing family is unknown
 with the file it was looked for in, never an empty list.
@@ -20,8 +20,9 @@ from unittest import mock
 
 from sd_db import reporting, routine_briefs
 
-from sd_dashboard import places, reports_screen, v2
+from sd_dashboard import places, reports_screen, tasks_screen, v2
 
+import test_v2_tasks
 from support import NOW, ScreenCase
 from test_v2_tasks import SHELL, STAND_IN
 from test_v2_today import OSASCRIPT
@@ -91,6 +92,13 @@ class Issues(Fixture):
         doc = places.issues(bare.connection, "hoa", now=NOW)
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
         self.assertIn("no repo named hoa", doc["reason"])
+
+    def test_tasks_hoa_and_home_views_hold_the_issues_views_rows(self):
+        rows = tasks_screen.document(self.connection, now=NOW)["rows"]
+        for area in places.AREAS:
+            tasks = sorted(r["id"] for r in rows if r["area"] == area and r["status"] != "done" and not r["parked"])
+            self.assertEqual(tasks, self.ids(places.issues(self.connection, area, now=NOW)), area)
+        self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
 
 
 class Briefs(Fixture):
@@ -201,6 +209,25 @@ await go('#view=reports'); R.reports = ELS['reports-rows'].html;""", docs)
         self.assertIn("▨ Not read.</b> not configured: <config>/project-dashboard/absent.conf is missing", out["R"]["briefs"].replace("&lt;", "<").replace("&gt;", ">"))
         self.assertNotIn("<table", out["R"]["briefs"])
         self.assertIn("▨ Not read.</b> /api/hoa/reports did not answer: the server failed", out["R"]["reports"])
+
+
+class TheTasksSwitch(Fixture):
+    """Tasks' All | HOA | Home: tasks.js with places.js, against the rows `tasks_screen` builds."""
+
+    def test_hoa_and_home_narrow_the_board_to_the_rows_area(self):
+        self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
+        body = (f"(0, eval)({json.dumps(PLACES_JS)});\n"
+                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
+R.first = ELS['view-board'].html; R.sw = ELS['place-views'].html;
+for (const v of ['hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); R[v] = ELS['view-board'].html; }""")
+        out = test_v2_tasks.TheScript.run_page(self, body)
+        r = out["R"]
+        self.assertEqual(re.findall(r'data-switch="(\w+)"', r["sw"]), ["all", "hoa", "home"])
+        titles = ("Fix the valve log", "Clean the gutters", "Tune the gate")
+        self.assertEqual([t in r["first"] for t in titles], [True, True, True])
+        self.assertEqual([t in r["hoa"] for t in titles], [True, False, False])
+        self.assertEqual([t in r["home"] for t in titles], [False, True, False])
+        self.assertEqual(r["all"], r["first"])
 
 
 class TheRule(unittest.TestCase):

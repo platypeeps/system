@@ -40,3 +40,8 @@ A v1 `/backlog` address answers 301 to `/tasks` with the query v1 read
 (`tasks_screen.from_backlog`, sd:2356); a repository path becomes the label
 Tasks filters on. v1's screen and its run selection were deleted in sd:2622;
 `/classic/backlog` is a 404.
+
+All | HOA | Home (`places.js`) narrows every view to the rows of one place. Each
+row carries `area` from `places.area_of`, the rule the HOA and Home pages'
+Issues views use: the hoa checkout's items, or items with no repo. A report is
+in neither. The address keeps the choice as `#view=<id>`.
