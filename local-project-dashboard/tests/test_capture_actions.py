@@ -43,6 +43,35 @@ class CaptureActions(BrowserSession):
         self.assertEqual(status, 201)
         self.assertEqual((result["item"]["priority"], result["item"]["repo"]), (3, "/repos/one"))
 
+    def test_a_capture_with_a_ref_files_it_as_sd_task_add_ref_does(self):
+        """sd:4840: Today's issue intake files an item under `github:<owner>/<repo>#N`, the row `sd task add --ref` writes."""
+        upsert_repo(self.connection, "/repos/one")
+        status, _, result = self.post("/api/items", {"title": "Crash", "repo": "/repos/one",
+                                                     "ref": "github:example/project#12"})
+        self.assertEqual(status, 201)
+        row = self.connection.execute("SELECT source, external_id, kind, repo FROM item WHERE id = ?",
+                                      (result["item"]["id"],)).fetchone()
+        self.assertEqual(tuple(row), ("task-ref", "github:example/project#12", "task", "/repos/one"))
+
+    def test_a_ref_another_item_carries_is_refused_and_writes_nothing(self):
+        upsert_repo(self.connection, "/repos/one")
+        self.assertEqual(self.post("/api/items", {"title": "First", "ref": "github:example/project#12"})[0], 201)
+        before = self.snapshot()
+        status, _, result = self.post("/api/items", {"title": "Again", "ref": "github:example/project#12"})
+        self.assertEqual(status, 400)
+        self.assertIn("already carries", result["error"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_ref_that_is_not_a_github_issue_or_on_a_followup_is_refused(self):
+        before = self.snapshot()
+        for payload in ({"title": "x", "ref": "job:repo-sync:42"}, {"title": "x", "ref": "github:example/project#0"},
+                        {"title": "x", "ref": "github:example#1"}, {"title": "x", "ref": 12},
+                        {"title": "x", "ref": "github:example/project#1 "},
+                        {"title": "x", "kind": "followup", "ref": "github:example/project#1"}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.post("/api/items", payload)[0], 400)
+        self.assertEqual(self.snapshot(), before)
+
     def test_all_note_kinds_attach_to_selected_parent_without_creating_tasks(self):
         upsert_repo(self.connection, "/repos/one")
         upsert_repo(self.connection, "/repos/two")

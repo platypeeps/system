@@ -130,3 +130,102 @@ document.addEventListener = (t, f) => { listeners[t] = f; };
         self.assertNotIn("open", failed["issues-tally"])
         empty = self.drawn({"issues": [], "error": ""})
         self.assertIn("No open issue is assigned to you or filed by you", empty["issues"])
+
+
+INTAKE = {
+    "/home/example/repos/acme/anvil": [
+        {"tracker": "github", "repo": "example/project", "url": "https://github.com/example/project/issues/21",
+         "number": 21, "title": "Docs <i>typo</i>", "state": "open", "reason": "watched", "author": "octocat",
+         "last_seen": "2026-09-06T08:00:00+00:00"},
+        {"tracker": "github", "repo": "example/project", "url": "javascript:alert(1)", "number": 22, "title": "Odd",
+         "state": "open", "reason": None, "author": None, "last_seen": "2026-09-05T08:00:00+00:00"},
+    ],
+}
+
+
+def stub_intake(**kwargs):
+    return mock.patch.object(repos, "intake_issues", create=True, **kwargs)
+
+
+class TheIntake(ScreenCase):
+    """Issue intake on Today (sd:4840): each `github_issues` repo's open third-party issues that no sd item carries,
+    from `sd_db.repos.intake_issues` (pack sd:4880). Stubbed here as Your issues is: the pack's suite tests the read."""
+
+    def test_each_row_names_its_repo_reference_author_and_the_ref_an_item_files_it_under(self):
+        with stub_intake(return_value=INTAKE) as read:
+            document = issues.intake(self.connection)
+        read.assert_called_once_with(self.connection)
+        self.assertEqual(document["intake_error"], "")
+        self.assertEqual([(row["repo"], row["repo_path"], row["ref"], row["key"], row["author"], row["url"])
+                          for row in document["intake"]], [
+            ("anvil", "/home/example/repos/acme/anvil", "#21", "github:example/project#21", "octocat",
+             "https://github.com/example/project/issues/21"),
+            ("anvil", "/home/example/repos/acme/anvil", "#22", "github:example/project#22", "", None),
+        ])
+
+    def test_a_pack_without_the_read_or_a_failed_read_is_said_not_empty(self):
+        with mock.patch.object(repos, "intake_issues", None, create=True):
+            self.assertEqual(issues.intake(self.connection), {"intake": [], "intake_error":
+                             "this sd_db has no repos.intake_issues; update the command pack"})
+        with stub_intake(side_effect=sqlite3.OperationalError("no such column: github_issues")):
+            self.assertEqual(issues.intake(self.connection), {"intake": [], "intake_error":
+                             "no such column: github_issues; run sd-db migrate"})
+        with stub_intake(side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(issues.intake(self.connection), {"intake": [], "intake_error": "database is locked"})
+
+    def test_today_carries_the_intake_and_a_failure_leaves_the_rest(self):
+        with stub_intake(return_value=INTAKE):
+            today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
+                                        fleet=lambda area: fleet_document(area))
+        self.assertEqual([row["ref"] for row in today["intake"]], ["#21", "#22"])
+        with stub_intake(side_effect=sqlite3.OperationalError("database is locked")):
+            today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
+                                        fleet=lambda area: fleet_document(area))
+        self.assertEqual((today["intake_error"], today["work_error"]), ("database is locked", ""))
+
+    def test_today_draws_the_section_and_hands_the_rows_over(self):
+        html = (V2 / "today.html").read_text(encoding="utf-8")
+        self.assertIn('<tbody id="intake">', html)
+        self.assertIn('id="intake-tally"', html)
+        self.assertIn("intake:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+
+
+class TheIntakeTable(ScreenCase):
+    """issues.js draws the intake rows, each with File as item, which posts the item under the issue's ref."""
+
+    PAGE = TheTable.PAGE + """
+var posted = [];
+window.shell = { post: (path, body) => { posted.push([path, body]); return new Promise(() => {}); } };
+"""
+
+    def drawn(self, detail, then=""):
+        script = (self.PAGE + ISSUES_JS + f"listeners['intake:read']({{ detail: {json.dumps(detail)} }});" + then
+                  + "JSON.stringify({ sunk, posted })")
+        return run_js(self, script)
+
+    def test_rows_escape_link_only_https_and_carry_a_file_control(self):
+        with stub_intake(return_value=INTAKE):
+            document = issues.intake(self.connection)
+        out = self.drawn({"intake": document["intake"], "error": ""})
+        drawn = dict(out["sunk"])
+        self.assertIn('<a href="https://github.com/example/project/issues/21">GitHub #21</a>', drawn["intake"])
+        self.assertIn("Docs &lt;i&gt;typo&lt;/i&gt;", drawn["intake"])
+        self.assertNotIn("javascript:", drawn["intake"])
+        self.assertIn(">octocat<", drawn["intake"])
+        self.assertEqual(drawn["intake"].count(">File as item<"), 2)
+        self.assertIn('data-key="github:example/project#21"', drawn["intake"])
+        self.assertIn("2 waiting", drawn["intake-tally"])
+
+    def test_file_posts_a_task_under_the_issue_s_ref_in_its_repo_and_marks_the_row_busy(self):
+        with stub_intake(return_value=INTAKE):
+            document = issues.intake(self.connection)
+        out = self.drawn({"intake": document["intake"], "error": ""}, "window.issues.file('github:example/project#21');")
+        self.assertEqual(out["posted"], [["/api/items", {"title": "Docs <i>typo</i>", "repo": "/home/example/repos/acme/anvil",
+                                                         "ref": "github:example/project#21"}]])
+        self.assertIn('aria-busy="true"', out["sunk"][-2][1])
+
+    def test_a_failure_is_a_row_naming_it_and_none_is_said(self):
+        failed = dict(self.drawn({"intake": [], "error": "database is locked"})["sunk"])
+        self.assertIn("Issue intake could not be read: database is locked. Refresh tries again.", failed["intake"])
+        empty = dict(self.drawn({"intake": [], "error": ""})["sunk"])
+        self.assertIn("No third-party issue waits for an item", empty["intake"])

@@ -206,6 +206,8 @@
   function draw() {
     // Your issues (sd:4628) are this document's too; issues.js draws them, or the failure that left none.
     document.dispatchEvent(new CustomEvent('issues:read', { detail: DOC ? { issues: DOC.issues || [], error: DOC.issues_error || '' } : { error: failed } }));
+    // Issue intake (sd:4840) too; issues.js draws it, and a filed row says so until the next read drops it.
+    document.dispatchEvent(new CustomEvent('intake:read', { detail: DOC ? { intake: DOC.intake || [], error: DOC.intake_error || '' } : { error: failed } }));
     // Your mail (sd:4191) too; mail.js draws it from the document's mail keys.
     document.dispatchEvent(new CustomEvent('mail:read', { detail: DOC || { mail_error: failed } }));
     if (DOC) return render();
