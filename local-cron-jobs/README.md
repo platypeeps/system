@@ -262,7 +262,11 @@ so the dashboard's Management page reads this file as the job's last run.
 completed run and by nothing else. `exit=<code>` is that run's own exit code
 and is always written. `runs=<n>`/`lifetime=<coalition id>`/`boot=<kern.boottime
 sec>` name the run and are written when launchd can supply them, all three or
-none. The run writes the record to a temp file and renames it into place, so a
+none. An idle label on some machines prints no coalition, so a hand run there
+writes a bare `exit=` that cannot retire launchd's failure; the next passing
+scheduled run does (sd:4920). Matching an absent coalition instead would let a
+reload inside one boot reset the counter and pair an old success with a new
+failure. The run writes the record to a temp file and renames it into place, so a
 reader sees the old record or the new one, never part of either. The run
 removes `logs/.<job>.attempt` only after the rename succeeds: a run that could
 not record its outcome keeps the marker, which withdraws the earlier success.

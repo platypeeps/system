@@ -1684,7 +1684,9 @@ case "${1:-}" in
                the job's lock: `bootout` would stop it. Retry after it ends.
   run          run a job once now, foreground — output goes to the terminal
                and to the job's log, so a hand-run clears an outstanding
-               failure the same way a scheduled run does
+               failure the same way a scheduled run does; where launchd
+               prints no coalition for the label, only the next passing
+               scheduled run clears it (sd:4920)
   status       launchd state, last exit, log tail, recent failures. Exits 0
                healthy, 3 when no job asked about is installed here, 1 when
                the evidence says a job's last run failed and nothing has
