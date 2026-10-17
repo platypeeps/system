@@ -14,6 +14,8 @@ service start, stop and restart, and the `sd-db repo` verbs, which refuse a
 stale revision and, on a satellite, refuse with `HubOnly`.
 A repo's page shows its Dependabot consent (sd:3984), the row's `dependabot`
 column: yes or no, written with `sd-db repo dependabot`. A `platypeeps` repo
-and one the sweep denies by name show that rule and no toggle. Open item goes to
+and one the sweep denies by name show that rule and no toggle.
+It also shows `github_issues` (sd:4840): on or off, written with
+`sd-db repo github-issues`; a database before schema 35 shows it unread, with no toggle. Open item goes to
 the item's row on Tasks. The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.

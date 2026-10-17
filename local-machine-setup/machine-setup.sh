@@ -2541,14 +2541,35 @@ stage_iterm2() {
     echo "  SKIP    iTerm.app not installed (cask iterm2)"
     return 0
   fi
-  if [ ! -d "$dir" ]; then
+  # Exit 3 is no folder, 4 a folder with no plist. Bounded like the vault
+  # read: the folder sits on a synced mount that stalls (sd:4832); a timeout
+  # or a failed read is no answer, not a folder that is not there.
+  py="${MACHINE_SETUP_PYTHON:-python3}"
+  it_rc=0
+  bound_step 30 "$py" -c 'import os, stat, sys
+def mode(path):
+    try:
+        return os.stat(path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return 0
+if not stat.S_ISDIR(mode(sys.argv[1])):
+    sys.exit(3)
+if not stat.S_ISREG(mode(os.path.join(sys.argv[1], "com.googlecode.iterm2.plist"))):
+    sys.exit(4)' "$dir" 2>/dev/null || it_rc=$?
+  if [ "$it_rc" -eq 3 ]; then
     echo "  MISSING prefs folder $dir — not synced down yet; re-run once it is"
     return 0
   fi
   # Repointing iTerm2 at an empty folder makes it write fresh defaults there,
   # and the synced settings are what get lost. Stop before touching prefs.
-  if [ ! -f "$dir/com.googlecode.iterm2.plist" ]; then
+  if [ "$it_rc" -eq 4 ]; then
     echo "  MISSING $dir/com.googlecode.iterm2.plist — folder is empty, not repointing iTerm2"
+    return 0
+  fi
+  if [ "$it_rc" -ne 0 ]; then
+    it_why="could not be read"
+    [ "$it_rc" -ne 124 ] || it_why="did not answer in time"
+    echo "  DIFFERS prefs folder $dir $it_why, state unknown; iTerm2 not repointed"
     return 0
   fi
   echo "  ok      com.googlecode.iterm2.plist present"

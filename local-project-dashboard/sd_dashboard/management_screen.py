@@ -39,7 +39,7 @@ rule when it decides first (`denied`, `owner`), read from
 Every write the page makes goes through a route `server.action_route`
 answers: job retry and cancel, service start, stop
 and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`), which refuse a stale `before`
+`repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`, `repos.set_github_issues`), which refuse a stale `before`
 and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
 """
 
@@ -255,6 +255,8 @@ def _repos(connection) -> list[dict]:
             # sd:3984: a store before migration 33 has no column, and an unread flag is unknown, not no.
             "dependabot": ("yes" if row["dependabot"] else "no") if "dependabot" in row.keys() else None,
             "dependabot_gate": _dependabot_gate(row["remote"]),
+            # sd:4840: a store before migration 35 has no column; an unread setting is unknown, not off.
+            "github_issues": ("on" if row["github_issues"] else "off") if "github_issues" in row.keys() else None,
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
@@ -537,7 +539,7 @@ def _attention(jobs) -> dict:
 #: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
 SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed"),
            "lane-host": (repos.set_lane_host, "lane_host"), "channels": (repos.set_channels, "channels"),
-           "dependabot": (repos.set_dependabot, "dependabot")}
+           "dependabot": (repos.set_dependabot, "dependabot"), "github-issues": (repos.set_github_issues, "github_issues")}
 
 
 class StaleSetting(workflow.StaleItem):
@@ -574,7 +576,8 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value, befor
         row = repos.row_for(connection, path)
         if row is None:
             raise repos.RepoRefusal(f"{path} is not a registered repository")
-        current = ("yes" if row[column] else "no") if column in ("managed", "dependabot") else row[column]
+        current = (("yes" if row[column] else "no") if column in ("managed", "dependabot")
+                   else ("on" if row[column] else "off") if column == "github_issues" else row[column])
         if current != before:
             raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
         _, was = setter(connection, row["path"], value)

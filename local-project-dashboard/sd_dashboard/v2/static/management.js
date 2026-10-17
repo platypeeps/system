@@ -27,7 +27,7 @@ function absorb(doc) {
     const m = (r.remote || '').match(/github\.com[:/]([^/]+)\/(.+?)(\.git)?$/);
     return { path: r.path, remote: r.remote, managed: r.managed, merge: r.runner_merge, lane: r.lane_host || 'hub', mode: r.mode, ci: r.ci,
       channels: r.channels || 'none', chProblem: r.channels_problem || null,
-      dependabot: r.dependabot ?? null, depGate: r.dependabot_gate || null,
+      dependabot: r.dependabot ?? null, depGate: r.dependabot_gate || null, github_issues: r.github_issues ?? null,
       pieces: r.pieces_source, created: r.created_at, updated: r.updated_at, review: r.review, protection: r.protection, runtimes: r.runtimes,
       owner: m ? m[1] : '?', slug: m ? `${m[1]}/${m[2]}` : '', name: nameOf(r.path), registered: true, git: gitBy[r.path] || null };
   });
@@ -371,13 +371,15 @@ function renderRepoPage(el) {
       <li><span class="route">${I('shield-check')}GitHub · API</span> read here; edits stay on the classic Protection screen</li>
     </ul>
 
-    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Five fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code>, <code>repo dependabot</code>, <code>repo lane-host</code> and <code>repo channels</code>. The rest change only through registration or a migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
+    <section class="set" aria-labelledby="set-db"><header><h3 id="set-db">sd-db row <button class="help" type="button" aria-label="Help: sd-db row" data-help="<b>The row the runner and dashboard read.</b> Six fields have sd-db verbs: <code>repo runner-merge</code>, <code>repo managed</code>, <code>repo dependabot</code>, <code>repo github-issues</code>, <code>repo lane-host</code> and <code>repo channels</code>. The rest change only through registration or a migration.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db · local</span>
       <p class="src">repo table · read ${hhmm(READ)} UTC</p></header>
       ${setRow('path', r.path, lock('primary key'))}
       ${setRow('remote', r.remote || html`<span class="no">none</span>`, lock('from the checkout'))}
       ${setRow(html`<code>runner_merge</code> <button class="help" type="button" aria-label="Help: runner_merge" data-help="<b>auto</b> lets the runner queue a merge after a done author run with a reviewed head, through the exclusive merge lane. <b>manual</b> ends the item at ready_to_send for you. Every row starts at manual.">${I('circle-help')}</button>`, r.merge, seg('runner_merge', ['manual', 'auto'], r.merge), html` data-key="runner_merge"`)}
       ${setRow(html`<code>managed</code>`, r.managed, seg('managed', ['yes', 'no'], r.managed), html` data-key="managed"`)}
       ${setRow(html`<code>dependabot</code> <button class="help" type="button" aria-label="Help: dependabot" data-help="<b>Whether the daily Dependabot sweep may merge this repo's patch and minor bumps.</b> Every platypeeps repo is swept, except the ones ROUTINE.md denies by name; for any other owner this is the consent. The sweep reads it at its next run.">${I('circle-help')}</button>`, depShown(r), depCtl(r), html` data-key="dependabot"`)}
+      ${setRow(html`<code>github_issues</code> <button class="help" type="button" aria-label="Help: github_issues" data-help="<b>Whether this repo takes third-party GitHub issues.</b> <b>on</b> lets agents here close and update issues on its own remote; <b>off</b>, where every row starts, keeps work in sd items only.">${I('circle-help')}</button>`, r.github_issues ?? html`<span class="no">not read</span>`,
+        r.github_issues == null ? lock(why('repos') || 'the row has no github_issues column') : seg('github_issues', ['on', 'off'], r.github_issues), html` data-key="github_issues"`)}
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
       ${setRow(html`<code>channels</code> <button class="help" type="button" aria-label="Help: channels" data-help="<b>Where this repo's briefs publish.</b> A checked channel is on; an empty folder is its default, shown greyed. <b>none</b> is no setting: each document's research.conf.py designation and the default folders, as before the setting existed. A change takes effect at the next render.">${I('circle-help')}</button>`, chShown(r), chForm(r), html` data-key="channels"`)}
@@ -432,13 +434,14 @@ function propose(key, value) {
   let p;
   if (key === 'channels') return proposeChannels(r, value === null ? null : chRead());
   if (key === 'mail_aliases') return proposeAliases(r, value);
-  if (key === 'runner_merge' || key === 'managed' || key === 'dependabot') {
+  if (key === 'runner_merge' || key === 'managed' || key === 'dependabot' || key === 'github_issues') {
     const before = key === 'runner_merge' ? r.merge : r[key];
     if (value === before) return withdraw(key);
-    const verb = key === 'runner_merge' ? 'runner-merge' : key;
+    const verb = key.replace('_', '-');
     p = { key, value, before, verb, route: 'sd-db', icon: 'terminal', title: `${key} ${before} → ${value}`, cmd: `${SDDB} repo ${verb} ${shq(r.path)} ${value}`,
       note: key === 'runner_merge' && value === 'manual' ? 'Items for this repo will stop at ready_to_send for you.' : key === 'runner_merge' ? 'The runner may queue merges for this repo through the exclusive lane.'
-        : key === 'dependabot' ? `The daily Dependabot sweep ${value === 'yes' ? 'may merge' : 'skips'} this repo's bumps from its next run.` : 'Writes one column; no new row.' };
+        : key === 'dependabot' ? `The daily Dependabot sweep ${value === 'yes' ? 'may merge' : 'skips'} this repo's bumps from its next run.`
+        : key === 'github_issues' ? (value === 'on' ? "Agents may close and update issues on this repo's own remote." : 'Agents write no GitHub issues here; work stays in sd items.') : 'Writes one column; no new row.' };
   } else if (key === 'lane_host') {
     if (!value || value === r.lane) return withdraw(key);
     p = { key, value, before: r.lane, verb: 'lane-host', route: 'sd-db', icon: 'terminal', title: `Move lane ${r.lane} → ${value}`,
@@ -823,7 +826,7 @@ function defaultDetails() {
     const r = repoParam && REPOS.find(x => x.path === repoParam);
     put(details, html`<p class="kind">${I('settings')} ${r ? 'Repo settings' : 'Repos'}</p><h2>${r ? r.name : 'How an edit lands'}</h2>
       <ul class="legend">
-        <li><span class="route">${I('terminal')}sd-db · local</span>runner_merge, managed and dependabot. The proposal shows the sd-db command; Run applies it here, with Undo.</li>
+        <li><span class="route">${I('terminal')}sd-db · local</span>runner_merge, managed, dependabot and github_issues. The proposal shows the sd-db command; Run applies it here, with Undo.</li>
         <li><span class="route">${I('git-pull-request')}file · PR</span><code>.github/sd-review.json</code>. The proposal shows the diff and the sd-ship line to copy.</li>
         <li><span class="route">${I('shield-check')}GitHub · API</span>Protection as the nightly collector read it. The dashboard does not change it.</li>
       </ul>
