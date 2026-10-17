@@ -67,7 +67,7 @@
   const ORDER = ['tank', 'well', 'hydrant', 'valve'];
   const glyph = type => html`<svg viewBox="0 0 24 24" aria-hidden="true">${TYPES[type].svg}</svg>`;
   const stClass = s => s === 'in service' ? 'st-ok' : s === 'unknown' ? 'st-unknown' : 'st-out';
-  const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32];
+  const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32], LABEL_ZOOM = 4;
 
   function project() {
     const pts = [...LOTS.flatMap(l => l.rings.flat()), ...ASSETS.map(a => [a.lng, a.lat])];
@@ -87,8 +87,13 @@
     if (!P) { put(box, unknownBlock(DOC ? [DOC.base.error, DOC.assets.error].filter(Boolean).join(' · ') || 'the map files hold no features' : 'the HOA document did not arrive')); return; }
     const [vx, vy, vw, vh] = view(), u = vw / (box.clientWidth || W);
     const ring = r => `M${r.map(([x, y]) => `${P.x(x).toFixed(1)},${P.y(y).toFixed(1)}`).join('L')}Z`;
+    // sd:4964: a lot is a tap target (data-lot) titled by its address; zoomed in to LABEL_ZOOM, the address is drawn on it.
+    const key = l => l.kind === 'tract' ? html` data-tract="${l.ain || l.label}"` : l.kind === 'lot' ? html` data-lot="${l.index}"` : '';
+    const mid = r => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
+    const labels = zoom >= LABEL_ZOOM ? LOTS.filter(l => l.kind === 'lot' && l.address).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
+      return html`<text class="lot-label" x="${P.x(x).toFixed(1)}" y="${P.y(y).toFixed(1)}" font-size="${(11 * u).toFixed(2)}">${l.address}</text>`; }) : '';
     put(box, html`<svg class="map" viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" aria-label="HOA water assets map">
-      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${l.kind === 'tract' ? html` data-tract="${l.ain || l.label}"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.label || l.kind}</title></path>`)}
+      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || l.kind}</title></path>`)}${labels}
       ${ASSETS.filter(a => !hidden.has(a.type) && TYPES[a.type]).map(a => { const t = TYPES[a.type], g = t.size * u;
         return html`<g class="asset t-${a.type} ${stClass(a.status)}" data-asset="${a.id}" tabindex="0" role="button" aria-label="${a.name}, ${a.type}, ${a.status}"${a.id === selected?.slice(6) ? html` aria-current="true"` : ''} transform="translate(${(P.x(a.lng) - g / 2).toFixed(2)} ${(P.y(a.lat) - g / 2).toFixed(2)}) scale(${(g / 24).toFixed(4)})"><title>${a.name} · ${a.status}</title>${TYPES[a.type].svg}</g>`; })}
     </svg>`);
@@ -137,6 +142,16 @@
     const l = LOTS.find(x => (x.ain || x.label) === key); if (!l) return;
     show(html`<div class="kind"><span class="label">Tract</span></div><h2>${l.label || `Tract ${l.ain}`}</h2>${dl([['AIN', l.ain], ['Land use', l.luc], ['Acres', l.acres], ['Source', 'base.geojson']])}`, null, open);
   }
+  // sd:4964: a lot's address, owner of record and parcel come from the checkout's lot data (hoa_screen._lots); without it
+  // the lot is unknown with the reason, which names the script to run.
+  function selectLot(index, open) {
+    const l = LOTS.find(x => x.kind === 'lot' && String(x.index) === String(index)); if (!l) return;
+    const lots = DOC.lots;
+    selected = `lot:${l.index}`; mark(); drawMap();
+    show(html`<div class="kind"><span class="label">Lot</span></div><h2>${l.address || `Lot ${l.index + 1}`}</h2>
+      ${lots.error ? unknownBlock(lots.error) : dl([['Address', l.address || 'no match in the lot data'], ['Owner of record', l.owner], ['AIN', l.parcel],
+        ['Source', `county parcel layer, fetched ${lots.fetched_at.slice(0, 10)}`]])}`, null, open);
+  }
   function selectOb(id, open) {
     const o = OB.find(x => x.id === id); if (!o) return;
     selected = id; mark(); drawMap();
@@ -174,6 +189,7 @@
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
     else if (id.startsWith('item:')) selectOb(id, open);
+    else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
@@ -270,7 +286,7 @@
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
+      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
@@ -325,7 +341,8 @@
     $('map').addEventListener('click', e => {
       if (dragged) return;
       const a = e.target.closest('[data-asset]'); if (a) { select(`asset:${a.dataset.asset}`, true); return; }
-      const t = e.target.closest('[data-tract]'); if (t) selectTract(t.dataset.tract, true);
+      const t = e.target.closest('[data-tract]'); if (t) { selectTract(t.dataset.tract, true); return; }
+      const l = e.target.closest('[data-lot]'); if (l) selectLot(l.dataset.lot, true);
     });
     $('map').addEventListener('keydown', e => {
       const a = e.target.closest('[data-asset]');

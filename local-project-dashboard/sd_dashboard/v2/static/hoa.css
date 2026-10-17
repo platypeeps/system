@@ -101,6 +101,10 @@ main { container-type: inline-size; }
 #map svg.map:active { cursor: grabbing; }
 .lot { fill: var(--color-panel); stroke: var(--color-rule); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .lot.k-tract { fill: var(--color-series-3); fill-opacity: 0.35; cursor: pointer; }
+/* sd:4964: a lot is a tap target; its address label lets the tap through to it. */
+.lot.k-lot { cursor: pointer; }
+.lot.k-lot[aria-current="true"] { fill: var(--color-accent); fill-opacity: 0.25; }
+.lot-label { fill: var(--color-ink-2); font-family: var(--font-data); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
 .lot.k-plat { fill: none; stroke: var(--color-ink-2); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .asset { color: var(--color-series-1); cursor: pointer; }
 .asset .halo { fill: none; stroke: var(--color-paper); stroke-width: 4; stroke-linejoin: round; }

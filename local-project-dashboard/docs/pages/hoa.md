@@ -17,6 +17,16 @@ Tasks view hold the checkout's open items of every kind but report (sd:4959):
 overdue is a warning, due within a week is caution (`SOON_DAYS`), the rest are
 queued. Water has no reader: the export holds daily rows, not the pump's state now.
 
+Lots (sd:4964): each lot carries its situs address and owner of record from
+the checkout's gitignored `downloads/parcels/lots.json`, which the hoa repo's
+`tools/fetch-lot-parcels.py` writes from the county parcel layer. The join is by
+the lot's index among `base.geojson`'s lots, and only against the base file the
+lot data names by sha256. The map titles each lot with its address and, zoomed
+in, draws it; a tap shows the address, owner and parcel in Details. Missing or
+stale lot data makes the read partial and each lot unknown, naming the script.
+The data names homeowners, so it is read at request time and never copied; this
+repo's tests use synthetic names.
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

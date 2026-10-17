@@ -16,6 +16,7 @@ check recorded on the pull request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -70,6 +71,18 @@ ASSETS = {"type": "FeatureCollection", "features": [
                                             ("V-01", "valve", "Valve 1", "unknown", 10.0003, 50.0003)]]}
 
 
+def parcels(root: Path, rows=None, *, base_sha=None) -> Path:
+    """The hoa checkout's downloads/parcels/lots.json as tools/fetch-lot-parcels.py writes it. Synthetic names only."""
+    rows = rows if rows is not None else [{"index": 0, "ain": "TEST-0001", "address": "100 Example St", "owner": "Test Owner A"},
+                                          {"index": 1, "ain": "TEST-0002", "address": "102 Example St", "owner": "Test Owner B"}]
+    sha = base_sha or hashlib.sha256((root / "water" / "map" / "base.geojson").read_bytes()).hexdigest()
+    out = root / "downloads" / "parcels" / "lots.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"fetched_at": "2026-09-05T12:00:00+00:00", "source": "Example County GIS", "base_sha256": sha,
+                               "lot_count": 2, "lots": rows, "unmatched": []}), encoding="utf-8")
+    return out
+
+
 def checkout(root: Path, *, analog=ANALOG, pump=PUMP, alarms=ALARMS, base=BASE, assets=ASSETS) -> Path:
     """A checkout laid out as the design reads it."""
     shutil.rmtree(root, ignore_errors=True)
@@ -91,6 +104,7 @@ class Fixture(ScreenCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.hoa = checkout(self.root / "hoa")
+        self.lot_data = parcels(self.hoa)
         self.repo(str(self.hoa))
         self.repo("/work/other")
         self.late = self.item("Confirm the invoice was paid", kind="followup", repo=str(self.hoa), due="2026-09-01", priority=1)
@@ -175,6 +189,35 @@ class TheDocument(Fixture):
                           (self.blocked, "task", "queued", None)])
         self.assertEqual(rows[0]["id"], f"item:{self.late}")
         self.assertEqual((rows[0]["priority"], rows[-1]["status"]), (1, "blocked"))
+
+    # sd:4964: each lot carries its address and owner of record from the checkout's downloads/parcels/lots.json, joined by
+    # the lot's index among base.geojson's lots, and only against the base file the lot data was made from.
+    def test_each_lot_carries_its_address_and_owner_from_the_lot_data(self):
+        doc = self.doc()
+        self.assertEqual(doc["lots"], {"error": "", "source": str(self.hoa / "downloads" / "parcels" / "lots.json"), "fetched_at": "2026-09-05T12:00:00+00:00"})
+        lots = [f for f in doc["base"]["features"] if f["kind"] == "lot"]
+        self.assertEqual([(l["index"], l["address"], l["owner"], l["parcel"]) for l in lots],
+                         [(0, "100 Example St", "Test Owner A", "TEST-0001"), (1, "102 Example St", "Test Owner B", "TEST-0002")])
+        self.assertNotIn("owner", next(f for f in doc["base"]["features"] if f["kind"] == "tract"))
+
+    def test_lot_data_not_fetched_is_unknown_and_names_the_script(self):
+        self.lot_data.unlink()
+        doc = self.doc()
+        self.assertEqual(doc["lots"]["error"], "lot data not fetched: run python3 tools/fetch-lot-parcels.py in the hoa checkout")
+        self.assertEqual([l.get("owner") for l in doc["base"]["features"] if l["kind"] == "lot"], [None, None])
+
+    def test_lot_data_made_from_another_base_file_is_not_joined(self):
+        parcels(self.hoa, base_sha="0" * 64)
+        doc = self.doc()
+        self.assertEqual(doc["lots"]["error"], "lot data is for another base.geojson: run python3 tools/fetch-lot-parcels.py in the hoa checkout")
+        self.assertEqual([l.get("owner") for l in doc["base"]["features"] if l["kind"] == "lot"], [None, None])
+
+    def test_lot_data_that_does_not_parse_is_named(self):
+        out = parcels(self.hoa)
+        out.write_text("{not json", encoding="utf-8")
+        self.assertRegex(self.doc()["lots"]["error"], r"^lots.json did not parse: JSONDecodeError")
+        parcels(self.hoa, rows=[{"index": "zero", "address": 1}])
+        self.assertRegex(self.doc()["lots"]["error"], r"^lots.json did not parse: ")
 
     def test_assets_and_outlines_carry_their_coordinates(self):
         doc = self.doc()
@@ -366,6 +409,29 @@ R.after = ELS.map.html;""")
         self.assertEqual(re.findall(r'data-kind="(\w+)" aria-pressed="(\w+)"', out["R"]["chips"]),
                          [("all", "true"), ("followup", "false"), ("task", "false")])
         self.assertIn("5 open items", out["R"]["tally"])
+
+    def test_a_lot_shows_its_address_as_its_label_and_its_owner_in_details(self):
+        tap = "ELS.map.listeners.click[0]({ target: { closest: s => s === '[data-lot]' ? { dataset: { lot: '1' } } : null } }); "
+        out = self.run_page("R.map = ELS.map.html; ELS['zoom-in'].listeners.click[0](); ELS['zoom-in'].listeners.click[0](); R.zoomed = ELS.map.html; "
+                            + tap + "R.det = ELS.details.html;")
+        self.assertIn('<path class="lot k-lot" data-lot="0"', out["R"]["map"])
+        self.assertIn("<title>100 Example St</title>", out["R"]["map"])
+        self.assertNotIn('class="lot-label"', out["R"]["map"])
+        self.assertRegex(out["R"]["zoomed"], r'<text class="lot-label"[^>]*>102 Example St</text>')
+        det = out["R"]["det"]
+        self.assertIn("<h2>102 Example St</h2>", det)
+        self.assertIn("<dt>Owner of record</dt><dd>Test Owner B</dd>", det)
+        self.assertIn("<dt>AIN</dt><dd>TEST-0002</dd>", det)
+        self.assertIn("2026-09-05", det)
+
+    def test_lot_data_not_fetched_is_a_partial_read_and_the_lot_says_why(self):
+        self.lot_data.unlink()
+        tap = "ELS.map.listeners.click[0]({ target: { closest: s => s === '[data-lot]' ? { dataset: { lot: '0' } } : null } }); "
+        out = self.run_page(tap + "R.det = ELS.details.html;")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("Lots: lot data not fetched: run python3 tools/fetch-lot-parcels.py", out["states"][-1]["text"])
+        self.assertIn("<b>▨ Not read.</b> lot data not fetched: run python3 tools/fetch-lot-parcels.py", out["R"]["det"])
+        self.assertIn("<h2>Lot 1</h2>", out["R"]["det"])
 
     def test_a_missing_config_is_the_empty_state_and_no_cell_is_lit(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.map = ELS.map.html;", self.bare("/work/other"))

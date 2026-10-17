@@ -5,8 +5,10 @@ The page is `v2/hoa.html`; it holds no data. It reads one JSON document,
 
 **Where the data is.** The design reads one HOA checkout: the asset map
 (`water/map/assets.geojson`, `water/map/base.geojson`), the Mission telemetry
-export (`water/metrics/mission/*.csv`) and the checkout's open items of every
-kind but report. The checkout is the one repo in the workflow database's repo table
+export (`water/metrics/mission/*.csv`), the lot data the checkout's
+`tools/fetch-lot-parcels.py` writes to its gitignored `downloads/parcels/lots.json`
+(each lot's address and owner of record, sd:4964) and the checkout's open items of
+every kind but report. The checkout is the one repo in the workflow database's repo table
 whose folder is named `hoa` (sd:3985), so no config file holds its path. A
 second repo with that folder name is an error that names both, never a guess.
 
@@ -20,6 +22,7 @@ in the files, and the page loads no tiles.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 from datetime import date, datetime, timedelta
@@ -41,7 +44,11 @@ SOON_DAYS = 7
 #: The export is daily and the pump file lags the analog file by one day, so a newest row two days old is on time.
 STALE_DAYS = 2
 
-DEFAULTS = {"mission": "water/metrics/mission", "assets": "water/map/assets.geojson", "base": "water/map/base.geojson"}
+DEFAULTS = {"mission": "water/metrics/mission", "assets": "water/map/assets.geojson", "base": "water/map/base.geojson",
+            "lots": "downloads/parcels/lots.json"}
+
+#: The hoa checkout's script that writes the lot data (sd:4964); a page that has none says to run it.
+LOT_SCRIPT = "python3 tools/fetch-lot-parcels.py"
 
 #: Each Mission file, the column that dates a row, and the columns the page reads.
 FILES = {
@@ -136,10 +143,13 @@ def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
         return {"error": f"no {kind} file: no repo named hoa is registered", "features": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        features = []
+        features, lots = [], 0
         for feature in data["features"]:
             props, geometry = feature["properties"], feature["geometry"]
             row = {key: props.get(key, "") for key in keys}
+            # A lot's index among the file's lots, counted before any is skipped: the lot data's key (sd:4964).
+            if props.get("kind") == "lot":
+                row["index"], lots = lots, lots + 1
             if geometry["type"] == "Point":
                 row["lng"], row["lat"] = (round(float(v), 7) for v in geometry["coordinates"][:2])
             elif geometry["type"] == "Polygon":
@@ -152,6 +162,38 @@ def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
     except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as error:
         return {"error": f"{path.name} did not parse: {error.__class__.__name__}: {error}", "features": []}
     return {"error": "", "features": features}
+
+
+def _lots(path: Path | None, base: Path | None, features: list[dict]) -> dict:
+    """The checkout's lot data (downloads/parcels/lots.json, the hoa checkout's `LOT_SCRIPT`), written onto each lot of
+    `features` as address, owner and parcel. It names homeowners, so it is read from the gitignored downloads/ at request
+    time and never copied. It joins only against the base file it was made from (its `base_sha256`); anything else is
+    the part's error, and no lot gets a value."""
+    if path is None:
+        return {"error": "no lot data: no repo named hoa is registered", "source": "", "fetched_at": ""}
+    rerun = f"run {LOT_SCRIPT} in the hoa checkout"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        by_index = {}
+        for row in data["lots"]:
+            if not isinstance(row["index"], int) or not all(isinstance(row.get(k), str) for k in ("ain", "address", "owner")):
+                raise ValueError(f"lot row {row!r:.40} is not index, ain, address and owner")
+            by_index[row["index"]] = row
+        made_from, fetched = data["base_sha256"], str(data.get("fetched_at") or "")
+        current = hashlib.sha256(base.read_bytes()).hexdigest()
+    except FileNotFoundError as error:
+        if Path(error.filename or "") == base:
+            return {"error": f"{base.name} is not there", "source": str(path), "fetched_at": ""}
+        return {"error": f"lot data not fetched: {rerun}", "source": str(path), "fetched_at": ""}
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as error:
+        return {"error": f"{path.name} did not parse: {error.__class__.__name__}: {error}", "source": str(path), "fetched_at": ""}
+    if made_from != current:
+        return {"error": f"lot data is for another base.geojson: {rerun}", "source": str(path), "fetched_at": fetched}
+    for feature in features:
+        row = by_index.get(feature.get("index")) if feature["kind"] == "lot" else None
+        if row:
+            feature.update(address=row["address"], owner=row["owner"], parcel=row["ain"])
+    return {"error": "", "source": str(path), "fetched_at": fetched}
 
 
 def _items(connection, repo: str | None, now: str, today: date) -> dict:
@@ -188,12 +230,16 @@ def document(connection, *, now: str) -> dict:
     mission, items = _mission(paths["mission"], today), _items(connection, recorded, now, today)
     if problems:
         mission["error"], items["error"] = problems[0], problems[0]
+    base = _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []}
+    lots = (_lots(paths["lots"], paths["base"], base["features"]) if not base["error"]
+            else {"error": f"no lot data: {base['error']}", "source": "", "fetched_at": ""})
     return {
         "read": now,
         "config": {"state": state, "source": "the repo table", "problems": problems},
         "mission": mission,
         "assets": _geojson(paths["assets"], ASSET_KEYS, "assets") if not problems else {"error": problems[0], "features": []},
-        "base": _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []},
+        "base": base,
+        "lots": lots,
         "items": items,
         "attention": _attention(mission, items),
     }
