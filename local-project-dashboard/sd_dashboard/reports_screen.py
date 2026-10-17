@@ -287,9 +287,10 @@ def local_days(now: str, *, tz=None) -> list[str]:
 
 
 def scheduled(schedule: list, day: str) -> bool:
-    """Whether a launchd calendar can fire on the day: an empty one (an interval job) always can."""
+    """Whether a launchd calendar can fire on the day. An empty one is a manual job (`JOB_SCHEDULE="manual"`, sd:4965),
+    which never does: only a kickstart starts it. cron-jobs.sh writes no interval job."""
     if not schedule:
-        return True
+        return False
     when = date.fromisoformat(day)
     weekday = (when.weekday() + 1) % 7  # launchd: 0 and 7 are Sunday
     for entry in schedule:
@@ -354,7 +355,7 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
         runs = (log["runs"].pop(last, [0, 0]) if last not in days else log["runs"].get(last, [0, 0])) if last else [0, 0]
         read = bool(log["log"] and last and log["from"] and last >= log["from"]
                     and not (log["cut"] and (not log["read_from"] or last <= log["read_from"])))
-        out[name] = log | {"scheduled": [scheduled(schedule, day) for day in days],
+        out[name] = log | {"manual": not schedule, "scheduled": [scheduled(schedule, day) for day in days],
                            "last": {"day": last, "read": read, "runs": runs if read else [0, 0]}}
     return out
 

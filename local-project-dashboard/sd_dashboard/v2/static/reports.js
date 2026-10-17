@@ -43,7 +43,9 @@ const prevOf = r => { const l = byJob[r.kind + ':' + r.job]; return l[l.indexOf(
 function mark(job, day) {
   const c = CAD[job], i = DAYS.indexOf(day);
   if (!c || i < 0) return ['unknown', '▨', 'not read'];
-  if (!c.scheduled[i]) return ['none', '·', 'not scheduled'];
+  // build (sd:4965): a manual job is never due; a day it ran reads as any run does.
+  if (c.manual) { const [ok, bad] = c.runs[day] || [0, 0]; if (!ok && !bad) return ['none', '·', 'manual: runs when started']; }
+  else if (!c.scheduled[i]) return ['none', '·', 'not scheduled'];
   if (!c.log || (c.from && day < c.from)) return ['unknown', '▨', 'no log yet'];
   // build: a cut read can begin partway through its first day, so that day is not read either (as the server's `last`);
   // a cut with no whole stamped line (no read_from) read no day at all.
@@ -78,8 +80,8 @@ function famState(jobs) {
   const partial = jobs.filter(j => CAD[j] && lastState(j) === 'caution');
   // build: a job whose own last scheduled run was not read (the cadence was not read, the job is not installed, it has no
   // log, the log begins later or its read was cut, or the calendar names no day) makes the lamp unknown, never all clear,
-  // whatever the job's cadence: no failure seen is not health when nothing was seen.
-  const unread = jobs.filter(j => !CAD[j]?.last?.read);
+  // whatever the job's cadence: no failure seen is not health when nothing was seen. A manual job is never due (sd:4965).
+  const unread = jobs.filter(j => !CAD[j]?.manual && !CAD[j]?.last?.read);
   const s = bad.length ? 'warning' : act.length || partial.length ? 'caution' : unread.length ? 'unknown' : 'ok';
   return { s, act: act.length, bad, partial, unread };
 }
