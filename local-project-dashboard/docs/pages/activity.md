@@ -11,8 +11,10 @@ merge carried, read from the same delivery note's `review_selection` and
 `review_clearance` (sd:2211): clean or advisory is ok, blocking findings whose
 dispositions were accepted are a caution, and a merge with no review record is
 counted, not drawn. A review that never reached a merge is not recorded, and a
-review's time is its merge's. Deploys and mail have no collector; the document
-names each with its reason and the page draws it unknown, not zero. Job retry posts the job's revision
+review's time is its merge's. The design's deploy and mail kinds are left out:
+no repository records deployments, and the operator ruled out a mail reader
+(sd:2212). A kind whose every source failed to read draws hatched, unknown
+rather than zero, with the reason. Job retry posts the job's revision
 and asks first after exit 127, command not found, naming the exit (sd:3392). Its toast says "Retry
 started" only when launchctl accepted the request; a refusal names launchctl's
 message, and a timeout or a lost answer says the outcome is not known, as

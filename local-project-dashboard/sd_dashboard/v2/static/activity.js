@@ -12,14 +12,12 @@ addEventListener('DOMContentLoaded', () => {
   const C = window.shell.commands;
   const $ = id => document.getElementById(id);
 
-  // build: the sources are the document's. A kind with no collector is unknown, with the document's reason.
+  // build: the sources are the document's. The design's Deploys and Mail are left out: nothing records either (sd:2212).
   const KINDS = [
     { id: 'merge', name: 'Merges', icon: 'git-pull-request', src: 'sd-ship delivery notes' },
     { id: 'run', name: 'Runs', icon: 'play', src: 'runner assignments and launchd jobs' },
     // build: a review is the one its merge carried, from the delivery note (sd:2211); one that never shipped is not recorded.
     { id: 'review', name: 'Reviews', icon: 'bot', src: 'sd-ship delivery notes: the review each merge carried' },
-    { id: 'deploy', name: 'Deploys', icon: 'hard-drive-download', src: 'none' },
-    { id: 'mail', name: 'Mail', icon: 'mail', src: 'none' },
     { id: 'command', name: 'Commands', icon: 'terminal', src: 'the execution journal: notes of kind exec' },
   ];
   const SOURCES = { merge: ['merge'], run: ['run', 'job'], review: ['review'], command: ['command'] };
@@ -32,10 +30,9 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Data (build) ----------
   let DOC = null, EVENTS = [], OBSERVED = Date.now(), RANGE = { from: OBSERVED - 864e5, to: OBSERVED }, REPOS = [];
-  // A kind is unknown when nothing collects it, or when every source behind it failed to read this time.
+  // A kind is unknown when every source behind it failed to read this time: unknown is not zero.
   const unknownWhy = k => {
     if (!DOC) return 'not read yet';
-    if (DOC.unknown[k]) return DOC.unknown[k];
     const src = SOURCES[k] || [];
     return src.length && src.every(s => DOC.sources[s]) ? src.map(s => DOC.sources[s]).join('; ') : '';
   };
@@ -71,7 +68,8 @@ addEventListener('DOMContentLoaded', () => {
   let page = 1, size = 50, selected = null, allRepos = false;
   function readURL() {
     const p = new URLSearchParams(location.search);
-    (p.get('kind') || '').split(',').filter(Boolean).forEach(v => F.kind.add(v));
+    // A kind the page does not draw (an old link's deploy or mail) is dropped, or it would hide every row.
+    (p.get('kind') || '').split(',').filter(v => kindOf(v)).forEach(v => F.kind.add(v));
     (p.get('repo') || '').split(',').filter(Boolean).forEach(v => F.repo.add(v));
     F.state = p.get('state') || ''; F.q = p.get('q') || ''; F.hour = p.get('range') === '1h'; F.all = p.get('range') === 'all';
     const asked = Number(p.get('page'));
@@ -106,9 +104,9 @@ addEventListener('DOMContentLoaded', () => {
     const n = (k, s) => EVENTS.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
     // A lamp, its Kind chip and its lane button are one control (design.md § Interaction rules): pressed is F.kind.
-    // build: a kind with no answer is a lamp that cannot be pressed, as the design's deploy cell is.
+    // build: a kind whose read failed is a lamp that cannot be pressed: it has no answer to filter.
     const cell = (k, val) => unknownWhy(k.id)
-      ? { state: 'unknown', attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">no source</span>` }
+      ? { state: 'unknown', attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">not read</span>` }
       : { button: true, state: worst(k.id), pressed: F.kind.has(k.id), attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val };
     // Runs mixes two sources: a job carries `job`, an assignment carries `status`; count each by its own field.
     const asg = EVENTS.filter(e => e.k === 'run' && e.status);
@@ -160,7 +158,7 @@ addEventListener('DOMContentLoaded', () => {
       const evs = EVENTS.filter(e => e.k === k.id && inWindow(e) && (!F.repo.size || F.repo.has(e.repo))); // the chart is the 24 h window
       const why = unknownWhy(k.id);
       const btn = html`<button class="lane-btn" type="button" data-kind="${k.id}" aria-pressed="${String(F.kind.has(k.id))}">${ICON(k.icon)}<span>${k.name}</span><span class="n">${why ? '▨' : String(evs.length)}</span></button>`;
-      if (why) return html`<div class="lane">${btn}<div class="track unknown"><svg viewBox="0 0 ${String(W)} ${String(H)}" preserveAspectRatio="none" aria-hidden="true"><g class="grid">${grid}</g></svg><p class="why-unknown"><span>▨ unknown · no ${k.name.toLowerCase().replace(/s$/, '')} source</span></p></div></div>`;
+      if (why) return html`<div class="lane">${btn}<div class="track unknown"><svg viewBox="0 0 ${String(W)} ${String(H)}" preserveAspectRatio="none" aria-hidden="true"><g class="grid">${grid}</g></svg><p class="why-unknown"><span>▨ unknown · ${k.name.toLowerCase()} not read</span></p></div></div>`;
       // Draw ok first, then caution, then warning, so the loudest ticks sit on top.
       const ticks = evs.slice().sort((a, b) => order[a.s] - order[b.s]).map(e => html`<rect class="tick ${e.s}${e.id === selected ? ' sel' : ''}" data-id="${e.id}" x="${(x(e.at) - 1.5).toFixed(1)}" y="4" width="3" height="${String(H - 8)}"><title>${e.what} · ${hhmm(e.at)}Z</title></rect>`);
       return html`<div class="lane">${btn}<div class="track"><svg viewBox="0 0 ${String(W)} ${String(H)}" preserveAspectRatio="none" role="img" aria-label="${k.name}: ${String(evs.length)} in 24 hours"><g class="grid">${grid}</g>${ticks}</svg></div></div>`;
@@ -308,9 +306,9 @@ addEventListener('DOMContentLoaded', () => {
   function showKind(id) {
     const k = kindOf(id);
     put(details, html`<p class="kind"><span class="g-unknown" aria-hidden="true">▨</span> ${k.name} · unknown</p>
-      <h2>No ${k.name.toLowerCase().replace(/s$/, '')} source</h2>
-      <p class="why">${unknownWhy(id)} Unknown is not zero: ${k.name.toLowerCase()} may have happened; nothing this page can read records them.</p>`);
-    window.shell.setContext?.(`${k.name}: no source`); openPane('tab-details'); swap();
+      <h2>${k.name} not read</h2>
+      <p class="why">The read failed: ${unknownWhy(id)}. Unknown is not zero: ${k.name.toLowerCase()} may have happened. Reload reads again.</p>`);
+    window.shell.setContext?.(`${k.name}: not read`); openPane('tab-details'); swap();
   }
   function select(id, open) { selected = id; show(id); if (open) openPane('tab-details'); }
 

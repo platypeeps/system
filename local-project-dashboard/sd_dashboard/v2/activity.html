@@ -4,8 +4,8 @@
   Data: /api/activity (activity_screen.document: sd-ship delivery notes, runner assignments, launchd jobs and their log time, and
   the execution journal, over the 24 hours before the read; the journal's older records come too, for All read),
   read when the page opens and after a write. The journal is runner_exec.execution_journal: palette and runner runs (sd:2183).
-  Reviews are the review each merge carried, from its delivery note (sd:2211). Deploys and mail have no collector: the
-  document names each with its reason and the page draws it unknown.
+  Reviews are the review each merge carried, from its delivery note (sd:2211). A kind whose every source failed to read
+  draws unknown, with the reason.
   Writes: the v1 action route for job retry. Nothing here is sample data.
 -->
 <html lang="en">
@@ -56,12 +56,12 @@
 
   <section class="chart" aria-labelledby="chart-h">
     <div class="sec-head">
-      <h2 id="chart-h">Last 24 hours <button class="help" type="button" aria-label="Help: Last 24 hours" data-help="<b>One lane per kind.</b> Each tick is one event at its time. A plain tick went fine; <b>▲</b> amber wants a look; <b>■</b> red failed. A hatched lane has no collector yet. Tap a lane to filter; tap a tick to open that event.">
+      <h2 id="chart-h">Last 24 hours <button class="help" type="button" aria-label="Help: Last 24 hours" data-help="<b>One lane per kind.</b> Each tick is one event at its time. A plain tick went fine; <b>▲</b> amber wants a look; <b>■</b> red failed. A hatched lane failed to read this time. Tap a lane to filter; tap a tick to open that event.">
         <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       <div class="tally"><div class="chips" role="group" aria-label="Range" id="range"></div></div>
     </div>
     <div class="lanes" id="lanes"></div>
-    <p class="legend"><span><span class="sw"></span>event</span><span><span class="sw c"></span>▲ caution</span><span><span class="sw w"></span>■ failed</span><span><span class="sw h"></span>no source (unknown)</span><span>times UTC</span></p>
+    <p class="legend"><span><span class="sw"></span>event</span><span><span class="sw c"></span>▲ caution</span><span><span class="sw w"></span>■ failed</span><span><span class="sw h"></span>not read (unknown)</span><span>times UTC</span></p>
     <details class="fallback"><summary>Events per hour as a table</summary><div class="tbl-wrap" id="chart-table"></div></details>
   </section>
 

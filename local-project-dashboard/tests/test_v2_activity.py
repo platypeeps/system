@@ -5,9 +5,10 @@ loads its script before `shell.js`; `/api/activity` is one 24-hour timeline
 built from records the library already keeps -- the delivery notes
 `ship.note_merge` writes, runner assignments with their queue revision,
 launchd jobs placed at their log time -- plus the execution journal
-`runner_exec.executions` lists, older records too, and names every kind it
-has no collector for, with the reason, rather than showing it as zero. The
-page follows the design source at d82daa1.
+`runner_exec.executions` lists, older records too. A kind whose every source
+failed to read is unknown, with the reason, rather than zero; the design's
+deploy and mail kinds, which nothing records, are left out. The page follows
+the design source at d82daa1.
 
 `activity.js` runs under JavaScriptCore (osascript), against the stand-in
 page and shell `test_v2_tasks` uses, with the real reader (`read.js`,
@@ -115,7 +116,7 @@ class TheDocument(ScreenCase):
     def test_the_window_is_the_24_hours_before_the_read(self):
         self.assertEqual((self.doc["read"], self.doc["from"], self.doc["to"]),
                          (NOW, "2026-09-05T12:00:00Z", NOW))
-        self.assertEqual(self.doc["kinds"], ["merge", "run", "review", "deploy", "mail", "command"])
+        self.assertEqual(self.doc["kinds"], ["merge", "run", "review", "command"])
         stamps = [event["at"] for event in self.doc["events"]]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
 
@@ -182,9 +183,12 @@ class TheDocument(ScreenCase):
         self.assertFalse(any(e["at"] < self.doc["from"] for e in self.doc["events"] if e["k"] != "command"),
                          "only the journal reaches before the window")
 
-    def test_a_kind_with_no_collector_is_named_with_its_reason(self):
-        self.assertEqual(set(self.doc["unknown"]), {"deploy", "mail"})
-        self.assertTrue(all(reason.startswith("No collector reads") for reason in self.doc["unknown"].values()))
+    def test_deploy_and_mail_are_not_kinds(self):
+        # No repository records GitHub deployments, and the operator ruled out a mail reader (sd:2212).
+        for kind in ("deploy", "mail"):
+            self.assertNotIn(kind, activity_screen.KINDS)
+            self.assertNotIn(kind, self.doc["kinds"])
+        self.assertNotIn("unknown", self.doc, "no kind is unknown by design; only a failed source is")
         self.assertEqual(self.doc["sources"], {"merge": "", "review": "", "run": "", "job": "", "command": ""})
 
     # --- reviews: the review each merge carried (operator ruling on sd:2211) ---
@@ -330,21 +334,45 @@ class TheScript(ScreenCase):
             ["command.item", "command", "safe", "i", None, True, False, False],
         ])
 
-    def test_the_page_reads_the_document_once_and_draws_unknown_kinds_hatched(self):
-        out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html; R.sub = ELS.sub.html;")
+    def test_the_page_reads_the_document_once_and_draws_no_hatched_kind(self):
+        out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html; R.sub = ELS.sub.html;"
+                            " R.filters = ELS.filters.html; R.table = ELS['chart-table'].html;")
         self.assertEqual(out["gets"], ["/api/activity"])
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         lanes = out["R"]["lanes"]
         for kind in ("deploy", "mail"):
-            self.assertRegex(lanes, rf'data-kind="{kind}"[^>]*>.*?<span class="n">▨</span>')
-            self.assertRegex(out["R"]["ann"], rf'<div class="cell" data-kind="{kind}" data-state="unknown">')
+            for part in ("lanes", "ann", "filters"):
+                self.assertNotIn(f'"{kind}"', out["R"][part], part)
+        self.assertNotIn("Deploys", out["R"]["table"])
+        self.assertNotIn('data-state="unknown"', out["R"]["ann"], "every source read, so no lamp is hatched")
+        self.assertNotIn("track unknown", lanes)
+        self.assertEqual(re.findall(r'class="lane-btn" type="button" data-kind="(\w+)"', lanes), ["merge", "run", "review", "command"])
         self.assertIn('data-kind="command" data-state="warning"', out["R"]["ann"])
         self.assertIn("Port the page", out["R"]["rows"])
         self.assertIn("nightly-sync failed with exit 7", out["R"]["rows"])
         inside = [e for e in self.doc["events"] if e["at"] >= self.doc["from"]]
         self.assertIn(f"{len(inside)} events", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 2, "what": "failed events in 24 h"})
+
+    def test_an_old_link_to_deploys_or_mail_keeps_only_the_kinds_the_page_draws(self):
+        # A saved view or bookmark from before the kinds were dropped: it must not filter every row away.
+        out = self.run_page("R.rows = ELS.rows.html;", pre="location.search = '?kind=deploy,merge,mail';")
+        self.assertEqual(out["urls"][-1], ["merge", None])
+        self.assertIn("Port the page<small>", out["R"]["rows"])
+
+    def test_a_kind_whose_every_source_failed_is_hatched_with_the_reason(self):
+        with patch.object(activity_screen, "reviews", side_effect=sqlite3.OperationalError("database locked")):
+            doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
+        out = self.run_page("""R.ann = ELS.annunciator.html; R.lanes = ELS.lanes.html;
+ELS.lanes.listeners.click[0]({ target: { closest: s => s === '.lane-btn' ? { dataset: { kind: 'review' } } : null } });
+R.details = ELS.details.html;""", doc=doc)
+        self.assertIn('<div class="cell" data-kind="review" data-state="unknown">', out["R"]["ann"])
+        self.assertIn("▨ unknown · reviews not read", out["R"]["lanes"])
+        self.assertIn("Reviews not read", out["R"]["details"])
+        self.assertIn("The read failed: database locked.", out["R"]["details"])
+        self.assertIn('data-kind="merge" data-state="', out["R"]["ann"])
+        self.assertNotIn('data-kind="merge" data-state="unknown"', out["R"]["ann"], "merges read, so merges are not hatched")
 
     def test_a_failed_read_is_an_error_and_a_failed_source_is_partial(self):
         out = self.run_page("", doc={"status": 500, "error": "database locked"})
