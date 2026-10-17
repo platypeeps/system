@@ -422,6 +422,8 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     `issues_error` saying why none could be read.
     `intake` is Issue intake (sd:4840), `issues.intake`: each `github_issues` repo's open third-party issues no item
     carries, with `intake_error` saying why none could be read.
+    `observed` holds, for each fleet area the read came from the server's snapshot, when that area was read (`at`)
+    and why its newest read failed (`stale`, else None); the page says both (sd:TBD).
     `mail` is Your mail (sd:4191), `today_mail.document`: the mail threads waiting on the operator under each repo's aliases,
     with `mail_more`, `mail_unread` and `mail_error` saying what is left out and why.
     """
@@ -457,7 +459,10 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     active = active_sessions.document(connection, now=now, sessions=kept.get("sessions") or {},
                                       sessions_error=sources["sessions"], herdr=herdr)
     waiting = _waiting(connection, now)
-    return {"now": now, "sources": sources, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
+    # When each fleet area was read, and why its newest read failed, from the server's snapshot (sd:TBD).
+    observed = {area: {"at": found.get("observed"), "stale": found.get("stale")} for area, found in kept.items()
+                if isinstance(found, dict) and found.get("observed")}
+    return {"now": now, "sources": sources, "observed": observed, "rows": shown, "active": active, "snoozed": snoozed + work_snoozed, "snooze_error": snooze_error,
             "work": work, "work_error": work_error, "waiting": waiting, "attention": _attention(shown, waiting),
             **issues.document(connection), **issues.intake(connection), **today_mail.document(connection, now=now)}
 

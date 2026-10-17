@@ -242,6 +242,15 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["sources"]["repos"], "")
         self.assertTrue(doc["repos"])
 
+    def test_a_snapshot_section_carries_when_it_was_observed_and_why_it_is_stale(self):
+        def kept(area):
+            return dict(fleet(area), observed="2026-09-06T11:52:00Z", **({"stale": "git did not answer"} if area == "sessions" else {}))
+
+        doc = self.document(read=kept)
+        self.assertEqual((doc["git"]["observed"], doc["git"]["stale"]), ("2026-09-06T11:52:00Z", None))
+        self.assertEqual((doc["sessions"]["observed"], doc["sessions"]["stale"]), ("2026-09-06T11:52:00Z", "git did not answer"))
+        self.assertNotIn("observed", self.document()["git"])
+
     def test_the_repo_verb_writes_and_refuses_a_stale_before(self):
         got = management_screen.set_repo(self.connection, "runner-merge", self.ids["checkout"], "auto", "manual")
         self.assertEqual((got["value"], got["before"]), ("auto", "manual"))
@@ -835,6 +844,16 @@ class TheScript(PageScript):
         self.assertIn("git, sessions", out["states"][-1]["text"])
         self.assertIn("git state not read: stopped at its budget", out["R"]["repos"])
         self.assertIn("Sessions were not read", out["R"]["sess"])
+
+    def test_a_snapshot_section_says_when_it_was_observed_and_a_stale_one_is_not_green(self):
+        git = dict(self.doc["git"], observed="2026-09-06T11:52:00Z", stale=None)
+        sess = dict(self.doc["sessions"], observed="2026-09-06T11:31:00Z", stale="git did not answer")
+        out = self.run_page("""R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;
+R.lamp = ELS['sv-sessions'].dataset.state;""", doc=dict(self.doc, git=git, sessions=sess))
+        self.assertIn("git read 11:52 UTC", out["R"]["repos"])
+        self.assertNotIn("stale", out["R"]["repos"])
+        self.assertIn("fleet · 11:31 UTC · <span class=\"g-unknown\">▨</span> stale: git did not answer", out["R"]["sess"])
+        self.assertEqual(out["R"]["lamp"], "unknown")
 
     def test_a_repo_flip_posts_the_verb_with_before_toasts_after_the_write_and_undoes(self):
         path = self.ids["checkout"]

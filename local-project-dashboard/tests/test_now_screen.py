@@ -212,7 +212,7 @@ class Document(ScreenCase):
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
-        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error", "active",
+        self.assertEqual(set(document), {"rows", "sources", "now", "observed", "snoozed", "snooze_error", "work", "work_error", "active",
                                          "waiting", "attention", "issues", "issues_error", "intake", "intake_error",
                                          "mail", "mail_more", "mail_unread", "mail_error"})
         self.assertEqual(document["now"], NOW)

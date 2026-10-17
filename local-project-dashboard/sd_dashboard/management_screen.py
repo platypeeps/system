@@ -292,6 +292,11 @@ def _dependabot_gate(remote: str | None) -> str | None:
     return "denied" if slug in holds.DENIED else "owner" if found.owner in holds.ALLOWED_OWNERS else None
 
 
+def _seen(document: dict) -> dict:
+    """When the fleet snapshot read `document` and why its newest read failed; empty for a direct read (sd:TBD)."""
+    return {"observed": document.get("observed"), "stale": document.get("stale")} if "observed" in document else {}
+
+
 def _git(read, now: str) -> dict:
     document = read("repos")
     rows = document.get("repos") if isinstance(document, dict) else None
@@ -305,7 +310,7 @@ def _git(read, now: str) -> dict:
                                                    "behind_default", "fetched_iso", "last_iso", "subject", "error")}
                    | {"truncated": list(row.get("truncated") or []), "state": state, "headline": headline,
                       "detail": detail, "remedy": remedy})
-    return {"root": document.get("root"), "counts": document.get("counts") or {}, "repos": out}
+    return {"root": document.get("root"), "counts": document.get("counts") or {}, "repos": out} | _seen(document)
 
 
 def _assignment(connection, row) -> dict:
@@ -336,7 +341,7 @@ def _sessions(read) -> dict:
     abandoned = sum(1 for tree in trees if not tree["live"])
     return {"registered": len(trees), "abandoned": abandoned,
             "processes": [{key: proc.get(key) for key in ("pid", "elapsed", "command")} for proc in procs if isinstance(proc, dict)],
-            "processes_error": document.get("processes_error") or ""}
+            "processes_error": document.get("processes_error") or ""} | _seen(document)
 
 
 def _services(connection, backend) -> list[dict]:

@@ -261,10 +261,12 @@ reported. A listening socket does not prove application health or identify the
 intended service; inspection is limited to what this user can see and performs
 no network scan. A collector runs only when its page reads: Health runs the
 listener inspection, a Resources view runs its tile, and Management, Health and
-Operations > Sessions run the fleet reader. Today's Now runs the fleet reader too, once per
-`/api/now` read, for both areas, reads the shadow table, and reads the launchd
+Operations > Sessions run the fleet reader. Today's Now runs the fleet reader too, for both
+areas, reads the shadow table, and reads the launchd
 jobs' last-run state as Management does. None of them
 exposes prompts, environment variables, output logs or arbitrary commands.
+The server keeps the fleet reader's last answer for up to 45 seconds, refreshes it in the background,
+and shows when it was read; a failed refresh keeps it, marked stale with the reason (`snapshot.py`).
 
 The main server binds **local loopback**. Remote access requires an explicit
 private HTTPS Tailscale Serve origin and the node owner's exact operator login.
