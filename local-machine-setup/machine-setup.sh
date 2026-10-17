@@ -3294,8 +3294,10 @@ write_manifest() { # target, body-file, header-line...
   # A roster that had entries is never written empty (sd:3106): capture read
   # "manifest: 0 label(s)" on a machine whose agents were all installed, and
   # the next update would have removed every one. An empty roster is a hand edit.
-  if [ ! -s "$wm_body" ] && [ -n "$(manifest_entries "$wm_target")" ]; then
-    echo "    REFUSED $(basename "$wm_target") — capture found no entries where it lists $(manifest_entries "$wm_target" | grep -c .); not written"
+  # The kept `!` lines are no entry here: a body of those alone is empty.
+  if [ -z "$(manifest_entries "$wm_body" | grep -v '^!' || :)" ] \
+      && [ -n "$(manifest_entries "$wm_target" | grep -v '^!' || :)" ]; then
+    echo "    REFUSED $(basename "$wm_target") — capture found no entries where it lists $(manifest_entries "$wm_target" | grep -vc '^!'); not written"
     ADDITIVE_HELD=$((ADDITIVE_HELD + 1))
     return 0
   fi

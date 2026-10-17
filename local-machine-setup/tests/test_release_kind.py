@@ -532,6 +532,16 @@ class Negation(Case):
         self.assertNotIn("HELD    personal.brew", result.stdout, self.out(result))
         self.assertIn("!example-dropped", (self.profiles / "personal.brew").read_text())
 
+    def test_bang_lines_do_not_let_capture_write_a_roster_empty(self):
+        """sd:3106's guard: a capture that finds no entry where the profile
+        lists some writes nothing, `!` lines or not."""
+        before = (self.profiles / "personal.brew").read_text()
+
+        result = self.brew("git", "capture", "--apply")
+
+        self.assertIn("REFUSED personal.brew", result.stdout, self.out(result))
+        self.assertEqual((self.profiles / "personal.brew").read_text(), before)
+
     def test_a_bang_line_drops_a_release_entry_by_its_first_bin(self):
         (self.profiles / "common.release").write_text(f"example,example-helper {REPO} example.tar.gz\n")
         (self.profiles / "personal.release").write_text("!example\n")
