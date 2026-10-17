@@ -56,14 +56,6 @@ doctor_answered() { # rc, output
   [ "$1" -eq 0 ] || { [ "$1" -eq 1 ] && grep -q '^Warning:' "$2"; }
 }
 
-# Homebrew dropped Intel x86_64 in September 2026 and warns every night on an
-# Intel Mac; no fix here clears it, so it is no finding (sd:4785). Run it on
-# an answered output only: it can leave a warning exit with no warning.
-drop_platform_warning() { # output
-  awk '/^Warning:/ { skip = /^Warning: You are using macOS on Intel x86_64\./ } !skip' "$1" > "$1.kept"
-  mv "$1.kept" "$1"
-}
-
 d_rc=0
 st_step 600 brew doctor < /dev/null > "$tmp/raw" 2>&1 || d_rc=$?
 # A failed step names itself on stderr too, so in this capture; it is not brew's.
@@ -73,7 +65,8 @@ if ! doctor_answered "$d_rc" "$tmp/doctor1"; then
   echo "brew doctor FAILED (exit $d_rc)" >&2
   exit 1
 fi
-drop_platform_warning "$tmp/doctor1"
+st_drop_platform_warning "$tmp/doctor1" > "$tmp/kept1"
+mv "$tmp/kept1" "$tmp/doctor1"
 if ! grep -q '^Warning:' "$tmp/doctor1"; then
   echo "brew doctor: clean"
   exit 0
@@ -125,7 +118,8 @@ if ! doctor_answered "$d_rc" "$tmp/doctor2"; then
   echo "brew doctor re-check FAILED (exit $d_rc)" >&2
   exit 1
 fi
-drop_platform_warning "$tmp/doctor2"
+st_drop_platform_warning "$tmp/doctor2" > "$tmp/kept2"
+mv "$tmp/kept2" "$tmp/doctor2"
 if ! grep -q '^Warning:' "$tmp/doctor2"; then
   echo "brew doctor: clean after auto-fixes"
   exit 0

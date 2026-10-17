@@ -506,9 +506,11 @@ brew_node_bin() {
 
 # The bundle id that answers mailto: links: the first line of <profile>.mailto,
 # else of common.mailto, else Chrome, the handler before it moved (sd:3966).
+# A profile `!id` line drops common's id, as in every other kind (sd:4942).
 mailto_handler() {
   mh=$(profile_entries "$PROFILE" mailto | head -1)
-  [ -n "$mh" ] || mh=$(profile_entries common mailto | head -1)
+  [ -n "$mh" ] || mh=$(profile_entries common mailto \
+    | drop_negated "$(profile_drops "$PROFILE" mailto)" | head -1)
   echo "${mh:-com.google.Chrome}"
 }
 
@@ -670,11 +672,16 @@ stage_release() {
     echo "  no release tools in this profile"
     return 0
   fi
+  printf '%s\n' "$rel" | release_conflicts | while read -r rs_bin rs_n rs_lines; do
+    note_failure "release: $rs_n lines take $rs_bin ($rs_lines); keep one, with a !<name> line in the profile's .release for common's; none installs until then" 1
+  done
+  rs_bad=$(printf '%s\n' "$rel" | release_conflicts names)
   printf '%s\n' "$rel" | while IFS= read -r line; do
     if ! release_parse "$line"; then
       note_failure "release: cannot read the line '$line' (want <bins> <owner/repo> <asset .tar.gz|.tgz|.zip> [<tag>])" 1
       continue
     fi
+    ! printf '%s\n' "$rs_bad" | grep -qxF "$rl_name" || continue
     read -r rs_have rs_src <<EOF
 $(release_record "$rl_name")
 EOF
@@ -693,6 +700,27 @@ EOF
     fi
     run release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rl_tag"
   done
+}
+
+# Each bin that two or more .release lines on stdin take, as
+# `<bin> <count> '<line>' and '<line>'...`; with `names`, the entry name of
+# each such line, once. Such lines write one bin, and lines of one name read
+# one record, so each run would install one over the other. Neither may be
+# taken for the profile's choice: the stage and the sweep act on none of
+# them, and the bins and record already there stay (sd:4942).
+release_conflicts() { # [names]
+  awk -v q="'" -v names="${1:-}" '
+    { first[NR] = $1; sub(/,.*/, "", first[NR]); nb = split($1, b, ",")
+      for (j = 1; j <= nb; j++) {
+        if (own[NR, b[j]]++) continue
+        if (!(b[j] in c)) o[++k] = b[j]
+        c[b[j]]++; l[b[j]] = (c[b[j]] > 1 ? l[b[j]] " and " : "") q $0 q; bins[NR] = bins[NR] " " b[j]
+      } }
+    END {
+      if (names == "") { for (i = 1; i <= k; i++) if (c[o[i]] > 1) print o[i], c[o[i]], l[o[i]]; exit }
+      for (r = 1; r <= NR; r++) { nb = split(bins[r], b, " ")
+        for (j = 1; j <= nb; j++) if (c[b[j]] > 1) { if (!seen[first[r]]++) print first[r]; break } }
+    }'
 }
 
 # Splits one .release line into rl_bins, rl_repo, rl_asset, rl_tag and
@@ -854,10 +882,15 @@ release_outdated() {
   rlo_rc=0
   rlo_rel=$(manifest release)
   [ -n "$rlo_rel" ] || return 0
+  rlo_bad=$(printf '%s\n' "$rlo_rel" | release_conflicts names)
+  for rlo_name in $rlo_bad; do
+    printf '%s unknown\n' "$rlo_name"; rlo_rc=1
+  done
   while IFS= read -r rlo_line; do
     if ! release_parse "$rlo_line"; then
       printf '%s unknown\n' "${rlo_line%%[[:space:]]*}"; rlo_rc=1; continue
     fi
+    ! printf '%s\n' "$rlo_bad" | grep -qxF "$rl_name" || continue
     [ -z "$rl_tag" ] || continue
     if ! rlo_new=$(release_latest "$rl_repo"); then
       printf '%s unknown\n' "$rl_name"; rlo_rc=1; continue
@@ -896,7 +929,7 @@ release_sweep() {
   [ -n "$rsw" ] || return 0
   while read -r rsw_name rsw_old rsw_new rsw_line; do
     if [ "$rsw_old" = unknown ]; then
-      echo "  FAILED  release $rsw_name: no latest release tag, or a line of another shape"
+      echo "  FAILED  release $rsw_name: no latest release tag, a line of another shape, or a bin another line takes too"
       failed="$failed, release $rsw_name"
     elif release_parse "$rsw_line" \
         && release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rsw_new" </dev/null; then
@@ -4835,7 +4868,19 @@ cmd_doctor() {
   fi
 
   if command -v brew >/dev/null 2>&1; then
-    if bound_step 600 brew doctor >/dev/null 2>&1; then
+    # brew doctor exits 1 on a warning; Homebrew's Intel one is no finding,
+    # so a run that warns of nothing else is clean (sd:4943). Any other exit,
+    # a timeout among them, is no answer.
+    bd_rc=0
+    bd_out=$(bound_step 600 brew doctor 2>&1) || bd_rc=$?
+    if [ "$bd_rc" -eq 1 ] && printf '%s\n' "$bd_out" | grep -q '^Warning:'; then
+      command -v st_drop_platform_warning >/dev/null 2>&1 || . "$ROOT/lib/brew_unlinked.sh"
+      if bd_out=$(printf '%s\n' "$bd_out" | st_drop_platform_warning) \
+          && ! printf '%s\n' "$bd_out" | grep -q '^Warning:'; then
+        bd_rc=0
+      fi
+    fi
+    if [ "$bd_rc" -eq 0 ]; then
       echo "  ok      brew doctor clean"
     else
       echo "  WARN    brew doctor has warnings — run: brew doctor"

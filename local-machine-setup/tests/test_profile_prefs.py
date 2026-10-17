@@ -86,7 +86,7 @@ class Case(unittest.TestCase):
             write_exec(self.stubs / name, LOGGING_STUB)
         fixture_config.seal(self, self.stubs)
 
-    def run_script(self, *args, fnm_have="", ls_mailto="com.google.chrome"):
+    def run_script(self, *args, fnm_have="", ls_mailto="com.google.chrome", **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -97,6 +97,7 @@ class Case(unittest.TestCase):
             "CALL_LOG": str(self.call_log),
             "FNM_HAVE": fnm_have,
             "LS_MAILTO": ls_mailto,
+            **extra,
         }
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
@@ -166,6 +167,14 @@ class MailtoHandler(Case):
         (self.profiles / "personal.mailto").write_text("com.example.mail\n")
         self.update_tooling(fnm_have="18 20 24", ls_mailto="com.example.common")
         self.assertEqual(self.calls("duti"), ["duti -s com.example.mail mailto:"])
+
+    def test_a_bang_line_alone_drops_common_s_handler_for_chrome(self):
+        """sd:4942: `!id` drops common's id, as it drops any other kind's
+        entry; skipping it alone let common's handler win."""
+        (self.profiles / "common.mailto").write_text("com.example.common\n")
+        (self.profiles / "personal.mailto").write_text("!com.example.common\n")
+        self.update_tooling(fnm_have="18 20 24", ls_mailto="com.example.common")
+        self.assertEqual(self.calls("duti"), ["duti -s com.google.Chrome mailto:"])
 
     def test_no_mailto_file_keeps_chrome(self):
         out = self.update_tooling(fnm_have="18 20 24")
