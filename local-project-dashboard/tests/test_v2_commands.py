@@ -112,15 +112,14 @@ def declarations(text):
     for m in OPENS.finditer(text):
         body = literal(text, m.start())
         if ON.search(body) and LABEL.search(body):
-            out.append((re.match(r"\{\s*id:\s*([^,]+),", body).group(1).strip("'`"), body))
+            at = re.match(r"\{\s*id:\s*", body).end()
+            out.append((body[at:scan(body, at, lambda ch: ch == ",")].strip("'`"), body))
     return out
 
 
 # The pages whose commands do not say yet what they do: other branches own these scripts now (sd:4963). Each leaves this
 # list when its texts land; once it is empty, every page's commands are held to the rule.
-NOT_YET = {"activity.js", "briefs.js", "commands.js", "contributions.js", "designs.js", "documents.js", "health.js", "hoa.js",
-           "home.js", "management.js", "metrics.js", "reports.js", "research.js", "skills.js", "snooze.js", "tasks.js",
-           "writing.js"}
+NOT_YET = {"health.js", "hoa.js", "home.js", "reports.js", "tasks.js"}
 # `does: '…'`, or `does: o => …` for a text that differs per row: each text a person reads is about 12 words at most.
 DOES = re.compile(r"\bdoes:\s*")
 TEXT = re.compile(r"'((?:[^'\\]|\\.)*)'|`([^`]*)`")

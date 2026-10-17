@@ -254,10 +254,10 @@
     const offWhy = o => !o.control ? (DOC?.controls?.error ? `the provider registry was not read: ${DOC.controls.error}` : 'not in the provider registry')
       : o.revision ? true : 'the page holds no registry revision';
     C.register(
-      { id: 'providers.configure', on: 'provider', label: 'Configure', key: 'f', risk: 'undo', executes: true, primary: () => true,
+      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', risk: 'undo', executes: true, primary: () => true,
         when: offWhy, fields: configureFields, consequence: () => 'Saves the enabled choices and both automatic role orders together, as the registry reads them now.',
         cli: () => 'sd providers configure --file CONFIG.json', run: (o, v) => configure(o, v) },
-      { id: 'bill.cap', on: 'bill', label: 'Cap', key: 'p', risk: 'undo', executes: true, primary: () => true,
+      { id: 'bill.cap', on: 'bill', label: 'Cap', does: o => o.control?.write === 'clear' ? 'Clears the legacy cap on this bill; this cannot be undone.' : 'Sets a monthly cap on this bill; Undo restores the old cap.', key: 'p', risk: 'undo', executes: true, primary: () => true,
         when: o => { const w = offWhy(o); return w !== true ? w : o.control.write ? true : o.control.why; },
         fields: o => o.control?.write === 'set' ? [{ name: 'cap', label: 'New cap, USD a month', required: true, placeholder: o.control.cap_usd_month == null ? 'none' : String(o.control.cap_usd_month),
           help: `Now ${o.control.cap_usd_month == null ? 'no cap' : money(o.control.cap_usd_month)}. Type none to clear it.` }] : [],

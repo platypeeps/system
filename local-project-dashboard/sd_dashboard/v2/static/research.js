@@ -213,15 +213,15 @@ const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-ki
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
-const START = { id: 'research.start', on: 'research request', label: 'Run', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
+const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Gives the line that files this research request; the dashboard files nothing.', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
 function registerCommands() {
   const C = shell.commands;
   C.put(DRAFT);
   C.register(
-    { id: 'research.render', on: 'research project', label: 'Render', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
+    { id: 'research.render', on: 'research project', label: 'Render', does: 'Gives the line that renders this research project again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
       cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, run: () => COPY },
-    { id: 'research.review', on: 'research project', label: 'Review', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
+    { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
   );

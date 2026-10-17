@@ -89,29 +89,29 @@ addEventListener('DOMContentLoaded', () => {
   const kindOf = o => isIssue(o) ? 'issue' : 'pr';
   function registerCommands() {
     C.register(
-      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', key: 'a', risk: 'confirm', bulk: true, primary: () => true,
+      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', risk: 'confirm', bulk: true, primary: () => true,
         when: o => o.event_ids.length ? true : 'no attention event on this row',
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => window.shell.post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
           .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
-      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', key: 'd', risk: 'safe', executes: false, primary: () => true,
+      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
         run: () => 'Copy the line and write nudge.md: the dashboard posts nothing' },
-      { id: 'contribution.task', on: 'contribution', label: 'Make task', key: 'k', risk: 'confirm', executes: true,
+      { id: 'contribution.task', on: 'contribution', label: 'Make task', does: 'Files a task that tracks this contribution; no Undo, cancel it in Tasks.', key: 'k', risk: 'confirm', executes: true,
         when: o => o.item_id ? `already tracked as item #${o.item_id}` : linkOf(o) ? true : 'not filed on GitHub',
         consequence: o => `This files a task, "${o.title}", that tracks ${o.url || o.key} as this contribution. No verb deletes it; cancel it from Tasks.`,
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
         run: o => window.shell.post('/api/contributions/task', { key: o.key, title: o.title })
           .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { load(); throw e; }) },
       // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
-      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', key: 'o', risk: 'safe', executes: false,
+      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', does: 'Gives the line that opens it on GitHub; Details has the link.', key: 'o', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
         run: () => 'Copy the line, or use the link in Details: the dashboard opens nothing itself' },
       // build (sd:3432): Dismiss closes a row with no item that will never settle, such as a pull request that now 404s.
       // The row leaves the open lanes; new attention shows it again, and a lifecycle change ends the dismissal.
-      { id: 'contribution.dismiss', on: 'contribution', label: 'Dismiss', key: 'x', risk: 'confirm',
+      { id: 'contribution.dismiss', on: 'contribution', label: 'Dismiss', does: 'Moves this contribution to Closed; no Undo, new activity shows it again.', key: 'x', risk: 'confirm',
         when: o => o.dismissed ? 'dismissed; the page reads again' : o.item_id ? `tracked as item #${o.item_id}; close the item instead`
           : linkOf(o) ? true : 'not filed on GitHub',
         consequence: o => `This moves ${o.title} to Closed. No verb restores it; new attention or a change on GitHub shows it again, and Make task tracks it.`,

@@ -220,12 +220,12 @@ addEventListener('DOMContentLoaded', () => {
   function registerCommands() {
     C.register(
       // build (sd:3459): every brief is a row in the database, so Read works with or without a vault copy.
-      { id: 'brief.read', on: 'brief', label: 'Read', key: 'r', risk: 'safe', primary: () => true, executes: false,
+      { id: 'brief.read', on: 'brief', label: 'Read', does: 'Opens the brief on its work item\'s page.', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => `sd reports brief show ${shq(o.id)}`, run: o => { location.href = shell.itemPage(o.item); return `#${o.item} opens`; } },
       // build: no verb deletes a task, so no Undo: the capture form shows the line and files it only on Capture.
-      { id: 'brief.task', on: 'brief', label: 'Make task', key: 'k', risk: 'safe',
+      { id: 'brief.task', on: 'brief', label: 'Make task', does: 'Opens Capture with the brief\'s title, to file it as a task.', key: 'k', risk: 'safe',
         cli: o => `sd task add ${shq(o.label)}`, run: o => { shell.capture(o, o.label); return 'Check the title, then Capture'; } },
-      { id: 'brief.open', on: 'brief', label: 'Open in Obsidian', key: 'o', risk: 'safe', executes: false,
+      { id: 'brief.open', on: 'brief', label: 'Open in Obsidian', does: 'Opens the brief\'s vault copy in Obsidian.', key: 'o', risk: 'safe', executes: false,
         when: o => !!o.open || o.copy || 'no vault copy for this brief', cli: o => `open ${shq(o.open)}`,
         run: o => { window.open(o.open, '_blank', 'noopener'); return 'Obsidian opens the copy'; } },
     );
