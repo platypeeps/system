@@ -143,6 +143,8 @@
   //   Each view's panel is the page's element id="view-<id>"; a view with no panel is not drawn. The shell makes the panels
   //   tabpanels, hides all but the shown one, and puts the switch (WAI-ARIA tabs: ← → Home End) before the first panel, under
   //   the lamps. The rail lists the views under the current page, each linking <page>#view=<id>.
+  //   A page whose views filter one surface instead (Tasks: All, HOA, Home) puts an empty <div id="viewswitch"> where the
+  //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
@@ -150,7 +152,8 @@
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
   //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
   //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
-  const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && document.getElementById(`view-${v.id}`));
+  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.id}`);
+  const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
   const viewSeen = new Set(), viewTabs = [], viewLinks = [];
@@ -165,7 +168,7 @@
     VIEW_LIST.forEach((v, i) => {
       const on = v.id === id;
       viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
-      document.getElementById(`view-${v.id}`).hidden = !on;
+      const panel = viewPanel(v); if (panel) panel.hidden = !on;
       if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
     });
     if (viewStarted) viewFire(id);
@@ -188,12 +191,12 @@
     sub.className = 'subnav'; sub.setAttribute('aria-label', `${page} views`);
     VIEW_LIST.forEach(v => {
       const t = document.createElement('button'), nm = document.createElement('span'), n = document.createElement('span');
-      t.type = 'button'; t.setAttribute('role', 'tab'); t.setAttribute('id', `vt-${v.id}`); t.setAttribute('aria-controls', `view-${v.id}`);
+      t.type = 'button'; t.setAttribute('role', 'tab'); t.setAttribute('id', `vt-${v.id}`);
       nm.className = 'nm'; nm.textContent = v.label; n.className = 'n'; n.hidden = true;
       t.append(nm, n); t.addEventListener('click', () => viewShow(v.id));
       bar.append(t); viewTabs.push(t);
-      const panel = document.getElementById(`view-${v.id}`);
-      panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`);
+      const panel = viewPanel(v);
+      if (panel) { t.setAttribute('aria-controls', panel.id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); }
       const li = document.createElement('li'), a = document.createElement('a');
       a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
       // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.
@@ -207,7 +210,7 @@
       if (i < 0 || to === undefined) return;
       e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
     });
-    document.getElementById(`view-${VIEW_LIST[0].id}`).before(bar);
+    viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
     rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
     viewApply(viewOf(location.hash) || VIEW_LIST[0].id);
     const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };

@@ -551,10 +551,10 @@ function El(tag) { const e = { tagName: tag, id: '', attrs: {}, hidden: false, d
   addEventListener(t, f) { (e.listeners[t] = e.listeners[t] || []).push(f); }, fire(t, ev) { (e.listeners[t] || []).forEach(f => f(Object.assign({ type: t, target: e, preventDefault() {} }, ev))); },
   focus() { OUT.focused = e.id; }, closest() { return null; } };
   return e; }
-var PANELS = {}, MADE = [];
+var PANELS = {}, MADE = [], HOST = WITH_HOST ? El('div') : null;
 ['reports', 'cadence'].forEach(id => { const p = El('section'); p.id = 'view-' + id; PANELS[p.id] = p; });
 var document = { readyState: 'loading', activeElement: null,
-  getElementById: id => PANELS[id] || null, createElement: tag => { const e = El(tag); MADE.push(e); return e; },
+  getElementById: id => (id === 'viewswitch' ? HOST : PANELS[id]) || null, createElement: tag => { const e = El(tag); MADE.push(e); return e; },
   querySelector: () => null,
   addEventListener(t, f) { (DOC[t] = DOC[t] || []).push(f); },
   dispatchEvent(e) { if (e.type === 'shell:view') OUT.events.push(e.detail); (DOC[e.type] || []).forEach(f => f(e)); } };
@@ -573,10 +573,10 @@ window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label
 class TheViewSwitch(unittest.TestCase):
     """The view switch, cut out of shell.js: one declaration, window.PAGE_VIEWS, draws the tablist and the rail's sub-entries."""
 
-    def run_view(self, body, hash=""):
+    def run_view(self, body, hash="", host=False):
         block = re.search(r"^  // view:start\n(.*?)^  // view:end$", SHELL_JS, re.S | re.M)
         self.assertIsNotNone(block, "shell.js has no view:start block")
-        script = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)) + block.group(1) + r"""
+        script = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)).replace("WITH_HOST", json.dumps(host)) + block.group(1) + r"""
 var R = {};
 const shown = () => Object.values(PANELS).filter(p => !p.hidden).map(p => p.id);
 const SWITCH_SEL = MADE.find(e => e.getAttribute('role') === 'tablist'), SWITCH_TABS = SWITCH_SEL ? SWITCH_SEL.children : [];
@@ -650,6 +650,19 @@ R.marked = links().map(a => a.getAttribute('aria-current'));""")
 view.count('cadence', null); R.off = n.hidden; R.label = SWITCH_TABS[1].children[0].textContent;""")
         self.assertEqual(out["R"]["on"], ["7", False])
         self.assertEqual((out["R"]["off"], out["R"]["label"]), (True, "Cadence"))
+
+    def test_a_page_with_a_host_gets_the_switch_there_and_keeps_views_without_a_panel(self):
+        out = self.run_view("""R.inHost = HOST.children[0] === SWITCH_SEL;
+R.tabs = SWITCH_TABS.map(t => [t.id, t.getAttribute('aria-controls')]);
+view.show('gone'); R.gone = [view.current(), shown(), location.hash];
+view.show('cadence'); R.back = shown();""", host=True)
+        # Tasks filters one board, matrix and list: its views have no panels, so the page names where the tablist goes.
+        self.assertTrue(out["R"]["inHost"], "the tablist did not go in the page's #viewswitch")
+        self.assertNotIn("before", out)
+        self.assertEqual(out["R"]["tabs"], [["vt-reports", "view-reports"], ["vt-cadence", "view-cadence"], ["vt-gone", None]])
+        self.assertEqual(out["R"]["gone"], ["gone", [], "#view=gone"])
+        self.assertEqual(out["R"]["back"], ["view-cadence"])
+        self.assertEqual([e["id"] for e in out["events"]], ["reports", "gone", "cadence"])
 
     def test_the_shell_hands_pages_the_view_api_and_styles_the_switch(self):
         self.assertRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bview\b")

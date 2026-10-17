@@ -29,8 +29,8 @@
 // rows.reread();   after a write landed. A refused write calls load(): only reread() says the change landed.
 (() => {
   const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
-  window.SHELL_READ = ({ fetch, commands: C, state: put, row, listen }) => spec => {
-    const { source, what } = spec, state = s => put(s, spec.slot), open = () => !spec.active || spec.active();
+  window.SHELL_READ = ({ fetch, commands: C, state: shellState, row, listen }) => spec => {
+    const { source, what } = spec, state = s => shellState(s, spec.slot), open = () => !spec.active || spec.active();
     let generation = 0, applied = 0, putIds = new Set(), picks = [], flight = null, queued = null;
     listen('shell:picked', e => { picks = (e && e.detail) || []; });
 
