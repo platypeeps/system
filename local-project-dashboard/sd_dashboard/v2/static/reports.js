@@ -403,20 +403,20 @@ async function acknowledge(o) {
 const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
-  const task = on => ({ id: `${on}.task`, on, label: 'Make task', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
+  const task = on => ({ id: `${on}.task`, on, label: 'Make task', does: 'Opens Capture to file a task about this report.', key: 'k', risk: 'safe', journal: () => 'new', cli: o => `sd task add ${shq(o.label)}`, run: o => { window.shell.capture(o, '', `${on}.task`); return null; } }); // the filed task is the write
   // build: copy only here. Management shows the job's log in its Details, and its Show log command (key o) opens it (sd:3388).
-  const log = on => ({ id: `${on}.log`, on, label: 'Show log', key: 'l', risk: 'safe', executes: false, when: o => logOf(o) || 'this report came from sd-db, not a job log', cli: o => window.commands.logLine(o.job), run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
+  const log = on => ({ id: `${on}.log`, on, label: 'Show log', does: 'Gives the line that prints the job\'s log.', key: 'l', risk: 'safe', executes: false, when: o => logOf(o) || 'this report came from sd-db, not a job log', cli: o => window.commands.logLine(o.job), run: () => 'Copy it into a terminal, or open the job in Management: its Details show the log' });
   C.register(
     // build: Acknowledge posts /api/reports/<n>/acknowledge with the report's revision, the route v1's form posts. It is off,
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
     // The design's risk, 'undo': reporting.reopen moves the report back to the status it was acknowledged from (sd:2395). It
     // was 'confirm' while sd-db had no verb that reopens a report (operator ruling, sd:2121).
-    { id: 'report.ack', on: 'report', label: 'Acknowledge', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
+    { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
     // build: the report opens as its row on Tasks, the item address every page uses (sd:3526).
-    { id: 'report.show', on: 'report', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
+    { id: 'report.show', on: 'report', label: 'Open item', does: 'Opens the report\'s work item.', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => window.shell.openItem(o.n) },
     log('report'), task('report'),
     // Fix (sd:3456): the shared declaration (commands.js), on a report: a debug session for it, with the report's revision.

@@ -297,60 +297,60 @@
     // The protection collector is one object for the page, not a row of a reading: no read retires it.
     C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
     C.register(
-      { id: 'check.recheck', on: 'check', label: 'Re-check', key: 'e', risk: 'safe', executes: false, primary: () => true,
+      { id: 'check.recheck', on: 'check', label: 'Re-check', does: 'Reads Health again; the line reruns this check.', key: 'e', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
-      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', key: 'b', risk: 'safe', executes: false, primary: () => true,
+      { id: 'storage folder.du', on: 'storage folder', label: 'Show biggest', does: 'Gives the line that lists this folder\'s biggest entries.', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'build output.rm', on: 'build output', label: 'Remove build output', key: 'r', risk: 'confirm', executes: true, primary: () => true,
+      { id: 'build output.rm', on: 'build output', label: 'Remove build output', does: 'Deletes build output in merged, clean worktrees; this cannot be undone.', key: 'r', risk: 'confirm', executes: true, primary: () => true,
         when: o => revised(o) === true ? (o.remove.length ? true : 'every merged worktree has uncommitted changes: nothing is removed') : revised(o),
         cli: o => o.cli, consequence: o => `Deletes ${o.remove.length} build output folders in merged, clean worktrees: ${names(o.remove)}.`
           + (o.kept.length ? ` Keeps ${o.kept.length} with uncommitted changes: ${names(o.kept)}.` : '') + ' Each worktree is checked again first. This cannot be undone.', run: cleanup },
       // Volume rows are the build's: the design draws volumes as bars only. Its line shows the volume's use in a terminal.
-      { id: 'volume.df', on: 'volume', label: 'Show use', key: 'b', risk: 'safe', executes: false, primary: () => true,
+      { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Gives the line that shows this volume\'s use.', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
-      { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', key: 'p', risk: 'confirm',
+      { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', does: 'Removes registrations of worktrees whose folders are gone; cannot be undone.', key: 'p', risk: 'confirm',
         executes: true, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
         when: o => o.unreadable ? `${plural(o.unreadable, 'registration')} of this checkout could not be read, and prune would judge them itself` : revised(o),
         consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone: ${names(o.list)}. No directory is touched.`, run: cleanup },
-      { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', key: 'd', risk: 'confirm', executes: true,
+      { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', does: 'Deletes local branches already merged; this cannot be undone.', key: 'd', risk: 'confirm', executes: true,
         primary: () => true, when: o => o.disabled || revised(o), cli: o => o.cli,
         consequence: o => `Deletes ${o.facts.Merged} local branches already in origin's default branch: ${names(o.branches)}. git branch -d refuses any unmerged one.`, run: cleanup },
     );
     // Services (sd:3707): Restart and Start run sd services' code through Operations' route. sd_db.services protects the
     // dashboard's own service, and a restart from its page would end the request that asks, so that row is copy only.
     C.register(
-      { id: 'service.restart', on: 'service', label: 'Restart', key: 'r', risk: 'confirm', executes: true,
+      { id: 'service.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service through launchctl; connections drop.', key: 'r', risk: 'confirm', executes: true,
         primary: o => o.facts.State === 'running', when: can('restart'),
         cli: o => `sd services restart ${o.facts.Label}`,
         consequence: o => `Stops ${o.facts.Label} and starts it again through launchctl (bootout, bootstrap, kickstart). Its open connections drop.`,
         run: service('restart') },
-      { id: 'service.start', on: 'service', label: 'Start', key: 's', risk: 'confirm', executes: true,
+      { id: 'service.start', on: 'service', label: 'Start', does: 'Loads and starts the service through launchctl.', key: 's', risk: 'confirm', executes: true,
         primary: o => o.facts.State !== 'running', when: can('start'),
         cli: o => `sd services start ${o.facts.Label}`,
         consequence: o => `Loads ${o.facts.Label} if it is unloaded and kickstarts it through launchctl.`,
         run: service('start') },
-      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', key: 'l', risk: 'safe', executes: false,
+      { id: 'dashboard service.kickstart', on: 'dashboard service', label: 'Kickstart', does: 'Gives the line that restarts the dashboard service.', key: 'l', risk: 'safe', executes: false,
         primary: () => true, cli: o => o.kickstart, run: copyOnly },
     );
     // Ports and Protection are read-only: each line is copy only.
     C.register(
-      { id: 'port.inspect', on: 'port', label: 'Inspect listener', key: 'i', risk: 'safe', primary: () => true, executes: false,
+      { id: 'port.inspect', on: 'port', label: 'Inspect listener', does: 'Gives the lsof line that shows what listens on this port.', key: 'i', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.port || 'no port configured: there is nothing to inspect', cli: o => `lsof -nP -iTCP:${o.port || '<port>'} -sTCP:LISTEN`, run: copyOnly },
-      { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', key: 'o', risk: 'safe', primary: () => true, executes: false,
+      { id: 'protection.settings', on: 'branch protection', label: 'Open branch settings', does: 'Opens the repo\'s branch protection settings on GitHub.', key: 'o', risk: 'safe', primary: () => true, executes: false,
         when: o => !!o.slug || 'no github.com remote: there is no settings page', cli: o => `open https://github.com/${o.slug || '<owner>/<repo>'}/settings/branches`,
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
       // Re-run collector (commands.js); Health reads again once the run ends.
       window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
       // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
-      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
+      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', does: 'Gives the line that opens the Dependabot alerts on GitHub.', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', key: 'o', risk: 'safe', primary: () => true,
+      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Gives the line that opens the secret scanning alerts on GitHub.', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'vault mirror.render', on: 'vault mirror', label: 'Render mirror', key: 'r', risk: 'confirm', executes: true,
+      { id: 'vault mirror.render', on: 'vault mirror', label: 'Render mirror', does: 'Writes each base row\'s mirror note into the vault; hand edits stay.', key: 'r', risk: 'confirm', executes: true,
         primary: () => true, cli: o => o.cli,
         consequence: () => 'Writes every base row\'s mirror note and page into the vault. A hand-edited note is kept and listed, not overwritten.',
         run: render },
-      { id: 'credential.probe', on: 'credential', label: 'Probe again', key: 'r', risk: 'safe', primary: () => true, executes: false,
+      { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );
     // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
