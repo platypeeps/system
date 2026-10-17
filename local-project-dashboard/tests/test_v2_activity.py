@@ -5,9 +5,10 @@ loads its script before `shell.js`; `/api/activity` is one 24-hour timeline
 built from records the library already keeps -- the delivery notes
 `ship.note_merge` writes, runner assignments with their queue revision,
 launchd jobs placed at their log time -- plus the execution journal
-`runner_exec.executions` lists, older records too, and names every kind it
-has no collector for, with the reason, rather than showing it as zero. The
-page follows the design source at d82daa1.
+`runner_exec.executions` lists, older records too. A kind whose every source
+failed to read is unknown, with the reason, rather than zero; the design's
+deploy and mail kinds, which nothing records, are left out. The page follows
+the design source at d82daa1.
 
 `activity.js` runs under JavaScriptCore (osascript), against the stand-in
 page and shell `test_v2_tasks` uses, with the real reader (`read.js`,
@@ -115,7 +116,7 @@ class TheDocument(ScreenCase):
     def test_the_window_is_the_24_hours_before_the_read(self):
         self.assertEqual((self.doc["read"], self.doc["from"], self.doc["to"]),
                          (NOW, "2026-09-05T12:00:00Z", NOW))
-        self.assertEqual(self.doc["kinds"], ["merge", "run", "review", "deploy", "mail", "command"])
+        self.assertEqual(self.doc["kinds"], ["merge", "run", "review", "command"])
         stamps = [event["at"] for event in self.doc["events"]]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
 
@@ -182,9 +183,12 @@ class TheDocument(ScreenCase):
         self.assertFalse(any(e["at"] < self.doc["from"] for e in self.doc["events"] if e["k"] != "command"),
                          "only the journal reaches before the window")
 
-    def test_a_kind_with_no_collector_is_named_with_its_reason(self):
-        self.assertEqual(set(self.doc["unknown"]), {"deploy", "mail"})
-        self.assertTrue(all(reason.startswith("No collector reads") for reason in self.doc["unknown"].values()))
+    def test_deploy_and_mail_are_not_kinds(self):
+        # No repository records GitHub deployments, and the operator ruled out a mail reader (sd:2212).
+        for kind in ("deploy", "mail"):
+            self.assertNotIn(kind, activity_screen.KINDS)
+            self.assertNotIn(kind, self.doc["kinds"])
+        self.assertNotIn("unknown", self.doc, "no kind is unknown by design; only a failed source is")
         self.assertEqual(self.doc["sources"], {"merge": "", "review": "", "run": "", "job": "", "command": ""})
 
     # --- reviews: the review each merge carried (operator ruling on sd:2211) ---
@@ -330,21 +334,45 @@ class TheScript(ScreenCase):
             ["command.item", "command", "safe", "i", None, True, False, False],
         ])
 
-    def test_the_page_reads_the_document_once_and_draws_unknown_kinds_hatched(self):
-        out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html; R.sub = ELS.sub.html;")
+    def test_the_page_reads_the_document_once_and_draws_no_hatched_kind(self):
+        out = self.run_page("R.lanes = ELS.lanes.html; R.ann = ELS.annunciator.html; R.rows = ELS.rows.html; R.sub = ELS.sub.html;"
+                            " R.filters = ELS.filters.html; R.table = ELS['chart-table'].html;")
         self.assertEqual(out["gets"], ["/api/activity"])
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         lanes = out["R"]["lanes"]
         for kind in ("deploy", "mail"):
-            self.assertRegex(lanes, rf'data-kind="{kind}"[^>]*>.*?<span class="n">▨</span>')
-            self.assertRegex(out["R"]["ann"], rf'<div class="cell" data-kind="{kind}" data-state="unknown">')
+            for part in ("lanes", "ann", "filters"):
+                self.assertNotIn(f'"{kind}"', out["R"][part], part)
+        self.assertNotIn("Deploys", out["R"]["table"])
+        self.assertNotIn('data-state="unknown"', out["R"]["ann"], "every source read, so no lamp is hatched")
+        self.assertNotIn("track unknown", lanes)
+        self.assertEqual(re.findall(r'class="lane-btn" type="button" data-kind="(\w+)"', lanes), ["merge", "run", "review", "command"])
         self.assertIn('data-kind="command" data-state="warning"', out["R"]["ann"])
         self.assertIn("Port the page", out["R"]["rows"])
         self.assertIn("nightly-sync failed with exit 7", out["R"]["rows"])
         inside = [e for e in self.doc["events"] if e["at"] >= self.doc["from"]]
         self.assertIn(f"{len(inside)} events", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 2, "what": "failed events in 24 h"})
+
+    def test_an_old_link_to_deploys_or_mail_keeps_only_the_kinds_the_page_draws(self):
+        # A saved view or bookmark from before the kinds were dropped: it must not filter every row away.
+        out = self.run_page("R.rows = ELS.rows.html;", pre="location.search = '?kind=deploy,merge,mail';")
+        self.assertEqual(out["urls"][-1], ["merge", None])
+        self.assertIn("Port the page<small>", out["R"]["rows"])
+
+    def test_a_kind_whose_every_source_failed_is_hatched_with_the_reason(self):
+        with patch.object(activity_screen, "reviews", side_effect=sqlite3.OperationalError("database locked")):
+            doc = activity_screen.document(self.connection, now=NOW, jobs_backend=backend(self))
+        out = self.run_page("""R.ann = ELS.annunciator.html; R.lanes = ELS.lanes.html;
+ELS.lanes.listeners.click[0]({ target: { closest: s => s === '.lane-btn' ? { dataset: { kind: 'review' } } : null } });
+R.details = ELS.details.html;""", doc=doc)
+        self.assertIn('<div class="cell" data-kind="review" data-state="unknown">', out["R"]["ann"])
+        self.assertIn("▨ unknown · reviews not read", out["R"]["lanes"])
+        self.assertIn("Reviews not read", out["R"]["details"])
+        self.assertIn("The read failed: database locked.", out["R"]["details"])
+        self.assertIn('data-kind="merge" data-state="', out["R"]["ann"])
+        self.assertNotIn('data-kind="merge" data-state="unknown"', out["R"]["ann"], "merges read, so merges are not hatched")
 
     def test_a_failed_read_is_an_error_and_a_failed_source_is_partial(self):
         out = self.run_page("", doc={"status": 500, "error": "database locked"})
@@ -356,7 +384,7 @@ class TheScript(ScreenCase):
         self.assertIn("job: launchctl did not answer", out["states"][-1]["text"])
 
     def test_the_kind_filter_narrows_the_rows(self):
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'kind', v: 'command' } } : null } });
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'kind', v: 'command' } } : null } });
 R.rows = ELS.rows.html;""")
         self.assertIn(">status · exit 0<", out["R"]["rows"])
         self.assertNotIn("Port the page<small>", out["R"]["rows"])
@@ -430,15 +458,16 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
             self.assertIn(f'data-kind="{kind}" data-state="', out["R"]["ann"])
             self.assertRegex(out["R"]["ann"], rf'data-kind="{kind}" data-state="\w+" aria-pressed="true"')
             self.assertRegex(out["R"]["lanes"], rf'data-kind="{kind}" aria-pressed="true"')
-            self.assertRegex(out["R"]["filters"], rf'data-v="{kind}" aria-pressed="true"')
+            # The bar shows each picked kind as a removable token; the lamps and lanes are its pressable controls.
+            self.assertRegex(out["R"]["filters"], rf'<button type="button" class="tok" data-f="kind" data-v="{kind}" aria-label="Remove filter: ')
 
     def test_all_read_adds_the_older_journal_records_and_24h_leaves_them_out(self):
         older = self.ids["older"]
-        range_ = "ELS.range.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { r: '%s' } } : null } });"
-        out = self.run_page("R.day = ELS.rows.html; R.chip = ELS.range.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html;"
+        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-r]' ? { dataset: { r: '%s' } } : null } });"
+        out = self.run_page("R.day = ELS.rows.html; R.chip = ELS.filters.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html;"
                             + range_ % "all" + "R.all = ELS.rows.html;" + range_ % "24h" + "R.back = ELS.rows.html;")
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["day"])
-        self.assertIn("All read <span class=\"n\">+1 older</span>", out["R"]["chip"])
+        self.assertRegex(out["R"]["chip"], r'data-r="all"[^>]*title="All read: the 24 hours and 1 older journal record">All <span class="n">\+1</span>')
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["lanes"], "the chart is the 24 hours")
         self.assertIn(f'data-id="cmd:{older}"', out["R"]["all"])
         self.assertIn([None, "all"], out["urls"])
@@ -469,7 +498,7 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 2, "what": "failed events in 24 h"})
 
     def test_the_hourly_table_applies_the_repo_filter_the_lanes_apply(self):
-        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'repo', v: 'system' } } : null } });
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'repo', v: 'system' } } : null } });
 R.table = ELS['chart-table'].html; R.lanes = ELS.lanes.html;""")
         cells = [int(n) for n in re.findall(r"<td>(\d+)</td>", out["R"]["table"])]
         self.assertEqual(sum(cells), len(re.findall(r'<rect class="tick', out["R"]["lanes"])))
@@ -537,7 +566,7 @@ R.picked = picked; R.gone = C.get('{gone}').type; R.kept = C.get('run:{n}').type
         out = self.run_page("""window.shell.reconcile = o => { OUT.clear = typeof o.clear; if (o.clear) o.clear(); return null; };
 document.dispatchEvent(new CustomEvent('shell:open', { detail: 'job:nightly-sync' }));
 R.before = ELS.details.html;
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { f: 'repo', v: 'no-such-repo' } } : null } });
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'repo', v: 'no-such-repo' } } : null } });
 R.after = ELS.details.html; R.current = window.PAGE_LIST.current();""")
         self.assertIn('class="bar"', out["R"]["before"])
         self.assertEqual(out["clear"], "function")
@@ -713,9 +742,99 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         self.assertEqual(out["gets"], ["/api/activity", f"/api/executions/{note}?offset=0", f"/api/executions/{note}?offset=65536"])
         self.assertIn("first page|second page", out["R"]["details"])
 
+    # --- the filter bar: one compact row (operator, 2026-10-17: "they take up a lot of space") ---
+
+    def repos_doc(self):
+        """The seeded document plus merges in two more repositories, so the repo list has something to filter."""
+        doc = json.loads(json.dumps(self.doc))
+        merge = next(e for e in doc["events"] if e["k"] == "merge")
+        for n, repo in enumerate(("ui-design", "sd-ai-command-pack", "ui-design")):
+            doc["events"].append(dict(merge, id=f"merge:90{n}", repo=repo, what=f"Slice in {repo}"))
+        return doc
+
+    def test_the_filters_are_one_bar_with_no_stacked_label_rows(self):
+        out = self.run_page("R.filters = ELS.filters.html;")
+        bar = out["R"]["filters"]
+        self.assertEqual(bar.count('class="fbar"'), 1)
+        self.assertTrue(bar.startswith('<div class="fbar" role="group" aria-label="Filters">'), bar[:80])
+        self.assertNotIn("fgroup", bar)
+        self.assertNotIn('class="label"', bar, "no label line above a group")
+        self.assertNotIn('data-f="kind"', bar, "the lamps and lanes filter by kind; no kind chip row")
+        state = re.search(r'<div class="fseg" role="group" aria-label="State">(.*?)</div>', bar).group(1)
+        failed = sum(1 for e in self.doc["events"] if e["s"] == "warning")
+        self.assertRegex(state, rf'data-f="state" data-v="warning" aria-pressed="false" title="failed: {failed}"><span class="g-warning" aria-hidden="true">■</span><span class="n">{failed}</span>')
+        self.assertEqual(re.findall(r'aria-hidden="true">(.)</span>', state), ["■", "▲", "●"])
+        rng = re.search(r'<div class="fseg" role="group" aria-label="Range">(.*?)</div>', bar).group(1)
+        self.assertEqual(re.findall(r'data-r="(\w+)"', rng), ["1h", "24h", "all", "7d", "30d"])
+        self.assertIn('data-r="24h" aria-pressed="true"', rng)
+        self.assertRegex(bar, r'<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="repo-pop">Repo')
+        self.assertNotIn('id="clear"', bar, "no filter is on, so there is nothing to clear")
+        inside = sum(1 for e in self.doc["events"] if e["at"] >= self.doc["from"])
+        self.assertIn(f'<div class="fsum"><span>{inside} of {len(self.doc["events"])}</span></div>', bar, "24h leaves the older record out")
+
+    def test_the_repo_popover_opens_filters_and_closes_and_round_trips_the_address(self):
+        key = "ELS['%s'].listeners.keydown[0]({ key: '%s', preventDefault() {}, stopPropagation() { R.stopped = (R.stopped || 0) + 1; } });"
+        out = self.run_page("""const btn = () => ELS.filters.listeners.click[0]({ target: { closest: s => s === '#repo-btn' ? {} : null } });
+R.closed = ELS['repo-pop'].hidden; btn(); R.open = ELS['repo-pop'].hidden; R.bar = ELS.filters.html; R.all = ELS['repo-list'].html;
+ELS['repo-q'].value = 'ui'; ELS['repo-q'].listeners.input[0]({}); R.typed = ELS['repo-list'].html;
+ELS['repo-list'].listeners.click[0]({ target: { closest: s => s === '[role="option"]' ? { dataset: { repo: 'ui-design' } } : null } });
+R.picked = ELS['repo-list'].html; R.one = ELS.filters.html;
+ELS['repo-q'].value = 'sd-'; ELS['repo-q'].listeners.input[0]({});
+""" + key % ("repo-pop", "Enter") + """R.two = ELS.filters.html;
+""" + key % ("repo-pop", "Escape") + "R.after = ELS['repo-pop'].hidden; R.shut = ELS.filters.html; R.rows = ELS.rows.html;",
+                            doc=self.repos_doc(), pre="window.shell.url = p => OUT.repos = (OUT.repos || []).concat([p.get('repo')]);")
+        R = out["R"]
+        self.assertEqual((R["closed"], R["open"], R["after"]), (True, False, True))
+        self.assertIn('aria-expanded="true"', R["bar"])
+        self.assertEqual(re.findall(r'data-repo="([\w-]+)"', R["all"]), ["system", "ui-design", "sd-ai-command-pack"],
+                         "every repo, most events first, with no 'more' cut")
+        self.assertEqual(re.findall(r'data-repo="([\w-]+)"', R["typed"]), ["ui-design"], "typing filters the list")
+        self.assertRegex(R["picked"], r'data-repo="ui-design" aria-selected="true"[^>]*><span class="ck" aria-hidden="true">✓</span>')
+        self.assertIn('id="repo-btn" aria-haspopup="listbox" aria-expanded="true" aria-controls="repo-pop">Repo <span class="n">· 1</span>', R["one"])
+        self.assertEqual(out["repos"][-2:], ["ui-design", "ui-design,sd-ai-command-pack"], "Enter picks the active option")
+        self.assertIn('<span class="n">· 2</span>', R["two"])
+        self.assertEqual(R["stopped"], 2, "Enter and Esc stop at the popover, so the shell does not clear the filter")
+        self.assertIn('aria-expanded="false"', R["shut"])
+        for repo in ("ui-design", "sd-ai-command-pack"):
+            self.assertIn(f'class="tok" data-f="repo" data-v="{repo}" aria-label="Remove filter: {repo}"', R["shut"])
+        self.assertIn("Slice in ui-design", R["rows"])
+        self.assertNotIn("Port the page<small>", R["rows"])
+        # The address round-trips: a link with two repos opens on both, picked in the list.
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '#repo-btn' ? {} : null } });
+R.bar = ELS.filters.html; R.list = ELS['repo-list'].html;""", doc=self.repos_doc(), pre="location.search = '?repo=ui-design,gone-repo';")
+        self.assertIn('Repo <span class="n">· 2</span>', out["R"]["bar"])
+        self.assertRegex(out["R"]["list"], r'data-repo="ui-design" aria-selected="true"')
+        self.assertRegex(out["R"]["list"], r'data-repo="gone-repo" aria-selected="true"', "a picked repo with no events can still be unpicked")
+
+    def test_clear_all_resets_every_filter_and_the_address(self):
+        out = self.run_page("""R.before = ELS.filters.html;
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '#clear' ? {} : null } });
+R.after = ELS.filters.html; R.rows = ELS.rows.html; R.input = ELS.shift.value;""",
+                            pre="location.search = '?kind=merge&repo=system&state=ok&range=1h&q=port'; "
+                                "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
+        before, after = out["R"]["before"], out["R"]["after"]
+        self.assertIn('id="clear"', before)
+        self.assertEqual(len(re.findall(r'class="tok"', before)), 3, "kind, repo and the query are tokens")
+        self.assertIn('data-f="q" data-v="" aria-label="Remove filter: “port”"', before)
+        self.assertRegex(before, r'data-v="ok" aria-pressed="true"')
+        self.assertRegex(before, r'data-r="1h" aria-pressed="true"')
+        self.assertEqual(out["qs"][-1], "")
+        self.assertNotIn('id="clear"', after)
+        self.assertNotIn('class="tok"', after)
+        self.assertNotIn('aria-pressed="true" title="', re.search(r'aria-label="State">(.*?)</div>', after).group(1))
+        self.assertRegex(after, r'data-r="24h" aria-pressed="true"')
+        self.assertEqual(out["R"]["input"], "")
+
+    def test_a_query_token_clears_the_field(self):
+        out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'q', v: '' } } : null } });
+R.bar = ELS.filters.html; R.input = ELS.shift.value;""", pre="location.search = '?q=port';"
+                                                      "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
+        self.assertEqual((out["R"]["input"], out["qs"][-1]), ("", ""))
+        self.assertNotIn('class="tok"', out["R"]["bar"])
+
     def test_a_range_that_is_not_read_toasts_the_range_that_stays(self):
         """sd:2424. At 1h or All read, 7d keeps that range; the toast said 24h."""
-        range_ = "ELS.range.listeners.click[0]({ target: { closest: s => s === '.chip' ? { dataset: { r: '%s' } } : null } });"
+        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-r]' ? { dataset: { r: '%s' } } : null } });"
         out = self.run_page(range_ % "7d" + range_ % "1h" + range_ % "7d" + range_ % "all" + range_ % "30d")
         self.assertEqual([t[0] for t in out["toasts"]], [
             "7d is not read: /api/activity holds the last 24 hours. The range stays at 24h.",
