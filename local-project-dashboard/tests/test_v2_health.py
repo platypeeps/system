@@ -1079,6 +1079,111 @@ class OneScanPerArea(Collectors, ScreenCase):
         self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][2]["rows"])
 
 
+class TheViews(Collectors, ScreenCase):
+    """One view's areas, each view its own read, and a summary that waits on no walker (the Health split).
+
+    The one document waited on every walker at once, up to `PAGE_SECONDS`, and a reader that raised an error its area's
+    guard does not name took the whole page with it.
+    """
+
+    def seams(self, **kwargs):
+        return {"fleet": fleet_of(TREES), "ports": ports_snapshot, "protection": protection_of(PROTECTION), **kwargs}
+
+    def test_a_view_reads_only_its_areas(self):
+        called = []
+
+        def ports():
+            called.append("ports")
+            return ports_snapshot()
+        found = health_screen.part(self.connection, "checkouts", now=NOW, **self.seams(ports=ports))
+        self.assertEqual((found["view"], [area["id"] for area in found["areas"]]), ("checkouts", ["wt", "br"]))
+        self.assertEqual({area["view"] for area in found["areas"]}, {"checkouts"})
+        self.assertEqual(called, [], "the Checkouts view ran the port inventory")
+        self.assertEqual([row["id"] for row in found["areas"][0]["rows"]], ["gone:group/alpha", "unread:beta"])
+        every = [key for _, _, keys in health_screen.VIEWS for key in keys]
+        self.assertEqual(sorted(every), sorted(key for key, *_ in health_screen.AREAS), "an area is in no view, or in two")
+
+    def test_a_view_that_raises_marks_its_areas_unknown_and_leaves_the_other_views(self):
+        def broken(area):
+            raise ZeroDivisionError("a reader bug no area guard names")
+        seams = self.seams(fleet=broken)
+        failed = health_screen.part(self.connection, "checkouts", now=NOW, **seams)
+        self.assertEqual([(area["id"], area["rows"]) for area in failed["areas"]], [("wt", []), ("br", [])])
+        for area in failed["areas"]:
+            self.assertIn("the Checkouts read failed: ZeroDivisionError('a reader bug no area guard names')", area["error"])
+        github = health_screen.part(self.connection, "github", now=NOW, **seams)
+        self.assertEqual([(area["id"], area["error"]) for area in github["areas"]], [("dep", ""), ("sec", ""), ("prot", "")])
+        self.assertTrue(github["areas"][2]["rows"])
+        lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=NOW, **seams)["lamps"]}
+        self.assertEqual((lamps["prot"]["state"], lamps["prot"]["error"]), ("warning", ""))
+
+    def test_the_summary_waits_on_no_walker_and_builds_no_full_document(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocked(area):
+            release.wait(10)
+            return fleet_of(TREES)(area)
+        started = time.monotonic()
+        with patch.object(health_screen, "document", side_effect=AssertionError("the summary built the document")):
+            found = health_screen.summary(self.connection, now=NOW, **self.seams(fleet=blocked))
+        self.assertLess(time.monotonic() - started, 2.0)
+        lamps = {lamp["id"]: lamp for lamp in found["lamps"]}
+        self.assertEqual(list(lamps), [key for key, *_ in health_screen.AREAS])
+        # The database-only areas are read now; a walker no read has answered is unknown and says why.
+        self.assertEqual(lamps["prot"]["state"], "warning")
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["at"]), ("unknown", None))
+        self.assertEqual(lamps["wt"]["error"], f"being read since {NOW}; read Health again for its answer")
+        self.assertEqual(lamps["svc"]["error"], "not read since the dashboard started; the Machine view reads it")
+        self.assertEqual(set(found["attention"]), {"state", "n", "what"})
+        self.assertEqual([view["id"] for view in found["views"]], ["machine", "checkouts", "github", "jobs"])
+
+    def test_the_summary_shows_what_the_last_view_read_left_and_counts_its_rows(self):
+        machine = health_screen.part(self.connection, "machine", now=NOW, **self.seams())
+        health_screen.part(self.connection, "checkouts", now=NOW, **self.seams())
+        later = "2026-09-06T12:30:00Z"
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            found = health_screen.summary(self.connection, now=later, **self.seams())
+        lamps = {lamp["id"]: lamp for lamp in found["lamps"]}
+        self.assertEqual((lamps["svc"]["state"], lamps["svc"]["at"], lamps["svc"]["error"]), ("ok", NOW, ""))
+        self.assertEqual(lamps["wt"]["value"], [{"b": "2", "t": "dir gone"}])
+        disk = next(area for area in machine["areas"] if area["id"] == "disk")
+        fullest = max(disk["extra"]["volumes"], key=lambda volume: volume["capacity"])
+        self.assertEqual(lamps["disk"]["value"], [{"b": f"{fullest['capacity']}%", "t": "fullest"}, {"b": "", "t": fullest["name"]}])
+        full = health_screen.document(self.connection, now=later, **self.seams())
+        self.assertEqual(found["attention"], full["attention"], "the summary's badge differs from the document's")
+
+    def test_a_failed_scan_is_not_replaced_by_the_answer_before_it(self):
+        health_screen.part(self.connection, "checkouts", now=NOW, **self.seams())
+        later = "2026-09-06T12:30:00Z"
+
+        def broken(area):
+            raise ValueError("fleet collection was stopped at its budget: sessions")
+        failed = health_screen.part(self.connection, "checkouts", now=later, **self.seams(fleet=broken))
+        self.assertTrue(failed["areas"][0]["error"])
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=later, **self.seams())["lamps"]}
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["error"]),
+                         ("unknown", "fleet collection was stopped at its budget: sessions"))
+
+    def test_a_scan_that_finishes_after_its_view_was_cut_short_shows_in_the_next_summary(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow(area):
+            release.wait(10)
+            return fleet_of(TREES)(area)
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            cut = health_screen.part(self.connection, "checkouts", now=NOW, **self.seams(fleet=slow))
+        self.assertIn("still running at the page's budget", cut["areas"][0]["error"])
+        release.set()
+        health_screen._SCANS.running["wt"][1].result(timeout=5)
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now="2026-09-06T12:30:00Z",
+                                                                         **self.seams())["lamps"]}
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["error"], lamps["wt"]["at"]), ("caution", "", NOW))
+
+
 class ThePage(Collectors, BrowserSession):
     fleet_backend = staticmethod(fleet_of(TREES))
 
@@ -1112,6 +1217,25 @@ class ThePage(Collectors, BrowserSession):
         self.assertRegex(doc["read"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual([row["id"] for row in doc["areas"][2]["rows"]], ["gone:group/alpha", "unread:beta"])
         self.assertEqual(len(doc["areas"][6]["rows"]), 3)
+
+    def test_each_view_and_the_summary_answer_alone_and_another_name_is_a_404(self):
+        cookie = {"Cookie": self.cookie}
+        self.assertEqual(self.request("/api/health/checkouts")[0], 403)
+        self.assertEqual(self.request("/api/health/checkouts?area=wt", headers=cookie)[0], 400)
+        status, _, body = self.request("/api/health/checkouts", headers=cookie)
+        self.assertEqual((status, [area["id"] for area in json.loads(body)["areas"]]), (200, ["wt", "br"]))
+        status, _, body = self.request("/api/health/summary", headers=cookie)
+        self.assertEqual((status, len(json.loads(body)["lamps"])), (200, len(health_screen.AREAS)))
+        status, _, body = self.request("/api/health/nowhere", headers=cookie)
+        self.assertEqual(status, 404)
+        self.assertIn("Health has no view 'nowhere'", json.loads(body)["error"])
+
+    def test_the_rail_badge_comes_from_the_summary(self):
+        page = next(page for page in v2.registry.PAGES if page.section == "Health")
+        self.assertEqual((page.count, page.live), ("/api/health/summary", False))
+        self.request("/api/health/summary", headers={"Cookie": self.cookie})
+        badge = self.listening.RequestHandlerClass.badges.read(None, connected=False)["Health"]
+        self.assertIn(badge["state"], ("ok", "caution", "warning"))
 
     def test_the_rail_opens_health_at_its_page(self):
         self.assertEqual(v2.SECTIONS["Health"], "/fleet-health")
@@ -1617,7 +1741,8 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/cleanup", "/api/records/render")
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/summary", "/api/health/cleanup",
+                                                               "/api/records/render")
 
 
 if __name__ == "__main__":

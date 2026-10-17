@@ -9,6 +9,18 @@ its counts and warnings) and Protection (`protection.rows`, drawn as a matrix
 with one column per repository and a table carrying the same cells; an unread
 repository shows no cell).
 
+The page shows one view at a time, each its own read, `GET /api/health/<view>`
+(`health_screen.part`): Machine (Disk, Services, Ports, Doctor), Checkouts
+(Worktrees, Branches), GitHub (Dependencies, Security, Protection) and Jobs
+(Credentials, Vault mirror). A view whose read fails marks its own areas unknown
+with the reason; no other view is touched. The lamps on top come from
+`GET /api/health/summary` (`health_screen.summary`), which is also the rail
+badge: it reads the database-only areas now and shows every walker's last
+answer with its time, so it never waits on one. A walker with no answer younger
+than 60 seconds (the doctor's 10 minutes) gets a scan started in the background,
+which the next view read joins. `GET /api/health` is still every area in one
+document.
+
 Dependencies, Security and Credentials read rows nightly jobs stored; the page
 calls no service and reads no credential.
 
