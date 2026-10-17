@@ -382,6 +382,17 @@ class ReleaseStage(Case):
         self.assertIn(f"FAILED  release: cannot read the line 'broken {REPO}'", result.stdout)
         self.assertEqual(self.record(), "v1.2.3")
 
+    def test_a_copy_an_interrupted_run_left_is_cleared(self):
+        """A run stopped between the copy and the move leaves a dot file
+        beside the bin; the next install removes it."""
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        write_exec(self.bin / ".example.release.99999", "partial")
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual(sorted(p.name for p in self.bin.iterdir()), ["example", "example-helper"])
+
     def test_a_lost_bin_is_missing_and_reinstalled(self):
         self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
         self.run_verb("update", "release", "--apply")
@@ -615,6 +626,18 @@ class NodeLink(Case):
         result = self.run_verb("update", "tooling", "--apply")
 
         self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual(self.links(), {n: self.target("26.1.0", n) for n in ("node", "npm", "npx")})
+
+    def test_a_run_stopped_between_links_is_finished(self):
+        """node moved, npm still old, npx not made yet."""
+        self.bin.mkdir(parents=True)
+        (self.bin / "node").symlink_to(self.target("26.1.0", "node"))
+        (self.bin / "npm").symlink_to(self.target("26.0.0", "npm"))
+
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertIn("  DIFFERS node link 26: ", result.stdout, self.out(result))
+        self.assertIn("  MISSING node link 26: ", result.stdout)
         self.assertEqual(self.links(), {n: self.target("26.1.0", n) for n in ("node", "npm", "npx")})
 
     def test_a_file_that_is_not_a_link_is_left_alone(self):
