@@ -26,11 +26,12 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import reads, repos
+from sd_db import reads, repos, workflow, writes
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "document", "thresholds"]
+__all__ = ["ALARM_ROOT", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+           "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
 FOLDER = "hoa"
@@ -100,7 +101,7 @@ def _csv(path: Path, stamp: str, columns: tuple[str, ...]) -> list[dict]:
 
 def _mission(folder: Path | None, today: date) -> dict:
     out = {"dir": str(folder or ""), "error": "", "files": [], "latest": "", "age_days": None, "stale": False,
-           "analog": [], "pump": [], "alarms": [], "alarms_today": {"count": None, "reason": ""}}
+           "analog": [], "pump": [], "alarms": [], "alarms_today": {"count": None, "reason": "", "acked": 0}}
     if folder is None:
         out["error"] = "no export folder: no repo named hoa is registered"
         return out
@@ -131,8 +132,7 @@ def _mission(folder: Path | None, today: date) -> dict:
     alarms = next((f for f in out["files"] if f["name"] == FILES["alarms"][0]), None)
     if alarms and not alarms["error"]:
         if alarms["latest"][:10] == today.isoformat():
-            real = [row for row in out["alarms"] if row["datetime"][:10] == alarms["latest"][:10]
-                    and row["kind"] != "generator" and "Normal" not in row["event"]]
+            real = [row for row in out["alarms"] if row["datetime"][:10] == alarms["latest"][:10] and _real(row)]
             out["alarms_today"] = {"count": len(real), "reason": ""}
         else:
             out["alarms_today"]["reason"] = f"the export ends {alarms['latest'][:10] or 'with no rows'}"
@@ -169,6 +169,69 @@ def thresholds(path: Path | None = None) -> dict:
         else:
             out["levels"][fields[0]] = {"dir": fields[1], "value": value}
     return out
+
+
+# ---------------------------------------------------------------------------
+# Acknowledge (sd:4967): the workflow database's `view` state, the store Designs' Hide and Documents' Pin write
+# (sd:3428, sd:3447). An acknowledged alarm event is a hidden view keyed `hoa-alarm/<datetime> <event>`: the row's own
+# fields, so the key holds across reads and across a newer export. Nothing reaches the Mission portal.
+
+#: The key prefix of an alarm event's view state.
+ALARM_ROOT = "hoa-alarm"
+
+
+def alarm_key(row: dict) -> str:
+    return f"{ALARM_ROOT}/{row['datetime']} {row['event']}"
+
+
+def _acks(connection, mission: dict) -> None:
+    """Mark each alarm row `key` and `acked`, count today's acknowledged alarms apart, and say whether the store was read.
+    A store that does not read acknowledges nothing: every row shows, and `acks.reason` says why Acknowledge is off."""
+    from .documents_screen import views
+
+    kept, unread = views(connection)
+    for row in mission["alarms"]:
+        row["key"] = alarm_key(row)
+        row["acked"] = kept.get(row["key"], {}).get("hidden", False)
+    mission["acks"] = {"available": not unread, "reason": unread}
+    today = mission["alarms_today"]
+    if today["count"] is not None:
+        day = max(row["datetime"][:10] for row in mission["alarms"])
+        real = [row for row in mission["alarms"] if row["datetime"][:10] == day and _real(row)]
+        today["acked"] = sum(row["acked"] for row in real)
+        today["count"] = len(real) - today["acked"]
+
+
+def _real(row: dict) -> bool:
+    """An alarm, not a generator test or a return to normal."""
+    return row["kind"] != "generator" and "Normal" not in row["event"]
+
+
+def acknowledge(payload: dict):
+    """`POST /api/hoa/alarm`: `{"key", "acked"}`; the write as `action_route` returns one. The write reads the export
+    again, so a key the export no longer holds is refused as stale and nothing is written."""
+    key, acked = payload.get("key"), payload.get("acked")
+    if set(payload) != {"key", "acked"} or not isinstance(key, str) or not isinstance(acked, bool) \
+            or not key.startswith(f"{ALARM_ROOT}/"):
+        raise ValueError("Send the alarm event's key and acked, true or false.")
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+
+    def write(connection):
+        _, place, problems = checkout(connection)
+        if problems or place is None:
+            raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
+        name, stamp, columns = FILES["alarms"]
+        try:
+            rows = _csv(_paths(place)["mission"] / name, stamp, columns)
+        except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
+            raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
+        if key not in {alarm_key(row) for row in rows}:
+            raise workflow.StaleItem(f"{name} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. Nothing was acknowledged. "
+                                     "Read HOA again.")
+        return {"key": key, **writes.set_view(connection, key, hidden=acked)}
+
+    return write
 
 
 def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
@@ -225,6 +288,7 @@ def document(connection, *, now: str) -> dict:
     mission, followups = _mission(paths["mission"], today), _followups(connection, recorded, now, today)
     if problems:
         mission["error"], followups["error"] = problems[0], problems[0]
+    _acks(connection, mission)
     return {
         "read": now,
         "config": {"state": state, "source": "the repo table", "problems": problems},

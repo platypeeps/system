@@ -11,6 +11,8 @@
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   let DOC = null, M = null, ASSETS = [], LOTS = [], OB = [], AL = [], CELLS = [];
   let selected = null, range = 7, selDay = null, zoom = 1, center = null, P = null;
+  // sd:4967: acknowledged alarm events hide unless Show acknowledged is on; ACKS is why Acknowledge is off, or ''.
+  let showAcked = false, ACKS = '';
   const hidden = new Set();
 
   const dl = pairs => html`<dl>${pairs.filter(p => p[1] !== '' && p[1] != null).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>`;
@@ -34,7 +36,7 @@
       : { id: 'aquifer', label: 'Aquifer', state: 'unknown', val: html`<b>—</b> not read`, small: why });
     const at = m.alarms_today, real = AL.filter(a => a.st === 'warning').length, tests = AL.filter(a => a.kind === 'generator' && /Running/.test(a.event)).length;
     out.push(at.count == null ? { id: 'alarms', label: 'Alarms today', state: 'unknown', open: AL[0]?.id, val: html`<b>—</b> ${at.reason}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` }
-      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
+      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
     out.push(f.error ? { id: 'followups', label: 'Followups', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
       : late ? { id: 'followups', label: 'Followups', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
@@ -149,7 +151,9 @@
     const a = AL.find(x => x.id === id); if (!a) return;
     selected = id; mark(); drawMap();
     show(html`<div class="kind"><span class="g-${a.st}" aria-hidden="true">${GLYPH[a.st]}</span><span class="label">Alarm event · ${a.kind}</span></div><h2>${a.event}</h2>
-      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Source', 'alarm-events.csv']])}`, id, open);
+      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Acknowledged', a.acked ? 'yes, on this dashboard' : 'no'], ['Source', 'alarm-events.csv']])}
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
+      <p class="why">Acknowledge marks the event on this dashboard only. Nothing reaches the Mission portal.</p>`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -257,9 +261,12 @@
         <td class="act">${C.rowActions(o.id)}</td></tr>`)}`
       : html`<tr><td colspan="5" class="why">No open followup item in the checkout.</td></tr>`);
     const m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
-    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="6">${unknownBlock(alErr)}</td></tr>`
-      : AL.length ? html`${AL.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button></td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td></tr>`)}`
-      : html`<tr><td colspan="6" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
+    const acked = AL.filter(a => a.acked).length, shown = AL.filter(a => showAcked || !a.acked);
+    put($('al-show'), DOC && !alErr ? html`<button class="chip" type="button" aria-pressed="${String(showAcked)}">Show acknowledged <span class="n">${String(acked)}</span></button>` : html``);
+    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
+      : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
+      : AL.length ? html`<tr><td colspan="7" class="why">Every alarm event in the last 30 days is acknowledged. Show acknowledged lists them.</td></tr>`
+      : html`<tr><td colspan="7" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
@@ -274,7 +281,9 @@
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
       OB = doc.followups.rows;
-      AL = M.alarms.slice().reverse().map((a, i) => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime}:${i}`, st, why }; });
+      // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
+      AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
+      ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
@@ -282,7 +291,7 @@
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
-        ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
+        ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
@@ -376,6 +385,24 @@
       $('range').querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x === c ? 'true' : 'false'));
       drawTrends();
     });
+    // ---------- Acknowledge (sd:4967) ----------
+    // The workflow database's view state, as Designs' Hide: POST /api/hoa/alarm. Undo is the same post with the old value.
+    // A 409 (the export no longer holds the event) names the event, and the shell reads again.
+    const ack = (o, acked) => S.post('/api/hoa/alarm', { key: o.key, acked }).then(v => reader.reread().then(() => v));
+    const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
+    C.register(
+      { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event on this dashboard; nothing reaches the Mission portal. Undo shows it again.',
+        key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. Show acknowledged lists it.`), undo: o => ack(o, false) },
+      { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
+        key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
+    );
+    $('al-show').addEventListener('click', e => {
+      if (!e.target.closest('.chip')) return;
+      showAcked = !showAcked; drawLedgers();
+    });
+    document.addEventListener('shell:picked', e => $('al-body').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
     ['ob-body', 'al-body'].forEach(b => $(b).addEventListener('click', e => {
       if (e.target.closest('.rowact')) return;
       const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);

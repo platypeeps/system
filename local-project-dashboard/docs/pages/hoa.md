@@ -24,6 +24,13 @@ The levels are per machine, in `<config>/project-dashboard/hoa-thresholds.conf`
 (template `hoa-thresholds.conf.example`): the hoa checkout states its levels in
 prose only. Without the file a trend says "no problem level set".
 
+Acknowledge on an alarm event (sd:4967) posts `/api/hoa/alarm`, the workflow
+database's `view` state that Designs' Hide writes, keyed
+`hoa-alarm/<datetime> <event>`. Undo writes it back. Acknowledged events hide
+behind the Show acknowledged chip and leave the Alarms today lamp. The write
+reads the export again, so an event it no longer holds is refused (409) by
+name. Nothing reaches the Mission portal.
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

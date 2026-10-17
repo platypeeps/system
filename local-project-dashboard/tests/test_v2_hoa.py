@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -28,7 +29,7 @@ from unittest import mock
 
 from sd_dashboard import hoa_screen, server, v2
 
-from sd_db import connect, upsert_repo
+from sd_db import connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
 
 from support import NOW, ScreenCase
@@ -136,7 +137,7 @@ class TheDocument(Fixture):
         self.assertEqual((m["latest"], m["age_days"], m["stale"]), ("2026-09-05", 1, False))
         # 30 days back from the newest alarm: the July row is gone, oldest first.
         self.assertEqual([a["event"] for a in m["alarms"]], ["Generator Running", "A2 VSD Alarm", "A2 VSD Normal", "Tank Low Alarm"])
-        self.assertEqual(m["alarms_today"], {"count": None, "reason": "the export ends 2026-09-05"})
+        self.assertEqual(m["alarms_today"], {"count": None, "reason": "the export ends 2026-09-05", "acked": 0})
 
     def test_an_export_more_than_two_days_old_is_stale(self):
         self.assertEqual(hoa_screen.STALE_DAYS, 2)
@@ -149,7 +150,7 @@ class TheDocument(Fixture):
         alarms = ALARMS + ("2026-09-06 01:00:00,other,A2 VSD Alarm,N,2\n2026-09-06 01:10:00,other,A2 VSD Normal,,0\n"
                            "2026-09-06 02:00:00,generator,Generator Running,N,15\n")
         hoa = checkout(self.hoa, alarms=alarms)
-        self.assertEqual(self.doc()["mission"]["alarms_today"], {"count": 1, "reason": ""})
+        self.assertEqual(self.doc()["mission"]["alarms_today"], {"count": 1, "reason": "", "acked": 0})
 
     def test_a_file_that_does_not_parse_is_its_error_and_the_rest_still_answer(self):
         hoa = checkout(self.hoa, pump="date,a2_starts\n2026-09-01,1\n", alarms=None, assets="{not json")
@@ -267,6 +268,8 @@ class TheScript(Fixture):
             ["followup.draft", "followup", "safe", "d"],
             ["followup.open", "followup", "safe", "o"],
             ["asset.ask", "asset", "safe", "a"],
+            ["alarm.ack", "alarm", "undo", "a"],
+            ["alarm.unack", "alarm", "undo", "a"],
         ])
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
@@ -454,8 +457,160 @@ class TheTrendStatistics(Fixture):
         self.assertEqual(re.findall(r"key: '(\w+)'", HOA_JS.split("const SERIES = [")[1].split("];")[0]), list(hoa_screen.SERIES))
 
 
+#: The fixture's newest alarm event, as the server keys it.
+TANK_LOW = "hoa-alarm/2026-09-05 06:00:00 Tank Low Alarm"
+
+
+class TheAcknowledgement(Fixture):
+    """sd:4967: an acknowledged alarm event is a hidden view row keyed by its datetime and text; Undo writes it back."""
+
+    def ack(self, key, acked=True):
+        result = hoa_screen.acknowledge({"key": key, "acked": acked})(self.connection)
+        self.connection.commit()
+        return result
+
+    def alarms(self, doc=None):
+        return {row["key"]: row["acked"] for row in (doc or self.doc())["mission"]["alarms"]}
+
+    def test_each_event_is_keyed_by_its_datetime_and_text_and_none_is_acknowledged(self):
+        doc = self.doc()
+        self.assertEqual(self.alarms(doc), {
+            "hoa-alarm/2026-08-20 09:00:00 Generator Running": False, "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm": False,
+            "hoa-alarm/2026-09-01 10:30:00 A2 VSD Normal": False, TANK_LOW: False})
+        self.assertEqual(doc["mission"]["acks"], {"available": True, "reason": ""})
+
+    def test_acknowledge_hides_the_event_and_undo_restores_it(self):
+        self.assertEqual(self.ack(TANK_LOW)["hidden"], True)
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [TANK_LOW])
+        self.ack(TANK_LOW, False)
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [])
+
+    def test_the_key_holds_across_reads_and_a_newer_export(self):
+        self.ack(TANK_LOW)
+        first = self.alarms()
+        self.assertEqual(self.alarms(), first)
+        checkout(self.hoa, alarms=ALARMS + "2026-09-05 23:00:00,other,A2 VSD Alarm,N,1\n")
+        later = self.alarms()
+        self.assertTrue(later[TANK_LOW])
+        self.assertEqual({k: v for k, v in later.items() if k in first}, first)
+
+    def test_a_key_the_export_no_longer_holds_is_refused_by_name_and_nothing_is_written(self):
+        before = writes.views(self.connection)
+        with self.assertRaises(workflow.StaleItem) as caught:
+            self.ack("hoa-alarm/2026-09-05 06:00:00 Tank High Alarm")
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank High Alarm", str(caught.exception))
+        self.assertIn("Nothing was acknowledged", str(caught.exception))
+        self.assertEqual(writes.views(self.connection), before)
+
+    def test_a_request_that_is_not_one_key_and_a_flag_is_refused_before_a_write(self):
+        for payload in ({"key": TANK_LOW}, {"key": TANK_LOW, "acked": "yes"}, {"key": "designs/x.html", "acked": True},
+                        {"key": TANK_LOW, "acked": True, "extra": 1}):
+            with self.assertRaises(ValueError):
+                hoa_screen.acknowledge(payload)
+
+    def test_an_acknowledged_alarm_today_leaves_the_lamp_and_the_badge(self):
+        checkout(self.hoa, alarms=ALARMS + "2026-09-06 07:00:00,other,A2 VSD Alarm,N,2\n")
+        doc = self.doc()
+        self.assertEqual(doc["mission"]["alarms_today"]["count"], 1)
+        self.assertEqual(doc["attention"]["state"], "warning")
+        self.ack("hoa-alarm/2026-09-06 07:00:00 A2 VSD Alarm")
+        doc = self.doc()
+        self.assertEqual((doc["mission"]["alarms_today"]["count"], doc["mission"]["alarms_today"]["acked"]), (0, 1))
+        # The overdue followup still lights the badge; the alarm no longer does.
+        self.assertEqual(doc["attention"], hoa_screen._attention(doc["mission"], doc["followups"]))
+        self.assertEqual(doc["attention"]["n"], 1)
+
+    def test_a_store_that_does_not_read_acknowledges_nothing_and_says_why(self):
+        self.ack(TANK_LOW)
+        with mock.patch.object(writes, "views", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc()
+        self.assertFalse(any(self.alarms(doc).values()))
+        self.assertEqual(doc["mission"]["acks"], {"available": False, "reason": "the view store was not read: database is locked"})
+
+
+class TheAcknowledgeCommand(Fixture):
+    """hoa.js: acknowledged rows hide behind Show acknowledged; Acknowledge posts the key and Undo posts it back."""
+
+    run_page = TheScript.run_page
+
+    def acked_doc(self):
+        doc = self.doc()
+        for row in doc["mission"]["alarms"]:
+            row["acked"] = row["key"] == TANK_LOW
+        return doc
+
+    def test_an_acknowledged_row_hides_until_show_acknowledged_is_on(self):
+        out = self.run_page("""R.before = ELS['al-body'].html; R.chip = ELS['al-show'].html;
+ELS['al-show'].listeners.click[0]({ target: { closest: s => s === '.chip' ? {} : null } });
+R.after = ELS['al-body'].html; R.chipOn = ELS['al-show'].html;""", self.acked_doc())
+        rows = lambda html: re.findall(r'<button type="button">([^<]+)</button>', html)  # noqa: E731
+        self.assertEqual(rows(out["R"]["before"]), ["A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertIn('aria-pressed="false">Show acknowledged <span class="n">1</span>', out["R"]["chip"])
+        self.assertEqual(rows(out["R"]["after"]), ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertIn('data-acked', out["R"]["after"])
+        self.assertIn('<span class="tag">acknowledged</span>', out["R"]["after"])
+        self.assertIn('aria-pressed="true"', out["R"]["chipOn"])
+
+    def test_every_event_acknowledged_says_so_instead_of_an_empty_table(self):
+        doc = self.doc()
+        for row in doc["mission"]["alarms"]:
+            row["acked"] = True
+        out = self.run_page("R.al = ELS['al-body'].html;", doc)
+        self.assertIn("Every alarm event in the last 30 days is acknowledged", out["R"]["al"])
+
+    def test_acknowledge_posts_the_key_and_undo_posts_it_back(self):
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, {{ key: body.key, hidden: body.acked }}];
+const o = OBJ.get('alarm:2026-09-05 06:00:00 Tank Low Alarm');
+R.when = cmd('alarm.ack').when(o); R.off = cmd('alarm.unack').when(o);
+C.run(cmd('alarm.ack'), o); await flush();
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
+        self.assertEqual((out["R"]["when"], out["R"]["off"]), (True, "not acknowledged"))
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/alarm", {"key": TANK_LOW, "acked": True}],
+                                                         ["/api/hoa/alarm", {"key": TANK_LOW, "acked": False}]])
+        self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. Show acknowledged lists it.", out["toasts"][0][0])
+        self.assertTrue(out["toasts"][0][1])
+        # Each landed write reads HOA again.
+        self.assertEqual(out["gets"], ["/api/hoa"] * 3)
+
+    def test_a_refused_event_is_named_in_the_toast(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [409, { error: 'alarm-events.csv holds no alarm event 2026-09-05 06:00:00 Tank Low Alarm. Nothing was acknowledged. Read HOA again.', reload: true }];
+C.run(cmd('alarm.ack'), OBJ.get('alarm:2026-09-05 06:00:00 Tank Low Alarm')); await flush();""")
+        self.assertTrue(any("holds no alarm event 2026-09-05 06:00:00 Tank Low Alarm" in t[0] for t in out["toasts"]), out["toasts"])
+
+    def test_picked_rows_acknowledge_together_through_the_bulk_bar(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, { key: body.key, hidden: body.acked }];
+R.bulk = cmd('alarm.ack').bulk;
+C.runBulk(cmd('alarm.ack'), ['alarm:2026-09-05 06:00:00 Tank Low Alarm', 'alarm:2026-09-01 10:00:00 A2 VSD Alarm'].map(id => OBJ.get(id)));
+await flush();""")
+        self.assertIs(out["R"]["bulk"], True)
+        self.assertEqual(sorted(p[1]["key"] for p in out["posts"]), ["hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm", TANK_LOW])
+
+    def test_an_unread_store_turns_both_commands_off_with_its_reason(self):
+        doc = self.doc()
+        doc["mission"]["acks"] = {"available": False, "reason": "the view store was not read: database is locked"}
+        out = self.run_page("R.when = cmd('alarm.ack').when(OBJ.get('alarm:2026-09-05 06:00:00 Tank Low Alarm'));", doc)
+        self.assertEqual(out["R"]["when"], "Acknowledge is off: the view store was not read: database is locked")
+
+
+class TheAcknowledgeRoute(BrowserSession):
+    def test_the_route_writes_a_listed_event_and_answers_409_naming_one_it_does_not_list(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        hoa = checkout(Path(tmp.name) / "hoa")
+        self.repo(str(hoa))
+        status, _, body = self.post("/api/hoa/alarm", {"key": "hoa-alarm/2026-09-05 06:00:00 Tank High Alarm", "acked": True})
+        self.assertEqual(status, 409)
+        self.assertTrue(body["reload"])
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank High Alarm", body["error"])
+        status, _, body = self.post("/api/hoa/alarm", {"key": TANK_LOW, "acked": True})
+        self.assertEqual((status, body["key"], body["hidden"]), (200, TANK_LOW, True))
+        status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
+        self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
+
+
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/issues", "/api/hoa/briefs", "/api/hoa/reports")
+    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/issues", "/api/hoa/briefs", "/api/hoa/reports")
 
 
 if __name__ == "__main__":
