@@ -60,7 +60,7 @@
         <button class="chip" type="button" data-range="1" aria-disabled="true" aria-pressed="false" title="Mission exports daily rows; 24h needs the hourly export">24h</button>
         <button class="chip" type="button" data-range="7" aria-pressed="true">7d</button>
         <button class="chip" type="button" data-range="30" aria-pressed="false">30d</button>
-        <button class="help" type="button" aria-label="Help: time range" data-help="<b>Daily data.</b> The Mission CSVs hold one row per day, so 24h would be a single point."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+        <button class="help" type="button" aria-label="Help: time range" data-help="<b>Daily data.</b> The Mission CSVs hold one row per day, so 24h would be a single point. Min and max are the window's lowest daily low and highest daily high; the median is of the daily values. The dashed line is the problem level in hoa-thresholds.conf; a day beyond it is marked as a warning."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
       </div>
     </div>
     <div class="trends" id="trend-list"></div>

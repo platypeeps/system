@@ -90,6 +90,11 @@ class Fixture(ScreenCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        # Never this machine's levels: a test that wants one writes this file.
+        self.levels = self.root / "hoa-thresholds.conf"
+        patch = mock.patch.object(hoa_screen, "THRESHOLDS", self.levels)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.hoa = checkout(self.root / "hoa")
         self.repo(str(self.hoa))
         self.repo("/work/other")
@@ -364,6 +369,89 @@ R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
         self.assertNotRegex(HOA_JS, r"\.style\.")
         self.assertNotRegex(HOA_JS, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", HOA_JS)
+
+
+class TheTrendStatistics(Fixture):
+    """sd:4969: each trend's window min, median and max, and its problem level from hoa-thresholds.conf."""
+
+    run_page = TheScript.run_page
+
+    def trends(self, doc=None, body=""):
+        return self.run_page(body + "R.trends = ELS['trend-list'].html;", doc)["R"]["trends"]
+
+    @staticmethod
+    def figure(trends, key):
+        return re.search(rf'<figure class="spark" data-series="{key}">(.*?)</figure>', trends, re.S).group(1)
+
+    @staticmethod
+    def stats(fig):
+        return re.findall(r"(min|median|max) <b>([^<]+)</b>", fig)
+
+    def test_an_odd_window_reads_its_middle_day_and_its_lowest_low_and_highest_high(self):
+        trends = self.trends()
+        # The 7d window of pump-daily.csv: 12.6 to 13.1 for 08-26..08-31, then 16.9 on 09-04.
+        self.assertEqual(self.stats(self.figure(trends, "runtime")), [("min", "12.6"), ("median", "12.9"), ("max", "16.9")])
+        # Aquifer means 181..185, 210, 211: the median is 184; min and max are the daily min and max columns.
+        self.assertEqual(self.stats(self.figure(trends, "aquifer")), [("min", "150.0"), ("median", "184.0"), ("max", "240.0")])
+        runtime = self.figure(trends, "runtime")
+        self.assertIn('data-ext="min"', runtime)
+        self.assertIn('data-ext="max"', runtime)
+
+    def test_an_even_window_with_a_gap_reads_the_mean_of_its_middle_two_and_skips_the_gap(self):
+        doc = self.doc()
+        doc["mission"]["pump"] = [dict(doc["mission"]["pump"][0], date=f"2026-09-0{d}", a2_runtime_hours=v)
+                                  for d, v in ((1, "1"), (2, "4"), (3, ""), (4, "2"), (5, "10"))]
+        fig = self.figure(self.trends(doc), "runtime")
+        # Four days with a reading: 1, 2, 4, 10. The blank day is not a zero.
+        self.assertEqual(self.stats(fig), [("min", "1.0"), ("median", "3.0"), ("max", "10.0")])
+
+    def test_a_level_draws_its_line_and_puts_each_day_beyond_it_in_the_warning_state(self):
+        self.levels.write_text("# sample\nruntime|above|13\ntank|below|15.5\n", encoding="utf-8")
+        trends = self.trends()
+        runtime, tank, aquifer = (self.figure(trends, key) for key in ("runtime", "tank", "aquifer"))
+        self.assertIn('class="limit"', runtime)
+        self.assertEqual(len(re.findall(r'class="bar[^"]* over"', runtime)), 2)
+        self.assertIn("problem level above 13 h · 2 days beyond", runtime)
+        self.assertIn("g-warning", runtime)
+        self.assertIn('class="limit"', tank)
+        self.assertNotIn('class="over"', tank)
+        self.assertIn("problem level below 15.5 ft · no day beyond", tank)
+        self.assertNotIn('class="limit"', aquifer)
+        self.assertIn("no problem level set", aquifer)
+
+    def test_a_line_series_marks_a_day_whose_low_is_under_its_level(self):
+        self.levels.write_text("tank|below|16.5\n", encoding="utf-8")
+        tank = self.figure(self.trends(), "tank")
+        # Every tank day's low is 16.0: all seven are beyond.
+        self.assertEqual(len(re.findall(r'class="over"', tank)), 7)
+        self.assertIn("7 days beyond", tank)
+
+    def test_the_levels_file_names_each_line_it_does_not_read(self):
+        self.levels.write_text("tank|below|change-me\npump|above|3\naquifer|level|100\naquifer|above|250\naquifer|below|1\n"
+                               "runtime|above|inf\n", encoding="utf-8")
+        got = self.doc()["thresholds"]
+        self.assertEqual(got["levels"], {"aquifer": {"dir": "above", "value": 250.0}})
+        self.assertEqual([p.split(":")[0] for p in got["problems"]], ["line 1", "line 2", "line 3", "line 5", "line 6"])
+        self.assertIn("'change-me' is not a number", got["problems"][0])
+        self.assertIn("aquifer has a level already", got["problems"][3])
+        self.assertEqual(got["source"], str(self.levels))
+
+    def test_no_levels_file_is_no_level_and_no_error(self):
+        self.assertEqual(self.doc()["thresholds"], {"source": str(self.levels), "levels": {}, "problems": [], "error": ""})
+
+    def test_an_unreadable_levels_file_is_unknown_on_every_trend(self):
+        self.levels.mkdir()
+        doc = self.doc()
+        self.assertIn("hoa-thresholds.conf did not read", doc["thresholds"]["error"])
+        self.assertIn("problem level not read", self.figure(self.trends(doc), "tank"))
+
+    def test_the_committed_example_names_only_series_the_page_draws(self):
+        example = Path(hoa_screen.__file__).resolve().parents[1] / "hoa-thresholds.conf.example"
+        got = hoa_screen.thresholds(example)
+        self.assertEqual(got["levels"], {})
+        self.assertEqual(len(got["problems"]), 1)
+        self.assertIn("'change-me' is not a number", got["problems"][0])
+        self.assertEqual(re.findall(r"key: '(\w+)'", HOA_JS.split("const SERIES = [")[1].split("];")[0]), list(hoa_screen.SERIES))
 
 
 class TheRegistration(Registers, unittest.TestCase):

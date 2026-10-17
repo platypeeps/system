@@ -17,6 +17,13 @@ the checkout's open `followup` items: overdue is a warning, due within a week
 is caution (`SOON_DAYS`), the rest are queued. Water has no reader: the export
 holds daily rows, not the pump's state now.
 
+Each trend shows its window's min (lowest daily low), median (of the daily
+values) and max (highest daily high), with faint marks at the min and max
+(sd:4969). A problem level is a dashed line, and a day beyond it is a warning.
+The levels are per machine, in `<config>/project-dashboard/hoa-thresholds.conf`
+(template `hoa-thresholds.conf.example`): the hoa checkout states its levels in
+prose only. Without the file a trend says "no problem level set".
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

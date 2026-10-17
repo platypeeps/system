@@ -187,11 +187,32 @@
   ];
   const TW = 300, TH = 72;
   const rowsOf = s => (DOC ? DOC.mission[s.file] : []).filter(r => num(r[s.y]) && (!s.lo || (num(r[s.lo]) && num(r[s.hi])))).slice(-range);
+  // sd:4969: the window's min is its lowest daily low and its max its highest daily high (the plotted value on a series with
+  // no band); the median is of the plotted daily values, the middle one or the mean of the middle two.
+  const lowOf = (s, r) => +r[s.lo || s.y], highOf = (s, r) => +r[s.hi || s.y];
+  function stats(s, rows) {
+    const ys = rows.map(r => +r[s.y]).sort((a, b) => a - b), mid = ys.length >> 1;
+    const lows = rows.map(r => lowOf(s, r)), highs = rows.map(r => highOf(s, r));
+    return { min: Math.min(...lows), median: ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2, max: Math.max(...highs),
+      at: { min: lows.indexOf(Math.min(...lows)), max: highs.indexOf(Math.max(...highs)) } };
+  }
+  // The problem level (hoa_screen.thresholds): a day is beyond it when its low is under a `below` level or its high over an
+  // `above` one.
+  const levelOf = s => DOC?.thresholds?.levels?.[s.key] || null;
+  const beyond = (s, r, lv) => lv.dir === 'below' ? lowOf(s, r) < lv.value : highOf(s, r) > lv.value;
+  function levelText(s, rows, lv) {
+    const t = DOC?.thresholds;
+    if (!lv) return t?.error ? html`<span class="g-unknown">▨ problem level not read: ${t.error}</span>` : html`no problem level set`;
+    const n = rows.filter(r => beyond(s, r, lv)).length;
+    return html`<span class="${n ? 'g-warning' : ''}">${n ? '■ ' : ''}problem level ${lv.dir} ${lv.value} ${s.unit} · ${n ? `${plural(n, 'day')} beyond` : 'no day beyond'}</span>`;
+  }
   function spark(s) {
     const rows = rowsOf(s);
     if (!rows.length) return html`<figure class="spark" data-series="${s.key}"><header><span class="label">${s.title}</span></header>${unknownBlock(DOC?.mission.error || `${s.src} has no rows`)}</figure>`;
-    const ys = rows.flatMap(r => [+r[s.y], s.lo ? +r[s.lo] : +r[s.y], s.hi ? +r[s.hi] : +r[s.y]]);
-    let min = s.zero ? 0 : Math.min(...ys), max = Math.max(...ys); if (max === min) max = min + 1;
+    const st = stats(s, rows), lv = levelOf(s), fix = v => (+v).toFixed(1);
+    let min = s.zero ? 0 : st.min, max = st.max;
+    if (lv) { min = Math.min(min, lv.value); max = Math.max(max, lv.value); }
+    if (max === min) max = min + 1;
     const n = rows.length, step = TW / n;
     const X = i => (i + 0.5) * step, Y = v => TH - ((v - min) / (max - min)) * (TH - 6) - 3;
     const marks = [];
@@ -200,16 +221,23 @@
       marks.push(html`<polyline class="ln" points="${rows.map((r, i) => `${X(i)},${Y(+r[s.y])}`).join(' ')}"/>`);
       marks.push(html`<circle class="last" cx="${X(n - 1)}" cy="${Y(+rows[n - 1][s.y])}" r="2.5"/>`);
     } else {
-      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}${lv && beyond(s, r, lv) ? ' over' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+    }
+    marks.push(html`<circle class="ext" data-ext="min" cx="${X(st.at.min)}" cy="${Y(st.min)}" r="2"/><circle class="ext" data-ext="max" cx="${X(st.at.max)}" cy="${Y(st.max)}" r="2"/>`);
+    if (lv) {
+      marks.push(html`<line class="limit" x1="0" x2="${TW}" y1="${Y(lv.value)}" y2="${Y(lv.value)}"/>`);
+      if (s.kind === 'line') marks.push(rows.map((r, i) => beyond(s, r, lv) ? html`<circle class="over" cx="${X(i)}" cy="${Y(lv.dir === 'below' ? lowOf(s, r) : highOf(s, r))}" r="3"/>` : ''));
     }
     const picked = rows.find(r => r.date === selDay);
     const hits = html`${s.kind === 'line' ? rows.map((r, i) => html`<circle class="mk${r.date === selDay ? ' sel' : ''}" cx="${X(i)}" cy="${Y(+r[s.y])}" r="3.5"/>`) : ''}<rect class="hit scrub" x="0" y="0" width="${TW}" height="${TH}" tabindex="0" role="button" data-series="${s.key}" data-n="${n}" aria-label="${s.title}, ${n} days. ${picked ? `${picked.date}: ${picked[s.y]} ${s.unit}. ` : ''}Tap a day, or use the left and right arrow keys."/>`;
     const last = rows[n - 1];
     return html`<figure class="spark" data-series="${s.key}">
-      <header><span class="label">${s.title}</span><span class="now">${(+last[s.y]).toFixed(1)} <small>${s.unit} · ${day(last.date)}</small></span></header>
+      <header><span class="label">${s.title}</span><span class="now">${fix(last[s.y])} <small>${s.unit} · ${day(last.date)}</small></span></header>
       <svg viewBox="0 0 ${TW} ${TH}" preserveAspectRatio="none" role="img" aria-label="${s.title}, ${n} days">
         <line class="grid" x1="0" x2="${TW}" y1="${TH - 3}" y2="${TH - 3}"/>${marks}${hits}</svg>
-      <div class="axis"><span>${day(rows[0].date)}</span><span>${min.toFixed(s.zero ? 0 : 1)}–${max.toFixed(1)} ${s.unit}</span><span>${day(last.date)}</span></div>
+      <div class="axis"><span>${day(rows[0].date)}</span><span>${day(last.date)}</span></div>
+      <p class="stats"><span>min <b>${fix(st.min)}</b></span><span>median <b>${fix(st.median)}</b></span><span>max <b>${fix(st.max)}</b> ${s.unit}</span></p>
+      <p class="level">${levelText(s, rows, lv)}</p>
       <div class="sr"><table><caption>${s.title} (${s.unit}), from ${s.src}</caption><tbody>${rows.map(r => html`<tr><th scope="row">${r.date}</th><td>${r[s.y]}</td></tr>`)}</tbody></table></div>
     </figure>`;
   }

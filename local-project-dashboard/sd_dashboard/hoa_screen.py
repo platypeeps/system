@@ -21,13 +21,16 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from sd_db import reads, repos
 
-__all__ = ["SOON_DAYS", "STALE_DAYS", "TREND_DAYS", "document"]
+from .documents import _config_dir, pipe_lines
+
+__all__ = ["SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "document", "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
 FOLDER = "hoa"
@@ -50,6 +53,13 @@ FILES = {
     "pump": ("pump-daily.csv", "date", ("a2_starts", "a2_runtime_hours", "a2_gallons", "a2_flow_gpm_running", "a2_gallons_metered")),
     "alarms": ("alarm-events.csv", "datetime", ("kind", "event", "notified", "minutes")),
 }
+
+#: The trend series' problem levels (sd:4969), in this machine's config directory: the hoa checkout states its levels in
+#: prose only (the tank's fire floor), so no file there names one. The checkout ships `hoa-thresholds.conf.example`.
+THRESHOLDS = _config_dir() / "hoa-thresholds.conf"
+
+#: The trend series a level may name: `hoa.js` SERIES keys.
+SERIES = ("tank", "runtime", "aquifer")
 
 ASSET_KEYS = ("id", "type", "name", "status", "accuracy", "source", "notes", "updated")
 BASE_KEYS = ("kind", "ain", "label", "luc", "acres")
@@ -131,6 +141,36 @@ def _mission(folder: Path | None, today: date) -> dict:
     return out
 
 
+def thresholds(path: Path | None = None) -> dict:
+    """Each series' problem level, `{"dir": "below"|"above", "value"}`, from `<series>|below|<number>` lines; a line not
+    read is named in `problems`. No file is no level, which the page says; a file that does not read is `error`."""
+    path = THRESHOLDS if path is None else path
+    out = {"source": str(path), "levels": {}, "problems": [], "error": ""}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return out
+    except (OSError, UnicodeDecodeError) as error:
+        out["error"] = f"{path.name} did not read: {error}"
+        return out
+    for number, _, fields in pipe_lines(text):
+        if len(fields) != 3 or fields[0] not in SERIES or fields[1] not in ("below", "above"):
+            out["problems"].append(f"line {number}: expected <series>|below|<number> or <series>|above|<number>, "
+                                   f"series one of {', '.join(SERIES)}")
+            continue
+        try:
+            value = float(fields[2])
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            out["problems"].append(f"line {number}: {fields[2]!r} is not a number")
+        elif fields[0] in out["levels"]:
+            out["problems"].append(f"line {number}: {fields[0]} has a level already")
+        else:
+            out["levels"][fields[0]] = {"dir": fields[1], "value": value}
+    return out
+
+
 def _geojson(path: Path | None, keys: tuple[str, ...], kind: str) -> dict:
     if path is None:
         return {"error": f"no {kind} file: no repo named hoa is registered", "features": []}
@@ -192,6 +232,7 @@ def document(connection, *, now: str) -> dict:
         "assets": _geojson(paths["assets"], ASSET_KEYS, "assets") if not problems else {"error": problems[0], "features": []},
         "base": _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []},
         "followups": followups,
+        "thresholds": thresholds(),
         "attention": _attention(mission, followups),
     }
 
