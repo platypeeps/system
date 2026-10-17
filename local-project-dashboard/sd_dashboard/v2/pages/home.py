@@ -3,7 +3,7 @@ state (sd:3427). Edit tiles posts /api/home/tiles."""
 
 from __future__ import annotations
 
-from . import Api, Page
+from . import Api, Page, place_views
 
 
 def _read(read):
@@ -23,5 +23,6 @@ PAGE = Page(
     routes=("/home",),
     html="home.html",
     item="sd:2117",
-    api=(Api("/api/home", _read), Api("/api/home/tiles", write=_save)),
+    api=(Api("/api/home", _read), Api("/api/home/tiles", write=_save),
+         *place_views("home")),
 )
