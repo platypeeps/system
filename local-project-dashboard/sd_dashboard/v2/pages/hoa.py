@@ -10,7 +10,7 @@ from . import Api, Page, place_views
 def _read(read):
     from ... import hoa_screen
 
-    return hoa_screen.document(read.connection, now=read.now)
+    return hoa_screen.document(read.connection, now=read.now, jobs=read.jobs)
 
 
 def _ack(payload, principal):

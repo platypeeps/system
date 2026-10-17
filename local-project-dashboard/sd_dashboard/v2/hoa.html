@@ -42,10 +42,10 @@
 
   <section class="panel" id="sources" aria-labelledby="src-h">
     <div class="panel-head">
-      <div><h2 id="src-h">Data sources</h2><p>How old the Mission export and the Vantaca pull are, from the checkout's <code>tools/source-ages.py</code>.</p></div>
+      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Refresh now starts the source's manual job, as Management's Retry does.</p></div>
     </div>
     <table class="ledger" id="src-table" aria-labelledby="src-h">
-      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col" class="hide-sm">Refresh</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
       <tbody id="src-body"></tbody>
     </table>
   </section>
@@ -117,6 +117,7 @@
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
+<script src="/ui/commands.js"></script>
 <script src="/ui/hoa.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

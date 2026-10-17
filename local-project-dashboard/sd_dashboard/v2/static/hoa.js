@@ -18,6 +18,13 @@
   let SRC = [];
   const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
   const srcOf = key => SRC.find(r => r.source === key);
+// A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
+const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
+  : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
+  : j.state === 'idle' ? (j.last_exit === 0 ? 'last refresh finished' : 'refresh not run yet') : `refresh job ${j.state}`;
+// While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
+const SRC_POLL = 15000;
+let polling = 0;
   const hidden = new Set();
 
   const dl = pairs => html`<dl>${pairs.filter(p => p[1] !== '' && p[1] != null).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>`;
@@ -162,13 +169,15 @@
   }
   // The source-ages row for Details: its lamp state, age and what to do.
   const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
-    ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : '']])}`;
-  function selectVantaca(open) {
-    const r = srcOf('vantaca'); if (!r) return;
-    selected = 'source:vantaca'; mark();
-    show(html`<div class="kind"><span class="g-${SRC_STATE[r.state]}" aria-hidden="true">${GLYPH[SRC_STATE[r.state]]}</span><span class="label">Source · Vantaca</span></div>
+    ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : ''],
+    ['Refresh job', !r.job ? '' : r.job.error || `${r.job.name} · ${refreshText(r.job)}`]])}`;
+  function selectSourceRow(id, open) {
+    const r = srcOf(id.slice(7)); if (!r) return;
+    const st = SRC_STATE[r.state] || 'unknown';
+    selected = id; mark();
+    show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Source</span></div>
       <h2>${r.label}</h2>${ageBlock(r)}
-      <h3 class="label">Act</h3>${window.shell.commands.bar('source:vantaca')}`, 'source:vantaca', open);
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -197,7 +206,7 @@
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
-    else if (id === 'source:vantaca') selectVantaca(open);
+    else if (id.startsWith('source:')) selectSourceRow(id, open);
   }
 
   // ---------- Trends ----------
@@ -270,13 +279,13 @@
   // Every row is real; the design's sample rows are gone.
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
-    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="4">${unknownBlock(sr.error)}</td></tr>`
+    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
       : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
         return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
         <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
-        <td class="src hide-sm">allowed ${r.allowed_days} d</td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
         <td class="act">${C.rowActions(id)}</td></tr>`; })}`
-      : html`<tr><td colspan="4" class="why">tools/source-ages.py lists neither source.</td></tr>`);
+      : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`);
   }
   function drawLedgers() {
     const C = window.shell.commands, f = DOC?.followups;
@@ -302,6 +311,8 @@
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // One timer at a time; each read that still sees a running job sets the next.
+  function poll() { if (!polling) polling = setTimeout(() => { polling = 0; reader.reread(); }, SRC_POLL); }
   const spec = {
     source: '/api/hoa', what: 'the HOA readings',
     adopt: doc => {
@@ -322,8 +333,10 @@
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
-        ...(M.dir || srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
-        ...(srcOf('vantaca') ? [{ id: 'source:vantaca', type: 'source', label: 'Vantaca invoices', source: 'vantaca' }] : [])];
+        ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
+        // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
+        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
+      if (SRC.some(r => r.job?.state === 'running')) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
@@ -430,15 +443,20 @@
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
     );
     // ---------- Refresh a source (sd:4965) ----------
-    // The command is the one tools/source-ages.py names for the source (`refresh`), run from the checkout. build: copy only
-    // until the run route is settled (sd:4965 question); the line is what a run would start.
-    const refreshCli = o => { const r = srcOf(o.source); return r?.refresh ? `cd ${S.shq(DOC.sources.repo)} && ${r.refresh}` : ''; };
+    // Each refreshable source has a manual cron job (hoa_screen.REFRESH_JOBS). Its row registers Management's shared Retry
+    // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off
+    // reason. The run's state and its last output line come back with the next read.
+    const facts = o => { const j = srcOf(o.source)?.job || {};
+      return { name: j.name, service: j.service, failed: j.state === 'failed', exit: j.last_exit,
+        capability: j.error ? { allowed: false, reason: j.error } : j.state === 'running' ? { allowed: false, reason: `${j.name} is running now` } : j.capabilities?.retry }; };
+    const refresh = o => { const j = srcOf(o.source).job;
+      return S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision })
+        .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
     C.register(
-      { id: 'source.refresh', on: 'source', label: 'Refresh now', key: 'e', risk: 'safe', executes: false, primary: o => srcOf(o.source)?.state === 'stale',
-        does: o => o.source === 'vantaca' ? 'Pulls the Vantaca invoices once, read only, and lands them. Nothing to undo; a second run pulls again.'
-          : 'Exports the Mission telemetry from the portal and imports it. Nothing to undo; a second run exports again.',
-        when: o => refreshCli(o) ? true : srcOf(o.source) ? 'tools/source-ages.py names no refresh command for it' : 'tools/source-ages.py did not list it',
-        cli: refreshCli, run: o => `Copy the line into a terminal: the dashboard does not start ${o.label} yet` },
+      { ...window.commands.retry({ job: facts, run: refresh }),
+        does: o => o.source === 'vantaca' ? 'Starts the Vantaca pull once (Chrome, signed in, up to 2 h): it reads invoices and lands them. Nothing to undo.'
+          : 'Starts the Mission export once (Chrome, signed in to the portal, up to 30 min), then imports it. Nothing to undo.' },
+      window.commands.showLog({ job: facts }),
     );
     $('al-show').addEventListener('click', e => {
       if (!e.target.closest('.chip')) return;

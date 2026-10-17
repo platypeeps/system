@@ -12,9 +12,11 @@ second repo with that folder name is an error that names both, never a guess.
 
 **Each source is guarded on its own.** A file that is missing or does not
 parse is that part's `error`; the other parts still answer, and the page shows
-the failed part as unknown with the reason, never as an empty list. Nothing
-here writes, runs a command or reaches the network: the map draws the vectors
-in the files, and the page loads no tiles.
+the failed part as unknown with the reason, never as an empty list. The read
+reaches no network: the map draws the vectors in the files, and the page loads
+no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
+and reads the refresh jobs' launchd state; it starts nothing. The writes are
+Acknowledge (`acknowledge`) and the jobs route Refresh now posts.
 """
 
 from __future__ import annotations
@@ -28,11 +30,11 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import reads, repos, workflow, writes
+from sd_db import operations, reads, repos, workflow, writes
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["ALARM_ROOT", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
            "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
@@ -70,8 +72,7 @@ SOURCE_AGES = "tools/source-ages.py"
 #: Its ceiling: one Python start and a few small CSV reads.
 SOURCE_SECONDS = 10.0
 
-#: The sources the Overview lamps show, and the fields of each that the page reads.
-LAMPS = ("mission", "vantaca")
+#: The fields of each source row that the page reads; every row the script prints is a lamp.
 SOURCE_KEYS = ("source", "label", "latest", "age_days", "allowed_days", "state", "ends", "refresh", "todo", "error")
 
 ASSET_KEYS = ("id", "type", "name", "status", "accuracy", "source", "notes", "updated")
@@ -217,8 +218,42 @@ def sources(place: Path | None) -> dict:
     if rows is None:
         out["error"] = f"{SOURCE_AGES} exited {done.returncode}" + (f": {said}" if said else "")
         return out
-    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} for row in rows if row.get("source") in LAMPS]
+    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} for row in rows]
     return out
+
+
+#: The manual cron job (`JOB_SCHEDULE="manual"`) that refreshes each source; Refresh now starts it through the route
+#: Management's Retry posts, `/api/jobs/<name>/retry` (sd:4965). The job files are private config, installed with
+#: `cron-jobs.sh install <name>`.
+REFRESH_JOBS = {"mission": "hoa-mission-export", "vantaca": "hoa-vantaca-pull"}
+
+#: The fields of `operations.job_state` the page reads.
+JOB_KEYS = ("name", "service", "state", "last_exit", "revision", "capabilities", "last_request")
+
+
+def _said(log: dict, name: str) -> str:
+    """The last line the job's run printed, not the wrapper's own `[<job>] ...` lines: a refused run's stderr reason."""
+    lines = [line.strip() for line in log.get("text", "").splitlines()]
+    return next((line for line in reversed(lines) if line and not line.startswith(f"[{name}] ")), "")
+
+
+def _refresh_jobs(connection, rows: list[dict], backend) -> None:
+    """Give each row with a refresh job its launchd state, from the jobs inventory Management reads. A job that is not
+    installed is the row's `job.error`, with the line that installs it; the read never starts anything."""
+    from .management_screen import job_log
+
+    root = getattr(backend, "cron_root", None)
+    for row in rows:
+        name = REFRESH_JOBS.get(row["source"])
+        if not name:
+            continue
+        try:
+            job = operations.job_state(connection, name, backend=backend)
+        except workflow.WorkflowError as error:
+            row["job"] = {"name": name, "error": f"{name} is not an installed job ({error}); "
+                                                 f"local-cron-jobs/cron-jobs.sh install {name} installs it"}
+            continue
+        row["job"] = {key: job.get(key) for key in JOB_KEYS} | {"said": _said(job_log(root, name), name)}
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +364,9 @@ def _followups(connection, repo: str | None, now: str, today: date) -> dict:
     return {"error": "", "rows": rows}
 
 
-def document(connection, *, now: str) -> dict:
-    """The HOA page's document: the map, the Mission export and the checkout's open followups."""
+def document(connection, *, now: str, jobs=None) -> dict:
+    """The HOA page's document: the map, the Mission export, the checkout's open followups and its sources' ages.
+    `jobs` is the operations backend the refresh jobs are read from, `operations.LaunchdBackend` by default."""
     recorded, place, problems = checkout(connection)
     state = "error" if problems else "read" if recorded else "missing"
     today = datetime.fromisoformat(now.replace("Z", "+00:00")).date()
@@ -339,6 +375,9 @@ def document(connection, *, now: str) -> dict:
     if problems:
         mission["error"], followups["error"] = problems[0], problems[0]
     _acks(connection, mission)
+    ages = sources(place) if not problems else {"error": problems[0], "rows": [], "command": "", "repo": ""}
+    if ages["rows"]:
+        _refresh_jobs(connection, ages["rows"], jobs or operations.LaunchdBackend())
     return {
         "read": now,
         "config": {"state": state, "source": "the repo table", "problems": problems},
@@ -347,7 +386,7 @@ def document(connection, *, now: str) -> dict:
         "base": _geojson(paths["base"], BASE_KEYS, "base") if not problems else {"error": problems[0], "features": []},
         "followups": followups,
         "thresholds": thresholds(),
-        "sources": sources(place) if not problems else {"error": problems[0], "rows": [], "command": "", "repo": ""},
+        "sources": ages,
         "attention": _attention(mission, followups),
     }
 

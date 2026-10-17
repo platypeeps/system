@@ -42,6 +42,7 @@ from test_v2_shell_shared import cell_grammar
 
 V2 = Path(v2.__file__).resolve().parent
 HOA_JS = (V2 / "static" / "hoa.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
 #: NOW is 2026-09-06; the export below ends the day before, so it is current and has no row for today.
@@ -85,6 +86,31 @@ def checkout(root: Path, *, analog=ANALOG, pump=PUMP, alarms=ALARMS, base=BASE, 
     return root
 
 
+class HoaJobs:
+    """An operations backend double: `names` and `inspect`, the shape `operations.job_state` reads, and the `cron_root`
+    whose `logs/` holds each job's log. A job not in `jobs` is not installed, refused as `LaunchdBackend` refuses it.
+    No launchctl call is made."""
+
+    def __init__(self, root, jobs=()):
+        self.cron_root = Path(root) / "local-cron-jobs"
+        (self.cron_root / "logs").mkdir(parents=True, exist_ok=True)
+        self.jobs = dict(jobs)
+
+    def names(self):
+        return list(self.jobs)
+
+    def inspect(self, name):
+        if name not in self.jobs:
+            raise workflow.WorkflowError("job is not supported: installed configuration is unavailable or invalid")
+        state, code = self.jobs[name]
+        return {"name": name, "label": "fixture." + name, "service": "fixture/" + name, "schedule": [],
+                "state": state, "pid": 7 if state == "running" else None, "last_exit": code, "last_signal": None,
+                "runs": 1, "lifetime": None, "boot": None, "reason": "", "_observation": f"{name} {state} {code}"}
+
+    def log(self, name, text):
+        (self.cron_root / "logs" / f"{name}.log").write_text(text)
+
+
 class Fixture(ScreenCase):
     def setUp(self):
         super().setUp()
@@ -96,6 +122,8 @@ class Fixture(ScreenCase):
         patch = mock.patch.object(hoa_screen, "THRESHOLDS", self.levels)
         patch.start()
         self.addCleanup(patch.stop)
+        # Never this machine's launchd: a test that wants a refresh job installed names it here.
+        self.jobs = HoaJobs(self.root)
         self.hoa = checkout(self.root / "hoa")
         self.repo(str(self.hoa))
         self.repo("/work/other")
@@ -107,7 +135,7 @@ class Fixture(ScreenCase):
         self.item("Another checkout's followup", kind="followup", repo="/work/other", due="2026-08-01")
 
     def doc(self):
-        return hoa_screen.document(self.connection, now=NOW)
+        return hoa_screen.document(self.connection, now=NOW, jobs=self.jobs)
 
     def bare(self, *paths):
         """A document from a database that registers only `paths`."""
@@ -117,7 +145,7 @@ class Fixture(ScreenCase):
         self.addCleanup(connection.close)
         for path in paths:
             upsert_repo(connection, path, remote="git@example.invalid:x.git")
-        return hoa_screen.document(connection, now=NOW)
+        return hoa_screen.document(connection, now=NOW, jobs=self.jobs)
 
 
 class TheDocument(Fixture):
@@ -218,7 +246,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "hoa.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -246,12 +274,12 @@ window.shell.pages = { Tasks: '/tasks' };
 class TheScript(Fixture):
     """hoa.js against the document `hoa_screen` builds from the fixture checkout."""
 
-    def run_page(self, body, doc=None, status=200):
+    def run_page(self, body, doc=None, status=200, pre=""):
         doc = doc if doc is not None else self.doc()
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HOA_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
                   + "ANSWER = (path, body) => path === '/api/hoa' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + pre + "\n" + COMMANDS_JS + HOA_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -270,7 +298,8 @@ class TheScript(Fixture):
             ["asset.ask", "asset", "safe", "a"],
             ["alarm.ack", "alarm", "undo", "a"],
             ["alarm.unack", "alarm", "undo", "a"],
-            ["source.refresh", "source", "safe", "e"],
+            ["jobs.retry", "job", "safe", "t"],
+            ["jobs.log", "job", "safe", "l"],
         ])
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
@@ -616,11 +645,12 @@ def source_row(source, label, latest, age, allowed, state, ends=None, refresh=No
             "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error}
 
 
-#: NOW is 2026-09-06: the Mission export is current, Vantaca stale, CORE a source the lamps do not show.
+#: NOW is 2026-09-06: the Mission export is current, Vantaca stale; CORE and TMT have no refresh command.
 SOURCES = [source_row("mission", "Mission export", "2026-09-05", 1, 14, "ok", refresh="sh tools/mission/mission.sh export"),
            source_row("core", "CORE bills", "2026-08-01", 36, 40, "ok"),
            source_row("vantaca", "Vantaca invoices", "2026-08-20", 17, 14, "stale", ends="2026-10-31",
-                      refresh="python3 tools/vantaca-pull.py")]
+                      refresh="python3 tools/vantaca-pull.py"),
+           source_row("tmt", "TMT readings", "2026-07-01", 67, 85, "ok", ends="2026-11-30")]
 
 
 class TheSourceAges(Fixture):
@@ -636,13 +666,14 @@ class TheSourceAges(Fixture):
                         f"sys.stderr.write({stderr!r})\nsys.exit({code})\n")
         (tools / "source-ages.py").write_text(text, encoding="utf-8")
 
-    def test_the_lamps_are_the_mission_and_vantaca_rows_of_the_script(self):
+    def test_the_lamps_are_every_row_of_the_script_in_its_order(self):
         self.script()
         got = self.doc()["sources"]
         self.assertEqual(got["error"], "")
         self.assertEqual(got["command"], "python3 tools/source-ages.py --json")
-        self.assertEqual([(r["source"], r["state"], r["age_days"]) for r in got["rows"]], [("mission", "ok", 1), ("vantaca", "stale", 17)])
-        self.assertEqual(set(got["rows"][0]), set(hoa_screen.SOURCE_KEYS))
+        self.assertEqual([(r["source"], r["state"], r["age_days"]) for r in got["rows"]],
+                         [("mission", "ok", 1), ("core", "ok", 36), ("vantaca", "stale", 17), ("tmt", "ok", 67)])
+        self.assertEqual(set(got["rows"][1]), set(hoa_screen.SOURCE_KEYS))
 
     def test_a_source_that_did_not_read_is_unknown_and_the_others_still_answer(self):
         rows = [source_row("mission", "Mission export", None, None, 14, "unknown", error="cannot read analog-daily.csv"), SOURCES[2]]
@@ -651,6 +682,7 @@ class TheSourceAges(Fixture):
         self.assertEqual(got["error"], "")
         self.assertEqual([(r["source"], r["state"], r["error"]) for r in got["rows"]],
                          [("mission", "unknown", "cannot read analog-daily.csv"), ("vantaca", "stale", None)])
+        self.assertEqual([r["job"]["name"] for r in got["rows"]], ["hoa-mission-export", "hoa-vantaca-pull"])
 
     def test_a_checkout_without_the_script_names_it(self):
         self.assertEqual(self.doc()["sources"]["error"], "tools/source-ages.py is not in the checkout")
@@ -678,11 +710,11 @@ class TheSourceAges(Fixture):
         self.script()
         out = self.run_page("R.src = ELS['src-body'].html; document.dispatchEvent(new CustomEvent('shell:open', { detail: 'source:vantaca' })); R.det = ELS.details.html;")
         src = out["R"]["src"]
-        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', src), ["mission", "vantaca"])
+        self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', src), ["mission", "core", "vantaca", "tmt"])
         self.assertRegex(src, re.compile(r'data-id="source:mission".*?g g-ok" aria-label="ok">●.*?newest 2026-09-05 · 1 d old', re.S))
         self.assertRegex(src, re.compile(r'data-id="source:vantaca".*?g g-caution" aria-label="caution">▲.*?newest 2026-08-20 · 17 d old', re.S))
         self.assertIn("refresh vantaca", out["R"]["det"])
-        retired = [SOURCES[0], dict(SOURCES[2], state="retired", refresh=None)]
+        retired = [SOURCES[0], dict(SOURCES[2], state="retired", refresh=None)]  # what the script prints after Oct 30
         self.script(retired)
         self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', self.run_page("R.src = ELS['src-body'].html;")["R"]["src"]), ["mission"])
 
@@ -696,19 +728,79 @@ class TheSourceAges(Fixture):
         out = self.run_page("R.src = ELS['src-body'].html;")
         self.assertEqual(re.findall(r'<tr data-id="source:(\w+)"', out["R"]["src"]), ["mission", "vantaca"])
 
-    def test_refresh_is_the_line_the_script_names_run_from_the_checkout(self):
+    def test_retry_starts_the_sources_manual_job_through_the_jobs_route(self):
         self.script()
-        out = self.run_page("""const c = cmd('source.refresh'), m = OBJ.get('source:mission'), v = OBJ.get('source:vantaca');
-R.cli = [c.cli(m), c.cli(v)]; R.primary = [c.primary(m), c.primary(v)]; R.does = c.does(v); R.run = c.run(m);""")
-        self.assertEqual(out["R"]["cli"], [f"cd '{self.hoa}' && sh tools/mission/mission.sh export", f"cd '{self.hoa}' && python3 tools/vantaca-pull.py"])
-        self.assertEqual(out["R"]["primary"], [False, True])
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
+        doc = self.doc()
+        revision = doc["sources"]["rows"][0]["job"]["revision"]
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
+const c = cmd('jobs.retry'), m = OBJ.get('source:mission'), v = OBJ.get('source:vantaca');
+R.types = ['mission', 'core', 'vantaca', 'tmt'].map(k => OBJ.get(`source:${k}`).type);
+R.cli = [c.cli(m), c.cli(v)]; R.sends = c.sends(m); R.primary = [c.primary(m), c.primary(v)]; R.does = c.does(v);
+R.when = c.when(m); R.log = cmd('jobs.log').cli(m);
+C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        # CORE and TMT have no refresh job: they are source rows, and Retry is not theirs.
+        self.assertEqual(out["R"]["types"], ["job", "source", "job", "source"])
+        self.assertEqual(out["R"]["cli"], ["sd jobs retry hoa-mission-export", "sd jobs retry hoa-vantaca-pull"])
+        self.assertEqual(out["R"]["sends"], "launchctl kickstart fixture/hoa-mission-export")
+        self.assertEqual(out["R"]["primary"], [True, False])
         self.assertIn("Vantaca", out["R"]["does"])
-        self.assertIn("does not start Mission export yet", out["R"]["run"])
+        self.assertIs(out["R"]["when"], True)
+        self.assertEqual(out["R"]["log"], "local-cron-jobs/cron-jobs.sh logs hoa-mission-export")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/jobs/hoa-mission-export/retry", {"revision": revision}]])
+        self.assertIn("Mission export refresh started · hoa-mission-export", out["toasts"][0][0])
+        # The landed start reads HOA again, and the lamps with it,
+        self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
+        # and once more after SRC_POLL, in case launchd had not marked the job running yet.
+        self.assertEqual(out["R"]["timers"], [15000])
 
-    def test_a_source_with_no_refresh_command_turns_refresh_off(self):
-        self.script([dict(SOURCES[0], refresh=None)])
-        out = self.run_page("R.when = cmd('source.refresh').when(OBJ.get('source:mission'));")
-        self.assertEqual(out["R"]["when"], "tools/source-ages.py names no refresh command for it")
+    def test_a_refused_start_is_named(self):
+        self.script()
+        self.jobs.jobs["hoa-mission-export"] = ("failed", 3)
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { request: { status: 'failed', message: 'job changed before dispatch; no action was sent' }, job: {} }];
+C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        self.assertIn("hoa-mission-export not started: job changed before dispatch; no action was sent", out["toasts"][0][0])
+
+    def test_retry_is_off_with_the_inventorys_reason_until_the_job_can_start(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
+        out = self.run_page("""const c = cmd('jobs.retry');
+R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        self.assertEqual(out["R"]["when"], ["only a currently failed or interrupted job can retry", "hoa-vantaca-pull is running now"])
+
+    def test_a_job_that_is_not_installed_turns_retry_off_and_says_how_to_install_it(self):
+        self.script()
+        doc = self.doc()
+        self.assertEqual(doc["sources"]["rows"][0]["job"], {
+            "name": "hoa-mission-export",
+            "error": "hoa-mission-export is not an installed job (job is not supported: installed configuration is "
+                     "unavailable or invalid); local-cron-jobs/cron-jobs.sh install hoa-mission-export installs it"})
+        self.assertNotIn("job", doc["sources"]["rows"][1])
+        out = self.run_page("R.when = cmd('jobs.retry').when(OBJ.get('source:mission')); R.src = ELS['src-body'].html;", doc)
+        self.assertEqual(out["R"]["when"], doc["sources"]["rows"][0]["job"]["error"])
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:mission".*?class="detail hide-sm">refresh job not installed<', re.S))
+
+    def test_each_row_shows_its_jobs_last_run_and_a_failure_names_its_last_line(self):
+        self.script()
+        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("running", None)})
+        self.jobs.log("hoa-mission-export", "[hoa-mission-export] 2026-09-06T08:00:00-0600 starting (cwd: /x)\n"
+                      "mission export: Chrome is not running; open it and sign in to 123scada.com\n\n"
+                      "[hoa-mission-export] 2026-09-06T08:00:01-0600 FAILED rc=3\n")
+        doc = self.doc()
+        self.assertEqual(doc["sources"]["rows"][0]["job"]["said"],
+                         "mission export: Chrome is not running; open it and sign in to 123scada.com")
+        out = self.run_page("R.src = ELS['src-body'].html; R.timers = TIMERS;", doc,
+                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        src = out["R"]["src"]
+        self.assertRegex(src, re.compile(r'data-id="source:mission".*?>last refresh failed, exit 3: mission export: Chrome is not running', re.S))
+        self.assertRegex(src, re.compile(r'data-id="source:vantaca".*?>refresh running<', re.S))
+        # A running job reads HOA again until it ends, so the lamps follow the run.
+        self.assertEqual(out["R"]["timers"], [15000])
 
     def test_a_script_that_did_not_answer_is_unknown_with_its_reason(self):
         out = self.run_page("R.src = ELS['src-body'].html;")
