@@ -26,7 +26,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "health-check.sh"
@@ -114,6 +116,11 @@ def _stub(d, name, body):
     return path
 
 
+def stamped(**ago):
+    """The capture time in a report's file name, `-YYYY-MM-DD-HHMMSS`, that long ago."""
+    return (datetime.now() - timedelta(**ago)).strftime("-%Y-%m-%d-%H%M%S")
+
+
 class JevOrdering(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -165,17 +172,18 @@ esac
         cls.system_reports.mkdir()
         cls.host_reports = cls.tmp / "host-reports"
         cls.host_reports.mkdir()
-        (cls.host_reports / (HOST_APP + "-2026-01-01-000000.ips")).write_text("{}\n")
+        (cls.host_reports / (HOST_APP + stamped(hours=1) + ".ips")).write_text("{}\n")
         reports = cls.home / "Library" / "Logs" / "DiagnosticReports"
         reports.mkdir(parents=True)
-        (reports / (CRASHED_APP + "-2026-01-01-000000.ips")).write_text("{}\n")
+        (reports / (CRASHED_APP + stamped(hours=1) + ".ips")).write_text("{}\n")
         _stub(cls.bin, "route", 'echo "  gateway: %s"\n' % GATEWAY)
         _stub(cls.bin, "ping", "exit 1\n")
         _stub(cls.bin, "dscacheutil", "exit 0\n")
         _stub(cls.bin, "uptime", 'echo "up 1 day, 0 users, load averages: 1 1 1"\n')
         _stub(cls.bin, "hostname", 'echo "%s"\n' % HOSTNAME)
         # FAKE_DAY stands for the run's date, which the reason must not carry.
-        _stub(cls.bin, "date", 'if [ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ]; then echo "$FAKE_DAY"; '
+        # An offset call (the report age cutoffs) reaches the real date.
+        _stub(cls.bin, "date", 'case "$1" in -v*|-d) exec /bin/date "$@" ;; esac\nif [ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ]; then echo "$FAKE_DAY"; '
                                'else echo "2026-01-01 00:00"; fi\n')
         _stub(cls.bin, "sysctl", """\
 case "$2" in
@@ -461,7 +469,7 @@ esac
             return out, [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
         more = self.tmp / "more-reports"
         more.mkdir()
-        (more / (CRASHED_APP + "-2026-01-02-000000.ips")).write_text("{}\n")
+        (more / (CRASHED_APP + stamped(hours=2) + ".ips")).write_text("{}\n")
         once, quiet = run("crash-once")
         twice, crashed = run("crash-twice", reports=more)
         thirty, busy = run("load-30", "30.00")
@@ -479,6 +487,31 @@ esac
         self.assertEqual([l for l in busy if l not in quiet],
                          [l for l in busy if "5-minute load average" in l])
 
+    def test_report_age_is_the_capture_time_in_the_name(self):
+        """sd:4828: a report touched now but captured 3 days ago is not new; a
+        name with no date falls back to its mtime."""
+        def run(name, files):
+            reports = self.tmp / ("reports-" + name)
+            reports.mkdir()
+            for f, age in files.items():
+                (reports / f).write_text("{}\n")
+                if age is not None:
+                    os.utime(reports / f, (time.time() - age, time.time() - age))
+            out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                                 verb="run")["out"]
+            # The fixture home holds one fresh crash of its own; keep this run's.
+            return "\n".join(l for l in out.splitlines() if "kernel panic" in l or re.search(r"\b(Old|New|undated)", l))
+        old = run("capture-old", {"Old-App" + stamped(days=3) + ".ips": None,
+                                  "Kernel" + stamped(days=8)[:11] + ".panic": None})
+        self.assertEqual(old, "")
+        new = run("capture-new", {"New-App" + stamped(hours=2) + ".ips": 3 * 86400,
+                                  "Kernel" + stamped(days=2)[:11] + ".panic": 30 * 86400})
+        self.assertIn("New-App(1)", new)
+        self.assertIn("kernel panic", new)
+        # No date in the name: the file's mtime decides.
+        self.assertEqual(run("undated-old", {"undated.ips": 3 * 86400}), "")
+        self.assertIn("undated.ips(1)", run("undated-new", {"undated.ips": 60}))
+
     def test_each_crashing_app_and_panic_is_its_own_line(self):
         """sd:4664: one line per crashing app and per panic report, so a night
         with one of them gone is a subset the pack folds (pack sd:4658)."""
@@ -490,8 +523,9 @@ esac
             out = self.run_check(name, {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports),
                                         **(env or {})}, verb="run")["out"]
             return [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")]
-        both = run("two-apps", ("Other-App-2026-01-02-000000.ips", "Kernel-2026-01-01.panic", "Kernel-2026-01-02.panic"))
-        one = run("one-app", ("Kernel-2026-01-01.panic",))
+        both = run("two-apps", ("Other-App" + stamped(hours=1) + ".ips", "Kernel" + stamped(days=1)[:11] + ".panic",
+                             "Kernel" + stamped(days=2)[:11] + ".panic"))
+        one = run("one-app", ("Kernel" + stamped(days=1)[:11] + ".panic",))
         self.assertLess(set(one), set(both))
         self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
 

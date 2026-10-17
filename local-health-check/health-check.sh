@@ -225,13 +225,32 @@ bounded() {
 
 # --- crash and panic reports -------------------------------------------
 
+# A report's age is its capture time, which the file name carries
+# (<App>-YYYY-MM-DD-HHMMSS.ips, local time): a copy, a sync or an indexer
+# touches the file and moves its mtime, so mtime would call an old report new
+# (sd:4828). Only a name with no parseable date, or a cutoff `date` cannot
+# compute, falls back to -mtime. A date-only name counts to the end of its day.
+stamp_cut() { # <BSD date -v offset> <GNU date -d offset>: the cutoff as 14 digits, or nothing
+  { date -v-"$1" +%Y%m%d%H%M%S 2>/dev/null || date -d "$2 ago" +%Y%m%d%H%M%S 2>/dev/null; } | grep -E '^[0-9]{14}$' || :
+}
+CUT_DAY=$(stamp_cut 1d "1 day")
+CUT_WEEK=$(stamp_cut 7d "7 days")
+recent_report() { # <file> <cutoff or empty> <mtime days>
+  _s=$(basename "$1" | sed -En 's/.*([0-9]{4})-([0-9]{2})-([0-9]{2})(-([0-9]{6}))?\.[A-Za-z]+$/\1\2\3\5/p')
+  if [ -n "$_s" ] && [ -n "$2" ]; then
+    [ "${#_s}" -eq 8 ] && _s="${_s}235959"
+    [ "$_s" -ge "$2" ]
+  else
+    [ -n "$(find "$1" -maxdepth 0 -mtime -"$3" 2>/dev/null)" ]
+  fi
+}
 for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   [ -d "$d" ] || continue
-  find "$d" -maxdepth 1 -name '*.panic' -mtime -7 2>/dev/null | while read -r p; do
-    echo "$p" >> "$TMPD/panics"
+  find "$d" -maxdepth 1 -name '*.panic' 2>/dev/null | while read -r p; do
+    ! recent_report "$p" "$CUT_WEEK" 7 || echo "$p" >> "$TMPD/panics"
   done
-  find "$d" -maxdepth 1 -name '*.ips' -mtime -1 2>/dev/null | while read -r p; do
-    basename "$p" | sed 's/[-_][0-9]\{4\}-.*//' >> "$TMPD/crashes"
+  find "$d" -maxdepth 1 -name '*.ips' 2>/dev/null | while read -r p; do
+    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//' >> "$TMPD/crashes"
   done
 done
 if [ -s "$TMPD/panics" ]; then
@@ -308,7 +327,7 @@ for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist; do
       case "$cron_rc" in
         0) continue ;;
         1) finding "launchd: $label reports a failed run that nothing has superseded" \
-             "read local-cron-jobs/logs/$cron_job.log and the outcome recorded beside it in logs/.$cron_job.runs; re-run the job by hand to clear it" \
+             "read local-cron-jobs/logs/$cron_job.log and the outcome recorded beside it in logs/.$cron_job.runs; re-run the job by hand to clear it (where launchd prints no coalition, the next passing scheduled run clears it)" \
              "launchd: $(jev_label "$label") reports a failed run that nothing has superseded"
            continue ;;
       esac ;;
