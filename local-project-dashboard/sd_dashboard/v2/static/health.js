@@ -195,7 +195,7 @@
     const on = filtering(), shown = ROWS.filter(passes).length;
     const what = [F.area.size ? `${AREAS.filter(a => F.area.has(a.id)).map(a => a.name).join(', ')} only` : '', [...F.state].join(' or '), query ? `“${query}”` : ''].filter(Boolean).join(' · ');
     const total = ROWS.filter(drawn).length;
-    put($(`view-${VIEW}`), html`${DOC ? filters() : ''}${on ? html`<p class="filtered" role="status">${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" data-clear>Show all rows</button></p>` : ''}${areas()}`);
+    put($(`body-${VIEW}`), html`${DOC ? filters() : ''}${on ? html`<p class="filtered" role="status">${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" data-clear>Show all rows</button></p>` : ''}${areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
       clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
@@ -226,6 +226,8 @@
   const load = () => Promise.resolve(readers[VIEW] && readers[VIEW].load()).then(() => readSummary());
   const spec = view => ({
     source: `/api/health/${view}`, what: `the ${PAGE_VIEWS.find(v => v.id === view).label} rows`,
+    // Each view's reading state sits in its own panel, and a late read of a view not open leaves the selection alone.
+    slot: `state-${view}`, active: () => view === VIEW,
     adopt: doc => {
       const areas = doc.areas;
       // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
