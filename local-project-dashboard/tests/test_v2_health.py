@@ -1136,7 +1136,12 @@ class TheViews(Collectors, ScreenCase):
         self.assertEqual(lamps["wt"]["error"], f"being read since {NOW}; read Health again for its answer")
         self.assertEqual(lamps["svc"]["error"], "not read since the dashboard started; the Machine view reads it")
         self.assertEqual(set(found["attention"]), {"state", "n", "what"})
-        self.assertEqual([view["id"] for view in found["views"]], ["machine", "checkouts", "github", "jobs"])
+        self.assertEqual([view["id"] for view in found["views"]], ["checkouts", "machine", "github", "jobs"])
+        # A lamp counts the rows that want you; an area not read has no count, so its view has none either.
+        prot = next(area for area in health_screen.part(self.connection, "github", now=NOW, **self.seams())["areas"] if area["id"] == "prot")
+        wanting = sum(row["state"] in ("warning", "caution", "unknown") for row in prot["rows"])
+        self.assertGreater(wanting, 0)
+        self.assertEqual((lamps["prot"]["n"], lamps["wt"]["n"]), (wanting, None))
 
     def test_the_summary_shows_what_the_last_view_read_left_and_counts_its_rows(self):
         machine = health_screen.part(self.connection, "machine", now=NOW, **self.seams())
@@ -1264,6 +1269,11 @@ def summary_of(doc):
             "snooze_error": doc["snooze_error"]}
 
 
+def wanting(doc, view):
+    """The rows of `view` in `doc` that want the operator: warning, caution or unknown."""
+    return sum(row["state"] in ("warning", "caution", "unknown") for area in doc["areas"] if area["view"] == view for row in area["rows"])
+
+
 # The Health reads: /api/health/summary, and /api/health/<view> as `doc`'s areas of that view. STATUS fails both.
 HEALTH_ANSWER = r"""
 var HEALTH_READ = path => /^\/api\/health\/[a-z]+$/.test(path) && path !== '/api/health/cleanup';
@@ -1272,16 +1282,19 @@ var HEALTH = path => { const v = path.slice('/api/health/'.length);
   return v === 'summary' ? [200, SUMMARY_DOC] : [200, { ...DOC, view: v, areas: DOC.areas.filter(a => a.view === v) }]; };
 var history = { replaceState: (s, t, u) => { OUT.address = u; location.hash = u.slice(u.indexOf('#')); } };
 ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [404, { error: 'no answer' }];
+var PANEL = () => ELS['view-' + window.shell.view.current()];
 """
 
 
 class TheScript(Collectors, ScreenCase):
     """health.js against the document `health_screen` builds from the fixtures above, one view at a time."""
 
+    def run_doc(self):
+        return health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                      protection=protection_of(PROTECTION))
+
     def run_page(self, body, doc=None, status=200, view="checkouts", search="", pre=""):
-        doc = doc if doc is not None else health_screen.document(
-            self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
-            protection=protection_of(PROTECTION))
+        doc = doc if doc is not None else self.run_doc()
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HEALTH_SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, SUMMARY_DOC = {json.dumps(summary_of(doc))}, STATUS = {status};\n"
                   + f"location.pathname = '/fleet-health'; location.hash = {json.dumps(f'#view={view}' if view else '')}; location.search = {json.dumps(search)};\n"
@@ -1324,7 +1337,7 @@ class TheScript(Collectors, ScreenCase):
         cred = next(area for area in doc["areas"] if area["id"] == "cred")
         cred.update(read=False, source=None, rows=[], at=None,
                     missing=["GitHub PAT presence and expiry", "gh CLI sign-in"])
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.sub = ELS.subhead.html;", doc)
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.sub = ELS.subhead.html;", doc)
         self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary"])
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-area="cred" data-state="unknown"[^>]*>.*?not read')
@@ -1342,9 +1355,9 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("4 views · 1 warning row wants you · read", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
-        jobs = self.run_page("R.areas = ELS.areas.html;", doc, view="jobs")["R"]["areas"]
+        jobs = self.run_page("R.areas = PANEL().html;", doc, view="jobs")["R"]["areas"]
         self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: GitHub PAT presence and expiry", jobs)
-        machine = self.run_page("R.areas = ELS.areas.html;", doc, view="machine")["R"]["areas"]
+        machine = self.run_page("R.areas = PANEL().html;", doc, view="machine")["R"]["areas"]
         self.assertIn("<b>Not read here:</b> build output sizes", machine)
 
     def test_an_alert_lamp_keeps_a_paged_total_and_says_when_a_repo_was_not_read(self):
@@ -1358,7 +1371,7 @@ class TheScript(Collectors, ScreenCase):
             raise ValueError("fleet collection was stopped at its budget: sessions")
         doc = health_screen.document(self.connection, now=NOW, fleet=broken, ports=ports_snapshot,
                                      protection=protection_of([]), disk=scan_of(CLEAN_DISK), branches=scan_of(CLEAN_BRANCHES))
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html;", doc)
         self.assertRegex(out["R"]["lamps"], r'data-area="wt" data-state="unknown"[^>]*>.*?not read')
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
@@ -1369,7 +1382,7 @@ class TheScript(Collectors, ScreenCase):
                                      branches=scan_of(CLEAN_BRANCHES))
         wt = doc["areas"][2]
         wt["stale"] = "the Worktrees reader was still running; these rows are the read of " + NOW
-        out = self.run_page("R.areas = ELS.areas.html;", doc)
+        out = self.run_page("R.areas = PANEL().html;", doc)
         self.assertIn("<b>Not re-read:</b> the Worktrees reader was still running; these rows are the read of " + NOW,
                       out["R"]["areas"])
         self.assertIn(f'data-id="{wt["rows"][0]["id"]}"', out["R"]["areas"])
@@ -1377,10 +1390,10 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("Worktrees: the Worktrees reader was still running", out["states"][-1]["text"])
 
     def test_a_document_that_does_not_arrive_leaves_no_row_and_says_so(self):
-        out = self.run_page("""R.before = ELS.areas.html;
+        out = self.run_page("""R.before = PANEL().html;
 DOC = { error: 'Open a dashboard page before reading Health.' }; STATUS = 403;
 ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } }); await flush();
-R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
+R.areas = PANEL().html; R.lamps = ELS.annunciator.html;""")
         self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary",
                                        "/api/health/checkouts", "/api/health/summary"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["before"])
@@ -1392,7 +1405,7 @@ R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
 
     def test_the_filter_finds_a_row_by_a_path_in_its_facts_or_its_list(self):
         # The box says "repo, path, branch": a registered worktree's path is in `list`, the checkout's in `facts`.
-        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return ELS.areas.html; };
+        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return PANEL().html; };
 R.list = filter('/work/wt-b'); R.facts = filter('/checkouts/group/alpha'); R.none = filter('/work/nowhere');""")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["list"], "a path in the row's list did not match")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["facts"], "a path in the row's facts did not match")
@@ -1424,7 +1437,7 @@ const refresh = () => ELS.annunciator.listeners.click[0]({ target: { closest: s 
 refresh(); refresh(); await flush();
 pending[1].answer([200, DOC]); await flush();
 pending[0].fail(new Error('an older read that failed')); await flush();
-R.areas = ELS.areas.html;
+R.areas = PANEL().html;
 refresh(); refresh(); await flush();
 pending[3].answer([200, DOC]); await flush();
 pending[2].answer([200, { ...DOC, read: '2026-09-01T00:00:00Z' }]); await flush();
@@ -1436,13 +1449,13 @@ R.observed = document.body.dataset.observed;""")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["areas"])
 
     def test_a_lamp_shows_its_area_only_and_a_state_chip_narrows_the_rows(self):
-        click = "ELS.{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
+        click = "{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
         # Credentials is in Jobs: its lamp opens that view with Credentials alone; pressed again it shows the whole view.
-        out = self.run_page(click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }") + "await flush();"
-                            + "R.cred = ELS.areas.html; R.note = ELS.filtered.html; R.address = OUT.address;"
-                            + click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }")
-                            + click.format(el="filters", sel="[data-f]", data="{ f: 'state', v: 'unknown' }")
-                            + "R.unknown = ELS.areas.html;")
+        out = self.run_page(click.format(el="ELS.annunciator", sel="button.cell", data="{ area: 'cred' }") + "await flush();"
+                            + "R.cred = PANEL().html; R.note = PANEL().html; R.address = OUT.address;"
+                            + click.format(el="ELS.annunciator", sel="button.cell", data="{ area: 'cred' }")
+                            + click.format(el="PANEL()", sel="[data-f]", data="{ f: 'state', v: 'unknown' }")
+                            + "R.unknown = PANEL().html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
         self.assertIn("Filtered to Credentials only: 1 of 3 rows.", out["R"]["note"])
@@ -1452,22 +1465,22 @@ R.observed = document.body.dataset.observed;""")
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
-        out = self.run_page(click.format(a="wt") + click.format(a="br") + "R.both = ELS.areas.html;"
-                            + click.format(a="wt") + "R.one = ELS.areas.html;")
+        out = self.run_page(click.format(a="wt") + click.format(a="br") + "R.both = PANEL().html;"
+                            + click.format(a="wt") + "R.one = PANEL().html;")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["both"]), ["wt", "br"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["one"]), ["br"])
 
     def test_a_lamp_press_draws_the_rows_of_its_area(self):
         # sd:3708: the filter read r.area, which only the copies in ROWS carried, so each section drew no row.
         click = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { area: 'wt' } } : null } });"
-        out = self.run_page(click + "R.wt = ELS.areas.html; R.note = ELS.filtered.html;")
+        out = self.run_page(click + "R.wt = PANEL().html; R.note = PANEL().html;")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
         self.assertIn('data-id="unread:beta"', out["R"]["wt"])
         self.assertIn("Filtered to Worktrees only: ", out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",
                             view="machine")
         lamps, areas = out["R"]["lamps"], out["R"]["areas"]
         self.assertEqual(out["R"]["lsof"], "lsof -nP -iTCP:9010 -sTCP:LISTEN")
@@ -1477,7 +1490,7 @@ R.observed = document.body.dataset.observed;""")
         self.assertIn("Listener state is unknown for 1 configured ports.", areas)
 
     def test_the_matrix_is_one_column_per_repo_and_an_unread_column_draws_no_cell(self):
-        out = self.run_page("R.areas = ELS.areas.html;", view="github")
+        out = self.run_page("R.areas = PANEL().html;", view="github")
         areas = out["R"]["areas"]
         cols = re.findall(r'<button type="button" class="pmx-col" data-row="([^"]+)" data-status="(\w+)"[^>]*>(.*?)</button>', areas, re.S)
         self.assertEqual([(row, status) for row, status, _ in cols], [
@@ -1506,10 +1519,10 @@ R.observed = document.body.dataset.observed;""")
         self.assertIn("— does not apply; not read where the repository was not read.", table)
 
     def test_a_matrix_column_opens_its_repo_with_every_check_in_details(self):
-        out = self.run_page("""ELS.areas.listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });
+        out = self.run_page("""PANEL().listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });
 R.d = ELS.details.html; R.cli = cmd('protection.settings').cli(C.get('prot:/checkouts/alpha'));
 R.off = cmd('protection.settings').when(C.get('prot:/checkouts/beta')); R.sync = cmd('collector.sync').cli(C.get('collector:protection'));
-ELS.areas.listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/gamma' } } : null } });
+PANEL().listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/gamma' } } : null } });
 R.unread = ELS.details.html;""", view="github")
         details = out["R"]["d"]
         self.assertIn("<h2>group/alpha: 2 gaps</h2>", details)
@@ -1673,7 +1686,7 @@ R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;
             protection=protection_of(PROTECTION))["areas"][2]["rows"] if row["id"] == "gone:group/alpha")
         snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", seen=seen, now=NOW)
         out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
-R.areas = ELS.areas.html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
+R.areas = PANEL().html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
 shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertNotIn("directory gone", out["R"]["areas"])
         self.assertIn("Snoozed · 1", out["R"]["snoozed"])
@@ -1711,7 +1724,7 @@ OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); a
         self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: OperationalError: database is locked")
 
     def test_disk_draws_a_bar_per_volume_and_remove_names_the_folders_it_deletes(self):
-        out = self.cleanup("build:merged", """R.areas = ELS.areas.html;
+        out = self.cleanup("build:merged", """R.areas = PANEL().html;
 R.rm = cmd('build output.rm').cli(o); R.why = cmd('build output.rm').consequence(o);
 R.du = cmd('storage folder.du').cli(C.get('rs:/Volumes/store/repo-storage/alpha'));
 shellRun(cmd('build output.rm'), o); await flush();""", view="machine")
@@ -1756,40 +1769,70 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
         self.assertIn("<h2>Mac data is 85% full</h2>", out["R"]["d"],
                       "Details still say the fleet is being read after the rows arrived")
 
-    def test_the_summary_draws_every_lamp_before_the_view_answers(self):
-        out = self.run_page("""R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.views = ELS.viewswitch.html;""", pre="""var pending = [];
-ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promise(answer => pending.push(answer));""")
+    def test_the_page_declares_the_servers_views_in_order(self):
+        out = self.run_page("R.views = window.PAGE_VIEWS;")
+        self.assertEqual([(v["id"], v["label"], tuple(v["areas"]), v["api"]) for v in out["R"]["views"]],
+                         [(view, name, keys, f"/api/health/{view}") for view, name, keys in health_screen.VIEWS])
+
+    def test_the_summary_draws_every_lamp_and_count_before_the_view_answers(self):
+        doc = self.run_doc()
+        disk = next(area for area in doc["areas"] if area["id"] == "disk")
+        disk["error"] = "df did not answer in 5 s"
+        out = self.run_page("""R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.views = ELS.viewswitch.html;""", pre="""var pending = [];
+ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promise(answer => pending.push(answer));""", doc=doc)
         self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts"])
-        self.assertRegex(out["R"]["lamps"], r'data-area="disk" data-state="caution"')
+        self.assertRegex(out["R"]["lamps"], r'data-area="disk" data-state="unknown"')
+        self.assertRegex(out["R"]["lamps"], r'data-area="br" data-state="caution"')
         self.assertRegex(out["R"]["lamps"], r'data-area="cred" data-state="unknown"')
         self.assertNotIn('class="area"', out["R"]["areas"] or "")
         self.assertEqual(re.findall(r'data-view="(\w+)" aria-selected="(\w+)"', out["R"]["views"]),
-                         [("machine", "false"), ("checkouts", "true"), ("github", "false"), ("jobs", "false")])
-        # A view's chip carries its loudest lamp: GitHub's unprotected branch is a warning.
-        self.assertRegex(out["R"]["views"], r'data-view="github"[^>]*><span class="g-warning"')
+                         [("checkouts", "true"), ("machine", "false"), ("github", "false"), ("jobs", "false")])
+        # A view's count is the rows that want you in it; Machine's disk was not read, so Machine has no count.
+        counts = dict(re.findall(r'data-view="(\w+)"[^>]*>\w+(?: <span class="n">(\d+)</span>)?</button>', out["R"]["views"]))
+        self.assertEqual((counts["checkouts"], counts["jobs"]), (str(wanting(doc, "checkouts")), str(wanting(doc, "jobs"))))
+        self.assertEqual(counts["machine"], "")
 
-    def test_a_view_switch_reads_only_its_part_and_names_it_in_the_address(self):
-        out = self.run_page("""OUT.gets = [];
-ELS.viewswitch.listeners.click[0]({ target: { closest: s => s === '[data-view]' ? { dataset: { view: 'machine' } } : null } });
-await flush(); R.areas = ELS.areas.html; R.address = OUT.address; R.views = ELS.viewswitch.html;""")
-        self.assertEqual(out["gets"], ["/api/health/machine", "/api/health/summary"])
+    def test_a_view_switch_reads_its_part_once_and_names_it_in_the_address(self):
+        switch = "ELS.viewswitch.listeners.click[0]({{ target: {{ closest: s => s === '[data-view]' ? {{ dataset: {{ view: '{v}' }} }} : null }} }}); await flush();"
+        out = self.run_page("OUT.gets = [];" + switch.format(v="machine") + """
+R.areas = PANEL().html; R.address = OUT.address; R.views = ELS.viewswitch.html; R.hidden = PAGE_VIEWS.map(v => ELS['view-' + v.id].hidden);"""
+                            + switch.format(v="checkouts") + "R.back = PANEL().html; R.again = OUT.gets.slice();")
+        self.assertEqual(out["R"]["again"], ["/api/health/machine", "/api/health/summary"], "a view opened before was read again")
         self.assertEqual(out["R"]["address"], "/fleet-health#view=machine")
+        self.assertEqual(out["R"]["hidden"], [True, False, True, True])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["areas"]), ["disk", "ports", "svc", "doc"])
         self.assertIn('data-view="machine" aria-selected="true"', out["R"]["views"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["back"]), ["wt", "br"])
 
-    def test_with_no_view_named_the_loudest_opens_and_an_area_value_opens_its_view(self):
-        # GitHub holds the one warning lamp (an unprotected default branch); the others are caution or unknown.
-        loudest = self.run_page("R.address = OUT.address;", view=None)
-        self.assertEqual(loudest["gets"], ["/api/health/summary", "/api/health/github", "/api/health/summary"])
-        self.assertEqual(loudest["R"]["address"], "/fleet-health#view=github")
-        asked = self.run_page("R.areas = ELS.areas.html;", view=None, search="?area=ports")
+    def test_with_no_view_named_the_first_opens_and_an_area_value_opens_its_view(self):
+        first = self.run_page("R.address = OUT.address;", view=None)
+        self.assertEqual(first["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary"])
+        self.assertEqual(first["R"]["address"], "/fleet-health#view=checkouts")
+        asked = self.run_page("R.areas = PANEL().html;", view=None, search="?area=ports")
         self.assertEqual(asked["gets"], ["/api/health/summary", "/api/health/machine", "/api/health/summary"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', asked["R"]["areas"]), ["ports"])
+        named = self.run_page("", view="jobs", search="?area=ports")
+        self.assertEqual(named["gets"], ["/api/health/summary", "/api/health/jobs", "/api/health/summary"])
+
+    def test_with_the_shells_view_switch_the_page_draws_none_and_reads_a_view_on_its_first_opening(self):
+        # The shell's contract (sys-tuning-ui): shell.view and the shell:view event; the page's own switch stays empty.
+        out = self.run_page("""const open = (id, first) => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: '/api/health/' + id } }));
+open('machine', true); await flush(); R.machine = ELS['view-machine'].html;
+open('checkouts', false); await flush(); R.gets = OUT.gets.slice(); R.counts = OUT.counts;
+R.views = 'viewswitch' in ELS;""", view=None, pre="""OUT.counts = {}; var CUR = null;
+window.shell.view = { current: () => CUR, show: id => { OUT.shown = id; }, count: (id, n) => { OUT.counts[id] = n; } };
+document.addEventListener('shell:view', e => { CUR = e.detail.id; });""")
+        self.assertFalse(out["R"]["views"], "the page drew its own view switch next to the shell's")
+        self.assertEqual(out["R"]["gets"], ["/api/health/summary", "/api/health/machine", "/api/health/summary"])
+        self.assertIn('id="a-disk"', out["R"]["machine"])
+        doc = self.run_doc()
+        self.assertEqual(out["R"]["counts"], {view: wanting(doc, view) for view, *_ in health_screen.VIEWS})
+        self.assertGreater(min(out["R"]["counts"].values()), 0)
 
     def test_show_findings_hides_the_ok_rows_and_says_so_and_show_all_lists_them(self):
-        out = self.run_page("""R.findings = ELS.areas.html; R.filters = ELS.filters.html;
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'all' } } : null } });
-R.all = ELS.areas.html;""", view="machine")
+        out = self.run_page("""R.findings = PANEL().html; R.filters = PANEL().html;
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'all' } } : null } });
+R.all = PANEL().html;""", view="machine")
         findings, every = out["R"]["findings"], out["R"]["all"]
         ok = [i for i in re.findall(r'data-id="([^"]+)"', every) if i not in re.findall(r'data-id="([^"]+)"', findings)]
         self.assertTrue(ok)

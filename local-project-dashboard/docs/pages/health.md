@@ -10,8 +10,8 @@ with one column per repository and a table carrying the same cells; an unread
 repository shows no cell).
 
 The page shows one view at a time, each its own read, `GET /api/health/<view>`
-(`health_screen.part`): Machine (Disk, Services, Ports, Doctor), Checkouts
-(Worktrees, Branches), GitHub (Dependencies, Security, Protection) and Jobs
+(`health_screen.part`): Checkouts (Worktrees, Branches), Machine (Disk,
+Services, Ports, Doctor), GitHub (Dependencies, Security, Protection) and Jobs
 (Credentials, Vault mirror). A view whose read fails marks its own areas unknown
 with the reason; no other view is touched. The lamps on top come from
 `GET /api/health/summary` (`health_screen.summary`), which is also the rail
@@ -21,10 +21,13 @@ than 60 seconds (the doctor's 10 minutes) gets a scan started in the background,
 which the next view read joins. `GET /api/health` is still every area in one
 document.
 
-The view switch under the lamps marks each view with its loudest lamp; it
-writes `#view=<id>`. With no view named the page opens the view an `?area=`
-value names, else the loudest one. A lamp of another view opens that view with
-its area alone. Show findings (the default) leaves out ok and queued rows and
+The page declares its views in `window.PAGE_VIEWS` for the shell's view switch,
+which owns `#view=<id>`; each view's reader starts the first time it opens. Each
+view counts the rows that want you, from the summary; a view with an area not
+read shows no count. With no view named the page opens the view an `?area=`
+value names, else Checkouts. A lamp of another view opens that view with its
+area alone. Until shell.js carries the switch, `viewSwitch()` in health.js draws
+it to the same contract. Show findings (the default) leaves out ok and queued rows and
 says how many; Show all (`?show=all`) lists them. A finding's detail is one line
 in the table; Details carries the row in full.
 

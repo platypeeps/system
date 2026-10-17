@@ -96,16 +96,6 @@ R.selected = SELECTED;""")
         self.assertEqual(out["shown"], ["b"])
         self.assertEqual(out["R"]["selected"], "b")
 
-    def test_a_source_function_names_the_route_at_each_read_and_the_older_views_answer_is_dropped(self):
-        # Health reads one view at a time: a view switch reads another route, and the view left behind never draws.
-        out = run("""let view = 'a'; const r = make()({ ...spec, source: () => '/api/rows/' + view });
-r.load(); await flush(); view = 'b'; r.load(); await flush();
-HELD[1].ok(200, doc(2, ['b'])); await flush();
-HELD[0].ok(200, doc(1, ['a'])); await flush();""")
-        self.assertEqual(out["gets"], ["/api/rows/a", "/api/rows/b"])
-        self.assertEqual(out["adopted"], [2])
-        self.assertEqual(out["states"][1]["source"], "/api/rows/b")
-
     def test_an_older_failure_after_a_newer_success_changes_nothing(self):
         out = run("""const r = make()(spec);
 r.load(); r.load(); await flush();

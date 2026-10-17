@@ -29,7 +29,6 @@
 .ledger tr[hidden] { display: none; }
 .area[hidden] { display: none; }
 .filtered { margin: 0 0 var(--space-md); font-size: var(--text-xs); color: var(--color-muted); }
-.filtered[hidden] { display: none; }
 
 /* Filters: Tasks' chip grammar. Chips in one group widen, groups narrow; a lamp sets the Area group to its area. */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-sm) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-md); }

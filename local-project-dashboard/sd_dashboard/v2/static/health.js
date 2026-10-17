@@ -1,8 +1,9 @@
 // Health v2 (sd:2115): the page script. It loads before shell.js, which reads what it declares.
-// Views: one at a time, Machine, Checkouts, GitHub and Jobs, each its own read, /api/health/<view> (health_screen.part);
-// #view=<id> names it, else the view of the loudest lamp. The lamps and the badge are /api/health/summary, read first and
-// again once the view answers; it waits on no walker, so the strip draws before any view's rows. Show draws the rows
-// that want something (warning, caution, unknown) by default; All adds the ok and queued ones, and ?show=all keeps it.
+// Views: one at a time, Checkouts, Machine, GitHub and Jobs, each its own reader of /api/health/<view> (health_screen.part),
+// started the first time the view opens; PAGE_VIEWS declares them to the shell's view switch, which owns #view=<id>. The
+// lamps, the badge and each view's count are /api/health/summary, read at start and again after a view's read; it waits on
+// no walker, so the strip draws before any view's rows. Show draws the rows that want something (warning, caution,
+// unknown) by default; All adds the ok and queued ones, and ?show=all keeps it.
 // Rows: the areas health_screen.document builds from the fleet child (worktree registrations),
 // Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
@@ -39,16 +40,24 @@
   const PH = 10; // one matrix line in the SVG's own units
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const $ = id => document.getElementById(id);
+  // The views, for the shell's view switch: each panel is #view-<id> in health.html. `areas` is the page's own: the view
+  // an area's lamp or an ?area= value opens. health_screen.VIEWS is the same list.
+  window.PAGE_VIEWS = [
+    { id: 'checkouts', label: 'Checkouts', api: '/api/health/checkouts', areas: ['wt', 'br'] },
+    { id: 'machine', label: 'Machine', api: '/api/health/machine', areas: ['disk', 'svc', 'ports', 'doc'] },
+    { id: 'github', label: 'GitHub', api: '/api/health/github', areas: ['prot', 'dep', 'sec'] },
+    { id: 'jobs', label: 'Jobs', api: '/api/health/jobs', areas: ['cred', 'mir'] },
+  ];
 
   let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], selected = null, query = '';
   let SUMMARY = null, VIEW = null, showing = 'findings';
+  const S = {}, readers = {}; // each view's last reading and its reader
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
   // Show: the rows that want something, or all of them. A filter on ok or queued names those rows, so it shows them.
   const QUIET = new Set(['ok', 'queued']);
   const drawn = r => showing === 'all' || !QUIET.has(r.state) || F.state.has(r.state);
-  const views = () => SUMMARY ? SUMMARY.views : [];
-  const viewOf = area => views().find(v => v.areas.includes(area))?.id;
+  const viewOf = area => PAGE_VIEWS.find(v => v.areas.includes(area))?.id;
 
   // The design's size wording, from a count of KiB.
   const size = kb => kb >= 1024 ** 3 ? `${(kb / 1024 ** 3).toFixed(2)} TiB` : kb >= 1024 ** 2 ? `${(kb / 1024 ** 2).toFixed(1)} GiB` : `${Math.round(kb / 1024)} MiB`;
@@ -71,52 +80,57 @@
     const L = SUMMARY ? SUMMARY.lamps : [];
     put($('annunciator'), cells([...L.filter(l => !NO_LAMP.has(l.id)).map(l => ({ button: true, state: l.state, pressed: F.area.has(l.id),
       attrs: html` data-area="${l.id}"`, label: l.name, mark: I(LOOK[l.id]?.[0] || 'circle-help'), val: lampValue(l),
-      sr: `state ${l.state} · ${l.view === VIEW ? `shows only ${l.name} rows` : `opens ${views().find(v => v.id === l.view)?.name}`}` })),
+      sr: `state ${l.state} · ${l.view === VIEW ? `shows only ${l.name} rows` : `opens ${PAGE_VIEWS.find(v => v.id === l.view)?.label}`}` })),
       { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'),
         val: html`<span class="ph">${SUMMARY ? html`<b>${new Date(SUMMARY.read).toISOString().slice(11, 16)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` }]));
-    drawViews();
   }
 
   // ---------- Views ----------
-  // The shell's view switch (a segmented control, #view=<id>, rail sub-entries, a lazily read api per view) when shell.js
-  // carries it as shell.viewSwitch; until then the page draws the same contract itself in #viewswitch. A view's state is
-  // the loudest of its lamps, so the switch says where the findings are before a view is opened.
-  const viewState = v => (SUMMARY ? SUMMARY.lamps : []).filter(l => l.view === v.id)
-    .reduce((s, l) => (loud[l.state] ?? 9) < (loud[s] ?? 9) ? l.state : s, 'ok');
-  const hashView = () => (/(?:^#|&)view=([a-z]+)/.exec(location.hash || '') || [])[1];
-  function drawViews() {
-    const list = views().map(v => ({ id: v.id, label: v.name, state: viewState(v), api: `/api/health/${v.id}` }));
-    if (window.shell.viewSwitch) return window.shell.viewSwitch({ views: list, current: VIEW, change: id => setView(id) });
-    put($('viewswitch'), html`${list.map(v => html`<button type="button" role="tab" class="chip" data-view="${v.id}" aria-selected="${String(v.id === VIEW)}"><span class="g-${v.state}" aria-hidden="true">${GLYPH[v.state]}</span> ${v.label}<span class="sr"> · ${v.state}</span></button>`)}`);
+  // Until shell.js carries the view switch (sys-tuning-ui's contract), this draws it in #viewswitch to the same contract:
+  // PAGE_VIEWS, panels #view-<id>, #view=<id>, shell.view.current/show/count and the shell:view event. Delete it, and
+  // #viewswitch in health.html, once shell.view exists.
+  function viewSwitch() {
+    if (window.shell.view) return;
+    const seen = new Set(), n = {};
+    let cur = null;
+    const draw = () => put($('viewswitch'), html`${PAGE_VIEWS.map(v => html`<button type="button" role="tab" class="chip" data-view="${v.id}" aria-selected="${String(v.id === cur)}">${v.label}${n[v.id] == null ? '' : html` <span class="n">${n[v.id]}</span>`}</button>`)}`);
+    const show = id => {
+      const v = PAGE_VIEWS.find(x => x.id === id); if (!v || id === cur) return;
+      cur = id; PAGE_VIEWS.forEach(x => { $(`view-${x.id}`).hidden = x.id !== id; });
+      if (location.hash !== `#view=${id}`) history.replaceState(null, '', `${location.pathname}${location.search}#view=${id}`);
+      draw();
+      const first = !seen.has(id); seen.add(id);
+      document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: v.api } }));
+    };
+    window.shell.view = { current: () => cur, show, count: (id, c) => { n[id] = c; draw(); } };
+    $('viewswitch').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) show(b.dataset.view); });
+    addEventListener('hashchange', () => show(hashView()));
+    show(hashView() || PAGE_VIEWS[0].id);
   }
-  // The view to open: #view=, else the view of an ?area= the address names, else the loudest view, else the first.
-  function pickView() {
-    const ids = views().map(v => v.id), asked = hashView();
-    if (ids.includes(asked)) return asked;
-    const area = [...F.area].map(viewOf).find(Boolean);
-    if (area) return area;
-    return views().reduce((w, v) => !w || (loud[viewState(v)] ?? 9) < (loud[viewState(w)] ?? 9) ? v : w, null)?.id || null;
+  const hashView = () => (/(?:^#|&)view=([a-z0-9-]+)/.exec(location.hash || '') || [])[1];
+  // A view's reading becomes the page's rows; an unread view has none.
+  function use(id) {
+    ({ DOC, AREAS, ROWS, SNOOZED } = S[id] || { DOC: null, AREAS: [], ROWS: [], SNOOZED: [] });
+    if (DOC) document.body.dataset.observed = DOC.read; else delete document.body.dataset.observed;
   }
-  // A switch keeps only the Area values of the new view, writes #view= and reads that view alone.
-  function setView(id, read = true) {
-    if (!id || (id === VIEW && !read)) return;
-    VIEW = id;
-    const keep = views().find(v => v.id === id)?.areas || [];
+  // A view opens with its own rows, keeping only the Area values it holds; the first time, its reader starts.
+  function onView({ id, first }) {
+    VIEW = id; use(id);
+    const keep = PAGE_VIEWS.find(v => v.id === id).areas;
     [...F.area].forEach(a => { if (!keep.includes(a)) F.area.delete(a); });
-    if (!window.shell.viewSwitch && location.hash !== `#view=${id}` && typeof history !== 'undefined') history.replaceState(null, '', `${location.pathname}${location.search}#view=${id}`);
-    drawViews();
-    if (read) load();
+    lamps(); window.snooze.draw($('snoozed'), SNOOZED); apply();
+    if (first) { readers[id] = shell.read(spec(id)); load(); }
   }
 
-  function renderFilters() {
+  function filters() {
     const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
     const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    put($('filters'), html`<div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}`);
+    return html`<div class="filters" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}</div>`;
   }
 
-  function renderAreas() {
+  function areas() {
     const count = (a, s) => a.rows.filter(r => r.state === s).length;
-    put($('areas'), html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
+    return html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
       <div class="sec-head"><h2 id="h-${a.id}">${I(LOOK[a.id]?.[0] || 'circle-help')}${a.name}<button class="help" type="button" aria-label="Help: ${a.name}" data-help="${LOOK[a.id]?.[1] || ''}">${I('circle-help')}</button></h2>
         <p class="tally">${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
       ${!a.read ? html`<p class="unread"><b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: ${a.missing.join(', ')}.</p>`
@@ -131,7 +145,7 @@
           <td class="what"><button type="button">${r.what}</button><span class="detail">${r.detail}</span></td>
           <td class="fix">${shell.commands.rowActions(r.id)}</td></tr>`)}</tbody></table>` : ''}
       ${a.read && !a.error && quiet(a) && !filtering() ? html`<p class="quiet">${rows.length ? '' : 'Nothing wants you here. '}${plural(quiet(a), 'ok or queued row')} not shown: Show all lists ${quiet(a) === 1 ? 'it' : 'them'}.</p>` : ''}
-    </section>`; })}`);
+    </section>`; })}`;
   }
 
   // What an area draws above its ledger: v1's counts line and warnings, and for Protection the matrix and its table.
@@ -195,13 +209,13 @@
     if (showing === 'all') q.set('show', 'all');
     shell.url(q); // the shell keeps ?row=
   }
+  // The open view's panel: its filters, the filter note and its areas. Another view's panel keeps what it last drew.
   function apply() {
-    renderFilters(); renderAreas();
+    if (!VIEW) return;
     const on = filtering(), shown = ROWS.filter(passes).length;
     const what = [F.area.size ? `${AREAS.filter(a => F.area.has(a.id)).map(a => a.name).join(', ')} only` : '', [...F.state].join(' or '), query ? `“${query}”` : ''].filter(Boolean).join(' · ');
     const total = ROWS.filter(drawn).length;
-    $('filtered').hidden = !on;
-    put($('filtered'), on ? html`${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" id="clear-f">Show all rows</button>` : html``);
+    put($(`view-${VIEW}`), html`${DOC ? filters() : ''}${on ? html`<p class="filtered" role="status">${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" data-clear>Show all rows</button></p>` : ''}${areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
       clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
@@ -214,47 +228,44 @@
     window.PAGE_ATTENTION = SUMMARY && SUMMARY.attention || { state: 'unknown', n: 0, what: 'rows' };
     shell.attention(window.PAGE_ATTENTION);
     const a = window.PAGE_ATTENTION, failed = SUMMARY ? SUMMARY.lamps.filter(l => l.error).length : 0;
-    put($('subhead'), SUMMARY ? html`${plural(views().length, 'view')} · ${a.n ? `${a.n} ${a.state} ${a.n === 1 ? 'row wants' : 'rows want'} you` : 'no row wants you'}${failed ? ` · ${plural(failed, 'area')} not read` : ''} · read <time class="rel" datetime="${SUMMARY.read}"></time>`
+    put($('subhead'), SUMMARY ? html`${plural(PAGE_VIEWS.length, 'view')} · ${a.n ? `${a.n} ${a.state} ${a.n === 1 ? 'row wants' : 'rows want'} you` : 'no row wants you'}${failed ? ` · ${plural(failed, 'area')} not read` : ''} · read <time class="rel" datetime="${SUMMARY.read}"></time>`
       : html`Health's summary could not be read.`);
   }
-  // The summary: every lamp and the badge, read before the view and again once it answered. A failed one clears the strip.
+  // The summary: every lamp, the badge and each view's count of rows that want you, read at start and again after a view's
+  // read. A failed one clears the strip; a view with an area not read has no count.
   const readSummary = () => shell.getJSON('/api/health/summary').then(doc => { SUMMARY = doc; }, () => { SUMMARY = null; })
-    .then(() => { attention(); lamps(); });
+    .then(() => {
+      attention(); lamps();
+      PAGE_VIEWS.forEach(v => { const L = SUMMARY ? SUMMARY.lamps.filter(l => l.view === v.id) : [];
+        shell.view.count(v.id, L.length && L.every(l => l.n != null) ? L.reduce((n, l) => n + l.n, 0) : null); });
+    });
 
-  // The reader (read.js, sd:2418) holds the guards: of overlapping re-reads only the newest draws, a row the read no longer
-  // lists runs no command and loses its pick, and a failed read leaves no row, lamp or command from the last one. It is
-  // built on DOMContentLoaded, once shell.js has made shell.read.
-  let health = null;
-  // A load reads the summary first when there is none yet (it picks the view), then the view, then the summary again.
-  const load = () => (SUMMARY ? Promise.resolve() : readSummary())
-    .then(() => { if (!VIEW) setView(pickView(), false); return VIEW ? health.load() : null; })
-    .then(() => readSummary());
-  const spec = {
-    source: () => `/api/health/${VIEW}`, what: 'the Health rows',
+  // One reader per view (read.js, sd:2418) holds the guards: of overlapping re-reads only the newest draws, a row the read no
+  // longer lists runs no command and loses its pick, and a failed read leaves no row, lamp or command from the last one.
+  // Each puts and retires only its own view's rows; one for a view not open keeps its reading and draws nothing.
+  const load = () => Promise.resolve(readers[VIEW] && readers[VIEW].load()).then(() => readSummary());
+  const spec = view => ({
+    source: `/api/health/${view}`, what: `the ${PAGE_VIEWS.find(v => v.id === view).label} rows`,
     adopt: doc => {
-      DOC = doc; AREAS = doc.areas;
+      const areas = doc.areas;
       // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
-      AREAS.forEach(a => { a.rows.forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
-      ROWS = AREAS.flatMap(a => a.rows);
-      SNOOZED = AREAS.flatMap(a => a.snoozed);
-      document.body.dataset.observed = doc.read;
-      const failed = AREAS.filter(a => a.error || a.stale), source = `/api/health/${doc.view}`;
-      return { objects: [...ROWS.map(r => ({ ...r, label: r.what })), ...SNOOZED.map(window.snooze.object)],
+      areas.forEach(a => { a.rows.forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
+      S[view] = { DOC: doc, AREAS: areas, ROWS: areas.flatMap(a => a.rows), SNOOZED: areas.flatMap(a => a.snoozed) };
+      if (view === VIEW) use(view);
+      const { ROWS: rows, SNOOZED: snoozed } = S[view], failed = areas.filter(a => a.error || a.stale), source = `/api/health/${view}`;
+      return { objects: [...rows.map(r => ({ ...r, label: r.what })), ...snoozed.map(window.snooze.object)],
         state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source }
           : doc.snooze_error ? window.snooze.unread(doc.snooze_error, source) : null };
     },
     // Nothing from the last read stays on screen: rows, lamps, the observed time and the badge.
-    clear: () => {
-      DOC = null; AREAS = []; ROWS = []; SNOOZED = [];
-      delete document.body.dataset.observed;
-    },
-    draw: () => { lamps(); window.snooze.draw($('snoozed'), SNOOZED); },
-    current: () => selected,
-    first: () => ROWS[0]?.id,
+    clear: () => { S[view] = null; if (view === VIEW) use(view); },
+    draw: () => { if (view === VIEW) { lamps(); window.snooze.draw($('snoozed'), SNOOZED); } },
+    current: () => view === VIEW ? selected : null,
+    first: () => S[view]?.ROWS[0]?.id,
     // apply() reconciles against the rows the filters show; the new reading's Details are drawn here.
-    select: id => { selected = id; apply(); if (byId(selected)) show(selected); },
-    unselect: () => { selected = null; apply(); },
-  };
+    select: id => { if (view !== VIEW) return; selected = id; apply(); if (byId(selected)) show(selected); },
+    unselect: () => { if (view !== VIEW) return; selected = null; apply(); },
+  });
 
   // ---------- Commands (the design source's commands.md) ----------
   // Ids, labels and keys are the design's. Prune, Delete merged and Remove build output run here (sd:3393): each confirms
@@ -303,7 +314,6 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
-    health = shell.read(spec);
     // The protection collector is one object for the page, not a row of a reading: no read retires it.
     C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
     C.register(
@@ -373,31 +383,30 @@
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
     query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
     showing = u.get('show') === 'all' ? 'all' : 'findings';
+    // An ?area= link opens that area's view unless #view= names one; the view switch reads the hash next.
+    const asked = viewOf([...F.area][0]);
+    if (asked && !hashView()) history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`);
 
-    $('areas').addEventListener('click', e => {
+    // Each panel: its Show and filter chips, the filter note's clear, a matrix column and a row.
+    PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('click', e => {
+      if (e.target.closest('[data-clear]')) { clearFilters(); return; }
+      const b = e.target.closest('[data-show]');
+      if (b) { if (b.dataset.show !== showing) { showing = b.dataset.show; apply(); } return; }
+      const c = e.target.closest('[data-f]');
+      if (c) { const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v); lamps(); apply(); return; }
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
       const col = e.target.closest('.pmx-col'); if (col) { select(col.dataset.row, true); return; }
       const tr = e.target.closest('tbody tr[data-id]'); if (tr) select(tr.dataset.id, true);
-    });
-    $('filters').addEventListener('click', e => {
-      const b = e.target.closest('[data-show]');
-      if (b) { if (b.dataset.show !== showing) { showing = b.dataset.show; apply(); } return; }
-      const c = e.target.closest('[data-f]'); if (!c) return;
-      const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v);
-      lamps(); apply();
-    });
-    $('filtered').addEventListener('click', e => { if (e.target.id === 'clear-f') clearFilters(); });
+    }));
     // A lamp is the Area chip for its area: pressing it adds the area to the filter, pressing it again takes it out.
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();
       const id = c.dataset.area, lamp = SUMMARY?.lamps.find(l => l.id === id);
-      if (lamp && lamp.view !== VIEW) { F.area.clear(); F.area.add(id); setView(lamp.view); lamps(); return; }
+      if (lamp && lamp.view !== VIEW) { F.area.clear(); F.area.add(id); shell.view.show(lamp.view); return; }
       F.area.has(id) ? F.area.delete(id) : F.area.add(id);
       lamps(); apply();
     });
-    $('viewswitch').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b && b.dataset.view !== VIEW) setView(b.dataset.view); });
-    addEventListener('hashchange', () => { const id = hashView(); if (id && id !== VIEW && views().some(v => v.id === id)) setView(id); });
     $('q').addEventListener('input', () => { query = $('q').value.trim().toLowerCase(); apply(); });
     $('q').addEventListener('keydown', e => { if (e.key === 'Escape' && $('q').value) { e.stopPropagation(); $('q').value = ''; query = ''; apply(); } });
     document.addEventListener('keydown', e => {
@@ -407,6 +416,8 @@
     document.addEventListener('shell:open', e => { if (byId(e.detail)) select(e.detail, true); });
     document.addEventListener('shell:picked', e => { document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
 
-    load();
+    document.addEventListener('shell:view', e => onView(e.detail));
+    readSummary();
+    viewSwitch();
   });
 })();

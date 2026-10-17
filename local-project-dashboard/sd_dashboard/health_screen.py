@@ -98,8 +98,8 @@ AREAS = (
 #: Machine is this Mac (its disks, services, ports and doctor); Checkouts the local git cleanups; GitHub what the nightly
 #: sync stored; Jobs the heartbeats unattended jobs leave. Each is one request, `/api/health/<view>`.
 VIEWS = (
-    ("machine", "Machine", ("disk", "svc", "ports", "doc")),
     ("checkouts", "Checkouts", ("wt", "br")),
+    ("machine", "Machine", ("disk", "svc", "ports", "doc")),
     ("github", "GitHub", ("prot", "dep", "sec")),
     ("jobs", "Jobs", ("cred", "mir")),
 )
@@ -1075,7 +1075,7 @@ def _lamp(area: dict) -> dict:
     rows = area["rows"]
     if not area["read"] or area["error"]:
         return {"id": area["id"], "name": area["name"], "view": area["view"], "state": "unknown", "at": area["at"],
-                "error": area["error"], "stale": area["stale"], "value": [{"b": "", "t": "not read"}]}
+                "error": area["error"], "stale": area["stale"], "n": None, "value": [{"b": "", "t": "not read"}]}
     loudest = min((row["state"] for row in rows), key=lambda state: RANK.get(state, 2), default="ok")
     state = "ok" if loudest == "queued" else loudest if loudest in RANK else "unknown"
 
@@ -1107,7 +1107,7 @@ def _lamp(area: dict) -> dict:
     else:
         value = [{"b": str(sum(row["state"] in ("warning", "caution") for row in rows)), "t": "need you"}]
     return {"id": key, "name": area["name"], "view": area["view"], "state": state, "at": area["at"], "error": "",
-            "stale": area["stale"], "value": value}
+            "stale": area["stale"], "n": sum(row["state"] in ("warning", "caution", "unknown") for row in rows), "value": value}
 
 
 def summary(connection: sqlite3.Connection, *, now: str, **seams) -> dict:
