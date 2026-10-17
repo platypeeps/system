@@ -463,6 +463,10 @@
     const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
     return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
   };
+  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The Act bar
+  // shows it under the button and the ⋯ menu under the label, in view: the foundation has no hover-only affordances.
+  const doesOf = (c, o) => (typeof c.does === 'function' ? c.does(o) : c.does) || '';
+  let doesSeq = 0;
   // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
   const { plural } = window.markup;
@@ -582,13 +586,15 @@
     if (!L.length) return html`<span class="rowact"></span>`;
     return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
-  // closed until opened (sd:3464).
+  // Details: every command as a button, with what it does under it (sd:4963); its CLI line, and the reason an off one is
+  // off, fold under "Same thing from the CLI", closed until opened (sd:3464).
   function bar(id) {
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+    const button = (c, d) => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}"${d ? html` aria-describedby="does-${doesSeq}"` : ''}>${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
+    return html`<div class="actions">${on.map(c => { const d = doesOf(c, o); if (!d) return button(c, d); doesSeq += 1;
+      return html`<span class="act-row">${button(c, d)}<small class="does" id="does-${doesSeq}">${d}</small></span>`; })}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
@@ -602,7 +608,7 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><small>${doesOf(c, o)}</small><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
       <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
       <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;

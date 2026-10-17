@@ -235,6 +235,12 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .details h3 { margin: var(--space-lg) 0 var(--space-xs); }
 .details .note { font-size: var(--text-sm); color: var(--color-ink-2); max-width: 60ch; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+/* Hallmark · component: Act bar explanations (sd:4963) · genre: modern-minimal · theme: design.md instrument panel · states: the
+ * button's own; the line under it is text. Each button says what it does in view, not in a hover tip (foundation: no
+ * hover-only affordances): one command a row, the button, then one muted line. A bar with no explanations stays a wrapped row. */
+.actions:has(> .act-row) { display: grid; justify-items: start; gap: var(--space-sm); }
+.act-row { display: grid; justify-items: start; gap: var(--space-3xs); }
+.does { font-size: var(--text-xs); line-height: 1.35; color: var(--color-muted); max-inline-size: 52ch; }
 .why { font-size: var(--text-xs); color: var(--color-muted); margin: var(--space-xs) 0 0; }
 .cli {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs);
@@ -330,11 +336,13 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .actmenu[hidden] { display: none; }
 .actmenu .label { margin: var(--space-2xs) var(--space-sm) var(--space-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actmenu [role="menuitem"] {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l k" "c k"; align-items: center; column-gap: var(--space-sm);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l k" "d k" "c k"; align-items: center; column-gap: var(--space-sm);
   width: 100%; min-height: var(--row-touch); padding: var(--space-2xs) var(--space-sm); border: 0; border-radius: var(--radius-sm);
   background: transparent; color: var(--color-ink); font: 400 var(--text-sm)/1.3 var(--font-ui); text-align: left; cursor: pointer;
 }
 .actmenu [role="menuitem"] span { grid-area: l; }
+.actmenu [role="menuitem"] small { grid-area: d; font-size: var(--text-xs); line-height: 1.35; color: var(--color-muted); }
+.actmenu [role="menuitem"] small:empty { display: none; }
 .actmenu [role="menuitem"] code { grid-area: c; font: 400 var(--text-2xs)/1.3 var(--font-data); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actmenu [role="menuitem"] code:empty { display: none; }
 .actmenu [role="menuitem"] kbd { grid-area: k; font-size: var(--text-xs); color: var(--color-muted); }
