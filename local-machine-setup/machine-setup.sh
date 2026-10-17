@@ -724,8 +724,9 @@ release_latest() { # owner/repo
 # Installs an entry's bins at TAG, else at the latest tag, then records the
 # tag. Run through run_ok or a condition, where set -e is off, so each step
 # checks its own result. No bin moves into RELEASE_BIN before every bin is
-# found and copied beside its place, and the record comes last: a run that
-# stops before it leaves the entry MISSING or DIFFERS for the next run.
+# found and copied beside its place; the old record goes before the first
+# move and the new one comes last, so a run that stops between them leaves
+# the entry MISSING for the next run.
 release_install() { # name, bins, owner/repo, asset, [tag]
   ri_tag=$5
   if [ -z "$ri_tag" ] && ! ri_tag=$(release_latest "$3"); then
@@ -799,6 +800,14 @@ release_fetch() { # name, bins, owner/repo, asset, tag (into $ri_tmp)
       return 1
     fi
   done
+  # The record goes before the first bin moves: a run that stops between two
+  # moves, or before the record, leaves the entry MISSING, never ok over a
+  # mix of two tags' bins, pinned or not (sd:4853, lane round 1).
+  if ! rm -f "$RELEASE_STATE/$1.tag"; then
+    for rf_c in $rf_bins; do rm -f "$RELEASE_BIN/.$rf_c.release.$$"; done
+    echo "  release $1: cannot remove its tag record; nothing moved"
+    return 1
+  fi
   for rf_b in $rf_bins; do
     if ! mv -f "$RELEASE_BIN/.$rf_b.release.$$" "$RELEASE_BIN/$rf_b"; then
       for rf_c in $rf_bins; do rm -f "$RELEASE_BIN/.$rf_c.release.$$"; done
@@ -1882,8 +1891,10 @@ node_link() {
   [ "$nl_ok" -eq 0 ] || echo "  ok      node link $nl_major -> $nl_v"
 }
 
-# ln -s beside the link, then mv over it: the link is never absent.
+# ln -s beside the link, then mv over it: the link is never absent. A
+# temporary link an interrupted run left goes first.
 node_link_one() { # target, link
+  rm -f "$2.link."*
   { mkdir -p "${2%/*}" && ln -s "$1" "$2.link.$$" && mv -f "$2.link.$$" "$2"; } || { rm -f "$2.link.$$"; return 1; }
 }
 

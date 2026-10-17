@@ -496,6 +496,81 @@ class ReleaseUpgrade(Case):
         self.assertIn("outdated (release): unknown", result.stdout)
 
 
+# mv that fails when its last argument ends in /$MV_FAIL; any other mv is
+# the real one.
+MV_STUB = r"""#!/bin/sh
+for a in "$@"; do last="$a"; done
+if [ -n "$MV_FAIL" ]; then
+  case "$last" in */"$MV_FAIL") exit 1 ;; esac
+fi
+exec /bin/mv "$@"
+"""
+
+
+class PartialInstall(Case):
+    """A run that moved some bins and not the rest leaves no tag record, so
+    no later run calls the entry ok (lane round 1, sd:4853)."""
+
+    def setUp(self):
+        super().setUp()
+        write_exec(self.stubs / "mv", MV_STUB)
+        self.release("v1.2.3", "example-1.2.3.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("1.3.0", "example", "example-helper"),
+                     latest=False)
+
+    def install(self, line, **extra):
+        (self.profiles / "personal.release").write_text(line)
+        return self.run_verb("update", "release", "--apply", **extra)
+
+    def test_an_upgrade_that_moved_one_bin_of_two_is_missing_and_reinstalled(self):
+        unpinned = f"example,example-helper {REPO} example-{{version}}.tar.gz\n"
+        self.assertEqual(self.install(unpinned).returncode, 0)
+        (self.assets / REPO / "LATEST").write_text("v1.3.0")
+
+        swept = self.run_verb("upgrade", "--apply", MV_FAIL="example-helper")
+
+        self.assertIn("failed steps: release example", swept.stdout, self.out(swept))
+        self.assertEqual(self.installed("example"), TOOL.format("1.3.0"))
+        self.assertEqual(self.installed("example-helper"), TOOL.format("1.2.3"))
+        self.assertIsNone(self.record())
+        dry = self.run_verb("update", "release")
+        self.assertIn("  MISSING release example (no tag recorded)", dry.stdout, self.out(dry))
+
+        again = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(again.returncode, 0, self.out(again))
+        self.assertEqual(self.installed("example-helper"), TOOL.format("1.3.0"))
+        self.assertEqual(self.record(), "v1.3.0")
+
+    def test_a_pinned_install_that_moved_one_bin_of_two_is_repaired_at_the_pin(self):
+        self.assertEqual(self.install(f"example,example-helper {REPO} example-{{version}}.tar.gz v1.2.3\n")
+                         .returncode, 0)
+        pinned = f"example,example-helper {REPO} example-{{version}}.tar.gz v1.3.0\n"
+
+        partial = self.install(pinned, MV_FAIL="example-helper")
+
+        self.assertEqual(partial.returncode, 1, self.out(partial))
+        self.assertEqual(self.installed("example"), TOOL.format("1.3.0"))
+        self.assertIsNone(self.record())
+
+        again = self.install(pinned)
+
+        self.assertIn("  MISSING release example (no tag recorded)", again.stdout, self.out(again))
+        self.assertEqual(self.installed("example-helper"), TOOL.format("1.3.0"))
+        self.assertEqual(self.record(), "v1.3.0")
+
+    def test_a_record_that_cannot_be_written_leaves_none(self):
+        unpinned = f"example,example-helper {REPO} example-{{version}}.tar.gz\n"
+        self.assertEqual(self.install(unpinned).returncode, 0)
+        (self.assets / REPO / "LATEST").write_text("v1.3.0")
+
+        swept = self.run_verb("upgrade", "--apply", MV_FAIL="example.tag")
+
+        self.assertIn("failed steps: release example", swept.stdout, self.out(swept))
+        self.assertEqual(self.installed("example-helper"), TOOL.format("1.3.0"))
+        self.assertIsNone(self.record())
+
+
 # `brew list --formula` and `brew leaves` both name $BREW_HAVE; every install
 # is logged.
 BREW_STUB = r"""#!/bin/sh
@@ -644,6 +719,15 @@ class NodeLink(Case):
         self.assertIn("  DIFFERS node link 26: ", result.stdout, self.out(result))
         self.assertIn("  MISSING node link 26: ", result.stdout)
         self.assertEqual(self.links(), {n: self.target("26.1.0", n) for n in ("node", "npm", "npx")})
+
+    def test_a_temporary_link_an_interrupted_run_left_is_cleared(self):
+        self.bin.mkdir(parents=True)
+        (self.bin / "node.link.99999").symlink_to(self.target("26.0.0", "node"))
+
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertEqual(sorted(p.name for p in self.bin.iterdir()), ["node", "npm", "npx"])
 
     def test_a_file_that_is_not_a_link_is_left_alone(self):
         write_exec(self.bin / "node", "#!/bin/sh\necho mine\n")
