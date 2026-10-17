@@ -379,7 +379,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
-    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot)", path)
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot|github-issues)", path)
     if match:
         from .management_screen import set_repo
 
@@ -397,7 +397,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         def word(value) -> bool:
             if match[1] == "lane-host":
                 return isinstance(value, str) and value != ""
-            return value in (("manual", "auto") if match[1] == "runner-merge" else ("yes", "no"))
+            return value in {"runner-merge": ("manual", "auto"), "github-issues": ("on", "off")}.get(match[1], ("yes", "no"))
 
         if (set(values) != {"path", "value", "before"} or not isinstance(values["path"], str)
                 or not word(values["value"]) or not word(values["before"]) or values["value"] == values["before"]):
