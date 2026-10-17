@@ -20,7 +20,7 @@ cp .env.example ~/.config/system/mezmo-pipeline/.env   # once, fill in the servi
 ./pipeline.sh test
 ```
 
-`MEZMO_PIPELINE_SERVICE_KEY` and `MEZMO_PIPELINE_ID` are needed by everything;
+`MEZMO_SERVICE_KEY` and `MEZMO_PIPELINE_ID` are needed by everything;
 `state` also needs `MEZMO_PIPELINE_STATE_ID`, `source` also needs
 `MEZMO_SOURCE_ID` and `MEZMO_ACCOUNT_ID`. Only the subcommand's own variables
 are required, so `state get` does not demand the source ids. All may come from

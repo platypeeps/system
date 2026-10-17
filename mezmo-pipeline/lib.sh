@@ -90,13 +90,13 @@ mz_api() {
   if [ -n "$_body" ]; then
     MZ_CODE=$(curl -sS -o "$_out" -w '%{http_code}' \
       --request "$_method" --url "$_url" \
-      -H "Authorization: Token $MEZMO_PIPELINE_SERVICE_KEY" \
+      -H "Authorization: Token $MEZMO_SERVICE_KEY" \
       -H 'Content-Type: application/json' \
       --data "$_body") || MZ_CODE=""
   else
     MZ_CODE=$(curl -sS -o "$_out" -w '%{http_code}' \
       --request "$_method" --url "$_url" \
-      -H "Authorization: Token $MEZMO_PIPELINE_SERVICE_KEY" \
+      -H "Authorization: Token $MEZMO_SERVICE_KEY" \
       -H 'Content-Type: application/json') || MZ_CODE=""
   fi
   MZ_BODY=$(cat "$_out")
