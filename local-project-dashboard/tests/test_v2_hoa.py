@@ -396,6 +396,11 @@ R.after = ELS.map.html;""")
         self.assertIn('<td class="id num">sd:9</td>', out["R"]["cell"])
         self.assertNotIn("aria-sort", out["R"]["head"])
 
+    def test_a_followups_row_action_drafts_and_any_other_kinds_opens_the_item(self):
+        out = self.run_page(f"""const p = (id, o) => !!REG.find(c => c.id === id).primary(OBJ.get('item:' + o));
+R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
+        self.assertEqual(out["R"]["p"], [True, False, False, True])
+
     def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
         kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
         rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "

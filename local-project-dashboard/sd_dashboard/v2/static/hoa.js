@@ -289,7 +289,7 @@
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
+        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
         ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
@@ -324,9 +324,10 @@
     // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
     const openItem = o => S.openItem(o.item);
     C.register(
-      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: () => true,
+      // A followup's first action drafts it; any other kind's opens the item (sd:4959).
+      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
         run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },
-      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
+      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
