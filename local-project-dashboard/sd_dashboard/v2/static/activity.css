@@ -1,7 +1,7 @@
 /* Activity (sd:2111): the design source's products/system/designs/v2/activity.css at d82daa1, unchanged but for this comment.
  * build: the command lane has no rule of its own; it uses the lane grammar as it stands. */
-/* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
- * Activity v2: annunciator → 24h lane chart (one lane per kind) → kind and repo filters → one timeline, hour bands, newest first → details.
+/* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 (filter bar, 2026-10-17)
+ * Activity v2: annunciator → 24h lane chart (one lane per kind) → one filter bar (state, range, repo) → one timeline, hour bands, newest first → details.
  * build: the rows are /api/activity (activity_screen.py); a kind whose read failed draws hatched. */
 
 /* Annunciator (Today grammar) */
@@ -9,7 +9,6 @@
 .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
 .sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }
 .tally { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); margin: 0; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); }
-.tally .chips { margin: 0; }
 .chip .n { color: var(--color-muted); }
 
 /* Lane chart: one lane per kind over 24h. Tick colour = state (ok neutral, caution, warning). Hatch = no source. */
@@ -45,12 +44,43 @@
 .fallback th:first-child, .fallback td:first-child { text-align: left; }
 .fallback td.u { color: var(--color-muted); }
 
-/* Filters (Tasks grammar) */
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-sm) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-sm); }
-.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; }
-.fgroup > .label { margin-right: var(--space-2xs); }
-.fgroup .chips { margin: 0; }
-.fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
+/* Filters: one bar. Segmented state and range, a Repo picker, the picked filters as removable tokens, the count at the right.
+ * A lamp and a lane filter by kind, so the bar has no kind row (operator, 2026-10-17: compact). */
+.filters { position: relative; padding: var(--space-xs) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-sm); }
+.fbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }
+.fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.fseg button, .pick, .tok { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-3xs); border: 0; font: 400 var(--text-xs)/1 var(--font-data); white-space: nowrap; cursor: pointer; }
+.fseg button { gap: var(--space-2xs); min-height: 1.75rem; min-width: 2rem; padding: 0 var(--space-xs); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); }
+.fseg button:hover { background: var(--color-well); color: var(--color-ink); }
+.fseg button[aria-pressed="true"] { background: var(--color-accent-bg); color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.fseg button[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; }
+.fseg button[aria-disabled="true"]:hover { background: transparent; color: var(--color-muted); }
+.fseg .n, .pick .n { color: var(--color-muted); }
+.fseg button[aria-pressed="true"] .n { color: var(--color-ink-2); }
+.pick { min-height: calc(1.75rem + 6px); padding: 0 var(--space-xs) 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); color: var(--color-ink-2); }
+.pick:hover, .pick[aria-expanded="true"] { background: var(--color-well); color: var(--color-ink); }
+.pick:has(.n) { border-color: var(--color-accent); color: var(--color-ink); }
+.pick .caret { margin-left: var(--space-3xs); color: var(--color-muted); }
+.tok { min-height: 1.75rem; padding: 0 var(--space-3xs) 0 var(--space-xs); border: var(--rule-hair) solid var(--color-accent); border-radius: 999px; background: var(--color-accent-bg); color: var(--color-ink); max-width: 16rem; }
+.tok > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.tok .x { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; color: var(--color-ink-2); }
+.tok:hover .x { background: var(--color-panel); color: var(--color-ink); }
+.fseg button:focus-visible, .pick:focus-visible, .tok:focus-visible { outline: var(--rule-focus) solid var(--color-focus); outline-offset: 1px; }
+.fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
+.repo-pop { position: absolute; z-index: 30; left: var(--pop-x, 0); top: var(--pop-y, 100%); width: min(18rem, 100%); padding: var(--space-2xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); box-shadow: var(--shadow-overlay); }
+.repo-pop[hidden] { display: none; }
+.repo-pop input { box-sizing: border-box; width: 100%; min-height: var(--row); padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-well); color: var(--color-ink); font: 400 var(--text-sm)/1 var(--font-ui); }
+.repo-pop input::placeholder { color: var(--color-muted); }
+.repo-pop input:focus-visible { outline: none; border-color: var(--color-focus); box-shadow: inset 0 0 0 1px var(--color-focus); }
+.repo-pop ul { list-style: none; margin: var(--space-2xs) 0 0; padding: 0; max-height: 16rem; overflow-y: auto; overscroll-behavior: contain; }
+.repo-pop [role="option"] { display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto; align-items: center; gap: var(--space-xs); min-height: var(--row); padding: 0 var(--space-xs); border-radius: var(--radius-sm); color: var(--color-ink-2); font: 400 var(--text-xs)/1.2 var(--font-data); cursor: pointer; }
+.repo-pop [role="option"]:hover, .repo-pop [role="option"][data-active] { background: var(--color-well); color: var(--color-ink); }
+.repo-pop [role="option"][aria-selected="true"] { color: var(--color-ink); }
+.repo-pop .ck { color: var(--color-accent); visibility: hidden; }
+.repo-pop [aria-selected="true"] .ck { visibility: visible; }
+.repo-pop .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-pop [role="option"] .n { color: var(--color-muted); }
+.repo-pop .none { padding: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
 .linkbtn { border: 0; background: none; padding: var(--space-2xs); color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .linkbtn:hover { color: var(--color-ink); }
 
@@ -80,6 +110,8 @@
 
 @media (pointer: coarse) {
   .lane-btn, .linkbtn, .fallback summary { min-height: var(--row-touch); }
+  .fseg button, .pick, .tok, .repo-pop input, .repo-pop [role="option"] { min-height: var(--row-touch); }
+  .fseg button { min-width: var(--row-touch); }
   .track, .track svg { min-height: var(--row-touch); }
   .ledger .what button { min-height: var(--row-touch); display: flex; flex-direction: column; justify-content: center; }
   .note a, .details .why a { display: inline-flex; align-items: center; min-height: var(--row-touch); }
@@ -88,7 +120,9 @@
   .lanes { grid-template-columns: minmax(0, 1fr); }
   .lane-btn { border-bottom: 0; }
   .axis-label { display: none; }
-  .fsum { margin-left: 0; }
+  /* Two rows at 390: state, Repo and the count; then the range. The list opens full width under the bar. */
+  .fbar > .fseg:first-child { order: 1; } .pick { order: 2; } .fsum { order: 3; } .fseg[aria-label="Range"] { order: 4; } .tok { order: 5; }
+  .repo-pop { left: 0; right: 0; width: auto; }
 }
 @media (max-width: 899px) {
   .ledger thead { display: none; }

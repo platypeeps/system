@@ -65,7 +65,7 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- State (mirrored in the URL) ----------
   const F = { kind: new Set(), repo: new Set(), state: '', q: '', hour: false, all: false }; // all: every event read, the journal's older records too
-  let page = 1, size = 50, selected = null, allRepos = false;
+  let page = 1, size = 50, selected = null;
   function readURL() {
     const p = new URLSearchParams(location.search);
     // A kind the page does not draw (an old link's deploy or mail) is dropped, or it would hide every row.
@@ -134,22 +134,6 @@ addEventListener('DOMContentLoaded', () => {
   const W = 720, H = 24;
   const x = t => ((Date.parse(t) - RANGE.from) / (RANGE.to - RANGE.from)) * W;
   const hours = () => Array.from({ length: 25 }, (_, i) => RANGE.from + i * 36e5);
-  function renderRange() {
-    // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
-    put($('range'), html`
-      <button class="chip" type="button" data-r="1h" aria-pressed="${String(F.hour)}">1h</button>
-      <button class="chip" type="button" data-r="24h" aria-pressed="${String(!F.hour && !F.all)}">24h</button>
-      <button class="chip" type="button" data-r="all" aria-pressed="${String(F.all)}">All read <span class="n">+${EVENTS.filter(e => !inWindow(e)).length} older</span></button>
-      <button class="chip" type="button" data-r="7d" aria-pressed="false">7d <span class="n">▨ not read</span></button>
-      <button class="chip" type="button" data-r="30d" aria-pressed="false">30d <span class="n">▨ not read</span></button>`);
-  }
-  $('range').addEventListener('click', e => {
-    const c = e.target.closest('.chip'); if (!c) return;
-    const r = c.dataset.r;
-    // build: the range stays where it was, which is 1h or All read as often as 24h.
-    if (r === '7d' || r === '30d') return toast(`${r} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
-    F.hour = r === '1h'; F.all = r === 'all'; page = 1; update();
-  });
   function renderLanes() {
     const H24 = hours();
     const grid = H24.filter((_, i) => i % 3 === 0).map(t => { const gx = ((t - RANGE.from) / (RANGE.to - RANGE.from) * W).toFixed(1); return html`<line x1="${gx}" x2="${gx}" y1="0" y2="${String(H)}"/>`; });
@@ -176,28 +160,93 @@ addEventListener('DOMContentLoaded', () => {
     F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update();
   });
 
-  // ---------- Filters ----------
+  // ---------- Filters: one bar (state, range, repo, the picked tokens, the count) ----------
+  // A lamp and a lane already toggle each kind, so the bar draws no kind chips; a picked kind shows as a removable token.
+  const STATES = [['warning', '■', 'failed'], ['caution', '▲', 'caution'], ['ok', '●', 'ok']];
+  const pop = $('repo-pop'), repoQ = $('repo-q'), repoList = $('repo-list');
+  let cursor = 0; // the active option in the repo list, for the arrow keys and Enter
+  pop.hidden = true; // the list starts closed, whatever a restored page left
+  const token = (f, v, label) => html`<button type="button" class="tok" data-f="${f}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
   function renderFilters() {
-    const chip = (f, v, label, pressed, n) => html`<button type="button" class="chip" data-f="${f}" data-v="${v}" aria-pressed="${String(pressed)}">${label}${n != null ? html` <span class="n">${String(n)}</span>` : ''}</button>`;
-    const shown = EVENTS.filter(match).length;
-    const repos = allRepos ? REPOS : REPOS.filter(([r], i) => i < 8 || F.repo.has(r));
-    put($('filters'), html`
-      <div class="fgroup"><span class="label">Kind</span><div class="chips">${KINDS.map(k => unknownWhy(k.id) ? html`<button type="button" class="chip" data-f="kind-unknown" data-v="${k.id}" aria-pressed="false">${k.name} <span class="n">▨</span></button>` : chip('kind', k.id, k.name, F.kind.has(k.id), EVENTS.filter(e => e.k === k.id).length))}</div></div>
-      <div class="fgroup"><span class="label">State</span><div class="chips">${[['warning', '■ failed'], ['caution', '▲ caution'], ['ok', '● ok']].map(([s, l]) => chip('state', s, l, F.state === s, EVENTS.filter(e => e.s === s).length))}</div></div>
-      ${REPOS.length ? html`<div class="fgroup"><span class="label">Repo</span><div class="chips">${repos.map(([r, n]) => chip('repo', r, r, F.repo.has(r), n))}${REPOS.length > 8 ? html`<button type="button" class="linkbtn" id="more-repos" aria-expanded="${String(allRepos)}">${allRepos ? 'fewer' : `all ${REPOS.length} repos`}</button>` : ''}</div></div>` : ''}
-      <div class="fsum"><span>${shown} of ${EVENTS.length}${F.q ? ` · “${F.q}”` : ''}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>`);
+    const shown = EVENTS.filter(match).length, older = EVENTS.filter(e => !inWindow(e)).length;
+    const count = s => String(EVENTS.filter(e => e.s === s).length);
+    const range = (r, label, pressed, title) => html`<button type="button" data-r="${r}" aria-pressed="${String(pressed)}"${title ? html` title="${title}"` : ''}>${label}</button>`;
+    // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
+    const unread = r => html`<button type="button" data-r="${r}" aria-pressed="false" aria-disabled="true" title="${r} is not read: /api/activity holds the last 24 hours">${r}<span class="n" aria-hidden="true">▨</span></button>`;
+    put($('filters'), html`<div class="fbar" role="group" aria-label="Filters">
+      <div class="fseg" role="group" aria-label="State">${STATES.map(([s, g, w]) => html`<button type="button" data-f="state" data-v="${s}" aria-pressed="${String(F.state === s)}" title="${w}: ${count(s)}"><span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span></button>`)}</div>
+      <div class="fseg" role="group" aria-label="Range">${range('1h', '1h', F.hour)}${range('24h', '24h', !F.hour && !F.all)}${range('all', html`All <span class="n">+${String(older)}</span>`, F.all, `All read: the 24 hours and ${plural(older, 'older journal record')}`)}${unread('7d')}${unread('30d')}</div>
+      ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}<span class="caret" aria-hidden="true">▾</span></button>` : ''}
+      ${[...F.kind].map(k => token('kind', k, kindOf(k).name))}${[...F.repo].map(r => token('repo', r, r))}${F.q ? token('q', '', `“${F.q}”`) : ''}
+      <div class="fsum"><span>${String(shown)} of ${String(EVENTS.length)}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>
+    </div>`);
   }
   $('filters').addEventListener('click', e => {
     if (e.target.closest('#clear')) return clearAll();
-    if (e.target.closest('#more-repos')) { allRepos = !allRepos; return renderFilters(); }
-    const c = e.target.closest('.chip'); if (!c) return;
+    if (e.target.closest('#repo-btn')) return pop.hidden ? openRepos() : closeRepos(true);
+    const r = e.target.closest('[data-r]');
+    if (r) {
+      const v = r.dataset.r;
+      // build: the range stays where it was, which is 1h or All read as often as 24h.
+      if (v === '7d' || v === '30d') return toast(`${v} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
+      F.hour = v === '1h'; F.all = v === 'all'; page = 1; return update();
+    }
+    const c = e.target.closest('[data-f]'); if (!c) return;
     const { f, v } = c.dataset;
-    if (f === 'kind-unknown') return showKind(v);
     if (f === 'kind' || f === 'repo') F[f].has(v) ? F[f].delete(v) : F[f].add(v);
     if (f === 'state') F.state = F.state === v ? '' : v;
+    if (f === 'q') { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; }
     page = 1; update();
   });
   function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+
+  // The repo picker: a listbox under the Repo button, every repo with its count, most events first. Typing filters it;
+  // the arrows move, Enter or a tap picks, Esc closes and gives focus back to the button. A picked repo with no events
+  // (an address from another day) stays in the list, so it can be unpicked.
+  function repoOptions() {
+    const q = repoQ.value.trim().toLowerCase(), all = new Map(REPOS);
+    F.repo.forEach(r => { if (!all.has(r)) all.set(r, 0); });
+    return [...all].filter(([r]) => !q || r.toLowerCase().includes(q));
+  }
+  function renderRepos() {
+    const opts = repoOptions();
+    cursor = Math.max(0, Math.min(cursor, opts.length - 1));
+    put(repoList, opts.length ? html`${opts.map(([r, n], i) => html`<li role="option" id="repo-opt-${String(i)}" data-repo="${r}" aria-selected="${String(F.repo.has(r))}"${i === cursor ? html` data-active=""` : ''}><span class="ck" aria-hidden="true">✓</span><span class="nm">${r}</span><span class="n">${String(n)}</span></li>`)}`
+      : html`<li class="none" role="presentation">No repo matches “${repoQ.value.trim()}”</li>`);
+    if (opts.length) repoQ.setAttribute('aria-activedescendant', `repo-opt-${cursor}`); else repoQ.removeAttribute('aria-activedescendant');
+    repoList.querySelector('[data-active]')?.scrollIntoView?.({ block: 'nearest' });
+  }
+  const touch = () => matchMedia('(pointer: coarse)').matches; // a tap does not raise the keyboard
+  function openRepos() {
+    repoQ.value = ''; cursor = 0; pop.hidden = false;
+    const btn = $('repo-btn');
+    if (btn && btn.offsetParent) { pop.style.setProperty('--pop-x', `${btn.offsetLeft}px`); pop.style.setProperty('--pop-y', `${btn.offsetTop + btn.offsetHeight + 4}px`); }
+    renderRepos(); renderFilters();
+    if (!touch()) repoQ.focus();
+  }
+  // A press outside closes in place: a redraw on pointerdown would swap the token under the pointer and lose its click.
+  function closeRepos(focus) {
+    if (pop.hidden) return;
+    pop.hidden = true;
+    if (!focus) return $('repo-btn')?.setAttribute('aria-expanded', 'false');
+    renderFilters(); $('repo-btn')?.focus();
+  }
+  function pickRepo(r) { F.repo.has(r) ? F.repo.delete(r) : F.repo.add(r); page = 1; update(); renderRepos(); }
+  repoQ.addEventListener('input', () => { cursor = 0; renderRepos(); });
+  repoList.addEventListener('click', e => { const o = e.target.closest('[role="option"]'); if (!o) return; pickRepo(o.dataset.repo); if (!touch()) repoQ.focus(); });
+  // Keys stop here, so the shell's Esc (clear the filter) and Enter do not also run.
+  pop.addEventListener('keydown', e => {
+    const opts = repoOptions();
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); return closeRepos(true); }
+    if (e.key === 'Tab') return closeRepos(false);
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && opts.length) {
+      e.preventDefault(); cursor = (cursor + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length; return renderRepos();
+    }
+    if (e.key === 'Enter' && opts.length) { e.preventDefault(); e.stopPropagation(); pickRepo(opts[cursor][0]); }
+  });
+  // Esc on the Repo button itself closes the list too; a press outside the bar and the list closes it.
+  $('filters').addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); e.stopPropagation(); closeRepos(true); } });
+  document.addEventListener('pointerdown', e => { if (!pop.hidden && !e.target.closest?.('#repo-pop, #repo-btn')) closeRepos(false); });
 
   // ---------- Timeline ----------
   const tbody = $('rows');
@@ -256,7 +305,7 @@ addEventListener('DOMContentLoaded', () => {
     { name: 'Failed in the last hour', params: { state: 'warning', range: '1h' } },
   ];
   function update() {
-    renderRange(); renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); window.shell.views(VIEWS);
+    renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); window.shell.views(VIEWS);
     // Selection follows the filter (design.md, Page contract): a hidden row gives way to the first visible one.
     const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false), clear: unselect });
     if (kept !== undefined) selected = kept;
