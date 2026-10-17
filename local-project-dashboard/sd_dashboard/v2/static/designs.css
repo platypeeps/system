@@ -39,6 +39,8 @@
 .details .open { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--color-accent); font-weight: 600; }
 .details .open:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .details .shot { margin: var(--space-sm) 0 var(--space-md); }
+/* Read brief: the Markdown source as text, set in the reading face, wrapped to the pane. */
+.details pre.brief { margin: var(--space-xs) 0 var(--space-md); padding: var(--space-sm); border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-sm); background: var(--color-panel); font: 400 var(--text-sm)/1.55 var(--font-ui); color: var(--color-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 .details .shot img { display: block; width: 100%; height: auto; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-well); }
 .details .shot figcaption { margin-top: var(--space-2xs); font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-muted); overflow-wrap: anywhere; }
 

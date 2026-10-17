@@ -101,7 +101,8 @@ function show(id) {
       <h2>${r.product}</h2>
       <dl><dt>Brief</dt><dd>${pr.brief || 'none'}</dd><dt>Status</dt><dd>${pr.status.replace(/`/g, '') || 'no Status line'}</dd><dt>Pages</dt><dd>0</dd></dl>
       <p class="why">The brief exists and no page is drawn yet. The classic tab lists no section for a product without a page, so this row is the only place it shows.</p>
-      <h3>Act</h3>${shell.commands.bar(id)}`);
+      <h3>Act</h3>${shell.commands.bar(id)}
+      ${pr.briefText ? html`<h3>Brief</h3><pre class="brief">${pr.briefText}</pre>${pr.briefCut ? html`<p class="why">The brief is longer than this. The rest is in ${pr.brief}.</p>` : ''}` : ''}`);
     shell.suggest([`What should the first ${r.product} page be?`, `Summarise the ${r.product} brief.`]);
   } else {
     const shot = r.shots.find(s => /1440/.test(s)) || r.shots[0];
@@ -149,7 +150,7 @@ function update() {
 }
 
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
-// build: every command is copy only; the dashboard runs no git, no shots.mjs and no pager.
+// build: History and Retake are copy only; the dashboard runs no git, no shots.mjs and no pager. Read brief shows the brief.
 const pageName = o => o.path.split('/').pop().slice(0, -5);
 const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/designs/view)';
 const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }).then(v => reading.reread().then(() => v));
@@ -169,8 +170,9 @@ function registerCommands() {
       primary: o => { const r = ROWS.find(x => x.id === o.id); return !!r && !r.dirty && (!r.shots.length || !!shotStale(r)); },
       when: o => o.kind === 'v2 mockup' || o.kind === 'skeleton' || 'shots.mjs draws the v2 pages only',
       cli: o => `node ${REPO()}/products/system/designs/tools/shots.mjs ${pageName(o)}`, run: o => `Copy the line to retake ${o.label} at 1440 and 375; the dashboard does not run it` },
+    // build: the brief's text comes in the ledger (designs.BRIEF_CHARS); Details shows it, the tab serving no Markdown.
     { id: 'design.brief', on: 'brief', label: 'Read brief', key: 'b', icon: 'file-text', risk: 'safe', primary: () => true, executes: false,
-      when: o => !!o.brief || 'this product has no brief', cli: o => `less ${REPO()}/${o.brief}`, run: o => `Copy the line to read the ${o.product} brief` },
+      when: o => !!o.brief || 'this product has no brief', cli: o => `less ${REPO()}/${o.brief}`, run: o => { select(o.id, true); return `Brief of ${o.product} shown in Details`; } },
     ...hiding('page'), ...hiding('brief'),
   );
 }

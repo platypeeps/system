@@ -50,7 +50,8 @@ def page(path, **fields):
 #: A ledger with one page in each state and a product with a brief and no page.
 DOC = {
     "read": "2026-09-23T12:00:00Z", "root": "~/repos/example/ui-design", "head": "abc1234", "branch": "main", "caution": 3,
-    "products": [{"name": "brand", "title": "brand brief", "brief": "products/brand/README.md", "status": "extracted; no `redesign`.", "pages": 0},
+    "products": [{"name": "brand", "title": "brand brief", "brief": "products/brand/README.md", "status": "extracted; no `redesign`.", "pages": 0,
+                  "briefText": "# brand brief\n\n**Status:** extracted; no `redesign`.\n\nWho it is for.", "briefCut": False},
                  {"name": "system", "title": "system brief", "brief": "products/system/README.md", "status": "v2 drawn.", "pages": 4}],
     "pages": [
         page(f"{PAGES}/today.html", title="Today · system", shots=["products/system/designs/shots/v2-today-1440.png", "products/system/designs/shots/v2-today-375.png"],
@@ -180,9 +181,25 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
 
     def test_the_copy_only_commands_post_nothing_and_say_so(self):
-        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); shellRun(cmd('design.brief'), C.get('product:brand')); await flush();")
+        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); await flush();")
         self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it", "Copy the line to read the brand brief"])
+        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it"])
+
+    def test_read_brief_shows_the_brief_in_details(self):
+        # Tuning: Read brief only toasted "Copy the line", its line folded shut, so it seemed to do nothing. It now selects
+        # the row and shows the brief's text in Details, as the design source's run ("Brief of <product> shown") meant.
+        out = self.run_page(f"open('{PAGES}/today.html'); shellRun(cmd('design.brief'), C.get('product:brand')); await flush(); R.details = ELS.details.html;")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], ["Brief of brand shown in Details"])
+        self.assertEqual(out["selected"][-1], "product:brand")
+        self.assertIn('<pre class="brief">', out["R"]["details"])
+        self.assertIn("Who it is for.", out["R"]["details"])
+
+    def test_a_cut_brief_says_where_the_rest_is(self):
+        doc = json.loads(json.dumps(DOC))
+        doc["products"][0]["briefCut"] = True
+        out = self.run_page("open('product:brand'); R.details = ELS.details.html;", answer=f"(path) => [200, {json.dumps(doc)}]")
+        self.assertIn("The rest is in products/brand/README.md.", out["R"]["details"])
 
     def test_retake_is_off_for_a_page_shots_mjs_does_not_draw(self):
         out = self.run_page("R.off = cmd('design.shots').when(C.get('products/system/designs/v1-today.html'));")
