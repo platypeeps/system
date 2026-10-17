@@ -214,7 +214,8 @@ class Document(ScreenCase):
         shadow.assert_called_once_with(self.connection, tracker="github")
         self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error", "active",
                                          "waiting", "attention", "issues", "issues_error", "intake", "intake_error",
-                                         "mail", "mail_more", "mail_unread", "mail_error"})
+                                         "mail", "mail_more", "mail_unread", "mail_error", "problems", "problems_more",
+                                         "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),

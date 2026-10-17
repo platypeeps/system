@@ -210,6 +210,8 @@
     document.dispatchEvent(new CustomEvent('intake:read', { detail: DOC ? { intake: DOC.intake || [], error: DOC.intake_error || '' } : { error: failed } }));
     // Your mail (sd:4191) too; mail.js draws it from the document's mail keys.
     document.dispatchEvent(new CustomEvent('mail:read', { detail: DOC || { mail_error: failed } }));
+    // Problem reports and new briefs too; today-reports.js draws them, or the failure that left none.
+    document.dispatchEvent(new CustomEvent('today-reports:read', { detail: DOC || { error: failed } }));
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
     $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;
