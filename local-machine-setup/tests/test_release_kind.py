@@ -512,6 +512,15 @@ class Negation(Case):
         self.assertEqual(installs, ["brew install example-extra"], self.out(result))
         self.assertNotIn("!", result.stdout)
 
+    def test_a_bang_line_drops_common_s_entry_and_not_the_profile_s_own(self):
+        """`!name` beside the profile's own spelling swaps common's entry."""
+        (self.profiles / "personal.brew").write_text("!example-dropped\nother-tap/tap/example-dropped\n")
+
+        result = self.brew("git example-qualified", "update", "brew", "--apply")
+
+        installs = [c for c in self.urls() if c.startswith("brew install")]
+        self.assertEqual(installs, ["brew install other-tap/tap/example-dropped"], self.out(result))
+
     def test_status_reports_a_dropped_formula_still_installed_as_extra(self):
         result = self.brew("git example-dropped example-extra", "status")
 
@@ -524,6 +533,18 @@ class Negation(Case):
         lines = [l for l in (self.profiles / "personal.brew").read_text().splitlines()
                  if l.strip() and not l.startswith("#")]
         self.assertEqual(lines, ["!example-dropped", "!example-qualified", "example-extra", "example-new"],
+                         self.out(result))
+
+    def test_capture_keeps_the_profile_s_own_spelling_of_a_dropped_entry(self):
+        (self.profiles / "personal.brew").write_text(
+            "!example-dropped\nexample-extra\nother-tap/tap/example-dropped\n")
+
+        result = self.brew("git example-dropped example-extra other-tap/tap/example-dropped",
+                           "capture", "--apply")
+
+        lines = [l for l in (self.profiles / "personal.brew").read_text().splitlines()
+                 if l.strip() and not l.startswith("#")]
+        self.assertEqual(lines, ["!example-dropped", "example-extra", "other-tap/tap/example-dropped"],
                          self.out(result))
 
     def test_an_additive_capture_does_not_hold_the_bang_lines_as_removals(self):

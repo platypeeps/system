@@ -448,26 +448,27 @@ profile_entries() {
 
 # Strips comments and blank lines from a manifest. A `!name` line in the
 # profile's file drops the entry common lists as name (sd:4853), so a machine
-# can do without one; no `!` line reaches the output.
+# can do without one, or list its own spelling of it; no `!` line reaches the
+# output.
 manifest() {
   kind="$1"
   mf_neg=$(profile_entries "$PROFILE" "$kind" | sed -n 's/^![[:space:]]*//p')
-  for p in common "$PROFILE"; do
-    f="$PROFILE_DIR/$p.$kind"
-    [ -f "$f" ] && sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f"
-  done | grep -v '^$' | grep -v '^!' | sort -u | drop_negated "$mf_neg"
+  { profile_entries common "$kind" | drop_negated "$mf_neg"
+    profile_entries "$PROFILE" "$kind"
+  } | grep -v '^!' | sort -u
 }
 
 # Copies stdin less each entry a name in $1 (one per line) drops. An entry's
 # name is its first word up to a comma, a .release line's first bin; `!name`
-# drops that name and its tap-qualified `<tap>/name` too. Through ENVIRON: a
-# newline in an awk -v value is an error in macOS awk.
-drop_negated() { # names
-  DN_NEG="$1" awk '
+# drops that name and its tap-qualified `<tap>/name` too, or with `exact`
+# that name alone. Through ENVIRON: a newline in an awk -v value is an error
+# in macOS awk.
+drop_negated() { # names, [exact]
+  DN_NEG="$1" awk -v exact="${2:-}" '
     function key(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]].*/, "", s); sub(/,.*/, "", s); return s }
     function bare(s) { sub(/.*\//, "", s); return s }
     BEGIN { n = split(ENVIRON["DN_NEG"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") drop[key(a[i])] = 1 }
-    { k = key($0); if (!(k in drop) && !(bare(k) in drop)) print }'
+    { k = key($0); if (!(k in drop) && (exact != "" || !(bare(k) in drop))) print }'
 }
 
 # The node majors fnm keeps: common.node and <profile>.node, one per line,
@@ -3240,12 +3241,13 @@ write_manifest() { # target, body-file, header-line...
   wm_target="$1"; wm_body="$2"; shift 2
 
   # A `!name` line is the operator's, not the machine's: capture keeps each
-  # one first, and writes no entry it drops back as wanted (sd:4853). A
-  # formula still installed under a `!` line stays drift that status names.
+  # one first, and writes no entry it names back as wanted (sd:4853). A
+  # formula still installed under a `!` line stays drift that status names;
+  # the profile's own `<tap>/name` stays an entry.
   wm_neg=$(manifest_entries "$wm_target" | grep '^!' || :)
   if [ -n "$wm_neg" ]; then
     { printf '%s\n' "$wm_neg"
-      drop_negated "$(printf '%s\n' "$wm_neg" | sed 's/^![[:space:]]*//')" < "$wm_body"
+      drop_negated "$(printf '%s\n' "$wm_neg" | sed 's/^![[:space:]]*//')" exact < "$wm_body"
     } > "$wm_body.neg" || die "capture: cannot keep the ! lines of $wm_target; not written"
     wm_body="$wm_body.neg"
   fi
@@ -3491,11 +3493,11 @@ review_hint() {
   fi
 }
 
+# Common's entries this profile keeps: capture subtracts these, so an entry a
+# `!` line drops is the machine's to record again (sd:4853).
 common_manifest() {
-  f="$PROFILE_DIR/common.$1"
-  if [ -f "$f" ]; then
-    sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$f" | grep -v '^$' | sort
-  fi
+  cm_neg=$(profile_entries "$PROFILE" "$1" | sed -n 's/^![[:space:]]*//p')
+  profile_entries common "$1" | grep -v '^!' | sort | drop_negated "$cm_neg"
 }
 
 # A dotfile is only copied in after it passes a credential scan, so a key
