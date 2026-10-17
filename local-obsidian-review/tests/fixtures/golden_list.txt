@@ -22,4 +22,4 @@ Topics: 2 awaiting a decision
 - topic-one (score 3.0)
 Market Watch: 1 awaiting a decision
 - watch-one (score 2.0)
-email sent
+brief filed

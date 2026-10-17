@@ -1,7 +1,7 @@
 # local-task-actions
 
 Tiny localhost HTTP service backing the action buttons in the Obsidian review
-digest email (`local-obsidian-review`): **Accept**, **Decline** and similar links
+digest brief (`local-obsidian-review`): **Accept**, **Decline** and similar links
 that flip one frontmatter `status` in a decision database note in the vault.
 
 ## How it works

@@ -1,14 +1,13 @@
 #!/bin/sh
 # Daily digest of vault decision queues (Blog Ideas, Skill Proposals,
-# Tips and Tricks, Topics, Market Watch), emailed as HTML with per-note
-# buttons: Open plus the decision actions (Accept/Decline, Track/Pause,
-# Adopt/Park) served as signed links by local-task-actions. Flipping a
+# Tips and Tricks, Topics, Market Watch), filed as a brief on the dashboard's
+# Today with per-note links: Open plus the decision actions (Accept/Decline,
+# Track/Pause, Adopt/Park) served as signed links by local-task-actions. Flipping a
 # status here is the input the nightly accept routines act on.
 # Usage: obsidian-review.sh run|list|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
-NOTIFY="$DIR/../local-notify/notify.sh"
 ACTIONS="$DIR/../local-task-actions/task-actions.sh"
 JEV="$DIR/../local-jev/jev.sh"
 # One id for every jev call this run makes, so the ledger groups them
@@ -37,9 +36,10 @@ usage: obsidian-review.sh run|list|test
 
   list  print every note waiting on a decision, per database; prints
         nothing when all queues are empty
-  run   list, and when anything is waiting email an HTML digest through
-        local-notify's email channel (what the obsidian-review-daily
-        cron job runs); exits 1 only when that email could not be sent.
+  run   list, and when anything is waiting file the digest as the day's
+        `Review Queue` brief (`sd reports brief add`), shown on the
+        dashboard's Today (what the obsidian-review-daily cron job runs);
+        exits 1 only when that brief could not be filed.
   test  run the unittest suite in tests/, offline
 
 queues and their buttons (each button is one signed status flip served
@@ -54,7 +54,7 @@ by local-task-actions; the nightly accept routines do the heavy work):
   Market Watch     status candidate  -> Track / Pause / Decline
 
 The digest asks Jev to order it, so the decision most worth making is the
-first card in the mail rather than the highest-scored note of whichever queue
+first card in the brief rather than the highest-scored note of whichever queue
 is listed first. It runs unless JEV_OBSIDIAN_REVIEW is set to 0, off, false, no or disabled
 -- unset means on -- and unless `jev enabled` declines, it never changes which
 notes appear or what their buttons do, and every failure falls back to
@@ -85,8 +85,8 @@ esac
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 
-body=$(VAULT="$VAULT" ACTIONS="$ACTIONS" JEV="$JEV" HTML_OUT="$TMPD/body.html" python3 <<'PYEOF'
-import datetime, hashlib, html, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
+body=$(VAULT="$VAULT" ACTIONS="$ACTIONS" JEV="$JEV" BRIEF_DIR="$TMPD" python3 <<'PYEOF'
+import datetime, hashlib, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
 
 vault = pathlib.Path(os.environ["VAULT"])
 actions = os.environ["ACTIONS"]
@@ -98,7 +98,7 @@ _pinned = os.environ.get("OBSIDIAN_REVIEW_TODAY", "")
 today = (datetime.date.fromisoformat(_pinned) if _pinned
          else datetime.date.today())
 
-# db key -> (section title, folder, decide-status, [(action, label, palette key)])
+# db key -> (section title, folder, decide-status, [(action, label, state)])
 QUEUES = [
     ("blog", "Blog Ideas", "System/Databases/Blog Ideas", "inbox",
      [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
@@ -240,26 +240,10 @@ def unsigned(why):
         "Open-only links for this run\n" % (why, load_text()))
     return ""
 
-# Email-safe foundation palette: the ui-design light values as sRGB hex, since
-# a mail client has no custom properties, no light-dark() and no oklch(). One
-# glyph sits beside each state colour; colour alone carries nothing. The
-# test pins each value against the dashboard's tokens.css.
-PALETTE = {
-    "paper": "#eff2f6", "panel": "#f8fbfd", "rule": "#c6cbd1",
-    "ink": "#14191f", "ink-2": "#3d434a", "muted": "#5b6168",
-    "ok": "#287c42", "caution": "#8a5600", "warning": "#b71824",
-}
-# Single quotes: a double quote would end the style="..." attribute it sits in.
-FONT = "'IBM Plex Sans',-apple-system,Helvetica,Arial,sans-serif"
-
-BTN = ('<a href="{href}" style="display:inline-block;padding:13px 16px;'
-       'margin:0 6px 6px 0;border-radius:5px;text-decoration:none;line-height:18px;'
-       'font-size:13px;font-weight:600;color:' + PALETTE["panel"] + ';background:{bg}">{label}</a>')
-
 # Jev orders the digest; it never decides what is in it. It runs unless
 # `jev enabled JEV_OBSIDIAN_REVIEW` declines -- unkeyed, the fleet switch off,
 # or that variable switching this stage off -- so a machine that never heard
-# of Jev mails exactly the digest it mailed yesterday. Jev is
+# of Jev files exactly the digest it filed yesterday. Jev is
 # experimental: nothing here may depend on it, so every path out of this
 # function is "today's order", and none of them is silent.
 URGENCY = ["can wait", "this week", "today", "right now"]
@@ -311,7 +295,7 @@ def jev_ranked(queues):
     """Reorder the cards the digest already chose, or hand them back as-is.
 
     It is handed the shown lists *after* the twelve-card cap, so the set of
-    notes in the mail is fixed before Jev ever sees it: this can move a card
+    notes in the brief is fixed before Jev ever sees it: this can move a card
     up, and cannot put one in or take one out. Only the note title, its
     queue and its added date go out -- no description, no file path, no note
     body, no vault name -- because every Jev call leaves this machine.
@@ -354,7 +338,7 @@ def jev_ranked(queues):
         subject = jev_subject([it[0] for q in queues for it in q[5]])
         # One request, every note a question in it: questions in one `ask`
         # run in parallel, where one call per note would pay the round trip
-        # once per card in the mail.
+        # once per card in the brief.
         with tempfile.TemporaryDirectory() as td:
             qf, sf = os.path.join(td, "q.json"), os.path.join(td, "s.json")
             with open(qf, "w") as fh:
@@ -374,7 +358,7 @@ def jev_ranked(queues):
                                or "jev ask exited %d" % r.returncode)
         answers = json.loads(r.stdout)["answers"]
         # A partial answer is a failure, not a ranking: ordering half the
-        # mail by urgency and half by accident is worse than not trying.
+        # brief by urgency and half by accident is worse than not trying.
         scores = {qid: float(answers[qid]["score"]) for qid in questions}
     except Exception as exc:
         sys.stderr.write("obsidian-review.sh: jev did not rank this digest "
@@ -393,7 +377,7 @@ def jev_ranked(queues):
         q = list(q)
         q[5] = [it for _, _, it in cards]
         # The queue itself rides on its best card, so the first section of
-        # the mail is the one holding the decision worth making first.
+        # the brief is the one holding the decision worth making first.
         out.append((-max(picked), qi, q))
     out.sort(key=lambda t: t[:2])
     return [q for _, _, q in out], True
@@ -427,7 +411,7 @@ for db, title, sub, decide, acts in QUEUES:
         continue
     total += len(items)
     # Highest-scored first; cap the cards so a backlog (Blog Ideas sits at
-    # 50+) doesn't produce an unscrollable email. The count above the cap
+    # 50+) doesn't produce an unscrollable brief. The count above the cap
     # is stated, never hidden. The cap picks from this order and no other,
     # so the optional Jev ranking below reorders the cards it chose and can
     # never change which twelve they are.
@@ -450,32 +434,20 @@ for db, title, sub, acts, count, shown, rest in queues:
         link = "obsidian://open?vault=%s&file=%s" % (
             urllib.parse.quote(vault.name), urllib.parse.quote(f"{sub}/{stem}"))
         open_url = action_url(db, stem, "open") or link
-        buttons = [BTN.format(href=html.escape(open_url), bg=PALETTE["ink"], label="\u2197 Open")]
-        for a, label, bg in acts:
+        buttons = [f"[\u2197 Open]({open_url})"]
+        for a, label, _state in acts:
             u = action_url(db, stem, a)
             if u:
-                buttons.append(BTN.format(href=html.escape(u), bg=PALETTE[bg], label=label))
+                buttons.append(f"[{label}]({u})")
         meta = " · ".join(x for x in (
             f"score {score}" if score else "",
             (f"added {created}" + (f" ({age}d ago)" if age else ""))
             if created else "") if x)
-        cards.append(
-            f'<div style="border:1px solid {PALETTE["rule"]};border-radius:5px;padding:14px 16px;'
-            f'margin:0 0 12px 0;background:{PALETTE["panel"]}">'
-            f'<div style="font-size:15px;font-weight:600;margin-bottom:2px;color:{PALETTE["ink"]}">'
-            f'{html.escape(stem)}</div>'
-            + (f'<div style="font-size:13px;color:{PALETTE["ink-2"]};margin-bottom:4px">'
-               f'{html.escape(desc)}</div>' if desc else "")
-            + (f'<div style="font-size:12px;color:{PALETTE["muted"]};margin-bottom:10px">'
-               f'{html.escape(meta)}</div>' if meta else "")
-            + "".join(buttons) + '</div>')
+        cards.append(f"- **{stem}**" + (f" · {desc}" if desc else "")
+                     + (f" · {meta}" if meta else "") + " · " + " · ".join(buttons))
     if rest > 0:
-        cards.append(f'<p style="font-size:12px;color:{PALETTE["muted"]}">… and {rest} '
-                     'more in Obsidian</p>')
-    sections.append(
-        f'<h3 style="font-size:16px;margin:18px 0 8px 0">{html.escape(title)}'
-        f' <span style="color:{PALETTE["muted"]};font-weight:400">({count})</span></h3>'
-        + "".join(cards))
+        cards.append(f"- … and {rest} more in Obsidian")
+    sections.append(f"## {title} ({count})\n\n" + "\n".join(cards))
 
 if total == 0:
     raise SystemExit(0)
@@ -483,19 +455,15 @@ if total == 0:
 if by_jev:
     lines.append("(ordered by Jev, most worth deciding first)")
 
-footer = (f'<p style="font-size:11px;color:{PALETTE["muted"]}">Each decision button asks for '
-          'one confirming tap; links work from any device and expire after '
-          '7 days. The nightly routines act on what you accept.'
-          + (f' {ready_tips} tip(s) are `ready` and wait for your final call '
-             'in Obsidian.' if ready_tips else '')
-          + (' Ordered by Jev, most worth deciding first.' if by_jev else '')
-          + '</p>')
-doc = (f'<div style="font-family:{FONT};background:{PALETTE["paper"]};color:{PALETTE["ink"]};'
-       'max-width:560px;margin:0 auto;padding:16px">'
-       f'<p style="font-size:14px"><b>{total}</b> note(s) across '
-       f'{len(sections)} queue(s) wait for a decision</p>'
-       + "".join(sections) + footer + '</div>')
-open(os.environ["HTML_OUT"], "w").write(doc)
+footer = ("Each decision link asks for one confirming tap; links work from any device and expire after "
+          "7 days. The nightly routines act on what you accept."
+          + (f" {ready_tips} tip(s) are `ready` and wait for your final call in Obsidian." if ready_tips else "")
+          + (" Ordered by Jev, most worth deciding first." if by_jev else ""))
+# The brief's stem is `<day> - <Series>`, the name `sd reports brief add` files it under (sd:3459).
+brief = pathlib.Path(os.environ["BRIEF_DIR"]) / f"{today.isoformat()} - Review Queue.md"
+brief.write_text("---\njob: obsidian-review-daily\n---\n\n"
+                 f"**{total}** note(s) across {len(sections)} queue(s) wait for a decision.\n\n"
+                 + "\n\n".join(sections) + "\n\n" + footer + "\n")
 print(f"{total} awaiting decisions")
 print("\n".join(lines))
 PYEOF
@@ -512,11 +480,13 @@ if [ "$MODE" = "list" ]; then
   exit 0
 fi
 
-n=$(printf '%s\n' "$body" | head -1 | awk '{print $1}')
-subject="Review queue: $n decision(s) waiting"
-if sh "$NOTIFY" -t "$subject" -k brief -c ntfy,email -b -f html "$(cat "$TMPD/body.html")"; then
-  echo "email sent"
+# The digest is a brief in the workflow database, shown on the dashboard's
+# Today (operator ruling 2026-10-17), not a mail. A rerun the same day
+# replaces that day's brief.
+for brief in "$TMPD"/*.md; do :; done
+if sd reports brief add --belongs-to "$(cd "$DIR/.." && pwd)" --replace "$brief"; then
+  echo "brief filed"
   exit 0
 fi
-echo "email FAILED — exiting 1 so the run's report needs attention" >&2
+echo "brief NOT filed — exiting 1 so the run's report needs attention" >&2
 exit 1

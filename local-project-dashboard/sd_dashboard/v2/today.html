@@ -7,12 +7,14 @@
   Working now (sd:3466): each open item's live sessions, from the same document (active, active_sessions.document).
   Your issues (sd:4628): each repo's issues assigned to or filed by the operator, from the same document (issues); issues.js draws them.
   Issue intake (sd:4840): each github_issues repo's open third-party issues no item carries (intake); issues.js draws them, File as item posts /api/items with the ref.
+  Problem reports and New briefs (operator ruling 2026-10-17): open reports that ask for a person and the last week's unseen
+  briefs, from the same document (problems, briefs); today-reports.js draws them, Acknowledge and Seen post the Reports and snooze routes.
   Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
   The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
   Sources: repos and sessions (fleet child), prs (shadow table), jobs (launchd through sd_db.operations.inventory).
-  Left out until a collector exists: status mail, backups, HOA water, the Runner lamp, Wants you and Briefs.
+  Left out until a collector exists: status mail, backups, HOA water, the Runner lamp and Wants you.
 -->
 <html lang="en">
 <head>
@@ -79,6 +81,30 @@
       </table>
       <p class="filtered" id="filtered" hidden></p>
       <div id="snoozed"></div>
+    </section>
+
+    <section class="issues-sec" aria-labelledby="problems-h">
+      <div class="sec-head">
+        <h2 id="problems-h">Problem reports <button class="help" type="button" aria-label="Help: Problem reports" data-help="&lt;b&gt;Open reports that ask for you.&lt;/b&gt; A scheduled job that exited non-zero or printed an &lt;code&gt;SD_REPORT_ATTENTION:&lt;/code&gt; line files one; these replace the ntfy and mail alerts. Acknowledge closes the report, as on Reports; &lt;code&gt;sd reports acknowledge&lt;/code&gt; does the same.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="problems-tally"></p>
+      </div>
+      <table class="ledger issues" aria-labelledby="problems-h">
+        <thead><tr><th>Filed</th><th>Report</th><th>Host</th><th>Why</th><th><span class="sr">Acknowledge</span></th></tr></thead>
+        <tbody id="problems"><tr class="empty"><td colspan="5">Reading reports…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="issues-sec" aria-labelledby="briefs-h">
+      <div class="sec-head">
+        <h2 id="briefs-h">New briefs <button class="help" type="button" aria-label="Help: New briefs" data-help="&lt;b&gt;Briefs from the last 7 days you have not marked seen.&lt;/b&gt; Routine briefs and digests file here instead of mail (&lt;code&gt;sd reports brief add&lt;/code&gt;). Seen hides a brief from Today; it shows again if its text grows. Every brief stays on Briefs.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p class="tally" id="briefs-tally"></p>
+      </div>
+      <table class="ledger issues" aria-labelledby="briefs-h">
+        <thead><tr><th>Day</th><th>Brief</th><th>Series</th><th>Size</th><th><span class="sr">Seen</span></th></tr></thead>
+        <tbody id="briefs"><tr class="empty"><td colspan="5">Reading briefs…</td></tr></tbody>
+      </table>
     </section>
 
     <section aria-labelledby="active-h">
@@ -165,6 +191,7 @@
 <script src="/ui/commands.js"></script>
 <script src="/ui/issues.js"></script>
 <script src="/ui/mail.js"></script>
+<script src="/ui/today-reports.js"></script>
 <script src="/ui/today.js"></script>
 <script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>

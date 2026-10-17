@@ -1,8 +1,8 @@
 """A whole fake repo root in a temp dir, so the suite never touches the vault.
 
 The tool resolves its siblings from its own directory (`$DIR/../local-jev`),
-so the cheapest way to stub `local-jev`, `local-notify` and
-`local-task-actions` is to copy the entrypoint next to stubs of them. That
+so the cheapest way to stub `local-jev` and `local-task-actions` is to copy
+the entrypoint next to stubs of them; a stub `sd` first on PATH takes the brief. That
 keeps the shipped script free of test-only seams: nothing in it knows a test
 exists, and nothing here reaches the network. The one input the harness hands
 it is the date, in OBSIDIAN_REVIEW_TODAY, and that is an ordinary setting.
@@ -47,7 +47,7 @@ QUEUE_NOTES = {
 EXPECTED_SECTIONS = ["Blog Ideas", "Skill Proposals", "Tips and Tricks",
                      "Topics", "Market Watch"]
 # Blog Ideas is over the twelve-card cap on purpose: the cap must pick the
-# same twelve whether or not Jev ranked the mail.
+# same twelve whether or not Jev ranked the digest.
 EXPECTED_SHOWN = {
     "Blog Ideas": ["blog-%02d" % i for i in range(14, 2, -1)],
     "Skill Proposals": ["skill-two", "skill-one"],
@@ -57,11 +57,13 @@ EXPECTED_SHOWN = {
 }
 EXPECTED_TOTAL = 20
 
-STUB_NOTIFY = """#!/bin/sh
-# Records what the digest would have mailed, and never mails anything.
-: > "$NOTIFY_RECORD"
-for a in "$@"; do printf '%s\\n' "$a" >> "$NOTIFY_RECORD"; done
-exit "${NOTIFY_EXIT:-0}"
+# Records the brief the digest would have filed, and files nothing: its
+# arguments to $SD_RECORD, the brief file (the last argument) to $SD_RECORD.brief.
+STUB_SD = """#!/bin/sh
+printf '%s\\n' "$*" > "$SD_RECORD"
+for a in "$@"; do last=$a; done
+cp "$last" "$SD_RECORD.brief"
+exit "${SD_EXIT:-0}"
 """
 
 # Exits non-zero, which is exactly how the real tool behaves when it is not
@@ -161,7 +163,7 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
     (root / "lib").mkdir()
     shutil.copy(TOOL.parents[1] / "lib" / "config.sh", root / "lib" / "config.sh")
     for folder, name, text in (
-        ("local-notify", "notify.sh", STUB_NOTIFY),
+        ("bin", "sd", STUB_SD),
         ("local-task-actions", "task-actions.sh", STUB_ACTIONS),
         ("local-jev", "jev.sh", STUB_JEV),
     ):
@@ -189,13 +191,18 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
     return root
 
 
+def sd_stub(root: pathlib.Path) -> dict:
+    """The environment that puts the stub `sd` first on PATH."""
+    return {"PATH": f"{root / 'bin'}:{os.environ['PATH']}", "SD_RECORD": str(root / "sd.args")}
+
+
 def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
-    """Run `obsidian-review.sh run`; return (the finished process, html)."""
+    """Run `obsidian-review.sh run`; return (the finished process, the brief filed)."""
     env = dict(os.environ)
     env.update({
         "OBSIDIAN_VAULT": str(root / "vault"),
         "SYSTEM_TOOLS_CONFIG": str(root / "config"),
-        "NOTIFY_RECORD": str(root / "notify.args"),
+        **sd_stub(root),
         "OBSIDIAN_REVIEW_TODAY": today.isoformat(),
     })
     env.pop("OBSIDIAN_REVIEW_SIGN_TIMEOUT", None)
@@ -211,15 +218,15 @@ def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
     proc = subprocess.run(
         ["sh", str(root / "local-obsidian-review" / TOOL.name), "run"],
         capture_output=True, text=True, env=env, timeout=120)
-    record = root / "notify.args"
-    html = record.read_text().splitlines()[-1] if record.exists() else ""
-    return proc, html
+    record = root / "sd.args.brief"
+    brief = record.read_text().rstrip("\n") if record.exists() else ""
+    return proc, brief
 
 
 def run(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
-    """Run `obsidian-review.sh run`; return (stdout, html, returncode)."""
-    proc, html = run_proc(root, env_extra, today)
-    return proc.stdout, html, proc.returncode
+    """Run `obsidian-review.sh run`; return (stdout, the brief, returncode)."""
+    proc, brief = run_proc(root, env_extra, today)
+    return proc.stdout, brief, proc.returncode
 
 
 def templated(text: str, today: datetime.date = TODAY) -> str:
