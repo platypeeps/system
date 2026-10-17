@@ -3,7 +3,7 @@
 What this slice promises: `/hoa` answers under the shared policy and loads its
 script before `shell.js`; `/api/hoa` reads the checkout the repo table holds
 under the folder name `hoa` (sd:3985; no config file names it): the asset map, the Mission export's last 30 days, and the
-checkout's open followup items ranked overdue, due soon, then the rest. Each
+checkout's open items of every kind ranked overdue, due soon, then the rest. Each
 source is guarded on its own, so a file that is missing or does not parse is
 that part's error and the page shows it as unknown with the reason, never as
 an empty list. An export whose newest row is more than two days old is stale.
@@ -16,6 +16,7 @@ check recorded on the pull request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -70,6 +71,18 @@ ASSETS = {"type": "FeatureCollection", "features": [
                                             ("V-01", "valve", "Valve 1", "unknown", 10.0003, 50.0003)]]}
 
 
+def parcels(root: Path, rows=None, *, base_sha=None) -> Path:
+    """The hoa checkout's downloads/parcels/lots.json as tools/fetch-lot-parcels.py writes it. Synthetic names only."""
+    rows = rows if rows is not None else [{"index": 0, "ain": "TEST-0001", "address": "100 Example St", "owner": "Test Owner A"},
+                                          {"index": 1, "ain": "TEST-0002", "address": "102 Example St", "owner": "Test Owner B"}]
+    sha = base_sha or hashlib.sha256((root / "water" / "map" / "base.geojson").read_bytes()).hexdigest()
+    out = root / "downloads" / "parcels" / "lots.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"fetched_at": "2026-09-05T12:00:00+00:00", "source": "Example County GIS", "base_sha256": sha,
+                               "lot_count": 2, "lots": rows, "unmatched": []}), encoding="utf-8")
+    return out
+
+
 def checkout(root: Path, *, analog=ANALOG, pump=PUMP, alarms=ALARMS, base=BASE, assets=ASSETS) -> Path:
     """A checkout laid out as the design reads it."""
     shutil.rmtree(root, ignore_errors=True)
@@ -91,13 +104,16 @@ class Fixture(ScreenCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.hoa = checkout(self.root / "hoa")
+        self.lot_data = parcels(self.hoa)
         self.repo(str(self.hoa))
         self.repo("/work/other")
         self.late = self.item("Confirm the invoice was paid", kind="followup", repo=str(self.hoa), due="2026-09-01", priority=1)
         self.soon = self.item("Chase the valve schedule", kind="followup", repo=str(self.hoa), due="2026-09-10", priority=2)
         self.later = self.item("Deliver the annual report", kind="followup", repo=str(self.hoa), due="2026-10-30", priority=1)
         self.item("Already settled", kind="followup", repo=str(self.hoa), status="done", due="2026-08-01")
-        self.item("A task, not a followup", kind="task", repo=str(self.hoa), due="2026-08-01")
+        self.task = self.item("Paint the pump house", kind="task", repo=str(self.hoa), due="2026-09-20", priority=2)
+        self.blocked = self.item("Wait on the county permit", kind="task", repo=str(self.hoa), status="blocked")
+        self.item("A report is no task", kind="report", repo=str(self.hoa), due="2026-08-01")
         self.item("Another checkout's followup", kind="followup", repo="/work/other", due="2026-08-01")
 
     def doc(self):
@@ -120,8 +136,8 @@ class TheDocument(Fixture):
         self.assertEqual(doc["config"], {"state": "missing", "source": "the repo table", "problems": []})
         self.assertIn("no repo named hoa", doc["mission"]["error"])
         self.assertIn("no repo named hoa", doc["assets"]["error"])
-        self.assertIn("no repo named hoa", doc["followups"]["error"])
-        self.assertEqual((doc["mission"]["analog"], doc["assets"]["features"], doc["followups"]["rows"]), ([], [], []))
+        self.assertIn("no repo named hoa", doc["items"]["error"])
+        self.assertEqual((doc["mission"]["analog"], doc["assets"]["features"], doc["items"]["rows"]), ([], [], []))
 
     def test_the_export_is_its_last_30_days_and_its_age(self):
         m = self.doc()["mission"]
@@ -164,12 +180,44 @@ class TheDocument(Fixture):
         files = {f["name"]: f["error"] for f in self.doc()["mission"]["files"]}
         self.assertEqual(files["analog-daily.csv"], "analog-daily.csv line 50: '' is not a date")
 
-    def test_followups_are_the_checkouts_open_followup_items_ranked_by_urgency(self):
-        rows = self.doc()["followups"]["rows"]
-        self.assertEqual([(r["item"], r["state"], r["due_days"]) for r in rows],
-                         [(self.late, "warning", -5), (self.soon, "caution", 4), (self.later, "queued", 54)])
-        self.assertEqual(rows[0]["id"], f"followup:{self.late}")
-        self.assertEqual(rows[0]["priority"], 1)
+    def test_items_are_the_checkouts_open_items_of_every_kind_ranked_by_urgency(self):
+        # sd:4959: one table of every open hoa item; a report is its family's, so it is not here.
+        rows = self.doc()["items"]["rows"]
+        self.assertEqual([(r["item"], r["kind"], r["state"], r["due_days"]) for r in rows],
+                         [(self.late, "followup", "warning", -5), (self.soon, "followup", "caution", 4),
+                          (self.later, "followup", "queued", 54), (self.task, "task", "queued", 14),
+                          (self.blocked, "task", "queued", None)])
+        self.assertEqual(rows[0]["id"], f"item:{self.late}")
+        self.assertEqual((rows[0]["priority"], rows[-1]["status"]), (1, "blocked"))
+
+    # sd:4964: each lot carries its address and owner of record from the checkout's downloads/parcels/lots.json, joined by
+    # the lot's index among base.geojson's lots, and only against the base file the lot data was made from.
+    def test_each_lot_carries_its_address_and_owner_from_the_lot_data(self):
+        doc = self.doc()
+        self.assertEqual(doc["lots"], {"error": "", "source": str(self.hoa / "downloads" / "parcels" / "lots.json"), "fetched_at": "2026-09-05T12:00:00+00:00"})
+        lots = [f for f in doc["base"]["features"] if f["kind"] == "lot"]
+        self.assertEqual([(l["index"], l["address"], l["owner"], l["parcel"]) for l in lots],
+                         [(0, "100 Example St", "Test Owner A", "TEST-0001"), (1, "102 Example St", "Test Owner B", "TEST-0002")])
+        self.assertNotIn("owner", next(f for f in doc["base"]["features"] if f["kind"] == "tract"))
+
+    def test_lot_data_not_fetched_is_unknown_and_names_the_script(self):
+        self.lot_data.unlink()
+        doc = self.doc()
+        self.assertEqual(doc["lots"]["error"], "lot data not fetched: run python3 tools/fetch-lot-parcels.py in the hoa checkout")
+        self.assertEqual([l.get("owner") for l in doc["base"]["features"] if l["kind"] == "lot"], [None, None])
+
+    def test_lot_data_made_from_another_base_file_is_not_joined(self):
+        parcels(self.hoa, base_sha="0" * 64)
+        doc = self.doc()
+        self.assertEqual(doc["lots"]["error"], "lot data is for another base.geojson: run python3 tools/fetch-lot-parcels.py in the hoa checkout")
+        self.assertEqual([l.get("owner") for l in doc["base"]["features"] if l["kind"] == "lot"], [None, None])
+
+    def test_lot_data_that_does_not_parse_is_named(self):
+        out = parcels(self.hoa)
+        out.write_text("{not json", encoding="utf-8")
+        self.assertRegex(self.doc()["lots"]["error"], r"^lots.json did not parse: JSONDecodeError")
+        parcels(self.hoa, rows=[{"index": "zero", "address": 1}])
+        self.assertRegex(self.doc()["lots"]["error"], r"^lots.json did not parse: ")
 
     def test_assets_and_outlines_carry_their_coordinates(self):
         doc = self.doc()
@@ -189,7 +237,7 @@ class TheDocument(Fixture):
         self.assertEqual(doc["config"]["state"], "error")
         self.assertEqual(doc["config"]["problems"], [f"two repos are named hoa: {other}, {self.hoa}"])
         self.assertIn("two repos are named hoa", doc["mission"]["error"])
-        self.assertEqual(doc["followups"]["rows"], [])
+        self.assertEqual(doc["items"]["rows"], [])
 
     def test_a_folder_that_only_contains_hoa_in_its_name_is_not_the_checkout(self):
         doc = self.bare("/work/hoa-notes", "/work/not-hoa", "/work/hoa/water")
@@ -212,7 +260,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "hoa.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -259,8 +307,8 @@ class TheScript(Fixture):
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null]);")
         self.assertEqual(out["R"]["reg"], [
-            ["followup.draft", "followup", "safe", "d"],
-            ["followup.open", "followup", "safe", "o"],
+            ["item.draft", "item", "safe", "d"],
+            ["item.open", "item", "safe", "o"],
             ["asset.ask", "asset", "safe", "a"],
         ])
 
@@ -272,7 +320,7 @@ class TheScript(Fixture):
         self.assertRegex(lamps, r'data-cell="tank" data-open="day:2026-09-05" data-state="ok".*?<b>16.1</b> ft mean')
         self.assertRegex(lamps, r'data-cell="pumps" data-open="day:2026-09-04" data-state="ok".*?<b>16.9</b> h A2.*?0 starts · 91,119 gal · 09-04')
         self.assertRegex(lamps, r'data-cell="alarms"[^>]*data-state="unknown".*?the export ends 2026-09-05.*?2 alarms in 30 d · 1 generator test')
-        self.assertRegex(lamps, rf'data-cell="followups" data-open="followup:{self.late}" data-state="warning".*?<b>1</b> overdue.*?3 open · 1 due within a week')
+        self.assertRegex(lamps, rf'data-cell="tasks" data-open="item:{self.late}" data-state="warning".*?Tasks.*?<b>1</b> overdue.*?5 open · 1 due within a week')
         self.assertRegex(lamps, r'data-cell="mission" data-open="source:mission" data-state="ok".*?<b>1 d</b> old')
         self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertIn("3 mapped assets, 4 lot and tract outlines; Mission export through 2026-09-05", out["R"]["sub"])
@@ -292,8 +340,8 @@ class TheScript(Fixture):
             doc = self.doc()
             doc["mission"]["alarms_today"]["count"], doc["mission"]["stale"] = alarms, stale
             if rows is not None:
-                doc["followups"]["rows"] = [dict(row, state="caution") for row in doc["followups"]["rows"]]
-            doc["attention"] = hoa_screen._attention(doc["mission"], doc["followups"])
+                doc["items"]["rows"] = [dict(row, state="caution") for row in doc["items"]["rows"]]
+            doc["attention"] = hoa_screen._attention(doc["mission"], doc["items"])
             cases.append((lit(doc), (doc["attention"]["state"], doc["attention"]["n"])))
         for drawn, counted in cases:
             self.assertEqual(drawn, counted)
@@ -310,10 +358,10 @@ R.after = ELS.map.html;""")
         self.assertIn("Valves <b>1</b>", out["R"]["legend"])
         self.assertEqual(re.findall(r'data-asset="([^"]+)"', out["R"]["after"]), ["TANK-01", "WELL-A2"])
 
-    def test_the_followups_are_ranked_rows_with_their_due_state(self):
+    def test_the_tasks_are_ranked_rows_with_their_due_state(self):
         out = self.run_page("R.ob = ELS['ob-body'].html; R.al = ELS['al-body'].html; R.det = ELS.details.html;")
         ob = out["R"]["ob"]
-        self.assertEqual(re.findall(r'<tr data-id="followup:(\d+)"', ob), [str(self.late), str(self.soon), str(self.later)])
+        self.assertEqual(re.findall(r'<tr data-id="item:(\d+)"', ob), [str(i) for i in (self.late, self.soon, self.later, self.task, self.blocked)])
         self.assertIn("overdue 5 days", ob)
         self.assertIn("in 4 days", ob)
         self.assertRegex(ob, r'g g-warning" aria-label="warning">■')
@@ -322,6 +370,73 @@ R.after = ELS.map.html;""")
         self.assertIn("2026-09-01 · overdue 5 days", out["R"]["det"])
         self.assertEqual(re.findall(r'<button type="button">([^<]+)</button>', out["R"]["al"]),
                          ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+
+    # sd:4959: the HOA Tasks view is the one table of every open hoa item: the id is its own first column, every column
+    # with data sorts through shell.list, a third click on a header returns to the urgency rank, and Kind narrows the rows.
+    def sort(self, key):
+        return f"ELS['ob-head'].listeners.click[0]({{ target: {{ closest: s => s === 'button[data-sort]' ? {{ dataset: {{ sort: '{key}' }} }} : null }} }}); "
+
+    def test_the_id_is_the_first_column_and_every_data_column_sorts(self):
+        out = self.run_page("R.head = ELS['ob-head'].html;")
+        heads = re.findall(r"<th\b.*?</th>", out["R"]["head"], re.S)
+        self.assertIn('data-sort="item"', heads[0])
+        self.assertIn(">ID<", heads[0])
+        self.assertEqual(re.findall(r'data-sort="(\w+)"', out["R"]["head"]), ["item", "rank", "title", "kind", "due", "status"])
+        self.assertEqual([h for h in heads if "data-sort" not in h], [heads[-1]])
+        self.assertIn("Actions", heads[-1])
+
+    def test_the_id_sorts_by_number_and_a_third_click_returns_to_the_rank(self):
+        doc = self.doc()
+        nine, ten = (dict(doc["items"]["rows"][0], id=f"item:{n}", item=n) for n in (9, 10))
+        doc["items"]["rows"] = [ten, nine]
+        ids = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        out = self.run_page(ids + "R.rank = re(); " + self.sort("item") + "R.up = re(); R.cell = ELS['ob-body'].html; "
+                            + self.sort("item") + "R.down = re(); " + self.sort("item") + "R.back = re(); R.head = ELS['ob-head'].html;", doc)
+        self.assertEqual((out["R"]["rank"], out["R"]["up"], out["R"]["down"], out["R"]["back"]), ([10, 9], [9, 10], [10, 9], [10, 9]))
+        self.assertIn('<td class="id num">sd:9</td>', out["R"]["cell"])
+        self.assertNotIn("aria-sort", out["R"]["head"])
+
+    def test_a_followups_row_action_drafts_and_any_other_kinds_opens_the_item(self):
+        out = self.run_page(f"""const p = (id, o) => !!REG.find(c => c.id === id).primary(OBJ.get('item:' + o));
+R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
+        self.assertEqual(out["R"]["p"], [True, False, False, True])
+
+    def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
+        kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
+        rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
+        out = self.run_page(rows + "R.all = re(); R.chips = ELS['ob-kinds'].html; " + kind.replace("K", "task") + "R.task = re(); "
+                            + kind.replace("K", "followup") + "R.followup = re(); " + kind.replace("K", "all") + "R.again = re(); R.tally = ELS['tasks-tally'].html;")
+        everything = [self.late, self.soon, self.later, self.task, self.blocked]
+        self.assertEqual(out["R"]["all"], everything)
+        self.assertEqual(out["R"]["task"], [self.task, self.blocked])
+        self.assertEqual(out["R"]["followup"], [self.late, self.soon, self.later])
+        self.assertEqual(out["R"]["again"], everything)
+        self.assertEqual(re.findall(r'data-kind="(\w+)" aria-pressed="(\w+)"', out["R"]["chips"]),
+                         [("all", "true"), ("followup", "false"), ("task", "false")])
+        self.assertIn("5 open items", out["R"]["tally"])
+
+    def test_a_lot_shows_its_address_as_its_label_and_its_owner_in_details(self):
+        tap = "ELS.map.listeners.click[0]({ target: { closest: s => s === '[data-lot]' ? { dataset: { lot: '1' } } : null } }); "
+        out = self.run_page("R.map = ELS.map.html; ELS['zoom-in'].listeners.click[0](); ELS['zoom-in'].listeners.click[0](); R.zoomed = ELS.map.html; "
+                            + tap + "R.det = ELS.details.html;")
+        self.assertIn('<path class="lot k-lot" data-lot="0"', out["R"]["map"])
+        self.assertIn("<title>100 Example St</title>", out["R"]["map"])
+        self.assertNotIn('class="lot-label"', out["R"]["map"])
+        self.assertRegex(out["R"]["zoomed"], r'<text class="lot-label"[^>]*>102 Example St</text>')
+        det = out["R"]["det"]
+        self.assertIn("<h2>102 Example St</h2>", det)
+        self.assertIn("<dt>Owner of record</dt><dd>Test Owner B</dd>", det)
+        self.assertIn("<dt>AIN</dt><dd>TEST-0002</dd>", det)
+        self.assertIn("2026-09-05", det)
+
+    def test_lot_data_not_fetched_is_a_partial_read_and_the_lot_says_why(self):
+        self.lot_data.unlink()
+        tap = "ELS.map.listeners.click[0]({ target: { closest: s => s === '[data-lot]' ? { dataset: { lot: '0' } } : null } }); "
+        out = self.run_page(tap + "R.det = ELS.details.html;")
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("Lots: lot data not fetched: run python3 tools/fetch-lot-parcels.py", out["states"][-1]["text"])
+        self.assertIn("<b>▨ Not read.</b> lot data not fetched: run python3 tools/fetch-lot-parcels.py", out["R"]["det"])
+        self.assertIn("<h2>Lot 1</h2>", out["R"]["det"])
 
     def test_a_missing_config_is_the_empty_state_and_no_cell_is_lit(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.map = ELS.map.html;", self.bare("/work/other"))
@@ -353,7 +468,7 @@ R.ob = ELS['ob-body'].html; R.lamps = ELS.annunciator.html;""")
         self.assertEqual(out["attention"][-1], {"state": "unknown", "n": 0, "what": "HOA not read"})
 
     def test_the_open_command_names_the_item_and_opens_it_in_tasks(self):
-        out = self.run_page(f"""var o = OBJ.get('followup:{self.late}'); var c = REG.find(x => x.id === 'followup.open');
+        out = self.run_page(f"""var o = OBJ.get('item:{self.late}'); var c = REG.find(x => x.id === 'item.open');
 R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
         self.assertEqual(out["R"]["cli"], f"sd task show {self.late}")
         self.assertEqual(out["R"]["href"], f"/tasks?row={self.late}")
@@ -367,7 +482,7 @@ R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa",)
+    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/briefs", "/api/hoa/reports")
 
 
 if __name__ == "__main__":

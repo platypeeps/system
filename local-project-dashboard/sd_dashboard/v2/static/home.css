@@ -79,6 +79,8 @@ html[data-kiosk] .tiles-edit { display: none; }
 
 /* Details extras */
 .details .attrs { font-size: var(--text-xs); }
+/* sd:4959: the one-line meaning under the name; plain text, not a state, so no colour. */
+.details .means { margin: 0 0 var(--space-sm); color: var(--color-ink-2); }
 .details .actions + .why { margin-bottom: var(--space-md); }
 .details .cli:not(.fold) code { white-space: pre-wrap; }
 /* Tile commands come from shell.commands.rowActions; the row may wrap inside a narrow tile. */

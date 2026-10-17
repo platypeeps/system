@@ -3,7 +3,7 @@ the repo table holds as `hoa`. The page has no classic screen to keep: v1 had no
 
 from __future__ import annotations
 
-from . import Api, Page
+from . import Api, Page, place_views
 
 
 def _read(read):
@@ -17,6 +17,7 @@ PAGE = Page(
     routes=("/hoa",),
     html="hoa.html",
     item="sd:2116",
-    api=(Api("/api/hoa", _read),),
+    # HOA's Tasks view is /api/hoa's items (hoa.js draws it), so it has no read of its own.
+    api=(Api("/api/hoa", _read), *place_views("hoa", ("briefs", "reports"))),
     count="/api/hoa",
 )

@@ -10,7 +10,8 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'HA not read' };
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest } = window.shell;
   const C = window.shell.commands;
-  const GLYPH = { ok: '●', caution: '▲', warning: '■', unknown: '▨' };
+  // neutral is no state: a door's open or closed is a fact, not a fault, so it has no colour and no glyph.
+  const GLYPH = { ok: '●', caution: '▲', warning: '■', unknown: '▨', neutral: '' };
   const domain = id => id.split('.')[0];
   const EVERY = 60 * 1000; // how often a visible page reads the tiles again
 
@@ -18,9 +19,46 @@ addEventListener('DOMContentLoaded', () => {
   // E: entity id -> { id, name, domain, group, state, error }. HEAD: the headline entity or null. REASON: why the read gave no
   // state, '' when it did. WRITES: why no command runs.
   let E = {}, HEAD = null, GROUPS = [], REASON = '', WRITES = '', READ = null, CONFIG = null;
+  // build (sd:4959): a binary sensor reads by its Home Assistant device_class: [lamp when on, lamp when off, on words, off
+  // words, what on means]. On is good for the first group, a fault for the second, and a plain fact for the third; a sensor
+  // with no class is neutral on/off, never a warning. The words follow Home Assistant's own state names.
+  const BINARY = {
+    connectivity: ['ok', 'neutral', 'connected', 'disconnected', 'it is connected'],
+    power: ['ok', 'neutral', 'connected', 'disconnected', 'it is connected to power'],
+    plug: ['ok', 'neutral', 'plugged in', 'unplugged', 'it is plugged in'],
+    running: ['ok', 'neutral', 'running', 'not running', 'it is running'],
+    battery_charging: ['ok', 'neutral', 'charging', 'not charging', 'the battery is charging'],
+    presence: ['ok', 'neutral', 'home', 'away', 'someone is home'],
+    problem: ['warning', 'ok', 'problem', 'clear', 'a problem is reported'],
+    smoke: ['warning', 'ok', 'detected', 'clear', 'smoke is detected'],
+    gas: ['warning', 'ok', 'detected', 'clear', 'gas is detected'],
+    carbon_monoxide: ['warning', 'ok', 'detected', 'clear', 'carbon monoxide is detected'],
+    moisture: ['warning', 'ok', 'wet', 'dry', 'water is detected'],
+    safety: ['warning', 'ok', 'unsafe', 'safe', 'it is unsafe'],
+    tamper: ['warning', 'ok', 'tampered', 'clear', 'tampering is detected'],
+    heat: ['warning', 'ok', 'hot', 'normal', 'it is too hot'],
+    cold: ['warning', 'ok', 'cold', 'normal', 'it is too cold'],
+    door: ['neutral', 'neutral', 'open', 'closed', 'the door is open'],
+    window: ['neutral', 'neutral', 'open', 'closed', 'the window is open'],
+    opening: ['neutral', 'neutral', 'open', 'closed', 'it is open'],
+    garage_door: ['neutral', 'neutral', 'open', 'closed', 'the garage door is open'],
+    motion: ['neutral', 'neutral', 'motion', 'clear', 'motion is detected'],
+    occupancy: ['neutral', 'neutral', 'occupied', 'clear', 'the space is occupied'],
+  };
+  const binaryOf = id => BINARY[E[id]?.state?.device_class];
+  // What a state means, in one line for Details: the binary table above, else the domain's.
+  const DOMAIN_MEANS = { alarm_control_panel: 'the alarm mode: disarmed, armed home, armed away or triggered', lock: 'locked or unlocked; jammed means the lock did not finish moving',
+    input_boolean: 'on or off, a switch Home Assistant keeps', sensor: 'a value Home Assistant reports' };
+  function means(id) {
+    const e = E[id], b = binaryOf(id), dc = e.state?.device_class;
+    if (id === HEAD?.id) return 'on means problems are reported';
+    if (domain(id) === 'binary_sensor') return b ? `on means ${b[4]}` : 'on or off, with no device class to judge it by';
+    if (domain(id) === 'sensor' && dc) return `a ${dc.replace(/_/g, ' ')} Home Assistant reports`;
+    return DOMAIN_MEANS[domain(id)] || 'a state Home Assistant reports';
+  }
   // The reference's state grammar per entity kind: [lamp state, words]. A tile claims only a state it was given; one without
   // says why (its error). build: the headline reads on/off (the reference counted a sample attribute), and a binary sensor is
-  // lit by its domain, not by an id that holds "wan" or "fault".
+  // lit by its device_class (BINARY), not by an id that holds "wan" or "fault".
   function read(id) {
     const e = E[id];
     if (!e?.state) return ['unknown', e?.error || REASON || 'no reading'];
@@ -31,7 +69,7 @@ addEventListener('DOMContentLoaded', () => {
     if (typeOf(id) === 'lock') return s === 'locked' ? ['ok', 'locked'] : s === 'jammed' ? ['warning', 'jammed'] : ['caution', s];
     if (id.startsWith('sensor.backup')) return (Date.now() - new Date(s)) / 3600000 > 36 ? ['warning', 'stale · over 36 h'] : ['ok', 'succeeded'];
     if (typeOf(id) === 'toggle') return ['ok', s];
-    if (domain(id) === 'binary_sensor') return s === 'on' ? ['warning', 'detected'] : ['ok', 'clear'];
+    if (domain(id) === 'binary_sensor') { const b = binaryOf(id) || ['neutral', 'neutral', 'on', 'off']; return s === 'on' ? [b[0], b[2]] : s === 'off' ? [b[1], b[3]] : ['neutral', s]; }
     return ['ok', e.state.unit ? `${s} ${e.state.unit}` : s];
   }
   // The age: the shell's relative-time renderer fills each <time class="rel"> from its last change.
@@ -111,11 +149,13 @@ addEventListener('DOMContentLoaded', () => {
     put(details, html`
       <div class="kind"><span class="label">${domain(id).replace(/_/g, ' ')}</span></div>
       <h2>${e.name}</h2>
+      <p class="means">${e.name}: ${means(id)}.</p>
       <dl>
         <dt>State</dt><dd class="g-${st}"><span aria-hidden="true">${GLYPH[st]}</span> ${words}${e.state ? html` <span class="g-queued">(${e.state.value})</span>` : ''}</dd>
         <dt>Entity</dt><dd><code>${id}</code></dd>
         <dt>Group</dt><dd>${e.group || 'headline'}</dd>
         <dt>Last changed</dt><dd>${e.state ? changedAt(id) : 'not read'}</dd>
+        <dt>Source</dt><dd>Home Assistant <code>/api/states</code>${e.state?.device_class ? html`, device class <code>${e.state.device_class}</code>` : ''}</dd>
       </dl>
       ${e.state ? '' : html`<p class="why">Not read: ${REASON || e.error || 'no reading'}.</p>`}
       <h3 class="label">Act</h3>${C.bar(id)}
