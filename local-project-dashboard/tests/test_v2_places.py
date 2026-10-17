@@ -171,7 +171,7 @@ class ThePlaceScript(Fixture):
     VIEWS = {"hoa": [["overview", "Overview", None], ["tasks", "Tasks", None], ["briefs", "Briefs", "/api/hoa/briefs"], ["reports", "Reports", "/api/hoa/reports"]],
              "home": [["overview", "Overview", None], ["tasks", "Tasks", "/api/home/tasks"], ["briefs", "Briefs", "/api/home/briefs"], ["reports", "Reports", "/api/home/reports"]]}
 
-    def run_page(self, body, docs, place="hoa"):
+    def run_page(self, body, docs, place="hoa", setup=""):
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL
                   + f"\nconst DOCS = {json.dumps(docs)}, PLACE = {json.dumps(place)}, VIEWS = {json.dumps(self.VIEWS[place])};\n"
                   + """ANSWER = path => path in DOCS ? DOCS[path] : [404, { error: 'no answer' }];
@@ -182,7 +182,7 @@ const SECTIONS = VIEWS.map(([v, label, api]) => Object.assign(El('view-' + v), {
 document.querySelectorAll = sel => sel === '[data-place-view]' ? SECTIONS : [];
 const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView);
 const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); };
-""" + PLACES_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
+""" + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -197,7 +197,7 @@ const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []
                 for view in ("tasks", "briefs", "reports")}
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
-        out = self.run_page("""R.sw = ELS['place-views'].html; R.first = shown(); R.gets0 = OUT.gets.slice();
+        out = self.run_page("""R.sw = ELS['viewswitch'].html; R.first = shown(); R.gets0 = OUT.gets.slice();
 await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();
 await go('#view=reports'); R.reports = ELS['reports-rows'].html; R.third = shown();""", self.docs())
         r = out["R"]
@@ -206,6 +206,28 @@ await go('#view=reports'); R.reports = ELS['reports-rows'].html; R.third = shown
         self.assertEqual(re.findall(r'data-switch="(\w+)" aria-pressed="\w+">(\w+)<', r["sw"]),
                          [("overview", "Overview"), ("tasks", "Tasks"), ("briefs", "Briefs"), ("reports", "Reports")])
         self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
+
+    def test_the_page_declares_its_views_for_the_shell_before_shell_js(self):
+        # places.js loads before shell.js, which reads window.PAGE_VIEWS when it loads (shell.js view:start).
+        for place in ("hoa", "home"):
+            out = self.run_page("R.views = window.PAGE_VIEWS;", self.docs(place), place=place)
+            self.assertEqual(out["R"]["views"], [{"id": v, "label": label, **({"api": api} if api else {})} for v, label, api in self.VIEWS[place]], place)
+
+    def test_with_the_shells_view_switch_the_page_draws_none_and_reads_the_view_the_shell_shows(self):
+        # The shell's 'shell:view' fired at DOMContentLoaded, before shell:ready: the view it shows then is read at shell:ready.
+        setup = "window.shell.view = { current: () => 'briefs', show: () => true, count: () => {} };"
+        out = self.run_page("""R.sw = (ELS['viewswitch'] || {}).html || ''; R.first = shown(); R.gets0 = OUT.gets.slice();
+document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'reports', first: true, api: '/api/hoa/reports' } })); await flush();
+R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup=setup)
+        r = out["R"]
+        self.assertFalse(r["sw"])
+        self.assertEqual([r["first"], r["gets0"], r["second"], out["gets"]],
+                         [["briefs"], ["/api/hoa/briefs"], ["reports"], ["/api/hoa/briefs", "/api/hoa/reports"]])
+        self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
+
+    def test_a_view_reads_again_each_time_it_shows(self):
+        out = self.run_page("""await go('#view=briefs'); await go('#view=overview'); await go('#view=briefs');""", self.docs())
+        self.assertEqual(out["gets"], ["/api/hoa/briefs", "/api/hoa/briefs"])
 
     def test_home_tasks_read_their_own_document_when_shown(self):
         out = self.run_page("""await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html; R.tally = ELS['tasks-tally'].html;""",
@@ -233,7 +255,7 @@ class TheTasksSwitch(Fixture):
         self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
         body = (f"(0, eval)({json.dumps(PLACES_JS)});\n"
                 + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
-R.first = ELS['view-board'].html; R.sw = ELS['place-views'].html;
+R.first = ELS['view-board'].html; R.sw = ELS['viewswitch'].html;
 for (const v of ['hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); R[v] = ELS['view-board'].html; }""")
         out = test_v2_tasks.TheScript.run_page(self, body)
         r = out["R"]
@@ -245,7 +267,27 @@ for (const v of ['hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LIS
         self.assertEqual(r["all"], r["first"])
 
 
+    def test_with_the_shells_view_switch_tasks_follows_shell_view(self):
+        self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
+        body = (f"window.shell.view = {{ current: () => 'hoa', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
+                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
+R.views = window.PAGE_VIEWS; R.sw = (ELS['viewswitch'] || {}).html || ''; R.hoa = ELS['view-board'].html;
+document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'home', first: true, api: null } })); await flush(); R.home = ELS['view-board'].html;""")
+        r = test_v2_tasks.TheScript.run_page(self, body)["R"]
+        self.assertEqual(r["views"], [{"id": "all", "label": "All"}, {"id": "hoa", "label": "HOA"}, {"id": "home", "label": "Home", "key": "o"}])
+        self.assertFalse(r["sw"])
+        self.assertEqual([("Fix the valve log" in r["hoa"], "Clean the gutters" in r["hoa"]), ("Fix the valve log" in r["home"], "Clean the gutters" in r["home"])],
+                         [(True, False), (False, True)])
+
+
 class ThePages(unittest.TestCase):
+    def test_page_views_are_declared_before_shell_js_and_each_page_has_the_switch_host(self):
+        for page, script in (("hoa", "places.js"), ("home", "places.js"), ("tasks", "tasks.js")):
+            text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
+            self.assertLess(text.index(f'src="/ui/{script}"'), text.index('src="/ui/shell.js"'), page)
+            self.assertEqual(text.count('id="viewswitch"'), 1, page)
+
+
     def test_the_overviews_read_state_shows_with_the_overview_only(self):
         # The page's #state names the Overview's read (/api/hoa, /api/home); on Briefs it would describe another read.
         for page in ("hoa", "home"):

@@ -5,15 +5,19 @@
 // /api/tasks row carries, so they hold the place pages' Tasks rows. A view that did not read is unknown with its reason, never
 // an empty list. Nothing here writes. Markup is html`…` from markup.js: every value is escaped.
 //
-// Adapter: viewSwitch(views, show) is the one place a page meets the shell's view switch. Until the shell carries one
-// (shell.viewSwitch), it draws a segmented control into #place-views and keeps the view as #view=<id> in the address.
+// Adapter: viewSwitch(show) is the one place a page meets the shell's view switch (shell.js view:start). The page declares
+// window.PAGE_VIEWS = [{ id, label, key?, api? }] before shell.js; show(id) runs for the view shown, at shell:ready and on
+// each change. With shell.view the shell draws the switch, hides the view-<id> panels and fires 'shell:view'. Without it
+// (until that shell lands), this draws a segmented control into #viewswitch and keeps #view=<id>.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
 
-  function viewSwitch(views, show) {
-    if (typeof window.shell?.viewSwitch === 'function') return window.shell.viewSwitch(views, show);
-    const slot = $('place-views'); if (!slot) return;
+  // Called at shell:ready, after the shell's first 'shell:view': the view already shown is shown here.
+  function viewSwitch(show) {
+    const S = window.shell, views = window.PAGE_VIEWS || [];
+    if (S.view) { document.addEventListener('shell:view', e => show(e.detail.id)); if (S.view.current()) show(S.view.current()); return; }
+    const slot = $('viewswitch'); if (!slot) return;
     const ids = views.map(v => v.id);
     const current = () => { const m = /^#view=([a-z-]+)$/.exec(location.hash); return m && ids.includes(m[1]) ? m[1] : ids[0]; };
     put(slot, html`<div class="seg" role="group" aria-label="${slot.dataset.label || 'View'}">${views.map(v => html`<button type="button" data-switch="${v.id}" aria-pressed="false">${v.label}</button>`)}</div>`);
@@ -68,20 +72,23 @@
     put(tally, html`<span>${count}</span>`);
   }
 
-  // A place page: <body data-place="hoa|home"> and one block per view, each [data-place-view] with its data-label, and
-  // data-api when the view reads its own document. The wall display (html[data-kiosk], home-kiosk.js) stays on the
-  // Overview: it has no switch.
+  // A place page: <body data-place="hoa|home"> and one block per view, id="view-<id>" with data-place-view, its data-label,
+  // and data-api when the view reads its own document. A view reads each time it shows, not only the first ('shell:view'
+  // first), since nothing else reads it again. The wall display (html[data-kiosk], home-kiosk.js) stays on the Overview: it
+  // declares no views.
+  const blocks = [...document.querySelectorAll('[data-place-view]')];
   function place() {
-    if (document.documentElement.hasAttribute('data-kiosk')) return;
-    const blocks = [...document.querySelectorAll('[data-place-view]')];
-    const views = blocks.map(b => ({ id: b.dataset.placeView, label: b.dataset.label, api: b.dataset.api }));
-    viewSwitch(views, id => {
+    viewSwitch(id => {
       blocks.forEach(b => { b.hidden = b.dataset.placeView !== id; });
-      const v = views.find(x => x.id === id);
+      const v = window.PAGE_VIEWS.find(x => x.id === id);
       if (v?.api) load(v);
     });
   }
 
   window.places = { viewSwitch, place };
-  if (document.body.dataset.place) document.addEventListener('shell:ready', place, { once: true });
+  // Top level: places.js loads before shell.js, which reads PAGE_VIEWS when it loads.
+  if (document.body.dataset.place && !document.documentElement.hasAttribute('data-kiosk')) {
+    window.PAGE_VIEWS = blocks.map(b => ({ id: b.dataset.placeView, label: b.dataset.label, ...(b.dataset.api ? { api: b.dataset.api } : {}) }));
+    document.addEventListener('shell:ready', place, { once: true });
+  }
 })();

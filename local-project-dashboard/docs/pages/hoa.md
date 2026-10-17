@@ -40,5 +40,5 @@ A brief is hoa's when its series, lower-cased with spaces as hyphens,
 names a job of the `hoa` family in `report-families.conf`, or it is filed under the hoa checkout; a report
 is hoa's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
-Until the shell carries a view switch, `places.js` draws its own segmented
-control (`viewSwitch`, the one adapter).
+The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws
+them in `#viewswitch`, and until that shell lands `places.js` draws a segmented control there (`viewSwitch`).

@@ -53,5 +53,5 @@ Tasks are the open items with no repo: personal and home items have none; Tasks'
 names a job of the `home` family in `report-families.conf`; a report
 is home's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
-Until the shell carries a view switch, `places.js` draws its own segmented
-control (`viewSwitch`, the one adapter).
+The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws
+them in `#viewswitch`, and until that shell lands `places.js` draws a segmented control there (`viewSwitch`).

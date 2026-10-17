@@ -10,6 +10,9 @@ window.PAGE_COMMANDS = [
   { label: 'Show the board', icon: 'kanban', key: 'v b', run: tasksView('board') },
   { label: 'Show the matrix', icon: 'grid-2x2', key: 'v m', run: tasksView('matrix') },
 ];
+// build (places): All | HOA | Home filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
+// #viewswitch. Home takes v o (g o opens the Home page), since v h is HOA's.
+window.PAGE_VIEWS = [{ id: 'all', label: 'All' }, { id: 'hoa', label: 'HOA' }, { id: 'home', label: 'Home', key: 'o' }];
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   // build: today is the viewer's day, not the mockup's observation day.
@@ -42,8 +45,8 @@ addEventListener('DOMContentLoaded', () => {
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
-  // build (places): All | HOA | Home, the switch places.js draws. A row's area is the server's (places.area_of), the rule
-  // the HOA and Home pages' Issues views use, so the HOA and Home views hold their rows.
+  // build (places): All | HOA | Home, the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule
+  // the HOA and Home pages' Tasks views use, so the HOA and Home views hold their rows.
   let PLACE = 'all';
   const inPlace = t => PLACE === 'all' || t.area === PLACE;
   const placed = () => listed().filter(inPlace);
@@ -1159,7 +1162,6 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
-  document.addEventListener('shell:ready', () => window.places.viewSwitch([{ id: 'all', label: 'All' }, { id: 'hoa', label: 'HOA' }, { id: 'home', label: 'Home' }],
-    id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) render(); }), { once: true });
+  document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) render(); }), { once: true });
   suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });
