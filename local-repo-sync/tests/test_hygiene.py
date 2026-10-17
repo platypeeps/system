@@ -1210,11 +1210,16 @@ class NightlyHygieneTest(unittest.TestCase):
         return f
 
     def test_nightly_runs_hygiene_apply_after_sync_and_its_report_needs_attention(self):
-        """NEW. Criterion 8, first half; sd:3454 reports it, and mails nothing."""
+        """NEW. Criterion 8, first half; sd:3454 reports it, and mails nothing.
+        A listed line needs attention; the prune beside it is in the report
+        but not in the attention lines (sd:4914)."""
         f = self.fixture()
         repo = f.repo()
         wt = f.add_worktree(repo, "gone-dir")
         shutil.rmtree(wt)
+        f.git(repo, "switch", "-q", "-c", "local-only")
+        f.commit(repo, "l.txt", "local\n", "local")
+        f.git(repo, "switch", "-q", "main")
 
         result = f.run("nightly", expect=0)
 
@@ -1229,7 +1234,48 @@ class NightlyHygieneTest(unittest.TestCase):
         self.assertEqual(found[0], "hygiene report", result.stdout)
         self.assertTrue(found[1:] and all(f.startswith("hygiene: ") for f in found[1:]), found)
         self.assertIn(real(wt), result.stdout)
+        self.assertTrue([x for x in found if "LOCAL" in x and "local-only" in x], found)
+        self.assertFalse([x for x in found if "pruned" in x], found)
         self.assertFalse(f.notify_log.exists(), f.notify_log.read_text() if f.notify_log.exists() else "")
+
+    def test_nightly_logs_routine_actions_and_reports_nothing(self):
+        """REGRESSION (sd:4914). Every night pruned remote-tracking refs and
+        worktrees, landed branches and old lane files opened a report with
+        nothing for the operator to do. hygiene --apply still does them and
+        the log names each one; only a listed or a failed line needs
+        attention."""
+        f = self.fixture()
+        repo = f.repo()
+        f.git(repo, "push", "-q", "origin", "main:elsewhere")
+        f.git(repo, "fetch", "-q", "origin")
+        bare = f.git(repo, "remote", "get-url", "origin")
+        f.git(bare, "branch", "-D", "elsewhere")
+        wt = f.add_worktree(repo, "gone-dir")
+        shutil.rmtree(wt)
+        f.git(repo, "branch", "landed")
+
+        result = f.run("nightly", expect=0)
+
+        self.assertEqual(attention(result), [])
+        self.assertIn("pruned remote-tracking ref origin/elsewhere", result.stdout)
+        self.assertIn(f"pruned worktree {real(wt)} (directory gone)", result.stdout)
+        self.assertIn("deleted branch landed ", result.stdout)
+        self.assertIn("hygiene : 4 done, 0 listed, 0 failed", result.stdout)
+
+    def test_nightly_reports_a_failed_action(self):
+        """REGRESSION (sd:4914). An action that failed still needs attention
+        when the actions beside it do not."""
+        f = self.fixture()
+        repo = f.repo()
+        wt = f.add_worktree(repo, "gone-dir")
+        shutil.rmtree(wt)
+        f.wrap_git("before", "*'worktree prune'*", "exit 1")
+
+        result = f.run("nightly", expect=0)
+
+        found = findings(result)
+        self.assertEqual(found[0], "hygiene report", result.stdout)
+        self.assertTrue([x for x in found if x.startswith("hygiene: ") and "FAILED worktree prune" in x], found)
 
     def test_nightly_bounds_each_remote_git_call_and_names_it(self):
         """sd:3536: one stuck SSH session held the fleet sweep; each remote

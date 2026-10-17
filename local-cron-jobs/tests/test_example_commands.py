@@ -13,6 +13,7 @@ set only in the fixture's env.sh.
 """
 
 import pathlib
+import re
 import time
 import unittest
 
@@ -132,8 +133,9 @@ class SecretScanWeeklyTest(unittest.TestCase):
 # A stand-in for sd-db, the interpreter that runs offsite-verify, and
 # mirror-sync.sh: each records its call and exits with its own code.
 RECORD = '#!/bin/sh\nprintf "%s %s\\n" "{name}" "$*" >> "$CHAIN_MARKER"\nexit "${{{rc}:-0}}"\n'
+# MIRROR_SLEEP holds the copy the way the share did under nas-full-copy (sd:4912).
 MIRROR_RECORD = ('#!/bin/sh\nprintf "mirror %s %s %s\\n" "$MIRROR_SYNC_CONF" "$MIRROR_SYNC_ADDITIVE" "$*"'
-                 ' >> "$CHAIN_MARKER"\nexit "${MIRROR_RC:-0}"\n')
+                 ' >> "$CHAIN_MARKER"\n[ -z "$MIRROR_SLEEP" ] || sleep "$MIRROR_SLEEP"\nexit "${MIRROR_RC:-0}"\n')
 
 
 class HourlyBackupJobTest(unittest.TestCase):
@@ -183,6 +185,34 @@ class HourlyBackupJobTest(unittest.TestCase):
         self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror", "sd-db"])
         log = result.stdout + result.stderr + "".join(p.read_text() for p in (self.fx.folder / "logs").glob("*.log"))
         self.assertIn("timed out after 2s: ", log)
+
+    def test_a_slow_share_ends_the_copy_at_its_own_bound(self):
+        """REGRESSION (sd:4912). At 23:50 on 2026-10-15 the NAS copy held the
+        run until the job's limit, and the log named no step. The copy now
+        runs under st_step with a 2700 s bound; the run shrinks it to 2 s.
+        Nothing is pruned after a copy that did not finish."""
+        text = self.JOB.read_text()
+        self.assertIn("st_step 2700 env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf MIRROR_SYNC_ADDITIVE=1 sh ", text)
+        started = time.monotonic()
+        result, calls = self.run_job(text.replace("st_step 2700 ", "st_step 2 "), MIRROR_SLEEP="20")
+        self.assertLess(time.monotonic() - started, 15, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertEqual([call.split()[0] for call in calls], ["sd-db", "python", "mirror"])
+        log = result.stdout + result.stderr + "".join(p.read_text() for p in (self.fx.folder / "logs").glob("*.log"))
+        self.assertIn("timed out after 2s: env MIRROR_SYNC_CONF=mirrors-nas-hourly.conf", log)
+
+    def test_the_bounded_steps_end_inside_the_job_limit(self):
+        """sd:4912: each bounded step ends before JOB_TIMEOUT, with five
+        minutes left for the snapshot and the preflight, so a stuck step is
+        named by its own bound and not by the job's limit. The longest run
+        before this, at 02:50 on 2026-10-17, spent 2442 s before its prune."""
+        text = self.JOB.read_text()
+        limit = re.search(r'^JOB_TIMEOUT="(\d+)m"$', text, re.M)
+        self.assertTrue(limit, "JOB_TIMEOUT is not in minutes")
+        bounds = [int(n) for n in re.findall(r"st_step (\d+) ", text)]
+        self.assertEqual(len(bounds), 2, bounds)
+        self.assertLessEqual(sum(bounds) + 300, int(limit.group(1)) * 60, (bounds, limit.group(0)))
+        self.assertLess(int(limit.group(1)), 60, "a run must free its lock before the next hourly slot")
 
     def test_the_snapshot_then_the_preflight_then_the_additive_copy_then_the_prune(self):
         result, calls = self.run_job()
