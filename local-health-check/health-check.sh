@@ -327,7 +327,7 @@ for plist in "$HOME"/Library/LaunchAgents/"$LABEL_PREFIX".*.plist; do
       case "$cron_rc" in
         0) continue ;;
         1) finding "launchd: $label reports a failed run that nothing has superseded" \
-             "read local-cron-jobs/logs/$cron_job.log and the outcome recorded beside it in logs/.$cron_job.runs; re-run the job by hand to clear it" \
+             "read local-cron-jobs/logs/$cron_job.log and the outcome recorded beside it in logs/.$cron_job.runs; re-run the job by hand to clear it (where launchd prints no coalition, the next passing scheduled run clears it)" \
              "launchd: $(jev_label "$label") reports a failed run that nothing has superseded"
            continue ;;
       esac ;;
