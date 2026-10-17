@@ -536,5 +536,139 @@ class TheRailWidth(unittest.TestCase):
         self.assertEqual([r for r in rules if re.search(r"\d+px", r)], [])
 
 
+
+# The view switch's stand-in: elements that keep their attributes, a rail with one current page, and an address whose
+# pushState writes the hash. Events on window (hashchange, popstate) and document (DOMContentLoaded, keydown, shell:view)
+# are recorded, so a test fires them as the browser would.
+VIEW_STAND_IN = r"""
+var window = globalThis, OUT = { events: [], pushed: [], error: null };
+var WIN = {}, DOC = {};
+function addEventListener(t, f) { (WIN[t] = WIN[t] || []).push(f); }
+const fireWin = t => (WIN[t] || []).forEach(f => f({ type: t }));
+function El(tag) { const e = { tagName: tag, id: '', attrs: {}, hidden: false, dataset: {}, children: [], listeners: {}, textContent: '', className: '', tabIndex: 0,
+  setAttribute(k, v) { e.attrs[k] = String(v); if (k === 'id') e.id = String(v); }, getAttribute(k) { return k in e.attrs ? e.attrs[k] : null; },
+  removeAttribute(k) { delete e.attrs[k]; }, append(...cs) { e.children.push(...cs); }, before(c) { OUT.before = [c.getAttribute('role'), e.id]; },
+  addEventListener(t, f) { (e.listeners[t] = e.listeners[t] || []).push(f); }, fire(t, ev) { (e.listeners[t] || []).forEach(f => f(Object.assign({ type: t, target: e, preventDefault() {} }, ev))); },
+  focus() { OUT.focused = e.id; }, closest() { return null; } };
+  return e; }
+var PANELS = {}, MADE = [], HOST = WITH_HOST ? El('div') : null;
+['reports', 'cadence'].forEach(id => { const p = El('section'); p.id = 'view-' + id; PANELS[p.id] = p; });
+var document = { readyState: 'loading', activeElement: null,
+  getElementById: id => (id === 'viewswitch' ? HOST : PANELS[id]) || null, createElement: tag => { const e = El(tag); MADE.push(e); return e; },
+  querySelector: () => null,
+  addEventListener(t, f) { (DOC[t] = DOC[t] || []).push(f); },
+  dispatchEvent(e) { if (e.type === 'shell:view') OUT.events.push(e.detail); (DOC[e.type] || []).forEach(f => f(e)); } };
+function CustomEvent(type, o) { this.type = type; this.detail = o && o.detail; }
+var location = { hash: HASH, pathname: '/reports', search: '?job=nightly' };
+var history = { state: null, pushState(s, t, u) { OUT.pushed.push(u); location.hash = u.slice(u.indexOf('#')); } };
+var LI = El('li'), LINK = El('a');
+LINK.closest = sel => sel === 'li' ? LI : null;
+var rail = { querySelector: sel => sel === '[data-section="Reports"]' ? LINK : null };
+var page = 'Reports', hrefOf = name => name === 'Reports' ? '/reports' : undefined;
+window.PAGE_KEYS = [['/', 'Filter reports']];
+window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence', api: '/api/reports/cadence' }, { id: 'gone', label: 'No panel' }];
+"""
+
+
+class TheViewSwitch(unittest.TestCase):
+    """The view switch, cut out of shell.js: one declaration, window.PAGE_VIEWS, draws the tablist and the rail's sub-entries."""
+
+    def run_view(self, body, hash="", host=False):
+        block = re.search(r"^  // view:start\n(.*?)^  // view:end$", SHELL_JS, re.S | re.M)
+        self.assertIsNotNone(block, "shell.js has no view:start block")
+        script = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)).replace("WITH_HOST", json.dumps(host)) + block.group(1) + r"""
+var R = {};
+const shown = () => Object.values(PANELS).filter(p => !p.hidden).map(p => p.id);
+const SWITCH_SEL = MADE.find(e => e.getAttribute('role') === 'tablist'), SWITCH_TABS = SWITCH_SEL ? SWITCH_SEL.children : [];
+try {
+(DOC.DOMContentLoaded || []).forEach(f => f({ type: 'DOMContentLoaded' }));
+""" + body + """
+} catch (e) { OUT.error = String(e) + ' ' + e.stack; }
+function run() { OUT.R = R; return JSON.stringify(OUT); }
+""")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out
+
+    def test_the_first_view_is_the_default_and_only_its_panel_renders(self):
+        out = self.run_view("R.cur = view.current(); R.shown = shown(); R.tabs = SWITCH_TABS.map(t => [t.getAttribute('aria-controls'), t.getAttribute('aria-selected'), t.tabIndex]);"
+                            " R.roles = Object.values(PANELS).map(p => [p.getAttribute('role'), p.getAttribute('aria-labelledby')]);")
+        self.assertEqual(out["R"]["cur"], "reports")
+        self.assertEqual(out["R"]["shown"], ["view-reports"])
+        # A view whose page has no panel is not drawn.
+        self.assertEqual(out["R"]["tabs"], [["view-reports", "true", 0], ["view-cadence", "false", -1]])
+        self.assertEqual(out["R"]["roles"], [["tabpanel", "vt-reports"], ["tabpanel", "vt-cadence"]])
+        # The tablist goes in once, before the first panel, and the page hears the first view once, at DOMContentLoaded.
+        self.assertEqual(out["before"], ["tablist", "view-reports"])
+        self.assertEqual(out["events"], [{"id": "reports", "first": True, "api": None}])
+        self.assertEqual(out["pushed"], [])
+
+    def test_the_hash_round_trips(self):
+        out = self.run_view("""R.start = [view.current(), shown()];
+view.show('reports'); R.shown = [location.hash, shown()];
+location.hash = '#view=cadence'; fireWin('hashchange'); R.back = [view.current(), shown()];
+location.hash = '#main'; fireWin('hashchange'); R.other = view.current();
+location.hash = ''; fireWin('popstate'); R.none = view.current();
+R.unknown = view.show('nope');""", hash="#view=cadence")
+        self.assertEqual(out["R"]["start"], ["cadence", ["view-cadence"]])
+        self.assertEqual(out["R"]["shown"], ["#view=reports", ["view-reports"]])
+        self.assertEqual(out["R"]["back"], ["cadence", ["view-cadence"]])
+        # Another hash (the skip link's #main) leaves the view alone; no hash at all is the first view.
+        self.assertEqual((out["R"]["other"], out["R"]["none"], out["R"]["unknown"]), ("cadence", "reports", False))
+        self.assertEqual(out["pushed"], ["#view=reports"])
+        self.assertEqual(out["events"], [{"id": "cadence", "first": True, "api": "/api/reports/cadence"},
+                                         {"id": "reports", "first": True, "api": None},
+                                         {"id": "cadence", "first": False, "api": "/api/reports/cadence"},
+                                         {"id": "reports", "first": False, "api": None}])
+
+    def test_a_segment_arrow_keys_and_a_v_chord_switch_the_view(self):
+        out = self.run_view("""SWITCH_TABS[1].fire('click'); R.click = view.current();
+document.activeElement = SWITCH_TABS[1]; SWITCH_SEL.fire('keydown', { key: 'ArrowRight', target: SWITCH_TABS[1] }); R.wrap = [view.current(), OUT.focused];
+SWITCH_SEL.fire('keydown', { key: 'End', target: SWITCH_TABS[0] }); R.end = view.current();
+const key = k => (DOC.keydown || []).forEach(f => f({ type: 'keydown', key: k, target: { matches: () => false }, preventDefault() {}, stopImmediatePropagation() {} }));
+key('v'); key('r'); R.chord = view.current(); R.keys = window.PAGE_KEYS;""")
+        self.assertEqual(out["R"]["click"], "cadence")
+        self.assertEqual(out["R"]["wrap"], ["reports", "vt-reports"])
+        self.assertEqual(out["R"]["end"], "cadence")
+        self.assertEqual(out["R"]["chord"], "reports")
+        self.assertEqual(out["R"]["keys"], [["/", "Filter reports"], ["v r / v c", "Reports or Cadence view"]])
+
+    def test_the_rail_lists_the_views_under_the_page_and_marks_the_current_one(self):
+        out = self.run_view("""const links = () => LI.children[0].children.map(li => li.children[0]);
+R.links = links().map(a => [a.getAttribute('href'), a.textContent, a.getAttribute('aria-current')]);
+let stopped = false; links()[1].fire('click', { preventDefault() { stopped = true; } }); R.after = [view.current(), stopped, location.hash];
+R.marked = links().map(a => a.getAttribute('aria-current'));""")
+        self.assertEqual(out["R"]["links"], [["/reports#view=reports", "Reports", "true"], ["/reports#view=cadence", "Cadence", None]])
+        # On the page a sub-entry switches in place, so the page keeps its filters (?job=); the href opens a new tab there.
+        self.assertEqual(out["R"]["after"], ["cadence", True, "#view=cadence"])
+        self.assertEqual(out["R"]["marked"], [None, "true"])
+
+    def test_a_count_shows_on_its_segment_and_null_hides_it(self):
+        out = self.run_view("""view.count('cadence', 7); const n = SWITCH_TABS[1].children[1]; R.on = [n.textContent, n.hidden];
+view.count('cadence', null); R.off = n.hidden; R.label = SWITCH_TABS[1].children[0].textContent;""")
+        self.assertEqual(out["R"]["on"], ["7", False])
+        self.assertEqual((out["R"]["off"], out["R"]["label"]), (True, "Cadence"))
+
+    def test_a_page_with_a_host_gets_the_switch_there_and_keeps_views_without_a_panel(self):
+        out = self.run_view("""R.inHost = HOST.children[0] === SWITCH_SEL;
+R.tabs = SWITCH_TABS.map(t => [t.id, t.getAttribute('aria-controls')]);
+view.show('gone'); R.gone = [view.current(), shown(), location.hash];
+view.show('cadence'); R.back = shown();""", host=True)
+        # Tasks filters one board, matrix and list: its views have no panels, so the page names where the tablist goes.
+        self.assertTrue(out["R"]["inHost"], "the tablist did not go in the page's #viewswitch")
+        self.assertNotIn("before", out)
+        self.assertEqual(out["R"]["tabs"], [["vt-reports", "view-reports"], ["vt-cadence", "view-cadence"], ["vt-gone", None]])
+        self.assertEqual(out["R"]["gone"], ["gone", [], "#view=gone"])
+        self.assertEqual(out["R"]["back"], ["view-cadence"])
+        self.assertEqual([e["id"] for e in out["events"]], ["reports", "gone", "cadence"])
+
+    def test_the_shell_hands_pages_the_view_api_and_styles_the_switch(self):
+        self.assertRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bview\b")
+        self.assertIn(".viewswitch", SHELL_CSS)
+        self.assertRegex(SHELL_CSS, r"\.viewswitch \[role=\"tab\"\][^{]*\{[^}]*white-space: nowrap")
+
+
 if __name__ == "__main__":
     unittest.main()

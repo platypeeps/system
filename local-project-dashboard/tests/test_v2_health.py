@@ -1079,6 +1079,116 @@ class OneScanPerArea(Collectors, ScreenCase):
         self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][2]["rows"])
 
 
+class TheViews(Collectors, ScreenCase):
+    """One view's areas, each view its own read, and a summary that waits on no walker (the Health split).
+
+    The one document waited on every walker at once, up to `PAGE_SECONDS`, and a reader that raised an error its area's
+    guard does not name took the whole page with it.
+    """
+
+    def seams(self, **kwargs):
+        return {"fleet": fleet_of(TREES), "ports": ports_snapshot, "protection": protection_of(PROTECTION), **kwargs}
+
+    def test_a_view_reads_only_its_areas(self):
+        called = []
+
+        def ports():
+            called.append("ports")
+            return ports_snapshot()
+        found = health_screen.part(self.connection, "checkouts", now=NOW, **self.seams(ports=ports))
+        self.assertEqual((found["view"], [area["id"] for area in found["areas"]]), ("checkouts", ["wt", "br"]))
+        self.assertEqual({area["view"] for area in found["areas"]}, {"checkouts"})
+        self.assertEqual(called, [], "the Checkouts view ran the port inventory")
+        self.assertEqual([row["id"] for row in found["areas"][0]["rows"]], ["gone:group/alpha", "unread:beta"])
+        every = [key for _, _, keys in health_screen.VIEWS for key in keys]
+        self.assertEqual(sorted(every), sorted(key for key, *_ in health_screen.AREAS), "an area is in no view, or in two")
+
+    def test_a_view_that_raises_marks_its_areas_unknown_and_leaves_the_other_views(self):
+        def broken(area):
+            raise ZeroDivisionError("a reader bug no area guard names")
+        seams = self.seams(fleet=broken)
+        failed = health_screen.part(self.connection, "checkouts", now=NOW, **seams)
+        self.assertEqual([(area["id"], area["rows"]) for area in failed["areas"]], [("wt", []), ("br", [])])
+        for area in failed["areas"]:
+            self.assertIn("the Checkouts read failed: ZeroDivisionError('a reader bug no area guard names')", area["error"])
+        github = health_screen.part(self.connection, "github", now=NOW, **seams)
+        self.assertEqual([(area["id"], area["error"]) for area in github["areas"]], [("dep", ""), ("sec", ""), ("prot", "")])
+        self.assertTrue(github["areas"][2]["rows"])
+        lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=NOW, **seams)["lamps"]}
+        self.assertEqual((lamps["prot"]["state"], lamps["prot"]["error"]), ("warning", ""))
+
+    def test_the_summary_waits_on_no_walker_and_builds_no_full_document(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocked(area):
+            release.wait(10)
+            return fleet_of(TREES)(area)
+        started = time.monotonic()
+        with patch.object(health_screen, "document", side_effect=AssertionError("the summary built the document")):
+            found = health_screen.summary(self.connection, now=NOW, **self.seams(fleet=blocked))
+        self.assertLess(time.monotonic() - started, 2.0)
+        lamps = {lamp["id"]: lamp for lamp in found["lamps"]}
+        self.assertEqual(list(lamps), [key for key, *_ in health_screen.AREAS])
+        # The database-only areas are read now; a walker no read has answered is unknown and says why.
+        self.assertEqual(lamps["prot"]["state"], "warning")
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["at"]), ("unknown", None))
+        self.assertEqual(lamps["wt"]["error"], f"being read since {NOW}; read Health again for its answer")
+        self.assertEqual(lamps["svc"]["error"], "not read since the dashboard started; the Machine view reads it")
+        self.assertEqual(set(found["attention"]), {"state", "n", "what"})
+        self.assertEqual([view["id"] for view in found["views"]], ["checkouts", "machine", "github", "jobs"])
+        # A lamp counts the rows that want you; an area not read has no count, so its view has none either.
+        prot = next(area for area in health_screen.part(self.connection, "github", now=NOW, **self.seams())["areas"] if area["id"] == "prot")
+        wanting = sum(row["state"] in ("warning", "caution", "unknown") for row in prot["rows"])
+        self.assertGreater(wanting, 0)
+        self.assertEqual((lamps["prot"]["n"], lamps["wt"]["n"]), (wanting, None))
+
+    def test_the_summary_shows_what_the_last_view_read_left_and_counts_its_rows(self):
+        machine = health_screen.part(self.connection, "machine", now=NOW, **self.seams())
+        health_screen.part(self.connection, "checkouts", now=NOW, **self.seams())
+        later = "2026-09-06T12:30:00Z"
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            found = health_screen.summary(self.connection, now=later, **self.seams())
+        lamps = {lamp["id"]: lamp for lamp in found["lamps"]}
+        self.assertEqual((lamps["svc"]["state"], lamps["svc"]["at"], lamps["svc"]["error"]), ("ok", NOW, ""))
+        self.assertEqual(lamps["wt"]["value"], [{"b": "2", "t": "dir gone"}])
+        disk = next(area for area in machine["areas"] if area["id"] == "disk")
+        fullest = max(disk["extra"]["volumes"], key=lambda volume: volume["capacity"])
+        self.assertEqual(lamps["disk"]["value"], [{"b": f"{fullest['capacity']}%", "t": "fullest"}, {"b": "", "t": fullest["name"]}])
+        full = health_screen.document(self.connection, now=later, **self.seams())
+        self.assertEqual(found["attention"], full["attention"], "the summary's badge differs from the document's")
+
+    def test_a_failed_scan_is_not_replaced_by_the_answer_before_it(self):
+        health_screen.part(self.connection, "checkouts", now=NOW, **self.seams())
+        later = "2026-09-06T12:30:00Z"
+
+        def broken(area):
+            raise ValueError("fleet collection was stopped at its budget: sessions")
+        failed = health_screen.part(self.connection, "checkouts", now=later, **self.seams(fleet=broken))
+        self.assertTrue(failed["areas"][0]["error"])
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=later, **self.seams())["lamps"]}
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["error"]),
+                         ("unknown", "fleet collection was stopped at its budget: sessions"))
+
+    def test_a_scan_that_finishes_after_its_view_was_cut_short_shows_in_the_next_summary(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow(area):
+            release.wait(10)
+            return fleet_of(TREES)(area)
+        with patch.object(health_screen, "PAGE_SECONDS", 0.2):
+            cut = health_screen.part(self.connection, "checkouts", now=NOW, **self.seams(fleet=slow))
+        self.assertIn("still running at the page's budget", cut["areas"][0]["error"])
+        release.set()
+        health_screen._SCANS.running["wt"][1].result(timeout=5)
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now="2026-09-06T12:30:00Z",
+                                                                         **self.seams())["lamps"]}
+        self.assertEqual((lamps["wt"]["state"], lamps["wt"]["error"], lamps["wt"]["at"]), ("caution", "", NOW))
+
+
 class ThePage(Collectors, BrowserSession):
     fleet_backend = staticmethod(fleet_of(TREES))
 
@@ -1113,6 +1223,25 @@ class ThePage(Collectors, BrowserSession):
         self.assertEqual([row["id"] for row in doc["areas"][2]["rows"]], ["gone:group/alpha", "unread:beta"])
         self.assertEqual(len(doc["areas"][6]["rows"]), 3)
 
+    def test_each_view_and_the_summary_answer_alone_and_another_name_is_a_404(self):
+        cookie = {"Cookie": self.cookie}
+        self.assertEqual(self.request("/api/health/checkouts")[0], 403)
+        self.assertEqual(self.request("/api/health/checkouts?area=wt", headers=cookie)[0], 400)
+        status, _, body = self.request("/api/health/checkouts", headers=cookie)
+        self.assertEqual((status, [area["id"] for area in json.loads(body)["areas"]]), (200, ["wt", "br"]))
+        status, _, body = self.request("/api/health/summary", headers=cookie)
+        self.assertEqual((status, len(json.loads(body)["lamps"])), (200, len(health_screen.AREAS)))
+        status, _, body = self.request("/api/health/nowhere", headers=cookie)
+        self.assertEqual(status, 404)
+        self.assertIn("Health has no view 'nowhere'", json.loads(body)["error"])
+
+    def test_the_rail_badge_comes_from_the_summary(self):
+        page = next(page for page in v2.registry.PAGES if page.section == "Health")
+        self.assertEqual((page.count, page.live), ("/api/health/summary", False))
+        self.request("/api/health/summary", headers={"Cookie": self.cookie})
+        badge = self.listening.RequestHandlerClass.badges.read(None, connected=False)["Health"]
+        self.assertIn(badge["state"], ("ok", "caution", "warning"))
+
     def test_the_rail_opens_health_at_its_page(self):
         self.assertEqual(v2.SECTIONS["Health"], "/fleet-health")
         self.assertNotIn("Health", v2.CLASSIC)
@@ -1133,18 +1262,65 @@ SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree 
                  "dashboard service", "vault mirror")
 
 
-class TheScript(Collectors, ScreenCase):
-    """health.js against the document `health_screen` builds from the fixtures above."""
+def summary_of(doc):
+    """What `/api/health/summary` answers for the areas in `doc`: the views, each area's lamp and the badge."""
+    return {"read": doc["read"], "views": [{"id": view, "name": name, "areas": list(keys)} for view, name, keys in health_screen.VIEWS],
+            "lamps": [health_screen._lamp(area) for area in doc["areas"]], "attention": doc["attention"],
+            "snooze_error": doc["snooze_error"]}
 
-    def run_page(self, body, doc=None, status=200):
-        doc = doc if doc is not None else health_screen.document(
-            self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
-            protection=protection_of(PROTECTION))
+
+def wanting(doc, view):
+    """The rows of `view` in `doc` that want the operator: warning, caution or unknown."""
+    return sum(row["state"] in ("warning", "caution", "unknown") for area in doc["areas"] if area["view"] == view for row in area["rows"])
+
+
+# The Health reads: /api/health/summary, and /api/health/<view> as `doc`'s areas of that view. STATUS fails both.
+HEALTH_ANSWER = r"""
+var HEALTH_READ = path => /^\/api\/health\/[a-z]+$/.test(path) && path !== '/api/health/cleanup';
+var HEALTH = path => { const v = path.slice('/api/health/'.length);
+  if (STATUS >= 300) return [STATUS, DOC];
+  return v === 'summary' ? [200, SUMMARY_DOC] : [200, { ...DOC, view: v, areas: DOC.areas.filter(a => a.view === v) }]; };
+var history = { replaceState: (s, t, u) => { OUT.address = u; location.hash = u.slice(u.indexOf('#')); } };
+ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [404, { error: 'no answer' }];
+var PANEL = () => ELS['view-' + window.shell.view.current()];
+"""
+
+
+# The shell's view switch (shell.js, view:start) as health.js meets it: shell.js loads after the page, shows the hash's view
+# at once, and fires the first shell:view after the page's DOMContentLoaded listener. A test that brings its own shell.view
+# keeps it.
+VIEW_SHELL = r"""
+if (!window.shell.view) (() => {
+  const seen = new Set(); let now = null, started = false; OUT.counts = OUT.counts || {};
+  const fire = id => { const first = !seen.has(id); seen.add(id);
+    document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: PAGE_VIEWS.find(v => v.id === id).api } })); };
+  const apply = id => { if (id === now) return; now = id;
+    PAGE_VIEWS.forEach(v => { document.getElementById('view-' + v.id).hidden = v.id !== id; }); if (started) fire(id); };
+  const show = id => { if (!PAGE_VIEWS.some(v => v.id === id)) return false;
+    if (location.hash !== '#view=' + id) { OUT.address = location.pathname + '#view=' + id; location.hash = '#view=' + id; }
+    apply(id); return true; };
+  window.shell.view = { current: () => now, show, count: (id, n) => { OUT.counts[id] = n; } };
+  const m = /^#view=([a-z0-9-]+)$/.exec(location.hash);
+  apply(m && PAGE_VIEWS.some(v => v.id === m[1]) ? m[1] : PAGE_VIEWS[0].id);
+  document.addEventListener('DOMContentLoaded', () => { started = true; fire(now); });
+})();
+"""
+
+
+class TheScript(Collectors, ScreenCase):
+    """health.js against the document `health_screen` builds from the fixtures above, one view at a time."""
+
+    def run_doc(self):
+        return health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                      protection=protection_of(PROTECTION))
+
+    def run_page(self, body, doc=None, status=200, view="checkouts", search="", pre=""):
+        doc = doc if doc is not None else self.run_doc()
         script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + HEALTH_SHELL + READ_SHELL
-                  + f"\nvar DOC = {json.dumps(doc)}, STATUS = {status};\n"
-                  + "URLSearchParams.prototype.toString = function () { return ''; };\n"
-                  + "ANSWER = (path, body) => path === '/api/health' ? [STATUS, DOC] : [404, { error: 'no answer' }];\n"
-                  + SNOOZE_JS + COMMANDS_JS + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + f"\nvar DOC = {json.dumps(doc)}, SUMMARY_DOC = {json.dumps(summary_of(doc))}, STATUS = {status};\n"
+                  + f"location.pathname = '/fleet-health'; location.hash = {json.dumps(f'#view={view}' if view else '')}; location.search = {json.dumps(search)};\n"
+                  + "URLSearchParams.prototype.toString = function () { return ''; };\n" + HEALTH_ANSWER + pre
+                  + SNOOZE_JS + COMMANDS_JS + HEALTH_JS + VIEW_SHELL + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -1182,24 +1358,28 @@ class TheScript(Collectors, ScreenCase):
         cred = next(area for area in doc["areas"] if area["id"] == "cred")
         cred.update(read=False, source=None, rows=[], at=None,
                     missing=["GitHub PAT presence and expiry", "gh CLI sign-in"])
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html; R.sub = ELS.subhead.html;", doc)
-        self.assertEqual(out["gets"], ["/api/health"])
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.sub = ELS.subhead.html;", doc)
+        self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary"])
         lamps = out["R"]["lamps"]
-        self.assertRegex(lamps, r'data-area="cred" data-state="unknown"[^>]*>.*?no reader')
+        self.assertRegex(lamps, r'data-area="cred" data-state="unknown"[^>]*>.*?not read')
         for area in ("dep", "sec"):
             self.assertRegex(lamps, rf'data-area="{area}" data-state="unknown"[^>]*><span class="lbl">[^<]*<svg[^>]*><use[^>]*/></svg></span><span class="val"><span class="ph">not read</span>', area)
         self.assertRegex(lamps, r'data-area="wt" data-state="caution"[^>]*>.*?<b>2</b> dir gone')
-        self.assertRegex(lamps, r'data-area="disk" data-state="caution"[^>]*>.*?<b>85%</b> fullest</span> <span class="ph">Mac data')
-        self.assertRegex(lamps, r'data-area="br" data-state="caution"[^>]*>.*?<b>3</b> merged')
+        self.assertRegex(lamps, r'data-area="disk" data-state="caution"[^>]*>.*?<b>85%</b> fullest</span> · <span class="ph">Mac data')
+        self.assertRegex(lamps, r'data-area="br" data-state="caution"[^>]*>.*?<b>3</b> merged, not deleted')
         self.assertEqual({tag for tag, _ in cell_grammar(self, lamps)}, {"button"})
         areas = out["R"]["areas"]
-        self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: GitHub PAT presence and expiry", areas)
+        # The Checkouts view draws its own areas only.
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', areas), ["wt", "br"])
         self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
-        self.assertIn("<b>Not read here:</b> build output sizes", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
-        self.assertIn("11 areas · 1 warning, 5 caution rows want you · 1 area with no reader yet", out["R"]["sub"])
+        self.assertIn("4 views · 1 warning row wants you · read", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
         self.assertIsNone(out["states"][-1])
+        jobs = self.run_page("R.areas = PANEL().html;", doc, view="jobs")["R"]["areas"]
+        self.assertIn("<b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: GitHub PAT presence and expiry", jobs)
+        machine = self.run_page("R.areas = PANEL().html;", doc, view="machine")["R"]["areas"]
+        self.assertIn("<b>Not read here:</b> build output sizes", machine)
 
     def test_an_alert_lamp_keeps_a_paged_total_and_says_when_a_repo_was_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(ALERTED))
@@ -1212,7 +1392,7 @@ class TheScript(Collectors, ScreenCase):
             raise ValueError("fleet collection was stopped at its budget: sessions")
         doc = health_screen.document(self.connection, now=NOW, fleet=broken, ports=ports_snapshot,
                                      protection=protection_of([]), disk=scan_of(CLEAN_DISK), branches=scan_of(CLEAN_BRANCHES))
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;", doc)
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html;", doc)
         self.assertRegex(out["R"]["lamps"], r'data-area="wt" data-state="unknown"[^>]*>.*?not read')
         self.assertIn("<b>Not read:</b> fleet collection was stopped at its budget: sessions", out["R"]["areas"])
         self.assertEqual(out["states"][-1]["kind"], "partial")
@@ -1223,7 +1403,7 @@ class TheScript(Collectors, ScreenCase):
                                      branches=scan_of(CLEAN_BRANCHES))
         wt = doc["areas"][2]
         wt["stale"] = "the Worktrees reader was still running; these rows are the read of " + NOW
-        out = self.run_page("R.areas = ELS.areas.html;", doc)
+        out = self.run_page("R.areas = PANEL().html;", doc)
         self.assertIn("<b>Not re-read:</b> the Worktrees reader was still running; these rows are the read of " + NOW,
                       out["R"]["areas"])
         self.assertIn(f'data-id="{wt["rows"][0]["id"]}"', out["R"]["areas"])
@@ -1231,11 +1411,12 @@ class TheScript(Collectors, ScreenCase):
         self.assertIn("Worktrees: the Worktrees reader was still running", out["states"][-1]["text"])
 
     def test_a_document_that_does_not_arrive_leaves_no_row_and_says_so(self):
-        out = self.run_page("""R.before = ELS.areas.html;
+        out = self.run_page("""R.before = PANEL().html;
 DOC = { error: 'Open a dashboard page before reading Health.' }; STATUS = 403;
 ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } }); await flush();
-R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
-        self.assertEqual(out["gets"], ["/api/health", "/api/health"])
+R.areas = PANEL().html; R.lamps = ELS.annunciator.html;""")
+        self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary",
+                                       "/api/health/checkouts", "/api/health/summary"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["before"])
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertIn("Open a dashboard page before reading Health.", out["states"][-1]["text"])
@@ -1245,7 +1426,7 @@ R.areas = ELS.areas.html; R.lamps = ELS.annunciator.html;""")
 
     def test_the_filter_finds_a_row_by_a_path_in_its_facts_or_its_list(self):
         # The box says "repo, path, branch": a registered worktree's path is in `list`, the checkout's in `facts`.
-        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return ELS.areas.html; };
+        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return PANEL().html; };
 R.list = filter('/work/wt-b'); R.facts = filter('/checkouts/group/alpha'); R.none = filter('/work/nowhere');""")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["list"], "a path in the row's list did not match")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["facts"], "a path in the row's facts did not match")
@@ -1272,64 +1453,65 @@ R.failed = [live('unread:beta'), PICKED.has('unread:beta'), PICKED.size];""")
         # Two re-reads overlap on the threaded server and the first one answers last: once as a failed request, once
         # as an older reading.
         out = self.run_page("""var pending = [];
-ANSWER = () => new Promise((answer, fail) => pending.push({ answer, fail }));
+ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promise((answer, fail) => pending.push({ answer, fail }));
 const refresh = () => ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: 'refresh', dataset: {} } : null } });
 refresh(); refresh(); await flush();
 pending[1].answer([200, DOC]); await flush();
 pending[0].fail(new Error('an older read that failed')); await flush();
-R.areas = ELS.areas.html;
+R.areas = PANEL().html;
 refresh(); refresh(); await flush();
 pending[3].answer([200, DOC]); await flush();
 pending[2].answer([200, { ...DOC, read: '2026-09-01T00:00:00Z' }]); await flush();
 R.observed = document.body.dataset.observed;""")
-        self.assertEqual(out["gets"], ["/api/health"] * 5)
+        self.assertEqual([path for path in out["gets"] if path != "/api/health/summary"], ["/api/health/checkouts"] * 5)
         self.assertNotEqual(out["R"]["observed"], "2026-09-01T00:00:00Z", "an older answer replaced the newer reading")
         self.assertNotIn("an older read that failed", json.dumps(out["states"]), "an older reading replaced the newer one")
         self.assertIsNone(out["states"][-1])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["areas"])
 
     def test_a_lamp_shows_its_area_only_and_a_state_chip_narrows_the_rows(self):
-        click = "ELS.{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
-        out = self.run_page(click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }")
-                            + "R.cred = ELS.areas.html; R.note = ELS.filtered.html;"
-                            + click.format(el="annunciator", sel="button.cell", data="{ area: 'cred' }")
-                            + click.format(el="filters", sel="[data-f]", data="{ f: 'state', v: 'unknown' }")
-                            + "R.unknown = ELS.areas.html;")
+        click = "{el}.listeners.click[0]({{ target: {{ closest: s => s === '{sel}' ? {{ id: '', dataset: {data} }} : null }} }});"
+        # Credentials is in Jobs: its lamp opens that view with Credentials alone; pressed again it shows the whole view.
+        out = self.run_page(click.format(el="ELS.annunciator", sel="button.cell", data="{ area: 'cred' }") + "await flush();"
+                            + "R.cred = PANEL().html; R.note = PANEL().html; R.address = OUT.address;"
+                            + click.format(el="ELS.annunciator", sel="button.cell", data="{ area: 'cred' }")
+                            + click.format(el="PANEL()", sel="[data-f]", data="{ f: 'state', v: 'unknown' }")
+                            + "R.unknown = PANEL().html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 24 rows.", out["R"]["note"])
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown),
-                         ["cred", "wt", "br", "dep", "sec", "ports", "prot", "mir"])
-        self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown),
-                         ["cred:none", "unread:beta", "br:no_default", "dep:none", "sec:none", "port:svc-b:9020",
-                          "prot:/checkouts/gamma", "mir", "mir:briefs"])
+        self.assertIn("Filtered to Credentials only: 1 of 3 rows.", out["R"]["note"])
+        self.assertEqual(out["R"]["address"], "/fleet-health#view=jobs")
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["cred", "mir"])
+        self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown), ["cred:none", "mir", "mir:briefs"])
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
-        out = self.run_page(click.format(a="wt") + click.format(a="ports") + "R.both = ELS.areas.html;"
-                            + click.format(a="wt") + "R.one = ELS.areas.html;")
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["both"]), ["wt", "ports"])
-        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["one"]), ["ports"])
+        out = self.run_page(click.format(a="wt") + click.format(a="br") + "R.both = PANEL().html;"
+                            + click.format(a="wt") + "R.one = PANEL().html;")
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["both"]), ["wt", "br"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["one"]), ["br"])
 
     def test_a_lamp_press_draws_the_rows_of_its_area(self):
         # sd:3708: the filter read r.area, which only the copies in ROWS carried, so each section drew no row.
         click = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { area: 'wt' } } : null } });"
-        out = self.run_page(click + "R.wt = ELS.areas.html; R.note = ELS.filtered.html;")
+        out = self.run_page(click + "R.wt = PANEL().html; R.note = PANEL().html;")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
         self.assertIn('data-id="unread:beta"', out["R"]["wt"])
         self.assertIn("Filtered to Worktrees only: ", out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = ELS.areas.html;")
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",
+                            view="machine")
         lamps, areas = out["R"]["lamps"], out["R"]["areas"]
+        self.assertEqual(out["R"]["lsof"], "lsof -nP -iTCP:9010 -sTCP:LISTEN")
         self.assertRegex(lamps, r'data-area="ports" data-state="unknown"[^>]*>.*?<b>1</b> unknown</span> · <span class="ph">2 listening')
         self.assertNotIn('data-area="prot"', lamps)
         self.assertIn('<p class="counts">2 configured ports · 2 listening · 1 unknown</p>', areas)
         self.assertIn("Listener state is unknown for 1 configured ports.", areas)
 
     def test_the_matrix_is_one_column_per_repo_and_an_unread_column_draws_no_cell(self):
-        out = self.run_page("R.areas = ELS.areas.html;")
+        out = self.run_page("R.areas = PANEL().html;", view="github")
         areas = out["R"]["areas"]
         cols = re.findall(r'<button type="button" class="pmx-col" data-row="([^"]+)" data-status="(\w+)"[^>]*>(.*?)</button>', areas, re.S)
         self.assertEqual([(row, status) for row, status, _ in cols], [
@@ -1358,11 +1540,11 @@ R.observed = document.body.dataset.observed;""")
         self.assertIn("— does not apply; not read where the repository was not read.", table)
 
     def test_a_matrix_column_opens_its_repo_with_every_check_in_details(self):
-        out = self.run_page("""ELS.areas.listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });
+        out = self.run_page("""PANEL().listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });
 R.d = ELS.details.html; R.cli = cmd('protection.settings').cli(C.get('prot:/checkouts/alpha'));
 R.off = cmd('protection.settings').when(C.get('prot:/checkouts/beta')); R.sync = cmd('collector.sync').cli(C.get('collector:protection'));
-ELS.areas.listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/gamma' } } : null } });
-R.unread = ELS.details.html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));""")
+PANEL().listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/gamma' } } : null } });
+R.unread = ELS.details.html;""", view="github")
         details = out["R"]["d"]
         self.assertIn("<h2>group/alpha: 2 gaps</h2>", details)
         self.assertIn('<dt>Reviews</dt><dd class="c-gap">GAP · no approving review is required</dd>', details)
@@ -1372,17 +1554,16 @@ R.unread = ELS.details.html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:
         self.assertEqual(out["R"]["cli"], "open https://github.com/group/alpha/settings/branches")
         self.assertEqual(out["R"]["off"], "no github.com remote: there is no settings page")
         self.assertEqual(out["R"]["sync"], "sd shadow sync --max-seconds 120")
-        self.assertEqual(out["R"]["lsof"], "lsof -nP -iTCP:9010 -sTCP:LISTEN")
         self.assertIn("No cell is shown: token does not reach it.", out["R"]["unread"])
         self.assertNotIn("<dl class=\"checks\">", out["R"]["unread"])
 
-    CLEANED = "ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path === '/api/health/cleanup' ? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n"
+    CLEANED = "ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : path === '/api/health/cleanup' ? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n"
 
-    def cleanup(self, row, body, status=200, answer=None):
+    def cleanup(self, row, body, status=200, answer=None, view="checkouts"):
         """Run a cleanup on `row` as the page does: the confirm, then one post of the row and its revision."""
         answer = answer if answer is not None else {"ok": True, "row": row, "done": ["x"], "refused": []}
         return self.run_page(f"var STATUS_W = {status}, WROTE = {json.dumps(answer)};\n" + self.CLEANED
-                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body)
+                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body, view=view)
 
     def test_prune_confirms_with_the_names_then_posts_the_row_and_its_revision(self):
         """sd:3393: the operator ruled that Health runs the prune, behind a confirm that names what goes."""
@@ -1397,10 +1578,10 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""",
         self.assertEqual(out["confirms"], ["worktree registrations.prune"])
         self.assertEqual([post[:2] for post in out["posts"]],
                          [["/api/health/cleanup", {"row": "gone:group/alpha", "revision": out["R"]["rev"]}]])
-        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["gets"], ["/api/health/checkouts", "/api/health/summary"])
         self.assertEqual(out["toasts"][-1][0], "group/alpha: 2 worktrees registered, directory gone: 1 done · kept 1: b (locked)")
 
-    SERVICE_ANSWER = ("ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path.startsWith('/api/services/') "
+    SERVICE_ANSWER = ("ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : path.startsWith('/api/services/') "
                       "? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n")
     ACCEPTED = {"request": {"id": "x", "action": "restart", "status": "accepted",
                             "message": "launchctl accepted the request; current state is observed separately"}, "service": {}}
@@ -1410,7 +1591,7 @@ shellRun(cmd('worktree registrations.prune'), o); await flush();""",
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
                                      protection=protection_of(PROTECTION), services=SERVICES, served_commit="a" * 40)
         return self.run_page(f"var STATUS_W = {status}, WROTE = {json.dumps(answer or self.ACCEPTED)};\n" + self.SERVICE_ANSWER
-                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body, doc=doc)
+                             + f"var o = C.get({json.dumps(row)}); OUT.gets = [];\n" + body, doc=doc, view="machine")
 
     def test_restart_confirms_then_posts_the_sd_services_route_with_the_rows_revision(self):
         """sd:3707, ruling Q3: the control runs the code `sd services restart` runs, through the route Operations posts."""
@@ -1426,11 +1607,11 @@ shellRun(c, o); await flush();""")
         self.assertEqual(out["confirms"], ["service.restart"])
         self.assertEqual([post[:2] for post in out["posts"]],
                          [["/api/services/com.example.alpha/restart", {"revision": "1" * 64}]])
-        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["gets"], ["/api/health/machine", "/api/health/summary"])
         self.assertEqual(out["toasts"][-1][0], "com.example.alpha: accepted · launchctl accepted the request; "
                                                "current state is observed separately")
 
-    RENDER_ANSWER = ("ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : path === '/api/records/render' "
+    RENDER_ANSWER = ("ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : path === '/api/records/render' "
                      "? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n")
 
     def test_render_mirror_confirms_then_posts_and_names_what_it_wrote(self):
@@ -1438,12 +1619,12 @@ shellRun(c, o); await flush();""")
         wrote = {"ok": True, "kinds": ["blog-idea", "topic"], "written": ["docs/dashboard/base-topic.html"], "refused": [], "reason": None}
         out = self.run_page(f"var STATUS_W = 200, WROTE = {json.dumps(wrote)};\n" + self.RENDER_ANSWER
                             + """var o = C.get('mir'); OUT.gets = []; var c = cmd('vault mirror.render');
-R.cli = c.cli(o); R.why = c.consequence(o); shellRun(c, o); await flush();""")
+R.cli = c.cli(o); R.why = c.consequence(o); shellRun(c, o); await flush();""", view="jobs")
         self.assertEqual(out["R"]["cli"], "sd-db records render")
         self.assertIn("A hand-edited note is kept and listed", out["R"]["why"])
         self.assertEqual(out["confirms"], ["vault mirror.render"])
         self.assertEqual([post[:2] for post in out["posts"]], [["/api/records/render", {}]])
-        self.assertEqual(out["gets"], ["/api/health"])
+        self.assertEqual(out["gets"], ["/api/health/jobs", "/api/health/summary"])
         self.assertEqual(out["toasts"][-1][0], "Vault mirror rendered: blog-idea, topic · 1 file written")
 
     def test_a_down_service_offers_start_and_says_why_restart_is_off(self):
@@ -1472,28 +1653,29 @@ shellRun(k, o); await flush();""")
         refused = self.service_page("svc:com.example.alpha", "shellRun(cmd('service.restart'), o); await flush();",
                                     status=409, answer={"error": "The service changed since the page read it.", "reload": True})
         self.assertIn("The service changed since the page read it.", refused["toasts"][-1][0])
-        self.assertEqual(refused["gets"], ["/api/health"])
+        self.assertEqual(refused["gets"], ["/api/health/machine", "/api/health/summary"])
         unknown = self.service_page("svc:com.example.alpha", "shellRun(cmd('service.restart'), o); await flush();",
                                     status=502, answer={"error": "bad gateway"})
         self.assertRegex(unknown["toasts"][-1][0], r"^Not known what changed · com\.example\.alpha: ")
-        self.assertEqual(unknown["gets"], ["/api/health"])
+        self.assertEqual(unknown["gets"], ["/api/health/machine", "/api/health/summary"])
 
     def test_a_refused_cleanup_says_not_changed_and_an_unknown_one_says_so(self):
         stale = self.cleanup("gone:group/alpha", "shellRun(cmd('worktree registrations.prune'), o); await flush();",
                              status=409, answer={"error": "The registrations changed since the page read it.", "reload": True})
         self.assertEqual(stale["toasts"][-1][0], "group/alpha: 2 worktrees registered, directory gone not changed: "
                                                  "The registrations changed since the page read it.")
-        self.assertEqual(stale["gets"], ["/api/health"])
+        self.assertEqual(stale["gets"], ["/api/health/checkouts", "/api/health/summary"])
         unknown = self.cleanup("build:merged", "shellRun(cmd('build output.rm'), o); await flush();",
-                               status=502, answer={"error": "/work/wt-old/target was removed only in part", "outcome": "unknown"})
+                               status=502, answer={"error": "/work/wt-old/target was removed only in part", "outcome": "unknown"},
+                               view="machine")
         self.assertRegex(unknown["toasts"][-1][0], r"^Not known what changed · 2 merged worktrees keep build output: "
                                                     r"/work/wt-old/target was removed only in part\. Health was read again")
-        self.assertEqual(unknown["gets"], ["/api/health"])
+        self.assertEqual(unknown["gets"], ["/api/health/machine", "/api/health/summary"])
 
     def test_a_row_without_a_revision_or_with_an_unreadable_registration_runs_nothing(self):
         out = self.cleanup("gone:group/alpha", """var p = cmd('worktree registrations.prune');
 R.old = p.when({ ...o, revision: undefined }); R.unread = p.when({ ...o, unreadable: 1 });
-R.dirty = cmd('build output.rm').when({ ...C.get('build:merged'), remove: [] });""")
+R.dirty = cmd('build output.rm').when({ revision: 'b', remove: [] });""")
         self.assertEqual(out["R"]["old"], "the row carries no revision: read Health again")
         self.assertEqual(out["R"]["unread"], "1 registration of this checkout could not be read, and prune would judge them itself")
         self.assertEqual(out["R"]["dirty"], "every merged worktree has uncommitted changes: nothing is removed")
@@ -1501,7 +1683,7 @@ R.dirty = cmd('build output.rm').when({ ...C.get('build:merged'), remove: [] });
 
     def test_snooze_posts_the_row_and_its_time_then_reads_health_again_and_undo_clears_it(self):
         """sd:1896: the server judges the time, so the page sends one it computed, and Undo writes the same key with none."""
-        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
 var o = C.get('gone:group/alpha'), t0 = Date.now(); OUT.gets = [];
 FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('worktree registrations.snooze'), o); await flush();
 R.ahead = Date.parse(OUT.posts[0][1].until) - t0;
@@ -1513,7 +1695,7 @@ R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;
                          [("/api/snooze", {"page": "health", "row": "gone:group/alpha", "seen": out["R"]["seen"]})] * 2)
         self.assertEqual(out["posts"][1][1]["until"], None)
         self.assertTrue(3590e3 <= out["R"]["ahead"] <= 3610e3, out["R"]["ahead"])
-        self.assertEqual(out["gets"], ["/api/health", "/api/health"])
+        self.assertEqual(out["gets"], ["/api/health/checkouts", "/api/health/summary"] * 2)
         self.assertRegex(out["toasts"][-2][0], r"^Snoozed until (\w{3} \w{3} \d\d )?\d\d:\d\d · group/alpha: ")
         self.assertTrue(out["toasts"][-2][1])
         self.assertEqual(out["toasts"][-1][0], "Snooze undone · group/alpha: 2 worktrees registered, directory gone")
@@ -1524,8 +1706,8 @@ R.off = cmd('check.snooze').when({ id: 'wt:ok', state: 'ok' }); R.seen = o.seen;
             self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
             protection=protection_of(PROTECTION))["areas"][2]["rows"] if row["id"] == "gone:group/alpha")
         snooze(self.connection, "health:gone:group/alpha", "2026-09-07T08:00:00Z", seen=seen, now=NOW)
-        out = self.run_page("""ANSWER = (path, body) => path === '/api/health' ? [200, DOC] : [200, { key: 'k', until: body.until }];
-R.areas = ELS.areas.html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
+R.areas = PANEL().html; R.snoozed = ELS.snoozed.html; var o = C.get('snoozed:gone:group/alpha'); R.type = o.type;
 shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertNotIn("directory gone", out["R"]["areas"])
         self.assertIn("Snoozed · 1", out["R"]["snoozed"])
@@ -1539,13 +1721,13 @@ shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.l
     def test_a_snooze_read_that_failed_is_a_partial_read(self):
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
             out = self.run_page("R.snoozed = ELS.snoozed.html;")
-        self.assertEqual(out["states"][-1], {"kind": "partial", "source": "/api/health",
+        self.assertEqual(out["states"][-1], {"kind": "partial", "source": "/api/health/checkouts",
                                              "text": "Snoozes were not read: database is locked. Every row shows."})
         self.assertEqual(out["R"]["snoozed"], "")
 
     def sync(self, finished):
         """Re-run collector on the protection collector: the run starts, reads as running once, then `finished`."""
-        return self.run_page("""var n = 0; ANSWER = (path, body) => path === '/api/health' ? [200, DOC]
+        return self.run_page("""var n = 0; ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path)
   : path === '/api/shadow/sync' ? [202, { running: true }]
   : path === '/api/shadow/state' ? (n++ ? [200, """ + json.dumps(finished) + """] : [200, { running: true }]) : [404, { error: 'no answer' }];
 OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); await flush();""")
@@ -1555,7 +1737,7 @@ OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); a
         out = self.sync({"running": False, "error": None, "trackers": [
             {"tracker": "github", "ok": True, "configured": True, "reason": "", "lines": []}]})
         self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
-        self.assertEqual(out["gets"], ["/api/shadow/state", "/api/shadow/state", "/api/health"])
+        self.assertEqual(out["gets"], ["/api/shadow/state", "/api/shadow/state", "/api/health/checkouts", "/api/health/summary"])
         self.assertEqual([t[0] for t in out["toasts"]][-1], "Shadow sync started · Health reads again when it ends")
 
     def test_a_sync_that_ends_broken_says_why(self):
@@ -1563,10 +1745,10 @@ OUT.gets = []; shellRun(cmd('collector.sync'), C.get('collector:protection')); a
         self.assertEqual(out["toasts"][-1][0], "Shadow sync ended with a problem: OperationalError: database is locked")
 
     def test_disk_draws_a_bar_per_volume_and_remove_names_the_folders_it_deletes(self):
-        out = self.cleanup("build:merged", """R.areas = ELS.areas.html;
+        out = self.cleanup("build:merged", """R.areas = PANEL().html;
 R.rm = cmd('build output.rm').cli(o); R.why = cmd('build output.rm').consequence(o);
 R.du = cmd('storage folder.du').cli(C.get('rs:/Volumes/store/repo-storage/alpha'));
-shellRun(cmd('build output.rm'), o); await flush();""")
+shellRun(cmd('build output.rm'), o); await flush();""", view="machine")
         areas = out["R"]["areas"]
         self.assertIn('<div class="bars" role="group" aria-label="Volume use: Mac data 85%, store 40%">', areas)
         self.assertIn('<span class="name" title="/Volumes/store">store</span>', areas)
@@ -1604,9 +1786,74 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
         self.assertIn("<dt>Source</dt><dd>the fleet&#39;s .git/worktrees registrations</dd>", details)
 
     def test_the_first_read_opens_the_first_row_in_details(self):
-        out = self.run_page("R.d = document.getElementById('details').html || '';")
+        out = self.run_page("R.d = document.getElementById('details').html || '';", view="machine")
         self.assertIn("<h2>Mac data is 85% full</h2>", out["R"]["d"],
                       "Details still say the fleet is being read after the rows arrived")
+
+    def test_the_page_declares_the_servers_views_in_order(self):
+        out = self.run_page("R.views = window.PAGE_VIEWS;")
+        self.assertEqual([(v["id"], v["label"], tuple(v["areas"]), v["api"]) for v in out["R"]["views"]],
+                         [(view, name, keys, f"/api/health/{view}") for view, name, keys in health_screen.VIEWS])
+
+    def test_the_summary_draws_every_lamp_and_count_before_the_view_answers(self):
+        doc = self.run_doc()
+        disk = next(area for area in doc["areas"] if area["id"] == "disk")
+        disk["error"] = "df did not answer in 5 s"
+        out = self.run_page("""R.lamps = ELS.annunciator.html; R.areas = PANEL().html;""", pre="""var pending = [];
+ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promise(answer => pending.push(answer));""", doc=doc)
+        self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts"])
+        self.assertRegex(out["R"]["lamps"], r'data-area="disk" data-state="unknown"')
+        self.assertRegex(out["R"]["lamps"], r'data-area="br" data-state="caution"')
+        self.assertRegex(out["R"]["lamps"], r'data-area="cred" data-state="unknown"')
+        self.assertNotIn('class="area"', out["R"]["areas"] or "")
+        # A view's count is the rows that want you in it; Machine's disk was not read, so Machine has no count.
+        counts = out["counts"]
+        self.assertEqual((counts["checkouts"], counts["jobs"]), (wanting(doc, "checkouts"), wanting(doc, "jobs")))
+        self.assertIsNone(counts["machine"])
+
+    def test_a_view_switch_reads_its_part_once(self):
+        switch = "shell.view.show('{v}'); await flush();"
+        out = self.run_page("OUT.gets = [];" + switch.format(v="machine") + "R.areas = PANEL().html;"
+                            + switch.format(v="checkouts") + "R.back = PANEL().html; R.again = OUT.gets.slice();")
+        self.assertEqual(out["R"]["again"], ["/api/health/machine", "/api/health/summary"], "a view opened before was read again")
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["areas"]), ["disk", "ports", "svc", "doc"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["back"]), ["wt", "br"])
+
+    def test_with_no_view_named_the_first_opens_and_an_area_value_opens_its_view(self):
+        first = self.run_page("", view=None)
+        self.assertEqual(first["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary"])
+        asked = self.run_page("R.areas = PANEL().html; R.address = OUT.address;", view=None, search="?area=ports")
+        self.assertEqual(asked["R"]["address"], "/fleet-health?area=ports#view=machine")
+        self.assertEqual(asked["gets"], ["/api/health/summary", "/api/health/machine", "/api/health/summary"])
+        self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', asked["R"]["areas"]), ["ports"])
+        named = self.run_page("", view="jobs", search="?area=ports")
+        self.assertEqual(named["gets"], ["/api/health/summary", "/api/health/jobs", "/api/health/summary"])
+
+    def test_with_the_shells_view_switch_the_page_draws_none_and_reads_a_view_on_its_first_opening(self):
+        # The shell's contract (sys-tuning-ui): shell.view and the shell:view event; the page's own switch stays empty.
+        out = self.run_page("""const open = (id, first) => document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: '/api/health/' + id } }));
+open('machine', true); await flush(); R.machine = ELS['view-machine'].html;
+open('checkouts', false); await flush(); R.gets = OUT.gets.slice(); R.counts = OUT.counts;
+R.views = 'viewswitch' in ELS;""", view=None, pre="""OUT.counts = {}; var CUR = null;
+window.shell.view = { current: () => CUR, show: id => { OUT.shown = id; }, count: (id, n) => { OUT.counts[id] = n; } };
+document.addEventListener('shell:view', e => { CUR = e.detail.id; });""")
+        self.assertFalse(out["R"]["views"], "the page drew its own view switch next to the shell's")
+        self.assertEqual(out["R"]["gets"], ["/api/health/summary", "/api/health/machine", "/api/health/summary"])
+        self.assertIn('id="a-disk"', out["R"]["machine"])
+        doc = self.run_doc()
+        self.assertEqual(out["R"]["counts"], {view: wanting(doc, view) for view, *_ in health_screen.VIEWS})
+        self.assertGreater(min(out["R"]["counts"].values()), 0)
+
+    def test_show_findings_hides_the_ok_rows_and_says_so_and_show_all_lists_them(self):
+        out = self.run_page("""R.findings = PANEL().html; R.filters = PANEL().html;
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'all' } } : null } });
+R.all = PANEL().html;""", view="machine")
+        findings, every = out["R"]["findings"], out["R"]["all"]
+        ok = [i for i in re.findall(r'data-id="([^"]+)"', every) if i not in re.findall(r'data-id="([^"]+)"', findings)]
+        self.assertTrue(ok)
+        self.assertRegex(findings, r'<p class="quiet">[^<]*\d+ ok or queued rows? not shown: Show all lists')
+        self.assertNotIn('class="quiet"', every)
+        self.assertIn('data-show="findings" aria-pressed="true"', out["R"]["filters"])
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", HEALTH_JS)
@@ -1617,7 +1864,8 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/cleanup", "/api/records/render")
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/summary", "/api/health/cleanup",
+                                                               "/api/records/render")
 
 
 if __name__ == "__main__":

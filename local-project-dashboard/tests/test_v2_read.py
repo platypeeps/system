@@ -41,7 +41,7 @@ READ_SHELL = READ_JS + """
 #: A stand-in for the shell the reader is given: fetch answers from held promises, commands keep objects and picks as
 #: shell.js does (a pick needs a bulk command on the object's type), and every call is recorded in OUT.
 STAND_IN = r"""
-var window = globalThis, OUT = { gets: [], states: [], selects: [], adopted: [], draws: 0, clears: [], shown: [], unselected: 0, error: null };
+var window = globalThis, OUT = { gets: [], states: [], selects: [], adopted: [], draws: 0, clears: [], shown: [], unselected: 0, slots: [], error: null };
 var LISTENERS = {}, HELD = [];
 var document = { addEventListener(t, f) { (LISTENERS[t] = LISTENERS[t] || []).push(f); } };
 function fetch(path) { OUT.gets.push(path); return new Promise((ok, fail) => HELD.push({ ok: (status, body) => ok({ ok: status < 300, status, json: () => Promise.resolve(body) }), fail })); }
@@ -51,7 +51,7 @@ var C = { put: o => { OBJ.set(o.id, o); return o; }, get: id => OBJ.get(id), sel
     (LISTENERS['shell:picked'] || []).forEach(f => f({ detail: [...PICKED] })); } };
 var live = id => !!OBJ.get(id) && REG.some(c => c.on === OBJ.get(id).type);
 var ROW = null;
-var make = () => window.SHELL_READ({ fetch: (...a) => fetch(...a), commands: C, state: s => OUT.states.push(s), row: () => ROW,
+var make = () => window.SHELL_READ({ fetch: (...a) => fetch(...a), commands: C, state: (s, at) => { OUT.states.push(s); OUT.slots.push(at === undefined ? null : at); }, row: () => ROW,
   listen: (t, f) => document.addEventListener(t, f) });
 var ROWS = [], SELECTED = null;
 var spec = {
@@ -128,6 +128,28 @@ R.after = SELECTED;""")
         self.assertEqual(out["selects"], [None], "the shell's selection was not cleared")
         self.assertEqual(out["unselected"], 1, "Details were not reset to the nothing-selected text")
         self.assertEqual(out["states"][-1]["kind"], "empty")
+
+    def test_a_reader_with_a_slot_draws_every_state_there_and_one_without_draws_in_the_page_slot(self):
+        out = run("""const r = make()({ ...spec, slot: 'state-jobs' });
+r.load(); await flush(); HELD[0].ok(200, doc(1, ['a'])); await flush();
+r.load(); await flush(); HELD[1].ok(500, { error: 'boom' }); await flush();
+R.slotted = OUT.slots.splice(0); R.kinds = OUT.states.splice(0).map(s => s && s.kind);
+const p = make()(spec);
+p.load(); await flush(); HELD[2].ok(200, doc(2, ['a'])); await flush();""")
+        self.assertEqual(out["R"]["kinds"], ["loading", None, "loading", "error"])
+        self.assertEqual(out["R"]["slotted"], ["state-jobs"] * 4, "a reader with a slot drew a state in the page's slot")
+        self.assertEqual(out["slots"], [None, None])
+
+    def test_an_inactive_reader_leaves_the_open_views_selection_alone(self):
+        out = run("""let open = false; const r = make()({ ...spec, active: () => open });
+r.load(); await flush(); HELD[0].ok(200, doc(1, [])); await flush();
+r.load(); await flush(); HELD[1].ok(500, { error: 'boom' }); await flush();
+R.closed = [OUT.selects.splice(0), OUT.unselected, OUT.states.map(s => s && s.kind)];
+open = true; r.load(); await flush(); HELD[2].ok(200, doc(2, ['a'])); await flush();
+R.opened = SELECTED;""")
+        self.assertEqual(out["R"]["closed"], [[], 0, ["loading", "empty", "loading", "error"]],
+                         "a reader for a view that is not open changed the selection")
+        self.assertEqual(out["R"]["opened"], "a")
 
     def test_a_kept_selection_stays_and_a_gone_one_moves_to_the_first_row(self):
         out = run("""const r = make()(spec);

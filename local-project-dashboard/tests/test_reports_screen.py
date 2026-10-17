@@ -1,8 +1,8 @@
 """The single report's controls (`reports_screen.report_controls`).
 
 The classic Operations > Reports area and its bulk-acknowledge preview were
-retired in sd:3402; the v2 Reports page previews through `/api/reports/clean`
-(`test_v2_reports.py`), and the POST is in `test_controls_actions.py`.
+retired in sd:3402, and the v2 Reports page has no clean preview or batch:
+a clean run files no report since the quiet-run rule.
 """
 
 import json

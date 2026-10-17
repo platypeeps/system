@@ -7,8 +7,7 @@ and the followups that hold it, the launchd jobs, each job's runs per local
 day from its `cron-jobs.sh` log, and the job families the config folder's
 `report-families.conf` names (job names are the operator's, so the public
 checkout carries only `report-families.conf.example`). A source that fails is
-`null` with its reason. `/api/reports/clean` is v1's clean preview and
-writes nothing. The page registers the design's Reports commands with the
+`null` with its reason. The page registers the design's Reports commands with the
 design's ids, labels, keys and risks; Acknowledge posts v1's route, and its
 Undo posts `/api/reports/<n>/reopen` with the revision the acknowledge answered
 (sd:2395). The page reads through the shared reader, `read.js` (sd:2487).
@@ -48,7 +47,7 @@ COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 EXAMPLE = Path(reports_screen.__file__).resolve().parents[1] / "report-families.conf.example"
 #: The machine's offset in the fixtures: the logs write -0600, so local days are those dates.
 TZ = timezone(timedelta(hours=-6))
-#: Two days after the newest fixture report, so a clean preview at 2026-09-08 is not a cutoff in the future.
+#: Two days after the newest fixture report.
 LATER = "2026-09-10T12:00:00Z"
 DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10"]
 
@@ -59,12 +58,7 @@ COMMANDS = [
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
     ["report.fix", "report", "Fix", "f", "safe"],  # sd:3456: a debug session in herdr; asks first
-    ["mail.ack", "status mail", "Acknowledge", "a", "undo"],
-    ["mail.open", "status mail", "Open in Gmail", "o", "safe"],
-    ["status mail.log", "status mail", "Show log", "l", "safe"],
-    ["status mail.task", "status mail", "Make task", "k", "safe"],
     ["jobs.retry", "job", "Retry", "t", "safe"],
-    ["clean batch.ack", "clean batch", "Acknowledge", "a", "confirm"],  # sd:3386: the attributed batch, from the clean preview
 ]
 
 
@@ -144,7 +138,8 @@ class TheDocument(ScreenCase):
         clean = rows[self.ids["clean"]]
         self.assertEqual((clean["attention"], clean["followups"], clean["cut"], len(clean["body"])), (False, [], True, 1400))
         self.assertEqual(rows[self.ids["done"]]["status"], "done")
-        self.assertEqual(doc["mail"], {"available": False, "reason": reports_screen.MAIL_REASON})
+        # sd:2212: no status mail is read and none is planned, so the reading carries no mail key.
+        self.assertNotIn("mail", doc)
         self.assertEqual(doc["html"], 3)
         # sd:3446: the rail badge is the read's; only the open report that asks for attention counts.
         self.assertEqual(doc["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
@@ -306,28 +301,6 @@ class TheDocument(ScreenCase):
         # A job twice within one line is refused too: the cadence table would list it twice and the lamp count it twice.
         self.assertIn("six is listed twice in the family f", problems[5])
 
-    def test_the_clean_preview_is_the_librarys_and_writes_nothing(self):
-        before = tuple(self.connection.iterdump())
-        got = reports_screen.clean(self.connection, "2026-09-08", now=LATER)
-        self.assertEqual(got["selected"], [self.ids["clean"]])
-        self.assertEqual([d["id"] for d in got["declined"]], [])
-        got = reports_screen.clean(self.connection, "2026-09-09", now=LATER)
-        self.assertEqual(got["selected"], [self.ids["clean"]])
-        self.assertEqual([d["id"] for d in got["declined"]], [self.ids["failed"]])
-        self.assertEqual(tuple(self.connection.iterdump()), before)
-        with self.assertRaises(workflow.WorkflowError):
-            reports_screen.clean(self.connection, "2026-09-08T01:00:00Z", now=LATER)
-
-    def test_the_clean_preview_carries_the_plan_the_batch_acknowledge_checks(self):
-        """sd:3386: the plan binds the batch to this selection at these revisions; no selection issues none."""
-        got = reports_screen.clean(self.connection, "2026-09-08", now=LATER)
-        library = reporting.clean_reports(self.connection, before="2026-09-08T00:00:00+00:00",
-                                          now=reports_screen.datetime.fromisoformat(LATER.replace("Z", "+00:00")))
-        self.assertEqual((got["before"], got["plan"]), ("2026-09-08T00:00:00+00:00", library["plan"]))
-        self.assertRegex(got["plan"], r"^[0-9a-f]{64}$")
-        self.assertIsNone(reports_screen.clean(self.connection, "2026-09-01", now=LATER)["plan"])
-
-
 class ThePage(BrowserSession):
     def setUp(self):
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -355,49 +328,12 @@ class ThePage(BrowserSession):
 
     def test_the_data_routes_need_a_session_and_the_reading_takes_no_query(self):
         self.assertEqual(self.request("/api/reports")[0], 403)
-        self.assertEqual(self.request("/api/reports/clean?before=2026-09-01")[0], 403)
         cookie = {"Cookie": self.cookie}
         self.assertEqual(self.request("/api/reports?act=1", headers=cookie)[0], 400)
         status, _, body = self.request("/api/reports", headers=cookie)
         self.assertEqual(status, 200)
         doc = json.loads(body)
         self.assertEqual((doc["reports"], [j["name"] for j in doc["jobs"]], doc["sources"]["cadence"]), ([], ["quiet-one"], ""))
-
-    def test_the_clean_preview_takes_one_date_and_writes_nothing(self):
-        cookie = {"Cookie": self.cookie}
-        for query in ("", "?before=2026-09-01&before=2026-09-02", "?before=2026-09-01&x=1"):
-            self.assertEqual(self.request("/api/reports/clean" + query, headers=cookie)[0], 400, query)
-        status, _, body = self.request("/api/reports/clean?before=yesterday", headers=cookie)
-        self.assertEqual(status, 400)
-        self.assertIn("YYYY-MM-DD", json.loads(body)["error"])
-        before = self.snapshot()
-        status, _, body = self.request("/api/reports/clean?before=2026-09-01", headers=cookie)
-        self.assertEqual((status, json.loads(body)["selected"]), (200, []))
-        self.assertEqual(self.snapshot(), before)
-
-    def test_the_batch_acknowledge_takes_the_plan_the_page_previewed_and_refuses_one_a_change_moved(self):
-        """sd:3386: the v2 preview's before and plan are what the attributed batch posts; a report that changed is another plan."""
-        from sd_db import create_item
-
-        def clean(job):
-            return create_item(self.connection, kind="report", title=f"{job}: run report", status="planning", source="cron-report",
-                               external_id=f"{job}:run", fields={"attention": False, "report": {"job": job, "ended": "2026-09-09T00:00:00+00:00"}},
-                               created_at="2026-09-09T00:00:00+00:00")
-
-        alpha, beta = clean("alpha"), clean("beta")
-        self.connection.commit()
-        preview = json.loads(self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})[2])
-        self.assertEqual((preview["selected"], preview["count"]), ([alpha, beta], 2))
-        # Another subject: beta was acknowledged after the preview, so the plan the page holds is refused and nothing moves.
-        reporting.acknowledge(self.connection, beta, expected_revision=workflow.item_state(self.connection, beta)["revision"], who="fixture")
-        before = self.snapshot()
-        status, _, body = self.post("/api/reports/acknowledge-clean", {"before": preview["before"], "plan": preview["plan"], "who": "operator"})
-        self.assertEqual((status, body["reload"]), (409, True))
-        self.assertEqual(self.snapshot(), before)
-        preview = json.loads(self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})[2])
-        status, _, body = self.post("/api/reports/acknowledge-clean", {"before": preview["before"], "plan": preview["plan"], "who": "operator"})
-        self.assertEqual((status, body["acknowledged"], body["actor"]["who"]), (200, [alpha], "operator"))
-
 
     def test_reopen_takes_the_revision_the_acknowledgement_answered(self):
         """sd:2395: the Undo's route. It reopens an acknowledged report under the revision the acknowledge answered."""
@@ -494,6 +430,8 @@ SHELL_MORE = r"""
 OUT.urls = []; window.shell.url = q => OUT.urls.push(q); window.shell.setContext = () => {}; OUT.picks = [];
 window.shell.commands.pick = id => OUT.picks.push(id); window.shell.commands.list = () => REG;
 window.shell.row = () => new URLSearchParams(location.search).get('row');
+OUT.views = []; OUT.counts = {};
+window.shell.view = { show: id => { OUT.views.push(id); return true; }, count: (id, n) => { OUT.counts[id] = n; }, current: () => 'reports' };
 """
 
 
@@ -514,10 +452,8 @@ class TheScript(ScreenCase):
 
     def run_page(self, body, answer=None, doc=None, prelude=""):
         doc = doc or self.doc
-        answer = answer or f"(path, body) => path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
-        clean = {"before": "2026-09-08T00:00:00+00:00", "count": 1, "max_batch": 1000, "selected": [self.ids["clean"], 99999],
-                 "declined": [{"id": self.ids["failed"], "why": "it needs attention"}], "plan": "a" * 64}
-        script = (STAND_IN + f"var CLEAN = {json.dumps(clean)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
+        answer = answer or f"(path, body) => path === '/api/reports' ? [200, {json.dumps(doc)}] : [200, {{}}]"
+        script = (STAND_IN + MARKUP_JS + "\nconst mk = window.markup.html;\n"
                   + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + "\n" + COMMANDS_JS + REPORTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
@@ -635,7 +571,7 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
         self.assertEqual(out["R"]["weekly"], ["none", "none", "ok", "none", "none", "none", "none"])
         self.assertRegex(out["R"]["lamps"], r'data-fam="sync"[^>]*data-state="warning"')
         self.assertRegex(out["R"]["lamps"], r'data-fam="scan"[^>]*data-state="ok"')
-        self.assertEqual(cell_grammar(self, out["R"]["lamps"]), [("button", "warning"), ("button", "ok"), ("div", "unknown"), ("div", "unknown"), ("button", None)])
+        self.assertEqual(cell_grammar(self, out["R"]["lamps"]), [("button", "warning"), ("button", "ok"), ("div", "unknown"), ("button", None)])
         self.assertIn("■ 1 failed last run", out["R"]["tally"])
         self.assertEqual(out["attention"], {"state": "warning", "n": 1, "what": "reports want you"})
 
@@ -736,14 +672,13 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertEqual(out["R"]["today"], ["none", "·", "no run yet today"])
         self.assertEqual(out["R"]["last"], "ok")
 
-    def test_the_state_names_status_mail_a_missing_family_list_and_a_failed_source(self):
+    def test_the_state_names_a_missing_family_list_and_a_failed_source(self):
         doc = json.loads(json.dumps(self.doc))
         doc["families"] = {"state": "missing", "source": "<config>/project-dashboard/report-families.conf", "problems": [], "list": []}
         doc["cadence"], doc["sources"]["cadence"] = None, "no log root"
         out = self.run_page("R.lamps = ELS.annunciator.html; R.cad = ELS['cad-body'].html;", doc=doc)
         last = out["states"][-1]
         self.assertEqual(last["kind"], "partial")
-        self.assertIn(reports_screen.MAIL_REASON, last["text"])
         self.assertIn("cadence (no log root)", last["text"])
         self.assertIn("project-dashboard/report-families.conf.example", last["text"])
         self.assertIn("no family list", out["R"]["lamps"])
@@ -751,6 +686,49 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")
         self.assertEqual(out["states"][-1]["kind"], "error")
         self.assertIn("boom", out["states"][-1]["text"])
+
+    def test_the_status_mail_notice_the_runner_lamp_and_the_batch_sections_are_gone(self):
+        """sd:2212 has no mail reader and sd:1897 cancelled the message store; the quiet-run rule files no clean report."""
+        self.assertNotIn("mail", self.doc)
+        self.assertNotIn("Database reports only", REPORTS_JS)
+        self.assertNotIn("Runner & review", REPORTS_JS)
+        out = self.run_page("R.lamps = ELS.annunciator.html;")
+        self.assertNotIn("Runner", out["R"]["lamps"])
+        self.assertNotIn("status mail", json.dumps(out["states"]))
+        page = (V2 / "reports.html").read_text(encoding="utf-8")
+        for heading in ("Acknowledge clean reports", "Also on the classic Resources screen"):
+            self.assertNotIn(heading, page)
+
+    def test_a_job_with_a_report_that_needs_action_stays_in_the_short_cadence_table(self):
+        """A job whose log shows no gap is still listed while its newest report needs action (the rows key byJob by job)."""
+        doc = json.loads(json.dumps(self.doc))
+        sync = doc["cadence"]["nightly-sync"]
+        sync["from"], sync["runs"] = doc["days"][0], {d: [1, 0] for d in doc["days"]}
+        sync["last"] = {"day": doc["days"][-2], "read": True, "runs": [1, 0]}
+        out = self.run_page("R.marks = DAYS.map(d => mark('nightly-sync', d)[0]); R.listed = !!interesting(['', 'nightly-sync']);"
+                            " R.quiet = !!interesting(['', 'weekly-scan']);", doc=doc)
+        self.assertNotIn("caution", out["R"]["marks"])
+        self.assertNotIn("warning", out["R"]["marks"])
+        self.assertEqual((out["R"]["listed"], out["R"]["quiet"]), (True, False))
+
+    def test_the_page_declares_its_views_and_a_family_lamp_or_a_cadence_row_shows_the_reports(self):
+        """The shell's view switch: Reports (the list) first, Cadence (the run table) second. A lamp and a cadence row
+        filter the list, so each shows the Reports view; the segments count the rows shown and the jobs listed."""
+        lamp = "ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { fam: 'sync' } } : null } });"
+        row = "ELS['cad-body'].listeners.click[0]({ target: { closest: s => s === 'tr[data-job]' ? { dataset: { job: 'weekly-scan' } } : null } });"
+        doc = json.loads(json.dumps(self.doc))
+        doc["families"]["list"] = [{"key": "sync", "label": "Sync", "icon": "bot", "jobs": ["nightly-sync"]}]
+        out = self.run_page(f"R.decl = window.PAGE_VIEWS || null; R.before = OUT.views.slice(); {lamp} R.lamp = [OUT.views.slice(), F.fam, shown.length];"
+                            f" {row} R.row = [OUT.views.slice(), F.job, shown.length]; R.counts = OUT.counts; R.jobs = CAD_JOBS.length;", doc=doc)
+        self.assertEqual(out["R"]["decl"], [{"id": "reports", "label": "Reports"}, {"id": "cadence", "label": "Cadence"}])
+        self.assertEqual(out["R"]["before"], [])
+        self.assertEqual(out["R"]["lamp"], [["reports"], "sync", 1])
+        self.assertEqual(out["R"]["row"], [["reports", "reports"], "weekly-scan", 0])
+        self.assertEqual(out["R"]["counts"], {"reports": 0, "cadence": out["R"]["jobs"]})
+        page = (V2 / "reports.html").read_text(encoding="utf-8")
+        # The lamps sit above the switch, which goes before the first panel; the list is the first view.
+        self.assertLess(page.index('id="annunciator"'), page.index('id="view-reports"'))
+        self.assertLess(page.index('id="view-reports"'), page.index('id="view-cadence"'))
 
     def test_a_reading_retires_the_reports_and_jobs_it_no_longer_lists(self):
         clean, failed = self.ids["clean"], self.ids["failed"]
@@ -770,72 +748,6 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         self.assertEqual(out["R"]["types"], ["not listed", "not listed", "report", "job"])
         self.assertIn("(no longer listed)", out["R"]["label"])
         self.assertEqual(out["R"]["offered"], [[], []])
-
-    def test_select_clean_picks_the_servers_selection_and_names_each_decline(self):
-        out = self.run_page("ELS['ack-date'].value = '2026-09-08'; await selectClean(); R.sel = ELS['ack-sel'].html; R.dec = ELS['ack-dec'].html;"
-                            " R.sum = ELS['ack-sum'].textContent; R.shown = shown.map(r => r.n);")
-        self.assertIn("/api/reports/clean?before=2026-09-08", out["gets"])
-        self.assertEqual(out["picks"], [f"r{self.ids['clean']}"])
-        self.assertEqual(out["R"]["shown"], [self.ids["clean"]])
-        self.assertIn(f"#{self.ids['failed']}</b> nightly-sync: it needs attention", out["R"]["dec"])
-        self.assertIn("1 more are older than the newest 200", out["R"]["sum"])
-
-    # sd:3386: the attributed batch (`--all-clean --who`), from the preview Select clean read.
-    BATCH = ("ELS['ack-date'].value = '2026-09-08'; await selectClean();"
-             " const o = C.get('clean:batch'), c = cmd('clean batch.ack');")
-    ACKED = ("(path, body) => path === '/api/reports/acknowledge-clean' ? [200, { item: { id: 77 }, acknowledged: [1], revision: 'r' }]"
-             " : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]")
-
-    def test_select_clean_offers_the_attributed_batch_with_the_previews_plan(self):
-        out = self.run_page(self.BATCH + """R.obj = [o.type, o.before, o.plan, o.count, o.label]; R.when = c.when(o); R.cli0 = c.cli(o, {});
-R.cli = c.cli(o, { who: "Op O'Erator" }); R.fields = c.fields(o).map(f => [f.name, f.label, !!f.required]); R.batch = ELS['ack-batch'].html;
-FIELD_VALUES.who = "Op O'Erator"; shellRun(c, o); await flush(); R.after = C.get('clean:batch').type; R.out = ELS['ack-out'].hidden;""",
-                            answer=self.ACKED.replace("DOC_JSON", json.dumps(self.doc)))
-        before, plan = "2026-09-08T00:00:00+00:00", "a" * 64
-        self.assertEqual(out["R"]["obj"], ["clean batch", before, plan, 1, "1 clean report before 2026-09-08"])
-        self.assertIs(out["R"]["when"], True)
-        self.assertEqual(out["R"]["fields"], [["who", "Acknowledged by", True]])
-        self.assertEqual(out["R"]["cli0"], f"sd reports acknowledge --all-clean --before {before} --apply --if-plan {plan} --who NAME")
-        self.assertEqual(out["R"]["cli"], f"sd reports acknowledge --all-clean --before {before} --apply --if-plan {plan} --who 'Op O'\\''Erator'")
-        self.assertIn('class="bar"', out["R"]["batch"])
-        self.assertEqual(out["confirms"], ["clean batch.ack"])
-        self.assertEqual(out["posts"], [["/api/reports/acknowledge-clean", {"before": before, "plan": plan, "who": "Op O'Erator"}, 64]])
-        self.assertEqual(out["toasts"][-1], ["Acknowledged 1 clean report in batch report #77", False])
-        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
-        # The batch landed: its plan is spent, so the object retires and the preview closes.
-        self.assertEqual((out["R"]["after"], out["R"]["out"]), ("not listed", True))
-        self.assertIn('id="ack-batch"', (V2 / "reports.html").read_text(encoding="utf-8"))
-
-    def test_the_batch_asks_who_and_runs_nothing_without_a_name(self):
-        out = self.run_page(self.BATCH + "FIELD_VALUES.who = '   '; shellRun(c, o); await flush();")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][-1], ["not run: OK is off until Acknowledged by is typed", False])
-
-    def test_a_preview_with_no_plan_keeps_the_batch_off_with_the_reason(self):
-        out = self.run_page(self.BATCH + """R.none = c.when(o);
-CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.get('clean:batch'));""",
-                            prelude="CLEAN.plan = null; CLEAN.count = 0;")
-        self.assertEqual(out["R"]["none"], "nothing is clean before 2026-09-08")
-        self.assertEqual(out["R"]["over"], "1001 clean reports is more than one batch moves (1000); choose an earlier date")
-        self.assertEqual(out["posts"], [])
-
-    def test_a_stale_batch_writes_nothing_and_previews_again(self):
-        out = self.run_page(self.BATCH + "FIELD_VALUES.who = 'operator'; shellRun(c, o); await flush();",
-                            answer="(path, body) => path === '/api/reports/acknowledge-clean' ? [409, { error: 'the clean reports changed since the preview', reload: true }]"
-                                   f" : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]")
-        self.assertEqual(len(out["posts"]), 1)
-        self.assertEqual(out["toasts"][-1], ["1 clean report before 2026-09-08 not changed: the clean reports changed since the preview."
-                                             " The preview is read again", False])
-        self.assertEqual([path for path in out["gets"] if path.startswith("/api/reports/clean")], ["/api/reports/clean?before=2026-09-08"] * 2)
-        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
-
-    def test_a_batch_with_no_answer_is_unknown_not_refused(self):
-        out = self.run_page(self.BATCH + "FIELD_VALUES.who = 'operator'; shellRun(c, o); await flush();",
-                            answer="(path, body) => path === '/api/reports/acknowledge-clean' ? Promise.reject(new TypeError('Load failed'))"
-                                   f" : path.startsWith('/api/reports/clean') ? [200, CLEAN] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]")
-        self.assertEqual(out["toasts"][-1], ["1 clean report before 2026-09-08 not changed: no answer (Load failed), so whether the batch"
-                                             " landed is not known; the reports and the preview are read again", False])
-        self.assertEqual([path for path in out["gets"] if path == "/api/reports"], ["/api/reports", "/api/reports"])
 
     def test_details_show_the_report_its_source_from_home_and_the_diff_with_the_previous_one(self):
         out = self.run_page(f"open('r{self.ids['failed']}'); R.failed = ELS.details.html; open('r{self.ids['clean']}'); R.clean = ELS.details.html;")
@@ -865,7 +777,7 @@ CLEAN.count = 1001; await selectClean(); R.over = cmd('clean batch.ack').when(C.
                       f"Read its log, then acknowledge report {self.ids['clean']} in a terminal: "
                       f"<code>sd reports acknowledge {self.ids['clean']}</code>.", out["R"]["det"])
 
-    LAUNCHCTL = ("(path, body) => path.endsWith('/retry') ? [200, ANSWER] : path.startsWith('/api/reports/clean') ? [200, CLEAN]"
+    LAUNCHCTL = ("(path, body) => path.endsWith('/retry') ? [200, ANSWER]"
                  " : path === '/api/reports' ? [200, DOC_JSON] : [200, {}]")
 
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
@@ -984,7 +896,7 @@ R.other = !!c.askFirst(C.get('job:weekly-scan')); shellRun(c, o); await flush();
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "reports", "Reports", "/reports", ("/api/reports", "/api/reports/clean")
+    page, section, route, api = "reports", "Reports", "/reports", ("/api/reports",)
 
 
 if __name__ == "__main__":

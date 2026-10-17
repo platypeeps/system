@@ -15,7 +15,7 @@ from sd_db import (
     skills_catalog,
     workflow,
 )
-from sd_db.writes import add_note, create_item, upsert_repo
+from sd_db.writes import add_note, upsert_repo
 from sd_dashboard import controls
 
 from .test_capture_screen import Fields
@@ -51,7 +51,7 @@ class WorkflowControls(BrowserSession):
 
     def test_every_new_route_refuses_bad_session_before_work(self):
         before = self.snapshot()
-        for path in ("/api/providers/configure", "/api/bills/c/cap", "/api/skills/sd-fixture/try", "/api/skill-reviews/1/apply", "/api/reports/1/acknowledge", "/api/reports/acknowledge-clean"):
+        for path in ("/api/providers/configure", "/api/bills/c/cap", "/api/skills/sd-fixture/try", "/api/skill-reviews/1/apply", "/api/reports/1/acknowledge"):
             self.assertEqual(self.post(path, {}, **{"X-SD-CSRF": "0" * 64})[0], 403, path)
             self.assertEqual(self.request(path)[0], 404, path)
         self.assertEqual(before, self.snapshot())
@@ -841,155 +841,12 @@ class FollowupDetails(BrowserSession):
         self.assertIn("<strong>twice</strong>", self.request(f"/item/{item}")[2])
 
 
-#: The cutoff the bulk-acknowledge tests preview at, as `reporting.cutoff`
-#: stamps the date `2026-09-10`, and the instant every clean fixture report
-#: was filed: before it. The server's clock is the real one, later than both.
-CUTOFF = "2026-09-10T00:00:00+00:00"
-FILED = "2026-09-09T00:00:00+00:00"
-ACKNOWLEDGE_CLEAN = "/api/reports/acknowledge-clean"
-
-
-class BulkAcknowledge(BrowserSession):
-    """sd:755, the dashboard half of the bulk acknowledge: a GET preview that
-    writes nothing and issues a plan, and one POST that moves exactly that
-    plan or nothing, naming the person who typed `who`, the principal the
-    listener authenticated and `program="dashboard"`.
-
-    Two clean reports and one that needs attention, all filed before the
-    cutoff through `create_item`, which takes a `created_at`; `ingest` stamps
-    the real clock, which is after every cutoff a test can name.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.clean = [self.report("alpha"), self.report("beta")]
-        self.flagged = self.report("gamma", attention=True)
-
-    def report(self, job, *, attention=False):
-        fields = {"attention": attention, "report": {"job": job, "ended": FILED}}
-        item = create_item(self.connection, kind="report", title=f"{job}: run report", status="planning",
-                           source="cron-report", external_id=f"{job}:run", fields=fields, created_at=FILED)
-        if attention:
-            add_note(self.connection, item, "followup", f"Review {job} findings.", session="cron")
-        return item
-
-    def plan(self):
-        return reporting.clean_reports(self.connection, before=CUTOFF)["plan"]
-
-    def payload(self, **overrides):
-        return {"before": CUTOFF, "plan": self.plan(), "who": "operator", **overrides}
-
-    def status_of(self, item):
-        return self.connection.execute("SELECT status FROM item WHERE id=?", (item,)).fetchone()[0]
-
-    def fields_of(self, item):
-        return json.loads(self.connection.execute("SELECT fields FROM item WHERE id=?", (item,)).fetchone()[0])
-
-    def test_the_apply_moves_the_previewed_reports_and_records_who_from_where(self):
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload())
-        self.assertEqual(status, 200, result)
-        batch = result["item"]["id"]
-        self.assertEqual(result["item"]["status"], "done")
-        self.assertEqual(result["acknowledged"], self.clean)
-        for item in self.clean:
-            self.assertEqual(self.status_of(item), "done")
-        self.assertEqual(self.status_of(self.flagged), "planning")
-        actor = self.fields_of(batch)["report"]["actor"]
-        self.assertEqual(actor["who"], "operator")
-        # The loopback listener's principal (`auth.access_context`): the
-        # server recorded what its channel authenticated, not what was typed.
-        self.assertEqual(actor["principal"], "local")
-        self.assertEqual(actor["program"], "dashboard")
-        self.assertEqual(self.fields_of(batch)["record"], "reports-acknowledge")
-
-    def test_the_record_names_the_servers_session_as_the_cli_names_its_own(self):
-        """sd:1168: the route passed no `session`, so a batch filed while
-        `SD_SESSION` was set recorded `null`. The server runs in this process,
-        so its environment is the one patched here."""
-        with patch.dict("os.environ", {"SD_SESSION": "dashboard-session"}):
-            status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload())
-        self.assertEqual(status, 200, result)
-        self.assertEqual(self.fields_of(result["item"]["id"])["report"]["actor"]["session"], "dashboard-session")
-
-    def test_a_replay_of_an_applied_plan_is_stale_and_writes_nothing(self):
-        payload = self.payload()
-        self.assertEqual(self.post(ACKNOWLEDGE_CLEAN, payload)[0], 200)
+class BulkAcknowledgeRetired(BrowserSession):
+    def test_the_clean_preview_and_the_batch_routes_are_gone(self):
+        """A clean run files no report since the quiet-run rule, so the Reports page lost its clean preview and
+        batch; `sd reports acknowledge --all-clean` stays the CLI verb. Both routes answer 404 and write nothing."""
         before = self.snapshot()
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, payload)
-        self.assertEqual(status, 409, result)
-        self.assertIs(result["reload"], True)
+        body = {"before": "2026-09-10T00:00:00+00:00", "plan": "0" * 64, "who": "operator"}
+        self.assertEqual(self.post("/api/reports/acknowledge-clean", body)[0], 404)
+        self.assertEqual(self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})[0], 404)
         self.assertEqual(before, self.snapshot())
-
-    def test_a_body_the_route_does_not_recognise_is_refused_before_any_write(self):
-        plan = self.plan()
-        before = self.snapshot()
-        for payload in (self.payload(plan=plan, extra="x"),
-                        self.payload(plan="not-a-plan"),
-                        self.payload(plan=plan.upper()),
-                        {"before": CUTOFF, "plan": plan},
-                        self.payload(plan=plan, who=7)):
-            with self.subTest(payload=payload):
-                status, _, result = self.post(ACKNOWLEDGE_CLEAN, payload)
-                self.assertEqual(status, 400, result)
-                self.assertIn("Preview the clean reports again", result["error"])
-        self.assertEqual(before, self.snapshot())
-
-    def test_a_cutoff_that_is_not_a_date_is_refused_with_a_json_answer(self):
-        """`reporting.cutoff` raises `WorkflowError`, which the `try` around
-        `action_route` does not catch: run in that body it leaves `do_POST`
-        with no response and this client raises `RemoteDisconnected`. Inside
-        the returned function the second `try` answers 400 with the message."""
-        before = self.snapshot()
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload(before="2026-09-10T01:00:00+00:00"))
-        self.assertEqual(status, 400, result)
-        self.assertEqual(result["error"], "give the cutoff as a date, YYYY-MM-DD, meaning 00:00 UTC")
-        self.assertEqual(before, self.snapshot())
-
-    def test_an_emptied_selection_is_stale_not_a_second_kind_of_error(self):
-        plan = self.plan()
-        for item in self.clean:
-            reporting.acknowledge(self.connection, item, expected_revision=workflow.item_state(self.connection, item)["revision"], who="operator")
-        self.assertIsNone(self.plan())
-        before = self.snapshot()
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload(plan=plan))
-        self.assertEqual(status, 409, result)
-        self.assertIs(result["reload"], True)
-        self.assertEqual(before, self.snapshot())
-
-    def test_a_blank_who_is_refused_with_the_library_message(self):
-        before = self.snapshot()
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload(who="  "))
-        self.assertEqual(status, 400, result)
-        self.assertEqual(result["error"], "who must not be blank")
-        self.assertEqual(before, self.snapshot())
-
-    def test_a_followup_added_after_the_preview_makes_the_plan_stale(self):
-        plan = self.plan()
-        add_note(self.connection, self.clean[0], "followup", "look at this first", session="operator")
-        before = self.snapshot()
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, self.payload(plan=plan))
-        self.assertEqual(status, 409, result)
-        self.assertIs(result["reload"], True)
-        self.assertEqual(before, self.snapshot())
-        self.assertEqual(self.status_of(self.clean[1]), "planning")
-
-    def test_the_preview_stamps_the_date_and_the_apply_takes_the_stamp_back(self):
-        """The one `before` contract, end to end: the preview is asked with a
-        date, its answer carries the stamp `cutoff` made of it, and the POST
-        of that stamp and plan succeeds. A bare date would fail at `stamp`; a
-        stamp computed differently would not match the plan. The Reports page
-        asks `/api/reports/clean`; the classic Reports area that rendered this
-        preview as a form was retired in sd:3402."""
-        before = self.snapshot()
-        status, _, body = self.request("/api/reports/clean?before=2026-09-10", headers={"Cookie": self.cookie})
-        self.assertEqual(status, 200)
-        self.assertEqual(before, self.snapshot())
-        preview = json.loads(body)
-        self.assertEqual((len(preview["selected"]), len(preview["declined"])), (2, 1))
-        self.assertIn("it needs attention, which waits for a person", preview["declined"][0]["why"])
-        stamped, token = preview["before"], preview["plan"]
-        self.assertEqual(stamped, CUTOFF)
-        self.assertEqual(token, reporting.clean_reports(self.connection, before=CUTOFF)["plan"])
-        status, _, result = self.post(ACKNOWLEDGE_CLEAN, {"before": stamped, "plan": token, "who": "operator"})
-        self.assertEqual(status, 200, result)
-        self.assertEqual(result["acknowledged"], self.clean)

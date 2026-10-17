@@ -32,9 +32,6 @@ keeps, so the port adds no collector:
   The read is the latest `JOURNAL_CAP` notes: `journal_unread` counts the
   older ones it left out, so the page says so rather than cut them silently.
 
-The design's other kinds, deploys and mail, have no collector here. Each is in `unknown` with
-the reason, and the page draws it hatched: unknown is not zero.
-
 A source that raises is named in `sources` with its reason and adds no
 rows, so a failed read never looks like a quiet day. Nothing here writes.
 """
@@ -50,21 +47,16 @@ from pathlib import Path
 from sd_db import operations, reads, runner_exec
 from sd_db.errors import SdDbError
 
-__all__ = ["JOURNAL_CAP", "KINDS", "UNKNOWN", "WINDOW", "document", "reviews"]
+__all__ = ["JOURNAL_CAP", "KINDS", "WINDOW", "document", "reviews"]
 
 WINDOW = timedelta(hours=24)
 
 #: The latest exec notes the journal read takes (the library's own bound).
 JOURNAL_CAP = 100
 
-#: The kinds the page draws, in lane order.
-KINDS = ("merge", "run", "review", "deploy", "mail", "command")
-
-#: Kinds with no collector, and why. The page shows each as unknown, never as zero.
-UNKNOWN = {
-    "deploy": "No collector reads deploys. No repository records GitHub deployments, and no deploy log is read.",
-    "mail": "No collector reads mail activity. Brief and status mail stay in Gmail; Notes lists the inbox, but nothing records sent mail here.",
-}
+#: The kinds the page draws, in lane order. The design's deploy and mail kinds are left out: no repository records
+#: GitHub deployments and no deploy log exists, and the operator ruled out a mail reader (sd:2212).
+KINDS = ("merge", "run", "review", "command")
 
 _DELIVERY = re.compile(r"Code delivery (https://github\.com/([^/\s]+)/([^/\s]+)/pull/([0-9]+)) at ([0-9a-f]{7,64})")
 
@@ -271,7 +263,7 @@ def document(connection: sqlite3.Connection, *, now: str, jobs_backend=None) -> 
         sources[source] = ""
         events.extend(found)
     events.sort(key=lambda event: (event["at"], event["id"]), reverse=True)
-    return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS), "unknown": UNKNOWN,
+    return {"read": _iso(end), "from": _iso(start), "to": _iso(end), "kinds": list(KINDS),
             "sources": sources, "undated": undated, "review_unrecorded": unrecorded["n"], "journal_skipped": skipped,
             "journal_cap": JOURNAL_CAP, "journal_unread": journal["unread"], "events": events,
             "attention": _attention(events, start)}
