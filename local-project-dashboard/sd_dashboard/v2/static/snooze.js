@@ -24,12 +24,12 @@
   function register(C, { page, types, off = () => false, reread }) {
     const post = (row, until, seen) => window.shell.post('/api/snooze', { page, row, until, seen }).then(v => { reread(); return v; });
     const fields = () => [{ name: 'until', label: 'Snooze until', options: CHOICES.map(ch => ({ value: ch.id, label: ch.label })) }];
-    types.forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', key: 'z', risk: 'undo', bulk: true,
+    types.forEach(t => C.register({ id: `${t}.snooze`, on: t, label: 'Snooze', does: 'Hides the row until the time you pick; Undo shows it again.', key: 'z', risk: 'undo', bulk: true,
       when: o => off(o) || true, cli: CLI, fields,
       run: (o, v = {}) => { const ch = CHOICES.find(c => c.id === v.until) || CHOICES[0], until = ch.until(new Date());
         return post(o.id, until.toISOString(), o.seen).then(() => `Snoozed until ${when(until)} · ${o.label}`); },
       undo: o => post(o.id, null, o.seen) }));
-    C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
+    C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', does: 'Shows the row again now; Undo snoozes it again.', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
       run: o => post(o.row, null, o.seen).then(() => `Shows again · ${o.label}`),
       undo: o => post(o.row, o.until, o.seen) });
   }

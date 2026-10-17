@@ -202,7 +202,7 @@ addEventListener('DOMContentLoaded', () => {
   const parkUndo = parked => (o, v) => window.shell.post(`/api/items/${o.id}/${parked ? 'revive' : 'park'}`, { revision: v.revision })
     .then(() => reading?.reread(), e => { reading?.load(); throw e; });
   const CMDS = [
-    { id: 'piece.stage', on: 'piece', label: 'Stage', key: 's', icon: 'arrow-up-right', risk: 'confirm',
+    { id: 'piece.stage', on: 'piece', label: 'Stage', does: 'Moves the piece to its next stage; going back needs a reason.', key: 's', icon: 'arrow-up-right', risk: 'confirm',
       cli: o => `sd writing stage --piece ${P_(o).piece} --stage ${nextOf(P_(o)) || '…'}`,
       primary: () => true,
       when: o => { const p = P_(o); if (!p) return 'not listed'; if (p.parked || owned(p) !== true) return legal(p, '').reason;
@@ -210,23 +210,23 @@ addEventListener('DOMContentLoaded', () => {
       consequence: o => { const p = P_(o), to = nextOf(p); return `Moves #${p.id} from ${SL[p.stage] || p.stage} to ${SL[to] || to}${to === 'ready' ? ' and records readiness for this draft' : ''}. Going back is a correction with a reason.`; },
       run: o => { const p = P_(o), to = nextOf(p), from = p.stage; target = null;
         return write(p, 'stage', { stage: to }).then(() => `#${p.id} ${SL[from] || from} → ${SL[to] || to}${to === 'ready' ? ' · readiness recorded' : ''}`); } },
-    { id: 'piece.correct', on: 'piece', label: 'Correct', key: 'o', icon: 'undo-2', risk: 'safe', fills: true,
+    { id: 'piece.correct', on: 'piece', label: 'Correct', does: 'Moves the piece back to an earlier stage, with a reason.', key: 'o', icon: 'undo-2', risk: 'safe', fills: true,
       cli: o => `sd writing stage --piece ${P_(o).piece} --stage ${target && P_(o).corrections.includes(target) ? target : (P_(o).corrections.at(-1) || '…')} --correct --reason "…"`,
       when: o => { const p = P_(o); if (!p) return 'not listed'; if (owned(p) !== true) return owned(p); return p.parked ? 'parked; revive first' : p.corrections.length ? true : 'no earlier stage to correct to'; },
       run: o => { const p = P_(o), to = target && p.corrections.includes(target) ? target : null; target = null; askReason(p, to); return null; } }, // the dialog's Correct is the write
-    { id: 'piece.park', on: 'piece', label: 'Park', key: 'p', icon: 'archive', risk: 'undo', bulk: true,
+    { id: 'piece.park', on: 'piece', label: 'Park', does: 'Parks the piece off the active board; Undo revives it.', key: 'p', icon: 'archive', risk: 'undo', bulk: true,
       cli: o => `sd writing park --piece ${P_(o).piece}`,
       when: o => { const p = P_(o); if (!p) return 'not listed'; if (owned(p) !== true) return owned(p); return p.publication ? 'published pieces stay on the board' : !p.parked || 'already parked'; },
       run: o => parkWrite(o, true), undo: parkUndo(true) },
-    { id: 'piece.revive', on: 'piece', label: 'Revive', key: 'v', icon: 'archive-restore', risk: 'undo', bulk: true,
+    { id: 'piece.revive', on: 'piece', label: 'Revive', does: 'Brings a parked piece back to the board; Undo parks it again.', key: 'v', icon: 'archive-restore', risk: 'undo', bulk: true,
       cli: o => `sd writing park --piece ${P_(o).piece} --revive`,
       primary: o => !!P_(o)?.parked,
       when: o => { const p = P_(o); if (!p) return 'not listed'; if (owned(p) !== true) return owned(p); return p.parked || 'not parked'; },
       run: o => parkWrite(o, false), undo: parkUndo(false) },
-    { id: 'piece.readiness', on: 'piece', label: 'Readiness', key: 'r', icon: 'shield-check', risk: 'safe',
+    { id: 'piece.readiness', on: 'piece', label: 'Readiness', does: 'Checks the piece\'s review gates and names the first problem.', key: 'r', icon: 'shield-check', risk: 'safe',
       cli: o => `sd writing readiness --piece ${P_(o).piece}`,
       run: o => { const p = P_(o); return p.gates_ok ? `#${p.id}: review checks pass` : `#${p.id}: ${markup.plural(p.problems.length, 'gate problem')}; first: ${p.problems[0]}`; } },
-    { id: 'piece.publish', on: 'piece', label: 'Publish', key: 'u', icon: 'send', risk: 'confirm',
+    { id: 'piece.publish', on: 'piece', label: 'Publish', does: 'Gives the two lines that publish the piece; the dashboard sends nothing.', key: 'u', icon: 'send', risk: 'confirm',
       // sd writing publication-claim writes the claim (--piece, --context-file, --payload-file); dispatch then publishes it.
       // build: copy only, with the reference's own executes: false; the dashboard sends nothing.
       executes: false,

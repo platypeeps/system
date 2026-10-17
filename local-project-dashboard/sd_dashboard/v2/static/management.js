@@ -580,20 +580,20 @@ function registerCommands() {
   const C = shell.commands;
   C.register(
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
-    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
       run: o => flipRepo('runner-merge', o), undo: undoOf },
-    { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.managed', on: 'repo', label: 'Switch managed', does: 'Switches whether sd manages this repo; Undo switches it back.', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
       run: o => flipRepo('managed', o), undo: undoOf },
     // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
-    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?view=repos&repo=${encodeURIComponent(o.path)}`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
-    { id: 'sddb.run', on: 'sd-db change', label: 'Run', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
+    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
         // write answered (sd:4632): the library keeps an inbound key the form never posts, so that row is not the posted value.
@@ -601,23 +601,23 @@ function registerCommands() {
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.
-    { id: 'file.prepare', on: 'file change', label: 'Prepare', key: 'p', risk: 'safe', primary: () => true, executes: false,
+    { id: 'file.prepare', on: 'file change', label: 'Prepare', does: 'Gives the sd-ship line that opens a pull request for this change.', key: 'p', risk: 'safe', primary: () => true, executes: false,
       cli: o => `sd-ship prepare --no-item --review-id ${o.branch.replace('/', '-')} --path .github/sd-review.json --title ${shq(o.title)}`,
       run: () => 'Copy it into a terminal in the checkout: the dashboard does not open pull requests' },
-    ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', risk: 'safe', executes: false,
+    ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
-    { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
+    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => window.shell.openItem(o.item) },
-    { id: 'wt.prune', on: 'worktrees', label: 'Prune', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
+    { id: 'wt.prune', on: 'worktrees', label: 'Prune', does: 'Removes records of worktrees whose folders are gone; this cannot be undone.', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.
-    { id: 'svc.restart', on: 'service', label: 'Restart', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
+    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
       consequence: o => `Stops and starts ${o.name}. Anything it serves drops for a few seconds.`, run: o => landing(service(o, 'restart'), () => `Restart requested · ${o.label}`) },
-    { id: 'svc.stop', on: 'service', label: 'Stop', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
+    { id: 'svc.stop', on: 'service', label: 'Stop', does: 'Stops the service through launchd; Start brings it back.', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
-    { id: 'svc.start', on: 'service', label: 'Start', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
+    { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // launchd calendar jobs. Retry (commands.js) posts /api/jobs/<name>/retry; operations.inventory's capability is the off
     // reason. Exit 127 is "command not found": Print is the row's act (sd:3392).
@@ -625,7 +625,7 @@ function registerCommands() {
       run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
-    { id: 'jobs.cancel', on: 'job', label: 'Cancel', key: 'x', risk: 'confirm', primary: o => o.running,
+    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', risk: 'confirm', primary: o => o.running,
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },

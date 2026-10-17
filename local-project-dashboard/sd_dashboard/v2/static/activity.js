@@ -385,12 +385,12 @@ addEventListener('DOMContentLoaded', () => {
   const openItem = item => window.shell.openItem(item);
   C.register(
     window.commands.openPullRequest({ pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
-    { id: 'pr.item', on: 'pull request', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    { id: 'pr.item', on: 'pull request', label: 'Open item', does: 'Opens the work item this delivery names.', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // build: the design's review.open; its review.lane re-runs a review, which a recorded one cannot ask for, so it is left out.
     window.commands.openPullRequest({ on: 'review', pr: o => ({ repo: `${o.owner}/${o.repo}`, number: o.pr, url: o.url }) }),
-    { id: 'review.item', on: 'review', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    { id: 'review.item', on: 'review', label: 'Open item', does: 'Opens the work item this review names.', key: 'i', risk: 'safe', when: o => !!o.item || 'the delivery names no work item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     window.commands.showAssignment({ run: o => { select(o.id, true); return `Assignment #${o.n} shown in Details`; } }),
-    { id: 'asg.item', on: 'assignment', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    { id: 'asg.item', on: 'assignment', label: 'Open item', does: 'Opens the work item this assignment works on.', key: 'i', risk: 'safe', when: o => !!o.item || 'the assignment names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
     // Retry (commands.js): it posts /api/jobs/<job>/retry with the job's revision, as Operations > Jobs does; launchd starts
     // the run.
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: ev(o).failed, exit: ev(o).exit, capability: ev(o).retry }), run: retry }),
@@ -399,18 +399,18 @@ addEventListener('DOMContentLoaded', () => {
     // build (sd:3391): Reconcile outcome, from v1 Operations > Commands, which this page replaces. It posts
     // /api/palette/<note>/reconcile, which observes the target and never replays the command; no sd verb does it, so it has no
     // line to copy. It is the primary act on an unfinished palette record, so it registers ahead of Show output.
-    { id: 'command.reconcile', on: 'command', label: 'Reconcile', key: 'r', risk: 'safe',
+    { id: 'command.reconcile', on: 'command', label: 'Reconcile', does: 'Checks how the run ended and records it; it never reruns it.', key: 'r', risk: 'safe',
       primary: o => ev(o).source !== 'runner' && !ev(o).ended,
       when: o => ev(o).source === 'runner' ? "a runner record is the runner's to finish; no palette request waits on it"
         : ev(o).ended ? 'the run ended; its outcome is recorded' : true,
       run: o => landing(reconcile(o), out => out.unknown
         || `Outcome of note ${o.note} recorded · ${out.exit_code == null ? 'no exit code' : `exit ${out.exit_code}`}`) },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
-    { id: 'command.output', on: 'command', label: 'Show output', key: 'o', risk: 'safe', primary: () => true,
+    { id: 'command.output', on: 'command', label: 'Show output', does: 'Reads the run\'s saved output and shows it in Details.', key: 'o', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
         : ev(o).expired ? `the output expired ${ev(o).expired}` : true,
       run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },
-    { id: 'command.item', on: 'command', label: 'Open item', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
+    { id: 'command.item', on: 'command', label: 'Open item', does: 'Opens the work item this command record names.', key: 'i', risk: 'safe', when: o => !!o.item || 'the record names no item', cli: o => `sd task show ${o.item}`, run: o => openItem(o.item) },
   );
   // read_execution answers at most 64 KiB a read (sd:2416): a full page means more follows at next_offset, up to the
   // 2 MiB it keeps of an output.
