@@ -120,7 +120,7 @@ function cadJobs() {
   const rest = Object.keys(CAD).filter(j => !FAM_OF[j]).sort().map(j => ['', j]);
   return [...named, ...rest];
 }
-const interesting = ([, j]) => DAYS.some(d => { const [s, , t] = mark(j, d); return s !== 'ok' && s !== 'none' && t !== 'no log yet'; }) || byJob['db:' + j]?.[0]?.act;
+const interesting = ([, j]) => DAYS.some(d => { const [s, , t] = mark(j, d); return s !== 'ok' && s !== 'none' && t !== 'no log yet'; }) || byJob[j]?.[0]?.act;
 let cadAll = false, jobFilter = '';
 function renderCad() {
   if (!DOC.cadence) {

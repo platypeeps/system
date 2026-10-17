@@ -697,6 +697,18 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         for heading in ("Acknowledge clean reports", "Also on the classic Resources screen"):
             self.assertNotIn(heading, page)
 
+    def test_a_job_with_a_report_that_needs_action_stays_in_the_short_cadence_table(self):
+        """A job whose log shows no gap is still listed while its newest report needs action (the rows key byJob by job)."""
+        doc = json.loads(json.dumps(self.doc))
+        sync = doc["cadence"]["nightly-sync"]
+        sync["from"], sync["runs"] = doc["days"][0], {d: [1, 0] for d in doc["days"]}
+        sync["last"] = {"day": doc["days"][-2], "read": True, "runs": [1, 0]}
+        out = self.run_page("R.marks = DAYS.map(d => mark('nightly-sync', d)[0]); R.listed = !!interesting(['', 'nightly-sync']);"
+                            " R.quiet = !!interesting(['', 'weekly-scan']);", doc=doc)
+        self.assertNotIn("caution", out["R"]["marks"])
+        self.assertNotIn("warning", out["R"]["marks"])
+        self.assertEqual((out["R"]["listed"], out["R"]["quiet"]), (True, False))
+
     def test_a_reading_retires_the_reports_and_jobs_it_no_longer_lists(self):
         clean, failed = self.ids["clean"], self.ids["failed"]
         later = json.loads(json.dumps(self.doc))
