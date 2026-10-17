@@ -18,6 +18,7 @@ done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 . "$DIR/../lib/config.sh"
 . "$DIR/../lib/bounded.sh"
+. "$DIR/../lib/brew_unlinked.sh"
 
 # fd 4 is this run's stderr, the job log under cron. bound_step is st_step with
 # its step line there, also when its caller captures the call's own output, as
@@ -36,6 +37,27 @@ bound_step() { # seconds, command...
 flag() {
   echo "$1"
   [ -z "${TMPD:-}" ] || printf '%s\n' "$1" >> "$TMPD/flagged"
+}
+
+# After a failed `make setup`: name a brew python that brew doctor lists as
+# unlinked, which the pack's installer then cannot run, and the fix. It links
+# nothing: local-brew-doctor does that on its own schedule (sd:4864). A doctor
+# that did not answer is said so, not read as no unlinked python.
+unlinked_python_hint() {
+  command -v brew >/dev/null 2>&1 || return 0
+  u_rc=0
+  bound_step 300 brew doctor < /dev/null > "$TMPD/doctor.raw" 2>&1 || u_rc=$?
+  # brew doctor exits 1 on a warning; any other code is no answer.
+  if [ "$u_rc" -gt 1 ]; then
+    flag "!!! cause unknown: could not check brew for an unlinked python (brew doctor exit $u_rc)"
+    return 0
+  fi
+  grep -v '^\[step ' "$TMPD/doctor.raw" > "$TMPD/doctor" || :
+  st_unlinked_kegs "$TMPD/doctor" | grep '^python' > "$TMPD/unlinked" || :
+  while IFS= read -r u_keg; do
+    flag "!!! cause: $u_keg is unlinked; relink it: brew link $u_keg"
+  done < "$TMPD/unlinked"
+  return 0
 }
 
 # The work checkout root. REPO_SYNC_WORK_ROOT and local-ai-apps'
@@ -693,6 +715,7 @@ pin_move() {
     echo "--- make setup"
     if ! make -C "$m_dir" setup; then
       flag "!!! failed: make setup; the checkout is at $m_new, rerun: make -C $m_dir setup"
+      unlinked_python_hint
       m_rc=1
     fi
   fi
@@ -1064,6 +1087,7 @@ recover() {
     echo "--- make setup at $(git -C "$v_pack" rev-parse --short HEAD)"
     if ! make -C "$v_pack" setup; then
       flag "!!! failed: make setup at the record's pack; by hand: make -C '$v_pack' setup"
+      unlinked_python_hint
       return 1
     fi
   fi
@@ -1473,6 +1497,7 @@ follow() {
       echo "--- make setup"
       if make -C "$f_dir" setup; then continue; fi
       flag "!!! failed: make setup; by hand: make -C '$f_dir' setup"
+      unlinked_python_hint
       f_failed=1
       f_back=0
       break
@@ -1553,6 +1578,7 @@ follow() {
       echo "--- make setup at the old sha"
       if ! make -C "$f_dir" setup; then
         flag "!!! failed: make setup at the old sha; the pack's commands may be from the hub's pin; by hand: make -C '$f_dir' setup"
+        unlinked_python_hint
         f_back=0
       fi
     fi
