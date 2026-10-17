@@ -170,6 +170,7 @@ class Fixture:
         (self.tmp / "lib").mkdir()
         shutil.copy(LIB / "config.sh", self.tmp / "lib" / "config.sh")
         shutil.copy(LIB / "bounded.sh", self.tmp / "lib" / "bounded.sh")
+        shutil.copy(LIB / "brew_unlinked.sh", self.tmp / "lib" / "brew_unlinked.sh")
         # Every profile but terra layers the profile conf on the common one.
         # Written for every profile so a fixture switched to `personal` needs
         # nothing else.

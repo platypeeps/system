@@ -778,6 +778,51 @@ class FollowTest(unittest.TestCase):
         f.run("follow", expect=0)
         self.assertFalse(f.intent.exists())
 
+    def test_a_failed_setup_names_an_unlinked_brew_python(self):
+        """NEW (sd:4864). When make setup fails and brew doctor lists a python
+        formula as unlinked, the report names it and the fix, and follow
+        relinks nothing itself."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+
+        result = f.run("follow", expect=1, extra_env={
+            "MAKE_RC": "1", "BREW_DOCTOR_RC": "1",
+            "BREW_DOCTOR": "Warning: You have unlinked kegs in your Cellar.\n"
+                           "Run `brew link` on these:\n  example-keg\n  python@3.12\n\n"})
+
+        self.assertIn("python@3.12 is unlinked; relink it: brew link python@3.12", result.stdout)
+        self.assertNotIn("example-keg is unlinked", result.stdout)
+        self.assertIn(f"by hand: make -C '{pack}' setup", result.stdout)
+
+    def test_a_failed_setup_with_no_unlinked_python_names_none(self):
+        """NEW (sd:4864). A clean doctor, or an unlinked keg that is no
+        python, adds no relink line."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+
+        for doctor, rc in (("", "0"), ("Warning: You have unlinked kegs in your Cellar.\n  example-keg\n\n", "1")):
+            result = f.run("follow", expect=1, extra_env={
+                "MAKE_RC": "1", "BREW_DOCTOR": doctor, "BREW_DOCTOR_RC": rc})
+            self.assertNotIn("unlinked", result.stdout)
+            self.assertNotIn("brew link", result.stdout)
+
+    def test_a_failed_setup_says_when_brew_doctor_did_not_answer(self):
+        """NEW (sd:4864). A doctor that fails is no answer: the report says it
+        could not check, not that no python is unlinked."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, old[0], pack=old[1])
+        f.leave_intent(*old)
+
+        result = f.run("follow", expect=1, extra_env={
+            "MAKE_RC": "1", "BREW_DOCTOR": "Error: cannot read the Cellar\n", "BREW_DOCTOR_RC": "2"})
+
+        self.assertIn("could not check brew for an unlinked python (brew doctor exit 2)", result.stdout)
+
     def test_kill_in_the_rollback_finishes_on_the_next_run(self):
         """NEW (round 6, kill point 8). A rollback killed after it put system
         back leaves the marker with the pack at the pin: the next run moves

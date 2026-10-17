@@ -8,6 +8,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/bounded.sh"
+. "$DIR/../lib/brew_unlinked.sh"
 
 case "${1:-}" in
   run)
@@ -92,8 +93,7 @@ fi
 # Unlinked kegs: only link ones brew still has a formula for, and never
 # --overwrite — an orphaned formula keg once clobbered a cask's binary here.
 if grep -q 'You have unlinked kegs' "$tmp/doctor1"; then
-  sed -n '/You have unlinked kegs/,/^$/p' "$tmp/doctor1" \
-    | grep '^  [a-z0-9]' | tr -d ' ' > "$tmp/unlinked" || true
+  st_unlinked_kegs "$tmp/doctor1" > "$tmp/unlinked"
   while IFS= read -r keg; do
     [ -n "$keg" ] || continue
     # 1 is no formula; a timeout or a signal is no answer, not an orphan.

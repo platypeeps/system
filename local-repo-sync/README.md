@@ -86,7 +86,9 @@ branch alone. In the command pack (it has
 `bin/sd_install.py`) it then runs `make setup`. It moves the system
 checkout first, whatever the conf or argument order (sd:3218); it knows
 that checkout by `local-repo-sync/repo-sync.sh`. It exits 1 when any
-checkout failed.
+checkout failed. When a `make setup` fails, it also runs `brew doctor`
+and names any unlinked brew python with its `brew link` fix (sd:4864); it
+relinks nothing itself, `local-brew-doctor` does.
 
 Every check and fetch runs first, while the services still serve: a
 refused checkout, a failed fetch or a kill in that phase moves nothing and

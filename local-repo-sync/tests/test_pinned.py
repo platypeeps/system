@@ -28,6 +28,17 @@ eval "${MAKE_HOOK:-}"
 exit "${MAKE_RC:-0}"
 """
 
+# Test stub for brew: `doctor` prints BREW_DOCTOR on stderr and exits
+# BREW_DOCTOR_RC (0, with no output, when unset), as a machine with a clean
+# brew; any other verb does nothing. No case reaches the machine's own brew.
+BREW_STUB = """#!/bin/sh
+case "$1" in
+  doctor) [ -z "${BREW_DOCTOR:-}" ] || printf '%b' "$BREW_DOCTOR" >&2
+          exit "${BREW_DOCTOR_RC:-0}" ;;
+esac
+exit 0
+"""
+
 # Refresh drains the lanes through `sd` (sd:3099). The stub answers the two
 # calls it makes: an idle gate, unless SD_GATE_SCRIPT prints another answer,
 # and an unset sd.lane_root, unless SD_LANE_ROOT_SETTING names one.
@@ -94,6 +105,8 @@ class PinFixture(HygieneFixture):
         super().__init__()
         (self.bin / "make").write_text(MAKE_STUB)
         (self.bin / "make").chmod(0o755)
+        (self.bin / "brew").write_text(BREW_STUB)
+        (self.bin / "brew").chmod(0o755)
         self.make_log = self.tmp / "make.log"
         self.others = 0
         (self.bin / "sd").write_text(SD_STUB)

@@ -102,9 +102,11 @@ class EndToEndTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "local-brew-doctor").mkdir()
         shutil.copy(ROOT / "local-brew-doctor/brew-doctor.sh", self.tmp / "local-brew-doctor")
-        # brew-doctor sources ../lib/bounded.sh for its bounded brew calls (sd:3536).
+        # brew-doctor sources ../lib/bounded.sh for its bounded brew calls (sd:3536)
+        # and ../lib/brew_unlinked.sh for the unlinked kegs (sd:4864).
         (self.tmp / "lib").mkdir()
-        shutil.copy(ROOT / "lib/bounded.sh", self.tmp / "lib")
+        for lib in ("bounded.sh", "brew_unlinked.sh"):
+            shutil.copy(ROOT / "lib" / lib, self.tmp / "lib")
         self.sent = self.tmp / "notify-calls"
         _stub(self.tmp / "local-notify/notify.sh", f'printf "%s\\n" "$@" >> "{self.sent}"\n')
         self.bin = self.tmp / "bin"
