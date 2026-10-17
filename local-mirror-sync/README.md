@@ -54,7 +54,9 @@ the NAS folder `Backup/sd-backups-hourly`, additive, through
 failover restores from; the nightly copy below is the 24-hour one. After the
 copy, the same job runs `sd-db backup --prune-only` over the NAS folder: it
 deletes copies whose checkpoint is more than 7 days old and that still match
-their manifests (sd:4011). It needs a pack with that flag. A machine that
+their manifests (sd:4011). With `--prune-unmanifested` it also deletes a dated
+folder with no manifest, a copy stopped partway, once its name is more than 14
+days old (sd:4917). It needs a pack with both flags. A machine that
 moves the local root with `SD_DB_BACKUP_HOURLY_DESTINATION`, such as a promoted
 satellite, still copies and prunes; the pair list's source must name that root.
 
