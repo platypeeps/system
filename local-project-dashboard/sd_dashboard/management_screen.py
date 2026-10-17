@@ -25,9 +25,6 @@ source guarded on its own so one that fails is a reason and not an empty list
   also carries `log`, the end of `<cron_root>/logs/<job>.log` (`job_log`),
   and `last_request`, the last retry or cancel the page or the CLI sent and
   what launchctl answered, as v1 Operations > Jobs showed it.
-- `grant`: the machine merge grant, `sd config get sd.assistant_merge`
-  (sd:1629). It is machine-wide, so the document carries it once, not per
-  repo; unset is a reading (`None`), not a failure.
 
 Each repo also carries the overview's columns (sd:1629): its required checks
 and `strict` from the protection reading, and `runtimes`, the Python and Node
@@ -51,7 +48,6 @@ import json
 import os
 import sqlite3
 import stat
-import subprocess
 import sys
 import tomllib
 from datetime import datetime, timezone
@@ -64,7 +60,7 @@ from . import fix_session
 from . import fleet as fleet_module
 from .repos_screen import primary
 
-__all__ = ["assistant_merge", "document", "job_log", "last_run", "log_tail", "set_repo"]
+__all__ = ["document", "job_log", "last_run", "log_tail", "set_repo"]
 
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
@@ -74,8 +70,6 @@ REVIEW_BYTES = 16384
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 #: The largest run stamp read; the wrapper writes three short lines.
 STAMP_BYTES = 512
-#: `sd config get`'s ceiling: one pack start and one small file read.
-SD_SECONDS = 5.0
 #: The largest pin file read; a version file is one line, a manifest a few KiB.
 PIN_BYTES = 65536
 #: How much of a job's log the page shows, from its end: where a failing run says why.
@@ -473,41 +467,14 @@ def _jobs(connection, backend) -> list[dict]:
             for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 
-def assistant_merge() -> tuple[int, str, str]:
-    """`sd config get sd.assistant_merge`: its exit code, stdout and stderr, within `SD_SECONDS` (sd:1629)."""
-    try:
-        done = subprocess.run(["sd", "config", "get", "sd.assistant_merge"], capture_output=True, text=True,
-                              timeout=SD_SECONDS, check=False)
-    except FileNotFoundError:
-        raise ValueError("sd is not on the dashboard's PATH, so the machine merge grant was not read") from None
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"sd config get ran past its {SD_SECONDS:g} seconds") from None
-    return done.returncode, done.stdout, done.stderr
-
-
-def _grant(read) -> dict:
-    """The machine merge grant: `controlled`, `ask`, or None when unset (which reads as ask)."""
-    code, out, err = read()
-    said = (err.strip().splitlines() or [""])[0]
-    if code == 1 and "is not set" in said:
-        return {"assistant_merge": None}
-    if code:
-        raise ValueError(f"sd config get sd.assistant_merge exited {code}" + (f": {said}" if said else ""))
-    value = out.strip()
-    if value not in ("controlled", "ask"):
-        raise ValueError(f"sd config get sd.assistant_merge printed {value or 'nothing'}, not controlled or ask")
-    return {"assistant_merge": value}
-
-
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, grant=None) -> dict:
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default; `grant` is `assistant_merge`'s shape.
+    by default.
     """
     read = fleet or fleet_module.collect
-    config = grant or assistant_merge
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
                             ("git", lambda: _git(read, now)),
@@ -515,8 +482,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("assignments", lambda: _assignments(connection)),
                             ("sessions", lambda: _sessions(read)),
                             ("services", lambda: _services(connection, services)),
-                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend())),
-                            ("grant", lambda: _grant(config))):
+                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend()))):
         try:
             out[source] = collect()
         except FAILURES as failure:

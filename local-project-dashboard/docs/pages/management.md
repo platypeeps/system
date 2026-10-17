@@ -8,7 +8,7 @@ makes. Each source is read on its own, so one that fails is a named reason, not
 an empty list. Nothing fetches, pulls or calls GitHub: protection is the
 nightly collector's reading. Each job carries its last run from the
 cron-jobs wrapper's stamp file and the end of its log; a log that cannot be
-read is no log, with the reason. The merge grant is read once, machine-wide.
+read is no log, with the reason.
 Writes go through the routes the server already answers: job retry and cancel,
 service start, stop and restart, and the `sd-db repo` verbs, which refuse a
 stale revision and, on a satellite, refuse with `HubOnly`.

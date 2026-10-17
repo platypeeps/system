@@ -1,10 +1,9 @@
 """Settings' Fleet section (sd:3989): the `sd.*` keys whose one value serves every machine.
 
 The pack keeps them as setting rows in the workflow database (`sd_lib.FLEET_KEYS`). This page reads them with
-`sd config list sd --json` and writes one with `sd config set sd.<key> <value>`, as Management reads
-`sd config get sd.assistant_merge`: the pack holds each key's pattern, description and the row-wins rule, so none is
-copied here. Each row shows its value, its source (`database`, `file` or `default`) and its description; a key whose
-pattern is a list of words gets a select.
+`sd config list sd --json` and writes one with `sd config set sd.<key> <value>`: the pack holds each key's pattern,
+description and the row-wins rule, so none is copied here. Each row shows its value, its source (`database`, `file`
+or `default`) and its description; a key whose pattern is a list of words gets a select.
 
 A failed list is named and lists nothing. A refused set answers sd's reason (400). A set that runs past `SD_SECONDS`
 may have committed before it was stopped, so its outcome is unknown: it answers 504 with `unknown`, and the page reads
@@ -18,9 +17,10 @@ import json
 import re
 import subprocess
 
-from .management_screen import SD_SECONDS
-
 __all__ = ["FLEET", "document", "request"]
+
+#: An `sd config` run's ceiling: one pack start and one small read or write.
+SD_SECONDS = 5.0
 
 #: The pack's `sd_lib.FLEET_KEYS`, in the order the page lists them; `test_v2_settings` pins the two equal.
 FLEET = ("fleet_owners", "copilot_review", "hub_name")
