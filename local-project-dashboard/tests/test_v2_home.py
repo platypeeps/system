@@ -934,7 +934,8 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
         doc["groups"].append({"name": "Binary", "tiles": [
             tile("binary_sensor.house_powerwall_grid_status", "on", "power"), tile("binary_sensor.pump_fault", "on", "problem"),
             tile("binary_sensor.side_door", "on", "door"), tile("binary_sensor.bare_switch", "on", None),
-            tile("binary_sensor.uplink", "off", "connectivity"), tile("binary_sensor.pump_fault_clear", "off", "problem")]})
+            tile("binary_sensor.uplink", "off", "connectivity"), tile("binary_sensor.pump_fault_clear", "off", "problem"),
+            tile("binary_sensor.grid_off", "off", "power")]})
         return doc
 
     def test_a_binary_sensor_lamp_and_words_come_from_its_device_class(self):
@@ -948,7 +949,9 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
             "binary_sensor.pump_fault": ("warning", "problem"),
             "binary_sensor.side_door": ("neutral", "open"),
             "binary_sensor.bare_switch": ("neutral", "on"),
-            "binary_sensor.uplink": ("neutral", "disconnected"),
+            # A lost connection is worth a look; power off is a plain fact (a grid outage the Powerwall carries).
+            "binary_sensor.uplink": ("caution", "disconnected"),
+            "binary_sensor.grid_off": ("neutral", "disconnected"),
             "binary_sensor.pump_fault_clear": ("ok", "clear"),
         })
 

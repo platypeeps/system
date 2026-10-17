@@ -56,7 +56,8 @@ it is visible (sd:3522); the minute read draws no loading state, so the tiles
 keep their place, and a failed read draws no tile and says why.
 
 A binary sensor reads by its `device_class` (sd:4959): on is ok for
-connectivity, power, plug, running, battery charging and presence; a warning
+connectivity, power, plug, running, battery charging and presence, and off is
+neutral except connectivity, which reads caution; on is a warning
 for problem, smoke, gas, carbon monoxide, moisture, safety, tamper, heat and
 cold; and a neutral fact, with no colour, for doors, windows, openings, motion
 and occupancy. A sensor with no class is neutral on/off. Details opens with one

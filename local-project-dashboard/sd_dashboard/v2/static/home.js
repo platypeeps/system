@@ -20,10 +20,10 @@ addEventListener('DOMContentLoaded', () => {
   // state, '' when it did. WRITES: why no command runs, '' when they can. SERVICES: the server's allowlist, domain -> service -> risk.
   let E = {}, HEAD = null, GROUPS = [], REASON = '', WRITES = '', SERVICES = {}, READ = null, CONFIG = null;
   // build (sd:4959): a binary sensor reads by its Home Assistant device_class: [lamp when on, lamp when off, on words, off
-  // words, what on means]. On is good for the first group, a fault for the second, and a plain fact for the third; a sensor
-  // with no class is neutral on/off, never a warning. The words follow Home Assistant's own state names.
+  // words, what on means]. On is good for the first group (connectivity off is caution, power off a plain fact), a fault for
+  // the second, and a plain fact for the third; a sensor with no class is neutral on/off, never a warning. The words follow Home Assistant's own state names.
   const BINARY = {
-    connectivity: ['ok', 'neutral', 'connected', 'disconnected', 'it is connected'],
+    connectivity: ['ok', 'caution', 'connected', 'disconnected', 'it is connected'], // off: a lost link is worth a look
     power: ['ok', 'neutral', 'connected', 'disconnected', 'it is connected to power'],
     plug: ['ok', 'neutral', 'plugged in', 'unplugged', 'it is plugged in'],
     running: ['ok', 'neutral', 'running', 'not running', 'it is running'],
