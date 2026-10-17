@@ -99,9 +99,8 @@ Priorities (ntfy): `min|low|default|high|urgent`. Also linked as `notify` in
   Gmail through the local `google_workspace_mcp` HTTP server
   (launchd, port 8083); needs `NOTIFY_EMAIL_TO` and `EMAIL_FROM` (the Google
   account authorized in that server). Title becomes the subject; `-f html`
-  sends the body as HTML (obsidian-review uses this for its action
-  buttons — the other channels always get the body as-is). Used by
-  the nightly report jobs (brew-doctor, repo-sync, obsidian-review).
+  sends the body as HTML (the other channels always get the body as-is).
+  Used by the nightly report jobs (brew-doctor, repo-sync).
   This is the email channel's outbound half, and its only sender;
   `local-mail-intake` is the inbound half (sd:4191).
 
