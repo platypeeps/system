@@ -18,8 +18,10 @@ with the reason; no other view is touched. The lamps on top come from
 badge: it reads the database-only areas now and shows every walker's last
 answer with its time, so it never waits on one. A walker with no answer younger
 than 60 seconds (the doctor's 10 minutes) gets a scan started in the background,
-which the next view read joins. `GET /api/health` is still every area in one
-document.
+which the next view read joins. Worktrees reads the server's fleet snapshot: its
+time is when that snapshot's read began, and after a failed refresh the area is
+stale with the reason. A stale area's lamp is unknown unless a row is worse.
+`GET /api/health` is still every area in one document.
 
 The page declares its views in `window.PAGE_VIEWS` for the shell's view switch,
 which owns `#view=<id>`; each view's reader starts the first time it opens. Each

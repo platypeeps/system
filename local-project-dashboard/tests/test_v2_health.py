@@ -1080,6 +1080,27 @@ class OneScanPerArea(Collectors, ScreenCase):
         self.assertNotEqual(wt["rows"], self.doc(fleet_of(TREES))["areas"][2]["rows"])
 
 
+    def test_the_fleet_snapshot_dates_the_worktrees_area_and_a_failed_refresh_marks_it_stale(self):
+        # sd:4956: read.fleet answers its snapshot with `observed`, when its read began, and `stale` after a failed refresh.
+        observed = "2026-09-05T11:58:00Z"
+
+        def snapshot(stale=None):
+            read = fleet_of([])
+            return lambda area: {**read(area), "observed": observed, **({"stale": stale} if stale else {})}
+        fresh = self.doc(snapshot())["areas"][2]
+        self.assertEqual((fresh["id"], fresh["at"], fresh["stale"]), ("wt", observed, ""))
+        self.assertEqual(health_screen._lamp(fresh)["state"], "ok")
+        health_screen._SCANS.clear()
+        why = "the fleet refresh failed: git worktree list timed out"
+        wt = self.doc(snapshot(why))["areas"][2]
+        self.assertEqual((wt["at"], wt["stale"], wt["error"]), (observed, why, ""))
+        lamp = health_screen._lamp(wt)
+        self.assertEqual((lamp["stale"], lamp["state"]), (why, "unknown"), "a stale Worktrees read showed a green lamp")
+        # A fleet with no `observed` (a test seam) is dated by Health's own read.
+        health_screen._SCANS.clear()
+        self.assertEqual(self.doc(fleet_of([]))["areas"][2]["at"], NOW)
+
+
 class TheViews(Collectors, ScreenCase):
     """One view's areas, each view its own read, and a summary that waits on no walker (the Health split).
 

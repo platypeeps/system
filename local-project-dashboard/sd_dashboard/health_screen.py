@@ -169,6 +169,13 @@ def _worktree_rows(document) -> list[dict]:
     return rows
 
 
+def _fleet_rows(document) -> tuple[list[dict], dict]:
+    """The Worktrees rows, dated by the fleet snapshot's `observed`, and `stale` with its reason after a failed refresh."""
+    rows = _worktree_rows(document)
+    extra = {"at": document["observed"]} if document.get("observed") else {}
+    return rows, {**extra, "stale": document["stale"]} if document.get("stale") else extra
+
+
 def _port_rows(snapshot) -> tuple[list[dict], dict]:
     """Operations > Ports' rows as ledger rows, with its counts line and warnings."""
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("services"), list):
@@ -923,6 +930,8 @@ def _settle(area: dict, name: str, read) -> None:
         area["extra"] = dict(extra)  # a kept answer is settled again; popping `at` must not change it
         if "at" in area["extra"]:
             area["at"] = area["extra"].pop("at")
+        if area["extra"].get("stale"):
+            area["stale"] = "; ".join(filter(None, (area["stale"], area["extra"].pop("stale"))))
     except reads.OverBudget as refused:
         area["error"] = f"{refused} and was stopped rather than waited on"
     except ports_screen.OverBudget as refused:
@@ -953,7 +962,7 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     read_doctor = doctor or (lambda: health_collectors.doctor_scan())
     return {
         "disk": lambda: _disk_rows(scan_disk(connection)),
-        "wt": lambda: _worktree_rows(read_fleet("sessions")),
+        "wt": lambda: _fleet_rows(read_fleet("sessions")),
         "br": lambda: _branch_rows(scan_branches(connection)),
         "ports": lambda: _port_rows(collect_ports()),
         "prot": lambda: _protection_rows(read_protection(connection)),
@@ -1078,6 +1087,9 @@ def _lamp(area: dict) -> dict:
                 "error": area["error"], "stale": area["stale"], "n": None, "value": [{"b": "", "t": "not read"}]}
     loudest = min((row["state"] for row in rows), key=lambda state: RANK.get(state, 2), default="ok")
     state = "ok" if loudest == "queued" else loudest if loudest in RANK else "unknown"
+    # Rows not re-read cannot say all is well: a stale area's quiet lamp is unknown, never green.
+    if area["stale"] and state == "ok":
+        state = "unknown"
 
     def total(key: str) -> int:
         return sum(int(row.get("facts", {}).get(key) or 0) for row in rows
