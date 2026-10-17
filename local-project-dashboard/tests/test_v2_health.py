@@ -1286,6 +1286,27 @@ var PANEL = () => ELS['view-' + window.shell.view.current()];
 """
 
 
+# The shell's view switch (shell.js, view:start) as health.js meets it: shell.js loads after the page, shows the hash's view
+# at once, and fires the first shell:view after the page's DOMContentLoaded listener. A test that brings its own shell.view
+# keeps it.
+VIEW_SHELL = r"""
+if (!window.shell.view) (() => {
+  const seen = new Set(); let now = null, started = false; OUT.counts = OUT.counts || {};
+  const fire = id => { const first = !seen.has(id); seen.add(id);
+    document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: PAGE_VIEWS.find(v => v.id === id).api } })); };
+  const apply = id => { if (id === now) return; now = id;
+    PAGE_VIEWS.forEach(v => { document.getElementById('view-' + v.id).hidden = v.id !== id; }); if (started) fire(id); };
+  const show = id => { if (!PAGE_VIEWS.some(v => v.id === id)) return false;
+    if (location.hash !== '#view=' + id) { OUT.address = location.pathname + '#view=' + id; location.hash = '#view=' + id; }
+    apply(id); return true; };
+  window.shell.view = { current: () => now, show, count: (id, n) => { OUT.counts[id] = n; } };
+  const m = /^#view=([a-z0-9-]+)$/.exec(location.hash);
+  apply(m && PAGE_VIEWS.some(v => v.id === m[1]) ? m[1] : PAGE_VIEWS[0].id);
+  document.addEventListener('DOMContentLoaded', () => { started = true; fire(now); });
+})();
+"""
+
+
 class TheScript(Collectors, ScreenCase):
     """health.js against the document `health_screen` builds from the fixtures above, one view at a time."""
 
@@ -1299,7 +1320,7 @@ class TheScript(Collectors, ScreenCase):
                   + f"\nvar DOC = {json.dumps(doc)}, SUMMARY_DOC = {json.dumps(summary_of(doc))}, STATUS = {status};\n"
                   + f"location.pathname = '/fleet-health'; location.hash = {json.dumps(f'#view={view}' if view else '')}; location.search = {json.dumps(search)};\n"
                   + "URLSearchParams.prototype.toString = function () { return ''; };\n" + HEALTH_ANSWER + pre
-                  + SNOOZE_JS + COMMANDS_JS + HEALTH_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
+                  + SNOOZE_JS + COMMANDS_JS + HEALTH_JS + VIEW_SHELL + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\n"
                   + "(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -1778,37 +1799,31 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
         doc = self.run_doc()
         disk = next(area for area in doc["areas"] if area["id"] == "disk")
         disk["error"] = "df did not answer in 5 s"
-        out = self.run_page("""R.lamps = ELS.annunciator.html; R.areas = PANEL().html; R.views = ELS.viewswitch.html;""", pre="""var pending = [];
+        out = self.run_page("""R.lamps = ELS.annunciator.html; R.areas = PANEL().html;""", pre="""var pending = [];
 ANSWER = path => path === '/api/health/summary' ? [200, SUMMARY_DOC] : new Promise(answer => pending.push(answer));""", doc=doc)
         self.assertEqual(out["gets"], ["/api/health/summary", "/api/health/checkouts"])
         self.assertRegex(out["R"]["lamps"], r'data-area="disk" data-state="unknown"')
         self.assertRegex(out["R"]["lamps"], r'data-area="br" data-state="caution"')
         self.assertRegex(out["R"]["lamps"], r'data-area="cred" data-state="unknown"')
         self.assertNotIn('class="area"', out["R"]["areas"] or "")
-        self.assertEqual(re.findall(r'data-view="(\w+)" aria-selected="(\w+)"', out["R"]["views"]),
-                         [("checkouts", "true"), ("machine", "false"), ("github", "false"), ("jobs", "false")])
         # A view's count is the rows that want you in it; Machine's disk was not read, so Machine has no count.
-        counts = dict(re.findall(r'data-view="(\w+)"[^>]*>\w+(?: <span class="n">(\d+)</span>)?</button>', out["R"]["views"]))
-        self.assertEqual((counts["checkouts"], counts["jobs"]), (str(wanting(doc, "checkouts")), str(wanting(doc, "jobs"))))
-        self.assertEqual(counts["machine"], "")
+        counts = out["counts"]
+        self.assertEqual((counts["checkouts"], counts["jobs"]), (wanting(doc, "checkouts"), wanting(doc, "jobs")))
+        self.assertIsNone(counts["machine"])
 
-    def test_a_view_switch_reads_its_part_once_and_names_it_in_the_address(self):
-        switch = "ELS.viewswitch.listeners.click[0]({{ target: {{ closest: s => s === '[data-view]' ? {{ dataset: {{ view: '{v}' }} }} : null }} }}); await flush();"
-        out = self.run_page("OUT.gets = [];" + switch.format(v="machine") + """
-R.areas = PANEL().html; R.address = OUT.address; R.views = ELS.viewswitch.html; R.hidden = PAGE_VIEWS.map(v => ELS['view-' + v.id].hidden);"""
+    def test_a_view_switch_reads_its_part_once(self):
+        switch = "shell.view.show('{v}'); await flush();"
+        out = self.run_page("OUT.gets = [];" + switch.format(v="machine") + "R.areas = PANEL().html;"
                             + switch.format(v="checkouts") + "R.back = PANEL().html; R.again = OUT.gets.slice();")
         self.assertEqual(out["R"]["again"], ["/api/health/machine", "/api/health/summary"], "a view opened before was read again")
-        self.assertEqual(out["R"]["address"], "/fleet-health#view=machine")
-        self.assertEqual(out["R"]["hidden"], [True, False, True, True])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["areas"]), ["disk", "ports", "svc", "doc"])
-        self.assertIn('data-view="machine" aria-selected="true"', out["R"]["views"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["back"]), ["wt", "br"])
 
     def test_with_no_view_named_the_first_opens_and_an_area_value_opens_its_view(self):
-        first = self.run_page("R.address = OUT.address;", view=None)
+        first = self.run_page("", view=None)
         self.assertEqual(first["gets"], ["/api/health/summary", "/api/health/checkouts", "/api/health/summary"])
-        self.assertEqual(first["R"]["address"], "/fleet-health#view=checkouts")
-        asked = self.run_page("R.areas = PANEL().html;", view=None, search="?area=ports")
+        asked = self.run_page("R.areas = PANEL().html; R.address = OUT.address;", view=None, search="?area=ports")
+        self.assertEqual(asked["R"]["address"], "/fleet-health?area=ports#view=machine")
         self.assertEqual(asked["gets"], ["/api/health/summary", "/api/health/machine", "/api/health/summary"])
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', asked["R"]["areas"]), ["ports"])
         named = self.run_page("", view="jobs", search="?area=ports")

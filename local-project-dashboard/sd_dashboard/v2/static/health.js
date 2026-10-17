@@ -86,27 +86,7 @@
   }
 
   // ---------- Views ----------
-  // Until shell.js carries the view switch (sys-tuning-ui's contract), this draws it in #viewswitch to the same contract:
-  // PAGE_VIEWS, panels #view-<id>, #view=<id>, shell.view.current/show/count and the shell:view event. Delete it, and
-  // #viewswitch in health.html, once shell.view exists.
-  function viewSwitch() {
-    if (window.shell.view) return;
-    const seen = new Set(), n = {};
-    let cur = null;
-    const draw = () => put($('viewswitch'), html`${PAGE_VIEWS.map(v => html`<button type="button" role="tab" class="chip" data-view="${v.id}" aria-selected="${String(v.id === cur)}">${v.label}${n[v.id] == null ? '' : html` <span class="n">${n[v.id]}</span>`}</button>`)}`);
-    const show = id => {
-      const v = PAGE_VIEWS.find(x => x.id === id); if (!v || id === cur) return;
-      cur = id; PAGE_VIEWS.forEach(x => { $(`view-${x.id}`).hidden = x.id !== id; });
-      if (location.hash !== `#view=${id}`) history.replaceState(null, '', `${location.pathname}${location.search}#view=${id}`);
-      draw();
-      const first = !seen.has(id); seen.add(id);
-      document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: v.api } }));
-    };
-    window.shell.view = { current: () => cur, show, count: (id, c) => { n[id] = c; draw(); } };
-    $('viewswitch').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) show(b.dataset.view); });
-    addEventListener('hashchange', () => show(hashView()));
-    show(hashView() || PAGE_VIEWS[0].id);
-  }
+  // The shell draws the switch from PAGE_VIEWS (shell.js, view:start); onView reads a view on its first shell:view.
   const hashView = () => (/(?:^#|&)view=([a-z0-9-]+)/.exec(location.hash || '') || [])[1];
   // A view's reading becomes the page's rows; an unread view has none.
   function use(id) {
@@ -383,9 +363,9 @@
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
     query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
     showing = u.get('show') === 'all' ? 'all' : 'findings';
-    // An ?area= link opens that area's view unless #view= names one; the view switch reads the hash next.
+    // An ?area= link opens that area's view unless #view= names one. The shell's first shell:view fires after this listener.
     const asked = viewOf([...F.area][0]);
-    if (asked && !hashView()) history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`);
+    if (asked && !hashView()) { history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`); shell.view.show(asked); }
 
     // Each panel: its Show and filter chips, the filter note's clear, a matrix column and a row.
     PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('click', e => {
@@ -418,6 +398,5 @@
 
     document.addEventListener('shell:view', e => onView(e.detail));
     readSummary();
-    viewSwitch();
   });
 })();

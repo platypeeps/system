@@ -19,14 +19,18 @@
 //   first: () => id,                the row to select when the current one is gone
 //   select: (id, opened) => {},     select a row; opened: it is the first read's ?row=
 //   unselect: () => {},             nothing selected: Details shows the page's nothing-selected text
+//   slot: 'state-jobs',             optional: the element id the loading, partial and error states draw in (shell.state's at);
+//                                   a page with one reader per view panel gives each panel its own, the page's #state otherwise
+//   active: () => bool,             optional: false while the reader's view is not open; its reads still load, retire and draw,
+//                                   but leave the selection alone, so a late read cannot clear the open view's (the view switch)
 // });
 // rows.load();     the first read and each refresh
 // rows.load(true); a timed read: no loading state, so the rows on screen keep their place until it answers
 // rows.reread();   after a write landed. A refused write calls load(): only reread() says the change landed.
 (() => {
   const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
-  window.SHELL_READ = ({ fetch, commands: C, state, row, listen }) => spec => {
-    const { source, what } = spec;
+  window.SHELL_READ = ({ fetch, commands: C, state: put, row, listen }) => spec => {
+    const { source, what } = spec, state = s => put(s, spec.slot), open = () => !spec.active || spec.active();
     let generation = 0, applied = 0, putIds = new Set(), picks = [], flight = null, queued = null;
     listen('shell:picked', e => { picks = (e && e.detail) || []; });
 
@@ -42,8 +46,9 @@
       putIds.forEach(id => { if (!keep.has(id)) C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }); });
       putIds = keep;
     }
-    function unselect() { C.select(null); spec.unselect(); }
+    function unselect() { if (open()) { C.select(null); spec.unselect(); } }
     function settle(first) {
+      if (!open()) return;
       const asked = first ? row() : spec.current();
       const id = putIds.has(asked) ? asked : spec.first();
       if (id != null && putIds.has(id)) spec.select(id, first && id === asked);
