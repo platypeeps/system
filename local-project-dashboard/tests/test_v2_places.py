@@ -230,6 +230,16 @@ for (const v of ['hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LIS
         self.assertEqual(r["all"], r["first"])
 
 
+class ThePages(unittest.TestCase):
+    def test_the_overviews_read_state_shows_with_the_overview_only(self):
+        # The page's #state names the Overview's read (/api/hoa, /api/home); on Issues it would describe another read.
+        for page in ("hoa", "home"):
+            text = (STATIC.parent / f"{page}.html").read_text(encoding="utf-8")
+            overview, state, issues = (text.index(mark) for mark in ('data-place-view="overview"', 'id="state"', 'data-place-view="issues"'))
+            self.assertLess(overview, state, page)
+            self.assertLess(state, issues, page)
+
+
 class TheRule(unittest.TestCase):
     def test_area_of(self):
         self.assertEqual(places.area_of("/repos/hoa", "task", "/repos/hoa"), "hoa")
