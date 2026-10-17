@@ -4857,7 +4857,19 @@ cmd_doctor() {
   fi
 
   if command -v brew >/dev/null 2>&1; then
-    if bound_step 600 brew doctor >/dev/null 2>&1; then
+    # brew doctor exits 1 on a warning; Homebrew's Intel one is no finding,
+    # so a run that warns of nothing else is clean (sd:4943). Any other exit,
+    # a timeout among them, is no answer.
+    bd_rc=0
+    bd_out=$(bound_step 600 brew doctor 2>&1) || bd_rc=$?
+    if [ "$bd_rc" -eq 1 ] && printf '%s\n' "$bd_out" | grep -q '^Warning:'; then
+      command -v st_drop_platform_warning >/dev/null 2>&1 || . "$ROOT/lib/brew_unlinked.sh"
+      if bd_out=$(printf '%s\n' "$bd_out" | st_drop_platform_warning) \
+          && ! printf '%s\n' "$bd_out" | grep -q '^Warning:'; then
+        bd_rc=0
+      fi
+    fi
+    if [ "$bd_rc" -eq 0 ]; then
       echo "  ok      brew doctor clean"
     else
       echo "  WARN    brew doctor has warnings — run: brew doctor"

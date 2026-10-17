@@ -86,7 +86,7 @@ class Case(unittest.TestCase):
             write_exec(self.stubs / name, LOGGING_STUB)
         fixture_config.seal(self, self.stubs)
 
-    def run_script(self, *args, fnm_have="", ls_mailto="com.google.chrome"):
+    def run_script(self, *args, fnm_have="", ls_mailto="com.google.chrome", **extra):
         env = {
             "HOME": str(self.home),
             "MACHINE_SETUP_STATE": str(self.state),
@@ -97,6 +97,7 @@ class Case(unittest.TestCase):
             "CALL_LOG": str(self.call_log),
             "FNM_HAVE": fnm_have,
             "LS_MAILTO": ls_mailto,
+            **extra,
         }
         return subprocess.run([str(self.folder / "machine-setup.sh"), *args], env=env,
                               capture_output=True, text=True, cwd=self.tmp.name,
