@@ -3,8 +3,8 @@
   Home (sd:2117), at /home. Built from the design source's products/system/designs/v2/home.html, home.js, home-kiosk.js and home.css at d82daa1, with design.md and commands.md.
   Data: /api/home (home_screen.document: the tiles the setting row dashboard.home_tiles names, else <config>/project-dashboard/home-tiles.conf
   (sd:3987), each with its live Home Assistant state and last change or a named error, sd:3427), read when the page opens and each minute after
-  (sd:3522). The design's tile states are sample data; nothing here is. Every Home Assistant command is off with the document's write reason.
-  Edit tiles (sd:3987) posts /api/home/tiles: it writes the tile row, never Home Assistant.
+  (sd:3522). The design's tile states are sample data; nothing here is. A tile's Act section posts /api/home/service (sd:4966): the services its domain allows, the security ones after a typed confirm.
+  Edit tiles (sd:3987) posts /api/home/tiles: it writes the tile row.
   Views (places.js): Overview is the tiles; Tasks, Briefs and Reports each read /api/home/<view> (places.py) when shown.
 -->
 <html lang="en">

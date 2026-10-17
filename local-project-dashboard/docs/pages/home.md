@@ -4,8 +4,8 @@ Home is at `/home` (sd:2117): the design's critical Home Assistant tiles and
 its wall display (`?kiosk=1`). `GET /api/home` (`home_screen.document`) lists
 the tiles one text names, one `headline|<entity_id>|<name>` or
 `tile|<group>|<entity_id>|<name>` per line. An optional last field, `alarm`,
-`lock`, `toggle` or `sensor`, sets the tile's commands when its domain would
-not. Entity ids describe a house, so the checkout ships only
+`lock`, `toggle` or `sensor`, sets how the tile reads its state when its domain
+would not; its commands follow the domain. Entity ids describe a house, so the checkout ships only
 `home-tiles.conf.example`. A line the page cannot read is named and skipped;
 with no list the page says "No tile list" and draws no grid.
 
@@ -29,10 +29,28 @@ answer it cannot parse) names its error on every tile, and an entity Home
 Assistant does not list names its own; the page still draws. The token never
 reaches the page, and no redirect is followed. Under launchd the server's
 interpreter may need macOS Local Network permission to reach a LAN host, as
-local-ha-mcp's Node does. The design's arm, disarm, lock, unlock and toggle
-commands are registered but off with `home_screen.WRITES_REASON`, so the page
-sends nothing to Home Assistant. Read state is copy only: its `curl` line names `$HA_TOKEN` and
-`$HA_URL` and never holds a value. The page reads `/api/home` through the
+local-ha-mcp's Node does.
+
+A tile's Act section and row menu offer the Home Assistant services its domain
+allows (sd:4966), from `home_screen.SERVICES`, which the document carries as
+`writes.services`: light, switch, fan and input_boolean turn on, off or toggle
+at once with Undo; scene and script turn on and button presses, once, with no
+Undo; lock (lock, unlock), alarm_control_panel (arm home, away or night,
+disarm) and cover (open, close) change physical security, so each asks for the
+entity id typed out and has no Undo. Each posts `POST /api/home/service
+{entity_id, service, before[, confirm]}`, which refuses (400, nothing sent) an
+entity the tile list does not name, a service the allowlist does not name for
+that domain, and a security service whose `confirm` is not the entity id; a
+`before` that is not the tile list's digest is a 409. It then calls
+`POST /api/services/<domain>/<service>` with the read's URL and token, bounded
+by `home_screen.SERVICE_TIMEOUT`, writes one record to the command journal
+(Activity's "Command journal", on the Home page's item), and reads the tile's
+state again, which the tile shows at once. Home Assistant's own reason for a
+refusal (a token without service rights is a 401 or 403) is the toast; no
+answer is an unknown outcome, and the page reads the tiles again. Writes are
+off, with the read's reason, until Home Assistant was read. Any other domain
+gets Read state, copy only: its `curl` line names `$HA_TOKEN` and `$HA_URL`
+and never holds a value. The page reads `/api/home` through the
 shell's reader (`read.js`) when it opens, on Read again, and each minute while
 it is visible (sd:3522); the minute read draws no loading state, so the tiles
 keep their place, and a failed read draws no tile and says why.
