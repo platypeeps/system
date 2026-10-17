@@ -43,6 +43,8 @@ PINNED_REPO = "example-owner/pinned"
 # Serves $ASSETS/<owner>/<repo>/<tag>/<asset> for a download URL, the tag in
 # $ASSETS/<owner>/<repo>/LATEST for the latest-release redirect, and answers
 # 404 for a checksum file the folder lacks. Logs each URL to $CURL_LOG.
+# $ASSETS/<owner>/<repo>/REDIRECT, when there, is the redirect GitHub answers
+# instead: empty for a 200 with none (sd:4916).
 CURL_STUB = r"""#!/bin/sh
 out=""; fmt=""; url=""
 while [ $# -gt 0 ]; do
@@ -58,6 +60,11 @@ echo "$url" >> "$CURL_LOG"
 rel=${url#"$RELEASE_BASE"/}
 case "$url" in
   */releases/latest)
+    r="$ASSETS/${rel%/releases/latest}/REDIRECT"
+    if [ -f "$r" ]; then
+      [ "$fmt" = '%{redirect_url}' ] && cat "$r"
+      exit 0
+    fi
     f="$ASSETS/${rel%/releases/latest}/LATEST"
     [ -f "$f" ] || exit 22
     [ "$fmt" = '%{redirect_url}' ] && printf '%s' "${url%/latest}/tag/$(cat "$f")"
@@ -93,14 +100,17 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 """
 
 # `fnm ls` lists $FNM_HAVE (full versions); `fnm exec --using=<v> -- sh -c
-# 'command -v node'` names that version's node under $FNM_ROOT.
+# 'command -v node'` names that version's node under $FNM_ROOT, and any other
+# exec fails, so node_link's exact call is the one tested (sd:4916).
 FNM_STUB = r"""#!/bin/sh
 echo "fnm $*" >> "$CURL_LOG"
 case "$1" in
   ls) for v in $FNM_HAVE; do echo "* v$v"; done ;;
   exec)
-    v=${2#--using=}
-    echo "$FNM_ROOT/node-versions/$v/installation/bin/node" ;;
+    v=${2#--using=v}
+    case " $FNM_HAVE " in *" $v "*) ;; *) exit 1 ;; esac
+    [ $# -eq 6 ] && [ "$3 $4 $5 $6" = "-- sh -c command -v node" ] || exit 1
+    echo "$FNM_ROOT/node-versions/v$v/installation/bin/node" ;;
 esac
 exit 0
 """
@@ -205,6 +215,11 @@ class Case(unittest.TestCase):
         return [(f"{root}/{n}", TOOL.format(tag), 0o755) for n in names]
 
     def record(self, name="example"):
+        """The tag recorded for NAME, or None."""
+        line = self.record_line(name)
+        return line.split()[0] if line else None
+
+    def record_line(self, name="example"):
         path = self.records / f"{name}.tag"
         return path.read_text().strip() if path.exists() else None
 
@@ -402,6 +417,80 @@ class ReleaseStage(Case):
 
         self.assertIn("  MISSING release example (no example-helper in", result.stdout, self.out(result))
         self.assertEqual(self.installed("example-helper"), TOOL.format("1.2.3"))
+
+    def test_a_latest_answer_with_no_redirect_installs_nothing(self):
+        """GitHub answers 200 with no redirect (sd:4916)."""
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        (self.assets / REPO / "REDIRECT").write_text("")
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("FAILED  release_install example", result.stdout)
+        self.assertFalse([u for u in self.urls() if "/download/" in u], self.urls())
+        self.assertFalse(self.bin.exists())
+        self.assertIsNone(self.record())
+
+    def test_a_redirect_to_releases_with_no_tag_installs_nothing(self):
+        """A repo with no release redirects to its /releases page (sd:4916)."""
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        (self.assets / REPO / "REDIRECT").write_text(f"{BASE}/{REPO}/releases")
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 1, self.out(result))
+        self.assertIn("FAILED  release_install example", result.stdout)
+        self.assertFalse([u for u in self.urls() if "/download/" in u], self.urls())
+        self.assertFalse(self.bin.exists())
+        self.assertIsNone(self.record())
+
+    def test_the_record_holds_the_repo_and_asset_beside_the_tag(self):
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+
+        self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}-x86_64.tar.gz")
+
+    def test_a_changed_repo_or_asset_differs_and_reinstalls(self):
+        """The tag alone stays the same when the line moves to another repo
+        or asset; the entry still reinstalls (sd:4916)."""
+        other = "example-owner/fork"
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        self.release("v1.2.3", "example-1.2.3-arm64.tar.gz", self.tools("1.2.3-arm", "example", "example-helper"))
+        self.release("v1.2.3", "fork-1.2.3.tar.gz", self.tools("1.2.3-fork", "example", "example-helper"),
+                     repo=other)
+        self.assertEqual(self.run_verb("update", "release", "--apply").returncode, 0)
+
+        for line, tool in ((f"{REPO} example-{{version}}-arm64.tar.gz", "1.2.3-arm"),
+                           (f"{other} fork-{{version}}.tar.gz", "1.2.3-fork")):
+            (self.profiles / "personal.release").write_text(f"example,example-helper {line}\n")
+            dry = self.run_verb("update", "release")
+            self.assertIn("  DIFFERS release example ", dry.stdout, self.out(dry))
+
+            result = self.run_verb("update", "release", "--apply")
+
+            self.assertEqual(result.returncode, 0, self.out(result))
+            self.assertEqual(self.installed("example"), TOOL.format(tool))
+            self.assertEqual(self.record_line(), f"v1.2.3 {line}")
+            again = self.run_verb("update", "release")
+            self.assertIn("  ok      release example v1.2.3\n", again.stdout, self.out(again))
+
+    def test_a_tag_only_record_an_older_version_wrote_reinstalls_once(self):
+        """A record from before sd:4916 names no repo or asset: DIFFERS once,
+        then a full record."""
+        self.release("v1.2.3", "example-1.2.3-x86_64.tar.gz", self.tools("1.2.3", "example", "example-helper"))
+        for name in ("example", "example-helper"):
+            write_exec(self.bin / name, TOOL.format("1.2.3"))
+        self.records.mkdir(parents=True)
+        (self.records / "example.tag").write_text("v1.2.3\n")
+
+        result = self.run_verb("update", "release", "--apply")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertIn("  DIFFERS release example ", result.stdout)
+        self.assertEqual(self.record_line(), f"v1.2.3 {REPO} example-{{version}}-x86_64.tar.gz")
+        again = self.run_verb("update", "release")
+        self.assertIn("  ok      release example v1.2.3\n", again.stdout, self.out(again))
 
     def test_a_profile_without_release_entries_installs_nothing(self):
         (self.profiles / "personal.release").unlink()
@@ -661,6 +750,21 @@ class Negation(Case):
         result = self.run_verb("update", "release")
 
         self.assertIn("== release\n  no release tools in this profile\n", result.stdout, self.out(result))
+
+    def test_compare_lists_no_bang_line_as_an_entry(self):
+        """A `!` line drops an entry; it is none (sd:4916)."""
+        result = self.run_verb("compare", "personal", "work")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertNotIn("!", result.stdout)
+        self.assertIn("== brew (match: 0, only personal: 1, only work: 1)", result.stdout)
+
+    def test_report_counts_no_bang_line_as_an_entry(self):
+        result = self.run_verb("report", "personal")
+
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertNotIn("!", result.stdout)
+        self.assertIn("    brew (1)\n      example-extra\n", result.stdout)
 
 
 class NodeLink(Case):
