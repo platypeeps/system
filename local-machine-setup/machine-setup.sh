@@ -472,10 +472,11 @@ drop_negated() { # names, [exact]
 }
 
 # The node majors fnm keeps: common.node and <profile>.node, one per line,
-# without a line's `link` field. With neither file, the three every machine
-# had before they moved (sd:3966).
+# without a line's `link` field, each once: common's `26` and a profile's
+# `26 link` are two manifest lines. With neither file, the three every
+# machine had before they moved (sd:3966).
 node_versions() {
-  nv=$(manifest node | awk '{ print $1 }')
+  nv=$(manifest node | awk '!seen[$1]++ { print $1 }')
   printf '%s\n' "${nv:-18
 20
 24}"
@@ -844,17 +845,33 @@ EOF
   return "$rlo_rc"
 }
 
+# The names of the unpinned .release entries, space-separated; nothing read
+# from the network.
+release_unpinned() {
+  release_profile || return 0
+  manifest release | while IFS= read -r ru_line; do
+    if release_parse "$ru_line"; then
+      [ -n "$rl_tag" ] || printf '%s\n' "$rl_name"
+    fi
+  done | tr '\n' ' ' | sed 's/ $//'
+}
+
 # The upgrade sweep's .release half: each unpinned entry moves to its latest
 # tag. Adds `release <name>` to $failed for a tag it could not read or install.
+# A dry run reads no tag, as the brew half reads nothing: it names the
+# entries it would check.
 release_sweep() {
+  if [ "$APPLY" -ne 1 ]; then
+    rsw=$(release_unpinned)
+    [ -z "$rsw" ] || echo "  [dry-run] release: check the latest tag of $rsw"
+    return 0
+  fi
   rsw=$(release_outdated) || :
   [ -n "$rsw" ] || return 0
   while read -r rsw_name rsw_old rsw_new rsw_line; do
     if [ "$rsw_old" = unknown ]; then
       echo "  FAILED  release $rsw_name: no latest release tag, or a line of another shape"
       failed="$failed, release $rsw_name"
-    elif [ "$APPLY" -ne 1 ]; then
-      echo "  [dry-run] release $rsw_name $rsw_old -> $rsw_new"
     elif release_parse "$rsw_line" \
         && release_install "$rl_name" "$rl_bins" "$rl_repo" "$rl_asset" "$rsw_new" </dev/null; then
       echo "  upgraded release $rsw_name $rsw_old -> $rsw_new"

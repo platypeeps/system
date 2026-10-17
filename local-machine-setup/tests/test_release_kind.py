@@ -448,12 +448,17 @@ class ReleaseUpgrade(Case):
         self.assertNotIn("upgraded release", result.stdout)
         self.assertFalse([u for u in self.urls() if "/download/" in u], self.urls())
 
-    def test_a_dry_run_sweep_names_the_move_and_installs_nothing(self):
-        self.release("v1.3.0", "example-1.3.0.tar.gz", self.tools("1.3.0", "example"))
+    def test_a_dry_run_sweep_reads_no_tag_and_names_what_it_would_check(self):
+        """The brew half reads nothing in a dry run; nor does this one, so an
+        offline dry run fails no step."""
+        (self.assets / REPO / "LATEST").unlink()
 
         result = self.run_verb("upgrade")
 
-        self.assertIn("  [dry-run] release example v1.2.3 -> v1.3.0", result.stdout, self.out(result))
+        self.assertEqual(result.returncode, 0, self.out(result))
+        self.assertIn("  [dry-run] release: check the latest tag of example\n", result.stdout)
+        self.assertNotIn("FAILED", result.stdout)
+        self.assertEqual(self.urls(), [])
         self.assertEqual(self.record(), "v1.2.3")
         self.assertEqual(self.installed("example"), TOOL.format("1.2.3"))
 
@@ -664,6 +669,16 @@ class NodeLink(Case):
 
         self.assertIn("  MISSING node link 26: fnm has no v26", result.stdout, self.out(result))
         self.assertFalse(self.bin.exists())
+
+    def test_a_major_in_common_and_linked_in_the_profile_is_one_major(self):
+        (self.profiles / "common.node").write_text("26\n")
+        self.fnm_have = "24.3.0"
+
+        result = self.run_verb("update", "tooling", "--apply")
+
+        self.assertEqual(result.stdout.count("  MISSING node 26 (fnm)\n"), 1, self.out(result))
+        self.assertEqual([c for c in self.urls() if c.startswith("fnm install")],
+                         ["fnm install 26"])
 
     def test_the_link_field_never_reaches_fnm_or_doctor(self):
         self.fnm_have = "24.3.0"
