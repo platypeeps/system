@@ -483,7 +483,7 @@ let polling = 0;
     const ack = (o, acked) => S.post('/api/hoa/alarm', { key: o.key, acked }).then(v => reader.reread().then(() => v));
     const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
     C.register(
-      { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event on this dashboard; nothing reaches the Mission portal. Undo shows it again.',
+      { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event here only; the Mission portal is not told. Undo shows it.',
         key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. Show acknowledged lists it.`), undo: o => ack(o, false) },
       { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
@@ -502,8 +502,8 @@ let polling = 0;
         .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
     C.register(
       { ...window.commands.retry({ job: facts, run: refresh }),
-        does: o => o.source === 'vantaca' ? 'Starts the Vantaca pull once (Chrome, signed in, up to 2 h): it reads invoices and lands them. Nothing to undo.'
-          : 'Starts the Mission export once (Chrome, signed in to the portal, up to 30 min), then imports it. Nothing to undo.' },
+        does: o => o.source === 'vantaca' ? 'Pulls Vantaca invoices once in signed-in Chrome, up to 2 h. Nothing to undo.'
+          : 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.' },
       window.commands.showLog({ job: facts }),
     );
     $('al-show').addEventListener('click', e => {

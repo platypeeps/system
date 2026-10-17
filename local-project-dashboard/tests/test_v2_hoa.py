@@ -338,6 +338,15 @@ class TheScript(Fixture):
         self.assertIsNone(out["error"])
         return out
 
+    def test_every_does_line_keeps_the_shared_word_limit(self):
+        # Retry and Show log are spread from commands.js, which test_v2_commands' scan cannot read, so HOA checks its
+        # registered commands here, a per-row text once for each source.
+        from test_v2_commands import WORDS
+        out = self.run_page("""R.d = REG.filter(c => c.does).flatMap(c => typeof c.does === 'function'
+  ? ['vantaca', 'mission'].map(source => [c.id, c.does({ source })]) : [[c.id, c.does]]);""")
+        long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
+        self.assertEqual(long, [], f"a does line over {WORDS} words")
+
     def test_every_command_is_registered_with_the_design_id_risk_and_key(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.risk, c.key || null]);")
         self.assertEqual(out["R"]["reg"], [
