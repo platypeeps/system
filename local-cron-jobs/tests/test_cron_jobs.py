@@ -3263,6 +3263,22 @@ class JobTimeoutTest(unittest.TestCase):
         self.assertNotIn("sending KILL", log)
         self.assert_gone("sleep 41.4142")
 
+    def test_a_timeout_logs_the_process_tree_before_the_kill(self):
+        """sd:5064: the log named the group only, so what hung was a guess.
+        Each process in the group goes to the log, with its parent and age,
+        before TERM."""
+        self.reap("sleep 45.2361")
+        self.job("'sleep 45.2361 & sleep 45.2361; wait'", timeout="1")
+        self.assertEqual(self.run_job().returncode, 124)
+        log = self.log.read_text().splitlines()
+        head = next(i for i, line in enumerate(log) if "timed out after 1s" in line)
+        group = re.search(r"process group (\d+)", log[head]).group(1)
+        self.assertEqual(log[head + 1], "  PID PPID PGID ELAPSED COMMAND", log)
+        tree = [line.split(None, 4) for line in log[head + 2:] if line.startswith("  ")]
+        self.assertEqual(sorted(row[4] for row in tree if row[4] == "sleep 45.2361"),
+                         ["sleep 45.2361", "sleep 45.2361"], log)
+        self.assertTrue(all(row[2] == group for row in tree), log)
+
     def test_the_lock_is_free_after_a_timeout(self):
         self.reap("sleep 43.1415")
         self.job("'sleep 43.1415'", timeout="1")
