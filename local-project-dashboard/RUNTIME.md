@@ -228,6 +228,12 @@ Its lock is `deep-<checkout hash>.lock` beside the codex one, so one deep review
 A `source` review (sd:5101) runs codex on one research ledger row; its runner fetches the row's link first, one GET bounded at 20 s and 2 MB, so a source review reaches the network from the server's process, and a failed fetch is written into the input as not known.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
+Publishing (sd:5102, `publishing.py`, `publish_drain.py`) reuses the pack's mirror queue and receipts; it adds no store.
+Publish to on Documents adds the contract's `drive=dict()` or `notion=dict()` key to a trusted `research.conf.py` entry, then runs `sd-research-kit publish`.
+Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue_briefs`; each brief render queues it again.
+Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
+It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
+The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.
 Add source (sd:5112, `source_intake.py`) on the Research page writes ledger rows without a model and never writes the operator's checkout.
 A dropped file is staged first, raw, through `POST /api/research/intake/file` (up to 200 MB, under `~/.local/state/system/source-intake/staged/`, a day at most); `POST /api/research/intake` then fetches origin, adds a worktree in `~/worktrees/` on `source-intake/<stamp>` at `origin/main`, appends one grade `U` row per source, commits as `Authored-with: script`, files an item with `--ref source-intake:<stamp>` and runs `sd-ship lane enqueue --deliver`.
 A file over 5 MB goes under `sd.bulk_storage_root` as `<root>/<checkout>/sources/`, and its row links it there; a URL's title comes from the source review's bounded fetch, so the server reaches the network here too.
