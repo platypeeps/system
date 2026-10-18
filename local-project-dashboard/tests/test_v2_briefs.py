@@ -28,8 +28,8 @@ import urllib.parse
 from pathlib import Path
 from unittest import mock
 
-from sd_db import routine_briefs
-from sd_dashboard import briefs_screen, server, v2
+from sd_db import review, routine_briefs, workflow
+from sd_dashboard import briefs_screen, review_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
@@ -42,6 +42,7 @@ from test_v2_registry import Registers
 V2 = Path(v2.__file__).resolve().parent
 BRIEFS_JS = (V2 / "static" / "briefs.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 REPO = "/repos/system"
 FOLDER = "Briefs/system"
 
@@ -50,6 +51,7 @@ COMMANDS = [
     ["brief.read", "brief", "Read", "r", "safe"],
     ["brief.task", "brief", "Make task", "k", "safe"],
     ["brief.open", "brief", "Open in Obsidian", "o", "safe"],
+    ["brief.adversarial-review", "brief", "Adversarial review", None, "safe"],
 ]
 
 #: The briefs a small store holds: stem, when first filed, the body's first line.
@@ -279,7 +281,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Briefs · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "briefs.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "briefs.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         self.assertNotIn("resource=briefs", body)
@@ -305,6 +307,14 @@ class ThePage(BrowserSession):
         self.assertEqual(doc["reader"]["copies"]["state"], "unknown")
         self.assertFalse(doc["watchdog"]["available"])
 
+    def test_the_recommendations_route_needs_a_session_and_reads_the_brief(self):
+        self.repo(REPO)
+        brief, _ = adversarial(self)
+        self.assertEqual(self.request(f"/api/briefs/{brief}/recommendations")[0], 403)
+        status, _, body = self.request(f"/api/briefs/{brief}/recommendations", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(json.loads(body)["questions"]), 3)
+
 
 # The stand-in additions briefs.js needs beyond test_v2_tasks: the shell's row, url, capture, chat, and window.open.
 SHELL_MORE = r"""
@@ -327,7 +337,7 @@ class TheScript(BriefCase):
     def run_page(self, body, answer=None, search="", row=None):
         answer = answer or f"(p) => p === '/api/items' ? [201, {{ item: {{ id: 77, title: 'Read it' }} }}] : [200, {json.dumps(self.page_doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; var ROW = {json.dumps(row)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + BRIEFS_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + BRIEFS_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -345,7 +355,90 @@ R.primary = REG.filter(c => c.primary && c.primary({})).map(c => c.id); R.gated 
         self.assertEqual(out["R"]["reg"], COMMANDS)
         # Read is every row's primary action and is never off, so a row without a vault copy offers it too (the shell draws
         # the primary in each row: the browser check on the pull request).
-        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open"]))
+        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review"]))
+
+    def test_adversarial_review_on_a_brief_posts_its_item(self):
+        """sd:5064: a brief row asks for {kind: brief, target: <its item>}; the run starts in the background."""
+        stem = "2026-09-06 - Intel Brief"
+        answer = f"""(path, body) => path === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: null, filed: null }}]
+  : path === '/api/adversarial/r1' ? [200, {{ id: 'r1', state: 'failed', item: null, reason: 'codex exited 1', filed: null }}]
+  : [200, {json.dumps(self.page_doc)}]"""
+        out = self.run_page(f"shellRun(cmd('brief.adversarial-review'), C.get({json.dumps(stem)})); await flush();", answer)
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "brief", "target": self.ids[stem]}, 64]])
+        self.assertEqual([t[0] for t in out["toasts"]],
+                         ["Review started · run r1", "Adversarial review failed · run r1: codex exited 1"])
+
+    def recommend(self):
+        """An adversarial brief with three recommendations, the first approved and filed; the page selects it."""
+        brief, batch = adversarial(self)
+        notes = [n["id"] for n in workflow.item_state(self.connection, batch)["notes"] if n["kind"] == "question"]
+        revision = workflow.item_state(self.connection, batch)["revision"]
+        review_screen.rule_request({"item": batch, "note": notes[0], "option": "Approve", "revision": revision})(self.connection)
+        self.page_doc = self.doc()
+        recs = review_screen.recommendations(self.connection, brief)
+        stem = next(b["id"] for b in self.page_doc["briefs"] if b["item"] == brief)
+        return brief, batch, notes, recs, stem
+
+    def pick(self, body, refuse=None):
+        """Run `body` on the selected adversarial brief, with NOTES its question notes; a rule on NOTES[refuse] answers 409."""
+        brief, batch, notes, recs, stem = self.recommend()
+        refused = None if refuse is None else notes[refuse]
+        answer = f"""(path, body) => path === '/api/briefs/{brief}/recommendations' ? [200, {json.dumps(recs)}]
+  : path === '/api/review/rule' ? (body.note === {json.dumps(refused)} ? [409, {{ error: 'note ' + body.note + ' is settled: ruled by note #9' }}]
+    : [200, {{ item: body.item, note: body.note, revision: String(body.note % 10).repeat(64), ruling: 900 + body.note }}])
+  : [200, {json.dumps(self.page_doc)}]"""
+        prelude = f"""const NOTES = {json.dumps(notes)};
+const box = (n, on) => ({{ target: {{ closest: s => s === 'input[data-q]' ? {{ checked: on, dataset: {{ q: String(n) }} }} : null }} }});
+const act = a => ({{ target: {{ closest: s => s === '[data-recs]' ? {{ dataset: {{ recs: a }} }} : null }} }});
+const fire = (t, e) => (ELS.details.listeners[t] || []).forEach(f => f(e));
+await flush();\n"""
+        return self.run_page(prelude + body, answer, row=stem), batch, notes, recs
+
+    def test_an_adversarial_brief_lists_its_recommendations_to_pick(self):
+        out, batch, notes, recs = self.pick("R.recs = ELS.recs.html; R.det = ELS.details.html;")
+        recs_html, filed = out["R"]["recs"], recs["questions"][0]["filed"]
+        self.assertIn("<h3>Create tasks</h3>", out["R"]["det"])
+        # Open questions each have a box; the approved one shows its label and links its filed task.
+        self.assertEqual(re.findall(r'<input type="checkbox" data-q="(\d+)"', recs_html), [str(n) for n in notes[1:]])
+        self.assertIn("Fix hypothesis 2", recs_html)
+        self.assertIn("system", recs_html)
+        self.assertRegex(recs_html, rf'Approve</span> <span>Fix hypothesis 1</span>.*<a href="/tasks\?row={filed}">sd:{filed}</a>')
+        for label in ("Select all", "Create selected", "Reject the rest"):
+            self.assertIn(f">{label}</button>", recs_html)
+        self.assertEqual(out["posts"], [])
+
+    def test_create_selected_rules_only_the_chosen_question_approve_under_its_batch_revision(self):
+        out, batch, notes, recs = self.pick("""fire('change', box(NOTES[1], true)); fire('click', act('create')); await flush();
+await flush(); R.recs = ELS.recs.html;""")
+        self.assertEqual(out["posts"], [["/api/review/rule", {"item": batch, "note": notes[1], "option": "Approve",
+                                                              "revision": recs["batches"][0]["revision"]}, 64]])
+        # The page reads the recommendations again, so a filed task shows as its link; the unchosen one stays open.
+        self.assertEqual(out["gets"].count(f"/api/briefs/{recs['brief']}/recommendations"), 2)
+        self.assertIn("1 of 1 ruled Approve", " ".join(t[0] for t in out["toasts"]))
+
+    def test_a_box_unticked_again_is_not_created_and_nothing_chosen_sends_nothing(self):
+        out, _, _, _ = self.pick("""fire('change', box(NOTES[1], true)); fire('change', box(NOTES[1], false));
+fire('click', act('create')); await flush();""")
+        self.assertEqual(out["posts"], [])
+        self.assertIn("Tick a recommendation first", " ".join(t[0] for t in out["toasts"]))
+
+    def test_select_all_then_create_carries_each_answers_revision(self):
+        out, batch, notes, recs = self.pick("fire('click', act('all')); fire('click', act('create')); await flush(); await flush();")
+        first = recs["batches"][0]["revision"]
+        self.assertEqual([(p[1]["note"], p[1]["option"], p[1]["revision"]) for p in out["posts"]],
+                         [(notes[1], "Approve", first), (notes[2], "Approve", str(notes[1] % 10) * 64)])
+
+    def test_reject_the_rest_rules_every_open_question_reject_and_a_failure_stays_on_its_row(self):
+        out, batch, notes, recs = self.pick("fire('click', act('reject')); await flush(); await flush(); R.recs = ELS.recs.html;",
+                                            refuse=1)
+        self.assertEqual([(p[1]["note"], p[1]["option"]) for p in out["posts"]], [(notes[1], "Reject"), (notes[2], "Reject")])
+        self.assertIn(f"note {notes[1]} is settled: ruled by note #9", out["R"]["recs"])
+        self.assertIn("1 of 2 ruled Reject; 1 failed", " ".join(t[0] for t in out["toasts"]))
+
+    def test_a_brief_from_another_series_has_no_create_tasks(self):
+        out = self.run_page("await flush(); R.det = ELS.details.html;", row="2026-09-06 - Intel Brief")
+        self.assertNotIn("Create tasks", out["R"]["det"])
+        self.assertFalse(any("recommendations" in g for g in out["gets"]))
 
     def test_the_rows_in_range_are_drawn_each_with_read_and_nothing_claims_a_failure(self):
         out = self.run_page("R.rows = ELS.rows.html; R.ann = ELS.annunciator.html; R.lanes = ELS.lanes.html; R.sub = ELS.sub.textContent;")
@@ -548,8 +641,61 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertIn("window.PAGE_LIST", BRIEFS_JS)
 
 
+def adversarial(case, questions=3):
+    """An adversarial review's batch of Approve-or-Reject recommendations and the brief that names it (sd:5064)."""
+    batch = review.file(case.connection, {
+        "schema": 1, "queue": "adversarial", "batch": "task-12-101500", "title": "Adversarial review of task 12",
+        "repo": REPO, "source": "local-adversarial-gate", "mode": "open",
+        "questions": [{"subject": f"task 12: hypothesis {n}", "text": f"Fix hypothesis {n}\n\nWhy it matters.",
+                       "options": ["Approve", "Reject"]} for n in range(1, questions + 1)]}, who="test")["item"]
+    stem = "2026-09-06 - Adversarial review · task 12 · 101500Z"
+    brief = routine_briefs.add(case.connection, stem, f"---\nreview: adversarial\nrun: r1\nbatches: sd:{batch}\n---\n\n"
+                               "# Adversarial review of task 12\n", repo=REPO, who="test")["item"]
+    return brief, batch
+
+
+class TheRecommendations(BriefCase):
+    """`/api/briefs/<item>/recommendations`: an adversarial brief's batch questions, to pick which become tasks."""
+
+    def test_each_question_of_each_named_batch_comes_with_its_title_repo_and_batch_revision(self):
+        brief, batch = adversarial(self)
+        notes = [n["id"] for n in workflow.item_state(self.connection, batch)["notes"] if n["kind"] == "question"]
+        revision = workflow.item_state(self.connection, batch)["revision"]
+        out = review_screen.rule_request({"item": batch, "note": notes[0], "option": "Approve",
+                                          "revision": revision})(self.connection)
+        review_screen.rule_request({"item": batch, "note": notes[1], "option": "Reject",
+                                    "revision": out["revision"]})(self.connection)
+        doc = review_screen.recommendations(self.connection, brief)
+        self.assertEqual(doc["batches"], [{"item": batch, "repo": "system", "error": None, "open": 1,
+                                           "revision": workflow.item_state(self.connection, batch)["revision"]}])
+        filed = review.read(self.connection, batch)["questions"][0]["filed"]
+        self.assertIsInstance(filed, int)
+        self.assertEqual([(q["batch"], q["note"], q["title"], q["repo"], q["label"], q["filed"], q["open"], q["options"])
+                          for q in doc["questions"]],
+                         [(batch, notes[0], "Fix hypothesis 1", "system", "Approve", filed, False, ["Approve", "Reject"]),
+                          (batch, notes[1], "Fix hypothesis 2", "system", "Reject", None, False, ["Approve", "Reject"]),
+                          (batch, notes[2], "Fix hypothesis 3", "system", None, None, True, ["Approve", "Reject"])])
+        # The repository's name, never its local path.
+        self.assertNotIn(REPO, json.dumps(doc))
+
+    def test_a_brief_that_is_no_adversarial_review_or_no_item_is_refused(self):
+        self.assertEqual(review_screen.recommendations(self.connection, self.ids[NO_COPY])[0], 404)
+        self.assertEqual(review_screen.recommendations(self.connection, 999999)[0], 404)
+
+    def test_a_named_batch_that_does_not_read_is_listed_with_its_reason(self):
+        brief, batch = adversarial(self)
+        other = self.item("Not a batch")
+        self.connection.execute("UPDATE item SET body = json_object('text', ?) WHERE id = ?",
+                                (f"---\nreview: adversarial\nbatches: sd:{batch}, sd:{other}\n---\n", brief))
+        self.connection.commit()
+        doc = review_screen.recommendations(self.connection, brief)
+        self.assertEqual([b["item"] for b in doc["batches"]], [batch, other])
+        self.assertIn("is not a review batch", doc["batches"][1]["error"])
+        self.assertEqual(len(doc["questions"]), 3)
+
+
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs",)
+    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs", "/api/briefs/7/recommendations")
 
 
 if __name__ == "__main__":

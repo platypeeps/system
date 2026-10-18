@@ -10,17 +10,22 @@ and the CLI verb share one path (operator ruling Q3); the page adds no store and
   A batch whose notes do not read as one is listed with its reason, never dropped.
 - `rule_request` is `/api/review/rule`: `review.rule`, under the batch revision the page read.
 - `withdraw_request` is `/api/review/withdraw`: `review.withdraw`, the undo.
+- `recommendations` is `/api/briefs/<item>/recommendations` (sd:5064): the questions of each batch an adversarial review's
+  brief names in its frontmatter (`batches: sd:N, ...`), ruled and open, with each batch's revision, so the Briefs page
+  can rule the chosen ones Approve through `/api/review/rule`. A repository is sent by name, never by its local path.
 - `export` is `/api/review/<item>/export`: `review.export` without a key, the lines `sd-db review export` writes.
   A blind or sealed batch exports only once no question is open, so the page never shows a subject while labelling.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 
 from sd_db import reads, workflow
 
-__all__ = ["BLIND", "NIGHTLY", "document", "export", "rule_request", "withdraw_request"]
+__all__ = ["BLIND", "NIGHTLY", "document", "export", "recommendations", "rule_request", "withdraw_request"]
 
 #: The queue the nightly review job files (`sd-db review apply nightly`); its suggestions come first.
 NIGHTLY = "nightly"
@@ -82,6 +87,43 @@ def document(connection) -> dict:
 
     found = attention(["caution"] * sum(batch.get("open") or 0 for batch in batches), {"caution": "questions open"})
     return {"batches": batches, "questions": questions, "attention": found}
+
+
+def _frontmatter(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    if not lines or lines[0] != "---" or "---" not in lines[1:]:
+        return {}
+    return dict(line.split(": ", 1) for line in lines[1:lines.index("---", 1)] if ": " in line)
+
+
+def recommendations(connection, item: int):
+    """An adversarial brief's batches and every question in them, or `(404, error)` for any other item."""
+    from sd_db import review
+
+    row = connection.execute("SELECT body FROM item WHERE id = ? AND source = 'brief'", (item,)).fetchone()
+    try:
+        found = json.loads(row["body"] or "{}") if row is not None else {}
+    except ValueError:
+        found = {}
+    head = _frontmatter(found.get("text") or "" if isinstance(found, dict) else "")
+    if head.get("review") != "adversarial":
+        return 404, {"error": f"sd:{item} is not an adversarial review's brief"}
+    ids = [int(n) for n in re.findall(r"sd:([1-9][0-9]{0,18})", head.get("batches", "")) if int(n) <= MAX_ID]
+    # Read before each batch, as `document` does: a change between the two makes a rule stale, never newer.
+    revisions = reads.revisions(connection, ids)
+    batches, questions = [], []
+    for batch in ids:
+        try:
+            read = review.read(connection, batch)
+        except (review.ReviewError, workflow.MissingItem) as problem:
+            batches.append({"item": batch, "repo": None, "revision": None, "open": 0, "error": str(problem)})
+            continue
+        repo = os.path.basename((read["item"]["repo"] or "").rstrip("/")) or None
+        batches.append({"item": batch, "repo": repo, "revision": revisions.get(batch), "open": read["open"], "error": None})
+        questions += [{"batch": batch, "note": q["note"], "title": q["text"].splitlines()[0], "repo": repo,
+                       "label": q["label"], "filed": q["filed"], "open": q["open"], "options": q["options"]}
+                      for q in read["questions"]]
+    return {"brief": item, "batches": batches, "questions": questions}
 
 
 def _ids(payload: dict, names: tuple[str, ...]) -> bool:
