@@ -6,6 +6,8 @@ const { html, put, plural, cells } = window.markup;
 window.PAGE_COMMANDS = [
   { label: 'Filter the timeline', icon: 'search', run: () => document.getElementById('shift').focus() },
 ];
+// The shell's view switch (shell.js, view block): the Timeline first, the 24-hour lane chart second. Both read /api/activity.
+window.PAGE_VIEWS = [{ id: 'timeline', label: 'Timeline' }, { id: 'cadence', label: 'Cadence' }];
 window.PAGE_KEYS = [['/', 'Filter events, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
@@ -127,7 +129,7 @@ addEventListener('DOMContentLoaded', () => {
     const c = e.target.closest('button.cell'); if (!c) return;
     if (c.id === 'refresh') return load(); // build: reads the document again instead of reloading the page
     const k = c.dataset.kind;
-    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); // adds to the kind filter, as the lane does
+    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); window.shell.view.show('timeline'); // adds to the kind filter, as the lane does
   });
 
   // ---------- Lane chart (hand-rolled SVG, patterns.md § Charts) ----------
@@ -153,11 +155,12 @@ addEventListener('DOMContentLoaded', () => {
     put($('chart-table'), html`<table><caption class="sr">Events per hour by kind</caption><thead><tr><th scope="col">Hour (UTC)</th>${KINDS.map(k => html`<th scope="col">${k.name}</th>`)}</tr></thead><tbody>${bins.map(t => html`<tr><td>${new Date(t).toISOString().slice(5, 16).replace('T', ' ')}</td>${KINDS.map(k => unknownWhy(k.id) ? html`<td class="u">▨</td>` : html`<td>${String(EVENTS.filter(e => e.k === k.id && (!F.repo.size || F.repo.has(e.repo)) && Date.parse(e.at) >= t && Date.parse(e.at) < t + 36e5).length)}</td>`)}</tr>`)}</tbody></table>`);
   }
   $('lanes').addEventListener('click', e => {
-    const t = e.target.closest('rect.tick'); if (t) return select(t.dataset.id, true);
+    // The chart is the Cadence view (sd:5064): a tick or a lane shows the Timeline, with that event or that kind.
+    const t = e.target.closest('rect.tick'); if (t) { window.shell.view.show('timeline'); return select(t.dataset.id, true); }
     const b = e.target.closest('.lane-btn'); if (!b) return;
     const k = b.dataset.kind;
     if (unknownWhy(k)) return showKind(k);
-    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update();
+    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); window.shell.view.show('timeline');
   });
 
   // ---------- Filters: one bar (state, range, repo, the picked tokens, the count) ----------
