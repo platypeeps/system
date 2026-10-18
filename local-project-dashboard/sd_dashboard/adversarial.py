@@ -59,6 +59,7 @@ database file the server's connection reads; the state file names both.
 
 from __future__ import annotations
 
+import codecs
 import datetime
 import fcntl
 import hashlib
@@ -972,6 +973,11 @@ def _fetch(url: str, *, seconds: float = FETCH_SECONDS) -> str:
     if final != url:
         head.append(f"It redirected to {final}.")
     body = b"".join(chunks)
+    try:
+        codecs.lookup(charset)
+    except LookupError:  # a charset Python does not know: read it as UTF-8 rather than fail the run
+        head.append(f"Its charset {charset} is not known here, so it is read as UTF-8.")
+        charset = "utf-8"
     if kind in ("text/html", "application/xhtml+xml"):
         parser = _Text()
         parser.feed(body.decode(charset, "replace"))

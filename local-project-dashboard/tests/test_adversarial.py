@@ -834,6 +834,11 @@ class _Pages(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(PAGE)
+        elif self.path == "/odd":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=x-not-a-charset")
+            self.end_headers()
+            self.wfile.write(PAGE)
         else:
             self.send_error(404, "Not Found")
 
@@ -923,6 +928,11 @@ class TheSourceReview(AdversarialCase):
                 done = self.settled(run["id"])
                 self.assertIn(said, Path(done["input"]).read_text())
                 time.sleep(1.1)
+
+    def test_a_page_in_a_charset_python_does_not_know_is_read_as_utf8(self):
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/odd")
+        self.assertIn("HTTP 200, text/html", fetched)
+        self.assertIn("The limit is 10 requests per minute.", fetched)
 
     def test_a_source_review_is_refused_for_an_unregistered_checkout_an_unknown_row_or_another_shape(self):
         self.connection.execute("DELETE FROM repo WHERE path = ?", (str(self.notes),))
