@@ -58,7 +58,7 @@ COMMANDS = [
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
     ["report.fix", "report", "Fix", "f", "safe"],  # sd:3456: a debug session in herdr; asks first
-    ["jobs.retry", "job", "Retry", "t", "safe"],
+    ["jobs.retry", "job", "Run now", "t", "safe"],
 ]
 
 

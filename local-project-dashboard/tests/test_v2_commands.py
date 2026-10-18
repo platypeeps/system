@@ -39,6 +39,12 @@ class OneDeclaration(unittest.TestCase):
         twice = {found: names for found, names in where.items() if len(names) > 1}
         self.assertEqual(twice, {}, "declare a shared command once, in commands.js")
 
+    def test_jobs_retry_reads_run_now_for_an_idle_job_and_a_failed_one(self):
+        # The run-now pack (sd:4982) allows a run of an idle job too, so the label cannot say Retry.
+        line = SCRIPTS[SHARED].split("id: 'jobs.retry'", 1)[1].split("\n", 1)[0]
+        self.assertIn("label: 'Run now'", line)
+        self.assertIn("does: 'Starts the job now; after a failure, this reruns it.'", line)
+
     def test_only_the_shared_module_writes_a_shared_command(self):
         for text in SHARED_TEXT:
             with self.subTest(text=text):

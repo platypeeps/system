@@ -30,12 +30,13 @@
         err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) };
   }
 
-  // Retry: `sd jobs retry`, which sends the kickstart. `job(o)` names the row's facts: { name, service, failed, exit,
+  // Run now (jobs.retry): `sd jobs retry`, which sends the kickstart; the run-now pack allows an idle job's run too (sd:4982).
+  // `job(o)` names the row's facts: { name, service, failed, exit,
   // capability }; capability is operations.inventory's retry answer, and its reason is the off text. Exit 127 is "command
   // not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside the dashboard can be
   // tested (sd:3392). run(o) is the page's write; it words the answer with answered().
   function retry({ job, run }) {
-    return { id: 'jobs.retry', on: 'job', label: 'Retry', does: 'Asks launchd to start the job\'s run again now.', key: 't', risk: 'safe', bulk: true,
+    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', risk: 'safe', bulk: true,
       primary: o => !!job(o).failed && job(o).exit !== 127,
       when: o => { const j = job(o), c = j.capability; return !c ? (j.failed || 'no failed run to retry') : c.allowed || c.reason || 'launchd refuses a retry now'; },
       askFirst: o => job(o).exit === 127,
