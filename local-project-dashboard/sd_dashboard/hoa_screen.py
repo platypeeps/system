@@ -17,8 +17,9 @@ parse is that part's `error`; the other parts still answer, and the page shows
 the failed part as unknown with the reason, never as an empty list. The read
 reaches no network: the map draws the vectors in the files, and the page loads
 no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
-and reads the refresh jobs' launchd state; it starts nothing. The writes are
-Acknowledge (`acknowledge`) and the jobs route Refresh now posts.
+and reads the refresh jobs' launchd state, and asks the checkout's `tools/sweep.py status --json` for the last sweep
+(`hoa_sweep`); it starts nothing. The writes are Acknowledge (`acknowledge`), the jobs route Refresh now posts, and
+Run sweep (`hoa_sweep.start`).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from pathlib import Path
 
 from sd_db import operations, reads, repos, workflow, writes
 
+from . import hoa_sweep
 from .documents import _config_dir, pipe_lines
 
 __all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
@@ -436,6 +438,7 @@ def document(connection, *, now: str, jobs=None) -> dict:
         "items": items,
         "thresholds": thresholds(),
         "sources": ages,
+        "sweep": hoa_sweep.status(place) if not problems else {**hoa_sweep.status(None), "error": problems[0]},
         "attention": _attention(mission, items),
     }
 

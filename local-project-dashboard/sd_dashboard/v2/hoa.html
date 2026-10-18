@@ -4,7 +4,8 @@
   commands.md. Data: /api/hoa (hoa_screen.document: the asset map, the Mission export and the open items of the checkout
   the repo table holds under the folder name hoa), read when the page opens and on Refresh. A part that did not read is unknown
   with its reason. The map is one SVG of the files' vectors: no Leaflet and no tiles. Writes: Acknowledge on an alarm event
-  (sd:4967, POST /api/hoa/alarm, the workflow database's view state); email is never sent; the Mission portal is never touched.
+  (sd:4967, POST /api/hoa/alarm, the workflow database's view state) and Run sweep on the HOA sweep row (sd:5095, POST /api/hoa/sweep,
+  the checkout's tools/sweep.py in the background: Gmail drafts only); email is never sent; the Mission portal is never touched.
   Nothing here is sample data.
   Views (places.js): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Briefs and Reports each read /api/hoa/<view> (places.py) when shown.
 -->
@@ -42,7 +43,7 @@
 
   <section class="panel" id="sources" aria-labelledby="src-h">
     <div class="panel-head">
-      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Refresh now starts the source's manual job, as Management's Retry does.</p></div>
+      <div><h2 id="src-h">Data sources</h2><p>How old each HOA source is, from the checkout's <code>tools/source-ages.py</code>. Refresh now starts the source's manual job, as Management's Retry does; Run sweep starts the HOA sweep.</p></div>
     </div>
     <table class="ledger" id="src-table" aria-labelledby="src-h">
       <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Source</th><th scope="col" class="hide-sm">Allowed</th><th scope="col" class="hide-sm">Refresh</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>

@@ -18,10 +18,17 @@
   let SRC = [];
   const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
   const srcOf = key => SRC.find(r => r.source === key);
+  // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (hoa_sweep.status): running, and the last run.
+  let SWEEP = null;
 // A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
   : j.state === 'idle' ? (j.last_exit === 0 ? 'last refresh finished' : 'refresh not run yet') : `refresh job ${j.state}`;
+// The sweep's last run, in words, and its lamp: running is queued, a failed run a warning, a part not read unknown.
+const sweepText = w => !w || w.error ? '' : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
+  : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `last sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
+  : `last sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
+const sweepState = w => !w || w.error || w.last?.state === 'unknown' ? 'unknown' : w.running || !w.last || w.last.state === 'never' ? 'queued' : w.last.state === 'done' ? 'ok' : 'warning';
 // While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
 const SRC_POLL = 15000;
 let polling = 0;
@@ -223,6 +230,18 @@ let polling = 0;
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
     else if (id.startsWith('source:')) selectSourceRow(id, open);
+    else if (id === 'sweep') selectSweep(open);
+  }
+  // The sweep's Details: its last run as tools/sweep.py recorded it, the log to read, and Run sweep.
+  function selectSweep(open) {
+    if (!SWEEP) return;
+    const st = sweepState(SWEEP), l = SWEEP.last || {};
+    selected = 'sweep'; mark();
+    show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Sweep · ${SWEEP.command}</span></div>
+      <h2>HOA sweep</h2>${SWEEP.error ? unknownBlock(SWEEP.error) : dl([['State', sweepText(SWEEP)], ['Started', l.started || ''], ['Ended', l.finished || ''],
+        ['Log', l.log || ''], ['Branch', l.branch || ''], ['Worktree', l.worktree || '']])}
+      <h3 class="label">Act</h3>${window.shell.commands.bar('sweep')}
+      <p class="why">Followups are Gmail drafts in the hoa account; nothing is sent. The commit lands through the lane.</p>`, 'sweep', open);
   }
 
   // ---------- Trends ----------
@@ -290,15 +309,26 @@ let polling = 0;
   const drawTrends = () => put($('trend-list'), html`${SERIES.map(spark)}`);
   const daysOf = sc => rowsOf(SERIES.find(x => x.key === sc.dataset.series)).map(r => r.date);
 
+  // The sweep is one more ledger row, after the sources: its lamp, its last run and Run sweep.
+  function sweepRow() {
+    const st = sweepState(SWEEP);
+    return html`<tr data-id="sweep" aria-selected="${selected === 'sweep' ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
+      <td class="what"><button type="button">HOA sweep</button><div class="detail">${SWEEP.error ? SWEEP.error : sweepText(SWEEP)}</div></td>
+      <td class="src hide-sm">one at a time</td><td class="detail hide-sm">${sweepText(SWEEP)}</td>
+      <td class="act">${window.shell.commands.rowActions('sweep')}</td></tr>`;
+  }
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
-    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
+    put($('src-body'), !DOC ? html`` : html`${drawSourceRows(C, sr)}${SWEEP ? sweepRow() : ''}`);
+  }
+  function drawSourceRows(C, sr) {
+    return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
       : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
         return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
         <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
         <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
         <td class="act">${C.rowActions(id)}</td></tr>`; })}`
-      : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`);
+      : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`;
   }
   // ---------- Tasks (sd:4959) ----------
   // build: one table of every open item of the checkout, followups, tasks and work, where the design had followups alone.
@@ -372,14 +402,16 @@ let polling = 0;
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
         ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
-      if (SRC.some(r => r.job?.state === 'running')) poll();
+      SWEEP = doc.sweep || null;
+      if (SWEEP) objects.push({ id: 'sweep', type: 'sweep', label: 'HOA sweep' });
+      if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = [];
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null;
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -506,6 +538,17 @@ let polling = 0;
           : 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.' },
       window.commands.showLog({ job: facts }),
     );
+    // ---------- Run sweep (sd:5095) ----------
+    // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (hoa_sweep.py); a 409 names the run going.
+    // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.
+    C.register({ id: 'sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs the HOA sweep headless: drafts followups, never sends; lands through the lane.',
+      key: 'w', risk: 'safe', askFirst: true, executes: true, primary: () => true,
+      when: () => SWEEP?.error || (SWEEP?.running ? 'a sweep is running now' : true),
+      consequence: () => 'Reviews the week, both Drives and the alias mail, updates the status and the VP brief, saves followups as Gmail drafts, and hands the commit to the lane. Up to 90 min.',
+      cli: () => SWEEP?.command || 'python3 tools/sweep.py run', sends: () => 'POST /api/hoa/sweep {}',
+      run: () => S.post('/api/hoa/sweep', {}).then(
+        out => reader.reread().then(() => { poll(); return `Sweep started ${String(out.started).slice(11, 16)} UTC · HOA reads again until it ends`; }),
+        err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a sweep started is not known`); }) });
     $('al-show').addEventListener('click', e => {
       if (!e.target.closest('.chip')) return;
       showAcked = !showAcked; drawLedgers();
