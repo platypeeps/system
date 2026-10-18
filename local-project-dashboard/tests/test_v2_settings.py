@@ -20,7 +20,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import pack_library, settings_screen, v2
+from sd_db import writes
+
+from sd_dashboard import pack_library, realm_sweep, settings_screen, v2
 
 from test_v2_registry import GROUPS, Registers
 from test_v2_tasks import FETCH_JS, STAND_IN
@@ -84,7 +86,7 @@ class StubSd:
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "settings", "Settings", "/settings", ("/api/settings", "/api/settings/fleet")
+    page, section, route, api = "settings", "Settings", "/settings", ("/api/settings", "/api/settings/fleet", "/api/settings/sweep")
 
 
 class TheFleetRead(unittest.TestCase):
@@ -166,6 +168,57 @@ class TheFleetSet(BrowserSession):
             status, _, answer = self.post("/api/settings/fleet", payload)
             self.assertEqual(status, 400, (payload, answer))
         self.assertEqual(self.sd.calls(), [])
+
+
+class TheSweepSettings(BrowserSession):
+    """sd:5109: the Sweeps section reads and writes the sweep settings as workflow database rows, never a config file.
+    A set names the value shown; a row changed since refuses with 409; an empty value unsets; another key is a 400."""
+
+    def setUp(self):
+        super().setUp()
+        self.sd = StubSd(self)
+
+    def read(self):
+        status, _, body = self.request("/api/settings", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    def test_the_read_lists_every_sweep_setting_with_its_row(self):
+        writes.set_setting(self.connection, "sweep.work.jira_scope", "project in (ABC)")
+        doc = self.read()
+        self.assertEqual(doc["sweeps_reason"], "")
+        self.assertEqual([k["key"] for k in doc["sweeps"]], list(realm_sweep.SETTINGS))
+        held = {k["key"]: (k["value"], k["source"]) for k in doc["sweeps"]}
+        self.assertEqual(held["sweep.work.jira_scope"], ("project in (ABC)", "database"))
+        self.assertEqual(held["sweep.personal.mail_query"], (None, "unset"))
+
+    def test_a_set_writes_the_row_and_the_runner_reads_it(self):
+        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.work.mail_query", "value": " in:inbox ", "before": None})
+        self.assertEqual((status, answer), (200, {"key": "sweep.work.mail_query", "value": "in:inbox", "was": None}))
+        rows = writes.read_settings(self.connection, ["sweep.work.mail_query"])
+        self.assertEqual(rows, {"sweep.work.mail_query": "in:inbox"})
+        self.assertEqual(realm_sweep.filters("work", {**rows, "sweep.work.followups_repo": "/r"})[0]["mail_query"], "in:inbox")
+        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.work.mail_query", "value": "", "before": "in:inbox"})
+        self.assertEqual((status, answer["value"], answer["was"]), (200, None, "in:inbox"))
+        self.assertEqual(writes.read_settings(self.connection, ["sweep.work.mail_query"]), {"sweep.work.mail_query": None})
+        self.assertEqual(self.sd.calls(), [], "a sweep setting ran sd config")
+
+    def test_a_row_changed_since_the_read_refuses_with_409_and_keeps_its_value(self):
+        writes.set_setting(self.connection, "sweep.personal.drive_exclude", "Example Drive")
+        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.personal.drive_exclude", "value": "Other", "before": None})
+        self.assertEqual(status, 409, answer)
+        self.assertIn("changed since it was read", answer["error"])
+        self.assertEqual(writes.read_settings(self.connection, ["sweep.personal.drive_exclude"]),
+                         {"sweep.personal.drive_exclude": "Example Drive"})
+
+    def test_another_key_or_shape_is_refused_and_writes_nothing(self):
+        for payload in ({"key": "sd.copilot_review", "value": "never", "before": None},
+                        {"key": "sweep.work.mail_query", "value": "x"},
+                        {"key": "sweep.work.mail_query", "value": 3, "before": None},
+                        {"key": "sweep.work.mail_query", "value": "x", "before": 3}):
+            status, _, answer = self.post("/api/settings/sweep", payload)
+            self.assertEqual(status, 400, (payload, answer))
+        self.assertEqual(writes.read_settings(self.connection, list(realm_sweep.SETTINGS)), {})
 
 
 class TheThemeMoved(unittest.TestCase):
@@ -286,6 +339,18 @@ class TheFleetSection(unittest.TestCase):
                             self.answer("[504, { error: 'sd config set ran past its 5 seconds', unknown: true }]"))
         self.assertEqual(out["R"]["out"], "Outcome unknown: sd config set ran past its 5 seconds. The value shown is the one read after.")
         self.assertEqual(out["gets"], ["/api/settings"] * 2)
+
+    def test_a_sweep_change_posts_the_value_shown_and_a_409_reads_again(self):
+        """sd:5109: the Sweeps rows draw from the same read; a set names the value shown, and a stale row reads again."""
+        doc = {**FLEET_DOC, "sweeps": [{"key": "sweep.work.mail_query", "value": "in:inbox", "source": "database",
+                                        "description": "The Work sweep's Gmail search.", "choices": None}], "sweeps_reason": ""}
+        change = ("await ELS.sweeps.listeners.change[0]({ target: { dataset: { key: 'sweep.work.mail_query' }, value: 'is:unread' } });"
+                  " await flush(); R.out = ELS['f-sweep.work.mail_query-out'].textContent; R.sweeps = ELS.sweeps.html;")
+        out = self.run_page(change, self.answer("[409, { error: 'sweep.work.mail_query changed since it was read; read it again', reload: true }]", doc))
+        self.assertIn('<h3 id="f-sweep.work.mail_query-h">sweep.work.mail_query</h3>', out["R"]["sweeps"])
+        self.assertEqual(out["posts"], [["/api/settings/sweep", {"key": "sweep.work.mail_query", "value": "is:unread", "before": "in:inbox"}, 64]])
+        self.assertEqual(out["gets"], ["/api/settings"] * 2)
+        self.assertEqual(out["R"]["out"], "Not saved: sweep.work.mail_query changed since it was read; read it again. The value shown is the one read now.")
 
     def test_a_failed_read_names_its_reason_and_draws_no_row(self):
         out = self.run_page("", self.answer("[500, {}]", {"read": "x", "fleet": None, "reason": "sd config list sd exited 1: hub refused"}))

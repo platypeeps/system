@@ -1,12 +1,13 @@
 """The Work and Personal sweeps' runner (sd:5096, sd:5097): `python3 -m sd_dashboard.realm_sweep`.
 
 What this slice promises: the run's allowlist reads and saves Gmail drafts, and names no tool that sends, forwards or
-writes; the Personal run loads workspace-mcp alone; a run reads its account from the pack's config.json and its filters
-from sweep.conf, files the brief its model wrote as `<day> - <Realm> sweep`, and records done; the next run reads since
-the last done one; one run per realm at a time; a missing account, filter or brief fails, naming it.
+writes; the Personal run loads workspace-mcp alone; a run reads its filters from the workflow database's setting rows
+(sd:5109) and its account from that database or the pack's config.json, files the brief its model wrote as
+`<day> - <Realm> sweep`, and records done; the next run reads since the last done one; one run per realm at a time; a
+missing account, filter or brief, or a database that does not answer, fails, naming it.
 
 `claude` and `sd` are stubs: the claude stub writes the brief the prompt names and prints `RESULT: ok`; the sd stub
-records its calls. No test calls claude, Gmail, Drive or the workflow database.
+records its calls. The workflow database is a temporary one under the run's HOME. No test calls claude, Gmail or Drive.
 """
 
 from __future__ import annotations
@@ -24,7 +25,14 @@ from pathlib import Path
 DASHBOARD = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DASHBOARD))
 
+import sd_db  # noqa: E402
+from sd_db import connect, initialise, writes  # noqa: E402
+from sd_db.database import local_path  # noqa: E402
+
 from sd_dashboard import realm_sweep  # noqa: E402
+
+#: The sd_db this process imported, for the run's own PYTHONPATH: the copy the gate pins, not the live pack.
+PACK_LIB = Path(sd_db.__file__).resolve().parent.parent
 
 CLAUDE = r'''import json, os, re, sys
 argv = sys.argv[1:]
@@ -107,9 +115,13 @@ class Run(unittest.TestCase):
         (root / "home").mkdir()
         (root / "xdg" / "sd-ai-command-pack").mkdir(parents=True)
         self.accounts({"personal": {"email": "me@example.test"}, "work": {"email": "work@example.test"}})
-        (root / "config" / "project-dashboard").mkdir(parents=True)
-        self.conf("personal|mail|in:inbox -to:hoa@example.test\npersonal|skip-drives|Example HOA\n"
-                  "work|mail|in:inbox\nwork|followups|~/repos/example-work/a\n")
+        database = local_path(root / "home")
+        database.parent.mkdir(parents=True)
+        initialise(database)
+        self.connection = connect(database)
+        self.addCleanup(self.connection.close)
+        self.set(**{"sweep.personal.mail_query": "in:inbox -to:hoa@example.test", "sweep.personal.drive_exclude": "Example HOA",
+                    "sweep.work.mail_query": "in:inbox", "sweep.work.followups_repo": "~/repos/example-work/a"})
         (root / "claude.py").write_text(CLAUDE)
         claude = root / "claude"
         claude.write_text(f"#!/bin/sh\nexec {sys.executable} {root / 'claude.py'} \"$@\"\n")
@@ -119,15 +131,16 @@ class Run(unittest.TestCase):
         sd.chmod(0o755)
         self.seen, self.calls = root / "seen.jsonl", root / "sd-calls"
         self.env = {"HOME": str(root / "home"), "PATH": "/usr/bin:/bin", "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_CONFIG_HOME": str(root / "xdg"), "SYSTEM_TOOLS_CONFIG": str(root / "config"),
-                    "CLAUDE_BIN": str(claude), "REALM_SWEEP_SD": str(sd), "PYTHONPATH": str(DASHBOARD),
+                    "XDG_CONFIG_HOME": str(root / "xdg"), "CLAUDE_BIN": str(claude), "REALM_SWEEP_SD": str(sd),
+                    "PYTHONPATH": f"{DASHBOARD}{os.pathsep}{PACK_LIB}",
                     "STUB_SEEN": str(self.seen), "STUB_SD_CALLS": str(self.calls)}
 
     def accounts(self, accounts):
         (self.root / "xdg" / "sd-ai-command-pack" / "config.json").write_text(json.dumps({"google": {"accounts": accounts}}))
 
-    def conf(self, text):
-        (self.root / "config" / "project-dashboard" / "sweep.conf").write_text(text)
+    def set(self, **rows):
+        for key, value in rows.items():
+            writes.set_setting(self.connection, key, value)
 
     def state(self, realm):
         return self.root / "state" / "system" / f"{realm}-sweep"
@@ -151,7 +164,8 @@ class Run(unittest.TestCase):
         [argv] = self.prompts()
         prompt = argv[argv.index("-p") + 1]
         self.assertIn("Google account: me@example.test", prompt)
-        self.assertIn("- mail: in:inbox -to:hoa@example.test", prompt)
+        self.assertIn("- mail_query: in:inbox -to:hoa@example.test", prompt)
+        self.assertIn("- drive_exclude: Example HOA", prompt)
         self.assertIn("Bash(sd task add --kind personal:*)", argv[argv.index("--allowedTools") + 1])
         record = self.record("personal")
         self.assertEqual((record["state"], record["exit"]), ("done", 0))
@@ -172,7 +186,7 @@ class Run(unittest.TestCase):
         self.assertIn("Since: seven days ago", prompts[0])
         self.assertIn(f"Since: {first}.", prompts[1])
         self.assertIn(f"Since: {first}.", prompts[2])
-        # The work followups belong to the sweep.conf checkout, its ~ expanded, so they show under Work.
+        # The work followups belong to the followups_repo setting's checkout, its ~ expanded, so they show under Work.
         self.assertIn(f"Bash(sd task add --belongs-to {self.root / 'home'}/repos/example-work/a:*)",
                       self.prompts()[0][self.prompts()[0].index("--allowedTools") + 1])
 
@@ -192,12 +206,32 @@ class Run(unittest.TestCase):
         self.assertEqual(self.sweep("run", "work").returncode, 1)
         self.assertIn("google.accounts.work.email", self.record("work")["reason"])
         self.accounts({"work": {"email": "work@example.test"}})
-        self.conf("work|mail|in:inbox\n")
+        self.set(**{"sweep.work.followups_repo": None})
         self.assertEqual(self.sweep("run", "work").returncode, 1)
-        self.assertIn("work|followups|<value>", self.record("work")["reason"])
-        (self.root / "config" / "project-dashboard" / "sweep.conf").unlink()
+        self.assertEqual(self.record("work")["reason"], "sweep.work.followups_repo is not set; set it on Settings, under Sweeps")
+        self.assertEqual(self.prompts(), [])
+
+    def test_the_filters_are_database_rows_and_the_account_row_comes_before_config_json(self):
+        """sd:5109: a changed row reaches the next prompt; no config file holds the filters."""
+        self.set(**{"sweep.work.jira_scope": "project in (ABC)", "sweep.work.github_scope": "org:example",
+                    "google.accounts.work.email": "row@example.test"})
+        self.assertEqual(self.sweep("run", "work").returncode, 0, self.record("work"))
+        prompt = self.prompts()[0][self.prompts()[0].index("-p") + 1]
+        self.assertIn("- jira_scope: project in (ABC)", prompt)
+        self.assertIn("- github_scope: org:example", prompt)
+        self.assertIn("- notion_scope: not configured", prompt)
+        self.assertIn("Google account: row@example.test", prompt)
+        # A cleared account row is unset: config.json does not come back under it.
+        self.set(**{"google.accounts.work.email": None})
         self.assertEqual(self.sweep("run", "work").returncode, 1)
-        self.assertIn("sweep.conf.example", self.record("work")["reason"])
+        self.assertIn("the workflow database's google.accounts.work.email setting is unset", self.record("work")["reason"])
+
+    def test_a_database_that_does_not_answer_fails_the_run_and_asks_no_model(self):
+        """A failed read is unknown, not unset: the run stops before the model."""
+        self.connection.close()
+        local_path(self.root / "home").unlink()
+        self.assertEqual(self.sweep("run", "personal").returncode, 1)
+        self.assertIn("the personal sweep settings did not read from the workflow database", self.record("personal")["reason"])
         self.assertEqual(self.prompts(), [])
 
     def test_todays_filed_brief_reaches_the_prompt_and_a_failed_read_of_it_stops_the_run(self):

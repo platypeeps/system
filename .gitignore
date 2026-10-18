@@ -81,7 +81,6 @@ local-project-dashboard/home-tiles.conf
 local-project-dashboard/hoa-thresholds.conf
 local-project-dashboard/report-families.conf
 local-project-dashboard/realms.conf
-local-project-dashboard/sweep.conf
 local-repo-sync/repos.*.conf
 local-scan-for-secrets/scan-for-secrets.conf
 local-scan-for-secrets/fixture-fingerprints

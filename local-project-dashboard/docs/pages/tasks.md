@@ -51,5 +51,5 @@ The Personal and Work views carry Run sweep (sd:5096, sd:5097) in their subhead,
 It posts `/api/tasks/sweep {"realm"}`, which starts `realm_sweep run <realm>` in the background, one run per realm
 (`sd_dashboard/sweep.py`); a second start of a running realm is a 409. The run reads that realm's Google account, mail and Drive,
 and for Work also Notion, Jira and GitHub; it files a `<day> - Work sweep` or `<day> - Personal sweep` brief and sd
-followups, and saves Gmail drafts. It sends nothing and commits nothing. Its filters are `sweep.conf`
-(`sweep.conf.example`); `/api/tasks`' `sweeps` and `GET /api/tasks/sweep/status` read each realm's last run.
+followups, and saves Gmail drafts. It sends nothing and commits nothing. Its filters are the
+`sweep.<realm>.*` settings in the workflow database, which Settings edits under Sweeps (sd:5109); `/api/tasks`' `sweeps` and `GET /api/tasks/sweep/status` read each realm's last run.

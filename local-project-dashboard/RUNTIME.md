@@ -230,7 +230,7 @@ The run calls `sd`, `sd-ship`, `git` and `claude`: the start adds `~/.local/bin`
 Its stdout and stderr go to `start.log` beside the lock; the script keeps its own record and log under `~/.local/state/hoa-sweep/`.
 Run sweep on Tasks' Personal and Work views (sd:5096, sd:5097) is the same start with a realm: `POST /api/tasks/sweep {"realm"}` runs `python3 -m sd_dashboard.realm_sweep run <realm>` from this folder.
 Each realm holds its own lock, `~/.local/state/system/<realm>-sweep/lock`, so the two may run together; the run keeps `last.json` and `runs/` there.
-It reads `google.accounts.<realm>.email` from the pack's config.json and `<config>/project-dashboard/sweep.conf`; it files its brief with `sd reports brief add`, under this checkout.
+It reads its filters from the workflow database's `sweep.<realm>.*` settings (sd:5109, Settings edits them) and `google.accounts.<realm>.email` from that database or the pack's config.json; it files its brief with `sd reports brief add`, under this checkout.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications

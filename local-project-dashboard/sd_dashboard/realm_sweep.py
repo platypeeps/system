@@ -3,7 +3,7 @@
     python3 -m sd_dashboard.realm_sweep run work|personal             the sweep, now; one run per realm at a time
     python3 -m sd_dashboard.realm_sweep status work|personal [--json] the last run: running, its end, its log
 
-    environment: XDG_STATE_HOME, XDG_CONFIG_HOME, SYSTEM_TOOLS_CONFIG, CLAUDE_BIN, WORKSPACE_MCP_URL,
+    environment: XDG_STATE_HOME, XDG_CONFIG_HOME, SD_PACK_ROOT, CLAUDE_BIN, WORKSPACE_MCP_URL,
     REALM_SWEEP_SD (default sd), REALM_SWEEP_TIMEOUT (seconds, default 3600)
 
 A run leaves three things and commits to no repository: a dated brief on the Briefs page (`<day> - Work sweep` or
@@ -13,13 +13,15 @@ A run leaves three things and commits to no repository: a dated brief on the Bri
 
 Sources:
 
-- personal: the personal Google account's mail and its My Drive changes. The `mail` filter leaves out the HOA aliases
-  and `skip-drives` the HOA shared Drives: the HOA sweep owns them.
+- personal: the personal Google account's mail and its My Drive changes. `mail_query` leaves out the HOA aliases and
+  `drive_exclude` the HOA shared Drives: the HOA sweep owns them.
 - work: the work Google account's mail and Drive changes, Notion page changes, Jira issues assigned to, mentioning or
   watched by the operator, and GitHub pull requests and reviews requesting the operator, and mentions.
 
-The accounts are `google.accounts.<realm>.email` in the pack's machine config (`<XDG_CONFIG_HOME>/sd-ai-command-pack/
-config.json`). The filters are this machine's `<config>/project-dashboard/sweep.conf` (`sweep.conf.example`).
+The filters are fleet settings (sd:5109), `sweep.<realm>.<name>` rows in the workflow database (`SETTINGS`), which the
+Settings page edits under Sweeps. The account is the `google.accounts.<realm>.email` setting row, or without one that key
+in the pack's machine config (`<XDG_CONFIG_HOME>/sd-ai-command-pack/config.json`): the row first, as `sd config` reads a
+fleet key. A failed database read fails the run: it is unknown, not unset.
 
 The run has an exact allowlist, `--permission-mode dontAsk`, and never skips permission checks. Its MCP tools read
 (`MCP_READS`); its one write is `draft_gmail_message`. No tool that sends, forwards or labels mail, writes Drive, Notion
@@ -57,7 +59,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .documents import _config_dir, pipe_lines
 from .sweep import DASHBOARD, state_dir
 
 REALMS = ("work", "personal")
@@ -68,9 +69,20 @@ SD_SECONDS = 60
 #: The checkout the briefs belong to: `sd reports brief add` files a brief only under a registered repository.
 REPO = DASHBOARD.parent
 
-#: `<realm>|<key>|<value>` keys; `REQUIRED` must be set, the others may be left out and the brief names the gap.
-KEYS = {"personal": ("mail", "skip-drives"), "work": ("mail", "skip-drives", "notion", "jira", "github", "followups")}
-REQUIRED = {"personal": ("mail",), "work": ("mail", "followups")}
+#: The sweep settings (sd:5109) and what each holds, as Settings lists them. `REQUIRED` must hold a value; a source left
+#: unset is skipped and named under the brief's Gaps.
+SETTINGS = {
+    "sweep.personal.mail_query": "The Personal sweep's Gmail search. Leave out the HOA aliases: the HOA sweep reads them.",
+    "sweep.personal.drive_exclude": "Shared Drives the Personal sweep skips, comma-separated: the HOA Drives.",
+    "sweep.work.mail_query": "The Work sweep's Gmail search.",
+    "sweep.work.drive_exclude": "Shared Drives the Work sweep skips, comma-separated.",
+    "sweep.work.notion_scope": "The Notion teamspaces or pages the Work sweep searches. Unset skips Notion.",
+    "sweep.work.jira_scope": "The Jira projects the Work sweep searches, as JQL such as project in (ABC). Unset skips Jira.",
+    "sweep.work.github_scope": "The GitHub owners the Work sweep searches, as qualifiers such as org:example. Unset skips GitHub.",
+    "sweep.work.followups_repo": "The registered repository the Work sweep files its followups under.",
+}
+REQUIRED = ("sweep.personal.mail_query", "sweep.work.mail_query", "sweep.work.followups_repo")
+ACCOUNT = "google.accounts.{realm}.email"
 
 BUILT_IN_TOOLS = "Bash,Read,Write,ToolSearch"
 DRAFT = "draft_gmail_message"
@@ -125,7 +137,7 @@ Facts:
 - Today's brief so far: {earlier}
 - Followup reference: {realm}-sweep:<source>-<id>
 
-This machine's filters (a source marked "not configured" is skipped and named under Gaps):
+The sweep's settings (a source marked "not configured" is skipped and named under Gaps):
 {filters}
 
 {steps}
@@ -152,24 +164,24 @@ Reply with a short report. Its last line is `RESULT: ok`, or `RESULT: failed, <s
 finish. A source that could not be read is a gap in the brief, not a failure.
 """
 STEPS = {
-    "personal": """Mail. Search Gmail with the mail filter and `after:` the Since date. Read the threads that ask the operator
+    "personal": """Mail. Search Gmail with mail_query and `after:` the Since date. Read the threads that ask the operator
 for something, change a commitment, or carry a deadline.
 
-Drive. Search Drive for files in the account's My Drive modified after Since. Skip the shared Drives that skip-drives
-names; the HOA sweep owns them.
+Drive. Search Drive for files in the account's My Drive modified after Since. Skip the shared Drives that
+drive_exclude names; the HOA sweep owns them.
 """,
-    "work": """Mail. Search Gmail with the mail filter and `after:` the Since date. Read the threads that ask the operator
+    "work": """Mail. Search Gmail with mail_query and `after:` the Since date. Read the threads that ask the operator
 for something, change a commitment, or carry a deadline.
 
-Drive. Search Drive for files modified after Since, in My Drive and the shared Drives, except those skip-drives names.
+Drive. Search Drive for files modified after Since, in My Drive and the shared Drives, except those drive_exclude names.
 
-Notion. Search Notion within the notion scope for pages edited after Since, and read those that concern the
+Notion. Search Notion within notion_scope for pages edited after Since, and read those that concern the
 operator. If Notion does not answer, or answers from a workspace that is not the work one, say so under Gaps.
 
-Jira. Search issues within the jira scope, updated after Since, that are assigned to the operator, mention them, or
+Jira. Search issues within jira_scope, updated after Since, that are assigned to the operator, mention them, or
 that they watch: (assignee = currentUser() OR watcher = currentUser() OR text ~ currentUser()).
 
-GitHub. Within the github scope, find open pull requests that request the operator's review (review-requested:@me),
+GitHub. Within github_scope, find open pull requests that request the operator's review (review-requested:@me),
 reviews on their own open pull requests (author:@me), and mentions (mentions:@me), updated after Since.
 """,
 }
@@ -185,41 +197,52 @@ def accounts_path() -> Path:
     return Path(home) / "sd-ai-command-pack" / "config.json"
 
 
-def account(realm: str) -> tuple[str, str]:
-    """`(address, "")`, or `("", why not)`: `google.accounts.<realm>.email`, never a literal."""
-    path = accounts_path()
+def held(realm: str) -> tuple[dict, str]:
+    """The realm's setting rows and its account row, read once: `({key: value}, "")`, or `({}, why not)`.
+
+    A key with no row is absent, a cleared one `None` (`sd_db.writes.read_settings`). A failed open or read is named:
+    it is unknown, never "unset".
+    """
+    keys = [key for key in SETTINGS if key.startswith(f"sweep.{realm}.")] + [ACCOUNT.format(realm=realm)]
     try:
-        found = json.loads(path.read_text(encoding="utf-8"))["google"]["accounts"][realm]["email"]
-    except FileNotFoundError:
-        return "", f"{path} is missing"
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        return "", f"{path} holds no google.accounts.{realm}.email ({error.__class__.__name__})"
+        from sd_db import connect, writes
+
+        with contextlib.closing(connect(write=False)) as connection:
+            return writes.read_settings(connection, keys), ""
+    except Exception as error:  # noqa: BLE001 - any open or read failure is named, as sd_lib.fleet_connection does
+        return {}, f"the {realm} sweep settings did not read from the workflow database: {type(error).__name__}: {error}"
+
+
+def account(realm: str, rows: dict) -> tuple[str, str]:
+    """`(address, "")`, or `("", why not)`: the `google.accounts.<realm>.email` row, else that key in config.json."""
+    key = ACCOUNT.format(realm=realm)
+    if key in rows:
+        found, where = rows[key], f"the workflow database's {key} setting"
+        if found is None:
+            return "", f"{where} is unset"
+    else:
+        path = accounts_path()
+        where = str(path)
+        try:
+            found = json.loads(path.read_text(encoding="utf-8"))["google"]["accounts"][realm]["email"]
+        except FileNotFoundError:
+            return "", f"no {key} setting, and {path} is missing"
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            return "", f"no {key} setting, and {path} holds none ({error.__class__.__name__})"
     if not isinstance(found, str) or "@" not in found:
-        return "", f"{path}: google.accounts.{realm}.email is not an address"
+        return "", f"{where}: {key} is not an address"
     return found, ""
 
 
-def filters(realm: str, config: Path | None = None) -> tuple[dict, str]:
-    """`({key: value}, "")` from `sweep.conf`'s `<realm>|<key>|<value>` lines, or `({}, why not)`."""
-    config = _config_dir() / "sweep.conf" if config is None else config
-    source = f"<config>/project-dashboard/{config.name}"
-    try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}, f"{source} is missing; copy local-project-dashboard/sweep.conf.example there and edit it"
-    except (OSError, UnicodeDecodeError) as error:
-        return {}, f"{source} was not read: {error.__class__.__name__}"
-    found = {}
-    for number, line, fields in pipe_lines(text):
-        if len(fields) < 3 or fields[0] not in REALMS or fields[1] not in KEYS[fields[0]]:
-            return {}, f"{source} line {number}: not <realm>|<key>|<value> with a known realm and key: {line}"
-        if fields[0] == realm:
-            found[fields[1]] = "|".join(fields[2:])
-    if found.get("followups"):
-        found["followups"] = os.path.expanduser(found["followups"])
-    missing = [key for key in REQUIRED[realm] if not found.get(key)]
+def filters(realm: str, rows: dict) -> tuple[dict, str]:
+    """`({name: value}, "")`, each setting by its name after `sweep.<realm>.`, or `({}, why not)` when a required one is unset."""
+    prefix = f"sweep.{realm}."
+    missing = [key for key in REQUIRED if key.startswith(prefix) and not rows.get(key)]
     if missing:
-        return {}, f"{source} has no {', '.join(f'{realm}|{key}|<value>' for key in missing)} line"
+        return {}, f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not set; set it on Settings, under Sweeps"
+    found = {key[len(prefix):]: rows.get(key) for key in SETTINGS if key.startswith(prefix)}
+    if found.get("followups_repo"):
+        found["followups_repo"] = os.path.expanduser(found["followups_repo"])
     return found, ""
 
 
@@ -372,10 +395,13 @@ def sweep(realm: str, state: Path, out, err) -> int:
         print(f"sweep: exit {code}: {reason}", file=out if code == EXIT_OK else err)
         return code
 
-    address, problem = account(realm)
+    rows, problem = held(realm)
+    if problem:
+        return end(EXIT_ERROR, problem)
+    address, problem = account(realm, rows)
     if not address:
         return end(EXIT_ERROR, f"no Google account for the {realm} sweep: {problem}")
-    found, problem = filters(realm)
+    found, problem = filters(realm, rows)
     if problem:
         return end(EXIT_ERROR, problem)
     earlier = folder / "earlier.md"
@@ -393,11 +419,11 @@ def sweep(realm: str, state: Path, out, err) -> int:
         label=SERIES[realm].lower(), account=address, folder=folder, brief=brief, realm=realm, series=SERIES[realm],
         since=since or "seven days ago (no earlier sweep finished here)",
         earlier=earlier if earlier.exists() else "none yet",
-        filters="\n".join(f"- {key}: {found.get(key) or 'not configured'}" for key in KEYS[realm] if key != "followups"),
+        filters="\n".join(f"- {name}: {value or 'not configured'}" for name, value in found.items() if name != "followups_repo"),
         steps=STEPS[realm],
-        add="sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {found['followups']}")
+        add="sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {found['followups_repo']}")
     argv = claude_argv(claude_binary(), realm, prompt, os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp"),
-                       allowed_tools(realm, folder, found.get("followups", "")))
+                       allowed_tools(realm, folder, found.get("followups_repo") or ""))
     with log.open("a", encoding="utf-8") as logged:
         code, reason = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged)
     if code != EXIT_OK:
@@ -440,4 +466,8 @@ def main(argv: list[str], out=None, err=None) -> int:
 
 
 if __name__ == "__main__":
+    # The pack's lib/ first, as bootstrap.py puts it for the server: the dashboard starts this as its own process.
+    from . import pack_library
+
+    sys.path.insert(0, str(pack_library()))
     sys.exit(main(sys.argv[1:]))
