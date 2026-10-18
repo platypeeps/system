@@ -113,9 +113,11 @@
     RUNS.set(key, run);
     document.dispatchEvent(new CustomEvent('adversarial:run', { detail: { key, run } }));
     if (settled(run)) { window.shell.toast(settledText(run)); return; }
-    // A failed read is not known, not settled: Details says so and the next poll tries again.
-    setTimeout(() => window.shell.getJSON(`/api/adversarial/${encodeURIComponent(run.id)}`).then(next => follow(key, next),
-      e => follow(key, { ...run, unread: e.message })), REVIEW_POLL);
+    // A failed read is not known, not settled: Details says so and the next poll tries again. A newer run on the same row
+    // ends this run's polling: an answer for it would draw over the newer one.
+    const still = window.shell.shown(`adversarial ${key}`, run.id, () => RUNS.get(key)?.id);
+    setTimeout(() => still() && window.shell.getJSON(`/api/adversarial/${encodeURIComponent(run.id)}`).then(next => still() && follow(key, next),
+      e => still() && follow(key, { ...run, unread: e.message })), REVIEW_POLL);
   }
   function adversarialReview(on, { payload, when = () => true }) {
     return { id: `${on}.adversarial-review`, on, label: 'Adversarial review', does: 'Starts a codex review in the background; its brief lists tasks to pick.', risk: 'safe', executes: true, icon: 'shield-alert', when,

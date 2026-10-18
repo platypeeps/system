@@ -127,6 +127,21 @@ def run_capture(case, body):
     return run_js(CAPTURE.group(1) + body)
 
 
+class TheShownGuard(unittest.TestCase):
+    """sd:5064, lane review on 16cad7b5: an answer for what the page no longer shows changes nothing."""
+
+    def test_a_newer_read_or_another_subject_ends_an_older_reads_check(self):
+        out = run_js("""let on = 'a';
+  const a1 = shown('recs', 'a', () => on); R.first = a1();
+  const a2 = shown('recs', 'a', () => on); R.older = a1(); R.newer = a2();
+  R.away = shown('recs', 'b', () => on); R.kept = a2();
+  const other = shown('poll', 'a', () => on); R.slots = [a2(), other()];
+  on = 'b'; R.moved = [a2(), other()];
+  on = 'a'; R.back = a2();""")
+        self.assertEqual(out, {"first": True, "older": False, "newer": True, "away": None, "kept": True,
+                               "slots": [True, True], "moved": [False, False], "back": True})
+
+
 class TheDefaultCapture(unittest.TestCase):
     """sd:3520: a capture on a page without its own hook files a row, and a toast says Captured only with the new id."""
 

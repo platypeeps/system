@@ -183,6 +183,7 @@ addEventListener('DOMContentLoaded', () => {
   function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
   function show(id) {
     const b = BRIEFS.find(r => r.id === id); if (!b) return false;
+    shownItem = b.item;
     tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
     document.querySelectorAll('#lanes rect.tick').forEach(r => r.classList.toggle('sel', r.dataset.id === id));
     put(details, html`<p class="kind">Brief · ${b.src}</p>
@@ -207,6 +208,7 @@ addEventListener('DOMContentLoaded', () => {
   // kind, not a job, so there is nothing to run them on.
   function showSource(id) {
     const s = srcOf(id); if (!s) return;
+    shownItem = null;
     const mine = ranged().filter(b => b.src === id), on = new Set(mine.map(b => b.day)).size;
     put(details, html`<p class="kind">Source · ${mine.length ? 'quiet days are gaps' : 'no brief in range'}</p>
       <h2>${s.id}</h2>
@@ -221,16 +223,18 @@ addEventListener('DOMContentLoaded', () => {
   // An adversarial review's brief names its review batches; each question is one recommendation, read from
   // /api/briefs/<item>/recommendations. Create selected rules each ticked question Approve through POST /api/review/rule,
   // one call at a time under its batch's revision, and Approve files the task. Reject the rest rules every open one
-  // Reject. An unticked question stays open; a refused call keeps the server's sentence on its own row.
+  // Reject. An unticked question stays open; a refused call keeps the server's sentence on its own row. Details names the
+  // brief it shows in shownItem; an answer or a click for another brief changes nothing (shell.shown).
   const REVIEW_SRC = 'Adversarial review';
-  let RECS = null, busy = false;
+  let RECS = null, busy = false, shownItem = null;
   const CHOSEN = new Set(), REFUSED = new Map();
   function loadRecs(item) {
+    const still = shell.shown('recs', item, () => shownItem); if (!still) return Promise.resolve();
     return shell.getJSON(`/api/briefs/${item}/recommendations`).then(doc => doc, e => ({ brief: item, error: e.message }))
-      .then(doc => { if (RECS?.brief !== item) { CHOSEN.clear(); REFUSED.clear(); } RECS = doc; drawRecs(); });
+      .then(doc => { if (!still()) return; if (RECS?.brief !== item) { CHOSEN.clear(); REFUSED.clear(); } RECS = doc; drawRecs(); });
   }
   function drawRecs() {
-    const host = document.getElementById('recs'); if (!host || !RECS || BRIEFS.find(b => b.id === selected)?.item !== RECS.brief) return;
+    const host = document.getElementById('recs'); if (!host || !RECS || RECS.brief !== shownItem) return;
     if (RECS.error) { put(host, html`<h3>Create tasks</h3><p class="why">Its recommendations were not read: ${RECS.error}</p>`); return; }
     const open = RECS.questions.filter(q => q.open);
     put(host, html`<h3>Create tasks</h3>
@@ -256,7 +260,7 @@ addEventListener('DOMContentLoaded', () => {
         revision.set(q.batch, out.revision); CHOSEN.delete(q.note);
       } catch (e) { failed++; REFUSED.set(q.note, e.message); }
     }
-    busy = false;
+    busy = false; drawRecs();
     shell.toast(`${picked.length - failed} of ${picked.length} ruled ${option}${failed ? `; ${failed} failed, each row says why` : ''}`);
     await loadRecs(doc.brief);
   }
@@ -265,7 +269,7 @@ addEventListener('DOMContentLoaded', () => {
     if (box.checked) CHOSEN.add(+box.dataset.q); else CHOSEN.delete(+box.dataset.q);
   });
   details.addEventListener('click', e => {
-    const b = e.target.closest?.('[data-recs]'); if (!b || busy || !RECS?.questions) return;
+    const b = e.target.closest?.('[data-recs]'); if (!b || busy || !RECS?.questions || RECS.brief !== shownItem) return;
     const open = RECS.questions.filter(q => q.open);
     if (b.dataset.recs === 'all') { open.forEach(q => CHOSEN.add(q.note)); drawRecs(); }
     if (b.dataset.recs === 'create') ruleEach('Approve', open.filter(q => CHOSEN.has(q.note)));

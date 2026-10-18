@@ -400,9 +400,9 @@ await flush();\n"""
         self.assertIn("<h3>Create tasks</h3>", out["R"]["det"])
         # Open questions each have a box; the approved one shows its label and links its filed task.
         self.assertEqual(re.findall(r'<input type="checkbox" data-q="(\d+)"', recs_html), [str(n) for n in notes[1:]])
-        self.assertIn("Fix hypothesis 2", recs_html)
+        self.assertIn("Fix hypothesis 2 of task 12", recs_html)
         self.assertIn("system", recs_html)
-        self.assertRegex(recs_html, rf'Approve</span> <span>Fix hypothesis 1</span>.*<a href="/tasks\?row={filed}">sd:{filed}</a>')
+        self.assertRegex(recs_html, rf'Approve</span> <span>Fix hypothesis 1 of task 12</span>.*<a href="/tasks\?row={filed}">sd:{filed}</a>')
         for label in ("Select all", "Create selected", "Reject the rest"):
             self.assertIn(f">{label}</button>", recs_html)
         self.assertEqual(out["posts"], [])
@@ -434,6 +434,56 @@ fire('click', act('create')); await flush();""")
         self.assertEqual([(p[1]["note"], p[1]["option"]) for p in out["posts"]], [(notes[1], "Reject"), (notes[2], "Reject")])
         self.assertIn(f"note {notes[1]} is settled: ruled by note #9", out["R"]["recs"])
         self.assertIn("1 of 2 ruled Reject; 1 failed", " ".join(t[0] for t in out["toasts"]))
+
+    def two(self):
+        """Two adversarial briefs, A (task 12) and B (task 13), each with three open recommendations; the page shows A."""
+        a, a_batch = adversarial(self)
+        b, b_batch = adversarial(self, task=13)
+        self.page_doc = self.doc()
+        stem = {item: next(r["id"] for r in self.page_doc["briefs"] if r["item"] == item) for item in (a, b)}
+        notes = {batch: [n["id"] for n in workflow.item_state(self.connection, batch)["notes"] if n["kind"] == "question"]
+                 for batch in (a_batch, b_batch)}
+        recs = {item: review_screen.recommendations(self.connection, item) for item in (a, b)}
+        return (a, b), stem, notes[a_batch], notes[b_batch], recs
+
+    def held(self, recs, a, hold_a, hold_rule):
+        """An answer where A's recommendations (or each rule post) wait for RELEASE(), so they arrive after B's. It is
+        made before the page loads, so the first read of A waits too."""
+        return f"""(() => {{ globalThis.HELD = new Promise(r => {{ globalThis.RELEASE = r; }});
+const FIX = {json.dumps({str(k): v for k, v in recs.items()})};
+return (path, body) => path === '/api/briefs/{a}/recommendations' && {json.dumps(hold_a)} ? HELD.then(() => [200, FIX[{a}]])
+  : path.startsWith('/api/briefs/') && path.endsWith('/recommendations') ? [200, FIX[+path.split('/')[3]]]
+  : path === '/api/review/rule' ? ({json.dumps(hold_rule)} ? HELD : Promise.resolve()).then(() => [200, {{ item: body.item, note: body.note, revision: 'e'.repeat(64), ruling: 900 }}])
+  : [200, {json.dumps(self.page_doc)}]; }})()"""
+
+    def run_two(self, body, hold_a=True, hold_rule=False):
+        (a, b), stem, a_notes, b_notes, recs = self.two()
+        prelude = f"""const act = x => ({{ target: {{ closest: s => s === '[data-recs]' ? {{ dataset: {{ recs: x }} }} : null }} }});
+const box = (n, on) => ({{ target: {{ closest: s => s === 'input[data-q]' ? {{ checked: on, dataset: {{ q: String(n) }} }} : null }} }});
+const fire = (t, e) => (ELS.details.listeners[t] || []).forEach(f => f(e));
+const A = {json.dumps(stem[a])}, B = {json.dumps(stem[b])}, A_NOTES = {json.dumps(a_notes)}, B_NOTES = {json.dumps(b_notes)};
+await flush();\n"""
+        out = self.run_page(prelude + body, self.held(recs, a, hold_a, hold_rule), row=stem[a])
+        return out, (a, b), a_notes, b_notes
+
+    def test_a_late_answer_for_a_brief_no_longer_shown_changes_nothing(self):
+        """Lane review on 16cad7b5: A's recommendations arrived after B was selected, so B's buttons ruled A's questions."""
+        out, (a, b), a_notes, b_notes = self.run_two("""window.PAGE_LIST.select(B); await flush(); RELEASE(); await flush(); await flush();
+R.recs = ELS.recs.html; fire('click', act('reject')); await flush(); await flush();""")
+        self.assertIn("Fix hypothesis 1 of task 13", out["R"]["recs"])
+        self.assertNotIn("of task 12", out["R"]["recs"])
+        self.assertEqual(sorted(p[1]["note"] for p in out["posts"]), sorted(b_notes))
+
+    def test_the_read_after_create_selected_changes_nothing_once_another_brief_is_shown(self):
+        out, (a, b), a_notes, b_notes = self.run_two("""fire('change', box(A_NOTES[0], true)); fire('click', act('create')); await flush();
+window.PAGE_LIST.select(B); await flush(); RELEASE(); await flush(); await flush(); R.recs = ELS.recs.html;
+fire('click', act('reject')); await flush(); await flush();""", hold_a=False, hold_rule=True)
+        self.assertEqual(out["posts"][0][1]["note"], a_notes[0])
+        self.assertIn("Fix hypothesis 1 of task 13", out["R"]["recs"])
+        self.assertNotIn("of task 12", out["R"]["recs"])
+        # A's refresh is not asked once B is shown, and B's buttons rule B's questions only.
+        self.assertEqual(out["gets"].count(f"/api/briefs/{a}/recommendations"), 1)
+        self.assertEqual(sorted(p[1]["note"] for p in out["posts"][1:]), sorted(b_notes))
 
     def test_a_brief_from_another_series_has_no_create_tasks(self):
         out = self.run_page("await flush(); R.det = ELS.details.html;", row="2026-09-06 - Intel Brief")
@@ -641,16 +691,16 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertIn("window.PAGE_LIST", BRIEFS_JS)
 
 
-def adversarial(case, questions=3):
+def adversarial(case, questions=3, task=12):
     """An adversarial review's batch of Approve-or-Reject recommendations and the brief that names it (sd:5064)."""
     batch = review.file(case.connection, {
-        "schema": 1, "queue": "adversarial", "batch": "task-12-101500", "title": "Adversarial review of task 12",
+        "schema": 1, "queue": "adversarial", "batch": f"task-{task}-101500", "title": f"Adversarial review of task {task}",
         "repo": REPO, "source": "local-adversarial-gate", "mode": "open",
-        "questions": [{"subject": f"task 12: hypothesis {n}", "text": f"Fix hypothesis {n}\n\nWhy it matters.",
+        "questions": [{"subject": f"task {task}: hypothesis {n}", "text": f"Fix hypothesis {n} of task {task}\n\nWhy it matters.",
                        "options": ["Approve", "Reject"]} for n in range(1, questions + 1)]}, who="test")["item"]
-    stem = "2026-09-06 - Adversarial review · task 12 · 101500Z"
+    stem = f"2026-09-06 - Adversarial review · task {task} · 101500Z"
     brief = routine_briefs.add(case.connection, stem, f"---\nreview: adversarial\nrun: r1\nbatches: sd:{batch}\n---\n\n"
-                               "# Adversarial review of task 12\n", repo=REPO, who="test")["item"]
+                               f"# Adversarial review of task {task}\n", repo=REPO, who="test")["item"]
     return brief, batch
 
 
@@ -672,9 +722,9 @@ class TheRecommendations(BriefCase):
         self.assertIsInstance(filed, int)
         self.assertEqual([(q["batch"], q["note"], q["title"], q["repo"], q["label"], q["filed"], q["open"], q["options"])
                           for q in doc["questions"]],
-                         [(batch, notes[0], "Fix hypothesis 1", "system", "Approve", filed, False, ["Approve", "Reject"]),
-                          (batch, notes[1], "Fix hypothesis 2", "system", "Reject", None, False, ["Approve", "Reject"]),
-                          (batch, notes[2], "Fix hypothesis 3", "system", None, None, True, ["Approve", "Reject"])])
+                         [(batch, notes[0], "Fix hypothesis 1 of task 12", "system", "Approve", filed, False, ["Approve", "Reject"]),
+                          (batch, notes[1], "Fix hypothesis 2 of task 12", "system", "Reject", None, False, ["Approve", "Reject"]),
+                          (batch, notes[2], "Fix hypothesis 3 of task 12", "system", None, None, True, ["Approve", "Reject"])])
         # The repository's name, never its local path.
         self.assertNotIn(REPO, json.dumps(doc))
 
