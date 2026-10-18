@@ -45,6 +45,10 @@ if mode != "nobrief":
     series = re.search(r"^series: (.+)$", prompt, re.M).group(1)
     open(brief, "w").write(f"---\nseries: {series}\n---\n\n## Status\n\nNothing is due.\n")
 print("did the steps")
+# STUB_READ names the sources the reply says it read in full; "-" prints no READ line.
+read = os.environ.get("STUB_READ", "mail, drive, notion, jira, github")
+if read != "-":
+    print(f"READ: {read}")
 print("RESULT: failed, Mail: the stub says so" if mode == "fail" else "RESULT: ok")
 '''
 SD = r'''#!/bin/sh
@@ -183,12 +187,73 @@ class Run(unittest.TestCase):
         self.assertEqual(self.sweep("run", "work", STUB_MODE="fail").returncode, 1)
         self.assertEqual(self.sweep("run", "work").returncode, 0)
         prompts = [argv[argv.index("-p") + 1] for argv in self.prompts()]
-        self.assertIn("Since: seven days ago", prompts[0])
-        self.assertIn(f"Since: {first}.", prompts[1])
-        self.assertIn(f"Since: {first}.", prompts[2])
+        self.assertIn("- mail: seven days ago", prompts[0])
+        self.assertIn(f"- mail: {first}\n", prompts[1])
+        self.assertIn(f"- mail: {first}\n", prompts[2])
         # The work followups belong to the followups_repo setting's checkout, its ~ expanded, so they show under Work.
         self.assertIn(f"Bash(sd task add --belongs-to {self.root / 'home'}/repos/example-work/a:*)",
                       self.prompts()[0][self.prompts()[0].index("--allowedTools") + 1])
+
+    def since(self, prompt, source):
+        return re.search(rf"^- {source}: (.+)$", prompt.split("Since, by source", 1)[1], re.M).group(1)
+
+    def test_a_source_the_run_did_not_read_keeps_its_checkpoint(self):
+        """sd:5096 review: RESULT: ok with Jira unread must not move Jira's checkpoint past changes nobody read."""
+        self.set(**{"sweep.work.jira_scope": "project in (ABC)"})
+        self.assertEqual(self.sweep("run", "work", STUB_READ="Gmail, drive, `jira`.").returncode, 0)
+        first = self.record("work")["started"]
+        self.assertEqual(self.sweep("run", "work", STUB_READ="mail, drive").returncode, 0)
+        second = self.record("work")
+        self.assertEqual((second["state"], second["gaps"]), ("done", ["jira"]))
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        prompt = self.prompts()[2][self.prompts()[2].index("-p") + 1]
+        self.assertEqual(self.since(prompt, "jira"), first)
+        self.assertEqual(self.since(prompt, "mail"), second["started"])
+        self.assertEqual(self.record("work")["gaps"], [])
+
+    def test_a_newly_configured_source_reads_from_seven_days_back(self):
+        """A source set after a done run has no checkpoint of its own; it must not take the others'."""
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        self.assertNotIn("github", self.record("work")["read"], "an unconfigured source counted as read")
+        self.set(**{"sweep.work.github_scope": "org:example"})
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        prompt = self.prompts()[1][self.prompts()[1].index("-p") + 1]
+        self.assertTrue(self.since(prompt, "github").startswith("seven days ago"), prompt)
+        self.assertEqual(self.since(prompt, "notion"), "not configured")
+
+    def test_a_reply_without_a_read_line_moves_no_checkpoint(self):
+        """A reply that names nothing it read is unknown: every source keeps its checkpoint, and the record says so."""
+        self.assertEqual(self.sweep("run", "personal").returncode, 0)
+        first = self.record("personal")["started"]
+        self.assertEqual(self.sweep("run", "personal", STUB_READ="-").returncode, 0)
+        self.assertEqual(self.record("personal")["gaps"], ["mail", "drive"])
+        self.assertEqual(self.sweep("run", "personal").returncode, 0)
+        prompt = self.prompts()[2][self.prompts()[2].index("-p") + 1]
+        self.assertEqual((self.since(prompt, "mail"), self.since(prompt, "drive")), (first, first))
+
+    def test_a_run_stopped_mid_way_or_left_by_the_older_record_keeps_every_checkpoint(self):
+        """A run stopped between its record and its end leaves `running` with a dead pid; a record from before
+        per-source checkpoints holds one `since` and no `read`. Neither may move a checkpoint to its start."""
+        self.state("personal").mkdir(parents=True)
+        last = self.state("personal") / "last.json"
+        last.write_text(json.dumps({"state": "running", "pid": 99999999, "started": "2026-10-18T12:00:00+00:00",
+                                    "since": {"mail": "2026-10-17T12:00:00+00:00", "drive": None}}))
+        self.assertEqual(self.sweep("run", "personal").returncode, 0)
+        last.write_text(json.dumps({"state": "done", "started": "2026-10-18T12:00:00+00:00",
+                                    "since": "2026-10-16T12:00:00+00:00"}))
+        self.assertEqual(self.sweep("run", "personal").returncode, 0)
+        stopped, older = (argv[argv.index("-p") + 1] for argv in self.prompts())
+        self.assertEqual(self.since(stopped, "mail"), "2026-10-17T12:00:00+00:00")
+        self.assertTrue(self.since(stopped, "drive").startswith("seven days ago"))
+        self.assertEqual((self.since(older, "mail"), self.since(older, "drive")),
+                         ("2026-10-16T12:00:00+00:00", "2026-10-16T12:00:00+00:00"))
+
+    def test_drive_with_no_exclusions_is_read_not_skipped(self):
+        """An unset drive_exclude excludes nothing; "not configured" would tell the model to skip Drive."""
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        prompt = self.prompts()[0][self.prompts()[0].index("-p") + 1]
+        self.assertIn("- drive_exclude: none", prompt)
+        self.assertIn("drive", self.record("work")["read"])
 
     def test_a_second_run_of_a_realm_while_one_holds_the_lock_exits_3_and_writes_nothing(self):
         self.state("work").mkdir(parents=True)

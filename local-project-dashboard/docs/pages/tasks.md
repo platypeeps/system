@@ -53,3 +53,5 @@ It posts `/api/tasks/sweep {"realm"}`, which starts `realm_sweep run <realm>` in
 and for Work also Notion, Jira and GitHub; it files a `<day> - Work sweep` or `<day> - Personal sweep` brief and sd
 followups, and saves Gmail drafts. It sends nothing and commits nothing. Its filters are the
 `sweep.<realm>.*` settings in the workflow database, which Settings edits under Sweeps (sd:5109); `/api/tasks`' `sweeps` and `GET /api/tasks/sweep/status` read each realm's last run.
+Each source keeps its own checkpoint: a done run that could not read one says "not read: jira", and that source
+is read again from its older time next run.

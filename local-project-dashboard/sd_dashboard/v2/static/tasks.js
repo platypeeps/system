@@ -61,7 +61,7 @@ addEventListener('DOMContentLoaded', () => {
   const SWEEP_NAME = { personal: 'Personal', work: 'Work' }, SWEEP_POLL = 15000;
   const sweepOf = o => SWEEPS?.[String(o.id).slice(6)] || null;
   const sweepText = w => !w ? '' : w.error ? `sweep not read: ${w.error}` : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
-    : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
+    : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}${w.last.gaps?.length ? ` · not read: ${w.last.gaps.join(', ')}` : ''}`
     : `sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
   const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
   const placed = () => listed().filter(inPlace);

@@ -399,6 +399,20 @@ C.run(cmd('realm-sweep.run'), C.get('sweep:personal')); await flush();""")
         self.assertIn(["off: a sweep is running now", False], out["toasts"])
         self.assertIn(["Personal sweep started 12:01 UTC · Tasks reads again until it ends", False], out["toasts"])
 
+    def test_a_done_sweep_names_the_sources_it_did_not_read(self):
+        """sd:5096 review: a done run with a gap says so, rather than a plain done that hides an unread source."""
+        self.doc, self.details = self.realm_doc(), {}
+        done = {"running": False, "error": "", "command": "c",
+                "last": {"state": "done", "finished": "2026-09-06T11:40:00+00:00", "gaps": ["jira", "github"]}}
+        self.doc["sweeps"] = {"personal": done, "work": {**done, "last": {**done["last"], "gaps": []}}}
+        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
+                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.personal = ELS.subhead.html;
+document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'work' } })); await flush(); R.work = ELS.subhead.html;""")
+        r = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)["R"]
+        self.assertIn("Personal sweep done 2026-09-06 11:40 UTC · not read: jira, github", r["personal"])
+        self.assertIn("Work sweep done 2026-09-06 11:40 UTC ", r["work"])
+        self.assertNotIn("not read", r["work"])
+
     def test_the_view_keys_skip_the_list_board_and_matrix_keys(self):
         body = "R.views = window.PAGE_VIEWS.map(v => [v.id, v.key]);"
         prelude = "globalThis.SHELL_REALMS = [{ id: 'work', label: 'Work' }, { id: 'brand', label: 'Brand' }, { id: 'lab', label: 'Lab' }, { id: 'all', label: 'Sneaky' }];\n"

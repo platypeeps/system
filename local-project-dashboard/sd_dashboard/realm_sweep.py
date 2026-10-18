@@ -40,7 +40,9 @@ Steps, and what a stop between them leaves:
 4. The brief filed with `sd reports brief add --replace`. A stop before it leaves the brief in the run folder. Before
    its model, each run reads today's filed brief, if any, and keeps its changes, so a second run in a day replaces it
    with more; a read that failed for another reason than "no brief" stops the run there.
-5. `last.json` as `done` or `failed`, with the exit code and the reason. Only a done run moves `since` on.
+5. `last.json` as `done` or `failed`, with the exit code, the reason, and the sources read (`read`) and not (`gaps`).
+   Each source keeps its own checkpoint (`checkpoints`): only a done run moves one on, and only for a source its
+   reply names on its `READ:` line. A failed run, an unread source and a newly configured one keep the older time.
 
 Exit codes: 0 done, 3 another run of the realm holds the lock, 1 failed.
 """
@@ -82,6 +84,9 @@ SETTINGS = {
     "sweep.work.followups_repo": "The registered repository the Work sweep files its followups under.",
 }
 REQUIRED = ("sweep.personal.mail_query", "sweep.work.mail_query", "sweep.work.followups_repo")
+#: Each realm's sources and the setting that switches one on; `None` is always read. Each keeps its own checkpoint.
+SOURCES = {"personal": {"mail": None, "drive": None},
+           "work": {"mail": None, "drive": None, "notion": "notion_scope", "jira": "jira_scope", "github": "github_scope"}}
 ACCOUNT = "google.accounts.{realm}.email"
 
 BUILT_IN_TOOLS = "Bash,Read,Write,ToolSearch"
@@ -126,18 +131,23 @@ RUN_ENV_DEFAULTS = {"MCP_CONNECT_TIMEOUT_MS": "60000", "MCP_TOOL_TIMEOUT": "6000
 # it, so the run sources the file that holds it, as local-cron-jobs does. A machine without the file runs on.
 WITH_TOKEN = ('[ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" >/dev/null 2>&1; exec "$@"')
 RESULT_OK = re.compile(r"^RESULT: ok\s*$")
+#: The reply's line naming the sources it read in full, as `READ: mail, drive`.
+READ_LINE = re.compile(r"^READ:(.*)$")
 
 PROMPT = """You run the operator's {label} for them, unattended. Nobody answers questions. Do the steps in order.
 
 Facts:
 - Google account: {account}. Every Gmail and Drive call names it as user_google_email.
-- Since: {since}. Read what changed after it.
 - Run folder: {folder}. Write files only there.
 - Brief file: {brief}
 - Today's brief so far: {earlier}
 - Followup reference: {realm}-sweep:<source>-<id>
 
-The sweep's settings (a source marked "not configured" is skipped and named under Gaps):
+Since, by source. Read what changed in each source after its own time; a source an earlier run could not read starts
+from that run's own time. A source marked "not configured" is skipped and named under Gaps.
+{since}
+
+The sweep's settings:
 {filters}
 
 {steps}
@@ -155,13 +165,15 @@ Brief. Write {brief} with the Write tool. It opens with these three lines:
 ---
 series: {series}
 ---
-Then `## Status` (what needs the operator now, most urgent first), `## Changes since {since}` (one short part per
-source), `## Followups` (each sd item filed or noted, with its id), `## Drafts` (each draft saved, by subject) and
+Then `## Status` (what needs the operator now, most urgent first), `## Changes` (one short part per source, since its
+time above), `## Followups` (each sd item filed or noted, with its id), `## Drafts` (each draft saved, by subject) and
 `## Gaps` (each source not read, and why). If today's brief so far is a file, read it and keep its changes. Plain
 sentences, no tables, no message bodies quoted at length.
 
-Reply with a short report. Its last line is `RESULT: ok`, or `RESULT: failed, <step>: <reason>` when a step could not
-finish. A source that could not be read is a gap in the brief, not a failure.
+Reply with a short report. Its second-last line is `READ: ` and the sources you read in full, comma-separated (for
+example `READ: mail, drive`); leave out every source you skipped or read only in part. Its last line is `RESULT: ok`,
+or `RESULT: failed, <step>: <reason>` when a step could not finish. A source that could not be read is a gap in the
+brief, not a failure.
 """
 STEPS = {
     "personal": """Mail. Search Gmail with mail_query and `after:` the Since date. Read the threads that ask the operator
@@ -280,8 +292,10 @@ def claude_binary() -> str:
     return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
 
 
-def ask(argv: list[str], cwd: Path, timeout: int, out) -> tuple[int, str]:
+def ask(argv: list[str], cwd: Path, timeout: int, out) -> tuple[int, str, list[str]]:
     """Run claude headless, its reply to `out`, and judge the reply's last `RESULT:` line: ok is 0, anything else 1.
+
+    The third value is what the reply's last `READ:` line names, and empty without one: an unnamed source was not read.
 
     `claude -p` exits 0 whatever the prompt concluded. The run gets its own process group, so a timeout stops its MCP
     children too. SD_HANDOFF_RESTORE=0: an unattended run must not consume a handoff written for a person's session.
@@ -292,21 +306,25 @@ def ask(argv: list[str], cwd: Path, timeout: int, out) -> tuple[int, str]:
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True)
     except OSError as error:
-        return EXIT_ERROR, f"cannot start {argv[0]}: {error}"
+        return EXIT_ERROR, f"cannot start {argv[0]}: {error}", []
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
-        return EXIT_ERROR, f"the run passed {timeout}s and was stopped"
+        return EXIT_ERROR, f"the run passed {timeout}s and was stopped", []
     print(stdout.rstrip(), file=out)
     if proc.returncode != 0:
         tail = (stderr or stdout).strip().splitlines()[-1:] or [""]
-        return EXIT_ERROR, f"claude exited {proc.returncode}: {tail[0][:200]}"
+        return EXIT_ERROR, f"claude exited {proc.returncode}: {tail[0][:200]}", []
     results = [line.strip() for line in stdout.splitlines() if line.startswith("RESULT: ")]
     last = results[-1] if results else ""
-    return (EXIT_OK, last) if RESULT_OK.match(last) else (EXIT_ERROR, last or "no RESULT: line in the reply")
+    reads = [m[1] for m in map(READ_LINE.match, stdout.splitlines()) if m]
+    # The names the since block shows, read loosely: case, stray punctuation, and gmail for mail, as followup refs say.
+    names = [name.strip(" .`").lower() for name in reads[-1].split(",")] if reads else []
+    read = ["mail" if name == "gmail" else name for name in names if name]
+    return (EXIT_OK, last, read) if RESULT_OK.match(last) else (EXIT_ERROR, last or "no RESULT: line in the reply", read)
 
 
 def sd(*args: str) -> subprocess.CompletedProcess:
@@ -368,14 +386,26 @@ def run(realm: str, out, err) -> int:
         return sweep(realm, state, out, err)
 
 
+def checkpoints(realm: str, previous: dict) -> dict:
+    """Each source's checkpoint, the time its next read starts from: the previous run's start for a source that run
+    read in full and recorded done, else the checkpoint that run started from. `None` is a source never read here.
+
+    So a failed run, a done run's unread source, and a source configured since all keep the older time (sd:5096
+    review). A record from before per-source checkpoints names one `since` and no `read`: every source keeps it.
+    """
+    before = previous.get("since")
+    before = before if isinstance(before, dict) else {source: before for source in SOURCES[realm]}
+    read = previous.get("read") if previous.get("state") == "done" and isinstance(previous.get("read"), list) else []
+    return {source: previous.get("started") if source in read else before.get(source) for source in SOURCES[realm]}
+
+
 def sweep(realm: str, state: Path, out, err) -> int:
     """Steps 2 to 5 above."""
     try:
         previous = read_record(realm) or {}
     except (OSError, ValueError):
         previous = {}
-    # Only a done run moves `since` on: after a failed one the next run reads the same span again.
-    since = previous.get("started") if previous.get("state") == "done" else previous.get("since")
+    since = checkpoints(realm, previous)
     started = _now()
     stamp = started.strftime("%Y%m%d-%H%M%S-%f")
     folder = state / "runs" / stamp
@@ -385,7 +415,8 @@ def sweep(realm: str, state: Path, out, err) -> int:
     stem = f"{day} - {SERIES[realm]}"
     brief = folder / f"{stem}.md"
     record = {"state": "running", "started": started.isoformat(timespec="seconds"), "finished": None, "exit": None,
-              "reason": None, "since": since, "log": str(log), "brief": str(brief), "pid": os.getpid()}
+              "reason": None, "since": since, "read": [], "gaps": [], "log": str(log), "brief": str(brief),
+              "pid": os.getpid()}
     write_record(state / "last.json", record)
 
     def end(code: int, reason: str) -> int:
@@ -415,17 +446,24 @@ def sweep(realm: str, state: Path, out, err) -> int:
         earlier.write_text(shown.stdout, encoding="utf-8")
     elif shown.returncode != 0 and "no brief has the stem" not in shown.stderr:
         return end(EXIT_ERROR, f"today's brief was not read: {(shown.stderr or shown.stdout).strip()[:200]}")
+    configured = [source for source, switch in SOURCES[realm].items() if switch is None or found.get(switch)]
     prompt = PROMPT.format(
         label=SERIES[realm].lower(), account=address, folder=folder, brief=brief, realm=realm, series=SERIES[realm],
-        since=since or "seven days ago (no earlier sweep finished here)",
+        since="\n".join(f"- {source}: " + ("not configured" if source not in configured else since[source]
+                                           or "seven days ago (no earlier sweep read it here)") for source in SOURCES[realm]),
         earlier=earlier if earlier.exists() else "none yet",
-        filters="\n".join(f"- {name}: {value or 'not configured'}" for name, value in found.items() if name != "followups_repo"),
+        # An unset drive_exclude excludes nothing: "not configured" would read as "skip Drive".
+        filters="\n".join(f"- {name}: {value or ('none' if name == 'drive_exclude' else 'not configured')}"
+                          for name, value in found.items() if name != "followups_repo"),
         steps=STEPS[realm],
         add="sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {found['followups_repo']}")
     argv = claude_argv(claude_binary(), realm, prompt, os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp"),
                        allowed_tools(realm, folder, found.get("followups_repo") or ""))
     with log.open("a", encoding="utf-8") as logged:
-        code, reason = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged)
+        code, reason, read = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged)
+    # Only a configured source the reply names counts as read; the rest keep their checkpoints and show as gaps.
+    record.update(read=[source for source in configured if source in read],
+                  gaps=[source for source in configured if source not in read])
     if code != EXIT_OK:
         return end(code, reason)
     if not brief.is_file():
