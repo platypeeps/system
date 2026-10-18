@@ -837,9 +837,11 @@ def _file_done(connection, document: dict) -> tuple[dict, str]:
     groups, subjects = {home["path"]: []}, set()
     for one in found:
         one["repo"] = _repo_of(connection, one["repo"], home["path"])
-        subject = _cut(f"{kind} {label}: {one['heading']}", 190)
-        while subject in subjects:  # Two hypotheses with one heading: a batch takes each subject once.
-            subject += "'"
+        said, copy = f"{kind} {label}: {one['heading']}", 1
+        subject = _cut(said, 190)
+        while subject in subjects:  # Two hypotheses with one heading: a batch takes each subject once, within its bound.
+            copy += 1
+            subject = _cut(said, 190 - len(f" ({copy})")) + f" ({copy})"
         subjects.add(subject)
         one["subject"] = subject
         groups.setdefault(one["repo"], []).append(one)

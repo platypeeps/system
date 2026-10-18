@@ -319,6 +319,19 @@ class TheOutcome(AdversarialCase):
         task = workflow.item_state(self.connection, ruled["filed"]["item"])["item"]
         self.assertEqual((task["title"], task["repo"]), ("Split the dashboard change into its own item", other_key))
 
+    def test_hypotheses_sharing_a_long_heading_each_get_a_subject_within_the_store_s_bound(self):
+        # Round 1 class: a batch's subjects were made unique by adding a mark each, past the store's 200 characters.
+        heading = ("The same long heading " * 12).strip()
+        self.result_fixture.write_text("# Adversarial review\n\n" + "".join(
+            f"## {n}. {heading}\n\nConfidence: **LIKELY**\n\n- **Recommendation:** Fix part {n}\n\n" for n in range(1, 16))
+            + "Does the central conclusion survive hostile reading? NO.\n")
+        _, done = self.filed()
+        self.assertEqual(done["filed"], "written", done)
+        subjects = [q["subject"] for q in review.read(self.connection, done["batches"][0])["questions"]]
+        self.assertEqual((len(subjects), len(set(subjects))), (15, 15))
+        self.assertLessEqual(max(map(len, subjects)), review.SUBJECT_CHARS)
+        self.assertEqual([subject[-5:] for subject in subjects[12:]], [" (13)", " (14)", " (15)"])
+
     def test_a_result_with_no_titled_hypothesis_files_a_brief_and_no_batch(self):
         self.result_fixture.write_text("Nothing survives.\n")
         item, done = self.filed()
