@@ -256,8 +256,10 @@ refresh refuses a `DIFFERS` or `UNKNOWN` target and writes nothing; follow
 prints a `!!!` line naming the target and the commands to run by hand, and
 still exits 0, since the move stands. A no-op or a
 rolled-back follow runs no update. It never moves to origin's default branch. It checks every checkout
-first, so a failed fetch, a tag with no `pack=` line, uncommitted changes or
-a drain timeout refuses with nothing moved. It moves system, then pack; when
+first, so a failed fetch, a tag with no `pack=` line or uncommitted changes
+refuses with nothing moved. A drain timeout skips with nothing moved and exits
+0: the job runs every five minutes, so a busy lane waits for the next run
+(sd:5111). It moves system, then pack; when
 a move fails, it switches each checkout it moved back to its old sha, pack
 first, so the pair is never left split and the next run retries both. Once
 the pack is back, and while system is still at the pin, it runs `make
