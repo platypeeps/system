@@ -2,7 +2,8 @@
 # Send a small fixed set of requests to the two experiment servers, or each
 # prompt of $AURA_PROMPTS to both: one per line, blank and # lines skipped.
 # Each request carries a user, metadata and a session header, so the traces
-# show where caller tags land. Answers go to $AURA_EXPERIMENT_STATE/responses.jsonl.
+# show where caller tags land. Answers go to $AURA_EXPERIMENT_STATE/responses.jsonl,
+# each with the Mezmo target ($MEZMO_TARGET) the servers run against.
 # aura.sh experiment run sets the variables; run it through that.
 # Every request is sent even when one fails; the run then exits 1, so a
 # failed request never reads as a complete experiment.
@@ -32,12 +33,12 @@ except Exception:
     txt=None; err=r[:300]
 if not err and txt and re.match(r"The upstream model provider \(.*?\) returned an error", txt):
     err=txt[:400]
-print(json.dumps({"case":sys.argv[2],"port":sys.argv[3],"secs":int(sys.argv[4]),"answer":(txt or "")[:400],"error":err}))
+print(json.dumps({"case":sys.argv[2],"port":sys.argv[3],"target":sys.argv[5],"secs":int(sys.argv[4]),"answer":(txt or "")[:400],"error":err}))
 if err or not txt:
     detail=err if isinstance(err,str) else json.dumps(err) if err else "no answer text"
     print("scenarios.sh: %s: %s" % (sys.argv[2], detail.splitlines()[0] if detail.strip() else "empty reply"), file=sys.stderr)
     sys.exit(2)' \
-    "$resp" "$2" "$1" "$(( $(date +%s) - t0 ))") || failed=1
+    "$resp" "$2" "$1" "$(( $(date +%s) - t0 ))" "${MEZMO_TARGET:-}") || failed=1
   printf '%s\n' "$line" | tee -a "$out"
 }
 

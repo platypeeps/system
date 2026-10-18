@@ -20,7 +20,7 @@ ENTRYPOINT = FOLDER / "aura.sh"
 EXAMPLE = "examples/quickstart-orchestration-math/config.toml"
 
 DOCKER = """#!/bin/sh
-echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes} MEZMO_SERVICE_KEY_SET=${MEZMO_SERVICE_KEY:+yes}" >> "$STUB_LOG"
+echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes} MEZMO_SERVICE_KEY_SET=${MEZMO_SERVICE_KEY:+yes} MEZMO_TARGET=${MEZMO_TARGET:-} MEZMO_KEY_KIND=${MEZMO_SERVICE_KEY%%-*} MEZMO_MCP_URL=${MEZMO_MCP_URL:-} MEZMO_ACCOUNT_ID=${MEZMO_ACCOUNT_ID:-}" >> "$STUB_LOG"
 case "$1 $2" in
   "image inspect") [ -f "$STUB_IMAGE" ] || exit 1; echo "${STUB_LABEL-local/test@abc}" ;;
 esac
@@ -158,14 +158,15 @@ class RunCase(ExperimentCase):
         shutil.copy(FOLDER / "experiment" / "scenarios.sh",
                     self.folder / "experiment" / "scenarios.sh")
         (self.folder / "experiment" / "state").mkdir(exist_ok=True)
+        (self.folder / "experiment" / "state" / "target").write_text("dev\n", encoding="utf-8")
         curl = self.root / "bin" / "curl"
         curl.write_text(CURL, encoding="utf-8")
         curl.chmod(0o755)
         self.curl_log = self.root / "curl.log"
         self.env["STUB_CURL_LOG"] = str(self.curl_log)
 
-    def run_scenarios(self, mode, *args):
-        env = dict(self.env, STUB_CURL=mode)
+    def run_scenarios(self, mode, *args, **extra):
+        env = dict(self.env, STUB_CURL=mode, **extra)
         return subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "run", *args],
                               capture_output=True, text=True, env=env, timeout=60)
 
@@ -293,6 +294,10 @@ KEY = "svc-key-value-for-tests-7f3a"
 
 
 class OverlayCase(ExperimentCase):
+    def setUp(self):
+        super().setUp()
+        self.env["AURA_MEZMO_DEV_SERVICE_KEY"] = "dev-key-for-tests"
+
     def overlay(self, text):
         path = self.root / "overlay.toml"
         path.write_text(text, encoding="utf-8")
@@ -360,7 +365,7 @@ class TheServiceKey(OverlayCase):
         return {str(p): p.read_bytes() for p in files}
 
     def test_the_value_is_in_no_rendered_file(self):
-        done = self.start(0, "--overlay", self.overlay(OVERLAY), MEZMO_SERVICE_KEY=KEY)
+        done = self.start(0, "--overlay", self.overlay(OVERLAY), AURA_MEZMO_DEV_SERVICE_KEY=KEY)
         self.assertIn("{{ env.MEZMO_SERVICE_KEY }}", self.state("config-orch.toml"))
         self.assertIn("MEZMO_SERVICE_KEY_SET=yes", self.docker_calls())
         for path, body in self.written().items():
@@ -369,13 +374,94 @@ class TheServiceKey(OverlayCase):
 
     def test_an_overlay_holding_the_value_refuses(self):
         done = self.start(1, "--overlay", self.overlay(OVERLAY.replace("{{ env.MEZMO_SERVICE_KEY }}", KEY)),
-                          MEZMO_SERVICE_KEY=KEY)
+                          AURA_MEZMO_DEV_SERVICE_KEY=KEY)
         self.assertIn("{{ env.MEZMO_SERVICE_KEY }}", done.stderr)
         self.assertNotIn(KEY, done.stdout + done.stderr)
         self.assertNotIn("compose", self.docker_calls())
         state = self.folder / "experiment" / "state"
         for path in state.rglob("*"):
             self.assertNotIn(KEY.encode(), path.read_bytes(), path)
+
+
+class TheTarget(OverlayCase):
+    """sd:5073: the experiment took MEZMO_* from the operator's shell, whose
+    default target is production. It picks its own target: --target, else
+    AURA_MEZMO_TARGET, else dev; a name holding "prod" needs --allow-prod."""
+
+    SHELL = {"MEZMO_TARGET": "example-prod", "MEZMO_SERVICE_KEY": "prod-key-from-shell",
+             "MEZMO_MCP_URL": "https://mcp.prod.example.test/mcp", "MEZMO_ACCOUNT_ID": "prod-account"}
+
+    def test_the_shell_target_never_reaches_compose(self):
+        self.start(0, "--overlay", self.overlay(OVERLAY), **self.SHELL)
+        calls = self.docker_calls()
+        self.assertIn("MEZMO_TARGET=dev MEZMO_KEY_KIND=dev MEZMO_MCP_URL= MEZMO_ACCOUNT_ID=", calls)
+        self.assertNotIn("prod", calls)
+        self.assertEqual(self.state("target"), "dev\n")
+
+    def test_the_named_target_supplies_its_values(self):
+        self.start(0, "--target", "example-dev", "--overlay", self.overlay(OVERLAY), **self.SHELL,
+                   AURA_MEZMO_EXAMPLE_DEV_SERVICE_KEY="dev2-key",
+                   AURA_MEZMO_EXAMPLE_DEV_MCP_URL="https://mcp.dev.example.test/mcp")
+        self.assertIn("MEZMO_TARGET=example-dev MEZMO_KEY_KIND=dev2 "
+                      "MEZMO_MCP_URL=https://mcp.dev.example.test/mcp", self.docker_calls())
+
+    def test_the_env_file_names_the_target_and_the_flag_wins(self):
+        conf = self.root / "config" / "mezmo-aura"
+        conf.mkdir(parents=True)
+        (conf / ".env").write_text("AURA_MEZMO_TARGET=example-dev\n", encoding="utf-8")
+        self.start(0)
+        self.assertIn("MEZMO_TARGET=example-dev ", self.docker_calls())
+        self.start(0, "--target", "other-dev")
+        self.assertIn("MEZMO_TARGET=other-dev ", self.docker_calls())
+
+    def test_a_prod_target_needs_allow_prod(self):
+        for target in ("example-prod", "PROD"):
+            done = self.start(1, "--target", target)
+            self.assertIn("--allow-prod", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+        self.start(0, "--target", "example-prod", "--allow-prod")
+        self.assertIn("MEZMO_TARGET=example-prod ", self.docker_calls())
+
+    def test_an_overlay_needing_a_key_the_target_lacks_refuses(self):
+        done = self.start(1, "--target", "example-dev", "--overlay", self.overlay(OVERLAY), **self.SHELL)
+        self.assertIn("AURA_MEZMO_EXAMPLE_DEV_SERVICE_KEY", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_a_target_name_that_is_no_name_refuses(self):
+        for target in ("", "../dev", "dev env"):
+            done = self.start(1, "--target", target)
+            self.assertIn("--target", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+
+class TheRunTarget(RunCase):
+    """sd:5073: a run goes to the servers start brought up, against its target."""
+
+    def test_each_answer_names_the_target(self):
+        done = self.run_scenarios("ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('"target": "dev"', self.state("responses.jsonl"))
+
+    def test_another_target_than_the_started_one_refuses(self):
+        done = self.run_scenarios("ok", "--target", "example-dev")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("dev", done.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_no_recorded_target_refuses(self):
+        (self.folder / "experiment" / "state" / "target").unlink()
+        done = self.run_scenarios("ok")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("experiment start", done.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_a_prod_target_needs_allow_prod_on_run_too(self):
+        (self.folder / "experiment" / "state" / "target").write_text("example-prod\n", encoding="utf-8")
+        done = self.run_scenarios("ok")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("--allow-prod", done.stderr)
+        self.assertFalse(self.curl_log.exists())
+        self.assertEqual(self.run_scenarios("ok", "--allow-prod").returncode, 0)
 
 
 class TheComposeFile(unittest.TestCase):

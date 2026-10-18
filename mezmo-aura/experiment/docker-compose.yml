@@ -31,7 +31,10 @@ services:
       LLM_API_KEY: ${LLM_API_KEY}
       # By name only: Compose hands the caller's value through, for an
       # --overlay server whose headers read {{ env.MEZMO_SERVICE_KEY }}.
+      # aura.sh sets all three from the experiment's own target (sd:5073).
+      MEZMO_TARGET:
       MEZMO_SERVICE_KEY:
+      MEZMO_MCP_URL:
       PORT: "3030"
       CONFIG_PATH: "/app/config/config.toml"
       AURA_CUSTOM_EVENTS: "false"

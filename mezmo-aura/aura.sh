@@ -195,26 +195,92 @@ experiment_env() {
   export AURA_OTLP_ENDPOINT="${AURA_OTLP_ENDPOINT:-http://host.docker.internal:$GENAI_TRACES_GRPC_PORT}"
 }
 
-# experiment_option <--flag> experiment <verb> [<--flag> <file>]: sets OVERLAY
-# for --overlay, AURA_PROMPTS for --prompts, to the file's absolute path.
-# Anything else, or a file that is not there, refuses before any work starts.
+# experiment_option <--flag> experiment <verb> [options]: sets OVERLAY for
+# --overlay, AURA_PROMPTS for --prompts, to the file's absolute path;
+# TARGET_ARG for --target <name>; ALLOW_PROD for --allow-prod. Anything else,
+# or a file that is not there, refuses before any work starts.
 experiment_option() {
   _flag=$1
   shift 3
-  [ "$#" -eq 0 ] && return 0
-  if [ "$#" -ne 2 ] || [ "$1" != "$_flag" ]; then
-    echo "aura.sh: experiment: unknown arguments: $*; the only option here is $_flag <file>" >&2
-    exit 1
+  TARGET_ARG="" TARGET_SET=0 ALLOW_PROD=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --allow-prod) ALLOW_PROD=1; shift; continue ;;
+      --target|"$_flag")
+        if [ "$#" -lt 2 ]; then
+          echo "aura.sh: experiment: $1 needs a value" >&2
+          exit 1
+        fi ;;
+      *)
+        echo "aura.sh: experiment: unknown argument: $1; the options here are $_flag <file>, --target <name> and --allow-prod" >&2
+        exit 1 ;;
+    esac
+    if [ "$1" = --target ]; then
+      TARGET_ARG=$2 TARGET_SET=1
+      shift 2
+      continue
+    fi
+    if [ ! -f "$2" ] || [ ! -r "$2" ]; then
+      echo "aura.sh: $_flag $2: no readable file there" >&2
+      exit 1
+    fi
+    _file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+    case "$_flag" in
+      --overlay) OVERLAY=$_file ;;
+      --prompts) AURA_PROMPTS=$_file ;;
+    esac
+    shift 2
+  done
+}
+
+# The Mezmo target the experiment runs against (sd:5073): --target, else
+# AURA_MEZMO_TARGET (from .env or exported), else dev. It is never the
+# shell's MEZMO_TARGET, whose default may be production: every MEZMO_*
+# variable the caller exported is dropped, and the target's own values from
+# AURA_MEZMO_<NAME>_SERVICE_KEY and AURA_MEZMO_<NAME>_MCP_URL (the name upper
+# case, - as _) are exported as MEZMO_SERVICE_KEY and MEZMO_MCP_URL, for
+# Compose to pass on by name. A name holding "prod" needs --allow-prod.
+experiment_target() {
+  if [ "$TARGET_SET" -eq 1 ]; then
+    _target=$TARGET_ARG
+  else
+    _target=${AURA_MEZMO_TARGET:-dev}
   fi
-  if [ ! -f "$2" ] || [ ! -r "$2" ]; then
-    echo "aura.sh: $_flag $2: no readable file there" >&2
-    exit 1
-  fi
-  _file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
-  case "$_flag" in
-    --overlay) OVERLAY=$_file ;;
-    --prompts) AURA_PROMPTS=$_file ;;
+  case "$_target" in
+    ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*)
+      echo "aura.sh: experiment: target '$_target' is not a name (letters, digits, - and _); set --target or AURA_MEZMO_TARGET" >&2
+      exit 1 ;;
   esac
+  case "$(printf '%s' "$_target" | tr '[:upper:]' '[:lower:]')" in
+    *prod*)
+      if [ "$ALLOW_PROD" -ne 1 ]; then
+        echo "aura.sh: experiment: target $_target looks like production; add --allow-prod to run against it" >&2
+        exit 1
+      fi ;;
+  esac
+  for _var in $(env | sed -n 's/^\(MEZMO_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$_var"
+  done
+  TARGET_VARS="AURA_MEZMO_$(printf '%s' "$_target" | tr '[:lower:]-' '[:upper:]_')"
+  eval "MEZMO_SERVICE_KEY=\${${TARGET_VARS}_SERVICE_KEY:-}"
+  eval "MEZMO_MCP_URL=\${${TARGET_VARS}_MCP_URL:-}"
+  MEZMO_TARGET=$_target
+  export MEZMO_TARGET
+  [ -z "$MEZMO_SERVICE_KEY" ] || export MEZMO_SERVICE_KEY
+  [ -z "$MEZMO_MCP_URL" ] || export MEZMO_MCP_URL
+}
+
+# An overlay that reads a target value the target does not have would start
+# servers whose config cannot load; name the variable instead.
+need_overlay_values() {
+  [ -n "$OVERLAY" ] || return 0
+  for _var in SERVICE_KEY MCP_URL; do
+    eval "_value=\${MEZMO_$_var:-}"
+    if [ -z "$_value" ] && grep -Eq "\\{\\{ *env\\.MEZMO_$_var *(\\||\\}\\})" "$OVERLAY"; then
+      st_missing "${TARGET_VARS}_$_var" "$TOOL" .env "$TOOL"
+      exit 1
+    fi
+  done
 }
 
 experiment_compose() {
@@ -292,6 +358,8 @@ case "$1" in
       start)
         OVERLAY=""
         experiment_option --overlay "$@"
+        experiment_target
+        need_overlay_values
         need_repo
         need_llm
         if ! source_label="$(docker image inspect -f '{{ index .Config.Labels "aura.source" }}' "$AURA_IMAGE" 2>/dev/null)"; then
@@ -310,6 +378,8 @@ case "$1" in
           exit 1
         fi
         render_configs
+        # What `run` checks its target against.
+        printf '%s\n' "$MEZMO_TARGET" > "$EXP/state/target"
         experiment_env
         experiment_compose up -d --build --wait
         echo "image $AURA_IMAGE ($source_label)"
@@ -321,6 +391,18 @@ case "$1" in
       run)
         AURA_PROMPTS=""
         experiment_option --prompts "$@"
+        # The servers run against the target start recorded; a run names it,
+        # and refuses another one or none.
+        if ! started=$(cat "$EXP/state/target" 2>/dev/null) || [ -z "$started" ]; then
+          echo "aura.sh: experiment run: no target recorded; start the servers with: aura.sh experiment start" >&2
+          exit 1
+        fi
+        [ "$TARGET_SET" -eq 1 ] || { TARGET_ARG=$started; TARGET_SET=1; }
+        experiment_target
+        if [ "$MEZMO_TARGET" != "$started" ]; then
+          echo "aura.sh: experiment run: the servers run against $started, not $MEZMO_TARGET; restart with: aura.sh experiment start --target $MEZMO_TARGET" >&2
+          exit 1
+        fi
         experiment_env
         export AURA_PROMPTS
         exec sh "$EXP/scenarios.sh"
@@ -333,7 +415,7 @@ case "$1" in
         experiment_compose ps
         ;;
       *)
-        echo "usage: $(basename "$0") experiment start [--overlay <file>]|stop|run [--prompts <file>]|inspect [summary|tree]|ps" >&2
+        echo "usage: $(basename "$0") experiment start [--overlay <file>] [--target <name>] [--allow-prod]|stop|run [--prompts <file>] [--target <name>] [--allow-prod]|inspect [summary|tree]|ps" >&2
         exit 1
         ;;
     esac
@@ -359,17 +441,23 @@ usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
   prompt       send one chat completion ("Hello" if no text given)
   image        build $AURA_IMAGE (default aura-local:instrumented) from the
                $AURA_REPO checkout, labelled with its branch and commit
-  experiment start [--overlay <file.toml>]
+  experiment start [--overlay <file.toml>] [--target <name>] [--allow-prod]
                      run the math MCP server and two Aura servers
                      (orchestration on 127.0.0.1:3101, single agent on :3102)
                      from $AURA_IMAGE; refuses without the image or a healthy
                      local-genai-traces. Each [mcp.servers.<name>] table of the
                      overlay replaces that server or adds it; the overlay may
                      hold nothing else, and names the key as
-                     {{ env.MEZMO_SERVICE_KEY }}, never its value
-  experiment run [--prompts <file>]
+                     {{ env.MEZMO_SERVICE_KEY }}, never its value.
+                     The Mezmo target is --target, else AURA_MEZMO_TARGET,
+                     else dev, never the shell's MEZMO_TARGET; a name holding
+                     "prod" needs --allow-prod
+  experiment run [--prompts <file>] [--target <name>] [--allow-prod]
                      send the six math requests, or each line of the file to
-                     both servers (blank lines and # lines skipped)
+                     both servers (blank lines and # lines skipped); refuses a
+                     target other than the one start recorded. Exits 1 when a
+                     request fails or a reply is a provider error, naming the
+                     case
   experiment inspect [summary|tree]  summarise the aura spans in
                      local-genai-traces' raw file
   experiment stop|ps stop the experiment, or list its containers
@@ -385,8 +473,14 @@ config:
                                    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY for the
                                    experiment; copy .env.example. Exported
                                    values win.
-                                   The experiment passes MEZMO_SERVICE_KEY to
-                                   its servers by name only.
+                                   AURA_MEZMO_TARGET names the experiment's
+                                   Mezmo target; AURA_MEZMO_<NAME>_SERVICE_KEY
+                                   and AURA_MEZMO_<NAME>_MCP_URL (the name upper
+                                   case, - as _) hold its values. The
+                                   experiment drops every exported MEZMO_*
+                                   value and passes the target's to its
+                                   servers by name only, as MEZMO_TARGET,
+                                   MEZMO_SERVICE_KEY and MEZMO_MCP_URL.
   <config>/mezmo-aura/config.toml  replaces config.toml beside this script.
   <config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system.
   <config>/aura/ is the folder before sd:2539: with only it present, every
