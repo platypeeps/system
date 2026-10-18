@@ -22,3 +22,6 @@ Vault and Queues. The board reads through the
 shell's reader, `read.js` (sd:2491): only the newest read draws, a project
 the read no longer lists runs no command, and a failed read clears the board
 and the ledger. The child's deadline counts from the page's start (sd:2501).
+The page has three views on the shell's view switch (sd:5064): Projects (the board, the default), Sources and Claim
+map. The selected project carries to the other two; with none selected they link back to Projects. A tapped claim opens
+Sources with its sources lit, and a source's ◆ count opens Claim map with its claims lit.

@@ -14,7 +14,7 @@
 #tally .chip:disabled { cursor: not-allowed; color: var(--color-muted); background: transparent; border-style: dashed; }
 #tally .linkbtn { font: inherit; padding: 0 var(--space-2xs); }
 @media (pointer: coarse) { #tally .linkbtn { display: inline-grid; place-items: center; min-height: var(--row-touch); } }
-section + section { margin-top: var(--space-2xl); }
+/* build (sd:5064): the three sections are view panels, one shown at a time, so none takes the gap above a sibling. */
 
 /* Board */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }

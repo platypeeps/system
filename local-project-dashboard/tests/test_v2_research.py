@@ -4,12 +4,12 @@ What this slice promises: `/research` answers under the shared policy and loads
 its script before `shell.js`; `/api/research` is the board `collect_research`
 reads (every checkout with a `research.conf.py`, one group deep), with each
 checkout's stage and render freshness, read in a child under a budget;
-`/api/research/<checkout>` is that checkout's source ledger, and any other path
-is a 404. Nothing reads review rounds or claims, and the document says so. A
+`/api/research/<checkout>` is that checkout's source ledger and claim map, and
+any other path is a 404. Nothing reads review rounds, and the document says so. A
 research page built into `docs/dashboard/`, where `sd-research-kit` renders,
 counts as built.
 
-The page shows the board, the ledger and the reasons; registers the design's
+The page shows the board, the ledger and the claim map in three views, and the reasons; registers the design's
 Research commands with the design's ids, labels and keys; keeps Render and
 Review copy only and Start research off with a reason; and posts nothing.
 
@@ -521,9 +521,12 @@ class ThePage(BrowserSession):
             self.assertEqual(self.request("/api/research/..%2Fetc", headers=cookie)[0], 404)
 
 
-# The stand-in additions research.js needs beyond test_v2_tasks: the shell's row, url, setContext and a record of fetched paths.
+# The stand-in additions research.js needs beyond test_v2_tasks: the shell's row, url, setContext, its view switch (the views
+# shown and the counts put on them) and a record of fetched paths.
 SHELL_MORE = r"""
 window.shell.row = () => ROW; window.shell.setContext = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
+OUT.views = []; OUT.counts = {};
+window.shell.view = { show: id => OUT.views.push(id), count: (id, n) => { OUT.counts[id] = n; }, current: () => null };
 var ROW = null;
 """
 
@@ -767,6 +770,38 @@ R.filtered = ELS.claims.html;""")
         # The note's count lights the three claims that cite it.
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
+
+    def test_the_page_has_three_views_and_the_selected_project_carries_across_them(self):
+        # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
+        page = (V2 / "research.html").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims"])
+        out = self.run_page("""R.declared = window.PAGE_VIEWS.map(v => [v.id, v.label]);
+R.start = OUT.views.slice(); PAGE_LIST.select('research/alpha'); PAGE_LIST.select('research/beta'); await flush();
+R.selecting = OUT.views.slice(); R.counts = Object.assign({}, OUT.counts); R.for = [ELS['reader-for'].textContent, ELS['claims-for'].textContent];
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.claim[data-c]' ? { dataset: { c: '1' } } : s === 'button' ? {} : null } }));
+R.afterClaim = OUT.views.slice(); R.lit = ELS.reader.html;
+(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '0' } } : null } }));
+R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
+        r = out["R"]
+        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"]])
+        # Selecting a project stays on Projects; the panels name it.
+        self.assertEqual((r["start"], r["selecting"]), ([], []))
+        self.assertEqual(r["for"], ["· Beta", "· Beta · 2 claims"])
+        self.assertEqual(r["counts"], {"sources": 3, "claims": 2})
+        self.assertEqual(r["afterClaim"], ["sources"])
+        self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', r["lit"]), ["1"])
+        self.assertEqual(r["afterSource"], ["sources", "claims"])
+        self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', r["litClaims"]), ["0"])
+
+    def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
+        out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
+R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign({}, OUT.counts);
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-view]' ? { dataset: { view: 'projects' } } : null } }));
+R.views = OUT.views.slice();""")
+        for panel in ("reader", "claims"):
+            self.assertIn('No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.', out["R"][panel])
+        self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
+        self.assertEqual(out["R"]["views"], ["projects"])
 
     def test_a_ledger_without_a_claim_map_says_claims_were_not_read(self):
         self.ledger["claims"] = None

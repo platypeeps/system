@@ -21,6 +21,11 @@ let ATTENTION = null;
 function attention() {
   window.shell?.attention?.(LOADED && ATTENTION || { state: 'unknown', n: 0, what: 'research not read' });
 }
+// The page's views (sd:5064), drawn by the shell's view switch: the board, then the selected project's ledger and claim map.
+// The selection carries across them; a claim opens Sources with its sources lit, and a source's ◆ count opens Claim map.
+window.PAGE_VIEWS = [{ id: 'projects', label: 'Projects' }, { id: 'sources', label: 'Sources' }, { id: 'claims', label: 'Claim map' }];
+// With no project selected, Sources and Claim map send the viewer back to the board.
+const PICK = () => html`<p class="why">No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.</p>`;
 // The tally filters the board by state; the URL carries it (?state=), and the tally's Clear or a second tap removes it.
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
 let stateFilter = null;
@@ -86,8 +91,8 @@ function reconcile() {
 function clearSelection() {
   selected = null; curSource = null; resetClaims(); shell.commands.select(null);
   ['reader-for', 'reader-tally', 'claims-for'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
-  put(reader, html`<p class="why">No project is selected.</p>`);
-  put(claimsEl, html`<p class="why">No project is selected.</p>`);
+  put(reader, PICK()); put(claimsEl, PICK());
+  shell.view.count('sources', null); shell.view.count('claims', null);
 }
 function writeURL() {
   const q = new URLSearchParams(); if (stateFilter) q.set('state', stateFilter); if (filterText) q.set('q', filterText);
@@ -128,11 +133,11 @@ function drawReader(p, s) {
   if (s.error) {
     // An error that already ends its sentence takes no second period (sd:2429).
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
-    SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; return;
+    SOURCES.delete(key); document.getElementById('reader-tally').textContent = 'not read'; shell.view.count('sources', null); return;
   }
   if (!s.files.length) {
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>No source registry in ${p.path}: neither SOURCES.md nor 10-sources/registry.md exists. The standard expects one; the reader cannot show provenance without it.</p>`);
-    document.getElementById('reader-tally').textContent = 'registry missing'; return;
+    document.getElementById('reader-tally').textContent = 'registry missing'; shell.view.count('sources', 0); return;
   }
   // A row the claim map cites carries its count (◆ n); tapping it lights those claims. A lit row is a tapped claim's source.
   let lastSec = null;
@@ -148,8 +153,10 @@ function drawReader(p, s) {
     s.total > s.rows.length ? html`<p class="more">${s.rows.length} of ${s.total} rows shown. Open the ledger in the checkout for the rest.</p>` : ''}`);
   const grades = {}; s.rows.forEach(r => { if (/^[ABCUM]$/.test(r.id)) grades[r.id] = (grades[r.id] || 0) + 1; });
   put(document.getElementById('reader-tally'), html`${['A', 'B', 'C', 'U', 'M'].filter(g => grades[g]).map(g => html`<span>${g} ${grades[g]}</span>`)}<span>${plural(s.total, 'row')}</span>`);
+  shell.view.count('sources', s.total);
 }
 reader.addEventListener('click', e => {
+  const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const cites = e.target.closest('[data-cites]'); if (cites) { claimsOf(+cites.dataset.cites); return; }
   const li = e.target.closest('.src'); if (!li || e.target.closest('a')) return;
   selectSource(+li.dataset.i, true);
@@ -166,7 +173,7 @@ function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaim
 async function renderClaims(key) {
   const p = PROJECTS.find(x => x.key === key);
   document.getElementById('claims-for').textContent = p ? `· ${p.label}` : '';
-  if (!p) { put(claimsEl, html`<p class="why">No project is selected.</p>`); return; }
+  if (!p) { put(claimsEl, PICK()); return; }
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(claimsEl, html`<p class="why">Reading the claims in ${p.path}…</p>`);
   const s = await loadSources(key);
   if (selected !== key) return; // a newer selection owns the map
@@ -181,10 +188,11 @@ function drawClaims(p, s) {
   const c = s.claims;
   if (s.error || !c) {
     put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}. Reselect the project to retry.</p>`);
-    return;
+    shell.view.count('claims', null); return;
   }
   // A document the reader skipped is named, so an empty map is never mistaken for a read one.
   const unread = html`${c.unread.map(u => html`<p class="unknown"><span class="g-unknown">▨</span>${u.doc} not read: ${u.error}.</p>`)}`;
+  shell.view.count('claims', c.total);
   if (!c.total) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
@@ -199,9 +207,10 @@ function drawClaims(p, s) {
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
 }
 claimsEl.addEventListener('click', e => {
+  const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const v = e.target.closest('[data-verdict]');
   if (v) { verdict = verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
-  const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c, true);
+  const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c);
 });
 // Draw the reader and the map again from the cache, keeping what is lit.
 function redraw() {
@@ -209,18 +218,20 @@ function redraw() {
   if (!p || !s || s.then) return;
   drawReader(p, s); drawClaims(p, s);
 }
-// A tapped claim lights its sources in the reader.
-function selectClaim(i, open) {
+// A tapped claim opens Sources with its sources lit, and its Details stay beside them.
+function selectClaim(i) {
   const s = SOURCES.get(selected), x = s?.claims?.rows?.[i]; if (!x) return;
   curClaim = i; litKeys = x.keys; litClaims = [];
-  redraw(); showClaim(s, x); if (open) shell.openPane('tab-details');
+  redraw(); showClaim(s, x);
+  shell.view.show('sources'); reader.querySelector('[data-lit]')?.scrollIntoView?.({ block: 'nearest' });
 }
-// A source's ◆ count lights the claims that cite it; a verdict filter that would hide one is cleared.
+// A source's ◆ count opens Claim map with the claims that cite it lit; a verdict filter that would hide one is cleared.
 function claimsOf(i) {
   const s = SOURCES.get(selected), r = s?.rows?.[i]; if (!r?.key) return;
   litClaims = s.claims.rows.flatMap((x, n) => (x.keys.includes(r.key) ? [n] : []));
   litKeys = []; curClaim = null; verdict = null;
   redraw();
+  shell.view.show('claims'); claimsEl.querySelector('[data-lit]')?.scrollIntoView?.({ block: 'nearest' });
 }
 
 // ---------- Details ----------

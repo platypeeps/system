@@ -7,6 +7,8 @@
   from its 20-map, 30-brief and 40-docs sentences that link a ledger URL, sd:5064) per selection.
   The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds yet,
   so they say so; Render and Review are copy only, and Start research is off: nothing here writes.
+  Views: the shell's view switch (shell.js, view block) shows one panel, #view-projects (the board, first), #view-sources or
+  #view-claims; research.js declares them in window.PAGE_VIEWS. The selected project carries across all three.
 -->
 <html lang="en">
 <head>
@@ -51,7 +53,7 @@
     </header>
     <div id="state" hidden></div>
 
-    <section aria-labelledby="board-h">
+    <section id="view-projects" aria-labelledby="board-h">
       <div class="sec-head">
         <h2 id="board-h">Projects <button class="help" type="button" aria-label="Help: Projects" data-help="<b>Every checkout with research.conf.py.</b> Stage is the furthest numbered directory holding Markdown. Render compares each declared document with its built page. Rounds count independent review passes after the brief; the cap is 2.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
@@ -63,7 +65,7 @@
       <p class="empty why" id="empty" hidden>No project matches. Clear the filter or type another word.</p>
     </section>
 
-    <section aria-labelledby="reader-h">
+    <section id="view-sources" aria-labelledby="reader-h">
       <div class="sec-head">
         <h2 id="reader-h">Sources <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A ◆ count is how many claims cite the source; tap it to light them.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
@@ -72,7 +74,7 @@
       <div id="reader"></div>
     </section>
 
-    <section aria-labelledby="claims-h">
+    <section id="view-claims" aria-labelledby="claims-h">
       <div class="sec-head">
         <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that links a URL in the ledger. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones. Tap a claim to light its sources.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
