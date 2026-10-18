@@ -87,7 +87,8 @@ def realm_of(repo: str | None, kind: str, rules: list | None) -> str | None:
         return "personal"
     if rules is None:
         return None
-    return next((r["id"] for r in rules if any(fnmatch.fnmatchcase(repo, glob) for glob in r["globs"])), "personal")
+    path = os.path.expanduser(repo)  # the database keeps ~/repos/...; the globs are expanded too
+    return next((r["id"] for r in rules if any(fnmatch.fnmatchcase(path, glob) for glob in r["globs"])), "personal")
 
 
 def area_of(repo: str | None, kind: str, hoa: str | None) -> str | None:

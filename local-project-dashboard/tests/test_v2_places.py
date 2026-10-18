@@ -120,6 +120,12 @@ class Realms(Fixture):
         self.assertEqual(places.realm_of("/repos/hoa", "task", self.RULES), "personal")
         self.assertEqual(places.realm_of("/repos/system-two", "task", self.RULES), "personal")
 
+    def test_a_repo_stored_with_a_tilde_matches_a_tilde_glob(self):
+        # The database keeps a repo as ~/repos/...; realms() expands a glob's ~, so the repo's ~ must expand too.
+        rules = places.realms(self.conf("realm|work|Work|~/repos/example-work/*\n"))["list"]
+        self.assertEqual(places.realm_of("~/repos/example-work/api", "task", rules), "work")
+        self.assertEqual(places.realm_of(str(Path.home() / "repos/example-work/api"), "task", rules), "work")
+
     def test_no_repo_is_personal_and_a_report_is_in_no_realm(self):
         self.assertEqual(places.realm_of(None, "task", self.RULES), "personal")
         self.assertEqual(places.realm_of(None, "task", None), "personal")
