@@ -436,16 +436,21 @@ def request(values: dict, *, config_path=None, repo_root=None):
 
 def item_fields(connection, items) -> dict[int, dict]:
     """Each item's whole `fields` object, by id; fields that are not a JSON object read as `{}`."""
+    from sd_db import reads
+
     ids = sorted({item for item in items if type(item) is int})
     if connection is None or not ids:
         return {}
     out = {}
-    for row in connection.execute(f"SELECT id, fields FROM item WHERE id IN ({','.join('?' * len(ids))})", ids):
+    for item in ids:
+        row = reads.item_by_id(connection, item)
+        if row is None:
+            continue
         try:
-            fields = json.loads(row[1] or "{}")
+            fields = json.loads(row["fields"] or "{}")
         except ValueError:
             fields = {}
-        out[row[0]] = fields if isinstance(fields, dict) else {}
+        out[item] = fields if isinstance(fields, dict) else {}
     return out
 
 
@@ -458,9 +463,9 @@ def brief_choice(fields: dict, setting, unread: str) -> dict:
 
 def _brief(connection, item: int):
     """`(row, checkout, fields)` for a routine brief, or `Refused`."""
-    from sd_db import paths
+    from sd_db import paths, reads
 
-    row = connection.execute("SELECT id, title, repo, source, kind, body, fields FROM item WHERE id = ?", (item,)).fetchone()
+    row = reads.item_by_id(connection, item)
     if row is None or row["source"] != "brief" or row["kind"] != "report":
         raise Refused(f"sd:{item} is not a routine brief")
     if not row["title"] or "/" in row["title"] or row["title"].startswith("."):
@@ -479,7 +484,7 @@ def designate_brief(connection, item: int, channel: str, *, enqueue=None) -> dic
     2. `fields.publish.<channel>` becomes `{}` in one transaction, unless it is there already.
     3. The pack's `enqueue_briefs` queues the brief's designated channels from its row; a pack without it says so.
     """
-    from sd_db import writes
+    from sd_db import reads, writes
     from sd_db.database import transaction
 
     if channel not in OUTWARD:
@@ -494,7 +499,7 @@ def designate_brief(connection, item: int, channel: str, *, enqueue=None) -> dic
     already = isinstance(publish.get(channel), dict)
     if not already:
         with transaction(connection):
-            raw = connection.execute("SELECT fields FROM item WHERE id = ?", (item,)).fetchone()[0]
+            raw = reads.item_by_id(connection, item)["fields"]
             try:
                 current = json.loads(raw or "{}")
             except ValueError:
