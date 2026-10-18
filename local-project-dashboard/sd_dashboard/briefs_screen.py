@@ -20,6 +20,9 @@ list the stem as refused; else both are null and `copy` says why. Read needs
 no copy. `reader.copies` carries the heartbeat's state: `ok`, `failed` with
 its reason, `off`, or `unknown` when none was recorded or it was not read.
 
+**Where it was published** (sd:5102). Each row's `pub.copies` names the destinations holding a copy, from the item's
+`fields.published` and the vault copy above (`publishing.brief_copies`); `pub.unread` says when the fields were not read.
+
 **What is not read.** Unread state, follow-up flags, the watchdog's failures
 and each job's cadence come from mail and the weekly digest in the design. No
 reader supplies them: `watchdog.available` is false and `watchdog.reason`
@@ -34,6 +37,8 @@ import re
 import sys
 import urllib.parse
 from pathlib import Path
+
+from . import publishing
 
 __all__ = ["ROWS", "SOURCE", "WATCHDOG_REASON", "document", "rows"]
 
@@ -160,6 +165,36 @@ def rows(got: list, found, state: dict, vault: str | None) -> tuple[list[dict], 
     return out, bad
 
 
+def _publishing(connection, briefs: list[dict], repos: dict) -> None:
+    """sd:5102: each row's `pub`: its copies (item `fields.published`, the vault copy, a pending request), its Publish to
+    choice (`fields.publish`, ruling note #23223) and what was not read. Unknown is never "published nowhere"."""
+    try:
+        fields = publishing.item_fields(connection, [brief["item"] for brief in briefs])
+        unread = ""
+    except Exception as error:  # noqa: BLE001 - fields not read are unknown, never "published nowhere"
+        fields, unread = {}, f"where each brief was published was not read: {error}"
+    try:
+        queue = publishing.kit().QUEUE
+    except ImportError as missing:
+        queue, unread = None, "; ".join(filter(None, (unread, f"the pack's mirror queue was not read: {missing}")))
+    from sd_db import paths
+
+    settings: dict = {}
+    for brief in briefs:
+        own = fields.get(brief["item"], {})
+        repo = repos.get(brief["item"])
+        checkout = paths.expand(repo) if isinstance(repo, str) and repo else None
+        if checkout is not None and checkout not in settings:
+            settings[checkout] = publishing.read_channels(connection, checkout)
+        setting, why = settings.get(checkout, (None, "the brief names no repository"))
+        queued = publishing.brief_queued(checkout, brief["id"], queue) if checkout is not None else set()
+        found = publishing.brief_copies(own.get("published") if isinstance(own.get("published"), dict) else {},
+                                        brief["open"], queued)
+        brief["pub"] = {**found, "unread": unread, "choice": publishing.brief_choice(own, setting, why)}
+        if why and not unread:
+            brief["pub"]["choice"]["why"] = why
+
+
 def document(connection, *, now: str, reader=read_rows, copies_reader=read_copies, vault=_vault_name) -> dict:
     """The Briefs page's document: the database's brief rows, the vault copy's state, and what is not read."""
     watchdog = {"available": False, "reason": WATCHDOG_REASON}
@@ -181,6 +216,9 @@ def document(connection, *, now: str, reader=read_rows, copies_reader=read_copie
     except Exception:  # noqa: BLE001 - no vault name is no link; Read still opens the brief
         name = None
     briefs, bad = rows(got, found, state, name)
+    for brief in briefs:
+        brief["pub"] = None
+    _publishing(connection, briefs, {raw.get("id"): raw.get("repo") for raw in got if isinstance(raw, dict)})
     capped = len(got) > ROWS
     return {"read": now,
             "reader": {"state": "partial" if bad else "read", "reason": f"{bad} rows were not briefs" if bad else "",
