@@ -485,7 +485,7 @@ addEventListener('DOMContentLoaded', () => {
     // The draft's commands (sd:5103). File issue posts the digest of the text Details shows, so a draft that changed is
     // refused; it asks first, naming the target, since a filed issue is public and stays. Once filed but not linked, it
     // links only. A refusal or no answer reads the run again: the server writes what is known. No Undo for either.
-    { id: 'issue.file', on: 'issue draft', label: 'File issue', risk: 'confirm', executes: true, icon: 'send', primary: () => true,
+    { id: 'issue.file', on: 'issue draft', label: 'File issue', risk: 'confirm', executes: true, icon: 'send', primary: o => o.run.state !== 'unknown',
       when: o => ['ready', 'filed'].includes(o.run.state) || `the draft is ${o.run.state}`,
       does: o => o.run.state === 'filed' ? `Links #${o.run.item} to the filed issue; nothing is filed again.` : `Files this title and body in ${issueWhere(o.run.target)}.`,
       cli: () => 'no sd verb: the dashboard files through gh or the Jira REST API',
@@ -495,6 +495,16 @@ addEventListener('DOMContentLoaded', () => {
       run: o => window.shell.post(`/api/issue-runs/${encodeURIComponent(o.run.id)}/confirm`, { digest: o.run.digest }).then(
         run => { followIssue(run); reread(); return `${TRACKER[run.kind]} issue filed · ${run.url} · #${run.item} links it`; },
         err => { readIssue(o.run); if (!err.status) throw new Error(`no answer (${err.message}), so whether the issue was filed is not known; look in ${TRACKER[o.run.kind]} before you file it again`); throw err; }) },
+    // Check again (sd:5103): a run whose outcome is not known may have filed, so it is never filed again; the server
+    // lists the tracker's newest issues for this exact title and links one if found.
+    { id: 'issue.check', on: 'issue draft', label: 'Check again', risk: 'safe', executes: true, icon: 'search', primary: o => o.run.state === 'unknown',
+      when: o => o.run.state === 'unknown' || `the draft is ${o.run.state}`,
+      does: o => `Looks for this issue in ${issueWhere(o.run.target)}; files nothing.`,
+      cli: () => 'no sd verb: the dashboard lists the newest issues through gh or the Jira API',
+      sends: o => `POST /api/issue-runs/${o.run.id}/check`,
+      run: o => window.shell.post(`/api/issue-runs/${encodeURIComponent(o.run.id)}/check`, {}).then(
+        run => { followIssue(run); reread(); return `${TRACKER[run.kind]} issue found · ${run.url} · #${run.item} links it`; },
+        err => { readIssue(o.run); throw err; }) },
     { id: 'issue.discard', on: 'issue draft', label: 'Discard', risk: 'safe', executes: true, icon: 'x',
       when: o => ['ready', 'blocked', 'failed', 'unknown'].includes(o.run.state) || `the draft is ${o.run.state}`,
       does: o => o.run.state === 'unknown' ? 'Drops the run; it may have filed, so look in the tracker first.' : 'Drops the draft; nothing was filed.',

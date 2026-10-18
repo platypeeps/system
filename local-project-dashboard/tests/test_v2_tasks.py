@@ -675,6 +675,7 @@ class TheScript(ScreenCase):
             ["item.file-github-issue", "item", "safe", None, True, True, False],
             ["item.file-jira-issue", "item", "safe", None, True, True, False],
             ["issue.file", "issue draft", "confirm", None, True, True, False],
+            ["issue.check", "issue draft", "safe", None, True, True, False],
             ["issue.discard", "issue draft", "safe", None, True, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
@@ -1500,6 +1501,7 @@ const before = OUT.gets.length; shellRun(cmd('item.email'), C.get('{plan}')); aw
     if (path === '/api/items/{plan}/file-issue') return [202, {{ ...RUN, state: 'queued' }}];
     if (path === '/api/issue-runs/' + RUN.id) return [200, reads++ ? {{ ...RUN, ...DRAFT }} : {{ ...RUN, state: 'drafting' }}];
     if (path === '/api/issue-runs/' + RUN.id + '/confirm') return FILED ? [200, {{ ...RUN, ...FILED }}] : [409, {{ error: 'refused' }}];
+    if (path === '/api/issue-runs/' + RUN.id + '/check') return FILED ? [200, {{ ...RUN, ...FILED }}] : [409, {{ error: 'still not known' }}];
     if (path === '/api/issue-runs/' + RUN.id + '/discard') return [200, {{ ...RUN, ...DRAFT, state: 'discarded' }}];
     return [404, {{ error: 'no answer' }}]; }}; }})()"""
 
@@ -1554,6 +1556,27 @@ shellRun(cmd('issue.discard'), d); await flush(); R.after = ELS.details.html;"""
         self.assertFalse([p for p in out["posts"] if p[0].endswith("/confirm")])
         self.assertEqual([p[0] for p in out["posts"]][-1], f"/api/issue-runs/{run['id']}/discard")
         self.assertNotIn("issue <span", out["R"]["after"])
+
+    def test_an_unknown_run_offers_check_again_never_file_issue_and_check_links_what_it_finds(self):
+        """sd:5103. A run whose outcome is not known may have filed: File issue is off, Check again posts /check, and
+        the issue it finds is linked; no Confirm is ever posted."""
+        plan = self.ids["plan"]
+        self.row("plan")["issue_targets"] = self.GITHUB_ONLY
+        draft = {"state": "unknown", "title": "Crash on empty input", "body": "b", "removed": {},
+                 "reason": "gh exited 1: HTTP 502; whether GitHub holds the issue is not known"}
+        run, answer = self.issue_answer(plan, draft, {"state": "linked", "url": "https://github.com/example/tool/issues/8",
+                                                      "ref": "github:example/tool#8"})
+        out = self.run_page(f"""shellRun(cmd('item.file-github-issue'), C.get('{plan}')); await flush();
+const d = C.get('issue:{run["id"]}'); R.file = cmd('issue.file').when(d); R.check = cmd('issue.check').when(d);
+R.does = cmd('issue.check').does(d); R.preview = ELS.details.html;
+shellRun(cmd('issue.check'), d); await flush(); R.after = ELS.details.html;""", answer)
+        self.assertEqual(out["R"]["file"], "the draft is unknown")
+        self.assertTrue(out["R"]["check"])
+        self.assertEqual(out["R"]["does"], "Looks for this issue in GitHub example/tool; files nothing.")
+        self.assertIn("whether GitHub holds the issue is not known", out["R"]["preview"])
+        self.assertFalse([p for p in out["posts"] if p[0].endswith("/confirm")])
+        self.assertEqual([p[0] for p in out["posts"]][-1], f"/api/issue-runs/{run['id']}/check")
+        self.assertIn("https://github.com/example/tool/issues/8", out["R"]["after"])
 
     def test_a_linked_item_shows_the_issue_link_on_its_row_and_card(self):
         """sd:5103. The row and the card link the issue the item's ref names; a row with none shows no link."""

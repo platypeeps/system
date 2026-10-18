@@ -25,14 +25,18 @@ Steps, each one state of the run file `<state>/runs/<id>.json`:
    be free. The run is written `filing` before the call, so a server that dies mid-call leaves a run that reads
    `unknown`, and Confirm refuses it. GitHub: `gh issue create`, once (a server process has no MCP session, so gh is
    its one way; sessions use the GitHub MCP tools). Jira: `POST /rest/api/3/issue` through `sd_db.shadow_jira`'s
-   transport and settings (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, from the server's environment). A
-   refusal that filed nothing returns the run to `ready` with the reason; no answer reads `unknown`.
+   transport and settings (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, from the server's environment). Only an
+   answer that proves a refusal (a 4xx but 408, gh's checks before it creates, no sign-in) returns the run to
+   `ready` for another Confirm. Any other outcome is not known: the run looks for its issue (`find_github` lists the
+   repository's newest issues, `find_jira` runs JQL by project and age; both match the exact title, created since
+   `filing_at`), links it if found, and reads `unknown` if not. Check (`/api/issue-runs/<id>/check`) looks again for
+   an `unknown` run's issue and never files.
 6. Link-back, in the same POST: the item gains `--ref github:<owner>/<repo>#N` or `jira:<KEY-N>` when it carries no
    source of its own (`sd task add --ref`'s `task-ref`), and one comment note naming the URL; the run is `linked`. A
    link-back that fails leaves `filed` with the reason, and Confirm again retries the link-back only.
 
-`discard` ends a run that is not filing or filed. `status` reads a run whose runner is gone without an outcome as
-`failed`, and a `filing` run whose server is gone as `unknown`.
+`discard` ends a run that is not filing or filed; an `unknown` one may have filed, as its reason says. `status` reads
+a run whose runner is gone without an outcome as `failed`, and a `filing` run whose server is gone as `unknown`.
 """
 
 from __future__ import annotations
@@ -52,8 +56,8 @@ import threading
 import unicodedata
 from pathlib import Path
 
-__all__ = ["BODY_MAX", "PROMPT", "REMOVED", "RULES", "TARGETS", "TITLE_MAX", "confirm", "discard", "findings",
-           "request", "run", "sanitize", "scan", "start", "status"]
+__all__ = ["BODY_MAX", "PROMPT", "REMOVED", "RULES", "TARGETS", "TITLE_MAX", "check", "confirm", "discard",
+           "findings", "request", "run", "sanitize", "scan", "start", "status"]
 
 #: This repository's checkout: the leak guard's `scan` lives here.
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -572,8 +576,13 @@ def status(run_id: str, *, now: datetime.datetime | None = None):
 # -- step 5 and 6: confirm, file, link back --------------------------------------------------------------------------
 
 GH = ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
-      'exec "${GH_BIN:-$(command -v gh || echo /opt/homebrew/bin/gh)}" issue create --repo "$1" --title "$2" '
-      '--body-file -')
+      'exec "${GH_BIN:-$(command -v gh || echo /opt/homebrew/bin/gh)}" "$@"')
+#: What gh prints only when GitHub or gh itself refused the call, so no issue exists: a 4xx answer but 408, the
+#: repository lookup gh makes before it creates, issues switched off, and no sign-in. Anything else may have filed.
+GH_REFUSED = re.compile(r"\bHTTP 4(?!08)[0-9]{2}\b|GraphQL: Could not resolve to a |has disabled issues"
+                        r"|gh auth login")
+#: How far before `filing_at` a found issue may have been created, for a clock that differs from the tracker's.
+LOOK_SKEW = 120
 
 
 class NotFiled(Exception):
@@ -592,7 +601,8 @@ def file_github(target: dict, title: str, body: str) -> tuple[str, str]:
     """
     repo = target["repo"]
     try:
-        done = subprocess.run(["sh", "-c", GH, "sh", repo, title], input=body, capture_output=True, text=True,
+        done = subprocess.run(["sh", "-c", GH, "sh", "issue", "create", "--repo", repo, "--title", title,
+                               "--body-file", "-"], input=body, capture_output=True, text=True,
                               timeout=FILE_TIMEOUT, start_new_session=True, check=False)
     except subprocess.TimeoutExpired:
         raise Unknown(f"gh gave no answer in {FILE_TIMEOUT} s") from None
@@ -600,7 +610,11 @@ def file_github(target: dict, title: str, body: str) -> tuple[str, str]:
         raise NotFiled(f"gh did not run: {type(problem).__name__}") from None
     if done.returncode != 0:
         said = [line for line in done.stderr.splitlines() if line.strip()]
-        raise NotFiled(f"gh exited {done.returncode}: {said[-1] if said else 'no message'}")
+        why = f"gh exited {done.returncode}: {said[-1] if said else 'no message'}"
+        # A nonzero exit is no proof: GitHub can create the issue and the answer still fail on the way back.
+        if done.returncode == 4 or GH_REFUSED.search(done.stderr):
+            raise NotFiled(why)
+        raise Unknown(why)
     found = re.search(r"https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/issues/([1-9][0-9]*)", done.stdout)
     if not found:
         raise Unknown("gh exited 0 but printed no issue URL")
@@ -639,9 +653,11 @@ def file_jira(target: dict, title: str, body: str, transport=None, environ=None)
               "description": _adf(body)}
     payload, error = shadow_jira._request(config["base"] + "/rest/api/3/issue", config, {"fields": fields}, transport)
     if error:
-        # Jira's own answer (a status, a credential refusal, a redirect it was not followed to) filed nothing; a
-        # connection that broke after the request left may have.
-        if error.startswith(("Jira returned", "Jira rejected", "Jira redirected")):
+        # Only a refusal proves nothing was filed: the credentials, a redirect that was not followed, a 4xx but 408. A
+        # 5xx, a 408 or a connection that broke after the request left may have filed.
+        status = re.match(r"Jira returned ([0-9]{3})\b", error)
+        if error.startswith(("Jira rejected", "Jira redirected")) or (
+                status and 400 <= int(status[1]) < 500 and status[1] != "408"):
             raise NotFiled(error)
         raise Unknown(error)
     key = (payload or {}).get("key") or ""
@@ -651,6 +667,99 @@ def file_jira(target: dict, title: str, body: str, transport=None, environ=None)
 
 
 FILERS = {"github": file_github, "jira": file_jira}
+
+
+def _since(document: dict) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(document["filing_at"].replace("Z", "+00:00")) - datetime.timedelta(
+        seconds=LOOK_SKEW)
+
+
+def find_github(target: dict, title: str, since: datetime.datetime) -> tuple[str, str] | None:
+    """`(url, ref)` of an issue titled `title` created since `since`, or None; `Unknown` when the check fails.
+
+    The repository's newest issues, not search: GitHub's search index lags, and a check that missed a fresh issue would
+    read as not filed.
+    """
+    repo = target["repo"]
+    try:
+        done = subprocess.run(["sh", "-c", GH, "sh", "api",
+                               f"repos/{repo}/issues?state=all&sort=created&direction=desc&per_page=50"],
+                              capture_output=True, text=True, timeout=FILE_TIMEOUT, start_new_session=True,
+                              check=False)
+    except subprocess.TimeoutExpired:
+        raise Unknown(f"the check gave no answer in {FILE_TIMEOUT} s") from None
+    except OSError as problem:
+        raise Unknown(f"the check did not run: {type(problem).__name__}") from None
+    try:
+        issues = json.loads(done.stdout) if done.returncode == 0 else None
+    except ValueError:
+        issues = None
+    if not isinstance(issues, list):
+        said = [line for line in done.stderr.splitlines() if line.strip()]
+        raise Unknown(f"the check failed: gh exited {done.returncode}: {said[-1] if said else 'no list'}")
+    for issue in issues:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        if str(issue.get("title", "")).strip() != title.strip():
+            continue
+        try:
+            created = datetime.datetime.fromisoformat(str(issue.get("created_at")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        found = re.fullmatch(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/issues/([1-9][0-9]*)",
+                             str(issue.get("html_url", "")))
+        if created >= since and found and found[1].lower() == repo.lower():
+            return found[0], f"github:{repo}#{found[2]}"
+    return None
+
+
+def find_jira(target: dict, title: str, since: datetime.datetime, transport=None,
+              environ=None) -> tuple[str, str] | None:
+    """`(url, ref)` of an issue in the project with the summary `title`, created since `since`, or None; `Unknown`
+    when the check fails. JQL selects by project and age; the exact summary is compared here, since `summary ~` is a
+    word search."""
+    from sd_db import shadow_jira
+
+    config = shadow_jira.settings(environ)
+    if shadow_jira.missing(config):
+        raise Unknown(f"the check could not run: {', '.join(shadow_jira.missing(config))} not set")
+    minutes = max(1, int((_now() - since).total_seconds() // 60) + 1)
+    # The project key passed the column's CHECK (an upper-case letter, then letters, digits or `_`), so it needs no
+    # escaping inside the quotes.
+    jql = f'project = "{target["project"]}" AND created >= -{minutes}m ORDER BY created DESC'
+    payload, error = shadow_jira._request(config["base"] + "/rest/api/3/search/jql", config,
+                                          {"jql": jql, "maxResults": 50, "fields": ["summary"]}, transport)
+    if error or not isinstance((payload or {}).get("issues"), list):
+        raise Unknown(f"the check failed: {error or 'Jira answered without an issue list'}")
+    for issue in payload["issues"]:
+        key = str((issue or {}).get("key", ""))
+        summary = str(((issue or {}).get("fields") or {}).get("summary", ""))
+        if summary.strip() == title.strip() and re.fullmatch(re.escape(target["project"]) + r"-[1-9][0-9]*", key):
+            return f"{config['base']}/browse/{key}", f"jira:{key}"
+    return None
+
+
+FINDERS = {"github": find_github, "jira": find_jira}
+
+
+def _look(record: Path, document: dict, why: str, finders=None):
+    """After an outcome that is not known: link the run's issue if the tracker lists it, else record `unknown`."""
+    finders = finders or FINDERS
+    tracker = TRACKER[document["kind"]]
+    try:
+        found = finders[document["kind"]](document["target"], document["title"], _since(document))
+    except Unknown as failed:
+        found, why = None, f"{why}; {failed}"
+    if found is None:
+        document.update(state="unknown", reason=f"{why}; whether {tracker} holds the issue is not known. Look for "
+                                                f"\"{document['title']}\" there, or check again, before you draft it "
+                                                f"again", checked=_iso(_now()))
+        _write(record, document)
+        return None
+    url, ref = found
+    document.update(state="filed", url=url, ref=ref, finished=_iso(_now()), reason=None, found=True)
+    _write(record, document)
+    return document
 
 
 def _link(connection, document: dict) -> str:
@@ -713,11 +822,10 @@ def confirm(connection, run_id: str, posted: str, *, filers=None):
             _write(record, document)
             return 502, {"error": f"{TRACKER[document['kind']]} filed nothing: {refused}. Confirm may run again."}
         except Unknown as unknown:
-            document.update(state="unknown", reason=f"{unknown}; whether {TRACKER[document['kind']]} holds the issue "
-                                                    f"is not known. Look for \"{document['title']}\" there before you "
-                                                    f"draft it again")
-            _write(record, document)
-            return 504, {"error": document["reason"] + "."}
+            # Not known is not refused: look for the issue before anything offers to file it again.
+            if _look(record, document, str(unknown)) is None:
+                return 504, {"error": document["reason"] + "."}
+            return _linked(connection, record, document)
         document.update(state="filed", url=url, ref=ref, finished=_iso(_now()))
         _write(record, document)
     finally:
@@ -746,6 +854,27 @@ def confirm_request(run_id: str, values: dict):
     if not RUN_ID.fullmatch(run_id):
         raise ValueError("No such issue run.")
     return lambda connection: confirm(connection, run_id, values["digest"])
+
+
+def check(connection, run_id: str, *, finders=None):
+    """Look again for an `unknown` run's issue: `(200, run)` once found and linked, 409 while it is still not known.
+    It never files: a run whose outcome is not known can only be found, linked or discarded."""
+    record, document = _read(run_id)
+    if record is None:
+        return document
+    document = _settled(document, _now())
+    if document["state"] != "unknown":
+        return 409, {"error": f"Run {run_id} is {document['state']}; only a run whose outcome is not known is "
+                              f"checked."}
+    if _look(record, document, f"{TRACKER[document['kind']]} lists no issue with this title yet", finders) is None:
+        return 409, {"error": document["reason"] + "."}
+    return _linked(connection, record, document)
+
+
+def check_request(run_id: str, values: dict):
+    if values or not RUN_ID.fullmatch(run_id):
+        raise ValueError("Check takes no values.")
+    return lambda connection: check(connection, run_id)
 
 
 def discard(run_id: str):

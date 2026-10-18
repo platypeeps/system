@@ -342,13 +342,16 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
         return adversarial.request(values)
-    issue_run = re.fullmatch(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/(confirm|discard)", path)
+    issue_run = re.fullmatch(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/(confirm|check|discard)", path)
     if issue_run:
         from . import issue_filing
 
-        # sd:5103: Confirm files the previewed issue once and links it back; Discard ends a run that filed nothing.
+        # sd:5103: Confirm files the previewed issue once and links it back; Check looks again for the issue of a run
+        # whose outcome is not known, and never files; Discard ends a run.
         if issue_run[2] == "confirm":
             return issue_filing.confirm_request(issue_run[1], values)
+        if issue_run[2] == "check":
+            return issue_filing.check_request(issue_run[1], values)
         return issue_filing.discard_request(issue_run[1], values)
     if path == "/api/snooze":
         from . import snooze

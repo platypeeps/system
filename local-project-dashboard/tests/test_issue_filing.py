@@ -35,8 +35,14 @@ exit "$(cat "$DOUBLE_DIR/exit" 2>/dev/null || echo 0)"
 """
 GH = """#!/bin/sh
 printf '%s\\n' "$@" >> "$DOUBLE_DIR/gh.argv"
+if [ "$1" = api ]; then
+  echo look >> "$DOUBLE_DIR/gh.looks"
+  if [ -f "$DOUBLE_DIR/gh.api" ]; then cat "$DOUBLE_DIR/gh.api"; else echo '[]'; fi
+  exit "$(cat "$DOUBLE_DIR/gh.api.exit" 2>/dev/null || echo 0)"
+fi
 cat > "$DOUBLE_DIR/gh.stdin"
 echo call >> "$DOUBLE_DIR/gh.calls"
+if [ -s "$DOUBLE_DIR/gh.fail" ]; then cat "$DOUBLE_DIR/gh.fail" >&2; exit "$(cat "$DOUBLE_DIR/gh.exit" 2>/dev/null || echo 1)"; fi
 if [ -f "$DOUBLE_DIR/gh.fail" ]; then echo 'GraphQL: Could not resolve to a Repository' >&2; exit 1; fi
 cat "$DOUBLE_DIR/gh.out"
 """
@@ -111,9 +117,17 @@ class FilingCase(BrowserSession):
     def confirm(self, document, digest=None):
         return self.post(f"/api/issue-runs/{document['id']}/confirm", {"digest": digest or document["digest"]})
 
-    def gh_calls(self):
-        calls = self.double / "gh.calls"
+    def gh_calls(self, name="gh.calls"):
+        calls = self.double / name
         return len(calls.read_text().splitlines()) if calls.exists() else 0
+
+    def listed(self, *issues):
+        """The repository's newest issues, as `gh api` answers the check: `(title, number, age in seconds, is a PR)`."""
+        now = time.time()
+        (self.double / "gh.api").write_text(json.dumps([
+            {"number": number, "title": title, "html_url": f"https://github.com/example/tool/{'pull' if pr else 'issues'}/{number}",
+             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age)), **({"pull_request": {}} if pr else {})}
+            for title, number, age, pr in issues]))
 
     def item_row(self, item):
         return workflow.item_state(self.connection, item)
@@ -404,6 +418,68 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.confirm(run)[0], 200)
         self.assertEqual(self.gh_calls(), 2)
 
+    def test_a_gh_failure_that_may_have_filed_links_the_issue_it_finds_and_files_once(self):
+        """Failures: a 502 after the request left is no proof; the check finds the issue (not the PR or the older issue
+        with the same title) and links it, and gh created once."""
+        self.enable()
+        item = self.task()
+        run = self.drafted(item)
+        (self.double / "gh.fail").write_text("HTTP 502: Bad Gateway (https://api.github.com/graphql)\n")
+        self.listed((run["title"], 50, 0, True), (run["title"], 43, 0, False), (run["title"], 3, 86400, False))
+        status, _, done = self.confirm(run)
+        self.assertEqual(status, 200, done)
+        self.assertEqual((done["state"], done["url"]), ("linked", "https://github.com/example/tool/issues/43"))
+        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#43")
+        self.assertEqual((self.gh_calls(), self.gh_calls("gh.looks")), (1, 1))
+
+    def test_a_gh_failure_with_nothing_found_is_unknown_and_check_finds_it_later_without_filing(self):
+        """Failures and retry: not found reads unknown, Confirm refuses it, Check looks again and links what it finds."""
+        self.enable()
+        item = self.task()
+        run = self.drafted(item)
+        (self.double / "gh.fail").write_text("Post \"https://api.github.com/graphql\": read: connection reset by peer\n")
+        status, _, answer = self.confirm(run)
+        self.assertEqual(status, 504)
+        self.assertIn("is not known", answer["error"])
+        self.assertEqual(self.read(run["id"])[1]["state"], "unknown")
+        self.assertEqual(self.confirm(run)[0], 409)
+        check = f"/api/issue-runs/{run['id']}/check"
+        self.assertEqual(self.post(check, {})[0], 409)
+        self.listed((run["title"], 44, 0, False))
+        status, _, done = self.post(check, {})
+        self.assertEqual((status, done["state"], done["url"]), (200, "linked", "https://github.com/example/tool/issues/44"))
+        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#44")
+        self.assertEqual(self.post(check, {})[0], 409)
+        self.assertEqual(self.gh_calls(), 1)
+
+    def test_a_check_that_fails_reads_unknown_and_says_so(self):
+        self.enable()
+        run = self.drafted(self.task())
+        (self.double / "gh.fail").write_text("HTTP 503: Service Unavailable\n")
+        (self.double / "gh.api.exit").write_text("1")
+        status, _, answer = self.confirm(run)
+        self.assertEqual(status, 504)
+        self.assertIn("the check failed", answer["error"])
+        self.assertEqual(self.read(run["id"])[1]["state"], "unknown")
+
+    def test_only_a_refusal_reads_not_filed(self):
+        """Failures: gh's exit alone proves nothing; only a 4xx but 408, gh's own checks or no sign-in are refusals."""
+        target = {"kind": "github", "repo": "example/tool"}
+        for said, code, outcome in (("HTTP 422: Validation Failed (https://api.github.com/graphql)", 1, issue_filing.NotFiled),
+                                    ("GraphQL: Could not resolve to a Repository with the name 'example/tool'.", 1,
+                                     issue_filing.NotFiled),
+                                    ("the 'example/tool' repository has disabled issues", 1, issue_filing.NotFiled),
+                                    ("To get started with GitHub CLI, please run:  gh auth login", 4, issue_filing.NotFiled),
+                                    ("HTTP 502: Bad Gateway", 1, issue_filing.Unknown),
+                                    ("HTTP 408: Request Timeout", 1, issue_filing.Unknown),
+                                    ("read: connection reset by peer", 1, issue_filing.Unknown),
+                                    ("", 1, issue_filing.Unknown)):
+            with self.subTest(said=said):
+                (self.double / "gh.fail").write_text(said + "\n" if said else "\n")
+                (self.double / "gh.exit").write_text(str(code))
+                with self.assertRaises(outcome):
+                    issue_filing.file_github(target, "t", "b")
+
     def test_a_server_gone_mid_filing_reads_unknown_and_confirm_refuses(self):
         """Steps: stop between `filing` and the answer; the next read finds it unknown, never files twice."""
         self.enable()
@@ -416,6 +492,7 @@ class TheConfirm(FilingCase):
         self.assertEqual(read["state"], "unknown")
         self.assertIn("not known", read["reason"])
         self.assertEqual(self.confirm(run)[0], 409)
+        self.assertEqual(self.post(f"/api/issue-runs/{run['id']}/check", {})[0], 409)
         self.assertEqual(self.gh_calls(), 0)
         self.assertEqual(self.post(f"/api/issue-runs/{run['id']}/discard", {})[0], 200)
 
@@ -485,6 +562,31 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.item_row(item)["item"]["external_id"], "jira:EXAMPLE-9")
         self.assertEqual(self.gh_calls(), 0)
 
+    def test_a_jira_5xx_is_checked_by_project_age_and_exact_summary_and_links_what_it_finds(self):
+        """Failures: a 502 on create may have filed; JQL by project and age, then the exact summary, finds it."""
+        self.enable(github="off", jira="EXAMPLE")
+        item = self.task()
+        run = self.drafted(item, "jira")
+        env = {"JIRA_BASE_URL": "https://example.atlassian.test", "JIRA_EMAIL": "e", "JIRA_API_TOKEN": "t"}
+        calls = []
+
+        def transport(url, headers, body):
+            calls.append((url, body))
+            if url.endswith("/rest/api/3/issue"):
+                return None, "Jira returned 502 Bad Gateway"
+            return {"issues": [{"key": "EXAMPLE-5", "fields": {"summary": run["title"] + " too"}},
+                               {"key": "OTHER-6", "fields": {"summary": run["title"]}},
+                               {"key": "EXAMPLE-6", "fields": {"summary": run["title"]}}], "isLast": True}, ""
+
+        with patch.dict(issue_filing.FILERS, {"jira": lambda t, ti, b: issue_filing.file_jira(t, ti, b, transport, env)}), \
+                patch.dict(issue_filing.FINDERS, {"jira": lambda t, ti, s: issue_filing.find_jira(t, ti, s, transport, env)}):
+            status, _, done = self.confirm(run)
+        self.assertEqual(status, 200, done)
+        self.assertEqual((done["state"], done["ref"]), ("linked", "jira:EXAMPLE-6"))
+        self.assertEqual([url.rsplit("/rest/", 1)[1] for url, _ in calls], ["api/3/issue", "api/3/search/jql"])
+        self.assertRegex(calls[1][1]["jql"], r'^project = "EXAMPLE" AND created >= -[0-9]+m ORDER BY created DESC$')
+        self.assertEqual(calls[1][1]["fields"], ["summary"])
+
     def test_jira_without_its_variables_files_nothing_and_names_them(self):
         target = {"kind": "jira", "project": "EXAMPLE"}
         with self.assertRaises(issue_filing.NotFiled) as caught:
@@ -494,11 +596,17 @@ class TheConfirm(FilingCase):
     def test_jira_status_errors_file_nothing_and_a_broken_connection_is_unknown(self):
         target = {"kind": "jira", "project": "EXAMPLE"}
         env = {"JIRA_BASE_URL": "https://example.atlassian.test", "JIRA_EMAIL": "e", "JIRA_API_TOKEN": "t"}
-        with self.assertRaises(issue_filing.NotFiled):
-            issue_filing.file_jira(target, "t", "b", transport=lambda *a: (None, "Jira returned 400 Bad Request"),
-                                   environ=env)
-        with self.assertRaises(issue_filing.Unknown):
-            issue_filing.file_jira(target, "t", "b", transport=lambda *a: (None, "could not reach Jira: timeout"),
-                                   environ=env)
+        for error, outcome in (("Jira returned 400 Bad Request", issue_filing.NotFiled),
+                               ("Jira returned 404 Not Found", issue_filing.NotFiled),
+                               ("Jira rejected the credentials (401 Unauthorized); check JIRA_EMAIL", issue_filing.NotFiled),
+                               ("Jira redirected the request (302 Found)", issue_filing.NotFiled),
+                               ("Jira returned 500 Internal Server Error", issue_filing.Unknown),
+                               ("Jira returned 502 Bad Gateway", issue_filing.Unknown),
+                               ("Jira returned 503 Service Unavailable", issue_filing.Unknown),
+                               ("Jira returned 408 Request Timeout", issue_filing.Unknown),
+                               ("the request to Jira failed: RemoteDisconnected", issue_filing.Unknown),
+                               ("could not reach Jira: timeout", issue_filing.Unknown)):
+            with self.subTest(error=error), self.assertRaises(outcome):
+                issue_filing.file_jira(target, "t", "b", transport=lambda *a, e=error: (None, e), environ=env)
         with self.assertRaises(issue_filing.Unknown):
             issue_filing.file_jira(target, "t", "b", transport=lambda *a: ({"key": "OTHER-1"}, ""), environ=env)
