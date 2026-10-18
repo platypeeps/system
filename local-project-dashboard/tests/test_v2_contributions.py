@@ -758,6 +758,13 @@ ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = E
         self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }];", PAGE_JS)
         self.assertLess(page.index('<section id="view-open"'), page.index('<section class="settled" id="view-settled"'))
 
+    def test_trackers_is_a_link_beside_the_views_not_a_second_open(self):
+        # sd:5064: the Open | Settled tabs are the page's views; the old Open | Trackers switch repeated Open.
+        page = (V2 / "contributions.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="mode"', page)
+        self.assertNotIn('<a href="/contributions"', page)
+        self.assertIn('<a class="to-trackers" href="/operations?area=trackers">', page)
+
     def test_a_landed_acknowledge_puts_focus_on_the_rows_action_menu(self):
         out = self.run_page(f"""DOC.rows.forEach(r => {{ r.event_ids = []; }});
 button('rows', b => b.dataset.cmd === 'contribution.ack' && b.dataset.obj === '{ONE}').focus();

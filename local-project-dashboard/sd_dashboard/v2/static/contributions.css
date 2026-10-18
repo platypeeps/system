@@ -90,9 +90,8 @@
   .bars .fill { fill: CanvasText; }
 }
 
-/* build: the view switch is two links (Trackers opens the classic Operations > Trackers), styled as the shell's .seg. */
-#mode { margin: 0; min-width: 0; }
-#mode a { flex: 1 1 auto; color: inherit; text-decoration: none; border-radius: var(--radius-sm); }
-#mode a[aria-current="page"] span { background: var(--color-accent-bg); color: var(--color-ink); box-shadow: inset 0 0 0 1px var(--color-accent); }
-#mode a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
-@media (pointer: coarse) { #mode span { min-height: var(--row-touch); } }
+/* Trackers opens the classic Operations > Trackers: a link to another page, so it reads as a link, not a third view tab (sd:5064). */
+.to-trackers { display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 2rem; color: var(--color-ink-2); font-size: var(--text-sm); text-underline-offset: 3px; }
+.to-trackers:hover { color: var(--color-ink); }
+.to-trackers:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+@media (pointer: coarse) { .to-trackers { min-height: var(--row-touch); } }
