@@ -147,7 +147,7 @@ function drawReader(p, s) {
       return html`${head}<li class="src" data-i="${i}" aria-current="${String(curSource === i)}"${r.cited ? html` data-cited` : ''}${r.key && litKeys.includes(r.key) ? html` data-lit` : ''}>
         <button type="button"><span class="id" data-grade="${r.grade || r.id}">${r.id}</span><span class="t">${r.title}<span class="u">${r.c3}</span></span></button>
         ${r.cited ? html`<button class="cites" type="button" data-cites="${i}" aria-label="Show the ${plural(r.cited, 'claim')} citing ${r.title}" title="Claims citing it">◆ ${r.cited}</button>` : html`<span></span>`}
-        ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}</li>`;
+        ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}${latest(s, r)}</li>`;
     })}</ul>` : html`<p class="why">No table rows in the ledger: the reader reads Markdown tables.</p>`}${
     // build: the reader does not page; the document carries the first rows and the whole count.
     s.total > s.rows.length ? html`<p class="more">${s.rows.length} of ${s.total} rows shown. Open the ledger in the checkout for the rest.</p>` : ''}`);
@@ -155,6 +155,21 @@ function drawReader(p, s) {
   put(document.getElementById('reader-tally'), html`${['A', 'B', 'C', 'U', 'M'].filter(g => grades[g]).map(g => html`<span>${g} ${grades[g]}</span>`)}<span>${plural(s.total, 'row')}</span>`);
   shell.view.count('sources', s.total);
 }
+// sd:5101: a source's adversarial reviews are briefs filed with its key (adversarial.source_reviews), newest first.
+const reviewsOf = (s, r) => (r.key && s.reviews?.[r.key]) || [];
+const day = b => b.filed.slice(0, 10);
+const briefLink = b => html`<a href="${shell.itemPage(b.item)}">brief sd:${b.item}</a>`;
+function latest(s, r) {
+  const [b, ...older] = reviewsOf(s, r); if (!b) return '';
+  return html`<p class="rev">Reviewed ${day(b)} · ${b.verdict || 'no verdict line'} · ${briefLink(b)}${older.length ? ` · ${older.length} older in Details` : ''}</p>`;
+}
+function reviewsSection(s, r) {
+  const list = reviewsOf(s, r);
+  const none = !s.reviews ? `Not known: the reviews were not read (${s.reviews_error || 'no reason given'}).` : 'None yet. Adversarial review files one; a re-run adds a brief and keeps the last.';
+  return html`<h3>Adversarial reviews</h3>${list.length ? html`<ul class="claims">${list.map(b => html`<li class="claim"><span class="g" aria-hidden="true">◇</span><span>${day(b)} · ${b.verdict || 'no verdict line'} · ${briefLink(b)}</span></li>`)}</ul>`
+    : html`<p class="why">${none}</p>`}${window.commands.reviewPane('source', `${selected} ${r.key}`)}`;
+}
+const sourceId = (key, r) => `source:${key} ${r.key || r.id}`;
 reader.addEventListener('click', e => {
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const cites = e.target.closest('[data-cites]'); if (cites) { claimsOf(+cites.dataset.cites); return; }
@@ -262,10 +277,13 @@ function showProject(key) {
 }
 function showSource(i) {
   const s = SOURCES.get(selected)?.rows?.[i]; if (!s) return;
+  shell.commands.put({ id: sourceId(selected, s), type: 'research source', label: s.title, project: selected, key: s.key });
   put(details, html`<p class="kind">${I('book-open')} Source · ${s.h[0] || 'grade'} ${s.id}</p><h2>${s.title}</h2>
     <dl><dt>Ledger</dt><dd>${s.f}</dd><dt>Section</dt><dd>${s.sec || 'none'}</dd><dt>${s.h[2] || 'Used for'}</dt><dd>${s.c3 || '—'}</dd>${s.c4 ? html`<dt>${s.h[3] || 'Note'}</dt><dd>${s.c4}</dd>` : ''}
       ${s.url ? html`<dt>Link</dt><dd><a class="ext" href="${s.url}" target="_blank" rel="noopener">${s.url.replace(/^https?:\/\//, '').slice(0, 60)} ${I('arrow-up-right')}</a></dd>` : ''}</dl>
-    <h3>Cited by</h3>${citedBy(s)}`);
+    <h3>Cited by</h3>${citedBy(s)}${reviewsSection(SOURCES.get(selected), s)}
+    <h3>Act</h3>${shell.commands.bar(sourceId(selected, s))}`);
+  shell.commands.select(sourceId(selected, s));
   shell.setContext(s.title.slice(0, 40)); swap();
 }
 function citedBy(r) {
@@ -317,9 +335,19 @@ function registerCommands() {
     { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
+    // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
+    window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
+      does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
+      payload: o => ({ kind: 'source', target: o.project, source: o.key }),
+      when: o => { const s = SOURCES.get(o.project);
+        return !o.key ? 'no link or ID in this ledger row, so no claim can cite it' : s?.reviews ? true : `briefs not read: ${s?.reviews_error || 'the ledger was not read'}`; } }),
   );
 }
 document.addEventListener('shell:open', e => select(e.detail, true));
+// A review's progress redraws the shown source's Details; a filed one reads the ledger again, so its brief lists.
+document.addEventListener('adversarial:run', e => { const r = SOURCES.get(selected)?.rows?.[curSource];
+  if (!r || e.detail.key !== `source:${selected} ${r.key}`) return;
+  if (e.detail.run.filed === 'written') { SOURCES.delete(selected); loadSources(selected).then(() => { redraw(); showSource(curSource); }); } else showSource(curSource); });
 document.addEventListener('shell:picked', e => { picked = e.detail; tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
 
 // ---------- Shapeshift: filter projects, or start research ----------

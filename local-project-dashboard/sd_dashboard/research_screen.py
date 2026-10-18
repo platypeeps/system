@@ -159,18 +159,32 @@ def _attention(projects, error: str) -> dict:
                      {"caution": "render-stale projects"})
 
 
-def sources(key: str, *, now: str, backend=None) -> dict | None:
-    """One checkout's source registry, None when no research checkout has that key."""
+def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None:
+    """One checkout's source registry, None when no research checkout has that key.
+
+    With `connection`, each row's adversarial reviews too (sd:5101): `reviews` maps a row key to its briefs, newest
+    first, as `adversarial.source_reviews` finds them; None with `reviews_error` when they were not read.
+    """
     if not KEY.fullmatch(key):
         return None
     try:
         found = (backend or collect)("sources", key)
     except (OSError, ValueError) as failure:
-        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None}
+        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None,
+                "checkout": None, "reviews": None, "reviews_error": "the ledger was not read"}
     if not found.get("found"):
         return None
+    reviews, reviews_error = None, "not read here"
+    if connection is not None:
+        from . import adversarial
+
+        try:
+            reviews, reviews_error = adversarial.source_reviews(connection, found.get("checkout")), ""
+        except (OSError, ValueError, LookupError) as failure:
+            reviews_error = str(failure)
     return {"read": now, "key": key, "error": "", "files": found.get("files", []), "rows": found.get("rows", []),
-            "total": found.get("total", 0),
+            "total": found.get("total", 0), "checkout": found.get("checkout"), "reviews": reviews,
+            "reviews_error": reviews_error,
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
             "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
                        "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
@@ -553,7 +567,8 @@ def main(argv):
                 found = board(collectors)
             else:
                 repo = checkout(Path(collectors.REPO_ROOT), argv[1])
-                found = registry(repo, collectors.time_left) if repo else {"found": False}
+                # The checkout's path, so the page side can find its adversarial reviews (sd:5101).
+                found = {**registry(repo, collectors.time_left), "checkout": str(repo)} if repo else {"found": False}
     except Exception as error:  # noqa: BLE001 - the page shows this reason
         print(f"research {area}: {error!r}"[:4096], file=sys.stderr)
         return 1

@@ -45,6 +45,7 @@ from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 RESEARCH_JS = (V2 / "static" / "research.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COLLECTORS = Path(research_screen.__file__).resolve().parents[1] / "collectors.py"
 
@@ -54,6 +55,7 @@ COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],
     ["research.review", "research project", "Review", "v", "safe"],
     ["research.start", "research request", "Run", "r", "confirm"],
+    ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
 REGISTRY = """# Sources
@@ -546,7 +548,8 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Research · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "research.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "research.js",
+                                   "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -610,7 +613,7 @@ class TheScript(ScreenCase):
         answer = answer or (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
                             f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}] : [404, {{ error: 'No research checkout at this address.' }}]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nROW = {row};\nANSWER = {answer};\n" + RESEARCH_JS
+                  + SHELL + SHELL_MORE + "\n" + READ_SHELL + f"\nROW = {row};\nANSWER = {answer};\n" + COMMANDS_JS + RESEARCH_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = OUT.attention; OUT.page = window.PAGE_ATTENTION;"
@@ -792,6 +795,57 @@ tap('1'); R.det = ELS.details.html; tap('2'); R.unlinked = ELS.details.html;""")
         self.assertIn("Secondary | vendor", det)
         self.assertIn("The note agrees (note). · 30-brief/BRIEF.md:3", det)
         self.assertIn("No sentence in 20-map, 30-brief, 40-docs cites this source.", out["R"]["unlinked"])
+
+    def reviewed(self):
+        """Beta's ledger with two reviews of its Vendor note, newest first, as `adversarial.source_reviews` reads them."""
+        self.ledger["reviews"] = {"https://example.test/note": [
+            {"item": 91, "stem": "2026-10-18 - Adversarial review · source beta-note · 120000Z", "filed": "2026-10-18T12:00:00Z",
+             "verdict": "Do the claims hold? NO. The vendor view is read as the spec."},
+            {"item": 90, "stem": "2026-10-11 - Adversarial review · source beta-note · 090000Z", "filed": "2026-10-11T09:00:00Z",
+             "verdict": "Do the claims hold? YES."}]}
+        self.ledger["reviews_error"] = ""
+
+    def test_a_reviewed_source_shows_its_latest_brief_and_details_list_the_older_ones(self):
+        """sd:5101: the row shows the latest review's date, verdict and link; Details lists every review."""
+        self.reviewed()
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); R.reader = ELS.reader.html;
+const tap = i => (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i } } : null } }));
+tap('1'); R.det = ELS.details.html; tap('0'); R.none = ELS.details.html;""")
+        self.assertIn('<p class="rev">Reviewed 2026-10-18 · Do the claims hold? NO. The vendor view is read as the spec. · '
+                      '<a href="/item/91">brief sd:91</a> · 1 older in Details</p>', out["R"]["reader"])
+        self.assertEqual(out["R"]["reader"].count('class="rev"'), 1)
+        self.assertIn("<h3>Adversarial reviews</h3>", out["R"]["det"])
+        self.assertIn('2026-10-11 · Do the claims hold? YES. · <a href="/item/90">brief sd:90</a>', out["R"]["det"])
+        self.assertIn("None yet. Adversarial review files one; a re-run adds a brief and keeps the last.", out["R"]["none"])
+
+    def test_adversarial_review_on_a_source_posts_its_checkout_and_key(self):
+        self.reviewed()
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}]"
+                  " : path === '/api/adversarial' ? [202, { id: 's1', state: 'queued', item: null, filed: null }]"
+                  " : path === '/api/adversarial/s1' ? [200, { id: 's1', state: 'done', item: null, filed: 'written', brief_item: 92 }]"
+                  " : [404, { error: 'no' }]")
+        # The stand-in's setTimeout runs at once, so the first poll answers settled; the queued draw is caught as it lands.
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush();
+const tap = i => (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i } } : null } }));
+tap('1'); const o = C.get('source:research/beta https://example.test/note'); R.on = cmd('source.adversarial-review').when(o);
+document.addEventListener('adversarial:run', e => { if (e.detail.run.state === 'queued') R.det = ELS.details.html; });
+shellRun(cmd('source.adversarial-review'), o); await flush(); await flush(); R.end = ELS.details.html;""", answer=answer)
+        self.assertEqual(out["R"]["on"], True)
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "source", "target": "research/beta",
+                                                              "source": "https://example.test/note"}, 64]])
+        self.assertIn("Run s1 is queued", out["R"]["det"])
+        # A filed review reads the ledger again, so the new brief lists beside the older ones.
+        self.assertEqual(out["gets"].count("/api/research/research/beta"), 2)
+        self.assertIn('<a href="/item/92">brief sd:92</a>', out["R"]["end"])
+
+    def test_adversarial_review_on_a_source_is_off_when_its_briefs_cannot_be_read(self):
+        self.ledger["reviews"], self.ledger["reviews_error"] = None, "~/repos/research/beta is not a registered repository"
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush();
+const tap = i => (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i } } : null } }));
+tap('1'); R.why = cmd('source.adversarial-review').when(C.get('source:research/beta https://example.test/note')); R.det = ELS.details.html;""")
+        self.assertEqual(out["R"]["why"], "briefs not read: ~/repos/research/beta is not a registered repository")
+        self.assertIn("Not known: the reviews were not read (~/repos/research/beta is not a registered repository).", out["R"]["det"])
 
     def test_a_claim_lights_its_sources_and_a_source_count_lights_its_claims(self):
         # sd:5064: the claim map showed "no claim reader" for every project; the ledger carried no cited mark.

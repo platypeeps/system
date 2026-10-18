@@ -15,7 +15,7 @@ def _board(read):
 def _sources(read):
     from ... import research_screen
 
-    found = research_screen.sources(read.path[len("/api/research/"):], now=read.now)
+    found = research_screen.sources(read.path[len("/api/research/"):], now=read.now, connection=read.connection)
     if found is None:
         return 404, {"error": "No research checkout at this address."}
     return found

@@ -17,6 +17,12 @@ wrote the work: codex, at the model and effort `<config>/adversarial-gate/.env` 
           lead fan out read-only sub-agents, one per area, then verify and rank what they find. Its model, effort,
           bound and sub-agent cap are the `DEEP` setting rows in the workflow database (sd:5109), else their defaults;
           `save_settings` writes them. Its lock is the repository's own, so one deep review runs per repository.
+  source  a research checkout's key, as the Research page lists it, with `source`, one ledger row's key: its URL or
+          `id:<ID>` (sd:5101). The checkout must be registered. The input holds the row and the claims citing it, as
+          the page's own reader finds them; the runner appends the row's link as it fetched it, one bounded GET
+          (`_fetch`), so codex's sandbox needs no network. The brief names the row's key in its front matter, which is
+          how `source_reviews` finds a row's reviews: a re-run files a brief of its own, and a ledger edit that keeps
+          the key keeps them.
 
 `start` runs in the POST, in four steps, and answers 202 at once:
 
@@ -56,6 +62,8 @@ from __future__ import annotations
 import datetime
 import fcntl
 import hashlib
+import html.parser
+import http.client
 import importlib.util
 import json
 import os
@@ -64,6 +72,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 __all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT",
@@ -73,7 +82,7 @@ __all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT
 CHECKOUT = Path(__file__).resolve().parents[2]
 GATE = CHECKOUT / "local-adversarial-gate" / "adversarial-gate.sh"
 RANK = CHECKOUT / "local-adversarial-gate" / "rank.py"
-KINDS = ("task", "brief", "repo", "change", "deep")
+KINDS = ("task", "brief", "repo", "change", "deep", "source")
 #: The model and effort when `<config>/adversarial-gate/.env` names none.
 MODEL = "gpt-6-astra"
 EFFORT = "high"
@@ -94,6 +103,13 @@ STARTUP = 60
 GIT_SECONDS = 10
 #: The bound on `git ls-remote origin`, which asks the remote for a pull request's head.
 REMOTE_SECONDS = 20
+#: A source review's fetch (sd:5101): its whole bound in seconds, the most bytes read, and the most characters of
+#: text the input keeps. A source past them is cut and says so.
+FETCH_SECONDS = 20
+FETCH_BYTES = 2_000_000
+FETCH_CHARS = 150_000
+#: How many of a checkout's source-review briefs `source_reviews` reads, newest first.
+SOURCE_BRIEFS = 500
 #: Hypotheses whose titles the note names.
 TOP = 3
 #: The longest pull-request body read into the input file, in bytes.
@@ -109,7 +125,7 @@ TITLE_CHARS = 120
 WHY_BYTES = 3000
 EVIDENCE_CHARS = 300
 EVIDENCE_LINES = 5
-RUN_ID = re.compile(r"(task|brief|repo|change|deep)-[A-Za-z0-9._-]{1,60}-[0-9]{8}T[0-9]{6}Z")
+RUN_ID = re.compile(r"(task|brief|repo|change|deep|source)-[A-Za-z0-9._-]{1,60}-[0-9]{8}T[0-9]{6}Z")
 REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 #: A line the lenses ask for under each hypothesis, bulleted or bold or neither.
 TAG = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*)?(Recommendation|Evidence|Repo)(?:\*\*)?\s*:(?:\*\*)?\s*(.*?)\s*$", re.IGNORECASE)
@@ -434,6 +450,54 @@ def _resolve_pull(connection, target, number, base, item) -> dict:
             "input": "\n".join(lines) + "\n", "sets": {"BASE": merge_base, "HEAD": head}}
 
 
+def _resolve_source(connection, target, source) -> dict:
+    """One ledger row of a registered research checkout and the claims that cite it (sd:5101), read through the
+    Research page's own bounded reader. The runner fetches the row's link before codex runs; nothing is fetched here."""
+    from sd_db import paths, workflow
+
+    from . import research_screen
+
+    if not isinstance(target, str) or not research_screen.KEY.fullmatch(target):
+        raise ValueError("A source review names a research checkout by its key, as the Research page lists it.")
+    if not isinstance(source, str) or not 0 < len(source) <= 400 or not source.isprintable():
+        raise ValueError("A source review names its ledger row by the row's key: its URL, or id:<ID>.")
+    found = research_screen.sources(target, now="")
+    if found is None:
+        raise workflow.WorkflowError(f"{target} is not a research checkout")
+    if found["error"] or not found.get("checkout"):
+        raise workflow.WorkflowError(f"the ledger of {target} was not read: {found['error'] or 'no checkout named'}")
+    row = next((row for row in found["rows"] if row.get("key") == source), None)
+    if row is None:
+        raise workflow.WorkflowError(f"{source} is not a row of {target}'s ledger as the Research page reads it")
+    checkout = Path(found["checkout"])
+    repo = _registered(connection, checkout)
+    if repo is None:
+        raise workflow.WorkflowError(f"{target} is not a registered repository (see sd-db repo list), and a brief is "
+                                     f"filed in one")
+    mapped = found.get("claims")
+    citing = [claim for claim in (mapped or {}).get("rows", []) if source in claim.get("keys", [])]
+    heads = row.get("h") or ["", "", "", ""]
+    lines = [f"# Source {row['id']}: {row['title']}", "", f"- checkout: {checkout}",
+             f"- repository: {paths.key(str(repo))}", f"- source key: {source}",
+             f"- ledger: {row['f']}, section {row.get('sec') or 'none'}",
+             f"- grade: {row.get('grade') or (row['id'] if row['id'] in research_screen.GRADES else 'none')}",
+             f"- link: {row.get('url') or 'none'}",
+             f"- {heads[2] or 'third column'}: {row.get('c3') or 'empty'}",
+             *([f"- {heads[3] or 'last column'}: {row['c4']}"] if row.get("c4") else []), "",
+             "## Claims that cite it", ""]
+    if mapped is None:
+        lines.append("Not known: the claim map was not read.")
+    else:
+        cited = row.get("cited", len(citing))
+        lines.append(f"{cited} claims cite it in {', '.join(mapped.get('dirs', []))}; {len(citing)} are listed"
+                     + ("." if len(citing) >= cited else ", the rest are past the reader's print bound."))
+        lines += ["", *(f"- {claim['doc']}:{claim['line']} ({claim['s']}): {claim['text']}" for claim in citing)]
+    lines += ["", "## The source as fetched", ""]
+    label = f"{checkout.name}-{row['id'] if research_screen.is_id(row['id']) else source.split('://')[-1]}"
+    return {"checkout": checkout, "repo": repo, "label": label, "item": None, "input": "\n".join(lines) + "\n",
+            "sets": {}, "extra": {"source": source, "fetch": row.get("url") or None}}
+
+
 def _item_id(value, name: str) -> int:
     if type(value) is str and re.fullmatch(r"[1-9][0-9]{0,18}", value):
         value = int(value)
@@ -458,7 +522,9 @@ def _database(connection) -> str:
     raise ValueError("The dashboard's database has no file the review's runner could open.")
 
 
-def _resolve(connection, kind: str, target, base, item, body, pr) -> dict:
+def _resolve(connection, kind: str, target, base, item, body, pr, source=None) -> dict:
+    if kind == "source":
+        return _resolve_source(connection, target, source)
     if kind == "task":
         return _resolve_task(connection, target)
     if kind == "brief":
@@ -477,7 +543,7 @@ def _lock(state: Path, kind: str, checkout: Path) -> Path:
     return state / f"deep-{hashlib.sha256(str(checkout).encode()).hexdigest()[:16]}.lock"
 
 
-def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=None,
+def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=None, source=None,
           now: datetime.datetime | None = None):
     """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` when a run holds the lock."""
     import sd_db
@@ -486,7 +552,7 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
     state = state_dir()
     runs = state / "runs"
     runs.mkdir(parents=True, exist_ok=True)
-    plan = _resolve(connection, kind, target, base, item, body, pr)
+    plan = _resolve(connection, kind, target, base, item, body, pr, source)
     model, effort, timeout, extra = settings(kind, connection)
     plan["sets"].update(extra)
     handle = open(_lock(state, kind, plan["checkout"]), "a+", encoding="utf-8")
@@ -520,7 +586,8 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
                     "result": str(result), "input": str(written) if written else None, "item": plan["item"],
                     "sets": sets, "model": model, "effort": effort, "timeout": timeout, "started": _iso(now),
                     "finished": None, "filed": None, "brief": None, "brief_item": None, "batches": None, "pid": None,
-                    "database": database, "library": str(Path(sd_db.__file__).resolve().parent.parent)}
+                    "database": database, "library": str(Path(sd_db.__file__).resolve().parent.parent),
+                    **plan.get("extra", {})}
         _write(record, document)
         handle.seek(0)
         handle.truncate()
@@ -549,18 +616,25 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
 
 def request(values: dict):
     """The POST's checks, before the server opens a connection; the start as `action_route` returns one."""
-    if set(values) - {"kind", "target", "base", "item", "body", "pr"} or not {"kind", "target"} <= set(values):
+    if set(values) - {"kind", "target", "base", "item", "body", "pr", "source"} or not {"kind", "target"} <= set(values):
         raise ValueError("An adversarial review takes a kind and a target, and for a change an optional base, item, "
-                         "body and pr.")
+                         "body and pr; a source review takes its ledger row's source key.")
     kind = values["kind"]
     if kind not in KINDS:
         raise ValueError(f"An adversarial review's kind is one of {', '.join(KINDS)}.")
-    if kind != "change" and set(values) - {"kind", "target"}:
+    if kind == "source":
+        if set(values) != {"kind", "target", "source"}:
+            raise ValueError("A source review takes a research checkout's key as its target and a ledger row's key "
+                             "as its source, and nothing else.")
+    elif kind != "change" and set(values) - {"kind", "target"}:
         raise ValueError("Only a change review takes a base, an item, a body or a pr.")
+    elif "source" in values:
+        raise ValueError("Only a source review takes a source.")
     if "pr" in values and "body" in values:
         raise ValueError("A pull request's review reads no body file; the dashboard holds no pull-request body.")
     return lambda connection: start(connection, kind, values["target"], base=values.get("base"),
-                                    item=values.get("item"), body=values.get("body"), pr=values.get("pr"))
+                                    item=values.get("item"), body=values.get("body"), pr=values.get("pr"),
+                                    source=values.get("source"))
 
 
 # -- the GET -----------------------------------------------------------------------------------------------------
@@ -698,6 +772,7 @@ def _brief_text(document: dict, verdict: str, found: list[dict], batches: list[t
     target = f"{document['kind']} {document['target']}"
     named = ", ".join(f"sd:{item} ({repo})" for item, repo in batches) or "none"
     lines = ["---", "review: adversarial", f"run: {document['id']}", f"target: {target}",
+             *([f"source: {document['source']}"] if document.get("source") else []),
              f"model: {document['model']}", f"effort: {document['effort']}",
              f"batches: {', '.join(f'sd:{item}' for item, _ in batches) or 'none'}", "---", "",
              f"# Adversarial review of {target}", "",
@@ -716,6 +791,36 @@ def _brief_text(document: dict, verdict: str, found: list[dict], batches: list[t
         lines.append(f"- Review batch: sd:{one['batch']}" if one.get("batch") else f"- Not asked: {one['dropped']}")
         lines += [*(f"- Evidence: {line}" for line in one["evidence"]), "", one["why"] or "(no reasoning given)", ""]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def source_reviews(connection, checkout) -> dict:
+    """Each ledger row's source reviews in a research checkout (sd:5101): row key -> its briefs, newest first.
+
+    The association is the brief itself: a source review's brief is filed in the checkout's registered repository with
+    a `source: <row key>` line in its front matter, so a ledger edit that keeps the row's key keeps its reviews, and a
+    re-run files a brief of its own beside the last. Each is `{item, stem, filed, verdict}`. An unregistered checkout
+    raises `LookupError`: its briefs have nowhere to be filed.
+    """
+    from sd_db import repos
+
+    owner = repos.row_for(connection, checkout) if checkout else None
+    if owner is None:
+        raise LookupError(f"{checkout or 'the checkout'} is not a registered repository, so it holds no review briefs")
+    out: dict = {}
+    for row in connection.execute(
+            "SELECT id, title, created_at, body FROM item WHERE source = 'brief' AND kind = 'report' AND repo = ? "
+            "AND title LIKE '% - Adversarial review · source %' ORDER BY created_at DESC, id DESC LIMIT ?",
+            (owner["path"], SOURCE_BRIEFS)):
+        text = _text(row["body"])
+        front = text.split("\n---\n", 1)[0] if text.startswith("---\n") else ""
+        key = next((line[len("source: "):] for line in front.splitlines() if line.startswith("source: ")), None)
+        if key is None:
+            continue
+        summary = text.split("\n## Summary\n\n", 1)
+        verdict = summary[1].split("\n", 1)[0].strip() if len(summary) == 2 else ""
+        out.setdefault(key, []).append({"item": row["id"], "stem": row["title"], "filed": row["created_at"],
+                                        "verdict": _cut(verdict, 200)})
+    return out
 
 
 def _file_done(connection, document: dict) -> tuple[dict, str]:
@@ -798,6 +903,93 @@ def _file(document: dict) -> str | None:
 # -- the runner --------------------------------------------------------------------------------------------------
 
 
+class _Text(html.parser.HTMLParser):
+    """A page's readable text: its title and the text outside script, style and the like, one block per line."""
+
+    SKIP = {"script", "style", "noscript", "template", "svg", "head"}
+    BLOCK = {"p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "pre", "table"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.title, self.skipping, self.in_title = [], "", 0, False
+
+    def handle_starttag(self, tag, attrs):
+        self.skipping += tag in self.SKIP
+        self.in_title = self.in_title or tag == "title"
+        if tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        self.skipping -= tag in self.SKIP and self.skipping > 0
+        self.in_title = self.in_title and tag != "title"
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.title += data
+        elif not self.skipping:
+            self.parts.append(data)
+
+
+def _fetch(url: str, *, seconds: float = FETCH_SECONDS) -> str:
+    """The source at `url` as the input's last section: what was fetched, or why not (sd:5101).
+
+    One GET, read-only, bounded as a whole by `seconds` and by `FETCH_BYTES`. A failure is written as not fetched,
+    with its reason: whether the page is still there is then not known, and the lens reads it so. An HTTP error and
+    a redirect are written as the answer they are, since a page that moved or is gone says so that way.
+    """
+    import urllib.error
+    import urllib.request
+
+    if not re.match(r"https?://[^\s/]", url):
+        return f"Not fetched: {url} is not an http or https address, so it is not a public page the dashboard reads.\n"
+    deadline = time.monotonic() + seconds
+    request = urllib.request.Request(url, headers={"User-Agent": "sd-dashboard-adversarial-review/1 (read-only)",
+                                                   "Accept": "text/html, text/plain;q=0.9, */*;q=0.5"})
+    try:
+        with urllib.request.urlopen(request, timeout=seconds) as response:
+            status, final = response.status, response.geturl()
+            kind, charset = response.headers.get_content_type(), response.headers.get_content_charset() or "utf-8"
+            chunks, size, cut = [], 0, ""
+            while True:
+                if time.monotonic() > deadline:
+                    cut = f"the read stopped at its {seconds:g} s bound"
+                    break
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > FETCH_BYTES:
+                    cut = f"the read stopped at {FETCH_BYTES} bytes"
+                    break
+    except urllib.error.HTTPError as error:
+        error.close()
+        return (f"Fetched {url}: HTTP {error.code} {error.reason}. The server answered with an error, so the text the "
+                f"ledger names was not read from it.\n")
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
+        return f"Not fetched: {type(error).__name__}: {error}. Whether the page is still there is not known.\n"
+    head = [f"Fetched {url}: HTTP {status}, {kind}, {size} bytes" + (f"; {cut}" if cut else "") + "."]
+    if final != url:
+        head.append(f"It redirected to {final}.")
+    body = b"".join(chunks)
+    if kind in ("text/html", "application/xhtml+xml"):
+        parser = _Text()
+        parser.feed(body.decode(charset, "replace"))
+        parser.close()
+        text = re.sub(r"[ \t\r\f\v]+", " ", "".join(parser.parts))
+        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+        if parser.title.strip():
+            head.append(f"Its title: {' '.join(parser.title.split())}.")
+    elif kind.startswith("text/") or kind in ("application/json", "application/xml"):
+        text = body.decode(charset, "replace")
+    else:
+        return "\n".join(head) + f"\nIts {kind} text is not extracted here, so the claims are unchecked against it.\n"
+    if len(text) > FETCH_CHARS:
+        text = text[:FETCH_CHARS]
+        head.append(f"Its text is cut at {FETCH_CHARS} characters.")
+    return "\n".join(head) + "\n\n" + (text.strip() or "(no text)") + "\n"
+
+
 def _engine(document: dict) -> str:
     return "claude" if document["kind"] == "deep" else "codex"
 
@@ -818,6 +1010,11 @@ def run(record: Path, lock: int | None = None) -> int:
     document.update(state="running", pid=os.getpid())
     _write(record, document)
     # A deep review is the gate's `deep`, which runs claude on `lenses/deep.md`; every other kind is codex's `run`.
+    if document["kind"] == "source":
+        # The source as the input's last section, fetched here so codex's sandbox needs no network (sd:5101).
+        with open(document["input"], "a", encoding="utf-8") as sink:
+            sink.write(_fetch(document["fetch"]) if document.get("fetch") else
+                       "Not fetched: the ledger row has no link, so the claims are unchecked against the source.\n")
     argv = ["sh", str(GATE), "deep" if document["kind"] == "deep" else "run", "--lens", document["kind"]]
     for key, value in document["sets"].items():
         argv += ["--set", f"{key}={value}"]

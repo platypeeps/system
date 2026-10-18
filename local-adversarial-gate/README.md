@@ -97,6 +97,7 @@ Its settings are workflow-database setting rows, not `.env` keys (sd:5109): `adv
 | `lenses/brief.md` | A routine brief a reader acts on: the action it drives, dates, attribution, omissions. Takes `{INPUT_PATH}`. |
 | `lenses/repo.md` | A whole checkout: documents the code contradicts, rules it breaks, failure handling, tests. Takes `{REPO_NAME}`. |
 | `lenses/deep.md` | A whole checkout, in depth, for `deep`: the lead fans out up to `{AGENTS}` read-only sub-agents, then verifies, deduplicates and ranks. Takes `{REPO_NAME}` and `{AGENTS}`. |
+| `lenses/source.md` | One research ledger row and the claims citing it, against the source as the dashboard fetched it: misreads, overclaims, missing caveats, the grade, stale or moved pages. Takes `{INPUT_PATH}`. |
 | `lenses/change.md` | A branch against its base plus its pull-request body: claims, failure paths, steps, older state, guards, tests. Takes `{INPUT_PATH}`, `{BASE}` and `{HEAD}`. |
 | `.env.example` | The codex action's model and effort, both commented out: the defaults apply without a copy. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `deep`, `rank`, `lenses`, `test`. |

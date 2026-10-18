@@ -104,6 +104,7 @@
   // A refusal is its toast in the server's words: a 409 names the run already going. The run is one row's, so no bulk.
   // sd:5100: a page may name its own `id`, `label`, `does`, `fields` (the shell's dialog fields, whose values reach
   // payload(o, v)) and `consequence`; Adversarial review: PR and Deep review on a repo row are two more of these.
+  // sd:5101: a source review's payload adds `source`, its ledger row's key; its run key is `source:<checkout> <row key>`.
   const REVIEW_POLL = 10000, RUNS = new Map();
   const runKey = (kind, target) => `${kind}:${target}`;
   const settled = r => (r.state === 'failed' && r.item == null) || r.filed != null;
@@ -127,7 +128,7 @@
       cli: () => 'no sd verb: the dashboard runs local-adversarial-gate in the background',
       sends: (o, v) => `POST /api/adversarial ${JSON.stringify(payload(o, v || {}))}`,
       run: (o, v) => { const p = payload(o, v || {});
-        return window.shell.post('/api/adversarial', p).then(run => { follow(runKey(p.kind, p.target), run); return `Review started · run ${run.id}`; },
+        return window.shell.post('/api/adversarial', p).then(run => { follow(runKey(p.kind, p.source ? `${p.target} ${p.source}` : p.target), run); return `Review started · run ${run.id}`; },
           err => { if ([400, 404, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a review started is not known`); }); } };
   }
   // The Details section for the row's latest run on this page, or nothing: its state, then the brief and the item it filed.

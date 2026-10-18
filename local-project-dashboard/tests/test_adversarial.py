@@ -11,11 +11,14 @@ asserts which `codex` the server's PATH resolves.
 from __future__ import annotations
 
 import datetime
+import http.server
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -810,3 +813,142 @@ class TheDeepReview(AdversarialCase):
         self.assertEqual(status, 400)
         self.assertIn("is not a registered repository", answer["error"])
 
+
+LEDGER = """# Sources
+
+| Grade | Source | Used for |
+|---|---|---|
+| A | [Spec](http://127.0.0.1:{port}/spec) | the limit |
+| B | [Gone](http://127.0.0.1:{port}/gone) | an old page |
+| C | [Closed](http://127.0.0.1:{closed}/closed) | nothing answers |
+| U | Notes kept by hand | a date |
+"""
+CLAIMS = "The limit is 10 requests ([spec](http://127.0.0.1:{port}/spec)). It always holds ([s](http://127.0.0.1:{port}/spec)).\n"
+PAGE = b"<html><head><title>The spec</title><script>ignore()</script></head><body><p>The limit is 10 requests per minute.</p></body></html>"
+
+
+class _Pages(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802 - the handler's name
+        if self.path == "/spec":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(PAGE)
+        else:
+            self.send_error(404, "Not Found")
+
+    def log_message(self, *args):
+        pass
+
+
+class TheSourceReview(AdversarialCase):
+    """sd:5101: one ledger row of a research checkout, checked by codex against the source as the runner fetched it.
+
+    The source is a page on a loopback server this case runs, so the fetch leaves no machine; `no_proxy` keeps it off
+    any proxy the environment names.
+    """
+
+    def setUp(self):
+        super().setUp()
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Pages)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        self.closed = closed.getsockname()[1]
+        closed.close()  # nothing listens there now, so its fetch is refused
+        self.port = server.server_address[1]
+        self.repos = self.root / "repos"
+        self.notes = self.repos / "research" / "notes"
+        (self.notes / "30-brief").mkdir(parents=True)
+        (self.notes / "research.conf.py").write_text("DOCS=[]\n")
+        self.write_ledger()
+        (self.notes / "30-brief" / "BRIEF.md").write_text(CLAIMS.format(port=self.port))
+        self.repo(str(self.notes))
+        environment = patch.dict(os.environ, {"REPO_ROOT": str(self.repos), "no_proxy": "*", "NO_PROXY": "*"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.spec = f"http://127.0.0.1:{self.port}/spec"
+
+    def write_ledger(self, text=LEDGER):
+        (self.notes / "SOURCES.md").write_text(text.format(port=getattr(self, "port", 0), closed=getattr(self, "closed", 0)))
+
+    def source(self, key):
+        return self.review("source", "research/notes", source=key)
+
+    def test_a_source_is_checked_against_its_fetched_text_and_the_claims_citing_it(self):
+        status, _, run = self.source(self.spec)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^source-notes-127\.0\.0\.1-[0-9]+-spec-[0-9]{8}T[0-9]{6}Z$")
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        text = Path(done["input"]).read_text()
+        self.assertIn(f"- source key: {self.spec}", text)
+        self.assertIn("- grade: A", text)
+        self.assertIn("2 claims cite it in 20-map, 30-brief, 40-docs; 2 are listed.", text)
+        self.assertIn("- 30-brief/BRIEF.md:1 (supported): The limit is 10 requests (spec).", text)
+        self.assertIn(f"Fetched {self.spec}: HTTP 200, text/html", text)
+        self.assertIn("Its title: The spec.", text)
+        self.assertIn("The limit is 10 requests per minute.", text)
+        self.assertNotIn("ignore()", text)
+        self.assertIn("A fetch that failed is not evidence", self.stdin.read_text())
+        _, brief, repo = self.brief(done["brief"])
+        self.assertEqual(repo, str(self.notes))
+        self.assertIn(f"source: {self.spec}\n", brief.split("\n---\n")[0])
+
+    def test_a_re_run_adds_a_brief_and_the_reviews_survive_a_ledger_edit_that_keeps_the_key(self):
+        first = self.settled(self.source(self.spec)[2]["id"])
+        time.sleep(1.1)  # The next run's id carries the next second.
+        self.write_ledger(LEDGER.replace("| A | [Spec]", "| B | [The spec, renamed]"))
+        second = self.settled(self.source(self.spec)[2]["id"])
+        reviews = adversarial.source_reviews(self.connection, str(self.notes))
+        self.assertEqual([b["item"] for b in reviews[self.spec]], [second["brief_item"], first["brief_item"]])
+        self.assertEqual(reviews[self.spec][0]["verdict"], "Does the central conclusion survive hostile reading? NO.")
+        self.assertEqual(reviews[self.spec][0]["stem"], second["brief"])
+        self.assertNotEqual(first["brief"], second["brief"])
+        self.assertIsNotNone(self.brief(first["brief"]), "a re-run replaced the first brief")
+
+    def test_a_page_that_answers_an_error_or_nothing_is_written_as_such(self):
+        for key, said in ((f"http://127.0.0.1:{self.port}/gone", f"Fetched http://127.0.0.1:{self.port}/gone: HTTP 404"),
+                          (f"http://127.0.0.1:{self.closed}/closed", "Whether the page is still there is not known."),
+                          ("id:U", None)):
+            with self.subTest(key=key):
+                status, _, run = self.source(key)
+                if said is None:
+                    # A row with no link and no ID has no key a claim or a review could name.
+                    self.assertEqual(status, 400, run)
+                    continue
+                self.assertEqual(status, 202, run)
+                done = self.settled(run["id"])
+                self.assertIn(said, Path(done["input"]).read_text())
+                time.sleep(1.1)
+
+    def test_a_source_review_is_refused_for_an_unregistered_checkout_an_unknown_row_or_another_shape(self):
+        self.connection.execute("DELETE FROM repo WHERE path = ?", (str(self.notes),))
+        status, _, answer = self.source(self.spec)
+        self.assertEqual(status, 400, answer)
+        self.assertIn("research/notes is not a registered repository", answer["error"])
+        self.repo(str(self.notes))
+        for payload, said in (({"kind": "source", "target": "research/notes", "source": "https://example.test/none"},
+                               "is not a row of research/notes's ledger"),
+                              ({"kind": "source", "target": "research/missing", "source": self.spec},
+                               "research/missing is not a research checkout"),
+                              ({"kind": "source", "target": "research/notes"}, "A source review takes"),
+                              ({"kind": "repo", "target": self.key, "source": self.spec}, "Only a change review takes"),
+                              ({"kind": "change", "target": str(self.work), "source": self.spec}, "Only a source review")):
+            with self.subTest(payload=payload):
+                status, _, answer = self.post("/api/adversarial", payload)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(said, answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_the_ledger_document_carries_each_row_s_reviews(self):
+        done = self.settled(self.source(self.spec)[2]["id"])
+        status, _, body = self.request("/api/research/research/notes", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        found = json.loads(body)
+        self.assertEqual(found["reviews_error"], "")
+        self.assertEqual(found["reviews"][self.spec], [{"item": done["brief_item"], "stem": done["brief"],
+                                                       "filed": found["reviews"][self.spec][0]["filed"],
+                                                       "verdict": "Does the central conclusion survive hostile reading? NO."}])
