@@ -265,6 +265,18 @@ class Resume(Fixture, ScreenCase):
         self.assertEqual(again["mode"], "resume")
         self.assertEqual(self.land(path, str(item), again["revision"])["lane"]["status"], "pending")
 
+    def test_a_body_file_that_could_not_be_written_before_the_enqueue_is_unknown_and_names_the_commits(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        (path / "lib" / "a.txt").write_text("changed\n")
+        found = self.preview(path, str(item))
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            status, body = self.land(path, str(item), found["revision"])
+        self.assertEqual((status, body["outcome"], len(body["commits"])), (502, "unknown", 1))
+        self.assertIn("disk full", body["error"])
+        self.assertFalse(self.argv_log.exists(), "the lane was asked without a body file")
+        self.assertTrue(self.land(path, str(item), self.preview(path, str(item))["revision"])["ok"])
+
     def test_a_branch_that_does_not_hold_this_head_is_another_landing_and_is_refused(self):
         path = self.checkout()
         item = self.item("Land button", repo=str(path))

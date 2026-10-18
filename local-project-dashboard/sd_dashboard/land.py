@@ -355,9 +355,10 @@ def land(connection, values: dict):
                                                       check=False).returncode == 0:
                     _git(path, "reset", "-q", "--keep", origin)
                     done["reset"] = f"{facts['default']} moved back from {now[:12]} to origin/{facts['default']}"
+        # In the try: a worktree or body file the enqueue could not read or write is a stop after the commits landed.
+        return _enqueue(facts, tip, values["claim"], done)
     except Unknown as error:
         return 502, {"error": f"Land stopped part way: {error}", "outcome": "unknown", **done}
-    return _enqueue(facts, tip, values["claim"], done)
 
 
 def _enqueue(facts: dict, head: str, claim: str, done: dict):
@@ -367,7 +368,10 @@ def _enqueue(facts: dict, head: str, claim: str, done: dict):
     tree = Path(facts["worktree"])
     gitdir = Path(_out(tree, "rev-parse", "--absolute-git-dir"))
     body = gitdir / "sd-land-body.md"
-    body.write_text(_body(facts), encoding="utf-8")
+    try:
+        body.write_text(_body(facts), encoding="utf-8")
+    except OSError as error:
+        raise Unknown(f"the pull-request body {body} was not written: {error}") from None
     answer = _run(_enqueue_argv(facts, head, claim, str(body)), ENQUEUE_SECONDS)
     if answer.get("ok") and answer.get("exit") == 0:
         done["lane"] = {"status": answer.get("status") or "pending", "item": answer.get("item"),
