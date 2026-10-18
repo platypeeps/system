@@ -25,7 +25,7 @@ from sd_db.errors import SdDbError
 
 from . import briefs_screen, snooze
 
-__all__ = ["SEEN_DAYS", "SHOWN", "WINDOW_DAYS", "document"]
+__all__ = ["READ", "SEEN_DAYS", "SHOWN", "WINDOW_DAYS", "document"]
 
 #: Briefs older than this many days stay on the Briefs page only.
 WINDOW_DAYS = 7
@@ -36,8 +36,20 @@ SHOWN = 50
 #: The last characters of a report's body Details shows.
 BODY_CHARS = 2000
 
-_OPEN = ("FROM item WHERE kind = 'report' AND source IS NOT 'brief' AND status != 'done'"
-         " AND (CASE WHEN json_valid(fields) THEN json_type(fields, '$.attention') END) IS NOT 'false'")
+#: Report rows read per refresh, newest first: `reporting.reports` reads at most 200. An open report older than the
+#: newest `READ` is on Reports only, and the count then says `+`.
+READ = 200
+
+
+def _open(row) -> bool:
+    """Not done, and `fields.attention` is not false; fields that do not parse ask for a person too."""
+    if row["status"] == "done":
+        return False
+    try:
+        fields = json.loads(row["fields"] or "null")
+    except ValueError:
+        return True
+    return not (isinstance(fields, dict) and fields.get("attention") is False)
 
 
 def _problem(connection, row, revision: str) -> dict:
@@ -63,13 +75,13 @@ def _problem(connection, row, revision: str) -> dict:
             "revision": revision, "fields_read": readable}
 
 
-def problems(connection: sqlite3.Connection) -> tuple[list[dict], int]:
-    """The open reports that ask for a person, newest first and at most `SHOWN`, and how many more there are."""
-    rows = connection.execute(f"SELECT id, title, created_at, fields, body {_OPEN} ORDER BY created_at DESC, id DESC LIMIT ?",
-                              (SHOWN,)).fetchall()
+def problems(connection: sqlite3.Connection) -> tuple[list[dict], int, bool]:
+    """The open reports that ask for a person, newest first and at most `SHOWN`; how many more; whether the read was full."""
+    read = reporting.reports(connection, limit=READ)
+    found = [row for row in read if _open(row)]
+    rows = found[:SHOWN]
     revisions = reads.revisions(connection, [row["id"] for row in rows])
-    more = connection.execute(f"SELECT count(*) {_OPEN}").fetchone()[0] - len(rows)
-    return [_problem(connection, row, revisions[row["id"]]) for row in rows], more
+    return [_problem(connection, row, revisions[row["id"]]) for row in rows], len(found) - len(rows), len(read) >= READ
 
 
 def _seen_until(day: str) -> str:
@@ -92,11 +104,12 @@ def briefs(connection: sqlite3.Connection, *, now: str, snoozes: dict) -> tuple[
 
 
 def document(connection: sqlite3.Connection, *, now: str, snoozes: dict) -> dict:
-    """`problems`, `problems_more`, `problems_error`; `briefs`, `briefs_more`, `briefs_error`, `briefs_skipped`."""
-    out = {"problems": [], "problems_more": 0, "problems_error": "",
+    """`problems`, `problems_more`, `problems_capped`, `problems_error`; `briefs`, `briefs_more`, `briefs_error`,
+    `briefs_skipped`."""
+    out = {"problems": [], "problems_more": 0, "problems_capped": False, "problems_error": "",
            "briefs": [], "briefs_more": 0, "briefs_error": "", "briefs_skipped": 0}
     try:
-        out["problems"], out["problems_more"] = problems(connection)
+        out["problems"], out["problems_more"], out["problems_capped"] = problems(connection)
     except (SdDbError, sqlite3.Error, ValueError, KeyError) as failure:
         out["problems_error"] = str(failure) or "the reports could not be read"
     try:

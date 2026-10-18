@@ -215,7 +215,7 @@ class Document(ScreenCase):
         self.assertEqual(set(document), {"rows", "sources", "now", "observed", "snoozed", "snooze_error", "work", "work_error", "active",
                                          "waiting", "attention", "issues", "issues_error", "intake", "intake_error",
                                          "mail", "mail_more", "mail_unread", "mail_error", "problems", "problems_more",
-                                         "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
+                                         "problems_capped", "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),

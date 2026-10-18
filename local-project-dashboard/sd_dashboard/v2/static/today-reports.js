@@ -24,16 +24,18 @@
   function draw() {
     const problems = DOC.problems || [], briefs = DOC.briefs || [];
     const pErr = FAILED || DOC.problems_error, bErr = FAILED || DOC.briefs_error;
+    // A full read: open reports older than the newest 200 are on Reports only, so the counts are at least this.
+    const cap = DOC.problems_capped ? '+' : '';
     put($('problems'), pErr ? html`<tr class="empty"><td colspan="5">Reports could not be read: ${pErr}. Refresh tries again.</td></tr>`
       : problems.length ? html`${problems.map(r => html`<tr${BUSY.has(r.id) ? html` aria-busy="true"` : ''}>
         <td class="ref"><time datetime="${r.at}">${day(r.at)} ${hm(r.at)}</time></td>
         <td class="what"><button type="button" data-open="${r.id}">${r.title}</button></td>
         <td class="repo">${r.host || ''}</td>
         <td class="why">${r.why}</td>
-        <td class="act">${ackControl(r)}</td></tr>`)}${DOC.problems_more ? html`<tr class="empty"><td colspan="5">${DOC.problems_more} more open on Reports.</td></tr>` : ''}`
+        <td class="act">${ackControl(r)}</td></tr>`)}${DOC.problems_more ? html`<tr class="empty"><td colspan="5">${DOC.problems_more}${cap} more open on Reports.</td></tr>` : ''}`
       : html`<tr class="empty"><td colspan="5">No open report asks for you.</td></tr>`);
     const open = problems.filter(r => !DONE.has(r.id)).length + (DOC.problems_more || 0);
-    put($('problems-tally'), problems.length && !pErr ? html`<span class="g-caution">▲ ${open} open</span>` : html``);
+    put($('problems-tally'), problems.length && !pErr ? html`<span class="g-caution">▲ ${open}${cap} open</span>` : html``);
     put($('briefs'), bErr ? html`<tr class="empty"><td colspan="5">Briefs could not be read: ${bErr}. Refresh tries again.</td></tr>`
       : briefs.length ? html`${briefs.map(b => html`<tr${BUSY.has(b.id) ? html` aria-busy="true"` : ''}>
         <td class="ref"><time datetime="${b.at || b.day}">${b.day}${b.at ? ` ${hm(b.at)}` : ''}</time></td>

@@ -78,6 +78,16 @@ class TheProblems(ReportsCase):
             doc = self.read()
         self.assertEqual((doc["problems"], doc["problems_error"]), ([], "database is locked"))
 
+    def test_a_full_read_marks_its_counts_as_at_least(self):
+        for run in ("r1", "r2", "r3"):
+            self.report(f"job-{run}", run)
+        with mock.patch.object(today_reports, "SHOWN", 1):
+            whole = self.read()
+            with mock.patch.object(today_reports, "READ", 2):
+                full = self.read()
+        self.assertEqual((len(whole["problems"]), whole["problems_more"], whole["problems_capped"]), (1, 2, False))
+        self.assertEqual((len(full["problems"]), full["problems_more"], full["problems_capped"]), (1, 1, True))
+
     def test_open_reports_count_in_todays_badge(self):
         self.report("nas-full-copy", "r1")
         today = self.today()
@@ -152,6 +162,14 @@ document.addEventListener = (t, f) => { listeners[t] = f; };
         self.assertIn("2026-09-05 - Daily Intel Brief", drawn["briefs"])
         self.assertIn("Seen", drawn["briefs"])
         self.assertIn("1 new", drawn["briefs-tally"])
+
+    def test_a_full_read_draws_its_counts_with_a_plus(self):
+        for run in ("r1", "r2"):
+            self.report(f"job-{run}", run)
+        with mock.patch.object(today_reports, "SHOWN", 1), mock.patch.object(today_reports, "READ", 2):
+            drawn = self.drawn(self.read())
+        self.assertIn("2+ open", drawn["problems-tally"])
+        self.assertIn("1+ more open on Reports.", drawn["problems"])
 
     def test_an_unknown_read_says_unknown_and_none_is_said(self):
         failed = self.drawn({"problems_error": "database is locked", "briefs_error": "no routine_briefs"})
