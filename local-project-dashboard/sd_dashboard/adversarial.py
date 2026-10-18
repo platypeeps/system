@@ -346,10 +346,10 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, now
         result = runs / f"{run_id}.md"
         written = runs / f"{run_id}.input.md" if plan["input"] is not None else None
         sets = {**plan["sets"], **({"INPUT_PATH": str(written)} if written else {})}
-        # The gate passes --set values through an `eval` of single-quoted words: a quote or a newline would break it.
-        for key, value in [*sets.items(), ("checkout", str(plan["checkout"])), ("result", str(result))]:
-            if "'" in value or "\n" in value:
-                raise ValueError(f"The review's {key} holds a quote or a newline, which the gate cannot pass: {value!r}")
+        # `render` reads its --set values one per line, so a newline would end one early.
+        for key, value in sets.items():
+            if "\n" in value:
+                raise ValueError(f"The review's {key} holds a newline, which the gate cannot pass: {value!r}")
         database = _database(connection)
         if written:
             written.write_text(plan["input"], encoding="utf-8")

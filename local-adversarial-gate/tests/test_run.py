@@ -167,6 +167,19 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         first = next(line for line in core.splitlines() if line.strip())
         self.assertIn(first, self.stdin_log.read_text())
 
+    def test_a_set_value_with_a_quote_reaches_the_prompt_as_written_and_runs_nothing(self):
+        # sd:5064: `run` handed its --set words to `render` through an `eval` of single-quoted words, so a quote
+        # in a value broke the words apart and the shell ran what followed it.
+        out, marker = self.tmp / "adversarial.md", self.tmp / "ran"
+        value = f"/fixture/it's here/$(touch {marker})"
+        result, _ = self.run_gate(
+            "--repo", str(self.repo), "--out", str(out), "--lens", "brief", "--set", f"INPUT_PATH={value}",
+            body='cat > "$CODEX_STDIN"\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"`{value}`", self.stdin_log.read_text())
+        self.assertFalse(marker.exists(), "the value ran as shell code")
+
     def test_effort_reaches_codex_as_a_config_override_beside_the_model(self):
         # sd:5064: the dashboard's review runs at a named reasoning effort, which codex takes as
         # `-c model_reasoning_effort=LEVEL`. The prompt still goes in on stdin, through `-`.
