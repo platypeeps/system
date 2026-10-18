@@ -17,7 +17,9 @@
 <link rel="stylesheet" href="/ui/tokens.css">
 <script src="/ui/theme.js"></script>
 <script src="/ui/markup.js"></script>
+<script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
+<link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/management.css">
 </head>
 <body data-page="Management" data-scope="fleet">
@@ -41,29 +43,13 @@
       </div>
     </header>
 
-    <div class="subviews" role="tablist" aria-label="Management views" id="subviews">
-      <button class="sv" role="tab" type="button" id="sv-repos" aria-controls="view-repos" data-view="repos" data-state="unknown">
-        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-folder-code"/></svg>Repos<kbd>1</kbd></span>
-        <span class="val">▨ reading</span></button>
-      <button class="sv" role="tab" type="button" id="sv-lane" aria-controls="view-lane" data-view="lane" data-state="unknown">
-        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-git-merge"/></svg>Ship lane<kbd>2</kbd></span>
-        <span class="val">▨ reading</span></button>
-      <button class="sv" role="tab" type="button" id="sv-sessions" aria-controls="view-sessions" data-view="sessions" data-state="unknown">
-        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-bot"/></svg>Sessions<kbd>3</kbd></span>
-        <span class="val">▨ reading</span></button>
-      <button class="sv" role="tab" type="button" id="sv-deploys" aria-controls="view-deploys" data-view="deploys" data-state="unknown">
-        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-rocket"/></svg>Deploys<kbd>4</kbd></span>
-        <span class="val">▨ no deploy source</span></button>
-      <button class="sv" role="tab" type="button" id="sv-schedules" aria-controls="view-schedules" data-view="schedules" data-state="unknown">
-        <span class="lbl"><svg class="i" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Schedules<kbd>5</kbd></span>
-        <span class="val">▨ reading</span></button>
-    </div>
-
-    <section id="view-repos" role="tabpanel" aria-labelledby="sv-repos"></section>
-    <section id="view-lane" role="tabpanel" aria-labelledby="sv-lane" hidden></section>
-    <section id="view-sessions" role="tabpanel" aria-labelledby="sv-sessions" hidden></section>
-    <section id="view-deploys" role="tabpanel" aria-labelledby="sv-deploys" hidden></section>
-    <section id="view-schedules" role="tabpanel" aria-labelledby="sv-schedules" hidden></section>
+    <h2 class="sr">Areas</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    <section id="view-repos" aria-label="Repos"></section>
+    <section id="view-lane" aria-label="Ship lane" hidden></section>
+    <section id="view-sessions" aria-label="Sessions" hidden></section>
+    <section id="view-deploys" aria-label="Deploys" hidden></section>
+    <section id="view-schedules" aria-label="Schedules" hidden></section>
   </main>
 
   <div class="details" id="details"></div>

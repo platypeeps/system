@@ -54,22 +54,11 @@
     <h2 class="sr">Brief sources</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
-    <section class="cadence" aria-labelledby="cad-h">
-      <div class="sec-head">
-        <h2 id="cad-h">Cadence <button class="help" type="button" aria-label="Help: Cadence" data-help="<b>One lane per source.</b> A source is the brief's series. Each tick is one brief at the time it was first filed. A blank day is a quiet day, not a fault: no watchdog reader says otherwise. Tap a lane to filter the list; tap a tick to open that brief.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <div class="tally"><div class="chips" role="group" aria-label="Range" id="range"></div></div>
-      </div>
-      <div class="lanes" id="lanes"></div>
-      <p class="legend"><span><span class="sw t"></span>brief written</span><span><span class="sw h"></span>watchdog not read (unknown)</span><span>times UTC</span></p>
-      <details class="fallback"><summary>Cadence as a table</summary><div class="tbl-wrap" id="cad-table"></div></details>
-    </section>
-
-    <section aria-labelledby="list-h">
+    <section id="view-list" aria-labelledby="list-h">
       <div class="sec-head">
         <h2 id="list-h">Briefs <button class="help" type="button" aria-label="Help: Briefs" data-help="<b>One row per brief,</b> newest first. The source is its series; the time is when it was first filed, shown only when that falls on the brief's own day. Read opens the whole brief. Open in Obsidian shows only when the last render wrote its vault copy. Status reports live on Reports, not here.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="tally"></p>
+        <div class="tally"><p class="tally" id="tally"></p><div class="chips" role="group" aria-label="Range" id="range"></div></div>
       </div>
       <div class="filters" id="filters" aria-label="Filters"></div>
       <table class="ledger" aria-labelledby="list-h" data-tfilter="page">
@@ -80,6 +69,17 @@
       <div class="pager" id="pager"></div>
       <p class="note">Status mail (job reports, run and review reports) is not a brief. It lives on <a href="/reports">Reports</a>.</p>
     </section>
+    <section class="cadence" id="view-cadence" aria-labelledby="cad-h" hidden>
+      <div class="sec-head">
+        <h2 id="cad-h">Cadence <button class="help" type="button" aria-label="Help: Cadence" data-help="<b>One lane per source.</b> A source is the brief's series. Each tick is one brief at the time it was first filed. A blank day is a quiet day, not a fault: no watchdog reader says otherwise. Tap a lane to filter the list; tap a tick to open that brief.">
+          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <div class="tally"><div class="chips" role="group" aria-label="Range" id="range-cad"></div></div>
+      </div>
+      <div class="lanes" id="lanes"></div>
+      <p class="legend"><span><span class="sw t"></span>brief written</span><span><span class="sw h"></span>watchdog not read (unknown)</span><span>times UTC</span></p>
+      <details class="fallback"><summary>Cadence as a table</summary><div class="tbl-wrap" id="cad-table"></div></details>
+    </section>
+
   </main>
 
   <div class="details" id="details"><p class="why">Select a brief to see it.</p></div>

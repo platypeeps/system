@@ -324,6 +324,7 @@ OUT.captures = []; OUT.opened = []; OUT.chat = []; OUT.urls = []; OUT.panes = []
 window.shell.row = () => ROW; window.shell.url = q => OUT.urls.push(q); window.shell.capture = (o, t) => OUT.captures.push([o && o.id, t]);
 window.shell.openChat = () => {}; window.shell.send = t => OUT.chat.push(t); window.shell.openPane = p => OUT.panes.push(p);
 window.open = (u, t, f) => OUT.opened.push([u, t, f]);
+OUT.shown = []; window.shell.view = { show: id => { OUT.shown.push(id); return true; }, current: () => 'list', count() {} };
 """
 
 
@@ -681,6 +682,28 @@ R.det = ELS.details.html;""", answer=f"() => [200, {json.dumps(cut)}]")
         self.assertIn("<dd>2 of the newest 4</dd>", out["R"]["det"])
         full = self.run_page("R.ann = ELS.annunciator.html;")["R"]["ann"]
         self.assertNotIn("at least", full)
+
+    def test_the_list_and_the_cadence_are_the_shells_views_with_the_range_in_each(self):
+        """sd:5080: Briefs and Cadence are PAGE_VIEWS; the Range chips sit in each view's head and set one range."""
+        page = (V2 / "briefs.html").read_text(encoding="utf-8")
+        self.assertLess(page.index('id="view-list"'), page.index('id="view-cadence"'))
+        out = self.run_page("""R.views = window.PAGE_VIEWS.map(v => [v.id, v.label, v.key || null]);
+R.list = ELS.range.html; R.cad = ELS['range-cad'].html;
+ELS['range-cad'].listeners.click[0]({ target: { closest: () => ({ dataset: { r: '30d' } }) } }); await flush();
+R.after = [ELS.range.html, ELS['range-cad'].html]; R.urls = OUT.urls.slice(-1);""")
+        self.assertEqual(out["R"]["views"], [["list", "Briefs", "b"], ["cadence", "Cadence", None]])
+        self.assertIn('data-r="7d" aria-pressed="true"', out["R"]["list"])
+        self.assertEqual(out["R"]["list"], out["R"]["cad"])
+        self.assertTrue(all('data-r="30d" aria-pressed="true"' in h for h in out["R"]["after"]), out["R"]["after"])
+
+    def test_a_tick_or_a_lane_in_the_cadence_shows_the_list(self):
+        out = self.run_page("""ELS.lanes.listeners.click[0]({ target: { closest: s => s === 'rect.tick' ? { dataset: { id: '2026-09-04 - Intel Brief' } } : null } });
+await flush(); R.tick = OUT.shown.slice();
+ELS.lanes.listeners.click[0]({ target: { closest: s => s === '.lane-btn' ? { dataset: { src: 'Fun Events' } } : null } });
+await flush(); R.lane = OUT.shown.slice(); R.rows = ELS.rows.html;""")
+        self.assertEqual(out["R"]["tick"], ["list"])
+        self.assertEqual(out["R"]["lane"], ["list", "list"])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Fun Events"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", BRIEFS_JS)

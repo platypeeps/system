@@ -574,7 +574,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Management · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "management.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "management.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -676,7 +676,13 @@ var ROW = null;
 window.shell.row = (...a) => a.length ? (ROW = a[0]) : ROW;
 window.shell.setContext = () => {};
 OUT.urls = []; OUT.qs = [];
-window.shell.url = p => { OUT.urls.push({ view: p.get('view'), p: p.get('page'), q: p.get('q') }); OUT.qs.push(p.toString()); };
+window.shell.url = p => { OUT.urls.push({ view: VIEW_NOW, p: p.get('page'), q: p.get('q') }); OUT.qs.push(p.toString()); };
+// The shell's view switch (shell.js, view:start) as management.js meets it: the hash's view, else the first; show() fires
+// 'shell:view' on a change, as a tab, a v key or a lamp does.
+var VIEW_NOW = null; OUT.shown = [];
+window.shell.view = { current: () => VIEW_NOW || (/^#view=([a-z]+)$/.exec(location.hash || '') || [])[1] || window.PAGE_VIEWS[0].id,
+  show: id => { OUT.shown.push(id); const was = window.shell.view.current(); VIEW_NOW = id;
+    if (was !== id) document.dispatchEvent(new CustomEvent('shell:view', { detail: { id } })); return true; }, count() {} };
 """
 
 
@@ -690,11 +696,11 @@ class PageScript(ScreenCase):
         stamp(jobs, "nightly-sync", "started=2026-09-06T02:15:00Z\nended=2026-09-06T02:16:30Z\nexit=7\n")
         self.doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=jobs, services=NoServices())
 
-    def run_page(self, body, answer="null", doc=None, search="", extra=""):
+    def run_page(self, body, answer="null", doc=None, search="", extra="", hash=""):
         script = (STAND_IN + EXTRA + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_EXTRA + READ_SHELL + extra
                   + f"\nconst DOC0 = {json.dumps(doc or self.doc)};\n"
                   + "const WRITE = " + answer + ";\n"
-                  + f"location.search = {json.dumps(search)};\n"
+                  + f"location.search = {json.dumps(search)}; location.hash = {json.dumps(hash)};\n"
                   + """ANSWER = (path, body) => {
   if (path === '/api/management') return [200, DOC0];
   return WRITE ? WRITE(path, body) : [200, {}];
@@ -771,12 +777,12 @@ class TheScript(PageScript):
         self.assertIn('<span class="range">1–25 of 32</span>', out["R"]["a"])
         self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["a"]), ["25", "50", "100", "200"])
         self.assertIn('<span class="range">26–32 of 32</span>', out["R"]["b"])
-        self.assertIn("view=schedules&page=2", out["qs"])
+        self.assertIn("page=2", out["qs"])
         self.assertIn('<span class="range">1–32 of 32</span>', out["R"]["c"])
-        self.assertEqual(out["qs"][-1], "view=schedules&size=50")
+        self.assertEqual(out["qs"][-1], "size=50")
         out = self.run_page("R.a = ELS['view-schedules'].html;", doc=self.jobs(30), search="?view=schedules&p=2&n=50")
         self.assertIn('<span class="range">1–32 of 32</span>', out["R"]["a"])
-        self.assertEqual(out["qs"][-1], "view=schedules&size=50")
+        self.assertEqual(out["qs"][-1], "size=50")
 
     def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
         """sd:2682: Repos' managed, merge and text filters as shell.list chips above the list."""
@@ -788,8 +794,8 @@ class TheScript(PageScript):
         self.assertEqual(chips("a"), ["managed", "q"])
         self.assertIn("2 filters · ", out["R"]["a"])
         self.assertEqual(chips("b"), ["q"])
-        self.assertEqual(out["qs"][-2], "view=repos&q=busy")
-        self.assertEqual((chips("c"), out["qs"][-1], out["R"]["box"]), ([], "view=repos", ""))
+        self.assertEqual(out["qs"][-2], "q=busy")
+        self.assertEqual((chips("c"), out["qs"][-1], out["R"]["box"]), ([], "", ""))
 
     def settings_doc(self):
         """The document with the seeded checkout managed, protected with two required checks, and pinned to Python 3.14."""
@@ -824,7 +830,7 @@ class TheScript(PageScript):
         self.assertIn('data-cols="settings" aria-pressed="true"', out["R"]["a"])
         self.assertIn('data-k="branch"', out["R"]["b"])
         self.assertNotIn('data-k="floor"', out["R"]["b"])
-        self.assertEqual(out["qs"][-2:], ["view=repos&cols=settings", "view=repos"])
+        self.assertEqual(out["qs"][-2:], ["cols=settings", ""])
 
     def test_a_reading_that_failed_is_unknown_with_its_reason(self):
         doc = self.settings_doc()
@@ -850,7 +856,7 @@ class TheScript(PageScript):
         git = dict(self.doc["git"], observed="2026-09-06T11:52:00Z", stale=None)
         sess = dict(self.doc["sessions"], observed="2026-09-06T11:31:00Z", stale="git did not answer")
         out = self.run_page("""R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;
-R.lamp = ELS['sv-sessions'].dataset.state;""", doc=dict(self.doc, git=git, sessions=sess))
+R.lamp = /data-view="sessions" data-state="(\w+)"/.exec(ELS.annunciator.html)[1];""", doc=dict(self.doc, git=git, sessions=sess))
         self.assertIn("git read 11:52 UTC", out["R"]["repos"])
         self.assertNotIn("stale", out["R"]["repos"])
         self.assertIn("fleet · 11:31 UTC · <span class=\"g-unknown\">▨</span> stale: git did not answer", out["R"]["sess"])
@@ -1161,7 +1167,7 @@ R.want = [at(2026, 9, 15, 3, 0), at(2027, 0, 1, 0, 5), at(2028, 1, 29, 0, 0), at
         self.assertEqual(out["urls"][-1]["p"], None)
 
     def test_the_failed_state_chip_writes_the_url(self):
-        out = self.run_page("""showView('schedules');
+        out = self.run_page("""shell.view.show('schedules');
 const chip = { dataset: { stateF: 'failed' } };
 const target = { closest: sel => sel === '[data-state-f]' ? chip : null };
 ELS['view-schedules'].listeners.click.forEach(f => f({ target }));
@@ -1327,7 +1333,7 @@ R.sched = ELS['view-schedules'].html; R.type = C.get('cron:quiet').type;""")
     def test_a_failed_load_clears_the_rows_and_their_commands(self):
         out = self.run_page("""ANSWER = () => [500, {error: 'database is busy'}]; await load(); await flush();
 R.sched = ELS['view-schedules'].html; R.repos = ELS['view-repos'].html; R.type = C.get('cron:quiet').type;
-R.lamps = ['repos', 'lane', 'sessions', 'schedules'].map(v => ELS['sv-' + v].dataset.state);""")
+R.lamps = ['repos', 'lane', 'sessions', 'schedules'].map(v => new RegExp(`data-view="${v}" data-state="([a-z]+)"`).exec(ELS.annunciator.html)[1]);""")
         self.assertEqual(out["states"][-1], {"kind": "error", "source": "/api/management",
                                              "text": "Repos, the lane, sessions, services and jobs were not read: database is busy. Reload retries it."})
         self.assertNotIn("nightly-sync", out["R"]["sched"])
@@ -1336,6 +1342,35 @@ R.lamps = ['repos', 'lane', 'sessions', 'schedules'].map(v => ELS['sv-' + v].dat
         self.assertEqual(out["R"]["type"], "not listed")
         self.assertEqual(out["R"]["lamps"], ["unknown"] * 4)
         self.assertEqual(out["attention"][-1]["state"], "unknown")
+
+
+class TheViews(PageScript):
+    """sd:5080: the five areas are the shell's views (PAGE_VIEWS); the page draws no tabs of its own."""
+
+    def test_the_areas_are_page_views_and_the_page_has_no_tabs_of_its_own(self):
+        page = (V2 / "management.html").read_text(encoding="utf-8")
+        self.assertNotRegex(page, r'role="tab|class="subviews|class="sv"')
+        out = self.run_page("R.views = window.PAGE_VIEWS.map(v => [v.id, v.label, v.key || null]);")
+        self.assertEqual(out["R"]["views"], [["repos", "Repos", None], ["lane", "Ship lane", None], ["sessions", "Sessions", None],
+                                             ["deploys", "Deploys", None], ["schedules", "Schedules", "c"]])
+
+    def test_a_lamp_shows_its_view_and_says_its_state(self):
+        out = self.run_page("""R.before = ELS.annunciator.html;
+ELS.annunciator.listeners.click.forEach(f => f({ target: { closest: s => s === 'button.cell' ? { id: '', dataset: { view: 'schedules' } } : null } }));
+await flush(); R.shown = OUT.shown.slice(); R.view = view; R.after = ELS.annunciator.html;""")
+        self.assertEqual(re.findall(r'data-view="(\w+)" data-state="(\w+)" aria-pressed="(\w+)"', out["R"]["before"]),
+                         [("repos", "ok", "true"), ("lane", "ok", "false"), ("sessions", "caution", "false"),
+                          ("deploys", "unknown", "false"), ("schedules", "warning", "false")])
+        self.assertIn('id="refresh"', out["R"]["before"])
+        self.assertEqual((out["R"]["shown"], out["R"]["view"]), (["schedules"], "schedules"))
+        self.assertIn('data-view="schedules" data-state="warning" aria-pressed="true"', out["R"]["after"])
+
+    def test_an_older_view_query_opens_its_view_and_the_address_drops_it(self):
+        out = self.run_page("R.view = view;", search="?view=lane")
+        self.assertEqual((out["R"]["view"], out["shown"]), ("lane", ["lane"]))
+        self.assertFalse(any("view=" in q for q in out["qs"]), out["qs"])
+        out = self.run_page("R.view = view;", search="?view=lane", hash="#view=sessions")
+        self.assertEqual((out["R"]["view"], out["shown"]), ("sessions", []))
 
 
 class TheMinuteMarks(PageScript):
@@ -1468,7 +1503,7 @@ class TheJobLogAndCancel(PageScript):
         self.assertIn('<span class="range">26–30 of 30</span>', out["R"]["b"])
         self.assertIn("svc-29", out["R"]["b"])
         self.assertNotIn("svc-00", out["R"]["b"])
-        self.assertIn("view=deploys&page=2", out["qs"])
+        self.assertIn("page=2", out["qs"])
 
     def test_services_filter_by_a_state_chip_and_by_any_column(self):
         click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === '[data-svc-state]' ? { dataset: { svcState: 'failed' } } : null } });"
@@ -1477,7 +1512,7 @@ class TheJobLogAndCancel(PageScript):
         self.assertEqual(re.findall(r'data-svc-state="(\w+)"', out["R"]["a"]), ["failed", "running"])
         self.assertIn("10 of 30", out["R"]["b"])
         self.assertEqual(out["R"]["box"], "state:failed")
-        self.assertEqual(out["qs"][-1], "view=deploys&q=state%3Afailed")
+        self.assertEqual(out["qs"][-1], "q=state%3Afailed")
         out = self.run_page("R.a = ELS['view-deploys'].html;", doc=self.services(30), search="?view=deploys&q=gui/501 svc-1")
         self.assertIn("10 of 30", out["R"]["a"])
         self.assertIn("svc-19", out["R"]["a"])

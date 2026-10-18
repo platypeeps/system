@@ -4,6 +4,10 @@
 // Writes (sd:3387): Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the revision the page
 // read (controls.revision). A 400 or 409 wrote nothing; any other failure, or no answer, leaves the outcome unknown.
 // build: bars are SVG rects sized by attribute, not CSSOM widths, and the age chart is the design's bar list only.
+// sd:5080: the panels are the shell's views (shell.js, view:start): Spend (spend, the week, usage), Providers, CI, Skills
+// and Age. A lamp shows the view that holds its reading.
+window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 'Providers' }, { id: 'ci', label: 'CI' },
+  { id: 'skills', label: 'Skills', key: 'k' }, { id: 'age', label: 'Age' }];
 (() => {
   const { html, put, plural, cells } = window.markup;
   const $ = id => document.getElementById(id);
@@ -61,12 +65,12 @@
   function readCells() {
     // a stale month (sd:4955) keeps its numbers on show, and lights no lamp: each of its cells is unknown.
     const d = DOC, u = d.usage, out = [], stale = u.stale ? 'unknown' : '';
-    out.push(u.error ? { id: 'spend', label: 'Spend month', state: 'unknown', val: html`<b>—</b> not read`, small: u.error }
-      : { id: 'spend', label: 'Spend month', state: stale || 'ok', ev: 'spend', val: html`<b>${money(u.spent)}</b>`, small: `${u.month} to date · ${plural(u.bills.length, 'bill')}` });
-    if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, state: stale || pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
+    out.push(u.error ? { id: 'spend', label: 'Spend month', view: 'spend', state: 'unknown', val: html`<b>—</b> not read`, small: u.error }
+      : { id: 'spend', label: 'Spend month', view: 'spend', state: stale || 'ok', ev: 'spend', val: html`<b>${money(u.spent)}</b>`, small: `${u.month} to date · ${plural(u.bills.length, 'bill')}` });
+    if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, view: 'spend', state: stale || pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
       val: html`<b>${Math.round(m.used_percent)}%</b> used`, small: `meter ${String(m.timestamp).slice(5, 16).replace('T', ' ')}Z` }));
-    if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', state: stale || (u.bound.length ? 'caution' : 'ok'), ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
-    out.push({ id: 'ci', label: 'CI 7d', state: 'unknown', ev: 'unread:ci', val: html`<b>—</b> not read`, small: 'no local-gate store' });
+    if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', view: 'spend', state: stale || (u.bound.length ? 'caution' : 'ok'), ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
+    out.push({ id: 'ci', label: 'CI 7d', view: 'ci', state: 'unknown', ev: 'unread:ci', val: html`<b>—</b> not read`, small: 'no local-gate store' });
     return out;
   }
   // the oldest reading on the page: a kept part (sd:4955) can be older than the request.
@@ -75,7 +79,7 @@
   function lamps() {
     const clock = { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: html`<kbd>r</kbd>`,
       val: html`<span class="ph"><b>${DOC ? oldest(DOC).slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: DOC ? `${oldest(DOC).slice(0, 10)} · refresh` : 'refresh' };
-    put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}" data-ev="${c.ev || ''}"`,
+    put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}" data-ev="${c.ev || ''}" data-view="${c.view}"`,
       label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${G[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
   // The badge is the read's own (sd:3446, metrics_screen._attention), the cells above that can light.
@@ -272,8 +276,9 @@
     document.addEventListener('click', e => {
       if (e.target.closest?.('.rowact')) return;
       if (e.target.closest?.('#refresh')) { load(); return; }
-      const el = e.target.closest?.('[data-ev]'); if (!el || !el.dataset.ev) return;
-      show(el.dataset.ev, true);
+      const el = e.target.closest?.('[data-ev]'); if (!el) return;
+      if (el.dataset.view) S.view.show(el.dataset.view);
+      if (el.dataset.ev) show(el.dataset.ev, true);
     });
     // A chart point is the page's own control: its keys stop at the trends block, so the shell's Enter (shell:open) does not also run.
     $('trends').addEventListener('keydown', e => {
