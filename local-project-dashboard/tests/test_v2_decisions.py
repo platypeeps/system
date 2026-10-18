@@ -7,8 +7,9 @@ note through `workflow.add_item_note` and resolves the question through
 `workflow.resolve_item_note`, in one transaction under the revision the page
 read, so a stale page writes nothing (409). The ruling reads back from
 `workflow.item_state`, the document `sd task show` prints. An old prose
-"Decision needed" comment, a question with fewer than two options and a
-resolved question list nothing and get no buttons.
+"Decision needed" comment and a resolved question list nothing. A question
+with fewer than two options (sd:5064) lists with a text box, and its words
+are the ruling, as `sd task note N ... --kind decision --answers <note>` writes.
 
 `decisions.js` runs under JavaScriptCore (osascript), as `test_v2_tasks` runs
 `tasks.js`, against the same stand-in page and shell. The browser half -- the
@@ -43,6 +44,7 @@ def seed(case):
            "asked": case.note(item, ASKED, kind="question"),
            "settled": case.note(item, "Pick a colour\nOption: Red\nOption: Blue", kind="question"),
            "single": case.note(item, "Approve it?\nOption: Approve", kind="question"),
+           "free": case.note(item, "Which name fits the quick notes page?", kind="question"),
            "prose": case.note(item, "Decision needed: (a) a store kind, or (b) database rows?", kind="comment")}
     case.connection.execute("UPDATE note SET resolved_at = ? WHERE id = ?", ("2026-09-06T11:00:00Z", ids["settled"]))
     case.connection.commit()
@@ -65,10 +67,12 @@ class TheFormat(unittest.TestCase):
 
 
 class TheDocument(ScreenCase):
-    def test_only_an_unresolved_question_with_two_options_on_an_open_item_is_listed(self):
+    def test_every_unresolved_question_on_an_open_item_is_listed_free_text_ones_too(self):
         ids = seed(self)
         doc = decisions.document(self.connection)
-        self.assertEqual([row["note"] for row in doc["decisions"]], [ids["asked"]])
+        self.assertEqual([row["note"] for row in doc["decisions"]], [ids["asked"], ids["single"], ids["free"]])
+        self.assertEqual([row["options"] for row in doc["decisions"][1:]], [["Approve"], []])
+        self.assertEqual(doc["decisions"][2]["question"], "Which name fits the quick notes page?")
         row = doc["decisions"][0]
         self.assertEqual((row["item"], row["title"], row["repo"]), (ids["item"], "Notes quick capture", "/repos/system"))
         self.assertEqual(row["question"], "Which store holds quick notes?\nThe page keeps them for the visit today.")
@@ -99,7 +103,7 @@ class TheAnswer(ScreenCase):
         self.assertIsNotNone(notes[self.ids["asked"]]["resolved_at"])
         self.assertEqual(notes[ruling["id"]]["body"], ruling["body"])
         self.assertEqual(state["revision"], workflow.item_state(self.connection, self.ids["item"])["revision"])
-        self.assertEqual(decisions.document(self.connection)["decisions"], [])
+        self.assertEqual([row["note"] for row in decisions.document(self.connection)["decisions"]], [self.ids["single"], self.ids["free"]])
 
     def test_the_ruling_reads_back_as_sd_task_show_prints_it(self):
         decisions.answer(self.connection, self.ids["item"], self.ids["asked"], "A pack store kind", expected_revision=self.revision, who="dashboard")
@@ -117,7 +121,7 @@ class TheAnswer(ScreenCase):
     def test_a_choice_the_note_does_not_offer_and_a_note_that_is_no_decision_are_refused(self):
         before = tuple(self.connection.iterdump())
         for note, option in ((self.ids["asked"], "Something else"), (self.ids["settled"], "Red"),
-                             (self.ids["single"], "Approve"), (self.ids["prose"], "(a) a store kind")):
+                             (self.ids["prose"], "(a) a store kind")):
             with self.subTest(note=note), self.assertRaises(workflow.WorkflowError) as refused:
                 decisions.answer(self.connection, self.ids["item"], note, option, expected_revision=self.revision, who="dashboard")
             self.assertNotIsInstance(refused.exception, workflow.StaleItem)
@@ -125,6 +129,17 @@ class TheAnswer(ScreenCase):
             with self.subTest(note=note), self.assertRaises(workflow.MissingNote):
                 decisions.answer(self.connection, self.ids["item"], note, "Yes", expected_revision=self.revision, who="dashboard")
         self.assertEqual(tuple(self.connection.iterdump()), before)
+
+
+    def test_a_free_text_question_takes_its_words_as_the_ruling_and_resolves(self):
+        # sd:5064: decisions.py:66 dropped a question with fewer than two Option: lines and answer() refused it.
+        for note, words in ((self.ids["free"], "  Call it Notes  "), (self.ids["single"], "Approve, with a dry run first")):
+            with self.subTest(note=note):
+                revision = workflow.item_state(self.connection, self.ids["item"])["revision"]
+                state = decisions.answer(self.connection, self.ids["item"], note, words, expected_revision=revision, who="dashboard")
+                self.assertEqual((state["ruling"]["kind"], state["ruling"]["body"]), ("decision", f"Ruling on note #{note}: {words.strip()}"))
+                self.assertIsNotNone(self.notes()[note]["resolved_at"])
+        self.assertEqual([row["note"] for row in decisions.document(self.connection)["decisions"]], [self.ids["asked"]])
 
 
 class TheRoutes(BrowserSession):
@@ -146,7 +161,8 @@ class TheRoutes(BrowserSession):
         good = {"item": ids["item"], "note": ids["asked"], "revision": "a" * 64, "option": "Red"}
         for payload in ({k: v for k, v in good.items() if k != "item"}, {k: v for k, v in good.items() if k != "revision"},
                         {**good, "revision": "x"}, {**good, "option": ""}, {**good, "note": str(ids["asked"])},
-                        {**good, "item": 0}, {**good, "note": 2 ** 63}, {**good, "who": "me"}):
+                        {**good, "item": 0}, {**good, "note": 2 ** 63}, {**good, "who": "me"},
+                        {**good, "option": "x" * (decisions.ANSWER_MAX + 1)}):
             with self.subTest(payload=payload):
                 self.assertEqual(self.post("/api/decisions/answer", payload)[0], 400)
 
@@ -237,6 +253,22 @@ class TheScript(unittest.TestCase):
                             f"""(path, body) => path === '/api/decisions' ? [200, {doc}]
                                 : [200, {{ revision: '{"b" * 64}', ruling: {{ id: 99, kind: 'decision', body: 'x' }} }}]""")
         self.assertEqual(out["posts"][1], ["/api/decisions/answer", {"item": 3012, "note": 8, "revision": "b" * 64, "option": "Yes"}, 64])
+
+    def test_a_free_text_question_is_a_text_box_whose_words_post_as_the_option(self):
+        # sd:5064: a question with fewer than two Option: lines had no row; now it has a box and an Answer button.
+        doc = json.dumps({"decisions": [decision_row(options=[]), decision_row(note=8, options=["Approve"])]})
+        submit = ("const submit = (note, value) => ELS.decisions.listeners.submit[0]({ preventDefault() {}, target: { closest: s => s === 'form.answer'"
+                  " ? { dataset: { note: String(note) }, elements: { answer: { value } } } : null } });\n")
+        out = self.run_page(submit + "R.rows = ELS.decisions.html; submit(7, '  '); await flush(); submit(7, ' Keep both <b> '); await flush(); R.after = ELS.decisions.html;",
+                            f"""(path, body) => path === '/api/decisions' ? [200, {doc}]
+                                : [200, {{ revision: '{"b" * 64}', ruling: {{ id: 99, kind: 'decision', body: 'x' }} }}]""")
+        rows = out["R"]["rows"]
+        self.assertEqual(rows.count('<form class="answer" data-note="'), 2)
+        self.assertNotIn("data-option=", rows)
+        self.assertIn('placeholder="Approve"', rows)
+        self.assertIn('<button type="submit" class="btn sm">Answer</button>', rows)
+        self.assertEqual(out["posts"], [["/api/decisions/answer", {"item": 3012, "note": 7, "revision": "a" * 64, "option": "Keep both <b>"}, 64]])
+        self.assertIn("Ruled: Keep both &lt;b&gt;", out["R"]["after"])
 
     def test_a_stale_answer_reads_the_list_again_and_says_why(self):
         doc = json.dumps({"decisions": [decision_row()]})

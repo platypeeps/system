@@ -58,8 +58,9 @@ Ask one with a `question` note that carries one `Option: <text>` line per choice
 `sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.
 Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,
 `Ruling on note #<id>: <option>`, and resolves the question, in one transaction under the item's revision, so a
-stale page writes nothing and reads the list again. `sd task show N` prints both. A prose "Decision needed"
-comment gets no buttons (`sd_dashboard/decisions.py`).
+stale page writes nothing and reads the list again. `sd task show N` prints both. A question with fewer than two
+`Option:` lines gets a text box instead (sd:5064); its words are the ruling, as `--kind decision --answers <id>`
+writes. A prose "Decision needed" comment is not listed (`sd_dashboard/decisions.py`).
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
 `products/system/` (`design.md`, `designs/pages/`), built one page at a time.
