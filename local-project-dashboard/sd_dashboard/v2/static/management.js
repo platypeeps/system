@@ -1,7 +1,11 @@
 // Management (sd:2118): the design source's products/system/designs/v2/management.js at d82daa1, ported. Each change from the
 // reference is marked "build:". The rows are /api/management (management_screen.py), never sample data. A command that
 // executes posts to a route server.action_route answers, and its toast comes after the write lands, not before.
-const { html, put, plural } = window.markup;
+const { html, put, plural, cells } = window.markup;
+// sd:5080: the five areas are the shell's views (shell.js, view:start): the shell draws the tabs, keeps #view=<id> and the
+// last choice, and fires 'shell:view'. Each lamp shows its view. Set before shell.js reads it.
+window.PAGE_VIEWS = [{ id: 'repos', label: 'Repos' }, { id: 'lane', label: 'Ship lane' }, { id: 'sessions', label: 'Sessions' },
+  { id: 'deploys', label: 'Deploys' }, { id: 'schedules', label: 'Schedules', key: 'c' }];
 // Chat scope = the selected repo. Set before shell.js reads it; a repo page is its own URL, so the scope is right on load.
 (() => { const r = new URLSearchParams(location.search).get('repo'); if (r) document.body.dataset.scope = r.replace(/^~\/(repos\/)?/, ''); })();
 
@@ -118,13 +122,13 @@ const stateOf = j => j.state === 'failed' ? 'warning' : ['unknown', 'unloaded'].
 const params = new URLSearchParams(location.search);
 const details = document.getElementById('details');
 const repoParam = params.get('repo');
-// build: the view comes from the URL, so it is checked against the five names before anything indexes by it.
-const VIEWS = ['repos', 'lane', 'sessions', 'deploys', 'schedules'];
-let view = VIEWS.includes(params.get('view')) ? params.get('view') : 'repos';
+// The shell owns the view (#view=<id>); an older ?view= link still opens its view (DOMContentLoaded below). Either is
+// checked against the five names before anything indexes by it.
+const VIEWS = window.PAGE_VIEWS.map(v => v.id);
+let view = 'repos';
 const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
-  p.set('view', view);
   if (repoParam) p.set('repo', repoParam);
   if (text.q) p.set('q', text.q);
   const L = LIST_STATE();
@@ -150,25 +154,19 @@ const ACTH = html`<th scope="col" class="act"><span class="sr">Actions</span></t
 function markRow(id) { document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id)); }
 const unknown = (what, reason, read) => html`<div class="unknown"><span><span class="g-unknown" aria-hidden="true">▨</span> <b>${what}</b></span><span>${reason}</span>${read ? html`<span class="mono">${read}</span>` : ''}</div>`;
 
-// ---------- Views: tabs ----------
-const tabs = [...document.querySelectorAll('.sv')];
-function showView(v, focus) {
+// ---------- Views (sd:5080: the shell's tabs) ----------
+function showView(v) {
   view = v;
-  tabs.forEach(t => { const on = t.dataset.view === v; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; });
-  if (focus) tabs.find(t => t.dataset.view === v).focus();
   document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'Filter merges by repo', sessions: 'Filter assignments by repo or agent', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
   const row = shell.row(); if (row && !document.querySelector(`#view-${v} tr[data-id="${CSS.escape(row)}"]`)) shell.row(null);
   applyText();
   defaultDetails();
 }
-document.getElementById('subviews').addEventListener('click', e => { const t = e.target.closest('.sv'); if (t) showView(t.dataset.view); });
-document.getElementById('subviews').addEventListener('keydown', e => {
-  const i = tabs.findIndex(t => t.dataset.view === view);
-  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); showView(tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length].dataset.view, true); }
-});
-// build: the five lamps count from the reading; a source that failed is unknown and says so.
+// build: the five lamps count from the reading; a source that failed is unknown and says so. A lamp shows its view.
+const LOOK = { repos: 'folder-code', lane: 'git-merge', sessions: 'bot', deploys: 'rocket', schedules: 'calendar-clock' };
 function lamps() {
-  const set = (v, state, val) => { const t = document.getElementById(`sv-${v}`); t.dataset.state = state; put(t.querySelector('.val'), val); };
+  const L = {};
+  const set = (v, state, val) => { L[v] = { state, val }; };
   if (DOC?.repos) set('repos', 'ok', html`<b>${REPOS.length}</b> rows · ${REPOS.filter(r => r.merge === 'auto').length} auto`);
   else set('repos', 'unknown', html`▨ not read`);
   const live = LANE ? LANE.live.length : 0;
@@ -180,6 +178,10 @@ function lamps() {
   set('deploys', 'unknown', html`▨ no deploy source`);
   if (DOC?.jobs) { const failed = CRON.filter(c => c.rank === 'warning').length; set('schedules', failed ? 'warning' : 'ok', html`<b>${failed}</b> failed ${failed ? '■ ' : ''}of ${CRON.length}`); }
   else set('schedules', 'unknown', html`▨ not read`);
+  put(document.getElementById('annunciator'), cells([...window.PAGE_VIEWS.map(v => ({ button: true, state: L[v.id].state, pressed: v.id === view,
+    attrs: html` data-view="${v.id}"`, label: v.label, mark: I(LOOK[v.id]), val: L[v.id].val, sr: `state ${L[v.id].state} · shows ${v.label}` })),
+    { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'),
+      val: html`<span class="ph">${READ ? html`<b>${hhmm(READ)}</b> UTC` : 'not read'}</span> · <span class="ph">refresh</span>` }]));
 }
 
 // ---------- Lists: sort, filter, page (shell.list, sd:2682) ----------
@@ -361,11 +363,11 @@ function proposeAliases(r, text) {
 
 function renderRepoPage(el) {
   const r = REPOS.find(x => x.path === repoParam);
-  if (!r) { put(el, html`<p class="empty">No registered repo at <code>${repoParam}</code>. <a href="?view=repos">All repos</a></p>`); return; }
+  if (!r) { put(el, html`<p class="empty">No registered repo at <code>${repoParam}</code>. <a href="?#view=repos">All repos</a></p>`); return; }
   const url = r.slug ? `https://github.com/${r.slug}` : null;
   const rv = r.review, pr = r.protection;
   put(el, html`
-    <div class="crumb"><a class="btn quiet sm" href="?view=repos">${I('chevron-left')}All repos</a><h2>${r.name}</h2>${url ? html`<a class="ext" href="${url}" target="_blank" rel="noopener">${r.slug}${I('arrow-up-right')}</a>` : ''}</div>
+    <div class="crumb"><a class="btn quiet sm" href="?#view=repos">${I('chevron-left')}All repos</a><h2>${r.name}</h2>${url ? html`<a class="ext" href="${url}" target="_blank" rel="noopener">${r.slug}${I('arrow-up-right')}</a>` : ''}</div>
     <ul class="routes" aria-label="How edits land">
       <li><span class="route">${I('terminal')}sd-db · local</span> runs one sd-db verb here</li>
       <li><span class="route">${I('git-pull-request')}file · PR</span> ships through sd-ship and review</li>
@@ -590,7 +592,7 @@ function registerCommands() {
     // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
     { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
-      run: o => { location.href = `?view=repos&repo=${encodeURIComponent(o.path)}`; return `Move lane: ${o.label}'s settings page opens`; } },
+      run: o => { location.href = `?repo=${encodeURIComponent(o.path)}#view=repos`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
     { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
@@ -893,7 +895,7 @@ function selectRow(id, open) {
       : html`<h3>Git state</h3><p class="why"><span class="g-unknown" aria-hidden="true">▨</span> Not read: ${pw}.</p>`;
     h = html`<p class="kind">${I(r.registered ? 'settings' : 'folder-code')} Repo${r.registered ? '' : ' · not registered'}</p><h2>${r.name}</h2>
       <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
-      ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
+      ${r.registered ? html`<p><a class="btn quiet" href="?repo=${encodeURIComponent(r.path)}#view=repos">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
       ${window.commands.reviewPane('repo', r.path)}`;
@@ -940,19 +942,15 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (e.key === '/') { e.preventDefault(); input.focus(); }
 });
-window.PAGE_KEYS = [['/', 'Filter the open sub-view'], ['← / →', 'On the sub-view tabs: the previous or next one']];
+window.PAGE_KEYS = [['/', 'Filter the open view']];
 window.PAGE_LIST = { rows: () => document.querySelectorAll(`#view-${view} tbody tr[data-id]`), select: id => selectRow(id, false) };
 
 // build (sd:3521): capture's repo default is the selected repo row's.
 window.PAGE_REPO = o => o && o.type === 'repo' ? o.path : null;
 
 window.PAGE_COMMANDS = [
-  { label: 'Show repos', icon: 'folder-code', run: () => location.href = '?view=repos' },
-  { label: 'Show ship lane', icon: 'git-merge', run: () => location.href = '?view=lane' },
-  { label: 'Show sessions and agents', icon: 'bot', run: () => location.href = '?view=sessions' },
-  { label: 'Show deploys', icon: 'rocket', run: () => location.href = '?view=deploys' },
-  { label: 'Show failed schedules', icon: 'calendar-clock', run: () => location.href = '?view=schedules&q=state:failed' },
-  { label: 'Open system repo settings', icon: 'settings', run: () => location.href = '?view=repos&repo=' + encodeURIComponent('~/repos/system') },
+  { label: 'Show failed schedules', icon: 'calendar-clock', run: () => location.href = '?q=state:failed#view=schedules' },
+  { label: 'Open system repo settings', icon: 'settings', run: () => location.href = `?repo=${encodeURIComponent('~/repos/system')}#view=repos` },
 ];
 
 // ---------- Start (build, sd:2485: shell.read reads /api/management, then draws; it rereads after each write) ----------
@@ -989,10 +987,18 @@ function nothingSelected() {
   swap();
 }
 document.addEventListener('DOMContentLoaded', () => {
-  if (repoParam) view = 'repos';
+  // A repo's settings page is in Repos; an older ?view= link opens its view unless #view= names one. The shell's first
+  // 'shell:view' fires after this listener.
+  const asked = repoParam ? 'repos' : VIEWS.includes(params.get('view')) && !/^#view=/.test(location.hash) ? params.get('view') : null;
+  if (asked && shell.view.current() !== asked) shell.view.show(asked);
+  view = VIEWS.includes(shell.view.current()) ? shell.view.current() : 'repos';
   registerCommands();
   readURL();
-  tabs.forEach(t => { const on = t.dataset.view === view; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute('aria-controls')).hidden = !on; });
+  document.addEventListener('shell:view', e => { if (e.detail.id !== view) { showView(e.detail.id); lamps(); } });
+  document.getElementById('annunciator').addEventListener('click', e => {
+    const c = e.target.closest('button.cell'); if (!c) return;
+    if (c.id === 'refresh') load(); else shell.view.show(c.dataset.view);
+  });
   reading = shell.read({
     source: '/api/management', what: 'repos, the lane, sessions, services and jobs', adopt, clear, draw,
     current: () => shell.row(), first: firstRow,

@@ -1,28 +1,9 @@
 /* Management (sd:2118): the design source's products/system/designs/v2/management.css at d82daa1, unchanged below this line but for
  * details.raw, renamed details.srcfile: no page script may name the word raw (test_v2_today, the one-sink test), and for
  * .strip's three columns: the lane strip lost the runner and its archive refresh (sd:3041). */
-/* Hallmark · route: custom (foundation) · structure: sub-view annunciator + ranked ledger + per-repo settings sheet + proposal drawer · idea: "every setting, one route each"
+/* Hallmark · route: custom (foundation) · structure: annunciator + shell views + ranked ledger + per-repo settings sheet + proposal drawer · idea: "every setting, one route each"
  * Hallmark · pre-emit critique: P5 H4 E4 S5 R4 V4
- * Management v2: the five sub-view tabs are lamps; a repo opens its own settings page; an edit becomes a proposal on one of three routes. */
-
-/* Sub-view annunciator: each tab is a lamp that says its state. */
-.subviews { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin: 0 0 var(--space-lg); padding: 1px; background: var(--color-rule); border-radius: var(--radius-md); }
-.sv { font: inherit; border: 0; text-align: left; cursor: pointer; display: grid; grid-template-rows: auto 1fr; gap: var(--space-2xs); min-height: 4rem; padding: var(--space-xs) var(--space-sm); background: var(--color-panel); color: var(--color-muted); }
-.sv:hover { background: var(--color-well); }
-.sv .lbl { display: flex; align-items: center; gap: var(--space-2xs); font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap; }
-.sv .lbl kbd { margin-left: auto; font: 400 var(--text-2xs)/1 var(--font-data); letter-spacing: 0; }
-.sv .val { align-self: end; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
-.sv .val b { font-weight: 500; font-size: var(--text-md); color: var(--color-ink); }
-.sv[data-state="caution"] { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.sv[data-state="caution"] .val, .sv[data-state="caution"] .val b { color: var(--color-caution-lamp-ink); }
-.sv[data-state="warning"] { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.sv[data-state="warning"] .val, .sv[data-state="warning"] .val b { color: var(--color-warning-ink); }
-.sv[data-state="unknown"] { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
-/* A lit lamp keeps its state colour under the pointer (sd:2530): a ring in its own ink token, not a brightness shift. */
-.sv[data-state="caution"]:not([aria-selected="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-caution-lamp-ink); }
-.sv[data-state="warning"]:not([aria-selected="true"]):hover { box-shadow: inset 0 0 0 1px var(--color-warning-ink); }
-.sv[aria-selected="true"] { box-shadow: inset 0 calc(-1 * var(--rule-lamp)) 0 var(--color-accent), inset 0 0 0 1px var(--color-accent); }
-.sv[aria-selected="true"] .lbl { color: inherit; }
+ * Management v2: the five areas are the shell's views and each has a lamp (sd:5080); a repo opens its own settings page; an edit becomes a proposal on one of three routes. */
 
 /* Section heads and tallies (same grammar as Today). */
 .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: var(--space-lg) 0 var(--space-xs); }
@@ -154,7 +135,6 @@ input.fld.num { width: 5rem; }
 .legend { display: grid; gap: var(--space-sm); margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); color: var(--color-ink-2); }
 .legend li { display: grid; gap: var(--space-2xs); }
 
-
 [hidden] { display: none !important; }
 
 @media (pointer: coarse) {
@@ -162,7 +142,6 @@ input.fld.num { width: 5rem; }
   .fld, .chans .chk { min-height: var(--row-touch); }
   .bar { min-height: var(--row-touch); }
 }
-@media (max-width: 1099px) { .subviews { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 899px) {
   .ledger thead { display: none; }
   .ledger tbody tr { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what end" ". detail detail"; padding: var(--space-xs) 0; border-bottom: var(--rule-hair) solid var(--color-rule-2); }
@@ -179,9 +158,6 @@ input.fld.num { width: 5rem; }
   .fsum { margin-left: 0; }
 }
 @media (max-width: 599px) {
-  .subviews { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .subviews .sv:last-child { grid-column: 1 / -1; }
-  .sv .lbl kbd { display: none; }
   .row { grid-template-columns: minmax(0, 1fr); gap: var(--space-2xs); padding: var(--space-xs) 0; }
   .row > .ctl { justify-content: flex-start; }
   .set > header .route { margin-left: 0; }
@@ -189,7 +165,5 @@ input.fld.num { width: 5rem; }
 }
 @media (max-width: 359px) { .strip { grid-template-columns: minmax(0, 1fr); } }
 @media (forced-colors: active) {
-  .sv[data-state="warning"], .sv[data-state="caution"] { border: 2px solid CanvasText; }
-  .sv[aria-selected="true"], .ledger tbody tr[aria-selected="true"] td:first-child, .row[data-pending] { outline: 2px solid Highlight; }
   .bar rect.fill { fill: CanvasText; }
 }
