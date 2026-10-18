@@ -13,6 +13,8 @@ source guarded on its own so one that fails is a reason and not an empty list
   `owner/name`, from the shadow rows `sd shadow sync` keeps
   (`progress.tracker_items`, as Trackers reads them): the repo row's
   Adversarial review: PR picks one (sd:5100). Nothing here calls GitHub.
+- `deep`: the Deep review's settings, `adversarial.deep_settings`: each
+  setting row's value and whether it is the row's or the default (sd:5109).
 - `git`: `fleet.collect("repos")`, v1 Operations > Repos, each row with
   `repos_screen.primary`'s state, headline, detail and remedy. Nothing fetches
   or pulls.
@@ -60,7 +62,7 @@ from pathlib import Path
 from sd_db import channels, database, operations, progress, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
-from . import fix_session
+from . import adversarial, fix_session
 from . import fleet as fleet_module
 from .repos_screen import primary
 
@@ -500,6 +502,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
                             ("pulls", lambda: _pulls(connection)),
+                            ("deep", lambda: adversarial.deep_settings(connection)),
                             ("git", lambda: _git(read, now)),
                             ("lane", lambda: _lane(connection)),
                             ("assignments", lambda: _assignments(connection)),

@@ -14,13 +14,13 @@ wrote the work: codex, at the model and effort `<config>/adversarial-gate/.env` 
           `sd shadow sync` last saw it, and its head is `refs/pull/<pr>/head` as `git ls-remote origin` names it. The
           head commit must already be in the checkout: the dashboard fetches nothing, and a refusal names the fetch.
   deep    a registered repository, reviewed by headless claude rather than codex (sd:5100): `lenses/deep.md` has the
-          lead fan out read-only sub-agents, one per area, then verify and rank what they find. Its model, effort and
-          bound are `DEEP_MODEL`, `DEEP_EFFORT` and `DEEP_TIMEOUT_MINUTES` in the same `.env`, else `DEEP_MODEL` at
-          `DEEP_EFFORT` for `DEEP_MINUTES`. Its lock is the repository's own, so one deep review runs per repository.
+          lead fan out read-only sub-agents, one per area, then verify and rank what they find. Its model, effort,
+          bound and sub-agent cap are the `DEEP` setting rows in the workflow database (sd:5109), else their defaults;
+          `save_settings` writes them. Its lock is the repository's own, so one deep review runs per repository.
 
 `start` runs in the POST, in four steps, and answers 202 at once:
 
-1. The target, resolved to a checkout, its registered repository and the lens's inputs.
+1. The target, resolved to a checkout, its registered repository and the lens's inputs; then the settings.
 2. The lock, taken without waiting: `<state>/lock` for a codex review, `<state>/deep-<checkout hash>.lock` for a deep
    one. A second run while one holds it is a 409 naming the run.
 3. The run's state file, `<state>/runs/<id>.json`, as `queued`, with the item's or the change's text beside it as
@@ -66,8 +66,8 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ["DEEP_EFFORT", "DEEP_MINUTES", "DEEP_MODEL", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT",
-           "recommendations", "request", "run", "start", "status"]
+__all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT",
+           "deep_settings", "recommendations", "request", "run", "save_settings", "settings", "start", "status"]
 
 #: This repository's checkout: a brief that names no repository is reviewed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -79,11 +79,15 @@ MODEL = "gpt-6-astra"
 EFFORT = "high"
 #: The gate's bound on codex, in seconds; the runner's own bound on the gate is `GRACE` longer.
 TIMEOUT = 1800
-#: A deep review's model, effort and bound in minutes when the `.env` names none: the claude CLI's alias for the
-#: latest Opus, and the highest effort `claude --effort` takes.
-DEEP_MODEL = "opus"
-DEEP_EFFORT = "max"
-DEEP_MINUTES = 90
+#: A deep review's settings (sd:5109): fleet-wide `setting` rows in the workflow database, not the `.env`. Each key's
+#: default, its pattern and what it wants: the claude CLI's alias for the latest Opus, the highest effort `claude
+#: --effort` takes, the bound in whole minutes, and the most sub-agents the lead starts.
+DEEP = {
+    "adversarial.deep.model": ("opus", r"[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]{0,99}", "a claude model id or alias, such as opus"),
+    "adversarial.deep.effort": ("max", r"[a-z]{1,20}", "one lowercase word, such as max"),
+    "adversarial.deep.bound_minutes": ("90", r"[1-9][0-9]{0,3}", "whole minutes, such as 90"),
+    "adversarial.deep.agents": ("8", r"[1-9]|1[0-6]", "a number of sub-agents from 1 to 16, such as 8"),
+}
 GRACE = 60
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
@@ -125,29 +129,77 @@ def state_dir() -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / "adversarial-gate"
 
 
-def settings(kind: str = "task") -> tuple[str, str, int]:
-    """The model, effort and timeout in seconds: exported, else `<config>/adversarial-gate/.env`, else the defaults.
+def settings(kind: str = "task", connection=None) -> tuple[str, str, int, dict]:
+    """The model, effort, timeout in seconds and the lens's extra `--set` values for a run of `kind`.
 
-    A codex review reads `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT` and runs for `TIMEOUT`; a deep review reads
-    `DEEP_MODEL`, `DEEP_EFFORT` and `DEEP_TIMEOUT_MINUTES`. A bound that is not whole minutes is refused, not guessed.
+    A codex review reads `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, exported or in `<config>/adversarial-gate/.env`,
+    and runs for `TIMEOUT`. A deep review reads its `DEEP` setting rows from `connection` (`deep_settings`).
     """
+    if kind == "deep":
+        held = {key: one["value"] for key, one in deep_settings(connection).items()}
+        return (held["adversarial.deep.model"], held["adversarial.deep.effort"],
+                int(held["adversarial.deep.bound_minutes"]) * 60, {"AGENTS": held["adversarial.deep.agents"]})
     lib = str(CHECKOUT / "lib")
     if lib not in sys.path:
         sys.path.insert(0, lib)
     import system_tools_config
 
     saved = system_tools_config.read_env("adversarial-gate")
-    if kind != "deep":
-        model = system_tools_config.setting("ADVERSARIAL_MODEL", saved) or MODEL
-        effort = system_tools_config.setting("ADVERSARIAL_EFFORT", saved) or EFFORT
-        return model, effort, TIMEOUT
-    model = system_tools_config.setting("DEEP_MODEL", saved) or DEEP_MODEL
-    effort = system_tools_config.setting("DEEP_EFFORT", saved) or DEEP_EFFORT
-    minutes = system_tools_config.setting("DEEP_TIMEOUT_MINUTES", saved) or str(DEEP_MINUTES)
-    if not re.fullmatch(r"[1-9][0-9]{0,3}", minutes):
-        raise ValueError(f"DEEP_TIMEOUT_MINUTES wants whole minutes, such as {DEEP_MINUTES}, not {minutes!r}; fix "
-                         f"<config>/adversarial-gate/.env or the exported value")
-    return model, effort, int(minutes) * 60
+    model = system_tools_config.setting("ADVERSARIAL_MODEL", saved) or MODEL
+    effort = system_tools_config.setting("ADVERSARIAL_EFFORT", saved) or EFFORT
+    return model, effort, TIMEOUT, {}
+
+
+def _deep_value(key: str, value) -> str:
+    """`value` for the `DEEP` setting `key`, or `ValueError` naming what it wants."""
+    _, pattern, wants = DEEP[key]
+    if not isinstance(value, str) or not re.fullmatch(pattern, value):
+        raise ValueError(f"{key} wants {wants}, not {value!r}")
+    return value
+
+
+def deep_settings(connection) -> dict:
+    """Each `DEEP` key's `{value, from}`: its latest setting row (`database`), else its default (`default`).
+
+    A cleared row reads as the default. A row that fails the key's pattern, or a read that fails, is refused with its
+    reason rather than run at the default: a setting nobody can read is unknown, not unset.
+    """
+    from sd_db import writes
+
+    try:
+        held = writes.read_settings(connection, list(DEEP))
+    except Exception as error:  # noqa: BLE001 - any failed read is unknown, named
+        raise ValueError(f"the deep review's settings were not read: {type(error).__name__}: {error}") from None
+    out = {}
+    for key, (default, _, _) in DEEP.items():
+        value = held.get(key)
+        if value is None:
+            out[key] = {"value": default, "from": "default"}
+            continue
+        try:
+            out[key] = {"value": _deep_value(key, value), "from": "database"}
+        except ValueError as problem:
+            raise ValueError(f"the setting {problem}; set it again in the repo's Deep review settings") from None
+    return out
+
+
+def save_settings(values: dict):
+    """`POST /api/adversarial/settings {key: value, ...}` (sd:5109): each `DEEP` key given, checked, then written with
+    `set_setting`; an empty value clears the row, so the default applies. Answers what each key held before."""
+    from sd_db import writes
+
+    if not values or set(values) - set(DEEP) or not all(isinstance(value, str) for value in values.values()):
+        raise ValueError(f"The deep review's settings are {', '.join(DEEP)}, each as text.")
+    checked = {key: _deep_value(key, value.strip()) if value.strip() else None for key, value in values.items()}
+
+    def write(connection):
+        from sd_db.database import transaction
+
+        with transaction(connection):
+            was = {key: writes.set_setting(connection, key, value) for key, value in checked.items()}
+        return {"saved": checked, "was": was, "settings": deep_settings(connection)}
+
+    return write
 
 
 def _stamp(now: datetime.datetime) -> str:
@@ -435,6 +487,8 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
     runs = state / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     plan = _resolve(connection, kind, target, base, item, body, pr)
+    model, effort, timeout, extra = settings(kind, connection)
+    plan["sets"].update(extra)
     handle = open(_lock(state, kind, plan["checkout"]), "a+", encoding="utf-8")
     try:
         try:
@@ -461,7 +515,6 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
         database = _database(connection)
         if written:
             written.write_text(plan["input"], encoding="utf-8")
-        model, effort, timeout = settings(kind)
         document = {"id": run_id, "kind": kind, "target": str(target), "label": label, "state": "queued",
                     "reason": None, "repo": str(plan["repo"]), "checkout": str(plan["checkout"]),
                     "result": str(result), "input": str(written) if written else None, "item": plan["item"],

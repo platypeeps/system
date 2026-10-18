@@ -342,6 +342,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
         return adversarial.request(values)
+    if path == "/api/adversarial/settings":
+        from . import adversarial
+
+        # sd:5109: the deep review's model, effort, bound and sub-agent cap, as setting rows.
+        return adversarial.save_settings(values)
     if path == "/api/snooze":
         from . import snooze
 

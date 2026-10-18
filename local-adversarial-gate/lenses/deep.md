@@ -8,7 +8,7 @@ Your tools are Read, Grep, Glob and Agent. You have no shell, no editor and no n
 
 - Read `README.md`, `CLAUDE.md`, `CLAUDE.local.md` when present, and every file under `.claude/rules/`. These are the rules the repository says it keeps. Note each rule a sub-agent will need.
 - Map the tree with Glob: the top-level folders and files, and the size of each folder.
-- Split the repository into areas: one per top-level folder or tool, and one for the root files and shared folders together. Join small folders that do one job. **Use at most 8 areas.** When there are more top-level folders than that, group them by what they do and say which went where.
+- Split the repository into areas: one per top-level folder or tool, and one for the root files and shared folders together. Join small folders that do one job. **Use at most {AGENTS} areas.** When there are more top-level folders than that, group them by what they do and say which went where.
 
 ## Step 2: the sub-agents
 

@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import repos, upsert_repo, upsert_shadow, workflow
+from sd_db import repos, upsert_repo, upsert_shadow, workflow, writes
 from sd_dashboard import management_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -97,8 +97,8 @@ class TheDocument(ScreenCase):
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
-        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "pulls", "git", "lane", "assignments", "sessions",
-                                                          "services", "jobs")})
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "pulls", "deep", "git", "lane", "assignments",
+                                                          "sessions", "services", "jobs")})
         self.assertEqual(doc["read"], NOW)
         # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
         self.assertNotIn("archive", doc)
@@ -115,6 +115,21 @@ class TheDocument(ScreenCase):
                                   "url": "https://github.com/Example/Checkout/pull/7"}],
             "example/other": [{"number": 3, "title": "Pull 3", "author": "someone",
                                "url": "https://github.com/example/other/pull/3"}]})
+
+    def test_deep_carries_each_setting_row_or_its_default(self):
+        """sd:5109: the Deep review's settings are workflow-database rows, shown beside the control."""
+        writes.set_setting(self.connection, "adversarial.deep.model", "fable")
+        deep = self.document()["deep"]
+        self.assertEqual(deep["adversarial.deep.model"], {"value": "fable", "from": "database"})
+        self.assertEqual(deep["adversarial.deep.agents"], {"value": "8", "from": "default"})
+        self.assertEqual(set(deep), {"adversarial.deep.model", "adversarial.deep.effort",
+                                     "adversarial.deep.bound_minutes", "adversarial.deep.agents"})
+
+    def test_a_deep_setting_row_that_does_not_read_is_the_source_s_reason(self):
+        writes.set_setting(self.connection, "adversarial.deep.agents", "many")
+        doc = self.document()
+        self.assertIsNone(doc["deep"])
+        self.assertIn("adversarial.deep.agents wants a number of sub-agents", doc["sources"]["deep"])
 
     def test_a_job_carries_its_last_run_from_the_wrappers_stamp(self):
         """sd:2210: launchd keeps no run time; the cron-jobs wrapper stamps each run's start, end and exit."""
@@ -733,6 +748,7 @@ class TheScript(PageScript):
             ["repo.adversarial-review", "repo", "safe", None, True, False],
             ["repo.adversarial-pr", "repo", "safe", None, True, False],
             ["repo.deep-review", "repo", "safe", None, True, False],
+            ["repo.deep-settings", "repo", "safe", None, True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["file.prepare", "file change", "safe", "p", False, False],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
@@ -948,6 +964,31 @@ selectRow('repo:{path}'); C.run(c, o); await flush(); await flush(); R.end = ELS
         self.assertIn("<h3>Deep review</h3>", out["R"]["det"])
         self.assertIn("Run d1 is running, 10 of at most 90 min.", out["R"]["det"])
         self.assertIn('<a href="/item/79">brief sd:79</a>', out["R"]["end"])
+
+    def test_deep_review_settings_show_beside_the_control_and_post_only_what_changed(self):
+        """sd:5109: Details shows each setting and where it comes from; the dialog opens on the values and posts the
+        changed ones, an emptied field as "" so the server clears its row."""
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        doc["deep"]["adversarial.deep.model"] = {"value": "fable", "from": "database"}
+        answer = """(p, b) => p === '/api/adversarial/settings' ? [200, { saved: b }] : [404, { error: 'no' }]"""
+        out = self.run_page(f"""const o = C.get('repo:{path}'), c = cmd('repo.deep-settings');
+selectRow('repo:{path}'); R.det = ELS.details.html; R.fields = c.fields(o).map(f => [f.name, f.value]); R.on = c.when(o);
+FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}; C.run(c, o); await flush(); await flush();""",
+                            answer=answer, doc=doc)
+        self.assertIn("Deep review settings: model <b>fable</b> · effort <b>max</b> (default)", out["R"]["det"])
+        self.assertIn("sub-agents at most <b>8</b> (default)", out["R"]["det"])
+        self.assertEqual(out["R"]["on"], True)
+        self.assertEqual(out["R"]["fields"], [["model", "fable"], ["effort", "max"], ["bound_minutes", "90"], ["agents", "8"]])
+        self.assertEqual(out["posts"], [["/api/adversarial/settings", {"adversarial.deep.model": "",
+                                                                       "adversarial.deep.bound_minutes": "120"}, 64]])
+
+    def test_deep_review_settings_are_off_when_the_settings_were_not_read(self):
+        path = self.ids["checkout"]
+        doc = dict(self.doc, deep=None, sources=dict(self.doc["sources"], deep="the setting adversarial.deep.agents wants x"))
+        out = self.run_page(f"R.why = cmd('repo.deep-settings').when(C.get('repo:{path}')); selectRow('repo:{path}'); R.det = ELS.details.html;", doc=doc)
+        self.assertEqual(out["R"]["why"], "settings not read: the setting adversarial.deep.agents wants x")
+        self.assertIn("Deep review settings not read: the setting adversarial.deep.agents wants x.", out["R"]["det"])
 
     def test_the_repo_page_shows_the_lane_host_and_move_lane_runs_the_verb_and_undoes(self):
         """sd:3075, acceptance 3: the list and the page show the host; the field offers hub and each named host;

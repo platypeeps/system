@@ -29,7 +29,7 @@ adversarial-gate render --lens writing-draft \
 adversarial-gate run --lens research-brief --repo . --out adversarial.md --timeout 900
 adversarial-gate run --lens repo --set REPO_NAME=x --repo . --out review.md \
     --model gpt-6-astra --effort high          # effort: codex's model_reasoning_effort
-adversarial-gate deep --lens deep --set REPO_NAME=x --repo . --out deep.md \
+adversarial-gate deep --lens deep --set REPO_NAME=x --set AGENTS=8 --repo . --out deep.md \
     --model opus --effort max --timeout 5400    # headless claude, read-only tools
 adversarial-gate rank --in adversarial.md     # order an existing result (see below)
 adversarial-gate test -v                      # the unittest suite under tests/
@@ -77,12 +77,14 @@ denies anything else, `--restricted` ignores user and project settings, and
 read-only list. `CLAUDE_BIN` names the binary, else `claude` on PATH, else `~/.local/bin/claude`;
 `~/.config/shell/env.sh`, when present, is sourced in claude's own shell for its token.
 
-`lenses/deep.md` has the lead read the rules, split the tree into at most 8 areas, start one
-sub-agent per area on correctness, secrets, simplification, test gaps and document drift, and then
-verify each `path:line` itself, refuting what does not hold. Each surviving finding carries
-`Recommendation:`, `Fix:`, `Size:` and `Evidence:` lines. The repo row's Deep review runs it at
-`DEEP_MODEL`, `DEEP_EFFORT` and `DEEP_TIMEOUT_MINUTES` from the same `.env` (`opus`, `max`, 90),
-one run per repository, and files it like the codex reviews: a brief and one question per finding.
+`lenses/deep.md` has the lead read the rules, split the tree into at most `{AGENTS}` areas, start
+one sub-agent per area on correctness, secrets, simplification, test gaps and document drift, and
+then verify each `path:line` itself, refuting what does not hold. Each surviving finding carries
+`Recommendation:`, `Fix:`, `Size:` and `Evidence:` lines. The repo row's Deep review runs it one
+run per repository, and files it like the codex reviews: a brief and one question per finding.
+Its settings are workflow-database setting rows, not `.env` keys (sd:5109): `adversarial.deep.model`
+(`opus`), `adversarial.deep.effort` (`max`), `adversarial.deep.bound_minutes` (90) and
+`adversarial.deep.agents` (8). The repo row's Deep review settings shows and sets them.
 
 ## Contents
 
@@ -94,9 +96,9 @@ one run per repository, and files it like the codex reviews: a brief and one que
 | `lenses/task.md` | A work item before it is built: the problem, the done condition, scope, conflicts with the rules. Takes `{INPUT_PATH}` (the item's text) and `{DESIGN_PATH}` (its design document, or `none`). |
 | `lenses/brief.md` | A routine brief a reader acts on: the action it drives, dates, attribution, omissions. Takes `{INPUT_PATH}`. |
 | `lenses/repo.md` | A whole checkout: documents the code contradicts, rules it breaks, failure handling, tests. Takes `{REPO_NAME}`. |
-| `lenses/deep.md` | A whole checkout, in depth, for `deep`: the lead fans out up to 8 read-only sub-agents, then verifies, deduplicates and ranks. Takes `{REPO_NAME}`. |
+| `lenses/deep.md` | A whole checkout, in depth, for `deep`: the lead fans out up to `{AGENTS}` read-only sub-agents, then verifies, deduplicates and ranks. Takes `{REPO_NAME}` and `{AGENTS}`. |
 | `lenses/change.md` | A branch against its base plus its pull-request body: claims, failure paths, steps, older state, guards, tests. Takes `{INPUT_PATH}`, `{BASE}` and `{HEAD}`. |
-| `.env.example` | The dashboard actions' models, efforts and the deep bound, all commented out: the defaults apply without a copy. |
+| `.env.example` | The codex action's model and effort, both commented out: the defaults apply without a copy. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `deep`, `rank`, `lenses`, `test`. |
 | `rank.py` | The optional Jev ordering: parse the findings, ask one question each, reorder and label. Never removes one. |
 | `tests/test_deep.py` | `deep` against a fake claude: the tool list holds no write tool, the lens reaches claude in the checkout, the bound kills its tree. |

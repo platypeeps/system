@@ -579,6 +579,14 @@ function objects() {
 const registeredWhy = o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first';
 // sd:5100: the repo's open pull requests as `sd shadow sync` last saw them, keyed by its lower-cased GitHub slug.
 const pullsOf = o => (o.row.slug && DOC?.pulls?.[o.row.slug.toLowerCase()]) || [];
+// sd:5109: the Deep review's settings as the document read them (management_screen's `deep` source).
+const DEEP_FIELDS = [['model', 'Model', 'a claude model id or alias, such as opus'], ['effort', 'Effort', 'one lowercase word, such as max'],
+  ['bound_minutes', 'Bound in minutes', 'whole minutes, such as 90'], ['agents', 'Sub-agents at most', 'from 1 to 16, such as 8']];
+const deepOf = k => DOC?.deep?.[`adversarial.deep.${k}`]?.value ?? '?';
+// Only the fields the operator changed are sent; an emptied field clears its row.
+const deepChanged = v => Object.fromEntries(DEEP_FIELDS.filter(([k]) => k in v && v[k] !== deepOf(k)).map(([k]) => [`adversarial.deep.${k}`, v[k]]));
+const deepLine = () => (DOC?.deep ? html`<p class="why">Deep review settings: ${DEEP_FIELDS.map(([k, label], i) => html`${i ? ' · ' : ''}${label.toLowerCase()} <b>${deepOf(k)}</b>${DOC.deep[`adversarial.deep.${k}`].from === 'default' ? ' (default)' : ''}`)}. Deep review settings changes them for every repository.</p>`
+  : html`<p class="why">Deep review settings not read: ${why('deep') || 'the reading carries none'}.</p>`);
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
 function registerCommands() {
   const C = shell.commands;
@@ -613,7 +621,15 @@ function registerCommands() {
     window.commands.adversarialReview('repo', { id: 'repo.deep-review', label: 'Deep review',
       does: 'Runs a read-only claude review with up to 8 sub-agents in the background; its brief lists fixes to pick.',
       payload: o => ({ kind: 'deep', target: o.path }), when: registeredWhy,
-      consequence: o => `Runs claude at the configured model and effort on ${o.label}, with up to 8 read-only sub-agents, for up to 90 minutes unless DEEP_TIMEOUT_MINUTES says otherwise. It changes nothing in the checkout. Its brief lists each fix as a question to approve or reject.` }),
+      consequence: o => `Runs claude at ${deepOf('model')} and ${deepOf('effort')} effort on ${o.label}, with up to ${deepOf('agents')} read-only sub-agents, for up to ${deepOf('bound_minutes')} minutes. It changes nothing in the checkout. Its brief lists each fix as a question to approve or reject.` }),
+    // sd:5109: the Deep review's settings are fleet-wide setting rows; an emptied field clears its row, so the default applies.
+    { id: 'repo.deep-settings', on: 'repo', label: 'Deep review settings', does: 'Sets the Deep review\'s model, effort, bound and sub-agent cap for every repository.', risk: 'safe', executes: true, icon: 'settings',
+      when: () => !!DOC?.deep || `settings not read: ${why('deep') || 'the reading carries none'}`,
+      fields: () => DEEP_FIELDS.map(([k, label, help]) => ({ name: k, label, help, value: deepOf(k) })),
+      cli: () => 'no sd verb: the dashboard writes the adversarial.deep.* setting rows',
+      sends: (o, v) => `POST /api/adversarial/settings ${JSON.stringify(deepChanged(v || {}))}`,
+      run: (o, v) => { const changed = deepChanged(v || {}); if (!Object.keys(changed).length) return 'Nothing changed';
+        return window.shell.post('/api/adversarial/settings', changed).then(async () => { await reread(); return `Deep review settings saved · ${Object.keys(changed).map(k => k.split('.').pop()).join(', ')}`; }); } },
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
@@ -915,7 +931,7 @@ function selectRow(id, open) {
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
-      ${window.commands.reviewPane('repo', r.path)}${window.commands.reviewPane('change', r.path, 'Adversarial review: PR')}${window.commands.reviewPane('deep', r.path, 'Deep review')}`;
+      ${window.commands.reviewPane('repo', r.path)}${window.commands.reviewPane('change', r.path, 'Adversarial review: PR')}${window.commands.reviewPane('deep', r.path, 'Deep review')}${r.registered ? deepLine() : ''}`;
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>

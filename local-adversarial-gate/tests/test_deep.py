@@ -55,7 +55,7 @@ class Deep(unittest.TestCase):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp / "home"), "CLAUDE_BIN": str(claude or self.fake),
                "CLAUDE_MODE": mode, "ADVERSARIAL_GATE_JEV": str(self.tmp / "no-jev"),
                **{f"CLAUDE_{name.upper()}": str(path) for name, path in self.log.items()}}
-        proc = subprocess.Popen(["sh", str(SCRIPT), "deep", "--lens", "deep", "--set", "REPO_NAME=fixture", *args],
+        proc = subprocess.Popen(["sh", str(SCRIPT), "deep", "--lens", "deep", "--set", "REPO_NAME=fixture", "--set", "AGENTS=8", *args],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 start_new_session=True)
         try:
