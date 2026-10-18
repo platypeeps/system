@@ -214,6 +214,16 @@ components:
       limits:
         memory: 96Mi         # was 40Mi (28Mi used, 71%)
 
+  # --- not sizing: llmInaccurateResponse serves varied wrong answers ---
+  # (sd:5029). llm_varied_wrong.py wraps upstream's app.py; the script builds
+  # its ConfigMap before helm and stamps its cksum on the pod, so an edit rolls it.
+  llm:
+    command: ["/venv/bin/python", "/app/varied/llm_varied_wrong.py"]
+    mountedConfigMaps:
+      - name: varied-wrong
+        mountPath: /app/varied
+        existingConfigMap: llm-varied-wrong
+
 # Deliberately NOT raised -- measured well clear of their caps:
 #   shipping 9Mi/20Mi (45%), currency 9Mi/20Mi (43%), coredns 79Mi/170Mi (47%),
 #   grafana 185Mi/300Mi (62%), email 61Mi/100Mi (61%), image-provider 31Mi/50Mi.

@@ -13,6 +13,10 @@ optional MCP port-forwards. Everything runs through one entrypoint.
 Chart overrides: `collector-values.yaml` (memory sizing, the events receiver,
 and the OTLP/HTTP export pipeline). It holds no destination or credential.
 
+`llm_varied_wrong.py` wraps the demo's llm service: with `llmInaccurateResponse` on, every product gets
+one of a few wrong answers, picked by a hash of its id, so runs repeat. `start` and `upgrade` ship it as
+the `llm-varied-wrong` ConfigMap; an edit rolls the llm pod on the next run.
+
 ## Configuration and secrets
 
 Values live in `$SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env` (copy

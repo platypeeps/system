@@ -38,6 +38,7 @@ class DemoConfig(unittest.TestCase):
         self.folder.mkdir()
         shutil.copy(ENTRYPOINT, self.folder / ENTRYPOINT.name)
         shutil.copy(FOLDER / "collector-values.yaml", self.folder / "collector-values.yaml")
+        shutil.copy(FOLDER / "llm_varied_wrong.py", self.folder / "llm_varied_wrong.py")
         shutil.copytree(FOLDER.parent / "lib", self.root / "lib")
         stubs = self.root / "bin"
         stubs.mkdir()
