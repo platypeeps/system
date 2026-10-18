@@ -27,7 +27,8 @@ task, a brief, or the change's `item`) it then adds a `comment` note through `sd
 top hypotheses' titles, or the failure. Nothing here approves, merges, publishes or posts anywhere else.
 
 `status` answers `GET /api/adversarial/<id>` from the state file. A run whose runner is gone without an outcome reads
-`failed`, with the reason, and a run queued for longer than `STARTUP` that never started reads `failed` too.
+`failed`, with the reason, and a run queued for longer than `STARTUP` that never started reads `failed` too. A run
+whose runner is gone after its outcome but before its note reads the note as not known.
 
 The runner is this file run by path: everything it needs is the standard library and `rank.py` by path, so the
 `sd_db` imports stay inside the functions the server calls.
@@ -430,6 +431,10 @@ def status(run_id: str, *, now: datetime.datetime | None = None):
         started = datetime.datetime.fromisoformat(document["started"].replace("Z", "+00:00"))
         if (now - started).total_seconds() > STARTUP:
             document.update(state="failed", reason=f"the runner never started within {STARTUP} s")
+    elif document["state"] in ("done", "failed") and document.get("item") is not None and document.get("note") is None \
+            and not _alive(document.get("pid")):
+        # The outcome was recorded and the runner stopped before it said whether the note landed.
+        document["note"] = "not known: the runner stopped before it recorded the note"
     return 200, public(document)
 
 

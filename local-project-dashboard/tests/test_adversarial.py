@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -290,6 +291,38 @@ class FailedRuns(AdversarialCase):
         document = adversarial.status(run_id, now=late)[1]
         self.assertEqual((document["state"], document["reason"]),
                          ("failed", f"the runner never started within {adversarial.STARTUP} s"))
+
+    def test_a_runner_that_died_before_its_note_reads_the_note_as_not_known(self):
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        runs = self.state / "system" / "adversarial-gate" / "runs"
+        runs.mkdir(parents=True)
+        run_id = "task-7-20261018T120000Z"
+        (runs / f"{run_id}.json").write_text(json.dumps({
+            "id": run_id, "state": "done", "reason": None, "pid": gone.pid, "result": "/fixture/result.md", "item": 7,
+            "note": None, "started": "2026-10-18T12:00:00Z"}))
+        document = self.read(run_id)[1]
+        self.assertEqual((document["state"], document["note"]),
+                         ("done", "not known: the runner stopped before it recorded the note"))
+
+    def test_a_runner_that_cannot_start_leaves_the_run_failed_and_the_lock_free(self):
+        real = subprocess.Popen
+
+        def refuse(argv, *args, **kwargs):
+            if argv[0] == sys.executable:
+                raise OSError("fork refused")
+            return real(argv, *args, **kwargs)
+
+        with patch.object(adversarial.subprocess, "Popen", side_effect=refuse):
+            status, _, answer = self.review("task", self.task())
+        self.assertEqual(status, 503, answer)
+        self.assertIn("fork refused", answer["error"])
+        [record] = (self.state / "system" / "adversarial-gate" / "runs").glob("*.json")
+        document = self.read(record.stem)[1]
+        self.assertEqual((document["state"], document["reason"]), ("failed", "the runner did not start: fork refused"))
+        status, _, run = self.review("repo", self.key)
+        self.assertEqual(status, 202, run)
+        self.settled(run["id"])
 
     def test_an_unknown_run_is_a_404(self):
         self.assertEqual(self.read("repo-checkout-20261018T120000Z")[0], 404)
