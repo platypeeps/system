@@ -226,7 +226,7 @@ Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIA
 
 Publishing (sd:5102, `publishing.py`, `publish_drain.py`) reuses the pack's mirror queue and receipts; it adds no store.
 Publish to on Documents adds the contract's `drive=dict()` or `notion=dict()` key to a trusted `research.conf.py` entry, then runs `sd-research-kit publish`.
-Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue`.
+Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue_briefs`; each brief render queues it again.
 Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
 It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
 The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.

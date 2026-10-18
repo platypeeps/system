@@ -40,8 +40,8 @@ Removing a designation is refused: the entry may hold the page or file id a drai
 copy. The operator edits the file.
 
 **A brief's choice** (ruling on sd:5102, note #23223) is `fields.publish.<channel>` on its item: `designate_brief` writes
-it in one transaction, writes the brief's stored Markdown to a snapshot, and calls the pack's `enqueue`, which queues as
-for a research document. A copy `fields.published` records is pinned as `page=` or `file=` (`brief_entry`).
+it in one transaction and calls the pack's `enqueue_briefs`, which builds the request from the row and queues it as for a
+research document; every brief render queues it again when its text changes.
 """
 
 from __future__ import annotations
@@ -456,11 +456,6 @@ def brief_choice(fields: dict, setting, unread: str) -> dict:
             "obsidian": None if unread else setting is None or "obsidian" in setting, "why": ""}
 
 
-def snapshot_dir() -> Path:
-    """Where a brief's stored Markdown is written for `enqueue` to read: derived, replaced on every tick, never edited."""
-    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / "publish-drain" / "briefs"
-
-
 def _brief(connection, item: int):
     """`(row, checkout, fields)` for a routine brief, or `Refused`."""
     from sd_db import paths
@@ -477,33 +472,12 @@ def _brief(connection, item: int):
     return row, checkout, fields
 
 
-def brief_entry(row, fields: dict, source: Path) -> dict:
-    """The DOCS entry `enqueue` takes for a brief: its stem, the snapshot as source, its item and each designation.
-
-    A copy its item's `fields.published` already records is pinned (`page=` or `file=`), so a new generation updates it,
-    as drain step 5 makes the next render name it for a research document.
-    """
-    stem = row["title"]
-    published = fields.get("published") if isinstance(fields.get("published"), dict) else {}
-    urls = _from_fields(published, {key for key in published if key.endswith(f"::{stem}")})
-    entry = {"out": stem, "title": stem, "src": str(source), "item": row["id"]}
-    publish = fields.get("publish") if isinstance(fields.get("publish"), dict) else {}
-    for channel in OUTWARD:
-        if isinstance(publish.get(channel), dict):
-            value = dict(publish[channel])
-            pin = "page" if channel == "notion" else "file"
-            if urls.get(channel) and not value.get(pin):
-                value[pin] = urls[channel]
-            entry[channel] = value
-    return entry
-
-
 def designate_brief(connection, item: int, channel: str, *, enqueue=None) -> dict:
     """Publish to on a brief, in three steps, idempotent like `designate`:
 
     1. The repo's channels setting must be read and must not leave the channel out; else it refuses, nothing written.
     2. `fields.publish.<channel>` becomes `{}` in one transaction, unless it is there already.
-    3. The brief's stored Markdown is written to its snapshot, and the pack's `enqueue` queues every designated channel.
+    3. The pack's `enqueue_briefs` queues the brief's designated channels from its row; a pack without it says so.
     """
     from sd_db import writes
     from sd_db.database import transaction
@@ -531,29 +505,17 @@ def designate_brief(connection, item: int, channel: str, *, enqueue=None) -> dic
             fields = {**current, "publish": {**held, channel: {}}}
             writes.set_item_fields(connection, item, fields=fields)
     try:
-        text = str(json.loads(row["body"] or "{}").get("text", ""))
-    except (ValueError, AttributeError):
-        text = ""
-    if not text.strip():
-        return {"designated": channel, "already": already, "queued": False, "exit": 1,
-                "lines": [f"sd:{item} stores no Markdown, so there is nothing to queue"]}
-    source = snapshot_dir() / repo_key(checkout) / f"{row['title']}.md"
-    source.parent.mkdir(parents=True, exist_ok=True)
-    _write_text(source, text)
-    try:
-        lines = (enqueue or kit().enqueue)(checkout, [brief_entry(row, fields, source)], setting)
-    except Exception as error:  # noqa: BLE001 - the designation stands; the next tick queues again
+        queue = enqueue or getattr(kit(), "enqueue_briefs", None)
+        if queue is None:
+            return {"designated": channel, "already": already, "queued": False, "exit": 1,
+                    "lines": ["the installed command pack has no enqueue_briefs (sd:5102), so nothing was queued; update it"]}
+        lines = queue(connection, {item})
+    except Exception as error:  # noqa: BLE001 - the designation stands; the next tick or brief render queues again
         return {"designated": channel, "already": already, "queued": False, "exit": 1,
                 "lines": [f"the pack's enqueue failed, so nothing was queued: {error}"]}
     stem = row["title"]
     queued = any(line.startswith((f"mirror: queued {stem} ", f"mirror: {stem}: already queued")) for line in lines)
     return {"designated": channel, "already": already, "queued": queued, "exit": 0, "lines": lines[-12:]}
-
-
-def _write_text(path: Path, text: str) -> None:
-    partial = path.with_name(path.name + ".partial")
-    partial.write_text(text, encoding="utf-8")
-    os.replace(partial, path)
 
 
 def brief_request(values: dict):

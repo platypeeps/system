@@ -320,7 +320,7 @@ class BriefRows(brief_tests.BriefCase):
 
 
 class BriefDesignation(brief_tests.BriefCase):
-    """Publish to on a brief: `fields.publish.<channel>` on its item, then the pack's `enqueue` (ruling note #23223)."""
+    """Publish to on a brief: `fields.publish.<channel>` on its item, then the pack's `enqueue_briefs` (ruling note #23223)."""
 
     STEM = "2026-09-06 - Intel Brief"
 
@@ -333,33 +333,35 @@ class BriefDesignation(brief_tests.BriefCase):
         self.brief = self.ids[self.STEM]
         self.connection.execute("UPDATE item SET repo = ? WHERE id = ?", (str(self.checkout), self.brief))
         self.connection.commit()
-        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.base / "state")}))
         self.queued = []
 
-    def enqueue(self, repo, docs, channels):
-        self.queued.append((repo, docs, channels))
-        return [f"mirror: queued {docs[0]['out']} -> notion private folder, page system"]
+    def enqueue(self, connection, items):
+        # The pack's `enqueue_briefs` builds the request from the row; here it records what it was asked to queue.
+        self.queued.append((items, json.loads(connection.execute("SELECT fields FROM item WHERE id = ?",
+                                                                  (self.brief,)).fetchone()[0])["publish"]))
+        return [f"mirror: queued {self.STEM} -> notion private folder, page system"]
 
     def fields(self):
         return json.loads(self.connection.execute("SELECT fields FROM item WHERE id = ?", (self.brief,)).fetchone()[0] or "{}")
 
-    def test_a_tick_writes_the_designation_and_queues_the_stored_markdown(self):
+    def test_a_tick_writes_the_designation_then_asks_the_pack_to_queue_the_brief(self):
         answer = publishing.designate_brief(self.connection, self.brief, "notion", enqueue=self.enqueue)
         self.assertEqual((answer["already"], answer["queued"]), (False, True))
         self.assertEqual(self.fields()["publish"], {"notion": {}})
-        repo, [entry], channels = self.queued[0]
-        self.assertEqual((repo, entry["out"], entry["item"], entry["notion"], channels), (self.checkout, self.STEM, self.brief, {}, None))
-        self.assertIn("Three items worth reading today.", Path(entry["src"]).read_text(encoding="utf-8"))
-        self.assertTrue(entry["src"].startswith(str(self.base / "state")))
+        self.assertEqual(self.queued, [({self.brief}, {"notion": {}})])
 
-    def test_a_second_tick_queues_again_and_pins_the_published_copy(self):
+    def test_a_second_tick_keeps_the_designation_and_queues_again(self):
         publishing.designate_brief(self.connection, self.brief, "notion", enqueue=self.enqueue)
-        fields = {**self.fields(), "published": {f"system::{self.STEM}": {"notion": NOTION_URL}}}
-        self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), self.brief))
-        self.connection.commit()
         answer = publishing.designate_brief(self.connection, self.brief, "notion", enqueue=self.enqueue)
         self.assertTrue(answer["already"])
-        self.assertEqual(self.queued[1][1][0]["notion"], {"page": NOTION_URL})
+        self.assertEqual(len(self.queued), 2)
+
+    def test_a_pack_without_enqueue_briefs_says_so_and_keeps_the_designation(self):
+        with mock.patch.object(publishing, "kit", return_value=object()):
+            answer = publishing.designate_brief(self.connection, self.brief, "drive")
+        self.assertEqual((answer["queued"], answer["exit"]), (False, 1))
+        self.assertIn("no enqueue_briefs", answer["lines"][0])
+        self.assertEqual(self.fields()["publish"], {"drive": {}})
 
     def test_an_enqueue_that_fails_keeps_the_designation_for_the_next_tick(self):
         answer = publishing.designate_brief(self.connection, self.brief, "drive", enqueue=mock.Mock(side_effect=OSError("disk full")))
