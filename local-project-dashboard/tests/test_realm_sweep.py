@@ -256,6 +256,18 @@ class Run(unittest.TestCase):
         self.assertEqual(self.sweep("run", "work").returncode, 0)
         self.assertEqual(self.record("work")["since"]["jira"], recovery["started"])
 
+    def test_a_followup_ref_names_the_message_or_comment_not_its_thread(self):
+        """sd:5096 review round 3: `--ref` refuses a second add whatever the first item's status, so a ref on a thread,
+        file, issue or pull request drops every later action there. A ref names one message or comment, or a version;
+        a draft is skipped only for the reply it already gives, not for its whole thread."""
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        prompt = self.prompts()[0][self.prompts()[0].index("-p") + 1]
+        self.assertNotIn("thread id", prompt)
+        for rule in ("a Gmail message id", "issue key and comment id", "comment or review id", "a Notion comment id",
+                     "add `@` and its modified time", "adds `.2`, `.3`", "skip a reply a draft already gives"):
+            self.assertIn(rule, prompt)
+        self.assertNotIn("skip a thread that already has a draft", prompt)
+
     def test_a_reply_without_a_read_line_moves_no_checkpoint(self):
         """A reply that names nothing it read is unknown: every source keeps its checkpoint, and the record says so."""
         self.assertEqual(self.sweep("run", "personal").returncode, 0)

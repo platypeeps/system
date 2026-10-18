@@ -36,7 +36,8 @@ Steps, and what a stop between them leaves:
 2. `<state>/last.json` as `running`, naming the run folder, the log, the brief and the pid. `status` reads a `running`
    record whose pid is gone as failed, so a stop from here on reads failed.
 3. The model run, in `<state>/runs/<stamp>/`. Followups and drafts land as it goes; a stop leaves them without a brief.
-   The next run finds them: a followup's `--ref` refuses a second add, and a thread with a draft gets no other.
+   The next run finds them: a followup's `--ref` names one message or comment (or a file's version) and refuses a
+   second add, and a reply a draft already gives gets no other.
 4. The brief filed with `sd reports brief add --replace`. A stop before it leaves the brief in the run folder. Before
    its model, each run reads today's filed brief, if any, and keeps its changes, so a second run in a day replaces it
    with more; a read that failed for another reason than "no brief" stops the run there.
@@ -158,11 +159,16 @@ Followups. For each action the operator owns, keep one sd item:
 - Read the open items once: `sd store items --open --json`.
 - An open item that covers the action gets a note: `sd task note <id> "<what changed>" --kind followup`.
 - Otherwise file one: `{add} --ref {realm}-sweep:<source>-<id> "<title>"`. <source> is gmail, drive, notion, jira or
-  github; <id> is that source's thread id, file id, page id, issue key or owner/repo#number. A refusal that names an
-  existing item means it is filed already: leave it.
+  github. <id> names the one message or comment that asks, never its whole thread, file, page, issue or pull request,
+  which can ask again later: a Gmail message id; a Jira issue key and comment id (`ABC-12/10023`); a GitHub
+  owner/repo#number and comment or review id (`owner/repo#7/123`); a Notion comment id. Where nothing finer than the
+  whole asks (a Drive file, a Notion page, a Jira assignment, a review request), add `@` and its modified time
+  (`<file id>@2026-10-18T09:00:00Z`). A second action in that same message or comment adds `.2`, `.3`. A refusal
+  that names an existing item means this one occurrence is filed already: leave it.
 
 Drafts. For each reply the operator owes, save one Gmail draft in {account} with draft_gmail_message, in the
-thread it answers. Search `in:drafts` first and skip a thread that already has a draft. Never send.
+thread it answers. Search `in:drafts` first and skip a reply a draft already gives; a thread with a draft for
+another message still gets this one. Never send.
 
 Brief. Write {brief} with the Write tool. It opens with these three lines:
 ---
