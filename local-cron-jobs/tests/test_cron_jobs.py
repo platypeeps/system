@@ -2035,6 +2035,28 @@ class RunReportTest(unittest.TestCase):
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn("report was not recorded", result.stderr)
 
+    def test_a_prompt_jobs_reply_carries_its_attention_lines_to_the_report(self):
+        # PIN (sd:5000). A prompt job raises attention on Today by writing
+        # `SD_REPORT_ATTENTION:` lines in its reply (the vault's intel-weekly
+        # routine does). The reply must reach the log the report reads, from
+        # the report's offset, each line whole and at its start, as
+        # `reports ingest` matches it, with or without JOB_RESULT_OK.
+        reply = ("# Weekly synthesis filed\n\n- 4 trends\n"
+                 "SD_REPORT_ATTENTION: intel-weekly: LIKELY: T2 links two unrelated launches\n"
+                 "SD_REPORT_ATTENTION: intel-weekly: adversarial gate not run: codex timed out\n"
+                 "RESULT: ok")
+        log = self.fx.folder / "logs" / "demo.log"
+        for extra in ("", 'JOB_RESULT_OK="^RESULT: ok"\n'):
+            with self.subTest(result_ok=bool(extra)):
+                self.sd_log.unlink(missing_ok=True)
+                self.fx.write_job("demo", PROMPT_JOB + extra)
+                self.assertEqual(self.exec_job(FAKE_CLAUDE_SAY=reply).returncode, 0)
+                offset = int(re.search(r"--offset (\d+) ", self.reports()[0]).group(1))
+                marks = [line for line in log.read_bytes()[offset:].splitlines()
+                         if line.startswith(b"SD_REPORT_ATTENTION: ")]
+                self.assertEqual(marks, [b"SD_REPORT_ATTENTION: intel-weekly: LIKELY: T2 links two unrelated launches",
+                                         b"SD_REPORT_ATTENTION: intel-weekly: adversarial gate not run: codex timed out"])
+
     def lost_report_case(self, first_job):
         """One run whose report is not recorded, then two that are: the
         ingest offsets of the three, the log, and the pushes."""
