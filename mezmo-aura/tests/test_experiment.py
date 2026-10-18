@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -19,7 +20,7 @@ ENTRYPOINT = FOLDER / "aura.sh"
 EXAMPLE = "examples/quickstart-orchestration-math/config.toml"
 
 DOCKER = """#!/bin/sh
-echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes}" >> "$STUB_LOG"
+echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes} MEZMO_SERVICE_KEY_SET=${MEZMO_SERVICE_KEY:+yes}" >> "$STUB_LOG"
 case "$1 $2" in
   "image inspect") [ -f "$STUB_IMAGE" ] || exit 1; echo "${STUB_LABEL-local/test@abc}" ;;
 esac
@@ -30,6 +31,16 @@ CONFIG = """[agent.llm]
 provider = "openai"
 api_key = "{{ env.OPENAI_API_KEY }}"
 model = "gpt-test"
+
+[mcp]
+sanitize_schemas = true
+
+[mcp.servers.math]
+transport = "http_streamable"
+url = "http://math-mcp:8081/mcp"
+
+[mcp.servers.math.headers]
+X-Example = "math"
 
 [orchestration]
 enabled = true
@@ -60,7 +71,7 @@ class ExperimentCase(unittest.TestCase):
         self.image.write_text("", encoding="utf-8")
         self.log = self.root / "docker.log"
         self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith(("LLM_", "AURA_", "OTEL_", "GENAI_TRACES_"))}
+                    if not k.startswith(("LLM_", "AURA_", "OTEL_", "GENAI_TRACES_", "MEZMO_"))}
         self.env.update(
             PATH=f"{stubs}:{os.environ['PATH']}",
             SYSTEM_TOOLS_CONFIG=str(self.root / "config"),
@@ -69,10 +80,10 @@ class ExperimentCase(unittest.TestCase):
             LLM_PROVIDER="openrouter", LLM_MODEL="model-exported", LLM_API_KEY="k",
         )
 
-    def start(self, expect, **extra):
+    def start(self, expect, *args, **extra):
         env = dict(self.env, **extra)
         env = {k: v for k, v in env.items() if v is not None}
-        done = subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "start"],
+        done = subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "start", *args],
                               capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(done.returncode, expect, done.stdout + done.stderr)
         return done
@@ -137,8 +148,7 @@ esac
 """
 
 
-class ARun(ExperimentCase):
-    # PR #61 review: a failed curl was swallowed and `run` exited 0.
+class RunCase(ExperimentCase):
     def setUp(self):
         super().setUp()
         shutil.copy(FOLDER / "experiment" / "scenarios.sh",
@@ -150,13 +160,17 @@ class ARun(ExperimentCase):
         self.curl_log = self.root / "curl.log"
         self.env["STUB_CURL_LOG"] = str(self.curl_log)
 
-    def run_scenarios(self, mode):
+    def run_scenarios(self, mode, *args):
         env = dict(self.env, STUB_CURL=mode)
-        return subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "run"],
+        return subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "run", *args],
                               capture_output=True, text=True, env=env, timeout=60)
 
     def requests_sent(self):
         return len(self.curl_log.read_text(encoding="utf-8").splitlines())
+
+
+class ARun(RunCase):
+    # PR #61 review: a failed curl was swallowed and `run` exited 0.
 
     def test_answers_everywhere_exit_zero(self):
         done = self.run_scenarios("ok")
@@ -174,6 +188,42 @@ class ARun(ExperimentCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         responses = self.state("responses.jsonl")
         self.assertIn("upstream failed", responses)
+
+
+class APromptFile(RunCase):
+    """sd:5061: `run --prompts <file>` sends each prompt line to both servers."""
+
+    def prompts(self, text):
+        path = self.root / "prompts.txt"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def test_each_prompt_line_goes_to_both_servers(self):
+        path = self.prompts("# a comment\nList the pipelines.\n\n   \nShow the last error\n")
+        done = self.run_scenarios("ok", "--prompts", path)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.requests_sent(), 4)
+        sent = self.curl_log.read_text(encoding="utf-8")
+        self.assertEqual(sent.count("List the pipelines."), 2)
+        self.assertEqual(sent.count("Show the last error"), 2)
+        self.assertNotIn("multiplied", sent)
+        self.assertIn("127.0.0.1:3101/", sent)
+        self.assertIn("127.0.0.1:3102/", sent)
+        cases = self.state("responses.jsonl")
+        for case in ("single-p1", "orch-p1", "single-p2", "orch-p2"):
+            self.assertIn(f'"case": "{case}"', cases)
+
+    def test_a_file_without_prompts_refuses(self):
+        done = self.run_scenarios("ok", "--prompts", self.prompts("# only a comment\n\n"))
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("no prompt", done.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_a_missing_file_refuses(self):
+        done = self.run_scenarios("ok", "--prompts", str(self.root / "absent.txt"))
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("absent.txt", done.stderr)
+        self.assertFalse(self.curl_log.exists())
 
 
 class AStart(ExperimentCase):
@@ -209,6 +259,103 @@ class AStart(ExperimentCase):
         self.assertIn("LLM_MODEL=model-from-file", self.docker_calls())
 
 
+OVERLAY = """[mcp.servers.dev]
+transport = "http_streamable"
+url = "https://mcp.example.test/mcp"
+
+[mcp.servers.dev.headers]
+Authorization = "Bearer {{ env.MEZMO_SERVICE_KEY }}"
+"""
+
+KEY = "svc-key-value-for-tests-7f3a"
+
+
+class OverlayCase(ExperimentCase):
+    def overlay(self, text):
+        path = self.root / "overlay.toml"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def servers(self, name):
+        return tomllib.loads(self.state(name))["mcp"]["servers"]
+
+
+class AnOverlay(OverlayCase):
+    """sd:5061: `start --overlay <file>` replaces or adds MCP servers by name."""
+
+    def test_without_an_overlay_the_render_keeps_the_example(self):
+        self.start(0)
+        servers = self.servers("config-orch.toml")
+        self.assertEqual(list(servers), ["math"])
+        self.assertEqual(servers["math"]["url"], "http://math-mcp:8081/mcp")
+
+    def test_a_new_server_is_added_to_both_configs(self):
+        self.start(0, "--overlay", self.overlay(OVERLAY))
+        for name in ("config-orch.toml", "config-single.toml"):
+            servers = self.servers(name)
+            self.assertEqual(sorted(servers), ["dev", "math"])
+            self.assertEqual(servers["dev"]["url"], "https://mcp.example.test/mcp")
+            self.assertEqual(servers["math"]["headers"], {"X-Example": "math"})
+        self.assertTrue(tomllib.loads(self.state("config-orch.toml"))["orchestration"]["enabled"])
+        self.assertFalse(tomllib.loads(self.state("config-single.toml"))["orchestration"]["enabled"])
+
+    def test_a_start_without_the_overlay_drops_the_last_one(self):
+        self.start(0, "--overlay", self.overlay(OVERLAY))
+        self.start(0)
+        for name in ("config-orch.toml", "config-single.toml"):
+            self.assertEqual(list(self.servers(name)), ["math"])
+
+    def test_a_server_of_the_same_name_is_replaced_whole(self):
+        self.start(0, "--overlay", self.overlay(
+            '[mcp.servers.math]\ntransport = "http_streamable"\nurl = "https://math.example.test/mcp"\n'))
+        math = self.servers("config-orch.toml")["math"]
+        self.assertEqual(math, {"transport": "http_streamable", "url": "https://math.example.test/mcp"})
+        self.assertNotIn("math-mcp:8081", self.state("config-orch.toml"))
+
+    def test_an_overlay_with_other_tables_refuses(self):
+        done = self.start(1, "--overlay", self.overlay('[agent]\nname = "other"\n'))
+        self.assertIn("[mcp.servers.<name>]", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_a_missing_overlay_refuses(self):
+        done = self.start(1, "--overlay", str(self.root / "absent.toml"))
+        self.assertIn("absent.toml", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+    def test_an_unknown_option_refuses(self):
+        done = self.start(1, "--overlays", self.overlay(OVERLAY))
+        self.assertIn("--overlays", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+
+class TheServiceKey(OverlayCase):
+    """sd:5061: MEZMO_SERVICE_KEY reaches Compose by name; its value lands in no file."""
+
+    def written(self):
+        state = self.folder / "experiment" / "state"
+        files = [p for p in self.root.rglob("*") if p.is_file()]
+        self.assertTrue(any(p.parent == state for p in files))
+        return {str(p): p.read_bytes() for p in files}
+
+    def test_the_value_is_in_no_rendered_file(self):
+        done = self.start(0, "--overlay", self.overlay(OVERLAY), MEZMO_SERVICE_KEY=KEY)
+        self.assertIn("{{ env.MEZMO_SERVICE_KEY }}", self.state("config-orch.toml"))
+        self.assertIn("MEZMO_SERVICE_KEY_SET=yes", self.docker_calls())
+        for path, body in self.written().items():
+            self.assertNotIn(KEY.encode(), body, path)
+        self.assertNotIn(KEY, done.stdout + done.stderr)
+
+    def test_an_overlay_holding_the_value_refuses(self):
+        done = self.start(1, "--overlay", self.overlay(OVERLAY.replace("{{ env.MEZMO_SERVICE_KEY }}", KEY)),
+                          MEZMO_SERVICE_KEY=KEY)
+        self.assertIn("{{ env.MEZMO_SERVICE_KEY }}", done.stderr)
+        self.assertNotIn(KEY, done.stdout + done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+        state = self.folder / "experiment" / "state"
+        for path in state.rglob("*"):
+            self.assertNotIn(KEY.encode(), path.read_bytes(), path)
+
+
 class TheComposeFile(unittest.TestCase):
     """Both Aura servers run the inspected local image, never a pulled one."""
 
@@ -217,6 +364,13 @@ class TheComposeFile(unittest.TestCase):
         anchor = compose.split("aura-orch: &aura", 1)[1].split("environment:", 1)[0]
         self.assertIn("pull_policy: never", anchor)
         self.assertIn("<<: *aura\n", compose.split("aura-single:", 1)[1])
+
+    def test_the_service_key_is_passed_by_name_only(self):
+        """sd:5061: a bare name hands the caller's value through; ${...} would interpolate it."""
+        compose = (Path(__file__).resolve().parent.parent / "experiment" / "docker-compose.yml").read_text()
+        env = compose.split("environment: &aura-env", 1)[1].split("volumes:", 1)[0]
+        self.assertRegex(env, r"\n\s+MEZMO_SERVICE_KEY:\s*\n")
+        self.assertNotIn("${MEZMO_SERVICE_KEY", compose)
 
 
 if __name__ == "__main__":
