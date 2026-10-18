@@ -69,118 +69,120 @@
       <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
     </ul></annunciator-strip>
 
-    <section aria-labelledby="now-h">
-      <div class="sec-head">
-        <h2 id="now-h">Now <button class="help" type="button" aria-label="Help: Now" data-help="&lt;b&gt;One ranked list.&lt;/b&gt; Failed jobs, pull requests waiting on you, abandoned worktrees and unpushed or uncommitted checkouts, loudest first. A source that could not be read is a row, never an empty list. Tap a lamp above to filter by source.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="tally"></p>
-      </div>
-      <table class="ledger" aria-labelledby="now-h" data-tfilter="page">
-        <thead id="rows-head"></thead>
-        <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
-      </table>
-      <p class="filtered" id="filtered" hidden></p>
-      <div id="snoozed"></div>
-    </section>
-
-    <section class="issues-sec" aria-labelledby="problems-h">
-      <div class="sec-head">
-        <h2 id="problems-h">Problem reports <button class="help" type="button" aria-label="Help: Problem reports" data-help="&lt;b&gt;Open reports that ask for you.&lt;/b&gt; A scheduled job that exited non-zero or printed an &lt;code&gt;SD_REPORT_ATTENTION:&lt;/code&gt; line files one; these replace the ntfy and mail alerts. Acknowledge closes the report, as on Reports; &lt;code&gt;sd reports acknowledge&lt;/code&gt; does the same.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="problems-tally"></p>
-      </div>
-      <table class="ledger issues" aria-labelledby="problems-h">
-        <thead><tr><th>Filed</th><th>Report</th><th>Host</th><th>Why</th><th><span class="sr">Acknowledge</span></th></tr></thead>
-        <tbody id="problems"><tr class="empty"><td colspan="5">Reading reports…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="issues-sec" aria-labelledby="briefs-h">
-      <div class="sec-head">
-        <h2 id="briefs-h">New briefs <button class="help" type="button" aria-label="Help: New briefs" data-help="&lt;b&gt;Briefs from the last 7 days you have not marked seen.&lt;/b&gt; Routine briefs and digests file here instead of mail (&lt;code&gt;sd reports brief add&lt;/code&gt;). Seen hides a brief from Today; it shows again if its text grows. Every brief stays on Briefs.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="briefs-tally"></p>
-      </div>
-      <table class="ledger issues" aria-labelledby="briefs-h">
-        <thead><tr><th>Day</th><th>Brief</th><th>Series</th><th>Size</th><th><span class="sr">Seen</span></th></tr></thead>
-        <tbody id="briefs"><tr class="empty"><td colspan="5">Reading briefs…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section aria-labelledby="active-h">
-      <div class="sec-head">
-        <h2 id="active-h">Working now <button class="help" type="button" aria-label="Help: Working now" data-help="&lt;b&gt;Open items with a live session.&lt;/b&gt; A worktree, a lane entry, a running &lt;code&gt;sd-*&lt;/code&gt; command or a herdr agent, each tied to its item by a lane entry, a branch name, &lt;code&gt;--item&lt;/code&gt;, &lt;code&gt;-C&lt;/code&gt; or a Fix note; the row says which. Longest-running item first.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="active-tally"></p>
-      </div>
-      <table class="ledger active" aria-labelledby="active-h">
-        <thead id="active-head"></thead>
-        <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
-      </table>
-      <p class="filtered" id="active-note" hidden></p>
-    </section>
-
-    <section aria-labelledby="work-h">
-      <div class="sec-head">
-        <h2 id="work-h">Your work <button class="help" type="button" aria-label="Help: Your work" data-help="&lt;b&gt;Items due or in progress.&lt;/b&gt; The same list as &lt;code&gt;sd today&lt;/code&gt;, finished-unsent items first. Snooze hides an item until a time; it shows again early if its status or due date changes. &lt;code&gt;sd today&lt;/code&gt; still lists a snoozed item.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="work-tally"></p>
-      </div>
-      <table class="ledger work" aria-labelledby="work-h">
-        <thead id="work-head"></thead>
-        <tbody id="work"><tr class="empty"><td colspan="4">Reading work…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="issues-sec" aria-labelledby="issues-h">
-      <div class="sec-head">
-        <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels). Watched issues stay synced and are not listed. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="issues-tally"></p>
-      </div>
-      <table class="ledger issues" aria-labelledby="issues-h">
-        <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
-        <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="issues-sec" aria-labelledby="intake-h">
-      <div class="sec-head">
-        <h2 id="intake-h">Issue intake <button class="help" type="button" aria-label="Help: Issue intake" data-help="&lt;b&gt;Issues that need an item.&lt;/b&gt; Open GitHub issues someone else opened, in each repo with GitHub issues on (Management), that no item carries yet. File as item adds a task in that repo under &lt;code&gt;--ref github:owner/name#N&lt;/code&gt;, as &lt;code&gt;sd task add --ref&lt;/code&gt; does, and the row leaves. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="intake-tally"></p>
-      </div>
-      <table class="ledger issues" aria-labelledby="intake-h">
-        <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Opened by</th><th><span class="sr">File</span></th></tr></thead>
-        <tbody id="intake"><tr class="empty"><td colspan="5">Reading issue intake…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="issues-sec" aria-labelledby="mail-h">
-      <div class="sec-head">
-        <h2 id="mail-h">Your mail <button class="help" type="button" aria-label="Help: Your mail" data-help="&lt;b&gt;Mail threads waiting on you.&lt;/b&gt; A thread shows when its newest message, in the last 48 hours, came to an alias a repo names (&lt;code&gt;email=LABEL&lt;/code&gt; on the repo&#39;s channels) and someone else wrote last. Read from mail-intake&#39;s state on this machine; &lt;code&gt;mail-intake.sh fetch&lt;/code&gt; refreshes it.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="mail-tally"></p>
-      </div>
-      <table class="ledger issues" aria-labelledby="mail-h">
-        <thead><tr><th>Sent</th><th>Subject</th><th>Repo</th><th>From</th></tr></thead>
-        <tbody id="mail"><tr class="empty"><td colspan="4">Reading mail…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section aria-labelledby="decisions-h">
-      <div class="sec-head">
-        <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item.">
-          <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="decisions-tally"></p>
-      </div>
-      <table class="ledger decisions" aria-labelledby="decisions-h">
-        <thead id="decisions-head"></thead>
-        <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
-      </table>
-      <p class="filtered" id="decisions-review" hidden></p>
-      <p class="filtered" id="decisions-note" role="status" hidden></p>
-    </section>
+    <div id="view-now" aria-label="Now">
+      <section aria-labelledby="now-h">
+        <div class="sec-head">
+          <h2 id="now-h">Now <button class="help" type="button" aria-label="Help: Now" data-help="&lt;b&gt;One ranked list.&lt;/b&gt; Failed jobs, pull requests waiting on you, abandoned worktrees and unpushed or uncommitted checkouts, loudest first. A source that could not be read is a row, never an empty list. Tap a lamp above to filter by source.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="tally"></p>
+        </div>
+        <table class="ledger" aria-labelledby="now-h" data-tfilter="page">
+          <thead id="rows-head"></thead>
+          <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
+        </table>
+        <p class="filtered" id="filtered" hidden></p>
+        <div id="snoozed"></div>
+      </section>
+    </div>
+    <div id="view-work" aria-label="Work" hidden>
+      <section aria-labelledby="active-h">
+        <div class="sec-head">
+          <h2 id="active-h">Working now <button class="help" type="button" aria-label="Help: Working now" data-help="&lt;b&gt;Open items with a live session.&lt;/b&gt; A worktree, a lane entry, a running &lt;code&gt;sd-*&lt;/code&gt; command or a herdr agent, each tied to its item by a lane entry, a branch name, &lt;code&gt;--item&lt;/code&gt;, &lt;code&gt;-C&lt;/code&gt; or a Fix note; the row says which. Longest-running item first.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="active-tally"></p>
+        </div>
+        <table class="ledger active" aria-labelledby="active-h">
+          <thead id="active-head"></thead>
+          <tbody id="active"><tr class="empty"><td colspan="5">Reading sessions…</td></tr></tbody>
+        </table>
+        <p class="filtered" id="active-note" hidden></p>
+      </section>
+      <section aria-labelledby="work-h">
+        <div class="sec-head">
+          <h2 id="work-h">Your work <button class="help" type="button" aria-label="Help: Your work" data-help="&lt;b&gt;Items due or in progress.&lt;/b&gt; The same list as &lt;code&gt;sd today&lt;/code&gt;, finished-unsent items first. Snooze hides an item until a time; it shows again early if its status or due date changes. &lt;code&gt;sd today&lt;/code&gt; still lists a snoozed item.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="work-tally"></p>
+        </div>
+        <table class="ledger work" aria-labelledby="work-h">
+          <thead id="work-head"></thead>
+          <tbody id="work"><tr class="empty"><td colspan="4">Reading work…</td></tr></tbody>
+        </table>
+      </section>
+    </div>
+    <div id="view-inbox" aria-label="Inbox" hidden>
+      <section class="issues-sec" aria-labelledby="problems-h">
+        <div class="sec-head">
+          <h2 id="problems-h">Problem reports <button class="help" type="button" aria-label="Help: Problem reports" data-help="&lt;b&gt;Open reports that ask for you.&lt;/b&gt; A scheduled job that exited non-zero or printed an &lt;code&gt;SD_REPORT_ATTENTION:&lt;/code&gt; line files one; these replace the ntfy and mail alerts. Acknowledge closes the report, as on Reports; &lt;code&gt;sd reports acknowledge&lt;/code&gt; does the same.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="problems-tally"></p>
+        </div>
+        <table class="ledger issues" aria-labelledby="problems-h">
+          <thead><tr><th>Filed</th><th>Report</th><th>Host</th><th>Why</th><th><span class="sr">Acknowledge</span></th></tr></thead>
+          <tbody id="problems"><tr class="empty"><td colspan="5">Reading reports…</td></tr></tbody>
+        </table>
+      </section>
+      <section class="issues-sec" aria-labelledby="briefs-h">
+        <div class="sec-head">
+          <h2 id="briefs-h">New briefs <button class="help" type="button" aria-label="Help: New briefs" data-help="&lt;b&gt;Briefs from the last 7 days you have not marked seen.&lt;/b&gt; Routine briefs and digests file here instead of mail (&lt;code&gt;sd reports brief add&lt;/code&gt;). Seen hides a brief from Today; it shows again if its text grows. Every brief stays on Briefs.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="briefs-tally"></p>
+        </div>
+        <table class="ledger issues" aria-labelledby="briefs-h">
+          <thead><tr><th>Day</th><th>Brief</th><th>Series</th><th>Size</th><th><span class="sr">Seen</span></th></tr></thead>
+          <tbody id="briefs"><tr class="empty"><td colspan="5">Reading briefs…</td></tr></tbody>
+        </table>
+      </section>
+      <section class="issues-sec" aria-labelledby="mail-h">
+        <div class="sec-head">
+          <h2 id="mail-h">Your mail <button class="help" type="button" aria-label="Help: Your mail" data-help="&lt;b&gt;Mail threads waiting on you.&lt;/b&gt; A thread shows when its newest message, in the last 48 hours, came to an alias a repo names (&lt;code&gt;email=LABEL&lt;/code&gt; on the repo&#39;s channels) and someone else wrote last. Read from mail-intake&#39;s state on this machine; &lt;code&gt;mail-intake.sh fetch&lt;/code&gt; refreshes it.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="mail-tally"></p>
+        </div>
+        <table class="ledger issues" aria-labelledby="mail-h">
+          <thead><tr><th>Sent</th><th>Subject</th><th>Repo</th><th>From</th></tr></thead>
+          <tbody id="mail"><tr class="empty"><td colspan="4">Reading mail…</td></tr></tbody>
+        </table>
+      </section>
+    </div>
+    <div id="view-issues" aria-label="Issues" hidden>
+      <section class="issues-sec" aria-labelledby="issues-h">
+        <div class="sec-head">
+          <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels). Watched issues stay synced and are not listed. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="issues-tally"></p>
+        </div>
+        <table class="ledger issues" aria-labelledby="issues-h">
+          <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
+          <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>
+        </table>
+      </section>
+      <section class="issues-sec" aria-labelledby="intake-h">
+        <div class="sec-head">
+          <h2 id="intake-h">Issue intake <button class="help" type="button" aria-label="Help: Issue intake" data-help="&lt;b&gt;Issues that need an item.&lt;/b&gt; Open GitHub issues someone else opened, in each repo with GitHub issues on (Management), that no item carries yet. File as item adds a task in that repo under &lt;code&gt;--ref github:owner/name#N&lt;/code&gt;, as &lt;code&gt;sd task add --ref&lt;/code&gt; does, and the row leaves. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="intake-tally"></p>
+        </div>
+        <table class="ledger issues" aria-labelledby="intake-h">
+          <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Opened by</th><th><span class="sr">File</span></th></tr></thead>
+          <tbody id="intake"><tr class="empty"><td colspan="5">Reading issue intake…</td></tr></tbody>
+        </table>
+      </section>
+    </div>
+    <div id="view-decisions" aria-label="Decisions" hidden>
+      <section aria-labelledby="decisions-h">
+        <div class="sec-head">
+          <h2 id="decisions-h">Decisions <button class="help" type="button" aria-label="Help: Decisions" data-help="&lt;b&gt;Questions that wait on you.&lt;/b&gt; Each is a &lt;code&gt;question&lt;/code&gt; note with one &lt;code&gt;Option:&lt;/code&gt; line per choice. A button records that choice as a &lt;code&gt;decision&lt;/code&gt; note and resolves the question; &lt;code&gt;sd task show&lt;/code&gt; prints both. Prose &quot;Decision needed&quot; notes stay on their item.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="decisions-tally"></p>
+        </div>
+        <table class="ledger decisions" aria-labelledby="decisions-h">
+          <thead id="decisions-head"></thead>
+          <tbody id="decisions"><tr class="empty"><td colspan="4">Reading decisions…</td></tr></tbody>
+        </table>
+        <p class="filtered" id="decisions-review" hidden></p>
+        <p class="filtered" id="decisions-note" role="status" hidden></p>
+      </section>
+    </div>
   </main>
 
   <div class="details" id="details"><p class="why">Reading the fleet…</p></div>

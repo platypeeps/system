@@ -7,6 +7,9 @@ const { html, put, plural, cells } = window.markup;
 // build: nothing here can be loud. The watchdog is not read, so the page claims nothing for the rail or Today.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'watchdog not read' };
 window.PAGE_COMMANDS = [];
+// sd:5080: the list and the cadence strip are the shell's views (shell.js, view:start). The Range chips sit in each view's
+// head and set one range for both; a tick or a lane shows the list with that brief or that source.
+window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }];
 window.PAGE_KEYS = [['/', 'Filter briefs, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
@@ -89,14 +92,15 @@ addEventListener('DOMContentLoaded', () => {
   // build: a tick sits at its time; a brief with no known time sits at noon of its day.
   const x = b => { const t0 = Date.parse(DAYS[0] + 'T00:00:00Z'), span = DAYS.length * DAY_MS;
     return ((Date.parse(b.at || b.day + 'T12:00:00Z') - t0) / span) * W; };
+  const RANGE_HOSTS = () => ['range', 'range-cad'].map(id => document.getElementById(id));
   function renderRange() {
-    put(document.getElementById('range'), html`${Object.keys(RANGES).map(r => html`<button class="chip" type="button" data-r="${r}" aria-pressed="${String(r === range)}">${r}</button>`)}`);
+    RANGE_HOSTS().forEach(el => put(el, html`${Object.keys(RANGES).map(r => html`<button class="chip" type="button" data-r="${r}" aria-pressed="${String(r === range)}">${r}</button>`)}`));
   }
   // 7d, not 24h, is this view's default: most sources write once a day, so 24h shows one tick per lane and no cadence.
-  document.getElementById('range').addEventListener('click', e => {
+  RANGE_HOSTS().forEach(el => el.addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c || !RANGES[c.dataset.r]) return;
     range = c.dataset.r; DAYS = days(); if (F.day && !DAYS.includes(F.day)) F.day = ''; page = 1; renderRange(); update();
-  });
+  }));
   function renderLanes() {
     const step = W / DAYS.length, label = DAYS.length <= 7 ? 1 : 5;
     const grid = html`${DAYS.map((d, i) => html`<line x1="${(i * step).toFixed(1)}" x2="${(i * step).toFixed(1)}" y1="0" y2="${H}"/>`)}<line x1="${W}" x2="${W}" y1="0" y2="${H}"/>`;
@@ -112,10 +116,10 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('cad-table'), html`<table><caption class="sr">Briefs per source and day</caption><thead><tr><th scope="col">Source</th>${DAYS.map(d => html`<th scope="col">${d.slice(5)}</th>`)}<th scope="col">Total</th></tr></thead><tbody>${SOURCES.map(s => html`<tr><td>${s.id}</td>${DAYS.map(d => html`<td>${BRIEFS.filter(b => b.src === s.id && b.day === d).length}</td>`)}<td>${ranged().filter(b => b.src === s.id).length}</td></tr>`)}</tbody></table>`);
   }
   document.getElementById('lanes').addEventListener('click', e => {
-    const t = e.target.closest('rect.tick'); if (t) return select(t.dataset.id, true);
+    const t = e.target.closest('rect.tick'); if (t) { shell.view.show('list'); return select(t.dataset.id, true); }
     const b = e.target.closest('.lane-btn'); if (!b) return;
     const s = b.dataset.src;
-    F.src.has(s) ? F.src.delete(s) : F.src.add(s); page = 1; update();
+    F.src.has(s) ? F.src.delete(s) : F.src.add(s); page = 1; update(); shell.view.show('list');
     if (F.src.has(s)) showSource(s);
   });
 

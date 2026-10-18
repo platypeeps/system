@@ -54,6 +54,7 @@ ROWS_EL.querySelectorAll = () => {
 """
 SHELL_MORE = r"""
 window.shell.row = () => new URLSearchParams(location.search).get('row');
+OUT.shown = []; OUT.counts = {}; window.shell.view = { show: id => { OUT.shown.push(id); return true; }, current: () => 'now', count: (id, n) => { OUT.counts[id] = n; } };
 { const commands = C;
 """ + RECONCILE + """
   window.shell.reconcile = reconcile; }
@@ -158,6 +159,38 @@ R.cleared = window.PAGE_LIST.clear(); R.shown = ROWS_EL.querySelectorAll().filte
         self.assertEqual(out["R"]["afterEsc"], 1, "today.js cleared the filter on Esc itself; the shell sends Esc to PAGE_LIST.clear")
         self.assertEqual((out["R"]["cleared"], out["R"]["shown"], out["R"]["again"]), (True, 0, False))
 
+
+
+class TheViews(TheReader):
+    """sd:5080: Today's areas are the shell's views; each tab counts what waits there, and an unread section hides it."""
+
+    def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
+        views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "work", "inbox", "issues", "decisions"])
+        self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
+        page = (V2 / "today.html").read_text(encoding="utf-8")
+        panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))
+                  for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
+        self.assertEqual(panels, {"now": ["now-h"], "work": ["active-h", "work-h"], "inbox": ["problems-h", "briefs-h", "mail-h"],
+                                  "issues": ["issues-h", "intake-h"], "decisions": ["decisions-h"]})
+        scripts = "".join((V2 / "static" / f).read_text(encoding="utf-8")
+                          for f in ("today.js", "today-reports.js", "mail.js", "issues.js", "decisions.js"))
+        reported = set(re.findall(r"todayCount(?:\?\.)?\('([a-z]+)'", scripts))
+        self.assertEqual(reported, {"now", "work", "problems", "briefs", "mail", "issues", "intake", "decisions"})
+
+    def test_a_read_counts_now_and_an_unread_section_hides_its_tabs_count(self):
+        out = self.run_page("""R.now = OUT.counts.now;
+window.todayCount('problems', 2); window.todayCount('briefs', 3); window.todayCount('mail', null); R.unread = OUT.counts.inbox;
+window.todayCount('mail', 1); R.read = OUT.counts.inbox;
+ANSWER = () => [500, { error: 'stopped' }]; refresh(); await flush(); R.failed = [OUT.counts.now, OUT.counts.work];""")
+        self.assertEqual(out["R"]["now"], 2, "the failed job and the unpushed repo both want you")
+        self.assertEqual((out["R"]["unread"], out["R"]["read"]), (None, 6))
+        self.assertEqual(out["R"]["failed"], [None, None])
+
+    def test_a_lamp_shows_now_which_it_filters(self):
+        out = self.run_page("""const cell = { id: 'jobs-cell', dataset: { src: 'jobs' } };
+ELS.annunciator.listeners.click[0]({ target: { closest: s => s === 'button.cell' ? cell : null } });""")
+        self.assertEqual(out["shown"], ["now"])
 
 
 class TheLamps(TheReader):

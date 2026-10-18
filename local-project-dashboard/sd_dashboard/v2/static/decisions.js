@@ -48,7 +48,7 @@
     line.hidden = !n;
     if (!LIST) {
       put(tb, html`<tr class="empty"><td colspan="4">Decisions could not be read: ${failed}. Refresh tries again.</td></tr>`);
-      put($('decisions-tally'), html``);
+      put($('decisions-tally'), html``); window.todayCount?.('decisions', null);
       return tell(0);
     }
     put(tb, LIST.length ? html`${sorted(LIST).map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
@@ -59,6 +59,7 @@
       : html`<tr class="empty"><td colspan="4">No decision waits on you. An open question note appears here; one with two Option: lines gets a button each.</td></tr>`);
     const waiting = LIST.filter(d => !RULED.has(d.note)).length;
     put($('decisions-tally'), LIST.length ? html`<span class="g-caution">▲ ${waiting} waiting</span>${RULED.size ? html`<span class="g-ok">● ${RULED.size} ruled</span>` : ''}` : html``);
+    window.todayCount?.('decisions', waiting);
     tell(waiting);
   }
 

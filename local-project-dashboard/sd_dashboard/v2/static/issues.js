@@ -15,6 +15,7 @@
         <td class="why">${r.reason}</td></tr>`)}`
       : html`<tr class="empty"><td colspan="4">No open issue is assigned to you or filed by you in a repo with issue sources.</td></tr>`);
     put($('issues-tally'), issues.length && !error ? html`<span>${issues.length} open</span>` : html``);
+    window.todayCount?.('issues', error ? null : issues.length); // Today's Issues tab (sd:5080); Tasks has none
   }
   document.addEventListener('issues:read', e => draw(e.detail));
 
@@ -40,6 +41,7 @@
       : html`<tr class="empty"><td colspan="5">No third-party issue waits for an item in a repo with GitHub issues on.</td></tr>`);
     const waiting = INTAKE.filter(r => !FILED.has(r.key)).length;
     put($('intake-tally'), INTAKE.length && !FAILED ? html`<span>${waiting} waiting</span>` : html``);
+    window.todayCount?.('intake', FAILED ? null : waiting);
   }
   function file(key) {
     const r = INTAKE.find(x => x.key === key);

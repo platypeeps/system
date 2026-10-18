@@ -267,6 +267,7 @@ class ThePage(BrowserSession):
 METRICS_SHELL = r"""
 window.shell.row = () => null;
 window.shell.pages = { Tasks: '/tasks' };
+OUT.shown = []; window.shell.view = { show: id => { OUT.shown.push(id); return true; }, current: () => 'spend', count() {} };
 """
 
 
@@ -319,12 +320,29 @@ class TheScript(Controlled):
         out = self.run_page("R.lamps = ELS.annunciator.html;")
         self.assertEqual(out["gets"], ["/api/metrics"])
         lamps = out["R"]["lamps"]
-        self.assertRegex(lamps, r'data-cell="spend" data-ev="spend" data-state="ok".*?<b>\$80.00</b>')
-        self.assertRegex(lamps, r'data-cell="w-claude" data-ev="win:claude:10080" data-state="caution".*?<b>80%</b> used')
-        self.assertRegex(lamps, r'data-cell="ci" data-ev="unread:ci" data-state="unknown".*?not read')
+        self.assertRegex(lamps, r'data-cell="spend" data-ev="spend" data-view="spend" data-state="ok".*?<b>\$80.00</b>')
+        self.assertRegex(lamps, r'data-cell="w-claude" data-ev="win:claude:10080" data-view="spend" data-state="caution".*?<b>80%</b> used')
+        self.assertRegex(lamps, r'data-cell="ci" data-ev="unread:ci" data-view="ci" data-state="unknown".*?not read')
         self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "readings past a threshold"})
         self.assertIsNone(out["states"][-1])
+
+    def test_the_panels_are_the_shells_views(self):
+        """sd:5080: Spend (spend, the week, usage), Providers, CI, Skills and Age are PAGE_VIEWS panels."""
+        views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", METRICS_JS, re.S).group(1)
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["spend", "providers", "ci", "skills", "age"])
+        self.assertIn("{ id: 'skills', label: 'Skills', key: 'k' }", views)
+        page = (V2 / "metrics.html").read_text(encoding="utf-8")
+        panels = {m.group(1): re.findall(r'<section class="panel" id="([a-z-]+)"', m.group(2))
+                  for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
+        self.assertEqual(panels, {"spend": ["spend", "week", "usage"], "providers": ["scorecard"], "ci": ["ci"],
+                                  "skills": ["skill-use"], "age": ["age"]})
+
+    def test_a_lamp_shows_the_view_that_holds_its_reading(self):
+        out = self.run_page("""const lamp = (cell, ev, view) => ({ dataset: { cell, ev, view } });
+for (const el of [lamp('ci', 'unread:ci', 'ci'), lamp('spend', '', 'spend')])
+  DOC_LISTENERS.click.forEach(f => f({ target: { closest: s => s === '[data-ev]' ? el : null } }));""")
+        self.assertEqual(out["shown"], ["ci", "spend"], "a spend lamp that did not read still shows its view")
 
     def test_the_panels_draw_the_readings_and_name_what_is_not_read(self):
         out = self.run_page("""R.bills = ELS.bills.html; R.trends = ELS.trends.html; R.model = ELS.model.html; R.ci = ELS['ci-state'].html;

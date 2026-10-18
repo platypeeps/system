@@ -408,7 +408,7 @@ shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", ACCEP
         out = self.run_page("""window.shell.pages.Management = '/management';
 R.cli = cmd('jobs.log').cli(C.get('job:nightly-sync'));
 shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = location.href;""")
-        self.assertEqual(out["R"].get("href"), "/management?view=schedules&q=nightly-sync&row=cron%3Anightly-sync")
+        self.assertEqual(out["R"].get("href"), "/management?q=nightly-sync&row=cron%3Anightly-sync#view=schedules")
         self.assertEqual(out["R"]["cli"], "local-cron-jobs/cron-jobs.sh logs nightly-sync")
         self.assertEqual(out["toasts"], [["nightly-sync opens in Management > Schedules", False]])
         self.assertEqual(out["posts"], [])
