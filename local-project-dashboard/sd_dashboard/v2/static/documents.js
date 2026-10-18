@@ -111,7 +111,7 @@ function row(d) {
     <td class="kind">${d.kind}</td>
     <td class="mod repo"><time class="rel" datetime="${d.mod}"></time></td>
     <td class="num">${kb(d.bytes)}</td>
-    <td class="acts">${shell.commands.rowActions(d.id)}</td></tr>`;
+    <td class="acts">${window.commands.published(d.pub)}${shell.commands.rowActions(d.id)}</td></tr>`;
 }
 // build: no request is filed (document.request is copy only), so the list has no queued request rows.
 function render() {
@@ -204,6 +204,9 @@ const ROOT_CMDS = [
   { id: 'root.unhide', on: 'document root', label: 'Unhide root', does: 'Shows this root in the list again; Undo hides it.', icon: 'eye', risk: 'undo', primary: () => true, when: o => !o.hidden ? 'not hidden' : storeOff(),
     cli: () => ROOT_CLI, run: o => rootView(o, { hidden: false }).then(() => `Unhidden: ${o.label}`), undo: o => rootView(o, { hidden: true }) },
 ];
+// Publish to and Publish now (sd:5102): commands.js declares both, for a research-kit document here and a brief on Briefs.
+const PUBLISH_CMDS = window.commands.publishCommands('document', { base: '/api/documents', payload: o => ({ root: o.key, file: o.file }), reread: () => reading.reread(),
+  cli: (o, channel) => `add ${channel}=dict() to the ${o.file.replace(/\.html$/, '')} entry in research.conf.py, then: cd ${shq(checkoutOf(o))} && sd-research-kit publish` });
 function registerCommands() {
   const C = shell.commands;
   C.register(
@@ -235,9 +238,11 @@ function registerCommands() {
       cli: o => `no CLI: proposes skip|${o.key} in documents.conf` },
     REQUEST,
     ...ROOT_CMDS,
+    ...PUBLISH_CMDS,
   );
 }
 document.addEventListener('shell:open', e => { if (DOCS.some(d => d.id === e.detail)) select(e.detail, true); });
+document.addEventListener('publish:run', e => { if (selected === e.detail.key) show(selected); });
 document.addEventListener('shell:picked', e => { picked = e.detail; tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
 
 // ---------- Details ----------
@@ -261,6 +266,7 @@ function show(id) {
       <dt>Modified</dt><dd><time class="rel" datetime="${d.mod}"></time></dd><dt>Source</dt><dd>${d.src ? d.src : '— none matched'}</dd>
       <dt>Render</dt><dd>${d.stale ? html`<span class="g-caution">▲</span> source newer than page` : d.src ? html`<span class="g-ok">●</span> rendered after source` : html`<span class="g-unknown">▨</span> unknown: no source Markdown to compare`}</dd>
       <dt>Label</dt><dd>${LABEL[d.key] || d.key}${root.research ? ' · research repo' : ''}</dd></dl>
+    ${window.commands.publishPane('document', d)}
     <h3>Root</h3><div>${shell.commands.bar(`root:${d.key}`)}</div>
     ${root.file_label ? html`<p class="why">documents.conf still holds <code>label|${d.key}|${root.file_label}</code>, which is not read (sd:3986): Rename root sets the name here.</p>` : ''}
     <h3>Tags</h3>
@@ -436,7 +442,7 @@ function adopt(doc) {
   document.body.dataset.observed = DOC.read; // shell time cells count from the reading, not from now
   ROOTS = DOC.roots || []; LABEL = Object.fromEntries(ROOTS.map(r => [r.key, r.label])); STORE = DOC.store?.available ? '' : (DOC.store?.reason || 'the view store was not read');
   DOCS = (DOC.documents || []).map(r => ({ id: `${r.key}/${r.file}`, type: 'document', label: r.title || r.file, key: r.key, file: r.file, href: r.href,
-    bytes: r.bytes, mod: r.modified, kind: r.kind, src: r.src, stale: !!r.stale, title: r.title || r.file, h1: r.h1, desc: r.desc, tags: r.tags || [], pinned: !!r.pinned, hidden: !!r.hidden }));
+    bytes: r.bytes, mod: r.modified, kind: r.kind, src: r.src, stale: !!r.stale, title: r.title || r.file, h1: r.h1, desc: r.desc, tags: r.tags || [], pinned: !!r.pinned, hidden: !!r.hidden, pub: r.pub || null }));
   if (!linked) {
     // The address is read before the first draw: that draw's reconcile selects the first shown row, and selecting rewrites
     // ?row=, so a link to any other row would be lost. A linked row the filters show moves the list to its page.
