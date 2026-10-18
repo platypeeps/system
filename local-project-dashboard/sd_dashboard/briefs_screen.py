@@ -7,8 +7,9 @@ The page is `v2/briefs.html`; it holds no rows. It reads one JSON document,
 row of kind `report` and source `brief` each, read through the pack's
 `routine_briefs.rows`, newest first and at most `ROWS`, without their text.
 A row is one brief: its stem is the subject and the row's `id`, its series
-the source, and `item` the item id, whose page (`/item/<id>`) renders the
-whole Markdown. A time is given only when the brief was first filed on its
+the source, cut at the first ` · ` (an adversarial review's stem carries its
+target and time after one, sd:5064), and `item` the item id, whose page
+(`/item/<id>`) renders the whole Markdown. A time is given only when the brief was first filed on its
 own day; else `at` is null.
 
 **The vault copy.** `sd reports brief render` writes each row's copy into
@@ -141,7 +142,7 @@ def _row(raw, found, state: dict, vault: str | None) -> dict | None:
         return None
     stamp = at.strftime("%Y-%m-%dT%H:%M:%SZ")
     rel, link, why = _copy(stem, raw.get("repo"), raw.get("updated_at"), found, state, vault)
-    return {"id": stem, "item": item, "subj": stem, "src": series, "day": day, "at": stamp if stamp[:10] == day else None,
+    return {"id": stem, "item": item, "subj": stem, "src": series.split(" · ", 1)[0], "day": day, "at": stamp if stamp[:10] == day else None,
             "words": words, "lead": lead[:LEAD], "rel": rel, "open": link, "copy": why}
 
 
