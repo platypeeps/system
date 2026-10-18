@@ -15,6 +15,7 @@
         unread.map(u => html`<tr class="empty"><td colspan="4">${u.repo}: mail not read: ${u.reason}</td></tr>`)}`
       : html`<tr class="empty"><td colspan="4">No thread waits on you in a repo with mail aliases.</td></tr>`);
     put($('mail-tally'), mail.length && !error ? html`<span>${mail.length + more} waiting</span>` : html``);
+    window.todayCount?.('mail', error ? null : mail.length + more);
   }
   document.addEventListener('mail:read', e => draw(e.detail));
 })();

@@ -36,6 +36,7 @@
       : html`<tr class="empty"><td colspan="5">No open report asks for you.</td></tr>`);
     const open = problems.filter(r => !DONE.has(r.id)).length + (DOC.problems_more || 0);
     put($('problems-tally'), problems.length && !pErr ? html`<span class="g-caution">▲ ${open}${cap} open</span>` : html``);
+    window.todayCount?.('problems', pErr ? null : open);
     put($('briefs'), bErr ? html`<tr class="empty"><td colspan="5">Briefs could not be read: ${bErr}. Refresh tries again.</td></tr>`
       : briefs.length ? html`${briefs.map(b => html`<tr${BUSY.has(b.id) ? html` aria-busy="true"` : ''}>
         <td class="ref"><time datetime="${b.at || b.day}">${b.day}${b.at ? ` ${hm(b.at)}` : ''}</time></td>
@@ -47,6 +48,7 @@
       : html`<tr class="empty"><td colspan="5">No new brief this week. Older ones are on Briefs.</td></tr>`);
     const fresh = briefs.filter(b => !DONE.has(b.id)).length;
     put($('briefs-tally'), briefs.length && !bErr ? html`<span>${fresh} new</span>` : html``);
+    window.todayCount?.('briefs', bErr ? null : fresh);
   }
 
   function details(id) {

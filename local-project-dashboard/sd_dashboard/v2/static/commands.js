@@ -49,7 +49,7 @@
   // Details on Management, the job's row on Management > Schedules elsewhere (sd:2392). `job(o)` names { name }.
   // The filter puts the row on Schedules' first page.
   const openSchedule = job => { const to = window.shell.pages?.Management; if (!to) return 'Management is not built yet';
-    location.href = `${to}?view=schedules&q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}`; return `${job} opens in Management > Schedules`; };
+    location.href = `${to}?q=${encodeURIComponent(job)}&row=${encodeURIComponent(`cron:${job}`)}#view=schedules`; return `${job} opens in Management > Schedules`; };
   // The one cron-jobs line (sd:3525): Reports' report.log prints it too, so no page names the wrapper or a checkout path.
   const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
   function showLog({ job, run = o => openSchedule(job(o).name) }) {

@@ -867,5 +867,45 @@ class TheSelect(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class TheOneViewModel(unittest.TestCase):
+    """sd:5080: a page with several areas shows them through the shell's view switch (shell.js, view:start) and no other.
+
+    The shell alone draws tabs: no page's markup or script carries a tab role or the old Management sub-view strip. Every
+    view-<id> panel is a view its page declares, in PAGE_VIEWS or as a places.js data-place-view block, and every view a
+    page declares by name has its panel, unless the page draws the switch into #viewswitch (a view that filters one list).
+    """
+
+    PAGES = {p.stem: p.read_text(encoding="utf-8") for p in V2.glob("*.html")}
+    # Tasks' List, Board and Matrix and Writing's Board and Editor show one list three or two ways: a layout, not an area.
+    # Their ids predate the switch; each page keeps a realm of the same id out of PAGE_VIEWS (writing.js, tasks.js).
+    LAYOUT = {"tasks": {"btn", "menu", "board", "matrix", "list"}, "writing": {"board", "editor"}}
+    TAB = re.compile(r"""role=["']?tab(list|panel)?\b|'role', 'tab|class="(subviews|sv)\b|\bsv-[a-z]""")
+
+    def declared(self, stem):
+        js = (STATIC / f"{stem}.js").read_text(encoding="utf-8") if (STATIC / f"{stem}.js").exists() else ""
+        block = re.search(r"PAGE_VIEWS = \[(.*?)\];", js, re.S)
+        return set(re.findall(r"\bid: '([a-z0-9-]+)'", block.group(1)) if block else []) | \
+            set(re.findall(r'data-place-view="([a-z0-9-]+)"', self.PAGES[stem]))
+
+    def test_every_rail_page_is_read(self):
+        from sd_dashboard import v2
+        self.assertEqual(len(self.PAGES), len(v2.SECTIONS), "a page joined the rail without this test reading it")
+
+    def test_no_page_draws_tabs_outside_the_shells_view_switch(self):
+        found = [(name, m.group(0)) for name, text in [*((f"{k}.html", v) for k, v in self.PAGES.items()), *PAGE_JS.items()]
+                 for m in self.TAB.finditer(text)]
+        found += [(name, m.group(0)) for name, text in PAGE_CSS.items() for m in re.finditer(r"\.(subviews|sv)\b", text)]
+        self.assertEqual(found, [])
+
+    def test_every_view_panel_is_a_declared_view_and_every_declared_view_has_its_panel(self):
+        stray, missing = [], []
+        for stem, page in sorted(self.PAGES.items()):
+            views, panels = self.declared(stem), set(re.findall(r'id="view-([a-z0-9-]+)"', page)) - self.LAYOUT.get(stem, set())
+            stray += [f"{stem}: view-{p}" for p in sorted(panels - views)]
+            if 'id="viewswitch"' not in page:
+                missing += [f"{stem}: {v}" for v in sorted(views - panels)]
+        self.assertEqual((stray, missing), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
