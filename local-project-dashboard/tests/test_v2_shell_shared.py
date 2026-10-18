@@ -456,6 +456,88 @@ class TheFilterChips(unittest.TestCase):
         self.assertEqual(out["none"], "")
 
 
+TABLES = re.search(r"^  // tables:start\n(.*?)^  // tables:end$", (STATIC / "shell.js").read_text(encoding="utf-8"), re.S | re.M)
+
+
+def run_tables(body):
+    """The table grammar's model functions, as the shell has them; body sets R."""
+    if TABLES is None:
+        raise AssertionError("shell.js has no tables:start block")
+    return run_js(TABLES.group(1) + body)
+
+
+class TheTableGrammar(unittest.TestCase):
+    """sd:5064: every table sorts, filters and folds through one grammar in shell.js."""
+
+    ROWS = """const row = (pos, ...cells) => ({ kind: 'row', cells, pos }), band = (pos, label) => ({ kind: 'group', cells: [label], pos });
+  const rows = [band(0, 'Mon'), row(1, '#10', 'job', '3'), row(2, '#9', 'mail', ''), row(3, '#2', 'job', '12'), { kind: 'static', cells: ['2 more'], pos: 4 },
+    band(5, 'Tue'), row(6, '#1', 'job', '7'), band(7, 'Wed')];
+  const cols = ['Item', 'Kind', 'Min'], ids = list => list.map(r => r.cells[0]);"""
+
+    def test_a_sort_orders_rows_inside_each_band_numbers_as_numbers_and_empty_cells_last(self):
+        out = run_tables(self.ROWS + """
+  R.page = ids(torder(rows, { sort: null, dir: 1 }, cols));
+  R.item = ids(torder(rows, { sort: 'Item', dir: 1 }, cols));
+  R.minUp = ids(torder(rows, { sort: 'Min', dir: 1 }, cols));
+  R.minDown = ids(torder(rows, { sort: 'Min', dir: -1 }, cols));
+  R.lost = ids(torder(rows, { sort: 'Gone', dir: 1 }, cols));
+  R.states = ['ok', 'warning', 'unknown', 'caution'].sort((a, b) => tcompare(a, b, 1));""")
+        self.assertEqual(out["page"], ["Mon", "#10", "#9", "#2", "2 more", "Tue", "#1", "Wed"])
+        self.assertEqual(out["item"], ["Mon", "#2", "#9", "#10", "2 more", "Tue", "#1", "Wed"])
+        self.assertEqual(out["minUp"], ["Mon", "#10", "#2", "#9", "2 more", "Tue", "#1", "Wed"])
+        self.assertEqual(out["minDown"], ["Mon", "#2", "#10", "#9", "2 more", "Tue", "#1", "Wed"])
+        self.assertEqual(out["lost"], out["page"])
+        self.assertEqual(out["states"], ["warning", "caution", "unknown", "ok"])
+
+    def test_a_header_click_goes_ascending_descending_then_back_to_the_page_order(self):
+        out = run_tables("""const st = { sort: null, dir: 1 }, seen = [];
+  for (const l of ['Kind', 'Kind', 'Kind', 'Min', 'Kind']) { tsortBy(st, l); seen.push([st.sort, st.dir]); }
+  R.seen = seen;""")
+        self.assertEqual(out["seen"], [["Kind", 1], ["Kind", -1], [None, 1], ["Min", 1], ["Kind", 1]])
+
+    def test_a_band_with_no_row_under_it_is_a_note_and_not_a_fold(self):
+        out = run_tables(self.ROWS + """
+  R.heads = tsegments(rows).filter(s => s.head).map(s => s.head.cells[0]);""")
+        self.assertEqual(out["heads"], ["Mon", "Tue"])
+
+    def test_filters_match_every_word_and_each_column_value_and_chips_name_them(self):
+        out = run_tables(self.ROWS + """
+  const st = { q: 'JOB 1', f: { Kind: 'job', Gone: 'x' } };
+  R.shown = ids(rows.filter(r => tshows(r, st, cols)));
+  R.chips = tchips(st);
+  R.afterOne = tunfilter({ q: 'a', f: { Kind: 'job', Min: '3' } }, 'f:Kind');
+  R.afterAll = tunfilter({ q: 'a', f: { Kind: 'job' } }, null);""")
+        self.assertEqual(out["shown"], ["Mon", "#10", "#2", "2 more", "Tue", "#1", "Wed"])
+        self.assertEqual(out["chips"], [{"key": "q", "label": "Text: JOB 1"}, {"key": "f:Kind", "label": "Kind: job"}, {"key": "f:Gone", "label": "Gone: x"}])
+        self.assertEqual(out["afterOne"], {"q": "a", "f": {"Min": "3"}})
+        self.assertEqual(out["afterAll"], {"q": "", "f": {}})
+
+    def test_a_column_offers_its_values_when_they_repeat_over_four_rows_or_more(self):
+        out = run_tables(self.ROWS + """
+  R.few = tfacets(cols, rows.filter(r => r.cells[0] !== '#1'));
+  R.facets = tfacets(cols, rows);
+  R.skipped = tfacets(cols, rows, [false, true, false]);""")
+        self.assertEqual(out["few"], [])
+        self.assertEqual(out["facets"], [{"label": "Kind", "values": ["job", "mail"]}])
+        self.assertEqual(out["skipped"], [])
+
+    def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
+        out = run_tables("""R.bad = tstate({ sort: 3, dir: 7, q: null, f: ['x'], closed: 'Mon' });
+  R.good = tstate({ sort: 'Kind', dir: -1, q: 'a', f: { Kind: 'job', n: 2 }, closed: ['Mon', 4] });
+  R.none = tstate(null);""")
+        self.assertEqual(out["bad"], {"sort": None, "dir": 1, "q": "", "f": {}, "closed": []})
+        self.assertEqual(out["good"], {"sort": "Kind", "dir": -1, "q": "a", "f": {"Kind": "job"}, "closed": ["Mon"]})
+        self.assertEqual(out["none"], out["bad"])
+
+    def test_the_grammar_keeps_its_state_in_local_storage_inside_try_and_its_chips_apart(self):
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
+        self.assertIn("try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch", js)
+        self.assertIn("list.chips(tchips(st), shown, total, 'tunfilter')", js)
+        self.assertIn("tr[data-tout] { display: none; }", SHELL_CSS)
+        self.assertIn('td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }', SHELL_CSS)
+
+
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
 #: The rail's markup as shell.js draws it: its head row (the mark and its controls) and its foot.
 RAIL = re.search(r"put\(rail, html`(.*?)`\);", SHELL_JS, re.S).group(1)
