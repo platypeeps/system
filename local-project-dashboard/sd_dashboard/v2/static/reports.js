@@ -290,7 +290,7 @@ function show(id) {
   const rep = x.repeats ? `${x.repeats.count} runs, last ended ${x.repeats.last ? new Date(x.repeats.last).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'not recorded'}` : 'one run';
   // build: a report's open followups, and fields the store cannot parse, are named where the design had only the attention line.
   const waits = !x.fields_read ? html`<p class="why">This report's stored fields are missing or not valid JSON, so its source cannot be read. This page withholds Acknowledge: one click would close a report nobody has read. Read its log, then acknowledge report ${x.id} in a terminal: <code>sd reports acknowledge ${x.id}</code>.</p>`
-    : r.open && x.followups.length ? html`<p class="why">An open followup (${x.followups.map(n => `note ${n}`).join(', ')}) holds this report. Resolve it with <code>sd note resolve ${x.followups[0]}</code>, then acknowledge.</p>` : '';
+    : r.open && x.followups.length ? html`<p class="why">An open followup (${x.followups.map(n => `note ${n}`).join(', ')}) holds this report. Resolve it with Resolve followup, or <code>sd note resolve ${x.followups[0]}</code>, then acknowledge.</p>` : '';
   put(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${G[r.s]}</span> Database report #${x.id} · ${r.open ? (r.attn ? 'needs attention' : 'open') : 'acknowledged'}</p>
     <h2>${r.what}</h2>
     <h3>Act</h3>${window.shell.commands.bar(id)}${jobAct}
@@ -410,6 +410,9 @@ async function acknowledge(o, v = {}) {
   const out = await write(`/api/reports/${o.n}/acknowledge`, { revision });
   return { text: `Acknowledged · #${o.n}`, revision: out.revision };
 }
+// sd:5064: Resolve followup resolves the oldest open followup that holds a report, through the item routes' /resolve.
+const resolveFollowup = o => write(`/api/notes/${o.source.followups[0]}/resolve`, { revision: o.source.revision })
+  .then(() => `Followup resolved · note ${o.source.followups[0]}`);
 const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
@@ -426,6 +429,12 @@ function registerCommands() {
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       fields: () => [{ name: 'reason', label: 'Reason (optional)', placeholder: 'why it can close', help: 'Written on the report as a comment just before it is acknowledged. Leave it empty for none.' }],
       cli: (o, v = {}) => `${v.reason ? `sd task note ${o.n} ${shq(v.reason)} && ` : ''}sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
+    // sd:5064: an open followup holds the report; this resolves it, as sd note resolve does, so Acknowledge can follow. No
+    // route reopens a note, so it asks first.
+    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', risk: 'confirm', journal: o => o.n, executes: true,
+      primary: o => o.open, when: o => !o.open ? 'already acknowledged' : !o.source.followups.length ? 'no open followup holds it' : true,
+      consequence: o => `Note ${o.source.followups[0]} is resolved. No dashboard control reopens it.`,
+      cli: o => `sd note resolve ${o.source.followups[0] ?? '<note>'}`, sends: o => `POST /api/notes/${o.source.followups[0]}/resolve {revision}`, run: resolveFollowup },
     // build: the report opens as its row on Tasks, the item address every page uses (sd:3526).
     { id: 'report.show', on: 'report', label: 'Open item', does: 'Opens the report\'s work item.', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => window.shell.openItem(o.n) },

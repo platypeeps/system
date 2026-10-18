@@ -54,6 +54,7 @@ DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2
 #: The design's Reports commands (design source products/system/designs/pages/reports.js): id, object type, label, key, risk.
 COMMANDS = [
     ["report.ack", "report", "Acknowledge", "a", "undo"],  # the design's risk: reporting.reopen is its Undo (sd:2395)
+    ["report.resolve", "report", "Resolve followup", "e", "confirm"],  # sd:5064: no route reopens a note, so it asks
     ["report.show", "report", "Open item", "o", "safe"],
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
@@ -530,6 +531,20 @@ class TheScript(ScreenCase):
         out = self.run_page(f"FIELD_VALUES = {{ reason: 'why' }}; shellRun(cmd('report.ack'), C.get('r{n}')); await flush();", answer=answer)
         self.assertEqual([p[0] for p in out["posts"]], [f"/api/items/{n}/notes"])
         self.assertIn("the item changed", out["toasts"][-1][0])
+
+    def test_resolve_followup_asks_and_resolves_the_followup_that_holds_the_report(self):
+        """sd:5064: the followup that holds a report is resolved from the page, through the notes' /resolve route."""
+        n = self.ids["failed"]
+        note = next(r for r in self.doc["reports"] if r["id"] == n)["followups"][0]
+        revision = workflow.item_state(self.connection, n)["revision"]
+        answer = f"(path, body) => path.endsWith('/resolve') ? [200, {{ revision: 'after-resolve' }}] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]"
+        out = self.run_page(f"""R.off = [cmd('report.resolve').when(C.get('r{self.ids['clean']}')), cmd('report.resolve').when(C.get('r{self.ids['done']}'))];
+R.cli = cmd('report.resolve').cli(C.get('r{n}')); shellRun(cmd('report.resolve'), C.get('r{n}')); await flush();""", answer=answer)
+        self.assertEqual(out["R"]["off"], ["no open followup holds it", "already acknowledged"])
+        self.assertEqual(out["confirms"], ["report.resolve"])
+        self.assertEqual(out["posts"], [[f"/api/notes/{note}/resolve", {"revision": revision}, 64]])
+        self.assertEqual(out["R"]["cli"], f"sd note resolve {note}")
+        self.assertEqual(out["toasts"][-1], [f"Followup resolved · note {note}", False])
 
     def test_fix_asks_first_posts_the_report_revision_and_names_the_debug_session(self):
         """sd:3456. Fix on a report: a debug session, asked first; it is off once the report is acknowledged."""
