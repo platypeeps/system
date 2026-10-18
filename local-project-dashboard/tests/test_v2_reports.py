@@ -933,24 +933,36 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertNotIn("Newer", (V2 / "reports.html").read_text(encoding="utf-8"))
 
     def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
-        opts = "document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
-        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]);"
-                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'act' }")
-                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.act = [F.act, ELS['f-act'].checked];"
+        # sd:5064: Needs action is a Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.
+        opts = ("document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
+                "document.getElementById('f-status').options = [{ value: '' }, { value: 'act' }, { value: 'open' }, { value: 'done' }];")
+        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]); R.st = [F.status, ELS['f-status'].value];"
+                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'status' }")
+                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.st2 = [F.status, ELS['f-status'].value];"
                             + "ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
                             + " R.chips3 = ELS.chips.html; R.url3 = String(OUT.urls[OUT.urls.length - 1]);"
-                            + " R.F = [F.job, F.act, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
+                            + " R.F = [F.job, F.status, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
                             prelude="location.search = '?job=nightly-sync&act=1&q=sync';\n" + opts)
-        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "act", "q"])
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "status", "q"])
+        self.assertIn("Status: Needs action", out["R"]["chips"])
         self.assertIn("3 filters · ", out["R"]["chips"])
-        self.assertEqual(out["R"]["url"], "job=nightly-sync&act=1&q=sync")
+        self.assertEqual(out["R"]["st"], ["act", "act"])
+        self.assertEqual(out["R"]["url"], "job=nightly-sync&status=act&q=sync")
         self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips2"]), ["job", "q"])
         self.assertEqual(out["R"]["url2"], "job=nightly-sync&q=sync")
-        self.assertEqual(out["R"]["act"], [False, False])
+        self.assertEqual(out["R"]["st2"], ["", ""])
         self.assertEqual(out["R"]["chips3"], "")
         self.assertEqual(out["R"]["url3"], "")
-        self.assertEqual(out["R"]["F"], ["", False, "", "", ""])
+        self.assertEqual(out["R"]["F"], ["", "", "", "", ""])
         self.assertEqual(out["R"]["n"], out["R"]["all"])
+
+    def test_the_page_has_no_view_chips_and_no_needs_action_checkbox(self):
+        # sd:5064: the dropdowns are the one filter control, so the saved-view row and the f-act box are gone.
+        page = (V2 / "reports.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="views"', page)
+        self.assertNotIn('id="f-act"', page)
+        self.assertIn('<option value="act">Needs action</option>', page)
+        self.assertNotIn("shell.views", REPORTS_JS)
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", REPORTS_JS)

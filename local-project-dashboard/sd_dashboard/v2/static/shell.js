@@ -147,6 +147,8 @@
   //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
+  //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
+  //   view with keep: false (Designs' Hidden) is never restored, so the page opens on its default.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
   //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it.
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
@@ -157,6 +159,8 @@
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
   const viewSeen = new Set(), viewTabs = [], viewLinks = [];
+  const VKEY = `sd.view.${location.pathname}`;
+  const viewKept = () => { try { const id = localStorage.getItem(VKEY); return VIEW_LIST.some(v => v.id === id && v.keep !== false) ? id : null; } catch (_) { return null; } };
   const viewOf = h => { const m = /^#view=([a-z0-9-]+)$/.exec(h || ''); return m && VIEW_LIST.some(v => v.id === m[1]) ? m[1] : null; };
   function viewFire(id) {
     const first = !viewSeen.has(id); viewSeen.add(id);
@@ -176,6 +180,7 @@
   function viewShow(id) {
     if (!VIEW_LIST.some(v => v.id === id)) return false;
     if (location.hash !== `#view=${id}`) try { history.pushState(history.state, '', `#view=${id}`); } catch (_) {}
+    try { localStorage.setItem(VKEY, id); } catch (_) {}
     viewApply(id);
     return true;
   }
@@ -212,7 +217,7 @@
     });
     viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
     rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
-    viewApply(viewOf(location.hash) || VIEW_LIST[0].id);
+    viewApply(viewOf(location.hash) || viewKept() || VIEW_LIST[0].id);
     const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };
     addEventListener('hashchange', follow); addEventListener('popstate', follow);
     // v then the view's key. Registered before the shell's keys, so the second key (v r) does not also reload the page.
@@ -900,7 +905,7 @@
     const grp = t => html`<li role="presentation" class="grp">${t}</li>`;
     put(palList, html`${o && live(o).length ? [grp(`Selected · ${o.label}`), live(o).map(c => html`<li role="option" data-run="${c.id}">${ICON(c.icon || 'play')}<span>${c.label}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>. ${c.key}</kbd>` : ''}</li>`)] : ''
       }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
-      }${VIEWS.length ? [grp('Views'), VIEWS.map((v, i) => html`<li role="option" data-view="${i}">${ICON('filter')}<span>View: ${v.name}</span><code>${viewHref(v)}</code></li>`)] : ''
+      }${VIEW_LIST.length > 1 ? [grp('Views'), VIEW_LIST.map(v => html`<li role="option" data-pview="${v.id}">${ICON('layout-dashboard')}<span>View: ${v.label}</span><kbd>v ${viewKey(v)}</kbd></li>`)] : ''
       }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
       GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span><kbd>g ${k}</kbd></li>`)}${
       Object.keys(SCREENS).length ? [grp('Classic screens'), Object.entries(SCREENS).map(([n, href]) => html`<li role="option" data-href="${href}">${ICON('arrow-up-right')}<span>Open ${n}</span><code>${href}</code></li>`)] : ''}`);
@@ -919,7 +924,7 @@
     pal.close();
     if (o.dataset.go) return go(o.dataset.go);
     if (o.dataset.href) { location.href = o.dataset.href; return; }
-    if (o.dataset.view) { location.href = viewHref(VIEWS[+o.dataset.view]); return; }
+    if (o.dataset.pview) { viewShow(o.dataset.pview); return; }
     if (o.hasAttribute('data-chat')) { openChat(); if (palIn.value.trim()) send(palIn.value.trim()); return; }
     if (o.hasAttribute('data-capture')) return openCapture();
     if (o.dataset.run) { const s = OBJ.get(selId), c = REG.find(x => x.id === o.dataset.run); return run(c, s); }
@@ -941,31 +946,6 @@
     if (hrefOf(name)) { location.href = hrefOf(name); return; }
     toast(`${name} is not ${window.SHELL_PAGES ? 'built yet, and has no classic screen' : 'in this mockup round'}.`);
   }
-
-  // ---------- Saved views ----------
-  // shell.views([{ name, params: { due: 'overdue' } }, …]): chips in the page's #views slot, each a link that sets those URL params.
-  // The current view is the one whose params all match the URL; "All" is current when none of the view keys is set.
-  let VIEWS = [];
-  function views(list) {
-    VIEWS = list || []; const slot = document.getElementById('views'); if (!slot) return;
-    const cur = new URLSearchParams(location.search), keys = new Set(VIEWS.flatMap(v => Object.keys(v.params)));
-    // A view keeps every param it does not name (the text filter, the sort) and ?row=, which the page drops on load when the
-    // view hides that row (shell.reconcile). Only the pager resets: page 3 of one view is not page 3 of another.
-    // The drawn href leaves ?row= out, so it does not change with every selection; following a chip adds the row back.
-    const keep = row => [...new URLSearchParams(location.search)].filter(([k]) => !keys.has(k) && k !== 'page' && (row || k !== 'row'));
-    const href = (params, row) => { const u = new URLSearchParams(keep(row)); Object.entries(params).forEach(([k, v]) => u.set(k, v)); const s = u.toString(); return s ? `?${s}` : location.pathname.split('/').pop(); };
-    const isCur = params => Object.entries(params).every(([k, v]) => cur.get(k) === v);
-    const none = ![...keys].some(k => cur.has(k));
-    viewHref = v => href(v.params, true); // the palette opens a view the way its chip does
-    slot.className = 'views'; slot.setAttribute('role', 'navigation'); slot.setAttribute('aria-label', 'Saved views');
-    put(slot, html`<span class="label">View</span><a class="chip" href="${href({})}"${none ? html` aria-current="true"` : ''}>All</a>${
-      VIEWS.map(v => html`<a class="chip" href="${href(v.params)}"${!none && isCur(v.params) ? html` aria-current="true"` : ''}>${v.name}</a>`)
-      }<button class="help" type="button" aria-label="Help: saved views" data-help="<b>A view is a URL.</b> Each chip sets the filters it names and clears the rest; the address bar carries it, so a view can be bookmarked, sent or opened from the palette.">${ICON('circle-help')}</button>`);
-    slot.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
-    // The row and the filters move after render, so a chip's href is rebuilt from the address at the moment it is followed.
-    slot.onclick = e => { const a = e.target.closest('a.chip'); if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return; const v = VIEWS[[...slot.querySelectorAll('a.chip')].indexOf(a) - 1]; e.preventDefault(); location.href = href(v ? v.params : {}, true); };
-  }
-  let viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
 
   // ---------- List grammar: sort, pages, filter chips (foundation patterns.md, Lists) ----------
   // list:start
@@ -1505,7 +1485,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, views, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

@@ -218,29 +218,28 @@ addEventListener('DOMContentLoaded', () => {
     const bases = [...new Set(tasks.map(t => t.base).filter(Boolean))].sort();
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
-    const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
-    // build (sd:3441): Kind and Repo, which grow with the rows, are comboboxes: one value or All. Values the address names
-    // that no row has are options too, and more than one shows as a count until one is picked.
-    const combo = (key, name, opts) => { const all = [...new Set([...opts, ...F[key]])], n = F[key].size;
-      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>All</option>${
-        all.map(v => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${v}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select></div>`; };
-    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${bases.length || F.base.size ? combo('base', 'Base', bases) : ''}${combo('repo', 'Repo', repos)}${
-      grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
-      grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
-      grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
-      grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
-      grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
-      grp('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`)}${
+    // build (sd:3441, sd:5064): every filter is a dropdown, one value or All; the active-filter chips under them are the only
+    // chips. Values the address names that no row has are options too, and more than one (?p=1,2) shows as a count until one
+    // is picked. Each option is [value, label]; `all` names the empty choice.
+    const combo = (key, name, opts, help, all = 'All') => { const vals = [...new Map([...opts, ...[...F[key]].map(v => [v, fvalue(key, v)])])], n = F[key].size;
+      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>${all}</option>${
+        vals.map(([v, l]) => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${l}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select>${help || ''}</div>`; };
+    const same = vs => vs.map(v => [v, v]);
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', same(kinds))}${bases.length || F.base.size ? combo('base', 'Base', same(bases)) : ''}${combo('repo', 'Repo', same(repos))}${
+      combo('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']].map(([v, l]) => [v || 'unset', l]))}${
+      combo('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. An old link may name two buckets; they widen the view, and filters narrow it.">${ICON('circle-help')}</button>`)}${
+      combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
+      combo('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
+      combo('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`, 'Done too')}${
+      combo('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`, 'Not parked')}${
       (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
   const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
-  const fvalue = (k, v) => k === 'p' ? (v ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
+  const fvalue = (k, v) => k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
     : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : k === 'parked' ? 'parked only' : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
-    const c = e.target.closest('[data-f]');
-    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); L.page = 1; render(); return; }
     if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
     const u = e.target.closest('[data-unfilter]'); if (!u) return;
     const [k, v] = u.dataset.unfilter.split(/:(.*)/);
@@ -256,7 +255,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
-  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
+  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
@@ -758,7 +757,7 @@ addEventListener('DOMContentLoaded', () => {
   function render() {
     putAll();
     renderFilters();
-    writeURL(); window.shell.views(VIEWS);
+    writeURL();
     if (view === 'board') renderBoard(); else if (view === 'matrix') renderMatrix(); else renderList();
     // design.md § Selection: a filter or view change that hides the selected task moves the selection to the first visible
     // one, so x, . and the palette never act on a hidden card (review 2026-09-29, item 10).
@@ -1014,13 +1013,6 @@ addEventListener('DOMContentLoaded', () => {
     subhead();
     render();
   }
-  // Saved views: each is a URL. The shell renders the chips and lists them in the palette.
-  const VIEWS = [
-    { name: 'Overdue', params: { due: 'overdue' } },
-    { name: 'Due this week', params: { due: 'overdue,week' } },
-    { name: 'P1 and P2', params: { p: '1,2' } },
-    { name: 'No due date', params: { due: 'none' } },
-  ];
   function readFilterURL() {
     const q = new URLSearchParams(location.search);
     FKEYS.forEach(key => (q.get(key) || '').split(',').filter(Boolean).forEach(v => F[key].add(v)));

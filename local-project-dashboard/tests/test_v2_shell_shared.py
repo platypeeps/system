@@ -643,22 +643,27 @@ var document = { readyState: 'loading', activeElement: null,
 function CustomEvent(type, o) { this.type = type; this.detail = o && o.detail; }
 var location = { hash: HASH, pathname: '/reports', search: '?job=nightly' };
 var history = { state: null, pushState(s, t, u) { OUT.pushed.push(u); location.hash = u.slice(u.indexOf('#')); } };
+var STORE = KEPT_STORE;
+var localStorage = STORE === null ? undefined : { getItem: k => k in STORE ? STORE[k] : null, setItem: (k, v) => { STORE[k] = String(v); } };
 var LI = El('li'), LINK = El('a');
 LINK.closest = sel => sel === 'li' ? LI : null;
 var rail = { querySelector: sel => sel === '[data-section="Reports"]' ? LINK : null };
 var page = 'Reports', hrefOf = name => name === 'Reports' ? '/reports' : undefined;
 window.PAGE_KEYS = [['/', 'Filter reports']];
 window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence', api: '/api/reports/cadence' }, { id: 'gone', label: 'No panel' }];
+if (KEEP_FALSE) window.PAGE_VIEWS[1].keep = false;
 """
 
 
 class TheViewSwitch(unittest.TestCase):
     """The view switch, cut out of shell.js: one declaration, window.PAGE_VIEWS, draws the tablist and the rail's sub-entries."""
 
-    def run_view(self, body, hash="", host=False):
+    def run_view(self, body, hash="", host=False, store=None, keep=True):
         block = re.search(r"^  // view:start\n(.*?)^  // view:end$", SHELL_JS, re.S | re.M)
         self.assertIsNotNone(block, "shell.js has no view:start block")
-        script = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)).replace("WITH_HOST", json.dumps(host)) + block.group(1) + r"""
+        stand_in = (VIEW_STAND_IN.replace("HASH", json.dumps(hash)).replace("WITH_HOST", json.dumps(host))
+                    .replace("KEPT_STORE", json.dumps({} if store is None else store or None)).replace("KEEP_FALSE", json.dumps(not keep)))
+        script = (stand_in + block.group(1) + r"""
 var R = {};
 const shown = () => Object.values(PANELS).filter(p => !p.hidden).map(p => p.id);
 const SWITCH_SEL = MADE.find(e => e.getAttribute('role') === 'tablist'), SWITCH_TABS = SWITCH_SEL ? SWITCH_SEL.children : [];
@@ -666,13 +671,35 @@ try {
 (DOC.DOMContentLoaded || []).forEach(f => f({ type: 'DOMContentLoaded' }));
 """ + body + """
 } catch (e) { OUT.error = String(e) + ' ' + e.stack; }
-function run() { OUT.R = R; return JSON.stringify(OUT); }
+function run() { OUT.R = R; OUT.STORE = STORE; return JSON.stringify(OUT); }
 """)
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         self.assertIsNone(out["error"])
         return out
+
+    def test_the_last_chosen_view_is_kept_per_page_and_the_address_wins(self):
+        # sd:5064: a view the reader picked opens again when the address names none; #view= in the address wins.
+        out = self.run_view("view.show('cadence'); R.cur = view.current();")
+        self.assertEqual(out["STORE"], {"sd.view./reports": "cadence"})
+        out = self.run_view("R.cur = view.current(); R.shown = shown();", store={"sd.view./reports": "cadence"})
+        self.assertEqual((out["R"]["cur"], out["R"]["shown"]), ("cadence", ["view-cadence"]))
+        self.assertEqual(out["events"], [{"id": "cadence", "first": True, "api": "/api/reports/cadence"}])
+        self.assertEqual(out["pushed"], [])
+        out = self.run_view("R.cur = view.current();", hash="#view=reports", store={"sd.view./reports": "cadence"})
+        self.assertEqual(out["R"]["cur"], "reports")
+        # Another page's key, a view the page no longer declares and a junk value all fall back to the first view.
+        for kept in ({"sd.view./tasks": "cadence"}, {"sd.view./reports": "gone-for-good"}, {"sd.view./reports": "<b>"}):
+            self.assertEqual(self.run_view("R.cur = view.current();", store=kept)["R"]["cur"], "reports", kept)
+
+    def test_a_keep_false_view_is_never_restored_and_storage_that_throws_is_no_view(self):
+        out = self.run_view("R.cur = view.current();", store={"sd.view./reports": "cadence"}, keep=False)
+        self.assertEqual(out["R"]["cur"], "reports")
+        self.assertEqual(self.run_view("R.cur = view.current();", hash="#view=cadence", keep=False)["R"]["cur"], "cadence")
+        # Storage off (a private window): no localStorage at all, and a show still works.
+        out = self.run_view("view.show('cadence'); R.cur = view.current();", store=False)
+        self.assertEqual(out["R"]["cur"], "cadence")
 
     def test_the_first_view_is_the_default_and_only_its_panel_renders(self):
         out = self.run_view("R.cur = view.current(); R.shown = shown(); R.tabs = SWITCH_TABS.map(t => [t.getAttribute('aria-controls'), t.getAttribute('aria-selected'), t.tabIndex]);"
@@ -746,10 +773,52 @@ view.show('cadence'); R.back = shown();""", host=True)
         self.assertEqual(out["R"]["back"], ["view-cadence"])
         self.assertEqual([e["id"] for e in out["events"]], ["reports", "gone", "cadence"])
 
+    def test_the_palette_lists_the_page_views_and_the_saved_view_chips_are_gone(self):
+        # sd:5064: "views" are the page's panels only; the saved-view chips (shell.views) and their CSS are gone.
+        self.assertNotRegex(SHELL_JS, r"\bfunction views\(|\bviewHref\b|\bVIEWS\b")
+        self.assertNotRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bviews\b")
+        self.assertNotIn("Saved views", SHELL_CSS)
+        self.assertIn("data-pview", SHELL_JS)
+        self.assertIn("viewShow(o.dataset.pview)", SHELL_JS)
+
     def test_the_shell_hands_pages_the_view_api_and_styles_the_switch(self):
         self.assertRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bview\b")
         self.assertIn(".viewswitch", SHELL_CSS)
         self.assertRegex(SHELL_CSS, r"\.viewswitch \[role=\"tab\"\][^{]*\{[^}]*white-space: nowrap")
+
+
+class TheSelect(unittest.TestCase):
+    """sd:5064: one native select style in shell.css; a page sets only size and width, so every select reads the same."""
+
+    def test_the_shell_styles_every_select_from_tokens(self):
+        rule = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M)
+        self.assertIsNotNone(rule, "shell.css has no shared select rule")
+        body = rule.group(1)
+        for want in ("appearance: none", "var(--color-panel)", "var(--color-ink)", "var(--color-rule)", "var(--radius-md)",
+                     "var(--color-muted) 50%", "color-scheme: inherit"):
+            self.assertIn(want, body)
+        self.assertRegex(SHELL_CSS, r":where\(select:not\(\.tile-f\):focus-visible\) \{ outline: 2px solid var\(--color-focus\)")
+        self.assertRegex(SHELL_CSS, r":where\(select:not\(\.tile-f\):hover:not\(:disabled\)\) \{ border-color: var\(--color-ink-2\)")
+        self.assertRegex(SHELL_CSS, r":where\(select:not\(\.tile-f\):disabled\) \{[^}]*var\(--color-well\)")
+        self.assertRegex(SHELL_CSS, r"@media \(forced-colors: active\) \{ :where\(select:not\(\.tile-f\)\) \{ appearance: auto")
+        # The option popup follows the theme: tokens.css sets color-scheme on :root.
+        self.assertIn("color-scheme", (STATIC / "tokens.css").read_text(encoding="utf-8"))
+
+    def test_no_page_redraws_the_select_box(self):
+        # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box or chevron.
+        # The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
+        redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline)\s*:")
+        found = []
+        for path in sorted(STATIC.glob("*.css")):
+            if path.name == "research.css":
+                continue
+            css = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
+            for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+                names = [part.strip() for part in selector.split(",") if re.search(r"\bselect\b(?![-\w])", part)]
+                names = [n for n in names if not n.startswith(":where(") and "tile-f" not in n and ":not(select)" not in n]
+                if names and redraw.search(body):
+                    found.append(f"{path.name}: {', '.join(names)}")
+        self.assertEqual(found, [])
 
 
 if __name__ == "__main__":

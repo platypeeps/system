@@ -127,7 +127,7 @@ addEventListener('DOMContentLoaded', () => {
     const c = e.target.closest('button.cell'); if (!c) return;
     if (c.id === 'refresh') return load(); // build: reads the document again instead of reloading the page
     const k = c.dataset.kind;
-    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); // adds to the kind filter, as the chip and the lane do
+    F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); // adds to the kind filter, as the lane does
   });
 
   // ---------- Lane chart (hand-rolled SVG, patterns.md § Charts) ----------
@@ -295,17 +295,8 @@ addEventListener('DOMContentLoaded', () => {
   });
   tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
-  // Saved views: each is a URL. The shell renders the chips and lists them in the palette; the chip that matches the URL is current.
-  const VIEWS = [
-    { name: 'Failed', params: { state: 'warning' } },
-    { name: 'Last hour', params: { range: '1h' } },
-    { name: 'Merges', params: { kind: 'merge' } },
-    { name: 'Reviews', params: { kind: 'review' } },
-    { name: 'Command journal', params: { kind: 'command', range: 'all' } },
-    { name: 'Failed in the last hour', params: { state: 'warning', range: '1h' } },
-  ];
   function update() {
-    renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL(); window.shell.views(VIEWS);
+    renderAnnunciator(); renderLanes(); renderFilters(); renderRows(); writeURL();
     // Selection follows the filter (design.md, Page contract): a hidden row gives way to the first visible one.
     const kept = window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false), clear: unselect });
     if (kept !== undefined) selected = kept;

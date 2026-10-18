@@ -324,7 +324,7 @@ STAND_IN = r"""
 var window = globalThis, OUT = { posts: [], gets: [], toasts: [], confirms: [], states: [], attention: [], error: null };
 var innerWidth = 1440, location = { search: '', replace: u => { OUT.replaced = u; } };
 function URLSearchParams(q) { var m = new Map(); (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.set(kv[0], decodeURIComponent(kv[1] || '')); });
-  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v));
+  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v)); this.delete = k => m.delete(k);
   this.toString = () => [...m].map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
 function El(id) { var e = { id: id, html: null, hidden: false, dataset: {}, style: {}, listeners: {}, value: '',
   classList: { add() {}, remove() {}, toggle() {} },
@@ -391,7 +391,7 @@ function shellBulk(c, objs) {
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
 window.shell = { commands: C, post, getJSON, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
-  suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
+  suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
@@ -687,12 +687,14 @@ class TheScript(ScreenCase):
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         filters = out["R"]["filters"]
-        # sd:3441: Kind and Repo are comboboxes; the other groups keep their chips.
+        # sd:3441: Kind and Repo are comboboxes; sd:5064: so is every other group, and the active-filter chips are the only chips.
         self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-fsel="kind"><option value="" selected>All</option>'
                       '<option value="followup">followup</option><option value="task">task</option><option value="work">work</option></select>', filters)
         self.assertIn('<select id="f-repo" class="fsel" data-fsel="repo"><option value="" selected>All</option><option value="no repo">no repo</option><option value="system">system</option></select>', filters)
         self.assertNotIn('data-f="kind"', filters)
-        self.assertIn('data-f="p" data-v="1"', filters)
+        self.assertNotIn('data-f=', filters)
+        self.assertIn('<select id="f-p" class="fsel" data-fsel="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
+        self.assertIn('<option value="unset">unset</option></select>', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
         # The badge is the read's own (sd:3446): at NOW the seeded due date is 3 days off, so nothing is due yet.
@@ -1308,12 +1310,12 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
     def test_a_parked_row_shows_only_under_the_parked_chip(self):
         self.park()
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'parked', v: '1' } } : null } });
+ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'parked' }, value: '1' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
-        self.assertIn('data-f="parked" data-v="1"', out["R"]["filters"])
+        self.assertIn('<select id="f-parked" class="fsel" data-fsel="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
         self.assertIn("parked=1", out["R"]["url"])
@@ -1487,7 +1489,7 @@ document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); a
         dues = ["2026-09-06", "2026-09-07", "2026-09-13", "2026-09-14", "2026-09-15", "2026-10-01"]
         self.doc["rows"] = [{**base, "id": 900 + n, "title": f"due {due}", "due": due, "urgent": False} for n, due in enumerate(dues)]
         out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'due', v: 'week' } } : null } }); await flush();
+ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'due' }, value: 'week' } }); await flush();
 R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
         kept = {due for due in dues if f"due {due}" in out["R"]["list"]}
         self.assertEqual(kept, {due for due in dues if reads.is_urgent({"due": due, "status": "planning", "kind": "task"}, now=read)})
@@ -1953,8 +1955,8 @@ class TheFilterAddress(ScreenCase):
                 self.assertEqual(self.listed(search)[0], expected)
         _, out = self.listed("?view=list&status=ready_to_send&age=3&active=1")
         for key, value in (("status", "ready_to_send"), ("age", "3"), ("active", "1")):
-            self.assertIn(f'data-f="{key}" data-v="{value}" aria-pressed="true"', out["R"]["filters"])
-        self.assertIn('data-v="14" aria-pressed="false">14-29d<', out["R"]["filters"])
+            self.assertRegex(out["R"]["filters"], rf'<select id="f-{key}"[^>]*>(?:(?!</select>).)*<option value="{value}" selected>', key)
+        self.assertIn('<option value="14">14-29d</option>', out["R"]["filters"])
 
     def test_the_text_filter_reads_q_and_the_box_writes_it(self):
         self.assertEqual(self.listed("?view=list&q=BUDGET")[0], {902})
@@ -1986,7 +1988,7 @@ class TheFilterAddress(ScreenCase):
         self.assertIn('data-page="2" aria-label="Page 2" aria-current="page"', out["R"]["list"])
         self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["list"]), ["25", "50", "100", "200"])
         # A filter change starts the list at its first page again.
-        chip = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'status', v: 'planning' } } : null } }); await flush();"
+        chip = "ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'status' }, value: 'planning' } }); await flush();"
         _, out = self.listed("?view=list&page=2", chip)
         self.assertEqual(out["urls"][-1], "view=list&status=planning")
         # A short list draws its range and no page numbers; the board shows every filtered card, whatever the page.

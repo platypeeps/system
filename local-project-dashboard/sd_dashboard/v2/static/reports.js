@@ -151,7 +151,7 @@ byId('cad-more').addEventListener('click', () => { cadAll = !cadAll; renderCad()
 byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); window.shell.view.show('reports'); byId('led-h').scrollIntoView?.({ block: 'start' }); });
 
 // Filters.
-const F = { job: '', status: '', day: '', act: false, fam: '', q: '' };
+const F = { job: '', status: '', day: '', fam: '', q: '' };
 let picks = new Set(), days = [];
 function fillFilters() {
   // Every job the reading names, not only jobs with a report row: a cadence row sets this filter, and readURL takes ?job=
@@ -165,7 +165,6 @@ function fillFilters() {
 function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; L.page = 1; renderCad(); renderRows(); }
 byId('f-job').addEventListener('change', e => setJob(e.target.value));
 [['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; L.page = 1; renderRows(); }));
-byId('f-act').addEventListener('change', e => { F.act = e.target.checked; L.page = 1; renderRows(); });
 byId('annunciator').addEventListener('click', e => {
   const c = e.target.closest('button.cell'); if (!c) return;
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
@@ -175,19 +174,20 @@ byId('annunciator').addEventListener('click', e => {
 });
 
 // Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
-const STATUS = { open: 'Open', done: 'Acknowledged' };
+// Status folds the old Needs action view in (sd:5064): act is an open report that needs attention.
+const STATUS = { act: 'Needs action', open: 'Open', done: 'Acknowledged' };
 const shortDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 function activeFilters() {
   return [F.job && { key: 'job', label: `Job: ${F.job}` },
     F.status && { key: 'status', label: `Status: ${STATUS[F.status]}` }, F.day && { key: 'day', label: `Day: ${shortDay(F.day)}` },
-    F.act && { key: 'act', label: 'Needs action' }, F.fam && { key: 'fam', label: `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}` },
+    F.fam && { key: 'fam', label: `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}` },
     F.q && { key: 'q', label: `Text: ${F.q}` }].filter(Boolean);
 }
 // Each remover leaves the list to draw once, after it.
 const UNFILTER = {
   job: () => { jobFilter = ''; F.job = ''; byId('f-job').value = ''; renderCad(); },
   status: () => { F.status = ''; byId('f-status').value = ''; },
-  day: () => { F.day = ''; byId('f-day').value = ''; }, act: () => { F.act = false; byId('f-act').checked = false; },
+  day: () => { F.day = ''; byId('f-day').value = ''; },
   fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
   q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
 };
@@ -211,10 +211,10 @@ byId('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(
 byId('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, renderRows); });
 function matches(r) {
   if (F.job && r.job !== F.job) return false;
+  if (F.status === 'act' && !r.act) return false;
   if (F.status === 'open' && !r.open) return false;
   if (F.status === 'done' && r.open) return false;
   if (F.day && r.at.slice(0, 10) !== F.day) return false;
-  if (F.act && !r.act) return false;
   if (F.fam && FAM_OF[r.job] !== F.fam) return false;
   if (F.q && !(r.what + ' ' + r.detail + ' ' + r.job + ' ' + (r.source.body || '')).toLowerCase().includes(F.q)) return false;
   return true;
@@ -307,16 +307,12 @@ function show(id) {
   window.shell.suggest([`What changed in ${r.job} since its last good run?`, `Why did ${r.job} ${r.attn ? 'fail' : 'report'} this time?`, `Show every open report from ${FAMILIES.find(f => f[0] === FAM_OF[r.job])?.[1] || 'this family'}`]);
   details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
 }
-// The URL carries the filters and the row, so a view can be bookmarked and the saved-view chips know which one is current.
-const views = () => [
-  { name: 'Needs action', params: { act: '1' } },
-  { name: 'Open reports', params: { status: 'open' } },
-  ...(days[0] ? [{ name: 'Newest day', params: { day: days[0] } }] : []),
-];
+// The URL carries the filters and the row, so a filtered list can be bookmarked. The dropdowns are the one filter control;
+// an old ?act=1 link (the Needs action view and checkbox) lands on Status: Needs action (sd:5064).
 function readURL() {
   const p = new URLSearchParams(location.search);
+  if (p.get('act') === '1' && !p.get('status')) p.set('status', 'act');
   ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (!v) return; const el = byId('f-' + k); if ([...el.options].some(o => o.value === v)) { F[k] = v; el.value = v; } });
-  F.act = p.get('act') === '1'; byId('f-act').checked = F.act;
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
   if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
@@ -326,12 +322,10 @@ function readURL() {
 function writeURL() {
   const p = new URLSearchParams();
   ['job', 'status', 'day'].forEach(k => { if (F[k]) p.set(k, F[k]); });
-  if (F.act) p.set('act', '1');
   if (F.fam) p.set('fam', F.fam);
   if (F.q) p.set('q', F.q);
   window.shell.list.listQuery(p, L, LIST);
   window.shell.url(p); // the shell keeps ?row=
-  window.shell.views(views());
 }
 function select(id, open) { show(id); writeURL(); if (open) window.shell.openPane('tab-details'); }
 tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
@@ -372,7 +366,7 @@ window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: 
 
 window.PAGE_COMMANDS = [
   { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
-  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-act').checked = true; F.act = true; L.page = 1; renderRows(); } },
+  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-status').value = 'act'; F.status = 'act'; L.page = 1; renderRows(); } },
 ];
 
 // ---------- Commands (products/system/commands.md) ----------

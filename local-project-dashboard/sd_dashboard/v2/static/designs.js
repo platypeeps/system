@@ -56,7 +56,7 @@ const ranked = () => ROWS.filter(match).sort((a, b) => PRODUCTS.indexOf(a.produc
 const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time>` : '—';
 
 function renderAnnunciator() {
-  // No "all pages" lamp: the head counts the pages and the view row's All chip clears a filter.
+  // No "all pages" lamp: the head counts the pages and a pressed lamp, pressed again, clears its filter.
   const n = k => ROWS.filter(r => shown(r) && FILTERS[k].test(r)).length;
   const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl,
     mark: state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon), val });
@@ -136,13 +136,11 @@ function reconcile() {
   const id = shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => select(id, false), clear: clearSelection });
   if (id && id === was) show(id);
 }
-// One name per filter (review 2026-09-29, item 18): the lamp, the view chip and the palette entry all read FILTERS[k].lbl.
-const VIEWS = ['stale', 'recent'].map(k => ({ name: FILTERS[k].lbl, params: { f: k } }));
-// A lamp and a view chip set the same key, so the chip row is redrawn to show which view the filter now is.
+// One name per filter (review 2026-09-29, item 18): the lamp and the palette entry both read FILTERS[k].lbl.
 // The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
 function writeFilter() {
   const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
-  shell.url({ ...(F.f && { f: F.f }), ...(F.hidden && { show: 'hidden' }), ...(input.value.trim() && { q: input.value.trim() }), ...sort }); shell.views(VIEWS);
+  shell.url({ ...(F.f && { f: F.f }), ...(F.hidden && { show: 'hidden' }), ...(input.value.trim() && { q: input.value.trim() }), ...sort });
 }
 function update() {
   if (!D) return;
@@ -235,7 +233,6 @@ function clear() {
 }
 document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
-  shell.views(VIEWS);
   const p = new URLSearchParams(location.search);
   F.f = FILTERS[p.get('f')] ? p.get('f') : '';
   F.hidden = p.get('show') === 'hidden' || p.get('f') === 'hidden'; // ?f=hidden: a link from before Show replaced the Hidden lamp

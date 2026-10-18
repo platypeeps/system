@@ -285,7 +285,7 @@ PAGE = r"""
 C.select = () => {}; C.pick = () => {};
 window.shell.row = () => null; window.shell.setContext = () => {}; window.shell.openChat = () => {}; window.shell.send = () => {};
 window.shell.pages = { Tasks: '/tasks' };
-OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); window.shell.views = v => { OUT.views = v.map(x => x.name); };
+OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]);
 """
 
 
@@ -431,7 +431,6 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn("<b>0</b> adjudicated</span> · <span class=\"ph\">1 clean</span>", out["R"]["ann"])
         self.assertNotIn("unrecorded", out["R"]["ann"])
         self.assertIn("codex reviewed system#41", out["R"]["rows"])
-        self.assertIn("Reviews", out["views"])
 
     def test_a_review_shows_who_reviewed_and_how_it_let_the_merge_through(self):
         review = f"review:{self.ids['merge']}"
@@ -476,7 +475,6 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn("palette and runner runs alike", out["R"]["note"])
         self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
         self.assertNotIn("none shows here", out["R"]["note"])
-        self.assertIn("Command journal", out["views"])
 
     def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
         port = self.ids["port"]

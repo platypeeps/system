@@ -34,10 +34,7 @@ section + section { margin-top: var(--space-2xl); }
 /* Filters */
 .filters { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin: 0 0 var(--space-sm); }
 .filters label.sel { display: flex; flex-direction: column; gap: 2px; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); min-width: 0; }
-.filters select { font: 400 var(--text-sm)/1 var(--font-data); color: var(--color-ink); background: var(--color-panel); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); min-height: var(--row-touch); padding: 0 var(--space-xs); max-width: 100%; }
-.filters select:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
-.toggle { display: flex; align-items: center; gap: var(--space-2xs); align-self: end; min-height: var(--row-touch); padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--color-ink); cursor: pointer; }
-.toggle input { width: 1.1rem; height: 1.1rem; accent-color: var(--color-accent); margin: 0; }
+.filters select { min-height: var(--row-touch); }
 
 /* Ledger */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
