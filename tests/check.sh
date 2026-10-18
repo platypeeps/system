@@ -6,7 +6,7 @@
 #
 # The environment is built here, not borrowed from the caller. The command
 # pack is fetched into `.ci/pack` (gitignored) at the SHA in `.sd-pack-rev`,
-# the one pin. `.ci/bin/python3` is the machine's python3.14. Each suite then
+# the one pin. `.ci/bin/python3` is the machine's python3.15. Each suite then
 # runs under `env -i` with an isolated HOME and TMPDIR outside the tree and a
 # PATH of that bin plus the system directories.
 set -e
@@ -46,7 +46,7 @@ Environment:
   SD_GATE_POOL_SIZE  the gate cap a slot holder exports; above 1, at most
                      CPUs / cap jobs run at once
 
-`make check` runs `check.sh run`. Each needs python3.14, git, sqlite3, lsof,
+`make check` runs `check.sh run`. Each needs python3.15, git, sqlite3, lsof,
 ps and rsync on PATH, and network access when no local clone holds the pin.
 USAGE
 }
@@ -69,8 +69,8 @@ case "$pin" in
 esac
 [ "${#pin}" -eq 40 ] || { echo "check.sh: no 40-hex pack sha in $PIN_FILE" >&2; exit 1; }
 
-python="$(command -v python3.14 || true)"
-[ -n "$python" ] || { echo "check.sh: python3.14 is not on PATH; the suites need 3.14" >&2; exit 1; }
+python="$(command -v python3.15 || true)"
+[ -n "$python" ] || { echo "check.sh: python3.15 is not on PATH; the suites need 3.15" >&2; exit 1; }
 for tool in git sqlite3 lsof ps rsync; do
   command -v "$tool" > /dev/null || { echo "check.sh: $tool is not on PATH; the suites call it" >&2; exit 1; }
 done
