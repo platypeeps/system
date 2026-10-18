@@ -75,6 +75,9 @@ with its path, beside a new Claude Code Caskroom binary (the `claude-code@latest
 cask, sd:4738) or python Cellar path, the two known grant droppers. Leftovers or a missing grant print an
 `SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
 nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
+A step that fails because sudo has no terminal (a cask with a pkg installer,
+`mas upgrade`) is deferred, not failed: the report names each leftover as a
+command to run in a terminal, such as `brew upgrade --cask example-cask` (sd:5046).
 After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
 a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
 with the screen locked (sd:4787).

@@ -3007,13 +3007,14 @@ do_stages() {
 # on screen after a long run — a DEFER line 200 lines up is a line nobody sees.
 # Exit stays 0: deferring is the expected outcome on a machine where the user
 # cannot sudo, and doctor reports these same items independently, so the drift
-# stays visible without an exit code that would surprise a caller.
+# stays visible without an exit code that would surprise a caller. $1 is the
+# verb to re-run, `update system` by default.
 report_deferred() {
   [ -n "$DEFERRED" ] || return 0
   n=$(printf '%s' "$DEFERRED" | grep -c '^' || :)
   echo "deferred — $n action(s) still need sudo. Run these, then re-run:"
   printf '%s' "$DEFERRED"
-  echo "    $(basename "$0") update system --apply"
+  echo "    $(basename "$0") ${1:-update system} --apply"
   echo
 }
 
@@ -5344,9 +5345,37 @@ claude_quarantine() {
   st_claude_quarantine "$(command -v claude 2>/dev/null)"
 }
 
+# An upgrade step: run_step, and a failure adds NAME to $failed. A cask with a
+# pkg installer, and mas, call sudo; an unattended run has no terminal for its
+# password, so the step fails with sudo's own refusal. That step is deferred
+# like sudo_run's, not failed, and the report names what to run in a terminal
+# (sd:5046). Any other failure, and a step stopped at its bound, stays failed.
+SUDO_REFUSED='sudo: a terminal is required|sudo: a password is required|sudo: no tty present'
+sweep_step() { # name, seconds, command...
+  ss_name=$1; shift
+  if [ "$ATTENDED" -eq 1 ]; then
+    run_step "$@" || failed="$failed, $ss_name"
+    return 0
+  fi
+  ss_out=$(mktemp)
+  ss_rc=0
+  run_step "$@" > "$ss_out.1" 2> "$ss_out.2" || ss_rc=$?
+  cat "$ss_out.1"; cat "$ss_out.2" >&2
+  if [ "$ss_rc" -ne 0 ] && [ "$ss_rc" -ne 124 ] && cat "$ss_out.1" "$ss_out.2" | grep -Eq "$SUDO_REFUSED"; then
+    shift
+    DEFERRED="$DEFERRED    $*
+"
+    echo "  DEFER   needs sudo: $*"
+  elif [ "$ss_rc" -ne 0 ]; then
+    failed="$failed, $ss_name"
+  fi
+  rm -f "$ss_out" "$ss_out.1" "$ss_out.2"
+}
+
 # Maintenance sweep: refresh what is already installed. Dry run by default
 # like every other mutating verb. A step that fails or times out does not stop
 # the sweep; the steps after it still run, and the sweep exits 1 naming it.
+# A step that needs sudo is deferred, not failed (sweep_step).
 cmd_upgrade() {
   echo "upgrade : brew, App Store and .release maintenance sweep"
   [ "$APPLY" -eq 1 ] || echo "mode    : DRY RUN — nothing will change; re-run with --apply"
@@ -5360,7 +5389,7 @@ cmd_upgrade() {
     if [ "$APPLY" -eq 1 ] && ! holds=$(pinned_holds); then
       failed="$failed, brew formula lists"
     elif [ -z "$holds" ]; then
-      run_step 1800 brew upgrade || failed="$failed, brew upgrade"
+      sweep_step "brew upgrade" 1800 brew upgrade
     else
       # One line: a newline in an awk -v value is an error in macOS awk.
       holds=$(printf '%s\n' "$holds" | tr '\n' ' ' | sed 's/ $//')
@@ -5373,26 +5402,27 @@ cmd_upgrade() {
           NF { name = $0; sub(/.*\//, "", name); if (!(name in held)) print }')
       if [ -n "$rest" ]; then
         # shellcheck disable=SC2086 # one word per formula name
-        run_step 1800 brew upgrade $rest || failed="$failed, brew upgrade"
+        sweep_step "brew upgrade" 1800 brew upgrade $rest
       fi
     fi
     # --greedy takes casks with `auto_updates true` too, whose own updaters
     # stage_macos turns off where the app holds a TCC grant (sd:3062). It
     # moves Claude Code too, the claude-code@latest cask, whose own updater
     # the settings baseline turns off (sd:3033, sd:4738).
-    run_step 1800 brew upgrade --cask --greedy || failed="$failed, brew upgrade --cask --greedy"
+    sweep_step "brew upgrade --cask --greedy" 1800 brew upgrade --cask --greedy
     claude_quarantine || failed="$failed, claude quarantine"
     run_step 600 brew cleanup --prune=all || failed="$failed, brew cleanup"
   else
     echo "  brew MISSING — https://brew.sh"
   fi
   if command -v mas >/dev/null 2>&1; then
-    run_step 1200 mas upgrade || failed="$failed, mas upgrade"
+    sweep_step "mas upgrade" 1200 mas upgrade
   else
     echo "  mas MISSING (brew install mas)"
   fi
   release_sweep
   echo
+  report_deferred upgrade
   echo "  afterwards: $(basename "$0") status   # drift check"
   if [ -n "$failed" ]; then
     echo "  failed steps: ${failed#, }"
@@ -5446,6 +5476,28 @@ outdated_lists() {
   # The .release entries whose latest tag is not the one installed (sd:4853).
   release_outdated > "$tmp/raw" || echo release >> "$tmp/unknown.$1"
   awk '$2 != "unknown" { print $1 }' "$tmp/raw" | sort > "$tmp/release.$1"
+}
+
+# sudo_kind formula|cask|mas: true when the sweep deferred that kind's upgrade
+# for sudo (sweep_step); its leftovers are then commands to run in a terminal.
+sudo_kind() {
+  case $1 in
+    formula) printf '%s' "$DEFERRED" | grep -Eq '^    brew upgrade($| [^-])' ;;
+    cask) printf '%s' "$DEFERRED" | grep -q '^    brew upgrade --cask' ;;
+    mas) printf '%s' "$DEFERRED" | grep -q '^    mas upgrade' ;;
+    *) return 1 ;;
+  esac
+}
+
+# sudo_commands formula|cask|mas: each leftover of that kind as the command
+# that upgrades it. A `mas outdated` line is `<id> <name> (<versions>)`.
+sudo_commands() {
+  case $1 in
+    formula) sed 's/^/brew upgrade /' "$tmp/formula.after" ;;
+    cask) sed 's/^/brew upgrade --cask /' "$tmp/cask.after" ;;
+    mas) awk '{ id = $1; $1 = ""; sub(/^ /, "")
+                if (id ~ /^[0-9]+$/) print "mas upgrade " id "  # " $0; else print "mas upgrade  # " id " " $0 }' "$tmp/mas.after" ;;
+  esac
 }
 
 # held_section before|after: the pinned formulae a newer version waits for.
@@ -5607,7 +5659,10 @@ cmd_upgrade_report() {
         printf '\nupgraded (%s):\n' "$kind"
         sed 's/^/  /' "$tmp/$kind.done"
       fi
-      if [ -s "$tmp/$kind.after" ]; then
+      if [ -s "$tmp/$kind.after" ] && sudo_kind "$kind"; then
+        printf '\nneeds sudo (%s) — run in a terminal:\n' "$kind"
+        sudo_commands "$kind" | sed 's/^/  /'
+      elif [ -s "$tmp/$kind.after" ]; then
         printf '\nstill outdated (%s) — held back or failed:\n' "$kind"
         sed 's/^/  /' "$tmp/$kind.after"
       fi
@@ -5629,7 +5684,13 @@ cmd_upgrade_report() {
   # carry the time of day.
   unknown=$(sort -u "$tmp/unknown.before" "$tmp/unknown.after" | tr '\n' ' ' | sed 's/ $//')
   {
-    for kind in formula cask mas release; do sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"; done
+    for kind in formula cask mas release; do
+      if sudo_kind "$kind"; then
+        sudo_commands "$kind" | sed 's/^/needs sudo, run in a terminal: /'
+      else
+        sed "s/^/still outdated ($kind): /" "$tmp/$kind.after"
+      fi
+    done
     if [ "$rc" -ne 0 ]; then
       echo "upgrade sweep failed [$(tail -30 "$tmp/out" | grep -v '^\[step ' | cksum | cut -d' ' -f1)]"
     fi
@@ -7351,14 +7412,17 @@ for a in "$@"; do
                    tag (dry run without --apply, like everything else);
                    an apply logs each step as it starts and stops it at its
                    bound (300-1800 s, or MACHINE_SETUP_STEP_TIMEOUT seconds),
-                   runs the rest, and exits 1 naming the steps that failed
+                   runs the rest, and exits 1 naming the steps that failed;
+                   a step sudo refused for want of a terminal is deferred
   upgrade-report   cron flavor of upgrade: always applies, prints what got
                    upgraded / what failed / what is still outdated, with the
                    ai-apps inventory capture and the result of
                    local-project-dashboard's `grants` probe; when nothing
                    is outdated it only runs the capture and the probe;
                    leftovers, a failed step or a missing grant print one
-                   SD_REPORT_ATTENTION line for Reports and Today; exits 1
+                   SD_REPORT_ATTENTION line for Reports and Today, and a
+                   deferred step's leftovers each name the command to run
+                   in a terminal; exits 1
                    when that quiet-week capture failed
   checklist        print the manual new-machine steps no stage automates
                    (accounts, licenses, key restores; plus checklist.txt from the config)
