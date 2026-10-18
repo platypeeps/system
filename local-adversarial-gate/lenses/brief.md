@@ -20,7 +20,13 @@ You see the brief and the repository, not the mail, feeds, pages or tools it was
 
 **6. Unverified passed off as verified.** A summary that reads as settled when its source is a rumour, a draft or a single message. A reader assumes the brief checked what it states.
 
-Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. After its four parts, add three kinds of line, each at the start of a line:
+
+- `Recommendation:` one sentence, the action a person would take if the hypothesis holds, short enough to be a task title.
+- `Evidence:` one file path and line, or one quoted line, that you read; at most five, one per line.
+- `Repo:` the repository the fix belongs in, as a path, only when it is not the one you are reading.
+
+The dashboard files each hypothesis as a recommendation, and the operator picks which become tasks.
 
 ## Ending
 

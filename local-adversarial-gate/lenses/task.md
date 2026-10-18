@@ -22,7 +22,13 @@ You see the item and the repository, not the conversation that produced it. A fi
 
 **6. The cheaper path.** Is there a deletion, a reuse of an existing mechanism, or a smaller change that meets the same need? Name it. Do not design it.
 
-Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. After its four parts, add three kinds of line, each at the start of a line:
+
+- `Recommendation:` one sentence, the action a person would take if the hypothesis holds, short enough to be a task title.
+- `Evidence:` one file path and line, or one quoted line, that you read; at most five, one per line.
+- `Repo:` the repository the fix belongs in, as a path, only when it is not the one you are reading.
+
+The dashboard files each hypothesis as a recommendation, and the operator picks which become tasks.
 
 ## Ending
 

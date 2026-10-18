@@ -85,6 +85,15 @@ class TheDashboardLenses(unittest.TestCase):
                 prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
                 self.assertIn("Give each hypothesis a `###` heading of its own", prompt)
 
+    def test_each_lens_asks_for_the_lines_a_recommendation_is_filed_from(self):
+        # The dashboard files each hypothesis as a review question; the approved task takes its title from
+        # `Recommendation:`, its evidence from `Evidence:` and its repository from `Repo:` (sd:5064).
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
+                for tag in ("`Recommendation:`", "`Evidence:`", "`Repo:`"):
+                    self.assertIn(tag, prompt)
+
     def test_the_change_lens_names_the_diff_it_reads(self):
         prompt = render("--lens", "change", "--set", "INPUT_PATH=/fixture/input.md", "--set", "BASE=1111111",
                         "--set", "HEAD=2222222")
