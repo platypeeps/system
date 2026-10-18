@@ -16,8 +16,8 @@ installed or run from a source checkout), CLI, and quick curl smoke tests.
 ./aura.sh models             # GET /v1/models
 ./aura.sh prompt "text"      # POST a chat completion
 ./aura.sh image              # build aura-local:instrumented from $AURA_REPO
-./aura.sh experiment start   # math MCP + two Aura servers from that image
-./aura.sh experiment run     # send the fixed scenario requests
+./aura.sh experiment start [--overlay servers.toml]   # math MCP + two Aura servers from that image
+./aura.sh experiment run [--prompts prompts.txt]      # the six math requests, or your prompts
 ./aura.sh experiment inspect [summary|tree]
 ./aura.sh experiment stop
 ```
@@ -45,7 +45,8 @@ Every Aura run here exports its traces to `local-genai-traces`
 `AURA_TRACES=0` turns that default off for one run.
 They do not record prompts and answers: a server may carry real work, and
 the collector may forward it. Export `OTEL_RECORD_CONTENT=true` to record.
-The experiment records them, since its requests are fixed test prompts.
+The experiment records them, since its requests are test prompts.
+That includes every line of a `--prompts` file, so keep real data out of it.
 
 The experiment runs only `$AURA_IMAGE` (default `aura-local:instrumented`),
 a local build of the `$AURA_REPO` checkout, never the published image.
@@ -63,6 +64,31 @@ listen on `127.0.0.1:3101` (orchestration) and `:3102` (single agent);
 `AURA_ORCH_PORT` and `AURA_SINGLE_PORT` move them. Answers go to
 `experiment/state/responses.jsonl`. `experiment run` sends every request,
 then exits 1 when any one failed or came back without an answer.
+
+To point the experiment at other MCP servers, such as the Mezmo dev
+endpoint, give `experiment start --overlay <file.toml>`. Each
+`[mcp.servers.<name>]` table in the file replaces the example's server of
+that name, sub-tables included, or adds a new one; both configs get it.
+The file may hold nothing else, and start refuses an overlay it cannot merge
+cleanly. Write the key as a template, never as a value:
+
+```toml
+[mcp.servers.mezmo-dev]
+transport = "http_streamable"
+url = "https://mcp.example.test/mcp"
+
+[mcp.servers.mezmo-dev.headers]
+Authorization = "Bearer {{ env.MEZMO_SERVICE_KEY }}"
+```
+
+Compose passes `MEZMO_SERVICE_KEY` into both servers by name, so its value
+stays in the environment; start refuses an overlay that holds the value.
+Without `--overlay`, the configs are the math example as before.
+
+`experiment run --prompts <file>` sends each line of the file to both
+servers, as cases `single-p<n>` and `orch-p<n>`; blank lines and lines
+starting with `#` are skipped, and a file with no prompt is refused.
+Without `--prompts`, it sends the six math requests.
 
 ## Configuration
 
