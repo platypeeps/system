@@ -99,7 +99,7 @@ class Allowlist(unittest.TestCase):
             # Bash runs sd's item verbs only; Read and Write reach the run folder alone.
             for tool in allowed:
                 if tool.startswith("Bash("):
-                    self.assertRegex(tool, r"^Bash\(sd (store items|task (show|note|add --kind personal|add --belongs-to /repos/example-work/a)):\*\)$")
+                    self.assertRegex(tool, r"^Bash\(sd (store items|task (show|note|add --kind followup --no-repo|add --belongs-to /repos/example-work/a)):\*\)$")
                 elif not tool.startswith("mcp__"):
                     self.assertIn(tool, ("Read(//runs/x/**)", "Write(//runs/x/**)"))
 
@@ -182,7 +182,7 @@ class Run(unittest.TestCase):
         self.assertIn("Google account: me@example.test", prompt)
         self.assertIn("- mail_query: in:inbox -to:hoa@example.test", prompt)
         self.assertIn("- drive_exclude: Example HOA", prompt)
-        self.assertIn("Bash(sd task add --kind personal:*)", argv[argv.index("--allowedTools") + 1])
+        self.assertIn("Bash(sd task add --kind followup --no-repo:*)", argv[argv.index("--allowedTools") + 1])
         record = self.record("personal")
         self.assertEqual((record["state"], record["exit"]), ("done", 0))
         self.assertRegex(Path(record["brief"]).name, r"^\d{4}-\d{2}-\d{2} - Personal sweep\.md$")
@@ -267,6 +267,22 @@ class Run(unittest.TestCase):
                      "add `@` and its modified time", "adds `.2`, `.3`", "skip a reply a draft already gives"):
             self.assertIn(rule, prompt)
         self.assertNotIn("skip a thread that already has a draft", prompt)
+
+    def test_the_personal_add_files_a_ref_and_refuses_the_same_ref_again(self):
+        """sd:5096 review: the real sd takes `--ref` on a task or followup only; Personal's `--kind personal` add
+        refused every followup. Personal's add, run by the pinned pack's sd, files once and refuses a repeat. Work's add
+        is a task (sd's default kind), which takes a ref."""
+        env = {**self.env, "SD_PACK_ROOT": str(PACK_LIB.parent), "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin"}
+        # The add the run may call, as its allowlist names it: `Bash(sd task add …:*)`.
+        [add] = [tool[len("Bash(sd "):-len(":*)")].split() for tool in realm_sweep.allowed_tools("personal", Path("/runs/x"))
+                 if tool.startswith("Bash(sd task add")]
+        ref = "personal-sweep:gmail-m1"
+        first, again = (subprocess.run([sys.executable, str(PACK_LIB.parent / "bin" / "sd"), *add, "--ref", ref, title],
+                                       cwd=self.root, env=env, capture_output=True, text=True, timeout=60)
+                        for title in ("Example", "Example again"))
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertNotEqual(again.returncode, 0, again.stdout)
+        self.assertIn(f"already carries --ref {ref}", again.stderr)
 
     def test_a_reply_without_a_read_line_moves_no_checkpoint(self):
         """A reply that names nothing it read is unknown: every source keeps its checkpoint, and the record says so."""

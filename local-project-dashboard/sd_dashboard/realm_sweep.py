@@ -268,9 +268,15 @@ def filters(realm: str, rows: dict) -> tuple[dict, str]:
     return found, ""
 
 
+def adder(realm: str, followups: str) -> str:
+    """The realm's `sd task add`. sd takes `--ref` on a task or followup only, so Personal files a followup with no
+    repository, which is what puts a row in Personal; a `--kind personal` add refused every ref (sd:5096 review)."""
+    return "sd task add --kind followup --no-repo" if realm == "personal" else f"sd task add --belongs-to {followups}"
+
+
 def allowed_tools(realm: str, folder: Path, followups: str = "") -> list[str]:
     """The run's exact allowlist: reads, the run folder, the realm's sd verbs and the one Gmail draft tool."""
-    add = "sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {followups}"
+    add = adder(realm, followups)
     servers = ("workspace-mcp",) if realm == "personal" else tuple(MCP_READS)
     return [
         f"Read(/{folder}/**)", f"Write(/{folder}/**)",
@@ -472,7 +478,7 @@ def sweep(realm: str, state: Path, out, err) -> int:
         filters="\n".join(f"- {name}: {value or ('none' if name == 'drive_exclude' else 'not configured')}"
                           for name, value in found.items() if name != "followups_repo"),
         steps=STEPS[realm],
-        add="sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {found['followups_repo']}")
+        add=adder(realm, found.get("followups_repo") or ""))
     argv = claude_argv(claude_binary(), realm, prompt, os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp"),
                        allowed_tools(realm, folder, found.get("followups_repo") or ""))
     with log.open("a", encoding="utf-8") as logged:
