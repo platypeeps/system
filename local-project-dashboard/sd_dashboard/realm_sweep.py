@@ -42,7 +42,8 @@ Steps, and what a stop between them leaves:
    with more; a read that failed for another reason than "no brief" stops the run there.
 5. `last.json` as `done` or `failed`, with the exit code, the reason, and the sources read (`read`) and not (`gaps`).
    Each source keeps its own checkpoint (`checkpoints`): only a done run moves one on, and only for a source its
-   reply names on its `READ:` line. A failed run, an unread source and a newly configured one keep the older time.
+   reply names on its `READ:` line. A failed run and an unread source keep the older time. A source's first attempt
+   writes its start, seven days before that run, to the record before the model, and it stays until a run reads it.
 
 Exit codes: 0 done, 3 another run of the realm holds the lock, 1 failed.
 """
@@ -88,6 +89,8 @@ REQUIRED = ("sweep.personal.mail_query", "sweep.work.mail_query", "sweep.work.fo
 SOURCES = {"personal": {"mail": None, "drive": None},
            "work": {"mail": None, "drive": None, "notion": "notion_scope", "jira": "jira_scope", "github": "github_scope"}}
 ACCOUNT = "google.accounts.{realm}.email"
+#: How far back a source's first attempt reads; its record then keeps that time until a run reads the source.
+FIRST_WINDOW = datetime.timedelta(days=7)
 
 BUILT_IN_TOOLS = "Bash,Read,Write,ToolSearch"
 DRAFT = "draft_gmail_message"
@@ -143,8 +146,8 @@ Facts:
 - Today's brief so far: {earlier}
 - Followup reference: {realm}-sweep:<source>-<id>
 
-Since, by source. Read what changed in each source after its own time; a source an earlier run could not read starts
-from that run's own time. A source marked "not configured" is skipped and named under Gaps.
+Since, by source. Read what changed in each source after its own time; a source an earlier run could not read keeps
+the time that run had. A source marked "not configured" is skipped and named under Gaps.
 {since}
 
 The sweep's settings:
@@ -389,7 +392,8 @@ def run(realm: str, out, err) -> int:
 
 def checkpoints(realm: str, previous: dict) -> dict:
     """Each source's checkpoint, the time its next read starts from: the previous run's start for a source that run
-    read in full and recorded done, else the checkpoint that run started from. `None` is a source never read here.
+    read in full and recorded done, else the checkpoint that run started from. `None` is a source never attempted
+    here; `sweep` writes its first window before the model runs.
 
     So a failed run, a done run's unread source, and a source configured since all keep the older time (sd:5096
     review). A record from before per-source checkpoints names one `since` and no `read`: every source keeps it.
@@ -448,10 +452,15 @@ def sweep(realm: str, state: Path, out, err) -> int:
     elif shown.returncode != 0 and "no brief has the stem" not in shown.stderr:
         return end(EXIT_ERROR, f"today's brief was not read: {(shown.stderr or shown.stdout).strip()[:200]}")
     configured = [source for source, switch in SOURCES[realm].items() if switch is None or found.get(switch)]
+    # A source's first attempt fixes its window's start, seven days back, in the record before the model runs: a
+    # relative "seven days ago" would slide on every retry past the changes the first attempt was owed (sd:5096 review).
+    for source in configured:
+        since[source] = since[source] or (started - FIRST_WINDOW).isoformat(timespec="seconds")
+    write_record(state / "last.json", record)
     prompt = PROMPT.format(
         label=SERIES[realm].lower(), account=address, folder=folder, brief=brief, realm=realm, series=SERIES[realm],
-        since="\n".join(f"- {source}: " + ("not configured" if source not in configured else since[source]
-                                           or "seven days ago (no earlier sweep read it here)") for source in SOURCES[realm]),
+        since="\n".join(f"- {source}: {since[source] if source in configured else 'not configured'}"
+                        for source in SOURCES[realm]),
         earlier=earlier if earlier.exists() else "none yet",
         # An unset drive_exclude excludes nothing: "not configured" would read as "skip Drive".
         filters="\n".join(f"- {name}: {value or ('none' if name == 'drive_exclude' else 'not configured')}"

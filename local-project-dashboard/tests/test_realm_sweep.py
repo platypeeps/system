@@ -12,6 +12,7 @@ records its calls. The workflow database is a temporary one under the run's HOME
 
 from __future__ import annotations
 
+import datetime
 import fcntl
 import json
 import os
@@ -44,6 +45,10 @@ if mode != "nobrief":
     brief = re.search(r"^- Brief file: (.+)$", prompt, re.M).group(1)
     series = re.search(r"^series: (.+)$", prompt, re.M).group(1)
     open(brief, "w").write(f"---\nseries: {series}\n---\n\n## Status\n\nNothing is due.\n")
+# STUB_COPY "<from>|<to>" copies the run's record as the model sees it, to show what a stop here would leave.
+if os.environ.get("STUB_COPY"):
+    import shutil
+    shutil.copy(*os.environ["STUB_COPY"].split("|"))
 print("did the steps")
 # STUB_READ names the sources the reply says it read in full; "-" prints no READ line.
 read = os.environ.get("STUB_READ", "mail, drive, notion, jira, github")
@@ -51,6 +56,13 @@ if read != "-":
     print(f"READ: {read}")
 print("RESULT: failed, Mail: the stub says so" if mode == "fail" else "RESULT: ok")
 '''
+
+
+def window(started):
+    """The first window's start for a source first attempted by the run that started at `started`."""
+    return (datetime.datetime.fromisoformat(started) - datetime.timedelta(days=7)).isoformat(timespec="seconds")
+
+
 SD = r'''#!/bin/sh
 printf '%s\n' "$*" >> "$STUB_SD_CALLS"
 case "$1 $2 $3" in
@@ -187,7 +199,7 @@ class Run(unittest.TestCase):
         self.assertEqual(self.sweep("run", "work", STUB_MODE="fail").returncode, 1)
         self.assertEqual(self.sweep("run", "work").returncode, 0)
         prompts = [argv[argv.index("-p") + 1] for argv in self.prompts()]
-        self.assertIn("- mail: seven days ago", prompts[0])
+        self.assertEqual(self.since(prompts[0], "mail"), window(first))
         self.assertIn(f"- mail: {first}\n", prompts[1])
         self.assertIn(f"- mail: {first}\n", prompts[2])
         # The work followups belong to the followups_repo setting's checkout, its ~ expanded, so they show under Work.
@@ -218,8 +230,31 @@ class Run(unittest.TestCase):
         self.set(**{"sweep.work.github_scope": "org:example"})
         self.assertEqual(self.sweep("run", "work").returncode, 0)
         prompt = self.prompts()[1][self.prompts()[1].index("-p") + 1]
-        self.assertTrue(self.since(prompt, "github").startswith("seven days ago"), prompt)
+        self.assertEqual(self.since(prompt, "github"), window(self.record("work")["started"]), prompt)
         self.assertEqual(self.since(prompt, "notion"), "not configured")
+
+    def test_a_source_never_read_keeps_its_first_window_through_gaps_and_failures(self):
+        """sd:5096 review round 2: Jira first tried on 2026-10-10 and back on 2026-10-18 must read from 2026-10-03.
+        The first attempt writes that time to the record before the model runs; gaps and failures never recompute it."""
+        self.set(**{"sweep.work.jira_scope": "project in (ABC)"})
+        last, seen = self.state("work") / "last.json", self.root / "at-model.json"
+        self.assertEqual(self.sweep("run", "work", STUB_READ="mail, drive", STUB_COPY=f"{last}|{seen}").returncode, 0)
+        first = self.record("work")
+        self.assertEqual(json.loads(seen.read_text())["since"]["jira"], window(first["started"]))
+        self.assertIsNone(first["since"]["notion"], "an unconfigured source got a window")
+        # That first attempt as if it ran on 2026-10-10; then a failed run, a run with Jira a gap, and the recovery.
+        last.write_text(json.dumps({**first, "started": "2026-10-10T12:00:00+00:00",
+                                    "since": {**first["since"], "jira": "2026-10-03T12:00:00+00:00"}}))
+        self.assertEqual(self.sweep("run", "work", STUB_MODE="fail").returncode, 1)
+        self.assertEqual(self.sweep("run", "work", STUB_READ="mail, drive").returncode, 0)
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        recovery = self.record("work")
+        prompts = [argv[argv.index("-p") + 1] for argv in self.prompts()[1:]]
+        self.assertEqual([self.since(prompt, "jira") for prompt in prompts], ["2026-10-03T12:00:00+00:00"] * 3)
+        self.assertEqual((recovery["since"]["jira"], recovery["gaps"]), ("2026-10-03T12:00:00+00:00", []))
+        # Read at last: the next run starts Jira from the recovery run's start.
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
+        self.assertEqual(self.record("work")["since"]["jira"], recovery["started"])
 
     def test_a_reply_without_a_read_line_moves_no_checkpoint(self):
         """A reply that names nothing it read is unknown: every source keeps its checkpoint, and the record says so."""
@@ -244,7 +279,9 @@ class Run(unittest.TestCase):
         self.assertEqual(self.sweep("run", "personal").returncode, 0)
         stopped, older = (argv[argv.index("-p") + 1] for argv in self.prompts())
         self.assertEqual(self.since(stopped, "mail"), "2026-10-17T12:00:00+00:00")
-        self.assertTrue(self.since(stopped, "drive").startswith("seven days ago"))
+        drive = datetime.datetime.fromisoformat(self.since(stopped, "drive"))
+        self.assertLess(abs(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7) - drive),
+                        datetime.timedelta(minutes=5))
         self.assertEqual((self.since(older, "mail"), self.since(older, "drive")),
                          ("2026-10-16T12:00:00+00:00", "2026-10-16T12:00:00+00:00"))
 
