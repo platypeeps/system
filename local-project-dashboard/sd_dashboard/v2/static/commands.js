@@ -128,7 +128,8 @@
   // The Details section for the row's latest run on this page, or nothing: its state, then the brief and the item it filed.
   function reviewPane(kind, target) {
     const r = RUNS.get(runKey(kind, target)); if (!r) return '';
-    const { html } = window.markup, S = window.shell;
+    const { html } = window.markup;
+    const S = window.shell;
     const links = r.brief_item ? html` · <a href="${S.itemPage(r.brief_item)}">brief sd:${r.brief_item}</a>` : '';
     const item = r.item != null ? html` · <a href="${S.itemHref(r.item)}">#${r.item}</a>` : '';
     const state = settled(r) ? settledText(r) : `Run ${r.id} is ${r.state}${r.unread ? `; its state was not read: ${r.unread}` : ''}. This page reads it every 10 s.`;
