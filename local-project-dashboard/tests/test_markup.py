@@ -149,6 +149,18 @@ class Links(unittest.TestCase):
         url = "obsidian://open?vault=Example&file=Daily%2F2026-10-17"
         self.assertEqual(self.anchors(markdown(f"See [the note]({url}).")), [(url, "the note")])
 
+    def test_an_obsidian_link_that_writes_stays_text(self):
+        # REGRESSION (lane review of sd:5000). `obsidian://new` with
+        # `overwrite=true` replaces a note, and other actions write too; only
+        # `open`, which reads, may be a link.
+        for url in ("obsidian://new?vault=Example&file=Daily&content=replaced&overwrite=true",
+                    "obsidian://daily?vault=Example", "obsidian://advanced-uri?vault=Example&data=x",
+                    "obsidian://openx?vault=Example", "OBSIDIAN://NEW?vault=Example"):
+            with self.subTest(url):
+                rendered = markdown(f"[x]({url})")
+                self.assertEqual(self.anchors(rendered), [])
+                self.assertIn("[x](", rendered)
+
     def test_a_query_string_and_a_label_are_escaped_once(self):
         # REGRESSION. The link was matched in text already escaped, then
         # escaped again by `tag`, so `&` reached the browser as `&amp;` and

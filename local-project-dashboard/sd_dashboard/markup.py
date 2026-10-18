@@ -28,10 +28,12 @@ from urllib.parse import urlsplit
 
 __all__ = ["Markup", "attribute", "escape", "href", "join", "markdown", "tag", "text"]
 
-#: The schemes a link may carry. `obsidian://` opens a vault note, which a
-#: routine brief links to (sd:5000). Everything else -- `javascript:`,
-#: `data:`, `vbscript:`, a scheme-relative `//host` -- renders as text.
-LINK_SCHEMES = ("http://", "https://", "obsidian://", "/")
+#: The schemes a link may carry. `obsidian://open?` opens a vault note, which
+#: a routine brief links to (sd:5000); its parameters only pick the note.
+#: Other Obsidian actions write (`new` with `overwrite=true` replaces a note),
+#: so they render as text, as do `javascript:`, `data:`, `vbscript:` and a
+#: scheme-relative `//host`.
+LINK_SCHEMES = ("http://", "https://", "obsidian://open?", "/")
 
 
 def href(url: str, schemes: tuple[str, ...] = ("https", "http")) -> str | None:
