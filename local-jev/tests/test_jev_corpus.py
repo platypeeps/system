@@ -245,6 +245,21 @@ class ACall(MeteringCase):
         self.assertEqual(found["ledger"], self.only()["id"])
         self.assertRegex(found["call"], r"^[0-9a-f]{16}$")
 
+    def test_the_stored_request_keeps_the_key_order_it_was_sent_in(self):
+        # Jev's answer depends on key order (sd:4984), so a row that sorted
+        # the keys could not say which order a call sent.
+        self.run_main(["noul", "is it?", "--state-format", "json"],
+                      stdin='{"zeta": {"y": 1, "b": 2}, "alpha": 3}')
+        line, = [text for path in sorted(self.corpus.glob("*.jsonl"))
+                 for text in path.read_text().splitlines()]
+        sent = Stub.seen[-1]["payload"]
+        self.assertEqual(list(sent), ["state", "model", "questions"])
+        found = json.loads(line)
+        self.assertEqual(list(found["request"]), list(sent))
+        self.assertEqual(list(found["request"]["state"]), ["zeta", "alpha"])
+        self.assertEqual(list(found["request"]["state"]["zeta"]), ["y", "b"])
+        self.assertIn('{"zeta": {"y": 1, "b": 2}, "alpha": 3}', line)
+
     def test_the_stored_request_is_the_redacted_one(self):
         secret = "ghp_" + "a" * 36
         self.run_main(["noul", "is it?"], stdin=f"token {secret} here")

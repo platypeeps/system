@@ -568,7 +568,9 @@ A record carries:
 - `caller`, `location`, `run_id`, `threshold`, `prompt_hash`, `load_avg`, `error_class`, `error_detail`, `stage`, `arm`, `provider`, `model`, `primitive`, `pair`,
   `shadow`, and the ledger's fields: answer, confidence, distribution,
   outcome, cause, tokens, duration, `changed`;
-- `request`: the payload as sent, after redaction. A local-only call sends
+- `request`: the payload as sent, after redaction, keys in the order sent:
+  Jev's answer depends on it. A `schema` 1 line sorted every key, so its
+  order says nothing. A local-only call sends
   its payload unredacted, so the corpus redacts its copy. The Haiku arm
   adds `prompts`, the message and schema each question became;
 - `response`: the whole parsed response, every distribution included; for

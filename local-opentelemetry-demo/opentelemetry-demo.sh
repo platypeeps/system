@@ -19,6 +19,8 @@ CHART_VERSION=0.40.10
 BASE="$(cd "$(dirname "$0")" && pwd)"
 . "$BASE/../lib/config.sh"
 VALUES_FILE="$BASE/collector-values.yaml"
+# The llm wrapper collector-values.yaml mounts (sd:5029).
+LLM_WRAPPER="$BASE/llm_varied_wrong.py"
 # Shell -> Secret -> collector env. $SYSTEM_TOOLS_CONFIG/opentelemetry-demo/.env
 # is sourced when present; OTLP_EXPORT_* already exported in the calling shell
 # win over it (st_source_env's one rule); the file is optional when they are
@@ -256,6 +258,21 @@ ensure_export_secret() {
     --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f - >/dev/null
 }
 
+# Create/refresh the llm-varied-wrong ConfigMap that collector-values.yaml
+# mounts into llm. helm does not watch it, so llm_wrapper_set stamps its cksum
+# on the pod and an edited wrapper rolls llm on the next start or upgrade.
+ensure_llm_wrapper() {
+  kubectl --context "$CONTEXT" create configmap llm-varied-wrong \
+    --namespace "$NAMESPACE" \
+    --from-file="$LLM_WRAPPER" \
+    --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f - >/dev/null
+}
+
+llm_wrapper_set() {
+  printf 'components.llm.podAnnotations.llm-wrapper-cksum=%s\n' \
+    "$(cksum < "$LLM_WRAPPER" | cut -d' ' -f1)"
+}
+
 # ------------------------------------------------------------- subcommands ---
 
 cmd_start() {
@@ -270,6 +287,7 @@ cmd_start() {
   # Must precede helm: the collector pod crashloops without these env vars and
   # "--wait" then fails on DaemonSet/otel-collector-agent.
   ensure_export_secret
+  ensure_llm_wrapper
 
   helm --kube-context "$CONTEXT" upgrade --install "$RELEASE" open-telemetry/opentelemetry-demo \
     --version "$CHART_VERSION" \
@@ -277,6 +295,7 @@ cmd_start() {
     --create-namespace \
     -f "$VALUES_FILE" \
     --set-string "$(export_header_set)" \
+    --set-string "$(llm_wrapper_set)" \
     --wait --timeout 10m
 
   start_forward "$PID_FILE" "$LOG_FILE" "$NAMESPACE" frontend-proxy 8080:8080 \
@@ -300,11 +319,13 @@ cmd_upgrade() {
   kubectl config use-context "$CONTEXT"
   helm repo update open-telemetry >/dev/null
   ensure_export_secret
+  ensure_llm_wrapper
   helm --kube-context "$CONTEXT" upgrade "$RELEASE" open-telemetry/opentelemetry-demo \
     --version "$CHART_VERSION" \
     --namespace "$NAMESPACE" \
     -f "$VALUES_FILE" \
     --set-string "$(export_header_set)" \
+    --set-string "$(llm_wrapper_set)" \
     --wait --timeout 5m
 }
 

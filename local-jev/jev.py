@@ -495,7 +495,9 @@ def write_event(event: dict, env, corpus=None) -> str:
 
 def sha256(value) -> str:
     """A string's SHA-256, or a JSON value's over its sorted, compact
-    encoding, so equal values hash equal."""
+    encoding, so equal values hash equal. Sorted for the digest only: two
+    key orders hash the same, and the corpus's `request` keeps the order
+    sent (sd:4984)."""
     import hashlib
     text = value if isinstance(value, str) else json.dumps(
         value, sort_keys=True, separators=(",", ":"))
