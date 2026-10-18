@@ -131,10 +131,11 @@ render_configs() {
   }
 }
 
-# apply_overlay <overlay.toml> <config>: each [mcp.servers.<name>] table in the
-# overlay replaces the config's table of that name, sub-tables included, or
-# adds it. The overlay may hold nothing else, and the merged config must parse
-# to exactly that, or the config is left as it was and start refuses.
+# apply_overlay <overlay.toml> <config>: each [mcp.servers.<name>] and
+# [orchestration.worker.<name>] table in the overlay replaces the config's
+# table of that name, sub-tables included, or adds it. The overlay may hold
+# nothing else, and the merged config must parse to exactly that, or the
+# config is left as it was and start refuses.
 # A key belongs in the overlay as {{ env.MEZMO_SERVICE_KEY }}: its value would
 # land in experiment/state/, so an overlay holding it is refused.
 apply_overlay() {
@@ -153,9 +154,17 @@ try:
     overlay = tomllib.loads(text)
 except (OSError, tomllib.TOMLDecodeError) as e:
     refuse(str(e))
-servers = overlay.get("mcp", {}).get("servers")
-if set(overlay) != {"mcp"} or set(overlay["mcp"]) != {"servers"} or not servers:
-    refuse("may hold only [mcp.servers.<name>] tables")
+# Workers carry their own mcp_filter, so a server reaches the orchestration
+# server's workers only through a worker table (sd:5077).
+servers = overlay.get("mcp", {}).get("servers", {})
+workers = overlay.get("orchestration", {}).get("worker", {})
+shape = {"mcp": {"servers"}, "orchestration": {"worker"}}
+if (not set(overlay) <= set(shape)
+        or any(not isinstance(overlay[k], dict) or not set(overlay[k]) <= shape[k] for k in overlay)
+        or not isinstance(servers, dict) or not isinstance(workers, dict)
+        or not all(isinstance(v, dict) for v in (*servers.values(), *workers.values()))
+        or not (servers or workers)):
+    refuse("may hold only [mcp.servers.<name>] and [orchestration.worker.<name>] tables")
 key = os.environ.get("MEZMO_SERVICE_KEY")
 if key and key in text:
     refuse("holds the value of MEZMO_SERVICE_KEY; write {{ env.MEZMO_SERVICE_KEY }} instead")
@@ -168,18 +177,22 @@ for line in base_text.splitlines(keepends=True):
     header = re.match(r"\s*\[+\s*([^\]]*)", line)
     if header:
         parts = header.group(1).strip().split(".")
-        dropping = parts[:2] == ["mcp", "servers"] and len(parts) > 2 and parts[2] in servers
+        dropping = len(parts) > 2 and (parts[:2] == ["mcp", "servers"] and parts[2] in servers
+                                       or parts[:2] == ["orchestration", "worker"] and parts[2] in workers)
     if not dropping:
         kept.append(line)
 merged_text = "".join(kept).rstrip("\n") + "\n\n# From the experiment start overlay.\n" + text
-expected = dict(base, mcp=dict(base.get("mcp", {})))
-expected["mcp"]["servers"] = {**expected["mcp"].get("servers", {}), **servers}
+expected = dict(base)
+for table, sub, adds in (("mcp", "servers", servers), ("orchestration", "worker", workers)):
+    if adds:
+        expected[table] = dict(base.get(table, {}))
+        expected[table][sub] = {**expected[table].get(sub, {}), **adds}
 try:
     merged = tomllib.loads(merged_text)
 except tomllib.TOMLDecodeError as e:
     refuse(f"the merged config does not parse: {e}")
 if merged != expected:
-    refuse("the merged config is not the example plus these servers; update apply_overlay")
+    refuse("the merged config is not the example plus these tables; update apply_overlay")
 with open(config_path, "w", encoding="utf-8") as f:
     f.write(merged_text)
 PY_OVERLAY
@@ -445,8 +458,10 @@ usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
                      run the math MCP server and two Aura servers
                      (orchestration on 127.0.0.1:3101, single agent on :3102)
                      from $AURA_IMAGE; refuses without the image or a healthy
-                     local-genai-traces. Each [mcp.servers.<name>] table of the
-                     overlay replaces that server or adds it; the overlay may
+                     local-genai-traces. Each [mcp.servers.<name>] and
+                     [orchestration.worker.<name>] table of the overlay
+                     replaces that server or worker or adds it (a worker's
+                     mcp_filter decides which tools it sees); the overlay may
                      hold nothing else, and names the key as
                      {{ env.MEZMO_SERVICE_KEY }}, never its value.
                      The Mezmo target is --target, else AURA_MEZMO_TARGET,

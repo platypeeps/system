@@ -73,8 +73,9 @@ To point the experiment at other MCP servers, such as the Mezmo dev
 endpoint, give `experiment start --overlay <file.toml>`. Each
 `[mcp.servers.<name>]` table in the file replaces the example's server of
 that name, sub-tables included, or adds a new one; both configs get it.
-The file may hold nothing else, and start refuses an overlay it cannot merge
-cleanly. Write the key as a template, never as a value:
+Worker tables may join them (below). The file may hold nothing else, and
+start refuses an overlay it cannot merge cleanly. Write the key as a
+template, never as a value:
 
 ```toml
 [mcp.servers.mezmo-dev]
@@ -83,6 +84,20 @@ url = "https://mcp.example.test/mcp"
 
 [mcp.servers.mezmo-dev.headers]
 Authorization = "Bearer {{ env.MEZMO_SERVICE_KEY }}"
+```
+
+The orchestration server hands tools to its workers, and each
+`[orchestration.worker.<name>]` table's `mcp_filter` decides which tools that
+worker sees. An overlay server alone therefore reaches the single agent but
+not the workers. The overlay may also hold worker tables, which replace the
+example's worker of that name, sub-tables included, or add one:
+
+```toml
+[orchestration.worker.traces]
+description = "Reads traces through the dev MCP server"
+turn_depth = 5
+mcp_filter = ["list_failed_traces", "get_trace_spans"]
+preamble = "You read traces. Report what the tools return."
 ```
 
 Compose passes `MEZMO_SERVICE_KEY` into both servers by name, so its value

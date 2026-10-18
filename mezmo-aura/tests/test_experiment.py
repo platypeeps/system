@@ -44,6 +44,13 @@ X-Example = "math"
 
 [orchestration]
 enabled = true
+
+[orchestration.worker.arithmetic]
+description = "Basic arithmetic"
+mcp_filter = ["add", "multiply"]
+
+[orchestration.worker.arithmetic.extra]
+note = "a sub-table"
 """
 
 
@@ -352,6 +359,43 @@ class AnOverlay(OverlayCase):
     def test_an_unknown_option_refuses(self):
         done = self.start(1, "--overlays", self.overlay(OVERLAY))
         self.assertIn("--overlays", done.stderr)
+        self.assertNotIn("compose", self.docker_calls())
+
+
+WORKER = """[orchestration.worker.traces]
+description = "Reads Mezmo traces"
+turn_depth = 5
+mcp_filter = ["list_failed_traces", "get_trace_spans"]
+preamble = "You read traces."
+"""
+
+
+class AWorkerOverlay(OverlayCase):
+    """sd:5077: the orchestration server's workers carry their own mcp_filter,
+    so overlay servers reached the single agent and never the workers. An
+    overlay may add or replace [orchestration.worker.<name>] tables too."""
+
+    def workers(self, name):
+        return tomllib.loads(self.state(name))["orchestration"]["worker"]
+
+    def test_a_new_worker_is_added_beside_the_example_ones(self):
+        self.start(0, "--overlay", self.overlay(OVERLAY + "\n" + WORKER))
+        workers = self.workers("config-orch.toml")
+        self.assertEqual(sorted(workers), ["arithmetic", "traces"])
+        self.assertEqual(workers["traces"]["mcp_filter"], ["list_failed_traces", "get_trace_spans"])
+        self.assertEqual(workers["arithmetic"]["mcp_filter"], ["add", "multiply"])
+        self.assertEqual(sorted(self.servers("config-orch.toml")), ["dev", "math"])
+
+    def test_a_worker_of_the_same_name_is_replaced_whole(self):
+        self.start(0, "--overlay", self.overlay(
+            '[orchestration.worker.arithmetic]\ndescription = "Math and traces"\n'
+            'mcp_filter = ["add", "list_failed_traces"]\n'))
+        self.assertEqual(self.workers("config-orch.toml")["arithmetic"],
+                         {"description": "Math and traces", "mcp_filter": ["add", "list_failed_traces"]})
+
+    def test_other_orchestration_keys_still_refuse(self):
+        done = self.start(1, "--overlay", self.overlay("[orchestration]\nenabled = false\n"))
+        self.assertIn("[orchestration.worker.<name>]", done.stderr)
         self.assertNotIn("compose", self.docker_calls())
 
 
