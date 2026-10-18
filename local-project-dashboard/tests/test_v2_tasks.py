@@ -1430,6 +1430,18 @@ RELEASE(); await flush(); await flush(); R.det = ELS.details.html;""", answer, s
         self.assertNotIn("run r1", out["R"]["det"])
         self.assertFalse(any("run r1:" in t[0] for t in out["toasts"]), out["toasts"])
 
+    def test_a_run_answer_for_a_row_no_longer_shown_leaves_details_alone(self):
+        """Class pass on 16cad7b5: the pane listener compares the run's row with the row Details shows when the answer lands."""
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(() => {{ globalThis.HELD = new Promise(r => {{ globalThis.RELEASE = r; }});
+return path => path === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: {plan}, filed: null }}]
+  : path === '/api/adversarial/r1' ? HELD.then(() => [200, {{ id: 'r1', state: 'done', item: {plan}, filed: 'written', brief_item: 77 }}])
+  : [404, {{ error: 'no answer' }}]; }})()"""
+        out = self.run_page(f"""shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush();
+open('{ask}'); await flush(); RELEASE(); await flush(); await flush(); R.det = ELS.details.html;""", answer, search=f"?row={plan}")
+        self.assertIn("<h2>Answer the question</h2>", out["R"]["det"])
+        self.assertNotIn("adv-run", out["R"]["det"])
+
     def test_a_refused_adversarial_review_toasts_the_servers_sentence(self):
         plan = self.ids["plan"]
         answer = """(path, body) => [409, { error: 'An adversarial review is already running (run r0); one runs at a time.' }]"""
