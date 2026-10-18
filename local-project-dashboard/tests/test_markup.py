@@ -164,6 +164,17 @@ class Links(unittest.TestCase):
                 self.assertEqual(self.anchors(rendered), [])
                 self.assertIn("[x](", rendered)
 
+    def test_a_scheme_relative_link_stays_text_and_a_path_is_a_link(self):
+        # REGRESSION (sd:5006). `//host` began with `/`, the one path prefix
+        # the subset allows, so it reached the browser as a link to another
+        # host; a browser reads `/\host` the same way.
+        for url in ("//example.test/a", "/\\example.test/a"):
+            with self.subTest(url):
+                rendered = markdown(f"[x]({url})")
+                self.assertEqual(self.anchors(rendered), [])
+                self.assertIn("[x](", rendered)
+        self.assertEqual(self.anchors(markdown("[item](/item/3)")), [("/item/3", "item")])
+
 
 class Shapes(unittest.TestCase):
     """SVG shapes are not HTML void elements, and the difference is a bug."""

@@ -140,7 +140,9 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 
 def _link(match: re.Match[str]) -> str:
     label, href = match.group(1), match.group(2)
-    if not href.lower().startswith(LINK_SCHEMES):
+    # `//host`, and `/\host` as a browser reads it, start with the path
+    # prefix but name another host (sd:5006).
+    if not href.lower().startswith(LINK_SCHEMES) or href.startswith(("//", "/\\")):
         # Not a scheme this dashboard opens. Render the source as text, so the
         # operator sees exactly what the artifact said and the browser is
         # never asked to resolve it.
