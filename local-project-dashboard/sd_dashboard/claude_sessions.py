@@ -7,8 +7,8 @@ No ledger records a session; each fact is read from what Claude Code, git and `p
               the operator".
   transcripts `<claude home>/projects/*/<session id>.jsonl` and its `subagents/agent-*.jsonl` with `.meta.json`. The
               newest write of either is the age of the last action. A subagent is idle only on completion evidence:
-              its last turn record is a finished answer, or the answer to its report to its caller (`REPORTS`)
-              with nothing written for `SETTLE` seconds after it. One whose last record is not is running, or stalled once
+              its last turn record is a finished answer. A tool's name or a message's shape is not that evidence
+              (sd:5106 round 2). One whose last record is not is running, or stalled once
               untouched for `STALL` seconds; one whose log or last record was not read is unknown. Stalled and
               unknown still count as active (sd:5106 review). A session whose first prompt is Fix's builder prompt
               (`fix_session.BUILD`) is a builder itself.
@@ -56,10 +56,6 @@ TAIL_MAX = 1 << 22
 #: How much of a transcript's start is read for its first prompt.
 HEAD_BYTES = 1 << 16
 STATUSES = ("busy", "idle", "waiting")
-#: The tools an agent reports to its caller with. An agent whose last record is that report's answer, and that wrote
-#: nothing for `SETTLE` seconds after it, has handed its turn back: a builder reports, then freezes.
-REPORTS = ("SubagentHandback", "SendMessage")
-SETTLE = 120
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,63}", re.ASCII)
 ITEM_TEXT = re.compile(r"\bsd:(\d{1,9})\b", re.ASCII)
 #: An item number in an agent's name: `b5106-sessions`, `sys-4914-4912`, `sd3456`.
@@ -174,28 +170,17 @@ def _records_from_end(path: Path):
 
 
 def _turn(path: Path) -> str:
-    """`idle` when the last turn record is a finished answer, `reported` when it is the answer to the agent's own report
-    to its caller (`REPORTS`), `running` for any other record, and `unknown` when none was read."""
-    records = [record for record in _records_from_end(path) if record.get("type") in ("user", "assistant")]
-    if not records:
-        return "unknown"
-    last = records[0]
-    message = last.get("message") if isinstance(last.get("message"), dict) else {}
-    content = message.get("content") if isinstance(message.get("content"), list) else []
-    blocks = [block for block in content if isinstance(block, dict)]
-    if last["type"] == "assistant":
-        asks = any(block.get("type") == "tool_use" for block in blocks)
-        return "idle" if message.get("stop_reason") == "end_turn" and not asks else "running"
-    answered = {block.get("tool_use_id") for block in blocks if block.get("type") == "tool_result"}
-    for record in records[1:]:
-        if record["type"] != "assistant":
-            continue
-        asked = record.get("message", {}).get("content") if isinstance(record.get("message"), dict) else None
-        names = {block.get("id"): block.get("name") for block in asked or [] if isinstance(block, dict) and block.get("type") == "tool_use"}
-        if answered and answered <= set(names) and all(names[key] in REPORTS for key in answered):
-            return "reported"
-        break
-    return "running"
+    """`idle` when the last turn record is a finished answer, `running` for any other, `unknown` when none was read."""
+    for record in _records_from_end(path):
+        kind = record.get("type")
+        if kind == "user":
+            return "running"
+        if kind == "assistant":
+            message = record.get("message") if isinstance(record.get("message"), dict) else {}
+            content = message.get("content") if isinstance(message.get("content"), list) else []
+            asks = any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
+            return "idle" if message.get("stop_reason") == "end_turn" and not asks else "running"
+    return "unknown"
 
 
 def _first_prompt(path: Path) -> str:
@@ -243,9 +228,7 @@ def _subagents(transcript: Path, clock: float) -> list[dict]:
         when = log.stat().st_mtime if log.is_file() else meta_path.stat().st_mtime
         # Only a finished answer is idle: no log yet, or no record read, is unknown, and silence is not completion.
         state = _turn(log) if log.is_file() else "unknown"
-        if state == "reported":
-            state = "idle" if clock - when >= SETTLE else "running"
-        elif state == "running" and clock - when >= STALL:
+        if state == "running" and clock - when >= STALL:
             state = "stalled"
         kinds = " ".join(str(meta.get(key) or "") for key in ("agentType", "customAgentType", "spawnedAgentType"))
         numbers = ITEM_TEXT.findall(str(meta.get("description") or "")) + NAME_ITEM.findall(str(meta.get("name") or ""))
@@ -296,7 +279,7 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
         if item is not None and all(t["item"] != item or t["via"] != via for t in tasks):
             tasks.append({"item": item, "via": via})
 
-    agents, last, builder = [], None, False
+    agents, last, builder, fix_item = [], None, False, None
     transcript = _transcript(root, session) if session else None
     if transcript is None:
         unknown.append("no transcript was found, so its last action and builders were not read")
@@ -305,8 +288,8 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
             last = transcript.stat().st_mtime
             prompt = BUILD.search(_first_prompt(transcript))
             if prompt:
-                builder = True
-                task(_item_id(prompt[1]), "Fix builder prompt")
+                builder, fix_item = True, _item_id(prompt[1])
+                task(fix_item, "Fix builder prompt")
             agents = _subagents(transcript, clock)
         except UNREAD as failure:
             unknown.append(f"its transcript could not be read: {_reason(failure)}")
@@ -343,7 +326,8 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
     paths = [cwd] if cwd else []
     if not cwd:
         unknown.append("claude agents gave no cwd, so its checkout was not read")
-    items = {item for agent in agents if agent["builder"] for item in agent["items"]}
+    # A Fix session is a builder too: Fix tells it to work in a worktree, so its own item counts (sd:5106 round 2).
+    items = {item for agent in agents if agent["builder"] for item in agent["items"]} | ({fix_item} if fix_item else set())
     if items and trees_error:
         unknown.append(f"its builders' worktrees were not read: {trees_error}")
     tied = set()

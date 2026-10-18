@@ -146,20 +146,34 @@ class Sessions(ScreenCase):
         doc = self.read([agent(OTHER)], fleet=trees)
         self.assertEqual((doc["sessions"][0]["safe"]["state"], doc["builders"]["running"]), ("yes", 0))
 
-    def test_a_report_to_its_caller_then_silence_is_a_final_answer(self):
-        """A builder reports with SendMessage or SubagentHandback and then freezes: the report's answer is its last record."""
+    def test_a_report_or_message_then_silence_is_not_a_final_answer(self):
+        """Review round 2 (sd:5106): a SendMessage may be a progress note or a message to a peer, and no tool's name
+        proves completion. Only a finished answer frees an agent; a report answered last stays running, then stalled."""
         def handed(tool, ident="t1"):
             return [record("user", text="go"),
                     {"type": "assistant", "message": {"role": "assistant", "stop_reason": "tool_use",
                                                       "content": [{"type": "tool_use", "id": ident, "name": tool}]}},
                     {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": ident}]}}]
-        cases = [("SendMessage", claude_sessions.SETTLE + 1, "idle"), ("SubagentHandback", claude_sessions.STALL + 60, "idle"),
-                 ("SendMessage", 10, "running"), ("Bash", claude_sessions.STALL + 60, "stalled")]
+        cases = [("SendMessage", 121, "running"), ("SendMessage", claude_sessions.STALL + 60, "stalled"),
+                 ("SubagentHandback", claude_sessions.STALL + 60, "stalled"), ("Bash", claude_sessions.STALL + 60, "stalled")]
         for tool, age, state in cases:
             with self.subTest(tool=tool, age=age):
                 log = self.subagent(LEAD, "b", handed(tool), age=age)
                 self.assertEqual(claude_sessions._subagents(self.transcript(), CLOCK)[0]["state"], state)
                 log.unlink()
+
+    def test_a_fix_sessions_own_item_has_its_worktree_checked(self):
+        """Review round 2 (sd:5106): Fix tells its builder to work in a worktree, so the session's own item counts."""
+        item = self.item("Started by Fix")
+        self.transcript(records=[record("user", text=fix_session.prompt("task", item)), record("assistant", stop="end_turn")])
+        trees = lambda area: {"worktrees": [{"path": "/wt/fix", "branch": f"sd{item}-fix", "live": True}]}
+        held = {"/work/system": {"branch": "main", "dirty": 0, "unpushed": 0},
+                "/wt/fix": {"branch": f"sd{item}-fix", "dirty": 0, "unpushed": 2}}
+        row = self.read([agent()], fleet=trees, work=held.__getitem__)["sessions"][0]
+        self.assertEqual(row["safe"], {"state": "no", "why": ["/wt/fix holds 2 unpushed commits"]})
+        row = self.read([agent()], work=held.__getitem__)["sessions"][0]
+        self.assertEqual(row["safe"], {"state": "unknown", "why": [
+            f"no live worktree names #{item}, and the item is not done, so its builder's work was not read"]})
 
     def test_a_finished_builder_whose_worktree_is_not_found_is_unknown_until_its_item_is_done(self):
         self.transcript()
@@ -186,7 +200,8 @@ class Sessions(ScreenCase):
         self.assertEqual(row["safe"]["why"], [
             "claude agents gave no status, so whether it works or waits on you is not known",
             "claude agents gave no pid, so its lane watches were not read",
-            "claude agents gave no cwd, so its checkout was not read"])
+            "claude agents gave no cwd, so its checkout was not read",
+            f"no live worktree names #{item}, and the item is not done, so its builder's work was not read"])
         self.assertEqual(counted(doc["builders"]), {"running": 1, "why": ""})
         self.assertEqual(doc["builders"]["holders"], [{"session": "system", "repo": "system", "agent": "", "state": "unknown", "age": 60}])
 
