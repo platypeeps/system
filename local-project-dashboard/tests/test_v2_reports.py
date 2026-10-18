@@ -507,7 +507,29 @@ class TheScript(ScreenCase):
         self.assertEqual(out["posts"], [[f"/api/reports/{n}/acknowledge", {"revision": revision}, 64]])
         self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
         self.assertEqual(out["gets"], ["/api/reports", "/api/reports"])
-        self.assertEqual(out["confirms"], [])
+        # sd:5064: it asks for an optional reason; left empty, no note is written.
+        self.assertEqual(out["confirms"], ["report.ack"])
+
+    def test_a_reason_is_a_comment_written_just_before_the_acknowledge_under_the_revision_it_answered(self):
+        """sd:5064: the reason lands as a comment note first; the acknowledge carries the revision that note answered."""
+        n = self.ids["clean"]
+        revision = workflow.item_state(self.connection, n)["revision"]
+        answer = self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)).replace(
+            "(path, body) => ", "(path, body) => path.endsWith('/notes') ? [200, { note: 9, revision: 'after-note' }] : ", 1)
+        out = self.run_page(f"FIELD_VALUES = {{ reason: \"it's fine\" }}; R.cli = cmd('report.ack').cli(C.get('r{n}'), FIELD_VALUES);"
+                            f" shellRun(cmd('report.ack'), C.get('r{n}')); await flush();", answer=answer)
+        self.assertEqual(out["posts"], [[f"/api/items/{n}/notes", {"body": "it's fine", "kind": "comment", "revision": revision}, 64],
+                                        [f"/api/reports/{n}/acknowledge", {"revision": "after-note"}, 64]])
+        self.assertEqual(out["R"]["cli"], f"sd task note {n} 'it'\\''s fine' && sd reports acknowledge {n}")
+        self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
+
+    def test_a_refused_reason_note_stops_the_acknowledge(self):
+        n = self.ids["clean"]
+        answer = self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)).replace(
+            "(path, body) => ", "(path, body) => path.endsWith('/notes') ? [409, { error: 'the item changed' }] : ", 1)
+        out = self.run_page(f"FIELD_VALUES = {{ reason: 'why' }}; shellRun(cmd('report.ack'), C.get('r{n}')); await flush();", answer=answer)
+        self.assertEqual([p[0] for p in out["posts"]], [f"/api/items/{n}/notes"])
+        self.assertIn("the item changed", out["toasts"][-1][0])
 
     def test_fix_asks_first_posts_the_report_revision_and_names_the_debug_session(self):
         """sd:3456. Fix on a report: a debug session, asked first; it is off once the report is acknowledged."""

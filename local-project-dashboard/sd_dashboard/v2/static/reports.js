@@ -399,8 +399,15 @@ async function write(path, body) {
   return out;
 }
 // The acknowledge answers the report's new revision; the Undo reopens under it, so a report changed since is refused (sd:2395).
-async function acknowledge(o) {
-  const out = await write(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision });
+// sd:5064: an optional reason is a comment note written just before, and the acknowledge goes under the revision it answered.
+// A refused acknowledge leaves that comment on the open report; it says why, so nothing needs taking back.
+async function acknowledge(o, v = {}) {
+  let revision = o.source.revision;
+  if (v.reason) {
+    try { revision = (await window.shell.post(`/api/items/${o.n}/notes`, { body: v.reason, kind: 'comment', revision })).revision; }
+    catch (err) { if (err.stale) load(); throw err; }
+  }
+  const out = await write(`/api/reports/${o.n}/acknowledge`, { revision });
   return { text: `Acknowledged · #${o.n}`, revision: out.revision };
 }
 const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
@@ -417,7 +424,8 @@ function registerCommands() {
     { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
-      cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
+      fields: () => [{ name: 'reason', label: 'Reason (optional)', placeholder: 'why it can close', help: 'Written on the report as a comment just before it is acknowledged. Leave it empty for none.' }],
+      cli: (o, v = {}) => `${v.reason ? `sd task note ${o.n} ${shq(v.reason)} && ` : ''}sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
     // build: the report opens as its row on Tasks, the item address every page uses (sd:3526).
     { id: 'report.show', on: 'report', label: 'Open item', does: 'Opens the report\'s work item.', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => window.shell.openItem(o.n) },
