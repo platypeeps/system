@@ -176,25 +176,26 @@ or `RESULT: failed, <step>: <reason>` when a step could not finish. A source tha
 brief, not a failure.
 """
 STEPS = {
-    "personal": """Mail. Search Gmail with mail_query and `after:` the Since date. Read the threads that ask the operator
-for something, change a commitment, or carry a deadline.
+    "personal": """Mail. Search Gmail with mail_query and `after:` its Since date. Read the threads that ask the
+operator for something, change a commitment, or carry a deadline.
 
-Drive. Search Drive for files in the account's My Drive modified after Since. Skip the shared Drives that
+Drive. Search Drive for files in the account's My Drive modified after its Since time. Skip the shared Drives that
 drive_exclude names; the HOA sweep owns them.
 """,
-    "work": """Mail. Search Gmail with mail_query and `after:` the Since date. Read the threads that ask the operator
-for something, change a commitment, or carry a deadline.
+    "work": """Mail. Search Gmail with mail_query and `after:` its Since date. Read the threads that ask the
+operator for something, change a commitment, or carry a deadline.
 
-Drive. Search Drive for files modified after Since, in My Drive and the shared Drives, except those drive_exclude names.
+Drive. Search Drive for files modified after its Since time, in My Drive and the shared Drives, except those
+drive_exclude names.
 
-Notion. Search Notion within notion_scope for pages edited after Since, and read those that concern the
+Notion. Search Notion within notion_scope for pages edited after its Since time, and read those that concern the
 operator. If Notion does not answer, or answers from a workspace that is not the work one, say so under Gaps.
 
-Jira. Search issues within jira_scope, updated after Since, that are assigned to the operator, mention them, or
+Jira. Search issues within jira_scope, updated after its Since time, that are assigned to the operator, mention them, or
 that they watch: (assignee = currentUser() OR watcher = currentUser() OR text ~ currentUser()).
 
 GitHub. Within github_scope, find open pull requests that request the operator's review (review-requested:@me),
-reviews on their own open pull requests (author:@me), and mentions (mentions:@me), updated after Since.
+reviews on their own open pull requests (author:@me), and mentions (mentions:@me), updated after its Since time.
 """,
 }
 
