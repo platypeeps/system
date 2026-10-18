@@ -889,13 +889,14 @@ C.run(cmd('jobs.retry'), OBJ.get('source:mission')); await flush();""",
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
         self.assertIn("hoa-mission-export not started: job changed before dispatch; no action was sent", out["toasts"][0][0])
 
-    def test_retry_is_off_with_the_inventorys_reason_until_the_job_can_start(self):
+    def test_an_idle_job_may_start_and_a_running_one_is_off_with_the_inventorys_reason(self):
+        # An idle job may run now (sd:4982): a manual refresh job is idle until its button starts it.
         self.script()
         self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
         out = self.run_page("""const c = cmd('jobs.retry');
 R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
                             pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
-        self.assertEqual(out["R"]["when"], ["only a currently failed or interrupted job can retry", "hoa-vantaca-pull is running now"])
+        self.assertEqual(out["R"]["when"], [True, "hoa-vantaca-pull is running now"])
 
     def test_a_job_that_is_not_installed_turns_retry_off_and_says_how_to_install_it(self):
         self.script()
