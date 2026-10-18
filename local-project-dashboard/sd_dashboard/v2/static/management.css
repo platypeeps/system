@@ -98,8 +98,9 @@ pre.code { margin: 0; padding: var(--space-sm); overflow-x: auto; background: va
 .segctl button { min-height: 2rem; padding: 0 var(--space-sm); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font: 500 var(--text-xs)/1 var(--font-data); cursor: pointer; white-space: nowrap; }
 .segctl button:hover { color: var(--color-ink); background: var(--color-well); }
 .segctl button[aria-pressed="true"] { color: var(--color-ink); background: var(--color-well); box-shadow: inset 0 -2px 0 var(--color-accent); }
-.fld { min-height: 2.25rem; padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: 400 var(--text-xs)/1 var(--font-data); color-scheme: inherit; }
-.fld:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+select.fld { min-height: 2.25rem; font-size: var(--text-xs); }
+.fld:not(select) { min-height: 2.25rem; padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-paper); color: var(--color-ink); font: 400 var(--text-xs)/1 var(--font-data); color-scheme: inherit; }
+.fld:not(select):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 input.fld { width: 100%; max-width: 16rem; }
 input.fld.num { width: 5rem; }
 /* sd:3465: the channels form, one line per channel: its checkbox, then its folder; an off channel's folder dims. */

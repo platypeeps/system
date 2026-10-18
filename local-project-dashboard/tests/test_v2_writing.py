@@ -21,7 +21,9 @@ from pathlib import Path
 
 from sd_db import upsert_repo, writing
 
-from sd_dashboard import server, v2, writing_screen
+from unittest import mock
+
+from sd_dashboard import places, server, v2, writing_screen
 
 from test_v2_read import READ_SHELL
 from test_v2_registry import Registers
@@ -64,6 +66,21 @@ class TheDocument(Pieces):
     def setUp(self):
         super().setUp()
         self.ids = self.seed()
+
+    def test_each_piece_carries_its_repos_realm(self):
+        # sd:5064: places.realm_of of the piece's repo, as on Tasks; without realms.conf a repo's realm is unknown.
+        conf = Path(self.tmp.name) / "realms.conf"
+        conf.write_text(f"realm|brand|Brand|{self.root}\n", encoding="utf-8")
+        with mock.patch.object(places, "REALMS_CONFIG", conf):
+            doc = writing_screen.document(self.connection, now=NOW)
+        self.assertEqual({p["realm"] for p in doc["pieces"]}, {"brand"})
+        self.assertEqual(doc["realms"]["state"], "read")
+        conf.write_text("realm|brand|Brand|/elsewhere/*\n", encoding="utf-8")
+        with mock.patch.object(places, "REALMS_CONFIG", conf):
+            self.assertEqual({p["realm"] for p in writing_screen.document(self.connection, now=NOW)["pieces"]}, {"personal"})
+        with mock.patch.object(places, "REALMS_CONFIG", Path(self.tmp.name) / "absent.conf"):
+            doc = writing_screen.document(self.connection, now=NOW)
+        self.assertEqual(({p["realm"] for p in doc["pieces"]}, doc["realms"]["state"]), ({None}, "missing"))
 
     def test_each_piece_carries_its_stage_gates_moves_files_and_draft(self):
         doc = writing_screen.document(self.connection, now=NOW)
@@ -204,10 +221,10 @@ var navigator = {};
 class TheScript(unittest.TestCase):
     """writing.js against a document with one piece per lamp story."""
 
-    def run_page(self, body, answer=None, search=""):
+    def run_page(self, body, answer=None, search="", prelude=""):
         answer = answer or "(path) => path === '/api/writing' ? [200, DOC] : [200, { revision: 'f'.repeat(64) }]"
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(DOC)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + prelude + PAGE_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.page_attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
@@ -217,6 +234,29 @@ class TheScript(unittest.TestCase):
         out = json.loads(result.stdout)
         self.assertIsNone(out["error"])
         return out
+
+    #: The realms /ui/sections.js hands a signed-in page, and the shell's view switch with the hidden views it was told.
+    REALMS = ("""globalThis.SHELL_REALMS = [{ id: 'brand', label: 'Brand' }, { id: 'work', label: 'Work' }, { id: 'editor', label: 'Clash' }];
+var VIEW = 'personal'; OUT.hidden = {};
+window.shell.view = { current: () => VIEW, show: () => true, count: () => {}, hide: (id, on) => { OUT.hidden[id] = on; } };
+DOC.pieces.forEach(p => { p.realm = p.id === 12 ? 'brand' : 'personal'; });
+""")
+
+    def test_realm_views_hold_their_pieces_and_a_realm_with_none_hides(self):
+        # sd:5064: Personal, the realms, All; a piece is in its repo's realm (places.realm_of), and Work, which holds no piece,
+        # hides. A realm named editor would take this page's editor panel, so it is dropped; b and e stay Writing's keys.
+        out = self.run_page("""R.views = window.PAGE_VIEWS.map(v => [v.id, v.key]); R.personal = ELS['view-board'].html;
+VIEW = 'brand'; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'brand' } })); await flush(); R.brand = ELS['view-board'].html;
+VIEW = 'all'; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'all' } })); await flush(); R.all = ELS['view-board'].html;""",
+                            prelude=self.REALMS)
+        r = out["R"]
+        self.assertEqual(r["views"], [["personal", "p"], ["brand", "r"], ["work", "w"], ["all", "a"]])
+        self.assertEqual(out["hidden"], {"personal": False, "brand": False, "work": True})
+        has = lambda board: ["Three Budgets" in board, "Gated Review" in board, "File Owned" in board]
+        self.assertEqual((has(r["personal"]), has(r["brand"]), has(r["all"])),
+                         ([True, False, True], [False, True, False], [True, True, True]))
+        # Each realm reads again, so the reader's objects are the pieces the view shows.
+        self.assertEqual(out["gets"], ["/api/writing"] * 3)
 
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.label, c.key, c.risk, !!c.bulk]); R.exec = cmd('piece.publish').executes;")

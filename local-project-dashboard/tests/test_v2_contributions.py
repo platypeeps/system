@@ -326,6 +326,7 @@ window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = [];
 OUT.picks = []; C.pick = id => OUT.picks.push(id); OUT.opened = []; window.open = u => OUT.opened.push(u);
 // An answer that settles after k more turns, so a test can make an older read land after a newer one.
 const later = (v, k) => { let p = Promise.resolve(v); for (let i = 0; i < k; i++) p = p.then(x => x); return p; };
+OUT.shown = []; window.shell.view = { show: id => OUT.shown.push(id), current: () => 'open', count() {} };
 """
 
 
@@ -749,6 +750,20 @@ class TheFocus(Script):
 ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = ELS.annunciator.html;""", extra=BOXES)
         self.assertEqual(out["R"]["on"], ["annunciator", {"cell": "awaiting_them", "state": "ok"}, True])
         self.assertIn('data-cell="awaiting_them" data-state="ok" aria-pressed="true"', out["R"]["html"])
+        # sd:5064: Settled is its own view and the lamps filter the Open rows, so a lamp shows Open.
+        self.assertEqual(out["shown"], ["open"])
+
+    def test_open_is_the_first_view_and_settled_the_second(self):
+        page = (V2 / "contributions.html").read_text(encoding="utf-8")
+        self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }];", PAGE_JS)
+        self.assertLess(page.index('<section id="view-open"'), page.index('<section class="settled" id="view-settled"'))
+
+    def test_trackers_is_a_link_beside_the_views_not_a_second_open(self):
+        # sd:5064: the Open | Settled tabs are the page's views; the old Open | Trackers switch repeated Open.
+        page = (V2 / "contributions.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="mode"', page)
+        self.assertNotIn('<a href="/contributions"', page)
+        self.assertIn('<a class="to-trackers" href="/operations?area=trackers">', page)
 
     def test_a_landed_acknowledge_puts_focus_on_the_rows_action_menu(self):
         out = self.run_page(f"""DOC.rows.forEach(r => {{ r.event_ids = []; }});

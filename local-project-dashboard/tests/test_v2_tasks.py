@@ -324,7 +324,7 @@ STAND_IN = r"""
 var window = globalThis, OUT = { posts: [], gets: [], toasts: [], confirms: [], states: [], attention: [], error: null };
 var innerWidth = 1440, location = { search: '', replace: u => { OUT.replaced = u; } };
 function URLSearchParams(q) { var m = new Map(); (q || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(p => { var kv = p.split('='); m.set(kv[0], decodeURIComponent(kv[1] || '')); });
-  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v));
+  this.get = k => m.has(k) ? m.get(k) : null; this.set = (k, v) => m.set(k, String(v)); this.delete = k => m.delete(k);
   this.toString = () => [...m].map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
 function El(id) { var e = { id: id, html: null, hidden: false, dataset: {}, style: {}, listeners: {}, value: '',
   classList: { add() {}, remove() {}, toggle() {} },
@@ -391,7 +391,7 @@ function shellBulk(c, objs) {
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
 window.shell = { commands: C, post, getJSON, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
-  suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, views() {}, capture() {},
+  suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
@@ -670,6 +670,7 @@ class TheScript(ScreenCase):
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
+            ["item.adversarial-review", "item", "safe", None, True, True, False],
             ["item.email", "item", "safe", None, True, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
@@ -681,18 +682,61 @@ class TheScript(ScreenCase):
             ["asg.get", "assignment", "safe", "o", False, True, False],  # copy only: Details show it (sd:3524)
         ])
 
+    # sd:5064: the List / Board / Matrix switch is one icon button whose menu lists the three views.
+    VIEW_MENU = r"""const items = ['list', 'board', 'matrix'].map(v => { const b = El('item-' + v); b.dataset.view = v; b.attrs = {};
+  b.setAttribute = (k, x) => { b.attrs[k] = String(x); }; b.getAttribute = k => k in b.attrs ? b.attrs[k] : null; b.focus = () => { document.activeElement = b; OUT.focus.push(v); }; return b; });
+OUT.focus = []; const btn = ELS['view-btn'], menu = ELS['view-menu']; btn.attrs = {}; btn.setAttribute = (k, x) => { btn.attrs[k] = String(x); };
+btn.focus = () => { document.activeElement = btn; OUT.focus.push('button'); };
+menu.querySelectorAll = () => items; menu.hidden = true;
+const key = (k) => { const ev = { key: k, preventDefault() { ev.prevented = true; }, stopPropagation() { ev.stopped = true; } }; menu.listeners.keydown[0](ev); return ev; };
+"""
+
+    def test_the_view_button_shows_the_current_views_icon_and_names_it(self):
+        out = self.run_page(self.VIEW_MENU + """document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'matrix' })); await flush();
+R.label = btn.attrs['aria-label']; R.icon = btn.html; R.checked = items.map(b => b.attrs['aria-checked']);""")
+        self.assertEqual(out["R"]["label"], "View: Matrix")
+        self.assertIn('<use href="#i-grid-2x2"/>', out["R"]["icon"])
+        self.assertEqual(out["R"]["checked"], ["false", "false", "true"])
+        self.assertIn("view=matrix", out["urls"][-1])
+
+    def test_the_view_menu_opens_on_the_checked_view_and_arrows_escape_and_a_pick_work(self):
+        out = self.run_page(self.VIEW_MENU + """document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'board' })); await flush();
+btn.listeners.click[0]({ target: btn }); R.open = [menu.hidden, btn.attrs['aria-expanded'], OUT.focus.slice()];
+key('ArrowDown'); key('ArrowDown'); key('ArrowUp'); key('End'); key('Home'); R.moved = OUT.focus.slice(1);
+const letter = key('j'); R.letter = !!letter.stopped;
+const esc = key('Escape'); R.esc = [menu.hidden, btn.attrs['aria-expanded'], OUT.focus.at(-1), !!esc.stopped];
+btn.listeners.click[0]({ target: btn }); menu.listeners.click[0]({ target: { closest: s => s === '[data-view]' ? items[0] : null } }); await flush();
+R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
+        self.assertEqual(out["R"]["open"], [False, "true", ["board"]])
+        self.assertEqual(out["R"]["moved"], ["matrix", "list", "matrix", "matrix", "list"])
+        self.assertTrue(out["R"]["letter"], "a letter in the menu reached the shell's keys")
+        self.assertEqual(out["R"]["esc"], [True, "false", "button", True])
+        self.assertEqual(out["R"]["pick"], [True, "View: List", "button"])
+        self.assertIn("view=list", out["urls"][-1])
+
+    def test_the_view_menu_markup_is_a_menu_of_radio_items_and_keeps_the_keys(self):
+        page = (V2 / "tasks.html").read_text(encoding="utf-8")
+        self.assertIn('<button type="button" class="viewpick-btn" id="view-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" aria-label="View: Board">', page)
+        self.assertIn('<div class="actmenu viewmenu" id="view-menu" role="menu" aria-label="View" hidden>', page)
+        self.assertEqual(re.findall(r'role="menuitemradio" data-view="(\w+)" aria-checked="(\w+)"><svg class="i" aria-hidden="true"><use href="#i-([\w-]+)"/></svg><span>(\w+)</span><kbd>(v \w)</kbd>', page),
+                         [("list", "false", "list-todo", "List", "v l"), ("board", "true", "kanban", "Board", "v b"), ("matrix", "false", "grid-2x2", "Matrix", "v m")])
+        self.assertNotIn('class="seg" role="group" aria-label="View"', page)
+        self.assertIn('aria-label="Help: views"', page)
+
     def test_the_page_reads_the_rows_and_draws_the_kind_and_repo_filters(self):
         out = self.run_page("R.filters = ELS.filters.html; R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/tasks"])
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         filters = out["R"]["filters"]
-        # sd:3441: Kind and Repo are comboboxes; the other groups keep their chips.
+        # sd:3441: Kind and Repo are comboboxes; sd:5064: so is every other group, and the active-filter chips are the only chips.
         self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-fsel="kind"><option value="" selected>All</option>'
                       '<option value="followup">followup</option><option value="task">task</option><option value="work">work</option></select>', filters)
         self.assertIn('<select id="f-repo" class="fsel" data-fsel="repo"><option value="" selected>All</option><option value="no repo">no repo</option><option value="system">system</option></select>', filters)
         self.assertNotIn('data-f="kind"', filters)
-        self.assertIn('data-f="p" data-v="1"', filters)
+        self.assertNotIn('data-f=', filters)
+        self.assertIn('<select id="f-p" class="fsel" data-fsel="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
+        self.assertIn('<option value="unset">unset</option></select>', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
         # The badge is the read's own (sd:3446): at NOW the seeded due date is 3 days off, so nothing is due yet.
@@ -1308,12 +1352,12 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
     def test_a_parked_row_shows_only_under_the_parked_chip(self):
         self.park()
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'parked', v: '1' } } : null } });
+ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'parked' }, value: '1' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
-        self.assertIn('data-f="parked" data-v="1"', out["R"]["filters"])
+        self.assertIn('<select id="f-parked" class="fsel" data-fsel="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
         self.assertIn("parked=1", out["R"]["url"])
@@ -1354,6 +1398,28 @@ shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
         self.assertTrue(out["R"]["cli"].startswith("no sd verb:"))
         self.assertEqual(out["posts"], [[f"/api/items/{plan}/fix", {"revision": self.row("plan")["revision"]}, 64]])
         self.assertEqual(out["toasts"], [[f"Fix started · #{plan} · builder session in herdr pane w9:p1", False]])
+
+    def test_adversarial_review_starts_in_the_background_and_details_follow_the_run(self):
+        """sd:5064: the row posts {kind: task, target}; the page reads the run until it is filed, and Details link the brief."""
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(path, body) => path === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: {plan}, filed: null }}]
+  : path === '/api/adversarial/r1' ? [200, {{ id: 'r1', state: 'done', item: {plan}, filed: 'written', brief_item: 77 }}] : [404, {{ error: 'no answer' }}]"""
+        out = self.run_page(f"""R.off = cmd('item.adversarial-review').when(C.get('{ask}'));
+C.select('{plan}'); window.shell.row?.('{plan}');
+shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush(); await flush(); R.det = ELS.details.html;""", answer, search=f"?row={plan}")
+        self.assertEqual(out["R"]["off"], "it has no repository to review in")
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "task", "target": plan}, 64]])
+        self.assertEqual(out["gets"].count("/api/adversarial/r1"), 1)
+        self.assertEqual([t[0] for t in out["toasts"]],
+                         ["Review started · run r1", "Adversarial review filed · run r1 · brief sd:77; Details links it"])
+        self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
+        self.assertIn(f'<a href="/tasks?row={plan}">#{plan}</a>', out["R"]["det"])
+
+    def test_a_refused_adversarial_review_toasts_the_servers_sentence(self):
+        plan = self.ids["plan"]
+        answer = """(path, body) => [409, { error: 'An adversarial review is already running (run r0); one runs at a time.' }]"""
+        out = self.run_page(f"""shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush();""", answer)
+        self.assertEqual(out["toasts"], [["An adversarial review is already running (run r0); one runs at a time.", False]])
 
     def test_a_refused_fix_says_why_and_offers_no_undo(self):
         plan = self.ids["plan"]
@@ -1487,7 +1553,7 @@ document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); a
         dues = ["2026-09-06", "2026-09-07", "2026-09-13", "2026-09-14", "2026-09-15", "2026-10-01"]
         self.doc["rows"] = [{**base, "id": 900 + n, "title": f"due {due}", "due": due, "urgent": False} for n, due in enumerate(dues)]
         out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'due', v: 'week' } } : null } }); await flush();
+ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'due' }, value: 'week' } }); await flush();
 R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
         kept = {due for due in dues if f"due {due}" in out["R"]["list"]}
         self.assertEqual(kept, {due for due in dues if reads.is_urgent({"due": due, "status": "planning", "kind": "task"}, now=read)})
@@ -1953,8 +2019,8 @@ class TheFilterAddress(ScreenCase):
                 self.assertEqual(self.listed(search)[0], expected)
         _, out = self.listed("?view=list&status=ready_to_send&age=3&active=1")
         for key, value in (("status", "ready_to_send"), ("age", "3"), ("active", "1")):
-            self.assertIn(f'data-f="{key}" data-v="{value}" aria-pressed="true"', out["R"]["filters"])
-        self.assertIn('data-v="14" aria-pressed="false">14-29d<', out["R"]["filters"])
+            self.assertRegex(out["R"]["filters"], rf'<select id="f-{key}"[^>]*>(?:(?!</select>).)*<option value="{value}" selected>', key)
+        self.assertIn('<option value="14">14-29d</option>', out["R"]["filters"])
 
     def test_the_text_filter_reads_q_and_the_box_writes_it(self):
         self.assertEqual(self.listed("?view=list&q=BUDGET")[0], {902})
@@ -1986,7 +2052,7 @@ class TheFilterAddress(ScreenCase):
         self.assertIn('data-page="2" aria-label="Page 2" aria-current="page"', out["R"]["list"])
         self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["list"]), ["25", "50", "100", "200"])
         # A filter change starts the list at its first page again.
-        chip = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'status', v: 'planning' } } : null } }); await flush();"
+        chip = "ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'status' }, value: 'planning' } }); await flush();"
         _, out = self.listed("?view=list&page=2", chip)
         self.assertEqual(out["urls"][-1], "view=list&status=planning")
         # A short list draws its range and no page numbers; the board shows every filtered card, whatever the page.

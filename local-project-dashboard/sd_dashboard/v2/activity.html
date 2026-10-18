@@ -54,23 +54,12 @@
   <h2 class="sr">Event kinds</h2>
   <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
-  <section class="chart" aria-labelledby="chart-h">
-    <div class="sec-head">
-      <h2 id="chart-h">Last 24 hours <button class="help" type="button" aria-label="Help: Last 24 hours" data-help="<b>One lane per kind.</b> Each tick is one event at its time. A plain tick went fine; <b>▲</b> amber wants a look; <b>■</b> red failed. A hatched lane failed to read this time. Tap a lane to filter; tap a tick to open that event.">
-        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-    </div>
-    <div class="lanes" id="lanes"></div>
-    <p class="legend"><span><span class="sw"></span>event</span><span><span class="sw c"></span>▲ caution</span><span><span class="sw w"></span>■ failed</span><span><span class="sw h"></span>not read (unknown)</span><span>times UTC</span></p>
-    <details class="fallback"><summary>Events per hour as a table</summary><div class="tbl-wrap" id="chart-table"></div></details>
-  </section>
-
-  <section aria-labelledby="tl-h">
+  <section id="view-timeline" aria-labelledby="tl-h">
     <div class="sec-head">
       <h2 id="tl-h">Timeline <button class="help" type="button" aria-label="Help: Timeline" data-help="<b>One timeline,</b> newest first, banded by hour. Filter by state, range or repo in the bar, and by kind with the lamps or lanes; the filters stay in the address, so a link shares the view. <b>j</b>/<b>k</b> move, <b>.</b> opens actions.">
         <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       <p class="tally" id="tally"></p>
     </div>
-    <div id="views"></div>
     <div class="filters">
       <div id="filters"></div>
       <div class="repo-pop" id="repo-pop" hidden>
@@ -80,7 +69,7 @@
         <ul id="repo-list" role="listbox" aria-label="Repositories" aria-multiselectable="true"></ul>
       </div>
     </div>
-    <table class="ledger" aria-labelledby="tl-h">
+    <table class="ledger" aria-labelledby="tl-h" data-tfilter="page">
       <thead><tr><th scope="col">UTC</th><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Kind</th><th scope="col">Event</th><th scope="col">Where</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -89,6 +78,16 @@
     <p class="note" id="journal-note"></p>
     <p class="note" id="note">Merges are the pull requests sd-ship landed. Runs are runner assignments and scheduled jobs whose log was written in the window.</p>
     <p class="note" id="undated" hidden></p>
+  </section>
+
+  <section class="chart" id="view-cadence" aria-labelledby="chart-h">
+    <div class="sec-head">
+      <h2 id="chart-h">Last 24 hours <button class="help" type="button" aria-label="Help: Last 24 hours" data-help="<b>One lane per kind.</b> Each tick is one event at its time. A plain tick went fine; <b>▲</b> amber wants a look; <b>■</b> red failed. A hatched lane failed to read this time. Tap a lane to filter the Timeline; tap a tick to open that event there.">
+        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+    </div>
+    <div class="lanes" id="lanes"></div>
+    <p class="legend"><span><span class="sw"></span>event</span><span><span class="sw c"></span>▲ caution</span><span><span class="sw w"></span>■ failed</span><span><span class="sw h"></span>not read (unknown)</span><span>times UTC</span></p>
+    <details class="fallback"><summary>Events per hour as a table</summary><div class="tbl-wrap" id="chart-table"></div></details>
   </section>
 </main>
 <div class="details" id="details"></div></div>

@@ -21,7 +21,8 @@ class BrowserSession(ScreenCase):
         super().setUp()
         self.listening = server.build(self.path, port=0, operations_backend=getattr(self, "backend", None),
                                       fleet_backend=getattr(self, "fleet_backend", None),
-                                      metrics_backend=getattr(self, "metrics_backend", None))
+                                      metrics_backend=getattr(self, "metrics_backend", None),
+                                      usage_backend=getattr(self, "usage_backend", None))
         thread = threading.Thread(target=self.listening.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.listening.server_close)

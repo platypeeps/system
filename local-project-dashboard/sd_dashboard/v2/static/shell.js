@@ -147,8 +147,12 @@
   //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
+  //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
+  //   view with keep: false (Designs' Hidden) is never restored, so the page opens on its default.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
-  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it.
+  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it. shell.view.hide(id, on) hides a
+  //   view's segment and rail entry, for a view with nothing in it (Writing's realms, sd:5064); a hidden view does not show,
+  //   and hiding the shown one shows the first view left.
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
   //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
   //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
@@ -156,7 +160,9 @@
   const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
-  const viewSeen = new Set(), viewTabs = [], viewLinks = [];
+  const viewSeen = new Set(), viewTabs = [], viewLinks = [], viewItems = [];
+  const VKEY = `sd.view.${location.pathname}`;
+  const viewKept = () => { try { const id = localStorage.getItem(VKEY); return VIEW_LIST.some(v => v.id === id && v.keep !== false) ? id : null; } catch (_) { return null; } };
   const viewOf = h => { const m = /^#view=([a-z0-9-]+)$/.exec(h || ''); return m && VIEW_LIST.some(v => v.id === m[1]) ? m[1] : null; };
   function viewFire(id) {
     const first = !viewSeen.has(id); viewSeen.add(id);
@@ -173,9 +179,11 @@
     });
     if (viewStarted) viewFire(id);
   }
+  const viewOpen = i => i >= 0 && !viewTabs[i].hidden;
   function viewShow(id) {
-    if (!VIEW_LIST.some(v => v.id === id)) return false;
+    if (!viewOpen(VIEW_LIST.findIndex(v => v.id === id))) return false;
     if (location.hash !== `#view=${id}`) try { history.pushState(history.state, '', `#view=${id}`); } catch (_) {}
+    try { localStorage.setItem(VKEY, id); } catch (_) {}
     viewApply(id);
     return true;
   }
@@ -183,7 +191,12 @@
     const t = viewTabs[VIEW_LIST.findIndex(v => v.id === id)]; if (!t) return;
     const c = t.children[1]; c.hidden = n == null; c.textContent = n == null ? '' : String(n);
   }
-  const view = { current: () => viewNow, show: viewShow, count: viewCount };
+  function viewHide(id, on) {
+    const i = VIEW_LIST.findIndex(v => v.id === id); if (i < 0) return;
+    viewTabs[i].hidden = !!on; viewItems[i].hidden = !!on;
+    if (on && viewNow === id) { const left = VIEW_LIST.find((v, j) => viewOpen(j)); if (left) viewApply(left.id); }
+  }
+  const view = { current: () => viewNow, show: viewShow, count: viewCount, hide: viewHide };
   if (VIEW_LIST.length) {
     const bar = document.createElement('div');
     bar.className = 'viewswitch'; bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', `${page} views`);
@@ -201,18 +214,19 @@
       a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
       // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.
       a.addEventListener('click', e => { e.preventDefault(); viewShow(v.id); });
-      li.append(a); sub.append(li); viewLinks.push(a);
+      li.append(a); sub.append(li); viewLinks.push(a); viewItems.push(li);
     });
     // Roving focus: ← → Home End move between segments and show each (WAI-ARIA tabs, automatic activation).
     bar.addEventListener('keydown', e => {
-      const i = viewTabs.indexOf(e.target), last = viewTabs.length - 1;
-      const to = { ArrowRight: i + 1 > last ? 0 : i + 1, ArrowLeft: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
-      if (i < 0 || to === undefined) return;
+      const open = viewTabs.filter(t => !t.hidden), i = open.indexOf(e.target), last = open.length - 1;
+      const k = { ArrowRight: i + 1 > last ? 0 : i + 1, ArrowLeft: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+      if (i < 0 || k === undefined) return;
+      const to = viewTabs.indexOf(open[k]);
       e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
     });
     viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
     rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
-    viewApply(viewOf(location.hash) || VIEW_LIST[0].id);
+    viewApply(viewOf(location.hash) || viewKept() || VIEW_LIST[0].id);
     const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };
     addEventListener('hashchange', follow); addEventListener('popstate', follow);
     // v then the view's key. Registered before the shell's keys, so the second key (v r) does not also reload the page.
@@ -900,7 +914,7 @@
     const grp = t => html`<li role="presentation" class="grp">${t}</li>`;
     put(palList, html`${o && live(o).length ? [grp(`Selected · ${o.label}`), live(o).map(c => html`<li role="option" data-run="${c.id}">${ICON(c.icon || 'play')}<span>${c.label}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>. ${c.key}</kbd>` : ''}</li>`)] : ''
       }${extra.length ? [grp('This page'), extra.map((c, i) => html`<li role="option" data-cmd="${i}">${ICON(c.icon || 'play')}<span>${c.label}</span>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</li>`)] : ''
-      }${VIEWS.length ? [grp('Views'), VIEWS.map((v, i) => html`<li role="option" data-view="${i}">${ICON('filter')}<span>View: ${v.name}</span><code>${viewHref(v)}</code></li>`)] : ''
+      }${VIEW_LIST.length > 1 ? [grp('Views'), VIEW_LIST.map(v => html`<li role="option" data-pview="${v.id}">${ICON('layout-dashboard')}<span>View: ${v.label}</span><kbd>v ${viewKey(v)}</kbd></li>`)] : ''
       }${grp('Anywhere')}<li role="option" data-capture>${ICON('plus')}<span>Capture a task, followup or note</span><kbd>n</kbd></li><li role="option" data-chat>${ICON('message-square')}<span>Ask in chat</span><kbd>c</kbd></li>${
       GROUPS.flatMap(([, items]) => items).map(([n, icon, k]) => html`<li role="option" data-go="${n}">${ICON(icon)}<span>Go to ${n}${classic(n) ? ' (classic)' : ''}</span><kbd>g ${k}</kbd></li>`)}${
       Object.keys(SCREENS).length ? [grp('Classic screens'), Object.entries(SCREENS).map(([n, href]) => html`<li role="option" data-href="${href}">${ICON('arrow-up-right')}<span>Open ${n}</span><code>${href}</code></li>`)] : ''}`);
@@ -919,7 +933,7 @@
     pal.close();
     if (o.dataset.go) return go(o.dataset.go);
     if (o.dataset.href) { location.href = o.dataset.href; return; }
-    if (o.dataset.view) { location.href = viewHref(VIEWS[+o.dataset.view]); return; }
+    if (o.dataset.pview) { viewShow(o.dataset.pview); return; }
     if (o.hasAttribute('data-chat')) { openChat(); if (palIn.value.trim()) send(palIn.value.trim()); return; }
     if (o.hasAttribute('data-capture')) return openCapture();
     if (o.dataset.run) { const s = OBJ.get(selId), c = REG.find(x => x.id === o.dataset.run); return run(c, s); }
@@ -941,31 +955,6 @@
     if (hrefOf(name)) { location.href = hrefOf(name); return; }
     toast(`${name} is not ${window.SHELL_PAGES ? 'built yet, and has no classic screen' : 'in this mockup round'}.`);
   }
-
-  // ---------- Saved views ----------
-  // shell.views([{ name, params: { due: 'overdue' } }, …]): chips in the page's #views slot, each a link that sets those URL params.
-  // The current view is the one whose params all match the URL; "All" is current when none of the view keys is set.
-  let VIEWS = [];
-  function views(list) {
-    VIEWS = list || []; const slot = document.getElementById('views'); if (!slot) return;
-    const cur = new URLSearchParams(location.search), keys = new Set(VIEWS.flatMap(v => Object.keys(v.params)));
-    // A view keeps every param it does not name (the text filter, the sort) and ?row=, which the page drops on load when the
-    // view hides that row (shell.reconcile). Only the pager resets: page 3 of one view is not page 3 of another.
-    // The drawn href leaves ?row= out, so it does not change with every selection; following a chip adds the row back.
-    const keep = row => [...new URLSearchParams(location.search)].filter(([k]) => !keys.has(k) && k !== 'page' && (row || k !== 'row'));
-    const href = (params, row) => { const u = new URLSearchParams(keep(row)); Object.entries(params).forEach(([k, v]) => u.set(k, v)); const s = u.toString(); return s ? `?${s}` : location.pathname.split('/').pop(); };
-    const isCur = params => Object.entries(params).every(([k, v]) => cur.get(k) === v);
-    const none = ![...keys].some(k => cur.has(k));
-    viewHref = v => href(v.params, true); // the palette opens a view the way its chip does
-    slot.className = 'views'; slot.setAttribute('role', 'navigation'); slot.setAttribute('aria-label', 'Saved views');
-    put(slot, html`<span class="label">View</span><a class="chip" href="${href({})}"${none ? html` aria-current="true"` : ''}>All</a>${
-      VIEWS.map(v => html`<a class="chip" href="${href(v.params)}"${!none && isCur(v.params) ? html` aria-current="true"` : ''}>${v.name}</a>`)
-      }<button class="help" type="button" aria-label="Help: saved views" data-help="<b>A view is a URL.</b> Each chip sets the filters it names and clears the rest; the address bar carries it, so a view can be bookmarked, sent or opened from the palette.">${ICON('circle-help')}</button>`);
-    slot.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
-    // The row and the filters move after render, so a chip's href is rebuilt from the address at the moment it is followed.
-    slot.onclick = e => { const a = e.target.closest('a.chip'); if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return; const v = VIEWS[[...slot.querySelectorAll('a.chip')].indexOf(a) - 1]; e.preventDefault(); location.href = href(v ? v.params : {}, true); };
-  }
-  let viewHref = v => { const u = new URLSearchParams(); Object.entries(v.params).forEach(([k, val]) => u.set(k, val)); return `?${u}`; };
 
   // ---------- List grammar: sort, pages, filter chips (foundation patterns.md, Lists) ----------
   // list:start
@@ -1028,9 +1017,14 @@
   }
   // Active filters above the list: one removable chip each, how many rows they leave, and one Clear all.
   // list: [{ key, label }]; a click on a chip names its key in data-unfilter, Clear all carries data-unfilter-all.
-  function chips(list, shown, total) {
+  // The table grammar (sd:5064) passes tunfilter, so a page's own [data-unfilter] handler never takes its chips.
+  function chips(list, shown, total, attr = 'unfilter') {
     if (!list.length) return html``;
-    return html`<div class="list-chips" role="group" aria-label="Active filters"><span class="n">${plural(list.length, 'filter')} · ${num(shown)} of ${num(total)}</span>${list.map(f => html`<button class="chip" type="button" data-unfilter="${f.key}" aria-label="Remove filter: ${f.label}">${f.label}${ICON('x')}</button>`)}<button class="linkbtn" type="button" data-unfilter-all>Clear all</button></div>`;
+    const t = attr === 'tunfilter';
+    return html`<div class="list-chips" role="group" aria-label="Active filters"><span class="n">${plural(list.length, 'filter')} · ${num(shown)} of ${num(total)}</span>${list.map(f => t
+      ? html`<button class="chip" type="button" data-tunfilter="${f.key}" aria-label="Remove filter: ${f.label}">${f.label}${ICON('x')}</button>`
+      : html`<button class="chip" type="button" data-unfilter="${f.key}" aria-label="Remove filter: ${f.label}">${f.label}${ICON('x')}</button>`)}${t
+      ? html`<button class="linkbtn" type="button" data-tunfilter-all>Clear all</button>` : html`<button class="linkbtn" type="button" data-unfilter-all>Clear all</button>`}</div>`;
   }
   // The URL: page and size as the pager sets them, sort and dir as the header does. A value the page does not offer is ignored,
   // and a page is decimal digits only (?page=1.5 or 0x2 is not a page, sd:2427). Defaults stay out of the URL.
@@ -1049,6 +1043,214 @@
   }
   const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery };
   // list:end
+
+  // ---------- Table grammar: every table sorts, filters and folds (sd:5064) ----------
+  // tables:start
+  // build (sd:5064): one grammar for every table on every page, the classic screens too. A table whose header the page
+  // draws with shell.list.sortHead (a button[data-sort]) keeps the page's sort; one marked data-tfilter="page" keeps the
+  // page's filter. Otherwise a table gets a sort button in each labelled header, a filter box and a column filter once it
+  // has rows enough, a removable chip per active filter, and every table gets a fold on each band row. These functions work on a plain model, so the tests
+  // run them without a page: rows of { kind, cells, pos }, kind 'row' (data), 'group' (a band heading the rows below it)
+  // or 'static' (a note); cells are the cell values in column order; pos is the row's place in the page's own order.
+  // st = { sort: column label or null, dir: 1 | -1, q: text filter, f: { label: value }, closed: [band labels] }.
+  const TCOLL = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+  const TRANK = { warning: 0, caution: 1, unknown: 2, queued: 3, ok: 4 };
+  const tnum = s => /^[-+−]?[\d,]*\.?\d+\s*%?$/.test(s) ? parseFloat(s.replace(/[,%\s]/g, '').replace('−', '-')) : null;
+  // Empty cells sort last either way; states by severity; numbers as numbers; the rest in natural order (#9 before #10).
+  function tcompare(a, b, dir) {
+    if (a === '' || b === '') return a === b ? 0 : a === '' ? 1 : -1;
+    if (a in TRANK && b in TRANK) return dir * (TRANK[a] - TRANK[b]);
+    const x = tnum(a), y = tnum(b);
+    return dir * (x != null && y != null ? x - y : TCOLL.compare(a, b));
+  }
+  // A band heads the rows below it up to the next band. A band with no data row under it is a note, not a group.
+  function tsegments(rows) {
+    const segs = [{ head: null, body: [] }];
+    rows.forEach(r => r.kind === 'group' ? segs.push({ head: r, body: [] }) : segs[segs.length - 1].body.push(r));
+    return segs.filter(s => s.head || s.body.length)
+      .map(s => s.head && !s.body.some(r => r.kind === 'row') ? { head: null, body: [{ ...s.head, kind: 'static' }, ...s.body] } : s);
+  }
+  // The order st asks for. Each band keeps its place; the data rows under it sort (ties, and no sort, keep the page's
+  // order) and its notes stay below them. cols names the columns, so a sort on a column the table lost is no sort.
+  function torder(rows, st, cols) {
+    const i = st.sort == null ? -1 : cols.indexOf(st.sort);
+    return tsegments(rows).flatMap(s => {
+      const data = s.body.filter(r => r.kind === 'row').sort((a, b) => (i < 0 ? 0 : tcompare(a.cells[i] ?? '', b.cells[i] ?? '', st.dir)) || a.pos - b.pos);
+      return [...(s.head ? [s.head] : []), ...data, ...s.body.filter(r => r.kind !== 'row')];
+    });
+  }
+  // A data row shows when every word of the text filter is in its cells and each column filter equals its cell; a filter
+  // on a column the table no longer has passes. Bands and notes always show.
+  function tshows(r, st, cols) {
+    if (r.kind !== 'row') return true;
+    const hay = r.cells.join(' ').toLowerCase();
+    return (st.q || '').toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w))
+      && Object.entries(st.f || {}).every(([label, v]) => { const i = cols.indexOf(label); return i < 0 || (r.cells[i] ?? '') === v; });
+  }
+  // A column offers its values as filters when, over at least 4 rows, it has 2 to 12 of them, some repeat and not all are
+  // numbers: state, kind, repo; not a count or a size.
+  function tfacets(cols, rows, skip = []) {
+    const data = rows.filter(r => r.kind === 'row'); if (data.length < 4) return [];
+    return cols.map((label, i) => ({ label, values: [...new Set(data.map(r => r.cells[i] ?? '').filter(Boolean))].sort(TCOLL.compare) }))
+      .filter((c, i) => c.label && !skip[i] && c.values.length >= 2 && c.values.length <= 12 && c.values.length < data.length && !c.values.every(v => tnum(v) != null));
+  }
+  // A header click: another column starts ascending, the sorted one turns descending, then back to the page's order.
+  function tsortBy(st, label) {
+    if (st.sort !== label) { st.sort = label; st.dir = 1; } else if (st.dir > 0) st.dir = -1; else { st.sort = null; st.dir = 1; }
+    return st;
+  }
+  // The chips for list.chips, and what removing one clears.
+  const tchips = st => [...(st.q ? [{ key: 'q', label: `Text: ${st.q}` }] : []), ...Object.entries(st.f || {}).map(([l, v]) => ({ key: `f:${l}`, label: `${l}: ${v}` }))];
+  function tunfilter(st, key) {
+    if (key == null) { st.q = ''; st.f = {}; } else if (key === 'q') st.q = ''; else delete st.f[key.slice(2)];
+    return st;
+  }
+  // A kept state is read back field by field; anything malformed falls back to the default, since the store is only a convenience.
+  function tstate(v) {
+    const o = v && typeof v === 'object' ? v : {}, f = o.f && typeof o.f === 'object' && !Array.isArray(o.f) ? o.f : {};
+    return { sort: typeof o.sort === 'string' ? o.sort : null, dir: o.dir === -1 ? -1 : 1, q: typeof o.q === 'string' ? o.q : '',
+      f: Object.fromEntries(Object.entries(f).filter(([, x]) => typeof x === 'string')),
+      closed: Array.isArray(o.closed) ? o.closed.filter(x => typeof x === 'string') : [] };
+  }
+  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate };
+  // tables:end
+
+  // The page side of the table grammar. State is kept per page and table in localStorage, a convenience: a blocked store
+  // keeps it for this page only. A redraw (put into the tbody, the thead or the table's parent) is seen by one observer,
+  // which reapplies the state in the next frame; it writes to the page only what differs, so a steady page sees no writes.
+  const TKEY = `sd.tables.${location.pathname}`;
+  const TKEPT = (() => { try { const v = JSON.parse(localStorage.getItem(TKEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } })();
+  const TST = {};
+  const tst = key => TST[key] ||= tstate(TKEPT[key]);
+  const tkeep = key => { TKEPT[key] = TST[key]; try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch { /* blocked: this page only */ } };
+  const twrap = t => { const p = t.parentElement; return p && p.children.length === 1 && p.matches('div:not(main)') ? p : t; };
+  const tlabel = el => el.textContent.replace(/\s+/g, ' ').trim();
+  // A state cell (td.g) reads as its state's name; a <time> as its datetime; data-sort-value wins over both.
+  function tcell(td) {
+    if (!td) return '';
+    if (td.dataset.sortValue != null) return td.dataset.sortValue;
+    if (td.classList.contains('g')) return tlabel(td.querySelector('.sr') || td).toLowerCase();
+    const tm = td.querySelector('time[datetime]');
+    return tm ? tm.getAttribute('datetime') : tlabel(td);
+  }
+  function tkeyOf(t) {
+    if (t.dataset.tgrid) return t.dataset.tgrid;
+    const base = t.getAttribute('aria-labelledby') || t.id || t.closest('[id], [data-listing]')?.id || t.closest('[data-listing]')?.dataset.listing || 'table';
+    let key = base, n = 1;
+    while (document.querySelector(`table[data-tgrid="${CSS.escape(key)}"]`)) key = `${base}:${++n}`;
+    return (t.dataset.tgrid = key);
+  }
+  const theads = t => { const r = t.tHead?.rows; return r && r.length === 1 && ![...r[0].cells].some(c => c.colSpan > 1) ? [...r[0].cells] : null; };
+  // The table's rows as the model has them; a row the page drew since the last pass takes its place after the row above it.
+  function tmodel(t) {
+    let last = -1, k = 0;
+    return [...t.tBodies].flatMap(tb => [...tb.rows]).map(tr => {
+      if (tr._tpos == null) tr._tpos = last + ++k * 1e-6; else { last = tr._tpos; k = 0; }
+      const one = tr.cells.length === 1 && tr.cells[0].colSpan > 1;
+      const kind = tr.matches('.empty, .skeleton') || (one && !tlabel(tr)) ? 'static' : one ? 'group' : 'row';
+      return { kind, cells: kind === 'row' ? [...tr.cells].map(tcell) : [tlabel(tr)], pos: tr._tpos, tr };
+    });
+  }
+  function tapply(t) {
+    if (!t.tHead || !t.tBodies.length || t.matches('.sr, [data-tgrid="off"]') || t.closest('.sr, dialog')) return;
+    const key = tkeyOf(t), st = tst(key), ths = theads(t);
+    const owned = !!t.tHead.querySelector('button[data-sort]') || !ths;
+    // A page with its own filter for the table marks it data-tfilter="page"; a classic listing has its server form.
+    const ownFilter = t.dataset.tfilter === 'page' || !!t.closest('.listing')?.querySelector('.listing-form');
+    const cols = ths ? ths.map(tlabel) : [];
+    // A header whose words are all for screen readers names an action column (Acknowledge, Seen), unless it is the state glyph's.
+    const seen = th => [...th.childNodes].some(n => n.nodeType === 3 ? n.textContent.trim() : n.nodeType === 1 && !n.matches('.sr') && tlabel(n));
+    const first = [...t.tBodies].flatMap(tb => [...tb.rows]).find(tr => tr.cells.length === (ths || []).length);
+    const sortable = ths ? ths.map((th, i) => !owned && !!tlabel(th) && (th.matches('.g') || first?.cells[i]?.matches('.g') || seen(th) || !!th.querySelector('button[data-tsort]')) && !th.matches('.act, .listing-select') && !th.querySelector('input, a, button:not([data-tsort])')) : [];
+    let rows = tmodel(t);
+    const groups = tsegments(rows).filter(s => s.head);
+    if (owned && ownFilter && !groups.length && !t._tbar) return;
+    // Header buttons, drawn once per header cell; aria-sort on the sorted th alone, as shell.list.sortHead draws it.
+    if (!owned) ths.forEach((th, i) => {
+      if (!sortable[i]) return;
+      let b = th.querySelector('button[data-tsort]');
+      if (!b) { b = document.createElement('button'); b.type = 'button'; b.className = 'sorter'; b.append(...th.childNodes); th.append(b); }
+      b.dataset.tsort = cols[i];
+      const on = st.sort === cols[i], dir = on ? (st.dir > 0 ? 'ascending' : 'descending') : null;
+      if ((th.getAttribute('aria-sort') || null) !== dir) dir ? th.setAttribute('aria-sort', dir) : th.removeAttribute('aria-sort');
+      const next = !on ? 'Sort ascending' : st.dir > 0 ? 'Sort descending' : 'Back to the page order';
+      if (b.title !== next) b.title = next;
+      const icon = on ? (st.dir > 0 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down';
+      let use = b.querySelector('svg.i[data-ticon] use');
+      if (!use) { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('class', 'i'); s.setAttribute('aria-hidden', 'true'); s.dataset.ticon = ''; use = document.createElementNS('http://www.w3.org/2000/svg', 'use'); s.append(use); b.append(s); }
+      if (use.getAttribute('href') !== `#i-${icon}`) use.setAttribute('href', `#i-${icon}`);
+    });
+    // Order: only when it differs, so the page's own order stands until a header asks for another.
+    if (!owned) {
+      const want = torder(rows, st, cols);
+      [...t.tBodies].forEach(tb => {
+        const mine = want.filter(r => r.tr.parentNode === tb).map(r => r.tr);
+        if (mine.some((tr, i) => tb.rows[i] !== tr)) tb.append(...mine);
+      });
+    }
+    // Folds: a band becomes a button that shows or hides the rows under it.
+    const closed = new Set(st.closed), hid = new Set();
+    groups.forEach(s => {
+      const label = tlabel(s.head.tr), td = s.head.tr.cells[0], open = !closed.has(label);
+      let b = td.querySelector(':scope > button.tfold');
+      if (!b) {
+        b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';
+        put(b, html`${ICON('chevron-right')}`); b.append(...[...td.childNodes]); td.append(b);
+        s.head.tr.removeAttribute('aria-hidden');
+      }
+      b.dataset.tfold = label;
+      if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
+      if (!open) s.body.forEach(r => hid.add(r.tr));
+    });
+    const filterOn = !ownFilter && tchips(st).length > 0;
+    let shown = 0, total = 0;
+    rows.forEach(r => {
+      const out = hid.has(r.tr) || (!ownFilter && !tshows(r, st, cols));
+      if (r.kind === 'row') { total++; if (ownFilter || tshows(r, st, cols)) shown++; }
+      if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
+    });
+    // The bar above the table: filter box and column filter once there are 6 rows (or a filter is on), folds for 2 bands or more.
+    const findOn = !ownFilter && (total >= 6 || filterOn), facets = findOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
+    const foldsOn = groups.length >= 2;
+    let bar = t._tbar;
+    if (!findOn && !foldsOn) { if (bar?.isConnected) bar.hidden = true; return; }
+    if (!bar || !bar.isConnected) {
+      bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key;
+      bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${t.getAttribute('aria-labelledby') ? ': ' + tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : ''}`);
+      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
+      twrap(t).before(bar);
+    }
+    bar.hidden = false;
+    const input = bar.querySelector('input'), sel = bar.querySelector('select');
+    bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
+    if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
+    const opts = html`<option value="">Filter by column…</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
+    if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }
+    const chipsHtml = findOn ? list.chips(tchips(st), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
+    if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
+  }
+  let tq = 0;
+  const tscan = () => { tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } }); tobs.takeRecords(); };
+  const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
+  tobs.observe(body, { childList: true, subtree: true, characterData: false });
+  const tfor = el => { const t = el.closest('table'); if (t) return t; const bar = el.closest('.tgrid'); return bar && document.querySelector(`table[data-tgrid="${CSS.escape(bar.dataset.tfor)}"]`); };
+  const tdo = (el, f) => { const t = tfor(el); if (!t) return; const key = tkeyOf(t); f(tst(key)); tkeep(key); tapply(t); tobs.takeRecords(); };
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('button[data-tsort], button.tfold, .tgrid [data-tunfilter], .tgrid [data-tunfilter-all], .tgrid [data-tfold-all]'); if (!b) return;
+    if (b.dataset.tsort != null) return tdo(b, st => tsortBy(st, b.dataset.tsort));
+    if (b.classList.contains('tfold')) return tdo(b, st => { const s = new Set(st.closed); s.has(b.dataset.tfold) ? s.delete(b.dataset.tfold) : s.add(b.dataset.tfold); st.closed = [...s]; });
+    if (b.dataset.tfoldAll) return tdo(b, st => { st.closed = b.dataset.tfoldAll === 'open' ? [] : [...tfor(b).querySelectorAll('button.tfold')].map(x => x.dataset.tfold); });
+    const bar = b.closest('.tgrid');
+    tdo(b, st => tunfilter(st, b.hasAttribute('data-tunfilter-all') ? null : b.dataset.tunfilter));
+    bar.querySelector('input')?.focus();
+  });
+  document.addEventListener('input', e => { if (e.target.matches?.('.tgrid input')) tdo(e.target, st => { st.q = e.target.value.trim(); }); });
+  document.addEventListener('change', e => {
+    if (!e.target.matches?.('.tgrid select') || !e.target.value) return;
+    const [label, v] = JSON.parse(e.target.value); e.target.value = '';
+    tdo(e.target, st => { st.f = { ...st.f, [label]: v }; });
+  });
+  tscan();
 
   // ---------- The page's list: j / k, Esc and ?row= ----------
   // A page declares its list once, window.PAGE_LIST = { rows, select, id, current, clear, when }, and binds none of these keys.
@@ -1292,7 +1494,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, views, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

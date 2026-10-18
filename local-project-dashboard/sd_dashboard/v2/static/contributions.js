@@ -7,6 +7,8 @@
 const { html, put, plural, cells } = window.markup;
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter contributions']];
+// The shell's view switch (shell.js, view block, sd:5064): Open, the rows acted on, first; Settled, the record, second.
+window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }];
 window.PAGE_COMMANDS = [
   { label: 'Filter contributions', icon: 'search', key: '/', run: () => document.getElementById('q').focus() },
   { label: 'Show the collector', icon: 'activity', run: () => document.dispatchEvent(new CustomEvent('shell:open', { detail: 'collector' })) },
@@ -309,7 +311,8 @@ addEventListener('DOMContentLoaded', () => {
   function render() { renderHead(); renderSettled(); renderRows(); }
 
   // ---------- Events ----------
-  document.getElementById('annunciator').addEventListener('click', e => { const c = e.target.closest('button.cell'); if (c) setLane(c.dataset.cell); });
+  // A lane lamp filters the Open rows, so it shows the Open view.
+  document.getElementById('annunciator').addEventListener('click', e => { const c = e.target.closest('button.cell'); if (c) { setLane(c.dataset.cell); window.shell.view.show('open'); } });
   document.getElementById('scope').addEventListener('change', e => setScope(e.target.value));
   document.getElementById('rows-head').addEventListener('click', e => { if (DOC && window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, applyFilter); });
   put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns

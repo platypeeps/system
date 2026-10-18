@@ -11,8 +11,10 @@
 #       compose core.md + lenses/NAME.md to stdout, substituting {KEY}
 #
 #   adversarial-gate run --lens NAME [--set KEY=VALUE ...]
-#                        --repo DIR --out FILE [--model M] [--timeout S]
-#       the same prompt, piped to `codex exec` in a read-only sandbox
+#                        --repo DIR --out FILE [--model M] [--effort LEVEL]
+#                        [--timeout S]
+#       the same prompt, piped to `codex exec` in a read-only sandbox;
+#       --effort is codex's `-c model_reasoning_effort=LEVEL`
 #
 #   adversarial-gate rank --in FILE   order an existing result by a Jev noul
 #
@@ -111,7 +113,7 @@ jev_rank() {
   return 0
 }
 
-usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 
 lens_path() {
   case "$1" in
@@ -162,22 +164,28 @@ ${2:?--set needs KEY=VALUE}"; shift 2 ;;
 }
 
 cmd_run() {
-  repo="" ; outfile="" ; model="" ; timeout="1800" ; pass=""
-  while [ $# -gt 0 ]; do
+  repo="" ; outfile="" ; model="" ; effort="" ; effort_given=0 ; timeout="1800"
+  # The words for `render` (--lens, --set) are rotated to the end of "$@" as
+  # they are met, in order; `n` counts the words not yet read. Until sd:5064
+  # they went through an `eval` of single-quoted words, so a quote in a value
+  # broke the words apart and the shell ran what followed it.
+  n=$#
+  while [ "$n" -gt 0 ]; do
     # `[ $# -ge 2 ]` and not `${2:?}`: that form also rejected an EMPTY value,
     # and did it with the shell's own `2: parameter null or not set`, so
     # `--out ""` never reached the `--out is required` line below (sd:790).
     # An empty value is the flag's fault to report; only the flag as the
     # last word is a missing value.
-    [ "$#" -ge 2 ] || case "$1" in
-      --repo|--out|--model|--timeout) die "run: $1 needs a value" ;;
+    [ "$n" -ge 2 ] || case "$1" in
+      --repo|--out|--model|--effort|--timeout) die "run: $1 needs a value" ;;
     esac
     case "$1" in
-      --repo)    repo="$2"; shift 2 ;;
-      --out)     outfile="$2"; shift 2 ;;
-      --model)   model="$2"; shift 2 ;;
-      --timeout) timeout="$2"; shift 2 ;;
-      *) pass="$pass '$1'"; shift ;;
+      --repo)    repo="$2"; shift 2; n=$((n - 2)) ;;
+      --out)     outfile="$2"; shift 2; n=$((n - 2)) ;;
+      --model)   model="$2"; shift 2; n=$((n - 2)) ;;
+      --effort)  effort="$2"; effort_given=1; shift 2; n=$((n - 2)) ;;
+      --timeout) timeout="$2"; shift 2; n=$((n - 2)) ;;
+      *) set -- "$@" "$1"; shift; n=$((n - 1)) ;;
     esac
   done
   [ -n "$repo" ] || die "run: --repo is required"
@@ -186,11 +194,18 @@ cmd_run() {
     ''|*[!0-9]*) die "run: --timeout wants seconds, a positive integer, not '$timeout'" ;;
   esac
   [ "$timeout" -gt 0 ] || die "run: --timeout wants seconds, a positive integer, not '$timeout'"
+  # The level lands in a `-c key=value` override, which codex parses as TOML:
+  # a quote, an `=` or a newline would make it another override (sd:5064).
+  [ "$effort_given" = 0 ] || case "$effort" in
+    ''|*[!a-z]*) die "run: --effort wants one lowercase word, such as high, not '$effort'" ;;
+  esac
   command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH"
   command -v perl >/dev/null 2>&1 || die "perl not found on PATH (it bounds the run)"
-  prompt="$(eval cmd_render $pass)"
-  set -- codex exec -s read-only -C "$repo" -o "$outfile" -
-  [ -n "$model" ] && set -- codex exec -m "$model" -s read-only -C "$repo" -o "$outfile" -
+  prompt="$(cmd_render "$@")"
+  set -- -s read-only -C "$repo" -o "$outfile" -
+  [ -z "$effort" ] || set -- -c "model_reasoning_effort=$effort" "$@"
+  [ -z "$model" ] || set -- -m "$model" "$@"
+  set -- codex exec "$@"
   echo "# adversarial gate: read-only sandbox, $repo -> $outfile" >&2
   # The bound, applied. Until sd:790 `--timeout` was parsed into a variable
   # nothing read, and a reviewer that never answered held the caller for as

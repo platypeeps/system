@@ -718,6 +718,7 @@ class TheScript(PageScript):
             ["repo.managed", "repo", "undo", "g", True, True],
             ["repo.lane-host", "repo", "safe", "h", False, False],
             ["repo.pull", "repo", "safe", "l", False, False],
+            ["repo.adversarial-review", "repo", "safe", None, True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["file.prepare", "file change", "safe", "p", False, False],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
@@ -865,6 +866,18 @@ R.toast = lastToast().msg; const undo = lastToast().undo; await undo(); await fl
                                  ("/api/repos/runner-merge", {"path": path, "value": "manual", "before": "auto"})])
         self.assertEqual(out["R"]["toast"], f"runner_merge auto · {path}")
         self.assertEqual(out["posts"][0][2], 64)
+
+    def test_adversarial_review_posts_the_repo_key_and_is_off_for_an_unregistered_checkout(self):
+        """sd:5064: a registered repo row asks for {kind: repo, target: its path key}; Details follow the run."""
+        path = self.ids["checkout"]
+        answer = """(p, b) => p === '/api/adversarial' ? [202, { id: 'r1', state: 'queued', item: null, filed: null }]
+  : p === '/api/adversarial/r1' ? [200, { id: 'r1', state: 'done', item: 41, filed: 'written', brief_item: 77 }] : [404, { error: 'no' }]"""
+        out = self.run_page(f"""const busy = [...OBJ.values()].find(o => o.type === 'repo' && !o.row.registered);
+R.off = cmd('repo.adversarial-review').when(busy); selectRow('repo:{path}');
+C.run(cmd('repo.adversarial-review'), C.get('repo:{path}')); await flush(); await flush(); R.det = ELS.details.html;""", answer=answer)
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "repo", "target": path}, 64]])
+        self.assertEqual(out["R"]["off"], "not registered in sd-db: sd-db repo add registers it first")
+        self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
 
     def test_the_repo_page_shows_the_lane_host_and_move_lane_runs_the_verb_and_undoes(self):
         """sd:3075, acceptance 3: the list and the page show the host; the field offers hub and each named host;

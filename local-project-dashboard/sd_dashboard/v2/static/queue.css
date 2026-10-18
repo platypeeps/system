@@ -35,6 +35,7 @@ section.lane > header .src { margin-left: auto; font: 400 var(--text-2xs)/1.3 va
 .qrow .s small b { font-weight: 500; color: var(--color-ink-2); }
 .qrow[data-held] .s, .qrow[data-state="cancelled"] .s { color: var(--color-ink-2); }
 .qrow .ctl { display: flex; gap: var(--space-3xs); }
+.qrow .ends { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-xs); }
 .qrow .ctl .btn { white-space: nowrap; }
 .qrow .ctl .btn .i { margin-right: 0; }
 @media (pointer: coarse) {
@@ -44,7 +45,9 @@ section.lane > header .src { margin-left: auto; font: 400 var(--text-2xs)/1.3 va
 @media (max-width: 599px) {
   .qrow { grid-template-columns: 1rem minmax(0, 1fr); }
   .qrow .st { grid-column: 2; }
-  .qrow .s, .qrow .ctl { grid-column: 1 / -1; }
+  .qrow .s, .qrow .ends { grid-column: 1 / -1; }
+  .qrow .ends { justify-content: flex-start; }
+  .qrow .ends .rowact { margin-left: auto; }
   .qrow .ctl { flex-wrap: wrap; }
   section.lane > header .src { margin-left: 0; flex-basis: 100%; }
 }

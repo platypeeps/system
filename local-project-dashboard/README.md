@@ -58,8 +58,9 @@ Ask one with a `question` note that carries one `Option: <text>` line per choice
 `sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.
 Keep each option short; the rest of the body is the question. A button writes the ruling as a `decision` note,
 `Ruling on note #<id>: <option>`, and resolves the question, in one transaction under the item's revision, so a
-stale page writes nothing and reads the list again. `sd task show N` prints both. A prose "Decision needed"
-comment gets no buttons (`sd_dashboard/decisions.py`).
+stale page writes nothing and reads the list again. `sd task show N` prints both. A question with fewer than two
+`Option:` lines gets a text box instead (sd:5064); its words are the ruling, as `--kind decision --answers <id>`
+writes. A prose "Decision needed" comment is not listed (`sd_dashboard/decisions.py`).
 
 **The new design is the default** (sd:2163). It is the redesign from ui-design
 `products/system/` (`design.md`, `designs/pages/`), built one page at a time.
@@ -234,7 +235,7 @@ and Commands on Activity. Any other `area=` is a 404.
 
 | Tab | Scope and controls |
 | --- | --- |
-| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`). Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db usage` binds it. |
+| **Usage** | The existing weekly numbers and their inputs, bill spend and reservations, and monthly provider scorecard. These details have moved from Today. Below the cost tile, the month (`?month=YYYY-MM`, a GET form): per bill spent, estimated (`bound`), held (`reserved` and `sending`) and cap, a gauge and a burn line with the cap rule and the projection for a capped bill, a gauge per `meter` window on a `plan` bill's card, the by-bill-provider-role table and every `bound` row as a `Listing` (filter and pager), all from `sd_db.usage.read` (`reads.usage_month` under the registry's merged caps: a legacy row cap on a `start` bill prints as no cap, on the tile as on the card), the read `sd-db usage` prints; `/api/usage?month=` serves its JSON as the verb's `--json` bytes (`usage_screen.py`); without a month the served dashboard answers its kept reading: one past 45 seconds starts a refresh, one past 300 seconds waits for it, and a write waits too. Read-only: the sweep is the verb's, so a dead owner's hold shows here until the next reservation or `sd-db usage` binds it. |
 | **Services** | User LaunchAgents and third-party `/Library/LaunchDaemons`; start, stop or restart eligible long-running user services. System daemons, scheduled/startup agents and protected dashboard/access services are read-only. |
 | **Resources** | The four legacy vault and machine views — Toolbox, Vault, Research and Queues — each rendered by running `sd_tile.py` as a child. Read-only observations; nothing here starts a job or edits a note. |
 | **Trackers** | PRs and Issues as `sd shadow sync` last saw them, read from `sd_db.shadow` through `progress.tracker_items`, with each tracker's sync health. A row's reference is the last path segment of its URL — `LOG-23818` for a Jira ticket, `owner/repo#4321` on GitHub. Open rows only; read-only. |
@@ -707,7 +708,7 @@ first two learned the hard way on 2026-08-28 when the page sat on
 
 | Variable | Default |
 | --- | --- |
-| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, and the cron job files Toolbox reads from `cron-jobs/jobs` |
+| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, `project-dashboard/realms.conf` (the Tasks and Writing realm views; copy `realms.conf.example`), and the cron job files Toolbox reads from `cron-jobs/jobs` |
 | `CRON_JOBS_EXTRA_DIRS` | none — further job directories Toolbox reads, as `cron-jobs.sh` does |
 | `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
 | `SD_DASHBOARD_PYTHON` | command pack `.venv/bin/python`; runs `serve`, `preflight`, `install`, `health` and `grants`, and so the tiles a Resources view renders |

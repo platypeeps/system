@@ -57,8 +57,7 @@
 .form .err { font-size: var(--text-xs); color: var(--color-warning); margin: 0; }
 .form .row { display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: center; }
 /* Intake (sd:3992): the Evaluate form's scope choice and the report under it */
-.form select { font: 400 var(--text-sm)/1.4 var(--font-data); color: var(--color-ink); background: var(--color-well); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); padding: 0 var(--space-xs); min-height: var(--row-touch); }
-.form select:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 0; }
+.form select { min-height: var(--row-touch); }
 .form .target { display: flex; align-items: center; gap: var(--space-xs); }
 .intake { margin-top: var(--space-sm); }
 .intake .verdict { margin: 0 0 var(--space-xs); font-size: var(--text-sm); color: var(--color-ink-2); }

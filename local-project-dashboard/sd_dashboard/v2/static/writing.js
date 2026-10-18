@@ -10,6 +10,16 @@ window.PAGE_COMMANDS = [
   { label: 'Show or hide parked pieces', icon: 'archive', run: () => document.getElementById('show-parked').click() },
 ];
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'pieces not read' };
+// Realm views (sd:5064): Personal, the realms.conf realms (SHELL_REALMS, from /ui/sections.js), then All. A piece's realm is
+// places.realm_of of its repo, as on Tasks; a view no piece is in hides once the pieces are read. Board and editor are this
+// page's panels and b and e its v keys, so a realm takes neither.
+window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'all', 'board', 'editor'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  { id: 'all', label: 'All', key: 'a' }];
+{
+  const used = new Set(['b', 'e', 'a']);
+  window.PAGE_VIEWS.forEach(v => { if (!v.key) { v.key = [...v.id].find(c => /[a-z]/.test(c) && !used.has(c)); used.add(v.key); } });
+}
 
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
@@ -21,7 +31,10 @@ addEventListener('DOMContentLoaded', () => {
   // Stages: sd_db.writing.STAGES minus inbox and declined (no piece holds them); the vault inbox leads as "Ideas".
   const STAGES = [['accepted', 'Accepted'], ['researching', 'Researching'], ['drafting', 'Drafting'], ['review', 'Review'], ['ready', 'Ready'], ['published', 'Published']];
   const SL = Object.fromEntries(STAGES);
-  let D = null, pieces = [];
+  let D = null, pieces = [], REALM = window.shell.view?.current() || 'all';
+  const inRealm = p => REALM === 'all' || p.realm === REALM;
+  // Another realm reads again quietly, so the reader's objects and first pick follow the pieces the view shows.
+  document.addEventListener('shell:view', e => { if (e.detail.id === REALM) return; REALM = e.detail.id; if (D) reading.load(true); });
   const byId = id => pieces.find(p => p.id === +id);
 
   // ---------- Gate lamps from sd_db.writing._problems ----------
@@ -398,7 +411,8 @@ addEventListener('DOMContentLoaded', () => {
   reading = window.shell.read({
     source: '/api/writing', what: 'the pieces',
     adopt: doc => {
-      D = doc; pieces = doc.pieces || [];
+      (window.PAGE_VIEWS || []).forEach(v => { if (v.id !== 'all') window.shell.view?.hide(v.id, !(doc.pieces || []).some(p => p.realm === v.id)); });
+      D = doc; pieces = (doc.pieces || []).filter(inRealm);
       document.body.dataset.observed = D.read;
       return { objects: pieces.map(p => ({ id: String(p.id), type: 'piece', label: `#${p.id} ${p.title}` })),
         state: pieces.length ? null : { kind: 'empty', title: 'No pieces', text: 'No writing piece is registered. Import the writing collection to see its pieces here.', source: '/api/writing' } };

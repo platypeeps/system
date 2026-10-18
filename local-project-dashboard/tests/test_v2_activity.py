@@ -285,7 +285,7 @@ PAGE = r"""
 C.select = () => {}; C.pick = () => {};
 window.shell.row = () => null; window.shell.setContext = () => {}; window.shell.openChat = () => {}; window.shell.send = () => {};
 window.shell.pages = { Tasks: '/tasks' };
-OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); window.shell.views = v => { OUT.views = v.map(x => x.name); };
+OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); OUT.shown = []; window.shell.view = { show: id => OUT.shown.push(id), current: () => 'timeline', count() {} };
 """
 
 
@@ -431,7 +431,6 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn("<b>0</b> adjudicated</span> · <span class=\"ph\">1 clean</span>", out["R"]["ann"])
         self.assertNotIn("unrecorded", out["R"]["ann"])
         self.assertIn("codex reviewed system#41", out["R"]["rows"])
-        self.assertIn("Reviews", out["views"])
 
     def test_a_review_shows_who_reviewed_and_how_it_let_the_merge_through(self):
         review = f"review:{self.ids['merge']}"
@@ -460,6 +459,22 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
             self.assertRegex(out["R"]["lanes"], rf'data-kind="{kind}" aria-pressed="true"')
             # The bar shows each picked kind as a removable token; the lamps and lanes are its pressable controls.
             self.assertRegex(out["R"]["filters"], rf'<button type="button" class="tok" data-f="kind" data-v="{kind}" aria-label="Remove filter: ')
+        # sd:5064: the lanes are the Cadence view and the lamps sit above both, so each shows the Timeline it filtered.
+        self.assertEqual(out["shown"], ["timeline", "timeline"])
+
+    def test_a_tick_on_the_cadence_chart_opens_its_event_on_the_timeline(self):
+        merge = next(e["id"] for e in self.doc["events"] if e["k"] == "merge")
+        out = self.run_page("ELS.lanes.listeners.click[0]({ target: { closest: s => s === 'rect.tick' ? { dataset: { id: '%s' } } : null } });"
+                            "R.details = ELS.details.html;" % merge)
+        self.assertEqual(out["shown"], ["timeline"])
+        self.assertIn("system#41", out["R"]["details"])
+
+    def test_the_timeline_is_the_first_view_and_the_lane_chart_the_cadence_view(self):
+        page = (V2 / "activity.html").read_text(encoding="utf-8")
+        self.assertIn("window.PAGE_VIEWS = [{ id: 'timeline', label: 'Timeline' }, { id: 'cadence', label: 'Cadence' }];", ACTIVITY_JS)
+        self.assertLess(page.index('<section id="view-timeline"'), page.index('<section class="chart" id="view-cadence"'))
+        self.assertNotIn('id="views"', page)
+        self.assertNotIn("shell.views", ACTIVITY_JS)
 
     def test_all_read_adds_the_older_journal_records_and_24h_leaves_them_out(self):
         older = self.ids["older"]
@@ -476,7 +491,6 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn("palette and runner runs alike", out["R"]["note"])
         self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
         self.assertNotIn("none shows here", out["R"]["note"])
-        self.assertIn("Command journal", out["views"])
 
     def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
         port = self.ids["port"]

@@ -287,7 +287,8 @@ def rows(entries: list[dict], *, path: str, lane: Path, now: float) -> list[dict
     latest = newest(entries)
     for entry in entries:
         status, item = entry.get("status"), entry.get("item")
-        base = {"item": item, "title": entry.get("title") or ""}
+        # The worktree `lane enqueue` recorded: an adversarial review of the change reads it (sd:5064).
+        base = {"item": item, "title": entry.get("title") or "", "worktree": entry.get("worktree") or None}
         if status == "running":
             started, holder = _when(entry.get("started_at")), entry.get("holder")
             holder = holder if isinstance(holder, dict) else {}

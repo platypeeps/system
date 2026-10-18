@@ -85,7 +85,9 @@ fails is a row on Now. The served process keeps each fleet area (`snapshot.Fleet
 and Metrics' month and week numbers (`server._metrics_kept`) in memory: a request gets the last reading with its `observed` time, a
 reading past 45 seconds starts one background refresh, any write the server answers
 makes the next read wait for a fresh one, and a failed refresh keeps the last
-reading marked `stale` with its reason. A restart reads again.
+reading marked `stale` with its reason. `/api/usage` without `?month=` is kept the same way (`server._usage_kept`);
+there a stale reading answers 503, not old bytes. A restart reads again, and starts these reads, Health's walkers and its
+doctor in the background as serving begins (`server._warm`, sd:5064).
 
 ## Private front door
 
@@ -212,6 +214,15 @@ It sources `~/.config/shell/env.sh` on the same line for the token and finds cla
 It saves the reply through workspace-mcp's `draft_gmail_message`, as Notes' `EMAIL_FROM`, with no recipient; no send tool is called.
 The model has 120 seconds and the draft call 30. Every run that reaches the model adds a note to the item: the subject, draft id and Drafts link, or the failure.
 A draft call with no answer is recorded as not known, never as no draft.
+
+Adversarial review (sd:5064, `adversarial.py`) runs `local-adversarial-gate/adversarial-gate.sh run` from this checkout on a task, a brief, a repository or a change.
+`POST /api/adversarial` answers 202 with a run id at once; `GET /api/adversarial/<id>` reads `queued`, `running`, `done` or `failed` with the reason.
+The model and effort come from `<config>/adversarial-gate/.env`, else `gpt-6-astra` at `high`; codex runs read-only, bounded at 1800 seconds.
+One run at a time: the runner holds `~/.local/state/system/adversarial-gate/lock`, and a second request is a 409 naming the first.
+Codex writes its result beside the run's state file, `runs/<id>.md`; nothing lands in the reviewed checkout.
+A done run files, in one transaction in the server's database, review batches in queue `adversarial` (one Approve-or-Reject question per recommendation, one batch per repository) and a brief, `<day> - Adversarial review · <kind> <label> · <time>Z`, that names them.
+An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
+Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications

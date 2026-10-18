@@ -97,5 +97,44 @@
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }
 
-  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector };
+  // Adversarial review (sd:5064): POST /api/adversarial starts a codex review of the row in the background (adversarial.py).
+  // `payload(o)` is the row's { kind, target } (a change adds item and body). A 202 is followed here: GET
+  // /api/adversarial/<id> every 10 s while the page is open, until the run settles: failed with no item, or `filed` set.
+  // Each answer fires 'adversarial:run' on document, so a Details pane that shows reviewPane(kind, target) draws again.
+  // A refusal is its toast in the server's words: a 409 names the run already going. The run is one row's, so no bulk.
+  const REVIEW_POLL = 10000, RUNS = new Map();
+  const runKey = (kind, target) => `${kind}:${target}`;
+  const settled = r => (r.state === 'failed' && r.item == null) || r.filed != null;
+  function settledText(r) {
+    if (r.state === 'failed') return `Adversarial review failed · run ${r.id}: ${r.reason || 'no reason recorded'}${r.filed && r.filed !== 'written' ? ` · ${r.filed}` : ''}`;
+    return r.filed === 'written' ? `Adversarial review filed · run ${r.id} · brief sd:${r.brief_item}; Details links it` : `Adversarial review done · run ${r.id} · ${r.filed}`;
+  }
+  function follow(key, run) {
+    RUNS.set(key, run);
+    document.dispatchEvent(new CustomEvent('adversarial:run', { detail: { key, run } }));
+    if (settled(run)) { window.shell.toast(settledText(run)); return; }
+    // A failed read is not known, not settled: Details says so and the next poll tries again.
+    setTimeout(() => window.shell.getJSON(`/api/adversarial/${encodeURIComponent(run.id)}`).then(next => follow(key, next),
+      e => follow(key, { ...run, unread: e.message })), REVIEW_POLL);
+  }
+  function adversarialReview(on, { payload, when = () => true }) {
+    return { id: `${on}.adversarial-review`, on, label: 'Adversarial review', does: 'Starts a codex review in the background; its brief lists tasks to pick.', risk: 'safe', executes: true, icon: 'shield-alert', when,
+      cli: () => 'no sd verb: the dashboard runs local-adversarial-gate in the background',
+      sends: o => `POST /api/adversarial ${JSON.stringify(payload(o))}`,
+      run: o => { const p = payload(o);
+        return window.shell.post('/api/adversarial', p).then(run => { follow(runKey(p.kind, p.target), run); return `Review started · run ${run.id}`; },
+          err => { if ([400, 404, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a review started is not known`); }); } };
+  }
+  // The Details section for the row's latest run on this page, or nothing: its state, then the brief and the item it filed.
+  function reviewPane(kind, target) {
+    const r = RUNS.get(runKey(kind, target)); if (!r) return '';
+    const { html } = window.markup;
+    const S = window.shell;
+    const links = r.brief_item ? html` · <a href="${S.itemPage(r.brief_item)}">brief sd:${r.brief_item}</a>` : '';
+    const item = r.item != null ? html` · <a href="${S.itemHref(r.item)}">#${r.item}</a>` : '';
+    const state = settled(r) ? settledText(r) : `Run ${r.id} is ${r.state}${r.unread ? `; its state was not read: ${r.unread}` : ''}. This page reads it every 10 s.`;
+    return html`<section class="adv-run" aria-live="polite"><h3>Adversarial review</h3><p class="why">${state}${links}${item}</p></section>`;
+  }
+
+  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane };
 })();
