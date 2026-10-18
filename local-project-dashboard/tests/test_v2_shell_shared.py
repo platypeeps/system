@@ -794,7 +794,7 @@ class TheSelect(unittest.TestCase):
         rule = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M)
         self.assertIsNotNone(rule, "shell.css has no shared select rule")
         body = rule.group(1)
-        for want in ("appearance: none", "var(--color-panel)", "var(--color-ink)", "var(--color-rule)", "var(--radius-md)",
+        for want in ("appearance: none", "var(--color-panel)", "var(--color-ink)", "var(--color-rule)",
                      "var(--color-muted) 50%", "color-scheme: inherit"):
             self.assertIn(want, body)
         self.assertRegex(SHELL_CSS, r":where\(select:not\(\.tile-f\):focus-visible\) \{ outline: 2px solid var\(--color-focus\)")
@@ -803,6 +803,18 @@ class TheSelect(unittest.TestCase):
         self.assertRegex(SHELL_CSS, r"@media \(forced-colors: active\) \{ :where\(select:not\(\.tile-f\)\) \{ appearance: auto")
         # The option popup follows the theme: tokens.css sets color-scheme on :root.
         self.assertIn("color-scheme", (STATIC / "tokens.css").read_text(encoding="utf-8"))
+
+    def test_a_select_has_the_chips_height_and_radius(self):
+        # The operator's ask: a filter select sits in a row of chips, so it takes their height and pill radius.
+        chip = re.search(r"^\.chip \{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        select = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        for prop in ("min-height", "border-radius"):
+            want = re.search(rf"\b{prop}: ([^;]+);", chip).group(1)
+            self.assertEqual(re.search(rf"\b{prop}: ([^;]+);", select).group(1), want, prop)
+        # A filter bar sizes no select of its own (Reports' .filters select was row-touch tall); a coarse pointer's
+        # row-touch comes from the shared rule.
+        reports = (STATIC / "reports.css").read_text(encoding="utf-8")
+        self.assertNotRegex(reports, r"(?m)^\.filters select \{[^}]*min-height")
 
     def test_no_page_redraws_the_select_box(self):
         # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box or chevron.

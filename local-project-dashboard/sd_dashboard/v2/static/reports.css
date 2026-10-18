@@ -34,7 +34,6 @@ section + section { margin-top: var(--space-2xl); }
 /* Filters */
 .filters { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin: 0 0 var(--space-sm); }
 .filters label.sel { display: flex; flex-direction: column; gap: 2px; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); min-width: 0; }
-.filters select { min-height: var(--row-touch); }
 
 /* Ledger */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
