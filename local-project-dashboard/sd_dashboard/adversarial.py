@@ -599,7 +599,7 @@ def _file_done(connection, document: dict) -> tuple[dict, str]:
 
 
 def _file(document: dict) -> str | None:
-    """Step 7: the outcome in the database, in one transaction, so all of it lands or none; None when it landed.
+    """The outcome in the database, in one transaction, so all of it lands or none; None when it landed.
 
     Any failure is recorded as the reason nothing was written: an `sd_db` refusal, a locked database, a result that
     cannot be read. The runner has no one else to tell.
@@ -643,7 +643,7 @@ def _reason(log: str, code: int) -> str:
 
 
 def run(record: Path, lock: int | None = None) -> int:
-    """Steps 5 to 7: the gate, its outcome and the filing; the exit code is 0 for a done run and 1 for a failed one.
+    """The runner: the gate, its outcome and the filing; the exit code is 0 for a done run and 1 for a failed one.
 
     `lock` is the lock's descriptor, handed on to the gate, so the lock outlives a runner that dies before codex.
     """
@@ -677,11 +677,15 @@ def run(record: Path, lock: int | None = None) -> int:
         reason = None
     finished = _iso(datetime.datetime.now(datetime.timezone.utc))
     document.update(state="failed" if reason else "done", reason=reason, finished=finished)
-    _write(record, document)
     if _files(document):
+        _write(record, document)
         problem = _file(document)
         document["filed"] = "written" if problem is None else f"not written: {problem}"
-        _write(record, document)
+    # The gate has exited, so this is the lock's last descriptor: it goes before the write a page reads as settled,
+    # so a review started at once finds the lock free.
+    if lock is not None:
+        os.close(lock)
+    _write(record, document)
     return 1 if reason else 0
 
 

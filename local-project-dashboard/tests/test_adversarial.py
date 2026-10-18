@@ -375,6 +375,34 @@ class OneAtATime(AdversarialCase):
         self.settled(after["id"])
 
 
+    def test_the_lock_is_free_once_the_run_reads_settled(self):
+        """A page that starts the next review as soon as the last reads settled gets a 202, not a 409: the runner
+        lets go of the lock before its last state write (a test that posted at once failed under load)."""
+        import fcntl
+
+        import sd_db
+
+        self.runs.mkdir(parents=True)
+        run_id = "repo-checkout-20261018T120000Z"
+        record = self.runs / f"{run_id}.json"
+        record.write_text(json.dumps({
+            "id": run_id, "kind": "repo", "target": self.key, "label": "checkout", "state": "queued", "reason": None,
+            "repo": str(self.work), "checkout": str(self.work), "result": str(self.runs / f"{run_id}.md"),
+            "input": None, "item": None, "sets": {"REPO_NAME": "checkout"}, "model": "gpt-6-astra", "effort": "high",
+            "timeout": 60, "started": "2026-10-18T12:00:00Z", "finished": None, "filed": None, "brief": None,
+            "brief_item": None, "batches": None, "pid": None, "database": str(self.path),
+            "library": str(Path(sd_db.__file__).resolve().parent.parent)}))
+        held = open(self.runs.parent / "lock", "a+")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = os.dup(held.fileno())
+        held.close()
+        self.assertEqual(adversarial.run(record, lock), 0)
+        self.assertEqual(json.loads(record.read_text())["filed"], "written")
+        with open(self.runs.parent / "lock", "a+") as probe:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 class FailedRuns(AdversarialCase):
     def test_a_codex_failure_reads_failed_with_its_own_words_and_notes_the_failure(self):
         self.mode.write_text("fail")
