@@ -11,27 +11,35 @@ wrote the work: codex, at the model and effort `<config>/adversarial-gate/.env` 
           compared with (default `origin/HEAD`, then `origin/main`, then `main`); `item`, the item it belongs to; and
           `body`, the file holding its pull-request body.
 
-`start` runs in the POST, in five steps, and answers 202 at once:
+`start` runs in the POST, in four steps, and answers 202 at once:
 
 1. The lock, `<state>/lock`, taken without waiting: a second run while one holds it is a 409 naming the run.
-2. The target, resolved to a checkout, a result folder in its main repository and the lens's inputs.
-3. `<repo>/docs/dashboard/adversarial/`, with a `docs/dashboard/` line added to `.gitignore` when git does not
-   already ignore that folder; the item's or the change's text as `<id>.input.md` there.
-4. The run's state file, `<state>/runs/<id>.json`, as `queued`.
-5. This file as a script, in a session of its own, holding the lock's descriptor: the lock is released only when
+2. The target, resolved to a checkout, its registered repository and the lens's inputs.
+3. The run's state file, `<state>/runs/<id>.json`, as `queued`, with the item's or the change's text beside it as
+   `<id>.input.md`. Codex writes its result beside them as `<id>.md`.
+4. This file as a script, in a session of its own, holding the lock's descriptor: the lock is released only when
    the runner and every process under it have exited, so nothing runs codex beside it.
 
 The runner (`run`) marks the run `running`, runs `adversarial-gate.sh run`, bounded by the gate at `TIMEOUT` (exit
-124) and here at `TIMEOUT + GRACE`, and marks it `done` or `failed` with the reason. When the target is an item (a
-task, a brief, or the change's `item`) it then adds a `comment` note through `sd task note`: the result path and the
-top hypotheses' titles, or the failure. Nothing here approves, merges, publishes or posts anywhere else.
+124) and here at `TIMEOUT + GRACE`, and marks it `done` or `failed` with the reason. It then files the outcome in the
+database the server reads, in one transaction, as the operator asked in note #22943 on sd:5064:
+
+- Each titled hypothesis is a recommendation: one Approve-or-Reject question in a review batch (`sd_db.review`,
+  queue `QUEUE`). An approval files a task in the batch's repository, titled with the question's first line
+  (sd:4924), so the runner files one batch per repository the recommendations name.
+- A routine brief (`sd_db.routine_briefs`) holds the target, the model and effort, the verdict and the numbered
+  recommendations, each naming its batch. Each batch header's `Source:` names the brief's stem.
+- When the target is an item (a task, a brief, or the change's `item`), a `comment` note names the brief and the
+  batches, or the failure. A failed run files no brief and no batch.
+
+Nothing here approves, merges, publishes or posts anywhere else; the operator picks recommendations on the Review page.
 
 `status` answers `GET /api/adversarial/<id>` from the state file. A run whose runner is gone without an outcome reads
 `failed`, with the reason, and a run queued for longer than `STARTUP` that never started reads `failed` too. A run
-whose runner is gone after its outcome but before its note reads the note as not known.
+whose runner is gone after its outcome but before it recorded the filing reads `filed` as not known.
 
-The runner is this file run by path: everything it needs is the standard library and `rank.py` by path, so the
-`sd_db` imports stay inside the functions the server calls.
+The runner is this file run by path. It imports `sd_db` from the folder the server loaded it from and opens the
+database file the server's connection reads; the state file names both.
 """
 
 from __future__ import annotations
@@ -48,7 +56,8 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ["EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "TIMEOUT", "request", "run", "start", "status"]
+__all__ = ["EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT", "recommendations", "request", "run",
+           "start", "status"]
 
 #: This repository's checkout: a brief that names no repository is reviewed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -64,21 +73,31 @@ GRACE = 60
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
 GIT_SECONDS = 10
-NOTE_SECONDS = 30
 #: Hypotheses whose titles the note names.
 TOP = 3
 #: The longest pull-request body read into the input file, in bytes.
 BODY_MAX = 200_000
-RESULTS = Path("docs") / "dashboard" / "adversarial"
+#: The review queue the recommendations are asked in, and who the runner writes as.
+QUEUE = "adversarial"
+WHO = "dashboard-adversarial"
+#: Per review: the most recommendations filed. Per recommendation: the longest title in characters, reasoning in
+#: bytes and evidence line in characters, and the most evidence lines (`sd_db.review` takes five). 30 recommendations
+#: at these sizes stay well under a brief's 200,000 bytes, so no overflow file is needed.
+RECOMMENDATIONS = 30
+TITLE_CHARS = 120
+WHY_BYTES = 3000
+EVIDENCE_CHARS = 300
+EVIDENCE_LINES = 5
 RUN_ID = re.compile(r"(task|brief|repo|change)-[A-Za-z0-9._-]{1,60}-[0-9]{8}T[0-9]{6}Z")
 REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
+#: A line the lenses ask for under each hypothesis, bulleted or bold or neither.
+TAG = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*)?(Recommendation|Evidence|Repo)(?:\*\*)?\s*:(?:\*\*)?\s*(.*?)\s*$", re.IGNORECASE)
+#: A line `sd_db.review` refuses in a question's text, as it would read it as the question's own field.
+RESERVED = re.compile(r"^[ \t]*(Option|Subject|Evidence):")
 
-NOTE = "Adversarial review ({model}, {effort} effort): {result}. Top hypotheses: {titles}. These are hypotheses for a person to check, not findings."
+NOTE = ("Adversarial review ({model}, {effort} effort): brief {stem} (sd:{brief}); recommendations: {count}, to pick in "
+        "review batch {batches}. Top hypotheses: {titles}. These are hypotheses for a person to check, not findings.")
 FAILED = "Adversarial review failed ({model}, {effort} effort): {reason}. Input: {input}."
-
-
-class Busy(Exception):
-    """Another run holds the lock."""
 
 
 # -- where things live -------------------------------------------------------------------------------------------
@@ -280,29 +299,6 @@ def _item_id(value, name: str) -> int:
     return value
 
 
-# -- step 3: the result folder -----------------------------------------------------------------------------------
-
-
-def results_folder(repo: Path) -> Path:
-    """`<repo>/docs/dashboard/adversarial/`, made; a `.gitignore` line when git does not ignore `docs/dashboard/`."""
-    folder = repo / RESULTS
-    folder.mkdir(parents=True, exist_ok=True)
-    probe = (RESULTS / "probe.md").as_posix()
-    try:
-        ignored = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", probe], capture_output=True,
-                                 stdin=subprocess.DEVNULL, timeout=GIT_SECONDS, check=False).returncode
-    except (OSError, subprocess.TimeoutExpired):
-        ignored = None
-    # 1 is git's "not ignored"; 0 is ignored, and anything else (no repository, git failed) changes nothing.
-    if ignored == 1:
-        ignore = repo / ".gitignore"
-        before = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
-        ignore.write_text(before + ("" if not before or before.endswith("\n") else "\n")
-                          + "# Generated pages and reports the dashboard reads from disk.\ndocs/dashboard/\n",
-                          encoding="utf-8")
-    return folder
-
-
 # -- the POST ----------------------------------------------------------------------------------------------------
 
 
@@ -311,11 +307,22 @@ def _held_by(handle) -> str:
     return handle.read().strip() or "unknown"
 
 
+def _database(connection) -> str:
+    """The file the server's connection reads: the runner opens it to file the outcome."""
+    for row in connection.execute("PRAGMA database_list"):
+        if row[1] == "main" and row[2]:
+            return row[2]
+    raise ValueError("The dashboard's database has no file the review's runner could open.")
+
+
 def start(connection, kind: str, target, *, base=None, item=None, body=None, now: datetime.datetime | None = None):
-    """Steps 1 to 5 above: `(202, run)`, or `(409, {"error"})` when a run holds the lock."""
+    """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` when a run holds the lock."""
+    import sd_db
+
     now = now or datetime.datetime.now(datetime.timezone.utc)
     state = state_dir()
-    (state / "runs").mkdir(parents=True, exist_ok=True)
+    runs = state / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
     handle = open(state / "lock", "a+", encoding="utf-8")
     try:
         try:
@@ -333,26 +340,26 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, now
             plan = _resolve_change(connection, target, base, item, body)
         label = re.sub(r"[^A-Za-z0-9._-]", "-", plan["label"])[:60].strip("-.") or "x"
         run_id = f"{kind}-{label}-{_stamp(now)}"
-        record = state / "runs" / f"{run_id}.json"
+        record = runs / f"{run_id}.json"
         if record.exists():
             return 409, {"error": f"Run {run_id} started this second; start it again in a moment."}
-        folder = plan["repo"] / RESULTS
-        result = folder / f"{run_id}.md"
-        written = folder / f"{run_id}.input.md" if plan["input"] is not None else None
+        result = runs / f"{run_id}.md"
+        written = runs / f"{run_id}.input.md" if plan["input"] is not None else None
         sets = {**plan["sets"], **({"INPUT_PATH": str(written)} if written else {})}
         # The gate passes --set values through an `eval` of single-quoted words: a quote or a newline would break it.
         for key, value in [*sets.items(), ("checkout", str(plan["checkout"])), ("result", str(result))]:
             if "'" in value or "\n" in value:
                 raise ValueError(f"The review's {key} holds a quote or a newline, which the gate cannot pass: {value!r}")
-        results_folder(plan["repo"])
+        database = _database(connection)
         if written:
             written.write_text(plan["input"], encoding="utf-8")
         model, effort = settings()
-        document = {"id": run_id, "kind": kind, "target": str(target), "state": "queued", "reason": None,
-                    "repo": str(plan["repo"]), "checkout": str(plan["checkout"]), "result": str(result),
-                    "input": str(written) if written else None, "item": plan["item"], "sets": sets,
-                    "model": model, "effort": effort, "timeout": TIMEOUT, "started": _iso(now), "finished": None,
-                    "note": None, "pid": None}
+        document = {"id": run_id, "kind": kind, "target": str(target), "label": label, "state": "queued",
+                    "reason": None, "repo": str(plan["repo"]), "checkout": str(plan["checkout"]),
+                    "result": str(result), "input": str(written) if written else None, "item": plan["item"],
+                    "sets": sets, "model": model, "effort": effort, "timeout": TIMEOUT, "started": _iso(now),
+                    "finished": None, "filed": None, "brief": None, "brief_item": None, "batches": None, "pid": None,
+                    "database": database, "library": str(Path(sd_db.__file__).resolve().parent.parent)}
         _write(record, document)
         handle.seek(0)
         handle.truncate()
@@ -398,7 +405,8 @@ def request(values: dict):
 
 def public(document: dict) -> dict:
     """What a page reads: the state file less the runner's own fields."""
-    return {key: value for key, value in document.items() if key not in ("pid", "sets", "timeout")}
+    return {key: value for key, value in document.items()
+            if key not in ("pid", "sets", "timeout", "database", "library")}
 
 
 def _alive(pid) -> bool:
@@ -411,6 +419,11 @@ def _alive(pid) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _files(document: dict) -> bool:
+    """Whether the run writes to the database: a done run files its brief; a failed one notes its item, if any."""
+    return document["state"] == "done" or (document["state"] == "failed" and document.get("item") is not None)
 
 
 def status(run_id: str, *, now: datetime.datetime | None = None):
@@ -431,31 +444,195 @@ def status(run_id: str, *, now: datetime.datetime | None = None):
         started = datetime.datetime.fromisoformat(document["started"].replace("Z", "+00:00"))
         if (now - started).total_seconds() > STARTUP:
             document.update(state="failed", reason=f"the runner never started within {STARTUP} s")
-    elif document["state"] in ("done", "failed") and document.get("item") is not None and document.get("note") is None \
-            and not _alive(document.get("pid")):
-        # The outcome was recorded and the runner stopped before it said whether the note landed.
-        document["note"] = "not known: the runner stopped before it recorded the note"
+    elif _files(document) and document.get("filed") is None and not _alive(document.get("pid")):
+        # The outcome was recorded and the runner stopped before it said whether its one transaction committed.
+        document["filed"] = (f"not known: the runner stopped before it recorded the filing; look for brief "
+                             f"{_stem(document)} on the Briefs page")
     return 200, public(document)
 
 
-# -- the runner --------------------------------------------------------------------------------------------------
+# -- the runner: the outcome in the database ---------------------------------------------------------------------
 
 
-def titles(result: Path, top: int = TOP) -> list[str]:
-    """The headings of the first `top` hypotheses, found as `rank.py` finds them; [] when none is titled."""
-    try:
-        spec = importlib.util.spec_from_file_location("adversarial_gate_rank", RANK)
-        rank = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(rank)
-        lines = result.read_text(encoding="utf-8", errors="replace").splitlines()
-        found = rank.finding_blocks(lines)
-    except (OSError, ImportError, AttributeError, SyntaxError):
-        return []
+def _stem(document: dict) -> str:
+    """The brief's stem: `<day> - Adversarial review · <kind> <label> · <time>Z`; the Briefs page cuts it at the ` · `."""
+    started = datetime.datetime.fromisoformat(document["started"].replace("Z", "+00:00"))
+    return f"{started:%Y-%m-%d} - Adversarial review · {document['kind']} {document['label']} · {started:%H%M%S}Z"
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.replace("**", "").replace("`", "").split())
+
+
+def recommendations(result: str, top: int = RECOMMENDATIONS) -> tuple[list[dict], str]:
+    """The result's titled hypotheses as recommendations, found as `rank.py` finds them, and its verdict line.
+
+    Each is `{heading, title, why, evidence, repo}`: the title is the `Recommendation:` line, else the heading; `why`
+    is the rest of the hypothesis, with a line `sd_db.review` would read as a field quoted; `repo` is the `Repo:`
+    line as written, or None. The verdict is the last line, which the last hypothesis holds when nothing follows it.
+    """
+    spec = importlib.util.spec_from_file_location("adversarial_gate_rank", RANK)
+    rank = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rank)
+    lines = result.splitlines()
+    filled = [number for number, line in enumerate(lines) if line.strip()]
+    last = filled[-1] if filled else None
     out = []
-    for start_line, _ in found[:top]:
-        title = re.sub(r"^#+\s*(?:[0-9]+[.)]\s+)?", "", lines[start_line]).replace("**", "").replace("`", "").strip()
-        out.append(title if len(title) <= 100 else title[:99] + "…")
-    return out
+    for first, end in rank.finding_blocks(lines)[:top]:
+        heading = _cut(_plain(re.sub(r"^#+\s*(?:[0-9]+[.)]\s+)?", "", lines[first])), TITLE_CHARS)
+        found = {"heading": heading, "recommendation": None, "evidence": [], "repo": None}
+        why = []
+        for number in range(first + 1, end):
+            if number == last:
+                continue
+            tagged = TAG.match(lines[number])
+            if tagged is None:
+                why.append(("> " if RESERVED.match(lines[number]) else "") + lines[number])
+                continue
+            tag, value = tagged[1].lower(), " ".join(tagged[2].replace("**", "").split())
+            if not value:
+                continue
+            if tag == "evidence" and len(found["evidence"]) < EVIDENCE_LINES:
+                found["evidence"].append(_cut(value, EVIDENCE_CHARS))
+            elif tag in ("repo", "recommendation") and found[tag] is None:
+                found[tag] = value
+        text = "\n".join(why).strip().encode("utf-8")
+        found["why"] = (text[:WHY_BYTES].decode("utf-8", "ignore").rstrip() + " …") if len(text) > WHY_BYTES \
+            else text.decode("utf-8")
+        found["title"] = _cut(_plain(found.pop("recommendation") or "") or heading, TITLE_CHARS)
+        if RESERVED.match(found["title"]):
+            found["title"] = "> " + found["title"]
+        out.append(found)
+    return out, lines[last].strip() if last is not None else ""
+
+
+def _repo_of(connection, named: str | None, home: str) -> str:
+    """The registered repository a `Repo:` line names, by key, path or last path part; else the review's own."""
+    from sd_db import repos
+
+    if not named:
+        return home
+    value = named.strip("`'\" ")
+    row = repos.row_for(connection, value)
+    if row is not None:
+        return row["path"]
+    found = [row["path"] for row in repos.registered(connection) if Path(row["path"]).name == value]
+    return found[0] if len(found) == 1 else home
+
+
+def _question(found: dict, subject: str, stem: str) -> dict:
+    """One recommendation as a question: its first line is the title an approval files its task under."""
+    text = "\n\n".join(part for part in (found["title"], found["why"], f"From the adversarial review in brief {stem}.")
+                       if part)
+    return {"subject": subject, "text": text, "evidence": found["evidence"], "options": ["Approve", "Reject"]}
+
+
+def _brief_text(document: dict, verdict: str, found: list[dict], batches: list[tuple[int, str]]) -> str:
+    target = f"{document['kind']} {document['target']}"
+    named = ", ".join(f"sd:{item} ({repo})" for item, repo in batches) or "none"
+    lines = ["---", "review: adversarial", f"run: {document['id']}", f"target: {target}",
+             f"model: {document['model']}", f"effort: {document['effort']}",
+             f"batches: {', '.join(f'sd:{item}' for item, _ in batches) or 'none'}", "---", "",
+             f"# Adversarial review of {target}", "",
+             f"- Target: {target}, read in {document['checkout']}",
+             f"- Model: {document['model']} at {document['effort']} effort",
+             f"- Review batches: {named}; approve a question there to file its task, reject it to drop it",
+             f"- Result as codex wrote it: {document['result']}", "", "## Summary", "",
+             verdict or "The result ends with no verdict line.", "",
+             f"Recommendations: {len(found)}. These are hypotheses for a person to check, not findings.", "",
+             "## Recommendations", ""]
+    for number, one in enumerate(found, 1):
+        lines += [f"### {number}. {one['title']}", ""]
+        if one["title"] != one["heading"]:
+            lines.append(f"- Hypothesis: {one['heading']}")
+        lines.append(f"- Repo: {one['repo']}")
+        lines.append(f"- Review batch: sd:{one['batch']}" if one.get("batch") else f"- Not asked: {one['dropped']}")
+        lines += [*(f"- Evidence: {line}" for line in one["evidence"]), "", one["why"] or "(no reasoning given)", ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _file_done(connection, document: dict) -> tuple[dict, str]:
+    """A done run's batches, then its brief, which names them: the fields to record and the note's body."""
+    from sd_db import repos, review, routine_briefs
+
+    found, verdict = recommendations(Path(document["result"]).read_text(encoding="utf-8", errors="replace"))
+    stem, kind, label = _stem(document), document["kind"], document["label"]
+    home = repos.row_for(connection, document["repo"])
+    if home is None:
+        raise ValueError(f"{document['repo']} is no longer a registered repository")
+    groups, subjects = {home["path"]: []}, set()
+    for one in found:
+        one["repo"] = _repo_of(connection, one["repo"], home["path"])
+        subject = _cut(f"{kind} {label}: {one['heading']}", 190)
+        while subject in subjects:  # Two hypotheses with one heading: a batch takes each subject once.
+            subject += "'"
+        subjects.add(subject)
+        one["subject"] = subject
+        groups.setdefault(one["repo"], []).append(one)
+    started = datetime.datetime.fromisoformat(document["started"].replace("Z", "+00:00"))
+    name = f"{kind}-{label[:30]}-{_stamp(started)}"
+    batches = []
+    for number, (repo, asked) in enumerate([group for group in groups.items() if group[1]], 1):
+        filed = review.file(connection, {
+            "schema": review.SCHEMA, "queue": QUEUE, "batch": name if number == 1 else f"{name}-{number}",
+            "title": f"Adversarial review of {kind} {label}: pick the recommendations to file as tasks",
+            "repo": repo, "source": f"local-adversarial-gate; brief {stem}", "mode": "open",
+            "questions": [_question(one, one["subject"], stem) for one in asked]}, who=WHO)
+        # A subject the queue rejected in the last 90 days is dropped, not asked again.
+        dropped = {entry["subject"]: entry["reason"] for entry in filed["dropped"]}
+        for one in asked:
+            one["batch"] = None if one["subject"] in dropped else filed["item"]
+            one["dropped"] = dropped.get(one["subject"])
+        if filed["item"] is not None:
+            batches.append((filed["item"], repo))
+    brief = routine_briefs.add(connection, stem, _brief_text(document, verdict, found, batches),
+                               repo=home["path"], who=WHO)
+    titles = "; ".join(f"{number}. {one['heading']}" for number, one in enumerate(found[:TOP], 1))
+    body = NOTE.format(model=document["model"], effort=document["effort"], stem=stem, brief=brief["item"],
+                       count=len(found), batches=", ".join(f"sd:{item}" for item, _ in batches) or "none",
+                       titles=titles or "none titled in the result; read the brief")
+    return {"brief": stem, "brief_item": brief["item"], "batches": [item for item, _ in batches]}, body
+
+
+def _file(document: dict) -> str | None:
+    """Step 7: the outcome in the database, in one transaction, so all of it lands or none; None when it landed.
+
+    Any failure is recorded as the reason nothing was written: an `sd_db` refusal, a locked database, a result that
+    cannot be read. The runner has no one else to tell.
+    """
+    if document["library"] not in sys.path:
+        sys.path.insert(0, document["library"])
+    try:
+        import sd_db
+        from sd_db import workflow
+        from sd_db.database import transaction
+
+        connection = sd_db.connect(document["database"])
+    except Exception as problem:  # noqa: BLE001 - see the docstring
+        return f"the database did not open: {type(problem).__name__}: {problem}"
+    try:
+        with transaction(connection):
+            fields, body = {}, None
+            if document["state"] == "done":
+                fields, body = _file_done(connection, document)
+            else:
+                body = FAILED.format(model=document["model"], effort=document["effort"], reason=document["reason"],
+                                     input=document["input"] or document["checkout"])
+            if document["item"] is not None:
+                workflow.add_item_note(connection, document["item"], kind="comment", body=body, who=WHO)
+    except Exception as problem:  # noqa: BLE001 - see the docstring
+        return f"{type(problem).__name__}: {problem}"
+    finally:
+        connection.close()
+    document.update(fields)
+    return None
+
+
+# -- the runner --------------------------------------------------------------------------------------------------
 
 
 def _reason(log: str, code: int) -> str:
@@ -465,31 +642,8 @@ def _reason(log: str, code: int) -> str:
     return f"{said[-1]} (exit {code})" if said else f"the gate exited {code} with no message"
 
 
-def _note(document: dict) -> str | None:
-    """Step 8: the comment note, as `None` when written, else why it was not."""
-    if document["state"] == "done":
-        named = titles(Path(document["result"]))
-        listed = "; ".join(f"{n}. {title}" for n, title in enumerate(named, 1)) or "none titled in the result; read the file"
-        body = NOTE.format(model=document["model"], effort=document["effort"], result=document["result"], titles=listed)
-    else:
-        body = FAILED.format(model=document["model"], effort=document["effort"], reason=document["reason"],
-                             input=document["input"] or document["checkout"])
-    try:
-        done = subprocess.run(["sd", "task", "note", str(document["item"]), body, "--kind", "comment"],
-                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=NOTE_SECONDS,
-                              check=False)
-    except FileNotFoundError:
-        return "sd is not on the dashboard's PATH"
-    except subprocess.TimeoutExpired:
-        return f"sd task note gave no answer in {NOTE_SECONDS} s, so whether the note landed is not known"
-    if done.returncode != 0:
-        said = (done.stderr.strip() or done.stdout.strip() or f"exit {done.returncode}").splitlines()[-1]
-        return f"sd task note failed: {said}"
-    return None
-
-
 def run(record: Path, lock: int | None = None) -> int:
-    """Steps 6 to 8 above, in the runner; the exit code is 0 for a done run and 1 for a failed one.
+    """Steps 5 to 7: the gate, its outcome and the filing; the exit code is 0 for a done run and 1 for a failed one.
 
     `lock` is the lock's descriptor, handed on to the gate, so the lock outlives a runner that dies before codex.
     """
@@ -524,9 +678,9 @@ def run(record: Path, lock: int | None = None) -> int:
     finished = _iso(datetime.datetime.now(datetime.timezone.utc))
     document.update(state="failed" if reason else "done", reason=reason, finished=finished)
     _write(record, document)
-    if document["item"] is not None:
-        problem = _note(document)
-        document["note"] = "written" if problem is None else f"not written: {problem}"
+    if _files(document):
+        problem = _file(document)
+        document["filed"] = "written" if problem is None else f"not written: {problem}"
         _write(record, document)
     return 1 if reason else 0
 

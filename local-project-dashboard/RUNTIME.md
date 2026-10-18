@@ -217,8 +217,9 @@ Adversarial review (sd:5064, `adversarial.py`) runs `local-adversarial-gate/adve
 `POST /api/adversarial` answers 202 with a run id at once; `GET /api/adversarial/<id>` reads `queued`, `running`, `done` or `failed` with the reason.
 The model and effort come from `<config>/adversarial-gate/.env`, else `gpt-6-astra` at `high`; codex runs read-only, bounded at 1800 seconds.
 One run at a time: the runner holds `~/.local/state/system/adversarial-gate/lock`, and a second request is a 409 naming the first.
-The result is `<repo>/docs/dashboard/adversarial/<kind>-<id>-<UTC stamp>.md`; the folder gets a `.gitignore` line when git does not ignore it.
-An item's review ends with a comment note through `sd task note`, so `sd` and `codex` must be on the LaunchAgent's PATH.
+Codex writes its result beside the run's state file, `runs/<id>.md`; nothing lands in the reviewed checkout.
+A done run files, in one transaction in the server's database, review batches in queue `adversarial` (one Approve-or-Reject question per recommendation, one batch per repository) and a brief, `<day> - Adversarial review · <kind> <label> · <time>Z`, that names them.
+An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,

@@ -1,10 +1,11 @@
 """Adversarial review (sd:5064): a task, a brief, a repository or a change, reviewed by codex in the background.
 
-Every test puts a `codex` and an `sd` of its own first on PATH: the codex double writes a fixed result to the `-o`
-path, or fails, or holds until released, and journals its argv and stdin; the sd double journals its argv and writes
-nothing. The real `local-adversarial-gate/adversarial-gate.sh` runs between them, with its Jev seam pointed at a path
-that does not exist, so no test reaches a model, the network, the judgment ledger or a database other than the
-fixture's. `test_the_doubles_are_what_the_run_finds` asserts which `codex` and `sd` the server's PATH resolves.
+Every test puts a `codex` of its own first on PATH: the double writes a fixed result to the `-o` path, or fails, or
+holds until released, and journals its argv and stdin. The real `local-adversarial-gate/adversarial-gate.sh` runs
+in front of it, with its Jev seam pointed at a path that does not exist. The runner files its outcome (a brief,
+review batches and a note) in the fixture's temporary database, the one the server under test reads. So no test
+reaches a model, the network, the judgment ledger or the live database. `test_the_double_is_what_the_run_finds`
+asserts which `codex` the server's PATH resolves.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -20,11 +20,13 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from sd_db import review, routine_briefs, workflow, writes
+
 from sd_dashboard import adversarial
 
 from test_workflow_actions import BrowserSession
 
-#: The longest a run against the doubles may take before the case fails naming it.
+#: The longest a run against the double may take before the case fails naming it.
 SETTLE = 30
 RESULT = """# Adversarial review
 
@@ -34,11 +36,18 @@ RESULT = """# Adversarial review
 
 The item names no check. **What would have to be true:** no test exists. Confidence: **LIKELY**
 
+- **Recommendation:** Add a test that fails before the fix
+- Evidence: `README.md:1`
+- Evidence: "Make the thing work."
+
 ## 2. Scope hides a second repository
 
 > "and the dashboard"
 
 Two repos move. **What would have to be true:** the page lives elsewhere. Confidence: **SPECULATIVE**
+Subject: a line the review store would read as a field
+Recommendation: Split the dashboard change into its own item
+Repo: other
 
 ## 3. `codex` may refuse the model
 
@@ -73,10 +82,7 @@ if [ "$mode" = fail ]; then
 fi
 cp "$CODEX_RESULT" "$out"
 """
-SD = r"""#!/bin/sh
-{ printf '%s\0' "$@"; printf '\n'; } >> "$SD_JOURNAL"
-[ ! -f "$SD_FAIL" ] || { echo "sd: item is locked" >&2; exit 1; }
-"""
+TITLES = "1. The done condition cannot fail; 2. Scope hides a second repository; 3. codex may refuse the model"
 
 
 def git(directory, *args):
@@ -93,20 +99,18 @@ class AdversarialCase(BrowserSession):
         self.bin, self.work, self.state = root / "bin", root / "checkout", root / "state"
         self.bin.mkdir()
         self.work.mkdir()
-        for name, body in (("codex", CODEX), ("sd", SD)):
-            (self.bin / name).write_text(body)
-            (self.bin / name).chmod(0o755)
+        (self.bin / "codex").write_text(CODEX)
+        (self.bin / "codex").chmod(0o755)
         self.result_fixture = root / "result.md"
         self.result_fixture.write_text(RESULT)
         self.argv, self.stdin, self.mode = root / "codex.argv", root / "codex.stdin", root / "codex.mode"
-        self.release, self.journal, self.sd_fail = root / "codex.release", root / "sd.journal", root / "sd.fail"
+        self.release = root / "codex.release"
         self.config = root / "config"
         environment = patch.dict(os.environ, {
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}", "XDG_STATE_HOME": str(self.state),
             "SYSTEM_TOOLS_CONFIG": str(self.config), "ADVERSARIAL_GATE_JEV": str(root / "no-jev"),
             "CODEX_ARGV": str(self.argv), "CODEX_STDIN": str(self.stdin), "CODEX_MODE": str(self.mode),
-            "CODEX_RELEASE": str(self.release), "CODEX_RESULT": str(self.result_fixture),
-            "SD_JOURNAL": str(self.journal), "SD_FAIL": str(self.sd_fail)})
+            "CODEX_RELEASE": str(self.release), "CODEX_RESULT": str(self.result_fixture)})
         environment.start()
         self.addCleanup(environment.stop)
         for name in ("ADVERSARIAL_MODEL", "ADVERSARIAL_EFFORT", "JEV_ADVERSARIAL_GATE"):
@@ -116,6 +120,7 @@ class AdversarialCase(BrowserSession):
         git(self.work, "add", "README.md")
         git(self.work, "commit", "-q", "-m", "first")
         self.key = self.repo(str(self.work))
+        self.runs = self.state / "system" / "adversarial-gate" / "runs"
         # A run still holding the lock when a case ends would hold it into the next case's state folder: release it.
         self.addCleanup(self.release.write_text, "")
 
@@ -131,15 +136,22 @@ class AdversarialCase(BrowserSession):
         while time.monotonic() < deadline:
             status, document = self.read(run_id)
             self.assertEqual(status, 200, document)
-            if document["state"] in ("done", "failed") and (document["item"] is None or document["note"]):
+            if document["state"] in ("done", "failed") and (not adversarial._files(document) or document["filed"]):
                 return document
             time.sleep(0.1)
         self.fail(f"run {run_id} did not settle in {SETTLE} s: {document}")
 
-    def notes(self):
-        if not self.journal.exists():
-            return []
-        return [line.rstrip("\0").split("\0") for line in self.journal.read_text().splitlines() if line]
+    def comments(self, item):
+        return [note["body"] for note in workflow.item_state(self.connection, item)["notes"] if note["kind"] == "comment"]
+
+    def brief(self, stem):
+        row = writes.item_by_external(self.connection, routine_briefs.SOURCE, stem)
+        return None if row is None else (row["id"], json.loads(row["body"])["text"], row["repo"])
+
+    def batches(self):
+        return [row["id"] for row in self.connection.execute(
+            "SELECT id FROM item WHERE source = ? AND external_id LIKE 'review:adversarial:%' ORDER BY id",
+            (review.REF_SOURCE,))]
 
     def codex_argv(self):
         return self.argv.read_text().splitlines()
@@ -148,28 +160,34 @@ class AdversarialCase(BrowserSession):
         columns.setdefault("repo", self.key)
         return self.item(title, kind="task", **columns)
 
+    def wait_for_codex(self):
+        deadline = time.monotonic() + SETTLE
+        while not self.argv.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
 
 class TheTaskReview(AdversarialCase):
-    def test_the_doubles_are_what_the_run_finds(self):
+    def test_the_double_is_what_the_run_finds(self):
         self.assertEqual(Path(shutil.which("codex")).parent, self.bin)
-        self.assertEqual(Path(shutil.which("sd")).parent, self.bin)
 
-    def test_a_task_runs_codex_read_only_at_the_default_model_and_effort_and_notes_the_top_hypotheses(self):
+    def test_a_task_runs_codex_read_only_at_the_default_model_and_effort(self):
         design = self.work / "docs" / "work" / "plan" / "design.md"
         design.parent.mkdir(parents=True)
         design.write_text("# plan\n")
+        git(self.work, "add", "docs")
+        git(self.work, "commit", "-q", "-m", "plan")
         item = self.task(body={"text": "Make it, and the dashboard."}, path="docs/work/plan/design.md")
         self.note(item, "Ruling: keep it small.", kind="decision")
-        before = self.snapshot()
         status, _, run = self.review("task", item)
         self.assertEqual(status, 202, run)
         self.assertRegex(run["id"], rf"^task-{item}-[0-9]{{8}}T[0-9]{{6}}Z$")
         self.assertEqual(run["state"], "queued")
-        result = self.work / "docs" / "dashboard" / "adversarial" / f"{run['id']}.md"
-        self.assertEqual(run["result"], str(result))
+        result = self.runs / f"{run['id']}.md"
+        self.assertEqual((run["result"], run["input"]), (str(result), str(self.runs / f"{run['id']}.input.md")))
         self.assertEqual((run["model"], run["effort"]), ("gpt-6-astra", "high"))
+        self.assertNotIn("database", run)
         done = self.settled(run["id"])
-        self.assertEqual((done["state"], done["reason"], done["note"]), ("done", None, "written"), done)
+        self.assertEqual((done["state"], done["reason"], done["filed"]), ("done", None, "written"), done)
         self.assertEqual(result.read_text(), RESULT)
         self.assertEqual(self.codex_argv(), ["exec", "-m", "gpt-6-astra", "-c", "model_reasoning_effort=high",
                                              "-s", "read-only", "-C", str(self.work), "-o", str(result), "-"])
@@ -182,11 +200,8 @@ class TheTaskReview(AdversarialCase):
                      f"design document: {design}"):
             self.assertIn(text, given)
         self.assertNotIn("opened as planning", given)
-        self.assertIn("docs/dashboard/", (self.work / ".gitignore").read_text().splitlines())
-        titles = "1. The done condition cannot fail; 2. Scope hides a second repository; 3. codex may refuse the model"
-        self.assertEqual(self.notes(), [["task", "note", str(item), adversarial.NOTE.format(
-            model="gpt-6-astra", effort="high", result=result, titles=titles), "--kind", "comment"]])
-        self.assertEqual(self.snapshot(), before, "the review wrote to the database itself")
+        # Nothing lands in the reviewed checkout: no result file and no .gitignore line.
+        self.assertEqual(git(self.work, "status", "--porcelain", "--ignored"), "")
 
     def test_the_tool_config_names_the_model_and_effort(self):
         (self.config / "adversarial-gate").mkdir(parents=True)
@@ -195,21 +210,6 @@ class TheTaskReview(AdversarialCase):
         self.assertEqual(status, 202, run)
         self.settled(run["id"])
         self.assertEqual(self.codex_argv()[:5], ["exec", "-m", "gpt-fixture", "-c", "model_reasoning_effort=low"])
-
-    def test_a_result_with_no_titled_hypothesis_says_so_in_the_note(self):
-        self.result_fixture.write_text("Nothing survives.\n")
-        item = self.task()
-        status, _, run = self.review("task", str(item))
-        self.assertEqual(status, 202, run)
-        self.assertEqual(self.settled(run["id"])["state"], "done")
-        self.assertIn("Top hypotheses: none titled in the result; read the file.", self.notes()[0][3])
-
-    def test_a_git_ignored_results_folder_adds_no_gitignore_line(self):
-        (self.work / ".gitignore").write_text("docs/\n")
-        status, _, run = self.review("task", self.task())
-        self.assertEqual(status, 202, run)
-        self.settled(run["id"])
-        self.assertEqual((self.work / ".gitignore").read_text(), "docs/\n")
 
     def test_a_task_without_a_repository_is_refused_and_runs_nothing(self):
         item = self.item("Personal errand", kind="task")
@@ -223,14 +223,146 @@ class TheTaskReview(AdversarialCase):
         self.settled(run["id"])
 
 
+class TheOutcome(AdversarialCase):
+    """Note #22943 on sd:5064: a brief listing the recommendations, and a review batch to pick them from."""
+
+    def filed(self, item=None):
+        item = item or self.task()
+        status, _, run = self.review("task", item)
+        self.assertEqual(status, 202, run)
+        return item, self.settled(run["id"])
+
+    def test_the_brief_lists_each_recommendation_and_names_its_batch(self):
+        item, done = self.filed()
+        self.assertEqual(done["filed"], "written", done)
+        [batch] = self.batches()
+        self.assertEqual(done["batches"], [batch])
+        stem = done["brief"]
+        self.assertRegex(stem, rf"^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}} - Adversarial review · task {item} · [0-9]{{6}}Z$")
+        brief, text, repo = self.brief(stem)
+        self.assertEqual((done["brief_item"], repo), (brief, self.key))
+        self.assertTrue(text.startswith(f"---\nreview: adversarial\nrun: {done['id']}\ntarget: task {item}\n"
+                                        f"model: gpt-6-astra\neffort: high\nbatches: sd:{batch}\n---\n"), text)
+        for line in (f"- Review batches: sd:{batch} ({self.key}); approve a question there to file its task, "
+                     f"reject it to drop it", "Does the central conclusion survive hostile reading? NO.",
+                     "Recommendations: 4. These are hypotheses for a person to check, not findings.",
+                     "### 1. Add a test that fails before the fix", "- Hypothesis: The done condition cannot fail",
+                     "- Evidence: `README.md:1`", "### 2. Split the dashboard change into its own item",
+                     "### 3. codex may refuse the model", "### 4. A fourth one", f"- Review batch: sd:{batch}",
+                     f"- Repo: {self.key}"):
+            self.assertIn(line, text.splitlines())
+        self.assertEqual(text.count(f"- Review batch: sd:{batch}"), 4)
+        self.assertEqual(routine_briefs.rows(self.connection)[0]["brief"]["series"],
+                         f"Adversarial review · task {item} · {stem[-7:]}")
+
+    def test_each_recommendation_is_one_approve_or_reject_question_whose_header_names_the_brief(self):
+        item, done = self.filed()
+        found = review.read(self.connection, done["batches"][0])
+        self.assertEqual((found["header"]["queue"], found["header"]["source"]),
+                         ("adversarial", f"local-adversarial-gate; brief {done['brief']}"))
+        self.assertEqual(found["item"]["repo"], self.key)
+        self.assertEqual(found["item"]["title"],
+                         f"Adversarial review of task {item}: pick the recommendations to file as tasks")
+        questions = found["questions"]
+        self.assertEqual([q["options"] for q in questions], [["Approve", "Reject"]] * 4)
+        self.assertEqual([q["text"].splitlines()[0] for q in questions],
+                         ["Add a test that fails before the fix", "Split the dashboard change into its own item",
+                          "codex may refuse the model", "A fourth one"])
+        self.assertEqual([q["subject"] for q in questions],
+                         [f"task {item}: The done condition cannot fail", f"task {item}: Scope hides a second repository",
+                          f"task {item}: codex may refuse the model", f"task {item}: A fourth one"])
+        self.assertEqual(questions[0]["evidence"], ["`README.md:1`", '"Make the thing work."'])
+        self.assertIn("> Subject: a line the review store would read as a field", questions[1]["text"])
+        self.assertTrue(questions[0]["text"].endswith(f"From the adversarial review in brief {done['brief']}."))
+        # The verdict is the brief's summary, not the last hypothesis's reasoning.
+        self.assertNotIn("survive hostile reading", questions[3]["text"])
+
+    def test_the_item_s_note_names_the_brief_and_the_batch(self):
+        item, done = self.filed()
+        [batch] = done["batches"]
+        self.assertEqual(self.comments(item), [adversarial.NOTE.format(
+            model="gpt-6-astra", effort="high", stem=done["brief"], brief=done["brief_item"], count=4,
+            batches=f"sd:{batch}", titles=TITLES)])
+
+    def test_approving_a_question_files_its_task_in_the_recommendation_s_repository(self):
+        _, done = self.filed()
+        [batch] = done["batches"]
+        first = review.read(self.connection, batch)["questions"][0]
+        state = workflow.item_state(self.connection, batch)
+        ruled = review.rule(self.connection, batch, first["note"], "Approve", expected_revision=state["revision"],
+                            who="operator")
+        task = workflow.item_state(self.connection, ruled["filed"]["item"])["item"]
+        self.assertEqual((task["title"], task["repo"], task["kind"]), ("Add a test that fails before the fix",
+                                                                       self.key, "task"))
+        self.assertIn("Evidence: `README.md:1`", adversarial._text(task["body"]))
+        self.assertIn(f"From the adversarial review in brief {done['brief']}.", adversarial._text(task["body"]))
+
+    def test_a_recommendation_naming_another_registered_repository_is_asked_in_a_batch_of_its_own(self):
+        other = self.root / "other"
+        other.mkdir()
+        other_key = self.repo(str(other))
+        _, done = self.filed()
+        home, away = done["batches"]
+        self.assertEqual([q["text"].splitlines()[0] for q in review.read(self.connection, away)["questions"]],
+                         ["Split the dashboard change into its own item"])
+        self.assertEqual(len(review.read(self.connection, home)["questions"]), 3)
+        _, text, _ = self.brief(done["brief"])
+        self.assertIn(f"- Review batches: sd:{home} ({self.key}), sd:{away} ({other_key}); approve a question there "
+                      f"to file its task, reject it to drop it", text)
+        self.assertIn(f"- Repo: {other_key}", text)
+        question = review.read(self.connection, away)["questions"][0]
+        ruled = review.rule(self.connection, away, question["note"], "Approve",
+                            expected_revision=workflow.item_state(self.connection, away)["revision"], who="operator")
+        task = workflow.item_state(self.connection, ruled["filed"]["item"])["item"]
+        self.assertEqual((task["title"], task["repo"]), ("Split the dashboard change into its own item", other_key))
+
+    def test_a_result_with_no_titled_hypothesis_files_a_brief_and_no_batch(self):
+        self.result_fixture.write_text("Nothing survives.\n")
+        item, done = self.filed()
+        self.assertEqual((done["state"], done["filed"], done["batches"]), ("done", "written", []), done)
+        self.assertEqual(self.batches(), [])
+        _, text, _ = self.brief(done["brief"])
+        self.assertIn("- Review batches: none; approve a question there to file its task, reject it to drop it", text)
+        self.assertIn("Recommendations: 0.", text)
+        [note] = self.comments(item)
+        self.assertIn("recommendations: 0, to pick in review batch none. Top hypotheses: none titled in the result; "
+                      "read the brief.", note)
+
+    def test_a_recommendation_the_queue_rejected_is_not_asked_again(self):
+        item = self.task()
+        _, done = self.filed(item)
+        [batch] = done["batches"]
+        first = review.read(self.connection, batch)["questions"][0]
+        review.rule(self.connection, batch, first["note"], "Reject",
+                    expected_revision=workflow.item_state(self.connection, batch)["revision"], who="operator")
+        time.sleep(1.1)  # The next run's id carries the next second.
+        _, again = self.filed(item)
+        [second] = again["batches"]
+        self.assertEqual(len(review.read(self.connection, second)["questions"]), 3)
+        _, text, _ = self.brief(again["brief"])
+        self.assertIn("- Not asked: ", text)
+
+    def test_parsing_takes_the_tagged_lines_and_quotes_a_reserved_one(self):
+        found, verdict = adversarial.recommendations(RESULT)
+        self.assertEqual(verdict, "Does the central conclusion survive hostile reading? NO.")
+        self.assertEqual([(one["title"], one["repo"]) for one in found[:2]],
+                         [("Add a test that fails before the fix", None),
+                          ("Split the dashboard change into its own item", "other")])
+        self.assertNotIn("Recommendation:", found[0]["why"])
+        self.assertIn("> Subject:", found[1]["why"])
+        many = "".join(f"## {n}. Hypothesis {n}\n\n{'x' * 5000}\nEvidence: a\nConfidence: **LIKELY**\n\n"
+                       for n in range(1, 41))
+        found, _ = adversarial.recommendations(many)
+        self.assertEqual(len(found), adversarial.RECOMMENDATIONS)
+        self.assertLessEqual(max(len(one["why"].encode()) for one in found), adversarial.WHY_BYTES + 4)
+
+
 class OneAtATime(AdversarialCase):
     def test_a_second_review_while_one_runs_is_refused_naming_the_first(self):
         self.mode.write_text("hold")
         status, _, first = self.review("task", self.task())
         self.assertEqual(status, 202, first)
-        deadline = time.monotonic() + SETTLE
-        while not self.argv.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.wait_for_codex()
         self.assertEqual(self.read(first["id"])[1]["state"], "running")
         status, _, refused = self.review("repo", self.key)
         self.assertEqual(status, 409, refused)
@@ -250,27 +382,36 @@ class FailedRuns(AdversarialCase):
         status, _, run = self.review("task", item)
         self.assertEqual(status, 202, run)
         done = self.settled(run["id"])
-        self.assertEqual(done["state"], "failed")
+        self.assertEqual((done["state"], done["filed"], done["brief"]), ("failed", "written", None))
         self.assertEqual(done["reason"], "error: model gpt-6-astra is not served to this account (exit 3)")
-        self.assertEqual(self.notes(), [["task", "note", str(item), adversarial.FAILED.format(
-            model="gpt-6-astra", effort="high", reason=done["reason"], input=run["input"]), "--kind", "comment"]])
+        self.assertEqual(self.comments(item), [adversarial.FAILED.format(
+            model="gpt-6-astra", effort="high", reason=done["reason"], input=run["input"])])
+        self.assertEqual(self.batches(), [])
 
-    def test_a_note_that_fails_is_reported_on_a_done_run(self):
-        self.sd_fail.write_text("")
-        status, _, run = self.review("task", self.task())
+    def test_a_filing_that_fails_writes_nothing_and_says_why(self):
+        # The brief's stem is taken by another text, so the brief fails after its batch was filed: the one
+        # transaction takes the batch and the note back with it.
+        self.mode.write_text("hold")
+        item = self.task()
+        status, _, run = self.review("task", item)
         self.assertEqual(status, 202, run)
+        stem = adversarial._stem({**run, "label": str(item)})
+        routine_briefs.add(self.connection, stem, "---\nseries: x\n---\n\nAnother text.\n", repo=self.key, who="test")
+        self.release.write_text("")
         done = self.settled(run["id"])
-        self.assertEqual((done["state"], done["note"]), ("done", "not written: sd task note failed: sd: item is locked"))
+        self.assertEqual(done["state"], "done")
+        self.assertTrue(done["filed"].startswith("not written: BriefConflict: "), done["filed"])
+        self.assertEqual((done["brief"], done["batches"]), (None, None))
+        self.assertEqual((self.batches(), self.comments(item)), ([], []))
 
     def test_a_runner_that_died_reads_failed_naming_the_result_it_may_have_left(self):
         gone = subprocess.Popen(["true"])
         gone.wait()
-        runs = self.state / "system" / "adversarial-gate" / "runs"
-        runs.mkdir(parents=True)
+        self.runs.mkdir(parents=True)
         run_id = "repo-checkout-20261018T120000Z"
-        (runs / f"{run_id}.json").write_text(json.dumps({
+        (self.runs / f"{run_id}.json").write_text(json.dumps({
             "id": run_id, "kind": "repo", "target": self.key, "state": "running", "reason": None, "pid": gone.pid,
-            "result": "/fixture/result.md", "item": None, "note": None, "started": "2026-10-18T12:00:00Z"}))
+            "result": "/fixture/result.md", "item": None, "filed": None, "started": "2026-10-18T12:00:00Z"}))
         status, document = self.read(run_id)
         self.assertEqual(status, 200)
         self.assertEqual(document["state"], "failed")
@@ -279,10 +420,9 @@ class FailedRuns(AdversarialCase):
         self.assertNotIn("pid", document)
 
     def test_a_queued_run_that_never_started_reads_failed_after_the_startup_window(self):
-        runs = self.state / "system" / "adversarial-gate" / "runs"
-        runs.mkdir(parents=True)
+        self.runs.mkdir(parents=True)
         run_id = "repo-checkout-20261018T120000Z"
-        (runs / f"{run_id}.json").write_text(json.dumps({
+        (self.runs / f"{run_id}.json").write_text(json.dumps({
             "id": run_id, "state": "queued", "pid": None, "result": "/fixture/result.md", "item": None,
             "started": "2026-10-18T12:00:00Z"}))
         early = datetime.datetime(2026, 10, 18, 12, 0, 30, tzinfo=datetime.timezone.utc)
@@ -292,18 +432,18 @@ class FailedRuns(AdversarialCase):
         self.assertEqual((document["state"], document["reason"]),
                          ("failed", f"the runner never started within {adversarial.STARTUP} s"))
 
-    def test_a_runner_that_died_before_its_note_reads_the_note_as_not_known(self):
+    def test_a_runner_that_died_before_its_filing_reads_the_filing_as_not_known(self):
         gone = subprocess.Popen(["true"])
         gone.wait()
-        runs = self.state / "system" / "adversarial-gate" / "runs"
-        runs.mkdir(parents=True)
-        run_id = "task-7-20261018T120000Z"
-        (runs / f"{run_id}.json").write_text(json.dumps({
-            "id": run_id, "state": "done", "reason": None, "pid": gone.pid, "result": "/fixture/result.md", "item": 7,
-            "note": None, "started": "2026-10-18T12:00:00Z"}))
+        self.runs.mkdir(parents=True)
+        run_id = "repo-checkout-20261018T120000Z"
+        (self.runs / f"{run_id}.json").write_text(json.dumps({
+            "id": run_id, "kind": "repo", "label": "checkout", "state": "done", "reason": None, "pid": gone.pid,
+            "result": "/fixture/result.md", "item": None, "filed": None, "started": "2026-10-18T12:00:00Z"}))
         document = self.read(run_id)[1]
-        self.assertEqual((document["state"], document["note"]),
-                         ("done", "not known: the runner stopped before it recorded the note"))
+        self.assertEqual((document["state"], document["filed"]),
+                         ("done", "not known: the runner stopped before it recorded the filing; look for brief "
+                                  "2026-10-18 - Adversarial review · repo checkout · 120000Z on the Briefs page"))
 
     def test_a_runner_that_cannot_start_leaves_the_run_failed_and_the_lock_free(self):
         real = subprocess.Popen
@@ -317,7 +457,7 @@ class FailedRuns(AdversarialCase):
             status, _, answer = self.review("task", self.task())
         self.assertEqual(status, 503, answer)
         self.assertIn("fork refused", answer["error"])
-        [record] = (self.state / "system" / "adversarial-gate" / "runs").glob("*.json")
+        [record] = self.runs.glob("*.json")
         document = self.read(record.stem)[1]
         self.assertEqual((document["state"], document["reason"]), ("failed", "the runner did not start: fork refused"))
         status, _, run = self.review("repo", self.key)
@@ -330,15 +470,16 @@ class FailedRuns(AdversarialCase):
 
 
 class OtherKinds(AdversarialCase):
-    def test_a_repo_review_reads_the_checkout_with_no_input_and_writes_no_note(self):
+    def test_a_repo_review_reads_the_checkout_with_no_input_and_files_a_brief_but_no_note(self):
         status, _, run = self.review("repo", self.key)
         self.assertEqual(status, 202, run)
         self.assertRegex(run["id"], r"^repo-checkout-[0-9]{8}T[0-9]{6}Z$")
         done = self.settled(run["id"])
-        self.assertEqual((done["state"], done["input"], done["item"], done["note"]), ("done", None, None, None))
+        self.assertEqual((done["state"], done["input"], done["item"], done["filed"]), ("done", None, None, "written"))
         self.assertEqual(self.codex_argv()[7:9], ["-C", str(self.work)])
         self.assertIn("The document is a whole repository, `checkout`", self.stdin.read_text())
-        self.assertEqual(self.notes(), [])
+        self.assertIsNotNone(self.brief(done["brief"]))
+        self.assertEqual(len(done["batches"]), 1)
 
     def test_an_unregistered_repository_is_refused(self):
         status, _, answer = self.review("repo", str(self.root / "elsewhere"))
@@ -350,10 +491,12 @@ class OtherKinds(AdversarialCase):
                           external_id="2026-10-18 - Morning", body={"text": "---\njob: morning\n---\n\nThree things."})
         status, _, run = self.review("brief", brief)
         self.assertEqual(status, 202, run)
-        self.assertEqual(self.settled(run["id"])["note"], "written")
+        done = self.settled(run["id"])
+        self.assertEqual(done["filed"], "written", done)
         self.assertIn("The document is a brief", self.stdin.read_text())
         self.assertIn("Three things.", Path(run["input"]).read_text())
-        self.assertEqual(self.notes()[0][:3], ["task", "note", str(brief)])
+        [note] = self.comments(brief)
+        self.assertIn(f"brief {done['brief']} (sd:{done['brief_item']})", note)
 
     def test_a_task_is_not_reviewed_as_a_brief(self):
         status, _, answer = self.review("brief", self.task())
@@ -374,15 +517,17 @@ class OtherKinds(AdversarialCase):
         status, _, run = self.review("change", str(worktree), base="main", item=item, body=str(body))
         self.assertEqual(status, 202, run)
         self.assertRegex(run["id"], r"^change-wt-feature-[0-9]{8}T[0-9]{6}Z$")
-        self.assertEqual(Path(run["result"]).parent, self.work / "docs" / "dashboard" / "adversarial")
         done = self.settled(run["id"])
-        self.assertEqual((done["state"], done["note"]), ("done", "written"), done)
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
         self.assertEqual(self.codex_argv()[7:9], ["-C", str(worktree)])
         self.assertIn(f"git diff {base}...{head}", self.stdin.read_text())
         given = Path(run["input"]).read_text()
         for text in ("- branch: feature", f"- head: {head}", f"merge base {base}", f"- item: sd:{item}", "- adds x"):
             self.assertIn(text, given)
-        self.assertEqual(self.notes()[0][:3], ["task", "note", str(item)])
+        [note] = self.comments(item)
+        self.assertIn(f"brief {done['brief']}", note)
+        # The batch and the brief belong to the main repository, not the worktree.
+        self.assertEqual(review.read(self.connection, done["batches"][0])["item"]["repo"], self.key)
 
     def test_a_change_with_no_commits_on_its_base_is_refused(self):
         status, _, answer = self.review("change", str(self.work), base="main")

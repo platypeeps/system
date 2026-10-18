@@ -60,6 +60,9 @@ them codex uses its own configuration. `--effort` takes one lowercase word (`low
 `local-project-dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
 `<config>/adversarial-gate/.env`, `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, and falls back
 to `gpt-6-astra` and `high`; copy `.env.example` there to change them.
+The four dashboard lenses ask for `Recommendation:`, `Evidence:` and `Repo:` lines under each
+hypothesis: the action lists them in a brief and asks each as a review question, which the
+operator approves into a task or rejects.
 
 ## Contents
 
