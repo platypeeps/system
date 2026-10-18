@@ -4,12 +4,12 @@ What this slice promises: `/research` answers under the shared policy and loads
 its script before `shell.js`; `/api/research` is the board `collect_research`
 reads (every checkout with a `research.conf.py`, one group deep), with each
 checkout's stage and render freshness, read in a child under a budget;
-`/api/research/<checkout>` is that checkout's source ledger, and any other path
-is a 404. Nothing reads review rounds or claims, and the document says so. A
+`/api/research/<checkout>` is that checkout's source ledger and claim map, and
+any other path is a 404. Nothing reads review rounds, and the document says so. A
 research page built into `docs/dashboard/`, where `sd-research-kit` renders,
 counts as built.
 
-The page shows the board, the ledger and the reasons; registers the design's
+The page shows the board, the ledger and the claim map in three views, and the reasons; registers the design's
 Research commands with the design's ids, labels and keys; keeps Render and
 Review copy only and Start research off with a reason; and posts nothing.
 
@@ -78,6 +78,58 @@ Each row is a dated read.
 
 Not a row | after the table
 """
+
+#: A graded ledger and the documents that cite it (sd:5064 ruling): claims are sentences in 20-map, 30-brief and 40-docs
+#: that link a ledger row's URL, matched without a fragment or a trailing slash.
+GRADED = """# Sources
+
+| Grade | Source | Used for |
+|---|---|---|
+| A | [Spec release](https://example.test/spec/) | the release date |
+| B | [Vendor note](https://example.test/note) | the vendor view |
+| C | [A summary](https://example.test/summary#top) | summary only |
+| U | [Rumour](https://example.test/rumour) | not checked |
+| S9 | [Ungraded](https://example.test/ungraded) | no grade |
+| A | Unlinked primary | nothing to match |
+"""
+BRIEF = """# Brief
+
+The release shipped in March ([spec](https://example.test/spec#s2)). A summary says it slipped
+([summary](https://example.test/summary/)). A blog disagreed ([blog](https://example.test/blog)).
+The vendor confirmed it ([Note. Vendor](https://example.test/note)) in May.
+
+- Both readings stand ([note](https://example.test/note), [rumour](https://example.test/rumour)).
+- Only a rumour backs this ([rumour](https://example.test/rumour)).
+
+```text
+A fenced link is not a claim ([spec](https://example.test/spec)).
+```
+
+| Row | [Spec](https://example.test/spec) | **used** |
+"""
+MAP = "An ungraded row backs nothing ([u](https://example.test/ungraded)). Also see <https://example.test/note>.\n"
+
+#: A ledger with IDs and no grades, as several real ledgers keep it: documents cite its rows by ID or by a deeper link.
+IDS = """| # | Source | Read |
+|---|---|---|
+| S1 | [Repo](https://example.test/org/repo) | a pin |
+| S2 | [Org](https://example.test/org/) | the org |
+| S12 | Notes kept by hand | a date |
+| S3-old | Old pin | a date |
+| LOG-21 | [Ticket](https://example.test/browse/LOG-21) | open |
+"""
+CITES = """The repo pins it ([file](https://example.test/org/repo/blob/main/x.rs#L3)). S12's notes agree. Section S1.2 is
+not a citation. S120 is not an ID. The old pin S3-old stands. A sibling path falls to the org
+([r](https://example.test/org/repository)). [LOG-21](https://example.test/browse/LOG-21) is open.
+"""
+
+
+def claimed(root: Path, key: str = "research/claims") -> Path:
+    repo = checkout(root, key)
+    for name, text in (("10-sources/registry.md", GRADED), ("30-brief/BRIEF.md", BRIEF), ("20-map/MAP.md", MAP)):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(text, encoding="utf-8")
+    return repo
 
 
 def collectors_module():
@@ -160,6 +212,104 @@ class TheReader(unittest.TestCase):
         found = research_screen.registry(repo)
         self.assertEqual([(f["file"], bool(f["error"])) for f in found["files"]], [("SOURCES.md", True)])
         self.assertEqual(found["rows"], [])
+
+    def test_a_claim_is_a_sentence_that_links_a_ledger_row_and_its_grades_decide_it(self):
+        # sd:5064: the claim map read nothing; the board said "no claim reader" for every project.
+        found = research_screen.registry(claimed(self.root))
+        got = [(c["doc"], c["line"], c["s"], c["text"], c["keys"]) for c in found["claims"]]
+        spec, note, summary, rumour, ungraded = (f"https://example.test/{n}" for n in ("spec", "note", "summary", "rumour", "ungraded"))
+        self.assertEqual(got, [
+            ("20-map/MAP.md", 1, "unverified", "An ungraded row backs nothing (u).", [ungraded]),
+            ("20-map/MAP.md", 1, "supported", "Also see https://example.test/note.", [note]),
+            ("30-brief/BRIEF.md", 3, "supported", "The release shipped in March (spec).", [spec]),
+            ("30-brief/BRIEF.md", 3, "unverified", "A summary says it slipped (summary).", [summary]),
+            ("30-brief/BRIEF.md", 5, "supported", "The vendor confirmed it (Note. Vendor) in May.", [note]),
+            ("30-brief/BRIEF.md", 7, "supported", "Both readings stand (note, rumour).", [note, rumour]),
+            ("30-brief/BRIEF.md", 8, "unverified", "Only a rumour backs this (rumour).", [rumour]),
+            ("30-brief/BRIEF.md", 14, "supported", "Row · Spec · used", [spec]),
+        ])
+        self.assertEqual((found["tally"], found["claims_total"], found["docs_read"], found["unread"], found["graded"]),
+                         ({"supported": 5, "unverified": 3, "ungraded": 1}, 8, 2, [], 5))
+        self.assertEqual([c["grades"] for c in found["claims"]], ["", "B", "A", "C", "B", "BU", "U", "A"])
+        cited = {r["title"]: (r["key"], r["cited"]) for r in found["rows"]}
+        self.assertEqual(cited, {"Spec release": (spec, 2), "Vendor note": (note, 3), "A summary": (summary, 1),
+                                 "Rumour": (rumour, 2), "Ungraded": (ungraded, 1), "Unlinked primary": ("", 0)})
+
+    def test_a_claim_cites_a_row_by_its_id_or_a_deeper_link_and_an_ungraded_ledger_leaves_it_unverified(self):
+        # sd:5064 follow-up: real ledgers cite S12 or LOG-21 by ID, and link deeper paths than their rows; none matched.
+        repo = checkout(self.root, "research/ids")
+        for name, text in (("10-sources/registry.md", IDS), ("30-brief/BRIEF.md", CITES)):
+            (repo / name).parent.mkdir(exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        found = research_screen.registry(repo)
+        got = [(c["line"], c["text"][:22], c["keys"], c["s"], c["grades"]) for c in found["claims"]]
+        self.assertEqual(got, [
+            (1, "The repo pins it (file", ["https://example.test/org/repo"], "unverified", ""),
+            (1, "S12's notes agree.", ["id:S12"], "unverified", ""),
+            (2, "The old pin S3-old sta", ["id:S3-old"], "unverified", ""),
+            (2, "A sibling path falls t", ["https://example.test/org"], "unverified", ""),
+            (3, "LOG-21 is open.", ["https://example.test/browse/LOG-21"], "unverified", ""),
+        ])
+        self.assertEqual((found["tally"], found["graded"]), ({"supported": 0, "unverified": 5, "ungraded": 5}, 0))
+        self.assertEqual({r["id"]: (r["key"], r["cited"]) for r in found["rows"]}, {
+            "S1": ("https://example.test/org/repo", 1), "S2": ("https://example.test/org", 1), "S12": ("id:S12", 1),
+            "S3-old": ("id:S3-old", 1), "LOG-21": ("https://example.test/browse/LOG-21", 1)})
+
+    def test_an_id_ledger_carries_its_grade_in_a_grade_column(self):
+        # sd:5064 grades: an ID ledger keeps its ID first, so the grade sits in a column headed Grade.
+        repo = checkout(self.root, "research/idgrades")
+        ledger = ("# Ledger\n\n## Sources\n\n| ID | Grade | Source | Scope |\n|---|---|---|---|\n"
+                  "| S1 | A | [Repo](https://example.test/org/repo) | code |\n"
+                  "| S2 | C | [Post](https://example.test/post) | summary |\n")
+        for name, text in (("10-sources/registry.md", ledger), ("30-brief/BRIEF.md", "S1 holds it. S2 says so.\n")):
+            (repo / name).parent.mkdir(exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        found = research_screen.registry(repo)
+        self.assertEqual([(c["text"], c["s"], c["grades"]) for c in found["claims"]],
+                         [("S1 holds it.", "supported", "A"), ("S2 says so.", "unverified", "C")])
+        self.assertEqual(found["graded"], 2)
+        self.assertEqual([r.get("grade") for r in found["rows"]], ["A", "C"])  # the page tallies and colours by it
+
+    def test_a_document_the_claim_reader_skips_is_named_never_an_empty_success(self):
+        repo = claimed(self.root)
+        outside = self.root / "outside.md"
+        outside.write_text(BRIEF, encoding="utf-8")
+        (repo / "30-brief" / "linked.md").symlink_to(outside)
+        (repo / "40-docs").mkdir()
+        (repo / "40-docs" / "big.md").write_text("x" * 4000, encoding="utf-8")
+        with mock.patch.object(research_screen, "CLAIM_BYTES", 2000):
+            found = research_screen.registry(repo)
+        self.assertEqual(found["unread"], [
+            {"doc": "30-brief/linked.md", "error": "a link, which the reader does not follow"},
+            {"doc": "40-docs/big.md", "error": "larger than the 2 MB the reader reads"}])
+        self.assertEqual((found["docs_read"], found["claims_total"]), (2, 8))
+        with mock.patch.object(research_screen, "CLAIM_FILES", 1):
+            found = research_screen.registry(repo)
+        self.assertEqual(found["unread"], [{"doc": "3 more documents", "error": "past the 1-document bound"}])
+        self.assertEqual(found["claims_total"], 2)
+        with mock.patch.object(research_screen, "UNREAD", 2), mock.patch.object(research_screen, "CLAIM_BYTES", 10):
+            found = research_screen.registry(repo)
+        self.assertEqual(found["unread"], [{"doc": "20-map/MAP.md", "error": "larger than the 2 MB the reader reads"},
+                                           {"doc": "3 more documents", "error": "skipped as well; the list stops here"}])
+        found = research_screen.registry(repo, time_left=lambda: 0.0)
+        self.assertEqual((found["unread"], found["claims"]),
+                         ([{"doc": "4 more documents", "error": "the reading ran out of time"}], []))
+
+    def test_the_claim_map_and_ledger_together_stay_under_the_print_bound_and_keep_cited_rows(self):
+        repo = claimed(self.root)
+        ledger = GRADED + "".join(f"| B | [Filler {n}](https://example.test/f{n}) | {'é' * 150} |\n" for n in range(80))
+        (repo / "10-sources" / "registry.md").write_text(ledger, encoding="utf-8")
+        brief = "".join(f"Claim {n} {'é' * 200} ([n](https://example.test/note)).\n\n" for n in range(300))
+        (repo / "40-docs").mkdir()
+        (repo / "40-docs" / "long.md").write_text(brief, encoding="utf-8")
+        found = research_screen.registry(repo)
+        self.assertLessEqual(len(json.dumps(found, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
+                             research_screen.PRINT_BYTES)
+        self.assertEqual((found["total"], found["claims_total"]), (86, 308))
+        self.assertLess(len(found["claims"]), research_screen.CLAIMS)
+        self.assertTrue(found["claims"] and found["rows"])
+        # Every cited row is kept ahead of the filler, in ledger order.
+        self.assertEqual([r["title"] for r in found["rows"][:5]], ["Spec release", "Vendor note", "A summary", "Rumour", "Ungraded"])
 
     def test_the_stage_is_the_numbered_directories_that_hold_markdown(self):
         bare = checkout(self.root, "group/bare")
@@ -304,7 +454,7 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["error"], "")
         self.assertEqual((doc["read"], doc["cap"], doc["dirs"]), (NOW, 2, list(research_screen.DIRS)))
         self.assertEqual(doc["rounds"], {"available": False, "reason": research_screen.ROUNDS_REASON})
-        self.assertEqual(doc["claims"], {"available": False, "reason": research_screen.CLAIMS_REASON})
+        self.assertNotIn("claims", doc)  # the claim map is per project, in the ledger document (sd:5064)
         rows = {p["key"]: p for p in doc["projects"]}
         self.assertEqual(set(rows), {"research/alpha", "research/beta"})
         alpha, beta = rows["research/alpha"], rows["research/beta"]
@@ -366,6 +516,20 @@ class TheDocument(ScreenCase):
         self.assertEqual((wide["docs_total"], wide["render"]["txt"]), (100, "100 of 100 documents not fresh"))
         self.assertTrue(all(len(d["title"]) <= research_screen.CELL for d in wide["docs"]))
 
+    def test_the_ledger_document_carries_the_claim_map_through_the_child(self):
+        claimed(self.root, "research/alpha")
+        found = research_screen.sources("research/alpha", now=NOW)
+        self.assertEqual(found["error"], "")
+        claims = found["claims"]
+        self.assertEqual((claims["total"], claims["tally"], claims["read"], claims["unread"], claims["dirs"]),
+                         (8, {"supported": 5, "unverified": 3, "ungraded": 1}, 2, [], ["20-map", "30-brief", "40-docs"]))
+        self.assertEqual(claims["graded"], 5)
+        self.assertEqual(claims["rows"][2]["text"], "The release shipped in March (spec).")
+        self.assertEqual({r["title"]: r["cited"] for r in found["rows"]}["Vendor note"], 3)
+        # A child that sends no claim map gives None, which the page reads as unknown, never as "no claims".
+        bare = research_screen.sources("research/alpha", now=NOW, backend=lambda *_: {"found": True, "rows": [], "total": 0})
+        self.assertIsNone(bare["claims"])
+
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
             raise ValueError("research reading was stopped at its budget: python ran past its budget of 4 seconds")
@@ -408,9 +572,12 @@ class ThePage(BrowserSession):
             self.assertEqual(self.request("/api/research/..%2Fetc", headers=cookie)[0], 404)
 
 
-# The stand-in additions research.js needs beyond test_v2_tasks: the shell's row, url, setContext and a record of fetched paths.
+# The stand-in additions research.js needs beyond test_v2_tasks: the shell's row, url, setContext, its view switch (the views
+# shown and the counts put on them) and a record of fetched paths.
 SHELL_MORE = r"""
 window.shell.row = () => ROW; window.shell.setContext = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
+OUT.views = []; OUT.counts = {};
+window.shell.view = { show: id => OUT.views.push(id), count: (id, n) => { OUT.counts[id] = n; }, current: () => null };
 var ROW = null;
 """
 
@@ -431,9 +598,13 @@ class TheScript(ScreenCase):
                     docs=[{"title": "Brief", "src": "30-brief/BRIEF.md", "state": "stale", "updated": "2026-09-01"}]),
             project("group/gamma", "Gamma", {"s": "unknown", "txt": "config unread", "sub": ""}, conf="computed data"),
         ]})
-        _, rows = research_screen.parse_registry(REGISTRY, "SOURCES.md")
-        self.ledger = {"read": NOW, "key": "research/beta", "error": "", "files": [{"file": "SOURCES.md", "mtime": "2026-09-01T10:00Z", "prov": "Compiled.", "error": ""}],
-                       "rows": rows, "total": 3}
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = checkout(root, "research/beta", registry=REGISTRY)
+        (repo / "30-brief").mkdir()
+        (repo / "30-brief" / "BRIEF.md").write_text("The spec shipped ([spec](https://example.test/spec)).\n\n"
+                                                    "The note agrees ([note](https://example.test/note/)).\n", encoding="utf-8")
+        self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+        self.ledger["files"][0].update(mtime="2026-09-01T10:00Z", prov="Compiled.")
 
     def run_page(self, body, answer=None, search="", row="null"):
         answer = answer or (f"(path) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
@@ -549,8 +720,9 @@ R.start = ELS['shift-hint'].html;""")
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale projects"})
         self.assertEqual(out["states"][0]["kind"], "loading")
         last = out["states"][-1]
-        self.assertEqual(last["kind"], "partial", "the page did not say rounds and claims are not read")
-        self.assertIn(research_screen.CLAIMS_REASON, last["text"])
+        self.assertEqual(last["kind"], "partial", "the page did not say rounds are not read")
+        self.assertIn(research_screen.ROUNDS_REASON, last["text"])
+        self.assertNotIn("claim", last["text"])
 
     def test_the_first_row_is_selected_and_its_ledger_is_read_and_drawn(self):
         out = self.run_page("R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.det = ELS.details.html; R.tally = ELS['reader-tally'].html;")
@@ -561,7 +733,9 @@ R.start = ELS['shift-hint'].html;""")
         self.assertIn('href="https://example.test/spec"', reader)
         self.assertEqual(re.findall(r'<li class="grp label">([^<]+)</li>', reader), ["Primary", "Later"])
         self.assertIn("A 1", out["R"]["tally"])
-        self.assertIn(f"Claims not extracted for Beta: {research_screen.CLAIMS_REASON}.", out["R"]["claims"])
+        self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"', out["R"]["claims"]), ["0", "1"])
+        self.assertIn("The spec shipped (spec).", out["R"]["claims"])
+        self.assertIn('data-cites="0"', out["R"]["reader"])
         self.assertIn("Beta", out["R"]["det"])
         self.assertIn("Brief · stale · 30-brief/BRIEF.md", out["R"]["det"])
 
@@ -610,13 +784,99 @@ R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html; R.det = ELS.deta
         self.assertIn("2 projects not listed", out["R"]["sum"])
         self.assertIn("2 projects not listed: the board passed its print bound", out["states"][-1]["text"])
 
-    def test_a_source_opens_its_details_and_no_claim_is_claimed(self):
-        out = self.run_page("""(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '1' } } : null } }));
-R.det = ELS.details.html;""")
+    def test_a_source_opens_its_details_with_the_claims_that_cite_it(self):
+        out = self.run_page("""const tap = i => (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i } } : null } }));
+tap('1'); R.det = ELS.details.html; tap('2'); R.unlinked = ELS.details.html;""")
         det = out["R"]["det"]
         self.assertIn("Vendor note", det)
         self.assertIn("Secondary | vendor", det)
-        self.assertIn(f"Not known: {research_screen.CLAIMS_REASON}.", det)
+        self.assertIn("The note agrees (note). · 30-brief/BRIEF.md:3", det)
+        self.assertIn("No sentence in 20-map, 30-brief, 40-docs cites this source.", out["R"]["unlinked"])
+
+    def test_a_claim_lights_its_sources_and_a_source_count_lights_its_claims(self):
+        # sd:5064: the claim map showed "no claim reader" for every project; the ledger carried no cited mark.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = claimed(root, "research/beta")
+        (repo / "40-docs").mkdir()
+        (repo / "40-docs" / "linked.md").symlink_to(repo / "20-map" / "MAP.md")
+        self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+        out = self.run_page("""R.claims = ELS.claims.html; R.for = ELS['claims-for'].textContent;
+const claimTap = c => (ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.claim[data-c]' ? { dataset: { c } } : s === 'button' ? {} : null } }));
+claimTap('5'); R.lit = ELS.reader.html; R.det = ELS.details.html;
+(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '5' } } : null } })); R.unkeyed = ELS.details.html;
+(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '1' } } : null } }));
+R.litClaims = ELS.claims.html;
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-verdict]' ? { dataset: { verdict: 'unverified' } } : null } }));
+R.filtered = ELS.claims.html;""")
+        claims = out["R"]["claims"]
+        self.assertIn("● 5 supported", claims)
+        self.assertIn("▨ 3 unverified", claims)
+        self.assertNotRegex(claims, r"inferred|corrected")
+        self.assertIn("30-brief/BRIEF.md:7", claims)
+        self.assertIn("40-docs/linked.md not read: a link, which the reader does not follow.", claims)
+        self.assertIn("8 claims", out["R"]["for"])
+        # Claim 5 cites the B note and the U rumour: both rows are lit, nothing else.
+        lit = re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', out["R"]["lit"])
+        self.assertEqual(lit, ["1", "3"])
+        self.assertIn("Claim · supported", out["R"]["det"])
+        self.assertIn("cites an A, B or M source (grades BU)", out["R"]["det"])
+        self.assertIn("1 of the unverified cite only ungraded sources", claims)
+        self.assertIn("No link or ID in this ledger row, so no claim can cite it.", out["R"]["unkeyed"])
+        # The note's count lights the three claims that cite it.
+        self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
+        self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
+
+    def test_the_page_has_three_views_and_the_selected_project_carries_across_them(self):
+        # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
+        page = (V2 / "research.html").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims"])
+        out = self.run_page("""R.declared = window.PAGE_VIEWS.map(v => [v.id, v.label]);
+R.start = OUT.views.slice(); PAGE_LIST.select('research/alpha'); PAGE_LIST.select('research/beta'); await flush();
+R.selecting = OUT.views.slice(); R.counts = Object.assign({}, OUT.counts); R.for = [ELS['reader-for'].textContent, ELS['claims-for'].textContent];
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.claim[data-c]' ? { dataset: { c: '1' } } : s === 'button' ? {} : null } }));
+R.afterClaim = OUT.views.slice(); R.lit = ELS.reader.html;
+(ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '0' } } : null } }));
+R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
+        r = out["R"]
+        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"]])
+        # Selecting a project stays on Projects; the panels name it.
+        self.assertEqual((r["start"], r["selecting"]), ([], []))
+        self.assertEqual(r["for"], ["· Beta", "· Beta · 2 claims"])
+        self.assertEqual(r["counts"], {"sources": 3, "claims": 2})
+        self.assertEqual(r["afterClaim"], ["sources"])
+        self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', r["lit"]), ["1"])
+        self.assertEqual(r["afterSource"], ["sources", "claims"])
+        self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', r["litClaims"]), ["0"])
+
+    def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
+        out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
+R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign({}, OUT.counts);
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-view]' ? { dataset: { view: 'projects' } } : null } }));
+R.views = OUT.views.slice();""")
+        for panel in ("reader", "claims"):
+            self.assertIn('No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.', out["R"][panel])
+        self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
+        self.assertEqual(out["R"]["views"], ["projects"])
+
+    def test_an_ungraded_ledger_says_why_every_claim_is_unverified(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = checkout(root, "research/beta")
+        for name, text in (("10-sources/registry.md", IDS), ("30-brief/BRIEF.md", CITES)):
+            (repo / name).parent.mkdir(exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+        out = self.run_page("""R.claims = ELS.claims.html;
+(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.claim[data-c]' ? { dataset: { c: '1' } } : s === 'button' ? {} : null } }));
+R.det = ELS.details.html; R.lit = ELS.reader.html;""")
+        self.assertIn("▨ 5 unverified", out["R"]["claims"])
+        self.assertIn("The ledger has no grades, so all 5 claims are unverified", out["R"]["claims"])
+        self.assertIn("cites only ungraded sources", out["R"]["det"])
+        self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', out["R"]["lit"]), ["2"])
+
+    def test_a_ledger_without_a_claim_map_says_claims_were_not_read(self):
+        self.ledger["claims"] = None
+        out = self.run_page("R.claims = ELS.claims.html;")
+        self.assertIn("Claims not read for Beta: the reader sent no claim map.", out["R"]["claims"])
 
     def test_a_failed_read_and_an_empty_board_each_say_so(self):
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")

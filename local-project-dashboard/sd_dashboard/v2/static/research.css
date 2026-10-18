@@ -14,7 +14,7 @@
 #tally .chip:disabled { cursor: not-allowed; color: var(--color-muted); background: transparent; border-style: dashed; }
 #tally .linkbtn { font: inherit; padding: 0 var(--space-2xs); }
 @media (pointer: coarse) { #tally .linkbtn { display: inline-grid; place-items: center; min-height: var(--row-touch); } }
-section + section { margin-top: var(--space-2xl); }
+/* build (sd:5064): the three sections are view panels, one shown at a time, so none takes the gap above a sibling. */
 
 /* Board */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
@@ -49,12 +49,16 @@ section + section { margin-top: var(--space-2xl); }
 .unknown .g-unknown { font-family: var(--font-data); margin-right: var(--space-2xs); }
 .srcs { list-style: none; margin: 0; padding: 0; }
 .srcs .grp { margin: var(--space-sm) 0 var(--space-2xs); }
-.src { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr) auto; gap: var(--space-2xs) var(--space-xs); align-items: center; border-bottom: var(--rule-hair) solid var(--color-rule-2); }
+.src { display: grid; grid-template-columns: 2.25rem minmax(0, 1fr) auto auto; gap: var(--space-2xs) var(--space-xs); align-items: center; border-bottom: var(--rule-hair) solid var(--color-rule-2); }
 .src > button { all: unset; box-sizing: border-box; grid-column: 1 / 3; display: grid; grid-template-columns: 2.25rem minmax(0, 1fr); gap: var(--space-xs); align-items: baseline; min-height: var(--row); padding: var(--space-2xs) var(--space-xs); cursor: pointer; }
 .src > button:hover { background: var(--color-well); }
 .src > button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .src[aria-current="true"] > button { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
-.src[data-cited] .id::after { content: "◆"; margin-left: 2px; color: var(--color-accent); font-size: 0.6em; vertical-align: 0.3em; }
+/* build (sd:5064): a tapped claim lights its sources; a cited row's ◆ count lights its claims. */
+.src[data-lit] > button { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
+.src .cites { all: unset; box-sizing: border-box; display: inline-grid; place-items: center; min-width: 2.75rem; min-height: var(--row); padding: 0 var(--space-2xs); cursor: pointer; font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-accent); border-radius: var(--radius-sm); }
+.src .cites:hover { background: var(--color-well); }
+.src .cites:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .src .id { font: 500 var(--text-xs)/1 var(--font-data); color: var(--color-ink); text-align: center; padding: 3px 0; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); }
 .src .id[data-grade="U"] { border-style: dashed; color: var(--color-muted); }
 .src .t { font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -63,13 +67,11 @@ section + section { margin-top: var(--space-2xl); }
 .more { margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-muted); }
 
 .vbar { display: flex; height: 1.75rem; margin: 0 0 var(--space-2xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); overflow: hidden; }
-.vbar button { all: unset; box-sizing: border-box; display: grid; place-items: center; min-width: 2.75rem; cursor: pointer; font: 500 var(--text-xs)/1 var(--font-data); border-right: var(--rule-hair) solid var(--color-rule); }
+.vbar button { all: unset; box-sizing: border-box; flex: 1; display: grid; place-items: center; min-width: 2.75rem; cursor: pointer; font: 500 var(--text-xs)/1 var(--font-data); border-right: var(--rule-hair) solid var(--color-rule); }
 .vbar button:last-child { border-right: 0; }
 .vbar button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
 .vbar button[aria-pressed="true"] { box-shadow: inset 0 calc(-1 * var(--rule-lamp)) 0 var(--color-accent); }
 .vbar .v-supported { background: var(--color-panel); color: var(--color-ok); }
-.vbar .v-inferred { background: var(--color-caution-lamp); color: var(--color-caution-lamp-ink); }
-.vbar .v-corrected { background: var(--color-warning-lamp); color: var(--color-warning-ink); }
 .vbar .v-unverified { background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); color: var(--color-ink-2); }
 .vlegend { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 0 0 var(--space-sm); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-ink-2); }
 .claims { list-style: none; margin: 0; padding: 0; }
@@ -78,6 +80,7 @@ section + section { margin-top: var(--space-2xl); }
 .claim .g { font-family: var(--font-data); text-align: center; padding-top: 2px; }
 .claim > button { all: unset; cursor: pointer; font-size: var(--text-sm); line-height: 1.4; }
 .claim > button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.claim[data-lit] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
 .claim[aria-current="true"] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
 .claim .meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--space-2xs); align-items: center; font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-muted); }
 .claim .meta .chip { font-size: var(--text-2xs); }
@@ -92,7 +95,7 @@ section + section { margin-top: var(--space-2xl); }
 .rel { border-bottom: 1px dotted var(--color-rule); cursor: pointer; }
 
 @media (pointer: coarse) {
-  .src > button { min-height: var(--row-touch); }
+  .src > button, .src .cites { min-height: var(--row-touch); }
   .vbar { height: calc(var(--row-touch) + 2 * var(--rule-hair)); }
   .claim .meta .chip { min-height: var(--row-touch); }
 }
