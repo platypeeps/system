@@ -46,8 +46,9 @@ from datetime import datetime, timedelta, timezone
 OFF = ("0", "off", "false", "no", "disabled")
 
 #: The record shape's version. Raise it when a field changes meaning, so a
-#: reader can tell old lines from new ones.
-SCHEMA = 1
+#: reader can tell old lines from new ones. 2: keys keep the order they were
+#: sent and received in; a 1 line sorted them, so its order says nothing.
+SCHEMA = 2
 
 #: What `append` returns. Only `written` means a line exists.
 WRITTEN = "written"
@@ -146,7 +147,9 @@ def append(record: dict, env=None) -> str:
         now = datetime.now(timezone.utc)
         line = dict(record, schema=SCHEMA, id=uuid.uuid4().hex,
                     time=now.isoformat(timespec="milliseconds"))
-        data = (json.dumps(line, sort_keys=True, default=str) + "\n").encode("utf-8")
+        # Not sorted: Jev's answer depends on the request's key order
+        # (sd:4984), so the line keeps the order the request was sent in.
+        data = (json.dumps(line, default=str) + "\n").encode("utf-8")
         folder = directory(env)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         # A folder or file that already exists is held to the same modes, and
