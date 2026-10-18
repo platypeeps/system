@@ -280,11 +280,11 @@
       what: o => `removes ${names(o.removable)} with their branches`, cli: o => o.cli },
   };
   const safe = () => (S.checkouts?.ROWS || []).filter(r => CLEAN[r.type]?.ready(r) === true);
-  // Each row posts with its own revision, in Checkouts' order. A refusal (4xx) wrote nothing for that row and the run goes
-  // on; an unknown outcome stops it there, since what that row left is not known.
-  const cleanAll = async () => {
+  // It runs the rows its confirm listed, each with its own revision, so a read in between adds none the operator did not
+  // see. A refusal (4xx) wrote nothing for that row and the run goes on; an unknown outcome stops it there.
+  const cleanAll = async rows => {
     const said = [];
-    for (const r of safe()) {
+    for (const r of rows) {
       try {
         const out = await shell.post('/api/health/cleanup', { row: r.id, revision: r.revision });
         said.push(`${r.what}: ${out.done.length} done${out.refused.length ? `, kept ${out.refused.length}` : ''}`);
@@ -356,8 +356,8 @@
       { id: 'safe cleanups.clean', on: 'safe cleanups', label: 'Clean all safe', does: 'Runs every Checkouts cleanup that is ready, after listing each.', key: 'a', risk: 'confirm',
         executes: true, primary: () => true, when: () => safe().length ? true : 'no Checkouts cleanup is ready: each row says why',
         cli: () => safe().map(r => CLEAN[r.type].cli(r)).join('\n'),
-        consequence: () => `Runs ${plural(safe().length, 'cleanup')} in turn, each checked again first: ${safe().map(r => `${r.what} (${CLEAN[r.type].what(r)})`).join('; ')}. This cannot be undone.`,
-        run: cleanAll },
+        consequence: o => { o.listed = safe(); return `Runs ${plural(o.listed.length, 'cleanup')} in turn, each checked again first: ${o.listed.map(r => `${r.what} (${CLEAN[r.type].what(r)})`).join('; ')}. This cannot be undone.`; },
+        run: o => cleanAll(o.listed || safe()) },
     );
     // Services (sd:3707): Restart and Start run sd services' code through Operations' route. sd_db.services protects the
     // dashboard's own service, and a restart from its page would end the request that asks, so that row is copy only.

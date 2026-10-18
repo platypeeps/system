@@ -1912,6 +1912,18 @@ shellRun(c, o); await flush();""", "body => body.row.startsWith('br:') ? [409, {
                                                r"deleted: not changed \(The merged branches changed\.\) · 2 merged worktrees .*: 1 done$")
         self.assertEqual(out["gets"], ["/api/health/checkouts", "/api/health/summary"])
 
+    def test_clean_all_safe_runs_only_the_rows_its_confirm_listed(self):
+        # A read between the confirm and the run brings a fourth ready row; the run posts only the three it listed.
+        out = self.merged_page("""var o = C.get('cleanup:safe'), c = cmd('safe cleanups.clean');
+R.why = c.consequence(o);
+var br = DOC.areas.find(a => a.id === 'br');
+br.rows.push({ ...br.rows.find(r => r.id === 'br:/checkouts/alpha'), id: 'br:/checkouts/gamma', what: 'gamma: 1 merged branch not deleted' });
+window.PAGE_COMMANDS.find(x => x.label === 'Read Health again').run(); await flush();
+R.now = c.cli(o).split('\\n').length;
+await c.run(o); await flush();""", "body => [200, { ok: true, row: body.row, done: ['x'], refused: [] }]")
+        self.assertEqual(out["R"]["now"], 4)
+        self.assertEqual([post[1]["row"] for post in out["posts"]], ["gone:group/alpha", "br:/checkouts/alpha", "wt:merged"])
+
     def test_clean_all_safe_stops_at_an_unknown_outcome(self):
         out = self.merged_page("shellRun(cmd('safe cleanups.clean'), C.get('cleanup:safe')); await flush();",
                                "body => body.row.startsWith('br:') ? [502, { error: 'bad gateway', outcome: 'unknown' }]"
