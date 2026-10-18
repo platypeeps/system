@@ -24,6 +24,7 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
   - `SD_DASHBOARD_PYTHON` in the LaunchAgent, for the server and the tiles it runs as children;
   - PATH `python3` for any other vault reader.
 - Do not re-pin to `/usr/bin/python3` for upgrade-proofness; it cannot be granted.
+- Keep every vault reader on the one pinned Homebrew Python: each `Python.app` has bundle id `org.python.python`, and TCC keeps one Full Disk Access row for it, so granting one version revokes the other (sd:5047).
 - A `brew upgrade python` moves the Cellar path and silently drops that path's grant.
   - `collectors.vault_blocked()` reports it on the first vault-reading tile asked, naming the interpreter to re-grant.
   - `local-project-dashboard/dashboard.sh grants` probes both paths in one run and names each result.
