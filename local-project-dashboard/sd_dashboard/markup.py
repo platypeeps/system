@@ -24,13 +24,13 @@ from __future__ import annotations
 
 import html
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 __all__ = ["Markup", "attribute", "escape", "href", "join", "markdown", "tag", "text"]
 
 #: The schemes a link may carry. `obsidian://open?` opens a vault note, which
-#: a routine brief links to (sd:5000); its parameters only pick the note.
-#: Other Obsidian actions write (`new` with `overwrite=true` replaces a note),
+#: a routine brief links to (sd:5000); `_obsidian_reads` keeps its parameters
+#: to the ones that pick the note. Other Obsidian actions write (`new` with `overwrite=true` replaces a note),
 #: so they render as text, as do `javascript:`, `data:`, `vbscript:` and a
 #: scheme-relative `//host`.
 LINK_SCHEMES = ("http://", "https://", "obsidian://open?", "/")
@@ -140,11 +140,26 @@ _ORDERED = re.compile(r"^\s*\d+[.)]\s+(.*)$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
+#: The `obsidian://open` parameters that only pick a note. `open` also takes
+#: `append` and `prepend`, which write to it, so any other key keeps the link
+#: text (lane review of sd:5000).
+_OBSIDIAN_OPEN_KEYS = frozenset({"vault", "file", "path"})
+
+
+def _obsidian_reads(url: str) -> bool:
+    """True when `url` is `obsidian://open?` with only note-picking parameters, decoded."""
+    parts = urlsplit(url)
+    keys = [key for key, _ in parse_qsl(parts.query, keep_blank_values=True)]
+    return (parts.netloc.lower() == "open" and not parts.path and not parts.fragment
+            and bool(keys) and set(keys) <= _OBSIDIAN_OPEN_KEYS)
+
+
 def _link(match: re.Match[str]) -> str:
     label, href = match.group(1), match.group(2)
     # `//host`, and `/\host` as a browser reads it, start with the path
     # prefix but name another host (sd:5006).
-    if not href.lower().startswith(LINK_SCHEMES) or href.startswith(("//", "/\\")):
+    if (not href.lower().startswith(LINK_SCHEMES) or href.startswith(("//", "/\\"))
+            or (href.lower().startswith("obsidian:") and not _obsidian_reads(html.unescape(href)))):
         # Not a scheme this dashboard opens. Render the source as text, so the
         # operator sees exactly what the artifact said and the browser is
         # never asked to resolve it.

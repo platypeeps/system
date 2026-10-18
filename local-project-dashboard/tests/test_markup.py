@@ -155,7 +155,15 @@ class Links(unittest.TestCase):
         # `open`, which reads, may be a link.
         for url in ("obsidian://new?vault=Example&file=Daily&content=replaced&overwrite=true",
                     "obsidian://daily?vault=Example", "obsidian://advanced-uri?vault=Example&data=x",
-                    "obsidian://openx?vault=Example", "OBSIDIAN://NEW?vault=Example"):
+                    "obsidian://openx?vault=Example", "OBSIDIAN://NEW?vault=Example",
+                    # Round 2: `open` itself writes with `append` or `prepend`,
+                    # also when the key is percent-encoded; any key outside
+                    # vault, file and path stays text.
+                    "obsidian://open?vault=Example&file=Daily&append=changed",
+                    "obsidian://open?vault=Example&file=Daily&prepend=changed",
+                    "obsidian://open?vault=Example&file=Daily&app%65nd=changed",
+                    "obsidian://open?vault=Example&file=Daily&unknown=1",
+                    "obsidian://open?", "obsidian://open/x?vault=Example"):
             with self.subTest(url):
                 rendered = markdown(f"[x]({url})")
                 self.assertEqual(self.anchors(rendered), [])
