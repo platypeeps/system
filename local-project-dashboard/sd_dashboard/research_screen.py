@@ -333,7 +333,11 @@ def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
         elif "|" in stripped and heads:
             cells = _row(stripped)
             if len(cells) >= 2 and cells[0]:
+                # The grade is the first cell (traces-research), or a column headed Grade beside an ID column.
+                at = next((k for k, h in enumerate(heads) if h.lower() == "grade"), 0)
+                grade = _cell(cells[at]) if at < len(cells) else ""
                 rows.append({"f": name, "sec": section, "id": _cell(cells[0])[:40], "title": _cell(cells[1]),
+                             "grade": grade if grade in GRADES else "",
                              "url": _url(cells[1:]), "c3": _cell(cells[2]) if len(cells) > 2 else "",
                              "c4": _cell(cells[-1]) if len(cells) > 3 else "",
                              "h": [heads[0] if heads else "", heads[1] if len(heads) > 1 else "",
@@ -442,7 +446,7 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
     for row in rows:
         key = row_key(row)
         if key:
-            index.setdefault(key, set()).add(row["id"] if row["id"] in GRADES else "")
+            index.setdefault(key, set()).add(row["grade"])
             if is_id(row["id"]):
                 ids.setdefault(row["id"], set()).add(key)
     # The IDs this ledger holds, longest first, each a whole word: S12 is not S120, S12-old or the section S12.3.
@@ -484,7 +488,7 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
         unread[UNREAD - 1:] = [{"doc": f"{len(unread) - UNREAD + 1} more documents", "error": "skipped as well; the list stops here"}]
     tally = {state: sum(claim["s"] == state for claim in found) for state in ("supported", "unverified")}
     tally["ungraded"] = sum(not claim["grades"] for claim in found)  # unverified because no cited row has a grade
-    return {"claims": found, "tally": tally, "read": read, "unread": unread, "graded": sum(row["id"] in GRADES for row in rows)}
+    return {"claims": found, "tally": tally, "read": read, "unread": unread, "graded": sum(bool(row["grade"]) for row in rows)}
 
 
 def registry(repo: Path, time_left=None) -> dict:
@@ -507,6 +511,7 @@ def registry(repo: Path, time_left=None) -> dict:
         for key in claim["keys"]:
             cited[key] = cited.get(key, 0) + 1
     for row in rows:
+        del row["grade"]  # the claims read it; the page shows the row's own cells, so it stays off the print bound
         row["key"] = row_key(row)
         row["cited"] = cited.get(row["key"], 0) if row["key"] else 0
     total = len(rows)

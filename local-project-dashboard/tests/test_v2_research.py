@@ -255,6 +255,20 @@ class TheReader(unittest.TestCase):
             "S1": ("https://example.test/org/repo", 1), "S2": ("https://example.test/org", 1), "S12": ("id:S12", 1),
             "S3-old": ("id:S3-old", 1), "LOG-21": ("https://example.test/browse/LOG-21", 1)})
 
+    def test_an_id_ledger_carries_its_grade_in_a_grade_column(self):
+        # sd:5064 grades: an ID ledger keeps its ID first, so the grade sits in a column headed Grade.
+        repo = checkout(self.root, "research/idgrades")
+        ledger = ("# Ledger\n\n## Sources\n\n| ID | Grade | Source | Scope |\n|---|---|---|---|\n"
+                  "| S1 | A | [Repo](https://example.test/org/repo) | code |\n"
+                  "| S2 | C | [Post](https://example.test/post) | summary |\n")
+        for name, text in (("10-sources/registry.md", ledger), ("30-brief/BRIEF.md", "S1 holds it. S2 says so.\n")):
+            (repo / name).parent.mkdir(exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        found = research_screen.registry(repo)
+        self.assertEqual([(c["text"], c["s"], c["grades"]) for c in found["claims"]],
+                         [("S1 holds it.", "supported", "A"), ("S2 says so.", "unverified", "C")])
+        self.assertEqual(found["graded"], 2)
+
     def test_a_document_the_claim_reader_skips_is_named_never_an_empty_success(self):
         repo = claimed(self.root)
         outside = self.root / "outside.md"
