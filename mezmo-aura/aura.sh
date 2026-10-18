@@ -390,14 +390,24 @@ case "$1" in
           echo "aura.sh: local-genai-traces is not healthy; run local-genai-traces/genai-traces.sh start" >&2
           exit 1
         fi
+        # state/target names the target the running servers carry, and `run`
+        # trusts it. From here on the servers change, so it goes first, and
+        # only a start Compose confirmed writes it: a failed start leaves run
+        # refusing, never a new target on the old servers (sd:5064 review).
+        rm -f "$EXP/state/target"
         render_configs
-        # What `run` checks its target against.
-        printf '%s\n' "$MEZMO_TARGET" > "$EXP/state/target"
         experiment_env
-        experiment_compose up -d --build --wait
+        # Recreated every time: a rendered config is read only at startup,
+        # and Compose keeps a container whose definition did not change.
+        experiment_compose up -d --build --wait --force-recreate
+        printf '%s\n' "$MEZMO_TARGET" > "$EXP/state/target.new"
+        mv -f "$EXP/state/target.new" "$EXP/state/target"
         echo "image $AURA_IMAGE ($source_label)"
         ;;
       stop)
+        # No servers, no target: dropped first, so a failed down leaves run
+        # refusing too.
+        rm -f "$EXP/state/target"
         experiment_env
         experiment_compose down
         ;;

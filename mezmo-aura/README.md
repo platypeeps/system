@@ -113,9 +113,13 @@ experiment drops every exported `MEZMO_*` value, then passes only the
 target's values to the servers, as `MEZMO_TARGET`, `MEZMO_SERVICE_KEY` and
 `MEZMO_MCP_URL`. An overlay may read the URL as `{{ env.MEZMO_MCP_URL }}`.
 Start refuses an overlay that reads a value the target lacks, and a target
-name holding "prod" unless `--allow-prod` is given. Start records the target
-in `experiment/state/target`. `run` refuses another target or none, and each
-answer in `responses.jsonl` names the target.
+name holding "prod" unless `--allow-prod` is given. `experiment/state/target`
+names the target the running servers carry. Start and stop delete it before
+they change the servers, and only a start that Compose confirmed writes it
+again, so a failed start or stop leaves `run` refusing. Start recreates the
+servers every time, because a server reads its config only when it starts.
+`run` refuses another target or none, and each answer in `responses.jsonl`
+names the target.
 
 `experiment run --prompts <file>` sends each line of the file to both
 servers, as cases `single-p<n>` and `orch-p<n>`; blank lines and lines

@@ -24,6 +24,10 @@ echo "$* | LLM_MODEL=${LLM_MODEL:-} LLM_API_KEY_SET=${LLM_API_KEY:+yes} MEZMO_SE
 case "$1 $2" in
   "image inspect") [ -f "$STUB_IMAGE" ] || exit 1; echo "${STUB_LABEL-local/test@abc}" ;;
 esac
+case " $* " in
+  *" compose "*" up "*) [ -z "${STUB_COMPOSE_UP_FAIL:-}" ] || exit 1 ;;
+  *" compose "*" down "*) [ -z "${STUB_COMPOSE_DOWN_FAIL:-}" ] || exit 1 ;;
+esac
 exit 0
 """
 
@@ -506,6 +510,65 @@ class TheRunTarget(RunCase):
         self.assertIn("--allow-prod", done.stderr)
         self.assertFalse(self.curl_log.exists())
         self.assertEqual(self.run_scenarios("ok", "--allow-prod").returncode, 0)
+
+
+class TheTargetMarker(RunCase):
+    """sd:5064 review: state/target is the target the running servers carry.
+    start wrote it before Compose ran, so a dev start that failed while
+    production servers ran left `dev` on them, and `run` sent requests to
+    production without --allow-prod, labelled dev. Every step that changes
+    the servers drops the marker first; only a start Compose confirmed
+    writes it."""
+
+    def marker(self):
+        return self.folder / "experiment" / "state" / "target"
+
+    def running_prod(self):
+        self.marker().write_text("example-prod\n", encoding="utf-8")
+
+    def test_a_failed_compose_up_leaves_run_refusing(self):
+        self.running_prod()
+        self.start(1, "--target", "dev", STUB_COMPOSE_UP_FAIL="1")
+        self.assertFalse(self.marker().exists())
+        done = self.run_scenarios("ok")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("experiment start", done.stderr)
+        self.assertFalse(self.curl_log.exists())
+
+    def test_a_refused_overlay_drops_the_marker(self):
+        overlay = self.root / "bad.toml"
+        overlay.write_text('[agent]\nname = "other"\n', encoding="utf-8")
+        self.running_prod()
+        self.start(1, "--overlay", str(overlay))
+        self.assertFalse(self.marker().exists())
+
+    def test_a_refusal_before_any_change_keeps_the_marker(self):
+        """Nothing moved: the servers still run with the target recorded."""
+        self.running_prod()
+        self.image.unlink()
+        self.start(1)
+        self.assertEqual(self.marker().read_text(encoding="utf-8"), "example-prod\n")
+
+    def test_a_confirmed_start_writes_the_marker(self):
+        self.running_prod()
+        self.start(0, "--target", "dev")
+        self.assertEqual(self.marker().read_text(encoding="utf-8"), "dev\n")
+
+    def test_stop_drops_the_marker_even_when_down_fails(self):
+        for fail in ("", "1"):
+            self.running_prod()
+            subprocess.run(["/bin/sh", str(self.folder / "aura.sh"), "experiment", "stop"],
+                           capture_output=True, text=True, env=dict(self.env, STUB_COMPOSE_DOWN_FAIL=fail),
+                           timeout=30)
+            self.assertFalse(self.marker().exists(), fail)
+
+    def test_start_recreates_the_servers(self):
+        """Compose keeps a container whose definition did not change, and a
+        rendered config is read only at startup: a new overlay on the same
+        target would leave the servers on the old one."""
+        self.start(0)
+        up = [line for line in self.docker_calls().splitlines() if " up " in line]
+        self.assertTrue(up and all("--force-recreate" in line for line in up), up)
 
 
 class TheComposeFile(unittest.TestCase):
