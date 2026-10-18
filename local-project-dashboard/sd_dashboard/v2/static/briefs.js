@@ -238,7 +238,7 @@ addEventListener('DOMContentLoaded', () => {
       ${RECS.batches.filter(b => b.error).map(b => html`<p class="why">sd:${b.item} was not read: ${b.error}</p>`)}
       ${RECS.questions.length ? html`<ul class="rec-list">${RECS.questions.map(q => html`<li>${q.open
         ? html`<label class="chk"><input type="checkbox" data-q="${q.note}"${CHOSEN.has(q.note) ? html` checked` : ''}${busy ? html` disabled` : ''}> <span>${q.title}</span></label>`
-        : html`<span class="lab">${q.label || 'expired'}</span> <span>${q.title}</span>${q.filed ? html` · <a href="${shell.itemHref(q.filed)}">sd:${q.filed}</a>` : ''}`}
+        : html`<span class="ruled"><span class="lab">${q.label || 'expired'}</span> <span>${q.title}</span>${q.filed ? html` · <a href="${shell.itemHref(q.filed)}">sd:${q.filed}</a>` : ''}</span>`}
         <small>${q.repo || 'no repository'} · batch sd:${q.batch}</small>${REFUSED.has(q.note) ? html`<small class="refused">${REFUSED.get(q.note)}</small>` : ''}</li>`)}</ul>`
         : html`<p class="why off">This review filed no recommendation.</p>`}
       ${open.length ? html`<div class="actions"><button class="linkbtn" type="button" data-recs="all">Select all</button>
