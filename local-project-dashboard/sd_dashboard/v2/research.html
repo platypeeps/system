@@ -3,9 +3,10 @@
   Research (sd:2122), at /research. Built from the design source's products/system/designs/v2/research.html, research.js and
   research.css at 7f50ad4 (last changed af211c7), with design.md and commands.md.
   Data: /api/research (research_screen.document: collectors.collect_research, every checkout with a research.conf.py) when the
-  page opens, and /api/research/<checkout> (research_screen.sources: its SOURCES.md and 10-sources/ ledgers) per selection.
-  The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds or
-  claims yet, so both say so; Render and Review are copy only, and Start research is off: nothing here writes.
+  page opens, and /api/research/<checkout> (research_screen.sources: its SOURCES.md and 10-sources/ ledgers, and the claim map
+  from its 20-map, 30-brief and 40-docs sentences that link a ledger URL, sd:5064) per selection.
+  The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds yet,
+  so they say so; Render and Review are copy only, and Start research is off: nothing here writes.
 -->
 <html lang="en">
 <head>
@@ -64,7 +65,7 @@
 
     <section aria-labelledby="reader-h">
       <div class="sec-head">
-        <h2 id="reader-h">Sources <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A mark means a claim below cites it.">
+        <h2 id="reader-h">Sources <span class="for" id="reader-for"></span> <button class="help" type="button" aria-label="Help: Sources" data-help="<b>The project's own ledger, as written.</b> Grade or ID comes from the registry: A primary, B secondary, C summary only, U unverified, M measured here. A ◆ count is how many claims cite the source; tap it to light them.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="reader-tally"></p>
       </div>
@@ -73,7 +74,7 @@
 
     <section aria-labelledby="claims-h">
       <div class="sec-head">
-        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> Read from the START HERE document's Status section. Supported ●, inferred ▲, corrected ■ (the earlier text was wrong), unverified ▨. Tap a claim to light its sources.">
+        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that links a URL in the ledger. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones. Tap a claim to light its sources.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       </div>
       <div id="claims"></div>

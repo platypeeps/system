@@ -2,21 +2,27 @@
 
 The page is `v2/research.html`; it holds no rows. It reads two JSON documents:
 `/api/research`, built here by `document`, and `/api/research/<checkout>`, one
-checkout's source registry, built by `sources`.
+checkout's source registry and claim map, built by `sources`.
 
 **The readers.** The board is `collectors.collect_research`, the reader the
 Resources > Research view renders: every checkout under `REPO_ROOT` (one group
 deep) that carries a `research.conf.py`, its declared documents and whether
 each built page is fresh, its config refusal, and `git_facts`. This module adds
-two filesystem reads the design asks for and nothing reads yet: the stage (which
-numbered directory holds Markdown) and the source registry (the Markdown tables
-in `SOURCES.md`, `10-sources/registry.md` and `10-sources/references.md`).
-Neither runs repository code, and neither writes.
+three filesystem reads the design asks for: the stage (which numbered
+directory holds Markdown), the source registry (the Markdown tables in
+`SOURCES.md`, `10-sources/registry.md` and `10-sources/references.md`) and the
+claim map. None runs repository code, and none writes.
 
-**No round or claim reader.** The design counts review rounds per brief and
-maps a START HERE document's Status claims to their sources. Nothing reads
-either yet, so the document says so (`ROUNDS_REASON`, `CLAIMS_REASON`) and
-the page shows both as unknown with that reason.
+**The claim map** (sd:5064 ruling). A claim is a sentence in the map, brief
+or published documents (`CLAIM_DIRS`) that links the URL of a ledger row; the
+row's grade decides it: supported when an A, B or M row backs it, unverified
+when only C, U or ungraded rows do. A Status section is a change log, so the
+design's START HERE reading was dropped, and with it the inferred and corrected
+states. A document the reader does not read is named with its reason.
+
+**No round reader.** The design counts review rounds per brief. Nothing reads
+them yet, so the document says so (`ROUNDS_REASON`) and the page shows rounds
+as unknown with that reason.
 
 **One module, two roles**, as `fleet.py`: imported, it is the page side, and
 `collect` runs this same file as a child, `python3 -I research_screen.py
@@ -36,8 +42,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["CAP", "CLAIMS_REASON", "DIRS", "REGISTRIES", "ROUNDS_REASON", "collect", "document", "parse_registry",
-           "project", "sources"]
+__all__ = ["CAP", "CLAIM_DIRS", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "parse_registry",
+           "project", "source_key", "sources"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
 #: stops so its reason arrives before the page's kill does (`fleet.FLEET_MARGIN`).
@@ -53,7 +59,20 @@ REGISTRIES = ("SOURCES.md", "10-sources/registry.md", "10-sources/references.md"
 #: The independent review passes a brief may take (the command pack's planning review rule).
 CAP = 2
 ROUNDS_REASON = "no round reader: the dashboard does not read review rounds yet"
-CLAIMS_REASON = "no claim reader: the dashboard does not extract claims from a Status section yet"
+#: Where claims are read: the map, brief and published documents (sd:5064 ruling).
+CLAIM_DIRS = ("20-map", "30-brief", "40-docs")
+#: Ledger grades: A primary, B secondary, C summary only, U unverified, M measured here. A, B and M support a claim.
+GRADES = frozenset("ABCUM")
+SUPPORTING = frozenset("ABM")
+#: The claim reader's bounds: documents read, bytes per document (the collectors' bound for a research source), the
+#: longest sentence kept, the claims and skipped documents the document carries, and the seconds it keeps for printing
+#: when the deadline nears.
+CLAIM_FILES = 200
+CLAIM_BYTES = 2 * 1024 * 1024
+CLAIM_CHARS = 240
+CLAIMS = 150
+UNREAD = 10
+CLAIM_MARGIN = 0.5
 #: A registry file larger than this is named, not read; the collectors' bound for a research source.
 REGISTRY_BYTES = 2 * 1024 * 1024
 #: How many ledger rows the sources document carries, and the bytes it may print: under the collectors' 64 KB ceiling
@@ -124,7 +143,6 @@ def document(*, now: str, backend=None) -> dict:
         "cap": CAP,
         "dirs": list(DIRS),
         "rounds": {"available": False, "reason": ROUNDS_REASON},
-        "claims": {"available": False, "reason": CLAIMS_REASON},
         "attention": _attention(projects, error),
     }
 
@@ -147,11 +165,15 @@ def sources(key: str, *, now: str, backend=None) -> dict | None:
     try:
         found = (backend or collect)("sources", key)
     except (OSError, ValueError) as failure:
-        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0}
+        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None}
     if not found.get("found"):
         return None
     return {"read": now, "key": key, "error": "", "files": found.get("files", []), "rows": found.get("rows", []),
-            "total": found.get("total", 0)}
+            "total": found.get("total", 0),
+            # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
+            "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
+                       "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
+            if isinstance(found.get("claims"), list) else None}
 
 
 # -- the child ----------------------------------------------------------------
@@ -262,13 +284,13 @@ LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 BARE = re.compile(r"<(https?://[^>\s]+)>")
 
 
-def _cell(text: str) -> str:
+def _cell(text: str, limit: int = CELL) -> str:
     """Markdown cell text as plain text: links keep their label, emphasis and code marks go."""
     text = LINK.sub(r"\1", text)
     text = BARE.sub(r"\1", text)
     text = re.sub(r"~~(.*?)~~", r"\1", text)
     text = re.sub(r"(\*\*|__|`|\*)", "", text).replace("\\|", "|").strip()
-    return text if len(text) <= CELL else text[: CELL - 1].rstrip() + "…"
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def _url(cells: list[str]) -> str:
@@ -324,7 +346,110 @@ def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
     return {"prov": text_prov if len(text_prov) <= 600 else text_prov[:599].rstrip() + "…"}, rows
 
 
-def registry(repo: Path) -> dict:
+def source_key(url: str) -> str:
+    """The key a link and a ledger row share: the URL without its fragment or a trailing slash."""
+    return url.strip().split("#", 1)[0].rstrip("/")
+
+
+FENCE = re.compile(r"(```|~~~)")
+#: A line that starts a unit of its own: a heading, a list item or a table row.
+STARTS = re.compile(r"(#{1,6}\s|[-*+]\s|\d{1,3}[.)]\s|\|)")
+#: A sentence ends at . ! or ? and the space after it.
+ENDS = re.compile(r"(?<=[.!?])\s+")
+
+
+def units(text: str):
+    """(line, text) for each paragraph, heading, list item and table row outside fenced code; a paragraph keeps its
+    line breaks, so a sentence can name the line it starts on."""
+    lines, start, fence = [], 0, None
+
+    def flush():
+        if lines:
+            yield start, "\n".join(lines)
+            lines.clear()
+
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = re.sub(r"^(>\s?)+", "", line.strip()).strip()  # a quote reads as its text
+        mark = FENCE.match(stripped)
+        if fence:
+            fence = None if mark and mark.group(1) == fence else fence
+            continue
+        if mark:
+            yield from flush()
+            fence = mark.group(1)
+            continue
+        if not stripped or STARTS.match(stripped):
+            yield from flush()
+        if stripped.startswith("|"):
+            # A table row is one unit: its cells joined, its outer pipes gone.
+            yield number, " · ".join(cell for cell in _row(stripped) if cell)
+        elif stripped:
+            start = start if lines else number
+            lines.append(re.sub(r"^(#{1,6}|[-*+]|\d{1,3}[.)])\s+", "", stripped))  # a heading or item reads as its text
+    yield from flush()
+
+
+def sentences(text: str):
+    """(line offset, sentence) for each sentence of a unit. A cut inside a link's label or address is joined back."""
+    pieces, at, held, offset = [], 0, "", 0
+    for match in [*ENDS.finditer(text), None]:
+        end = match.start() if match else len(text)
+        piece = text[at:end]
+        if not held:
+            offset = text.count("\n", 0, at)
+        held = f"{held} {piece}" if held else piece
+        if match is None or (held.count("[") <= held.count("]") and held.count("(") <= held.count(")")):
+            pieces.append((offset, held))
+            held = ""
+        at = match.end() if match else at
+    return pieces
+
+
+def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
+    """The claim map (sd:5064 ruling): each sentence in the map, brief and published documents that links a ledger row's
+    URL. A claim is supported when it cites an A, B or M row, and unverified when it cites only C, U or ungraded rows.
+    A document that is not read is named with its reason; the walk stops at its file bound and at the child's deadline."""
+    index = {}
+    for row in rows:
+        if row.get("url"):
+            index.setdefault(source_key(row["url"]), set()).add(row["id"] if row["id"] in GRADES else "")
+    found, unread, read = [], [], 0
+    paths = [path for name in CLAIM_DIRS if (repo / name).is_dir() and not (repo / name).is_symlink()
+             for path in sorted((repo / name).rglob("*.md"))]
+    for number, path in enumerate(paths):
+        name = path.relative_to(repo).as_posix()
+        left = time_left() if time_left else None
+        if number >= CLAIM_FILES or (left is not None and left < CLAIM_MARGIN):
+            why = f"past the {CLAIM_FILES}-document bound" if number >= CLAIM_FILES else "the reading ran out of time"
+            unread.append({"doc": f"{len(paths) - number} more documents", "error": why})
+            break
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(repo.resolve()):
+                raise ValueError("a link, which the reader does not follow")
+            if path.stat().st_size > CLAIM_BYTES:
+                raise ValueError("larger than the 2 MB the reader reads")
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError) as error:
+            unread.append({"doc": name, "error": _cut(str(error))})
+            continue
+        read += 1
+        for line, unit in units(text):
+            for offset, sentence in sentences(unit):
+                keys = [key for key in dict.fromkeys(source_key(m.group(2) if m.re is LINK else m.group(1))
+                                                     for m in [*LINK.finditer(sentence), *BARE.finditer(sentence)])
+                        if key in index]
+                if keys:
+                    grades = set().union(*(index[key] for key in keys))
+                    found.append({"doc": name, "line": line + offset, "text": _cell(" ".join(sentence.split()), CLAIM_CHARS),
+                                  "s": "supported" if grades & SUPPORTING else "unverified", "keys": keys})
+    if len(unread) > UNREAD:
+        # The list of skipped documents is bounded too: the rest are counted in one entry.
+        unread[UNREAD - 1:] = [{"doc": f"{len(unread) - UNREAD + 1} more documents", "error": "skipped as well; the list stops here"}]
+    tally = {state: sum(claim["s"] == state for claim in found) for state in ("supported", "unverified")}
+    return {"claims": found, "tally": tally, "read": read, "unread": unread}
+
+
+def registry(repo: Path, time_left=None) -> dict:
     files, rows = [], []
     for name in REGISTRIES:
         path = repo / name
@@ -338,11 +463,28 @@ def registry(repo: Path) -> dict:
         head, found = parse_registry(path.read_text(encoding="utf-8", errors="replace"), name)
         files.append({"file": name, "mtime": mtime, "prov": head["prov"], "error": ""})
         rows.extend(found)
+    mapped = claims(repo, rows, time_left)
+    cited = {}
+    for claim in mapped["claims"]:
+        for key in claim["keys"]:
+            cited[key] = cited.get(key, 0) + 1
+    for row in rows:
+        row["key"] = source_key(row["url"]) if row["url"] else ""
+        row["cited"] = cited.get(row["key"], 0) if row["key"] else 0
     total = len(rows)
-    rows = rows[:ROWS]
-    out = {"found": True, "files": files, "rows": rows, "total": total}
-    while rows and len(json.dumps(out, ensure_ascii=False).encode("utf-8")) > PRINT_BYTES:
-        rows.pop()
+    # Cited rows are kept first, so a claim can light its sources; the rest fill to ROWS. Both stay in ledger order.
+    keep = sorted(sorted(range(total), key=lambda i: not rows[i]["cited"])[:ROWS])
+    rows = [rows[i] for i in keep]
+    shown = mapped["claims"][:CLAIMS]
+    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown,
+           "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "docs_read": mapped["read"],
+           "unread": mapped["unread"]}
+    # Past PRINT_BYTES, drop from the end of whichever list prints more: claims or rows.
+    size = _printed(out)
+    while size > PRINT_BYTES and (rows or shown):
+        listed = shown if shown and (not rows or _printed(shown) >= _printed(rows)) else rows
+        size -= _printed(listed[-1]) + (len(listed) > 1)
+        listed.pop()
     return out
 
 
@@ -367,7 +509,7 @@ def main(argv):
                 found = board(collectors)
             else:
                 repo = checkout(Path(collectors.REPO_ROOT), argv[1])
-                found = registry(repo) if repo else {"found": False}
+                found = registry(repo, collectors.time_left) if repo else {"found": False}
     except Exception as error:  # noqa: BLE001 - the page shows this reason
         print(f"research {area}: {error!r}"[:4096], file=sys.stderr)
         return 1

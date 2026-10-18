@@ -1,7 +1,7 @@
 // Research (sd:2122): the design source's products/system/designs/v2/research.js at 7f50ad4, ported. Each change from the reference is
 // marked "build:". The board is /api/research (research_screen.py: collectors.collect_research, every checkout with a research.conf.py);
-// a project's ledger is /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads review rounds
-// or claims yet, so both are unknown with the document's reason. Render and Review are copy only; Start research is off.
+// a project's ledger and claim map are /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads
+// review rounds yet, so they are unknown with the document's reason. Render and Review are copy only; Start research is off.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
@@ -11,7 +11,7 @@ const GLYPH = { caution: '▲', unknown: '▨', ok: '●', queued: '◌', warnin
 let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
-let PROJECTS = [], ROUNDS = '', CLAIMS = '', READ = null, CUT = 0, LOADED = false;
+let PROJECTS = [], ROUNDS = '', READ = null, CUT = 0, LOADED = false;
 const SOURCES = new Map(); // a Map, so a checkout named like an object property (constructor) is not already cached
 const RANK = { caution: 0, unknown: 1, queued: 2, ok: 3 };
 // Page attention, the read's own (sd:3446, research_screen._attention): render-stale projects.
@@ -84,7 +84,7 @@ function reconcile() {
 }
 // With no project selected, the reader and the claims must not keep the last project's rows: they would open its sources.
 function clearSelection() {
-  selected = null; curSource = null; shell.commands.select(null);
+  selected = null; curSource = null; resetClaims(); shell.commands.select(null);
   ['reader-for', 'reader-tally', 'claims-for'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
   put(reader, html`<p class="why">No project is selected.</p>`);
   put(claimsEl, html`<p class="why">No project is selected.</p>`);
@@ -121,6 +121,10 @@ async function readerFor(key) {
   if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(reader, html`<p class="why">Reading the ledger in ${p.path}…</p>`);
   const s = await loadSources(key);
   if (selected !== key) return; // a newer selection owns the reader
+  drawReader(p, s);
+}
+function drawReader(p, s) {
+  const key = p.key;
   if (s.error) {
     // An error that already ends its sentence takes no second period (sd:2429).
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>The ledger was not read: ${s.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`);
@@ -130,13 +134,14 @@ async function readerFor(key) {
     put(reader, html`<p class="unknown"><span class="g-unknown">▨</span>No source registry in ${p.path}: neither SOURCES.md nor 10-sources/registry.md exists. The standard expects one; the reader cannot show provenance without it.</p>`);
     document.getElementById('reader-tally').textContent = 'registry missing'; return;
   }
-  // build: no claim reader, so no ledger row carries the cited mark.
+  // A row the claim map cites carries its count (◆ n); tapping it lights those claims. A lit row is a tapped claim's source.
   let lastSec = null;
   put(reader, html`${s.files.map(f => html`<p class="prov"><b>${f.file}</b> · modified ${f.mtime.replace('T', ' ')}${f.error ? ` · not read: ${f.error}` : f.prov ? `\n${f.prov}` : ''}</p>`)}${
     s.rows.length ? html`<ul class="srcs">${s.rows.map((r, i) => {
       const head = r.sec !== lastSec ? html`<li class="grp label">${r.sec || r.f}</li>` : ''; lastSec = r.sec;
-      return html`${head}<li class="src" data-i="${i}" aria-current="${String(curSource === i)}">
+      return html`${head}<li class="src" data-i="${i}" aria-current="${String(curSource === i)}"${r.cited ? html` data-cited` : ''}${r.key && litKeys.includes(r.key) ? html` data-lit` : ''}>
         <button type="button"><span class="id" data-grade="${r.id}">${r.id}</span><span class="t">${r.title}<span class="u">${r.c3}</span></span></button>
+        ${r.cited ? html`<button class="cites" type="button" data-cites="${i}" aria-label="Show the ${plural(r.cited, 'claim')} citing ${r.title}" title="Claims citing it">◆ ${r.cited}</button>` : html`<span></span>`}
         ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}</li>`;
     })}</ul>` : html`<p class="why">No table rows in the ledger: the reader reads Markdown tables.</p>`}${
     // build: the reader does not page; the document carries the first rows and the whole count.
@@ -145,18 +150,77 @@ async function readerFor(key) {
   put(document.getElementById('reader-tally'), html`${['A', 'B', 'C', 'U', 'M'].filter(g => grades[g]).map(g => html`<span>${g} ${grades[g]}</span>`)}<span>${plural(s.total, 'row')}</span>`);
 }
 reader.addEventListener('click', e => {
+  const cites = e.target.closest('[data-cites]'); if (cites) { claimsOf(+cites.dataset.cites); return; }
   const li = e.target.closest('.src'); if (!li || e.target.closest('a')) return;
   selectSource(+li.dataset.i, true);
 });
 
 // ---------- Claim map ----------
-// build: the reference's claims were read by hand from one project's Status section. Nothing extracts them yet, so every project
-// says why, and the verdict bar, the claim rows and their Details wait for a claim reader.
+// Read with the ledger (research_screen.claims, the sd:5064 ruling): each sentence in the map, brief and published documents that
+// links a ledger row's URL. Supported cites an A, B or M row; unverified cites only C, U or ungraded rows.
+// build: the reference read claims by hand from one project's Status section, with inferred and corrected states; neither is read.
 const claimsEl = document.getElementById('claims');
-function renderClaims(key) {
+const VERDICT = { supported: ['●', 'ok'], unverified: ['▨', 'unknown'] };
+let verdict = null, curClaim = null, litKeys = [], litClaims = [];
+function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
+async function renderClaims(key) {
   const p = PROJECTS.find(x => x.key === key);
   document.getElementById('claims-for').textContent = p ? `· ${p.label}` : '';
-  put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>${p ? `Claims not extracted for ${p.label}: ${CLAIMS}.` : 'No project is selected.'}</p>`);
+  if (!p) { put(claimsEl, html`<p class="why">No project is selected.</p>`); return; }
+  if (!(SOURCES.has(key) && !SOURCES.get(key).then)) put(claimsEl, html`<p class="why">Reading the claims in ${p.path}…</p>`);
+  const s = await loadSources(key);
+  if (selected !== key) return; // a newer selection owns the map
+  drawClaims(p, s);
+}
+// A ledger row's short name on a claim: its grade or ID and the start of its title.
+function chip(s, key) {
+  const r = s.rows.find(x => x.key === key);
+  return r ? html`<span class="chip"><b>${r.id}</b> ${r.title.length > 40 ? `${r.title.slice(0, 39)}…` : r.title}</span>` : html`<span class="chip">a source past the rows shown</span>`;
+}
+function drawClaims(p, s) {
+  const c = s.claims;
+  if (s.error || !c) {
+    put(claimsEl, html`<p class="unknown"><span class="g-unknown">▨</span>Claims not read for ${p.label}: ${s.error ? s.error.replace(/\.$/, '') : 'the reader sent no claim map'}. Reselect the project to retry.</p>`);
+    return;
+  }
+  // A document the reader skipped is named, so an empty map is never mistaken for a read one.
+  const unread = html`${c.unread.map(u => html`<p class="unknown"><span class="g-unknown">▨</span>${u.doc} not read: ${u.error}.</p>`)}`;
+  if (!c.total) {
+    put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
+    return;
+  }
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
+    <p class="vlegend"><span>● supported: cites an A, B or M source</span><span>▨ unverified: cites only C, U or ungraded sources</span></p>
+    <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
+      <span class="g g-${VERDICT[x.s][1]}" title="${x.s}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
+      <button type="button">${x.text}</button>
+      <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
+    c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
+  document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
+}
+claimsEl.addEventListener('click', e => {
+  const v = e.target.closest('[data-verdict]');
+  if (v) { verdict = verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
+  const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c, true);
+});
+// Draw the reader and the map again from the cache, keeping what is lit.
+function redraw() {
+  const p = PROJECTS.find(x => x.key === selected), s = SOURCES.get(selected);
+  if (!p || !s || s.then) return;
+  drawReader(p, s); drawClaims(p, s);
+}
+// A tapped claim lights its sources in the reader.
+function selectClaim(i, open) {
+  const s = SOURCES.get(selected), x = s?.claims?.rows?.[i]; if (!x) return;
+  curClaim = i; litKeys = x.keys; litClaims = [];
+  redraw(); showClaim(s, x); if (open) shell.openPane('tab-details');
+}
+// A source's ◆ count lights the claims that cite it; a verdict filter that would hide one is cleared.
+function claimsOf(i) {
+  const s = SOURCES.get(selected), r = s?.rows?.[i]; if (!r?.key) return;
+  litClaims = s.claims.rows.flatMap((x, n) => (x.keys.includes(r.key) ? [n] : []));
+  litKeys = []; curClaim = null; verdict = null;
+  redraw();
 }
 
 // ---------- Details ----------
@@ -188,12 +252,28 @@ function showSource(i) {
   put(details, html`<p class="kind">${I('book-open')} Source · ${s.h[0] || 'grade'} ${s.id}</p><h2>${s.title}</h2>
     <dl><dt>Ledger</dt><dd>${s.f}</dd><dt>Section</dt><dd>${s.sec || 'none'}</dd><dt>${s.h[2] || 'Used for'}</dt><dd>${s.c3 || '—'}</dd>${s.c4 ? html`<dt>${s.h[3] || 'Note'}</dt><dd>${s.c4}</dd>` : ''}
       ${s.url ? html`<dt>Link</dt><dd><a class="ext" href="${s.url}" target="_blank" rel="noopener">${s.url.replace(/^https?:\/\//, '').slice(0, 60)} ${I('arrow-up-right')}</a></dd>` : ''}</dl>
-    <h3>Cited by</h3><p class="why">Not known: ${CLAIMS}.</p>`);
+    <h3>Cited by</h3>${citedBy(s)}`);
   shell.setContext(s.title.slice(0, 40)); swap();
+}
+function citedBy(r) {
+  if (!r.key) return html`<p class="why">No link in this ledger row, so no claim can cite it.</p>`;
+  const map = SOURCES.get(selected)?.claims;
+  if (!map) return html`<p class="why">Not known: the claim map was not read.</p>`;
+  const by = map.rows.filter(x => x.keys.includes(r.key));
+  if (!r.cited) return html`<p class="why">No sentence in ${map.dirs.join(', ')} links this source.</p>`;
+  return html`<ul class="claims">${by.map(x => html`<li class="claim"><span class="g g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span><span>${x.text} · ${x.doc}:${x.line}</span></li>`)}</ul>${
+    r.cited > by.length ? html`<p class="more">${by.length} of ${plural(r.cited, 'claim')} listed: the reading passed its print bound.</p>` : ''}`;
+}
+function showClaim(s, x) {
+  put(details, html`<p class="kind"><span class="g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span> Claim · ${x.s}</p><h2>${x.text}</h2>
+    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? 'cites an A, B or M source' : 'cites only C, U or ungraded sources'}</dd></dl>
+    <h3>Sources</h3><ul class="claims">${x.keys.map(k => { const r = s.rows.find(y => y.key === k);
+      return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
+  shell.setContext(x.text.slice(0, 40)); swap();
 }
 function select(key, open) {
   if (!PROJECTS.some(p => p.key === key)) return;
-  selected = key; curSource = null;
+  selected = key; curSource = null; resetClaims();
   tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();
@@ -329,7 +409,7 @@ window.PAGE_COMMANDS = [
 let board = null, linked = false;
 function adopt(doc) {
   READ = doc.read; CAP = doc.cap || CAP; DIRS = doc.dirs || DIRS; CUT = doc.cut || 0; LOADED = true; ATTENTION = doc.attention || null;
-  ROUNDS = doc.rounds?.reason || 'not read'; CLAIMS = doc.claims?.reason || 'not read';
+  ROUNDS = doc.rounds?.reason || 'not read';
   if (READ) document.body.dataset.observed = READ; // shell time cells count from the reading, not from now
   PROJECTS = (doc.projects || []).map(p => ({ ...p, id: p.key, type: 'research project', s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));
   if (!linked) {
@@ -345,8 +425,8 @@ function adopt(doc) {
   const cut = CUT ? ` ${plural(CUT, 'project')} not listed: the board passed its print bound.` : '';
   const state = doc.error ? { kind: 'error', text: `The checkouts were not read: ${doc.error}. Reload retries it.`, source: 'collectors.collect_research' }
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
-    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds and claims are not read: ${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' }
-    : { kind: 'partial', title: 'No rounds or claims read', text: `${ROUNDS}; ${CLAIMS}.${cut}`, source: '/api/research' };
+    : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
+    : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
   return { objects: [...PROJECTS, DRAFT], state };
 }
 function draw() {

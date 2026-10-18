@@ -9,8 +9,12 @@ config the collector refuses shows as unknown with the refusal.
 `GET /api/research/<checkout>` (`research_screen.sources`) reads that
 checkout's ledger: the Markdown tables in `SOURCES.md`,
 `10-sources/registry.md` and `10-sources/references.md`, with or without
-outer pipes (sd:2414), up to 60 rows with the whole count. Any other path is a 404. Nothing reads review rounds or
-claims yet, so both show as unknown with that reason. Render and Review are
+outer pipes (sd:2414), up to 60 rows with the whole count, cited rows first. Any other path is a 404.
+The same document carries the claim map (sd:5064): each sentence in `20-map`, `30-brief` and `40-docs` that links a
+ledger row's URL, matched without its fragment or trailing slash. A claim is supported when it cites an A, B or M row,
+and unverified when it cites only C, U or ungraded rows. A document the reader skips (a link, over 2 MB, past the
+200-document bound or the deadline) is named with its reason. Nothing reads review rounds yet, so they show as unknown
+with that reason. Render and Review are
 copy only: the dashboard does not run `sd-research-kit`. Start research is
 off with its reason; the field shows the `sd task add` line for
 Copy. The old view stays in the palette as Resources (classic), with Toolbox,
