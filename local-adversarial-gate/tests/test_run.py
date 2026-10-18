@@ -167,6 +167,46 @@ class RunAgainstAFakeCodex(unittest.TestCase):
         first = next(line for line in core.splitlines() if line.strip())
         self.assertIn(first, self.stdin_log.read_text())
 
+    def test_effort_reaches_codex_as_a_config_override_beside_the_model(self):
+        # sd:5064: the dashboard's review runs at a named reasoning effort, which codex takes as
+        # `-c model_reasoning_effort=LEVEL`. The prompt still goes in on stdin, through `-`.
+        out = self.tmp / "adversarial.md"
+        result, _ = self.run_gate(
+            "--repo", str(self.repo), "--out", str(out), "--model", "gpt-fixture", "--effort", "high",
+            body='printf "%s\\n" "$@" > "$CODEX_ARGV"\ncat > "$CODEX_STDIN"\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.argv_log.read_text().splitlines(),
+            ["exec", "-m", "gpt-fixture", "-c", "model_reasoning_effort=high", "-s", "read-only",
+             "-C", str(self.repo), "-o", str(out), "-"],
+        )
+        self.assertTrue(self.stdin_log.read_text().strip())
+
+    def test_effort_alone_keeps_codex_s_own_model(self):
+        out = self.tmp / "adversarial.md"
+        result, _ = self.run_gate(
+            "--repo", str(self.repo), "--out", str(out), "--effort", "low",
+            body='printf "%s\\n" "$@" > "$CODEX_ARGV"\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.argv_log.read_text().splitlines(),
+            ["exec", "-c", "model_reasoning_effort=low", "-s", "read-only", "-C", str(self.repo),
+             "-o", str(out), "-"],
+        )
+
+    def test_an_effort_that_is_not_one_lowercase_word_is_refused(self):
+        # The value lands in a `-c key=value` override that codex parses as TOML: a quote or an
+        # `=` would be a different override, so only a bare word passes.
+        out = self.tmp / "adversarial.md"
+        for value in ("", "high\nx", "a=b", '"high"', "HIGH"):
+            with self.subTest(effort=value):
+                result, _ = self.run_gate("--repo", str(self.repo), "--out", str(out), "--effort", value)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("adversarial-gate: run: --effort wants one lowercase word", result.stderr)
+                self.assertFalse(self.argv_log.exists())
+
     def test_the_real_jev_writes_nothing_to_the_operator_s_stores(self):
         # sd:2799: this suite's happy path wrote an `unkeyed` row into the live
         # ledger. The operator's stores sit in a fixture HOME: a ledger at the
