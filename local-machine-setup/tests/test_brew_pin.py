@@ -2,17 +2,20 @@
 
 Homebrew python is ad-hoc signed, so every patch upgrade drops the macOS
 grants its binary held. The operator unpins and re-grants on purpose, so the
-brew stage converges `brew pin python@3.14`, and `status` counts an unpinned
-one as drift. python@3.12 stays as it is.
+brew stage converges `brew pin python@3.15`, and `status` counts an unpinned
+one as drift. python@3.12 stays as it is. The pin follows Homebrew's default
+python, so `status` names a PATH python3 of another version (sd:5047).
 
 The script runs from a copy of this folder under a temporary root; `brew` is
-a stub that keeps its pins in a file.
+a stub that keeps its pins in a file, and `python3` a stub that prints
+$PY_VERSION.
 """
 
 import pathlib
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -22,12 +25,13 @@ HERE = pathlib.Path(__file__).resolve().parent
 FOLDER = HERE.parent
 LIB = FOLDER.parent / "lib"
 
-# Two pythons are installed, plus $FORMULAE. `pin` records into $PINS; `list --pinned` reads it.
+# $PYTHONS are installed (three by default), plus $FORMULAE. `pin` records
+# into $PINS; `list --pinned` reads it.
 BREW_STUB = r"""#!/bin/sh
 case "$*" in
   "list --formula") [ -z "$LIST_HANG" ] || exec sleep 30
                     [ -z "$LIST_RC" ] || exit "$LIST_RC"
-                    printf '%s\n' python@3.12 python@3.14 $FORMULAE ;;
+                    printf '%s\n' ${PYTHONS-python@3.12 python@3.14 python@3.15} $FORMULAE ;;
   "list --cask"|leaves|tap) : ;;
   "list --pinned") [ -z "$PINNED_RC" ] || exit "$PINNED_RC"
                    sed -n 's/^pin //p' "$PINS" 2>/dev/null ;;
@@ -38,6 +42,17 @@ exit 0
 """
 
 EXIT_1_STUB = "#!/bin/sh\nexit 1\n"
+
+# `python3 --version` prints $PY_VERSION, or fails with PY_RC; every other
+# call is the real interpreter's, as other stages run python3.
+PYTHON3_STUB = f"""#!/bin/sh
+if [ "$*" = --version ]; then
+  [ -z "$PY_RC" ] || exit "$PY_RC"
+  echo "${{PY_VERSION:-Python 3.15.2}}"
+  exit 0
+fi
+exec {sys.executable} "$@"
+"""
 
 
 def write_exec(path, body):
@@ -63,6 +78,7 @@ class BrewPinTest(unittest.TestCase):
         self.pins = base / "pins"
         self.stubs = base / "stubs"
         write_exec(self.stubs / "brew", BREW_STUB)
+        write_exec(self.stubs / "python3", PYTHON3_STUB)
         for name in ("defaults", "sudo", "launchctl", "mas"):
             write_exec(self.stubs / name, EXIT_1_STUB)
         fixture_config.seal(self, self.stubs)
@@ -86,12 +102,12 @@ class BrewPinTest(unittest.TestCase):
         result = self.run_verb("update", "brew", "--apply")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.14"])
+        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.15"])
 
         again = self.run_verb("update", "brew", "--apply")
 
-        self.assertIn("ok      pinned python@3.14", again.stdout)
-        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.14"])
+        self.assertIn("ok      pinned python@3.15", again.stdout)
+        self.assertEqual(self.pins.read_text().splitlines(), ["pin python@3.15"])
 
     def test_the_brew_stage_pins_the_agent_clis_the_pack_gate_runs(self):
         # REGRESSION sd:3542: the weekly upgrade moved opencode under the pack gate's live test.
@@ -99,18 +115,45 @@ class BrewPinTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.pins.read_text().splitlines(),
-                         ["pin python@3.14", "pin opencode", "pin codex"])
+                         ["pin python@3.15", "pin opencode", "pin codex"])
 
     def test_status_counts_an_unpinned_python_as_drift(self):
         unpinned = self.run_verb("status")
-        self.pins.write_text("pin python@3.14\n")
+        self.pins.write_text("pin python@3.15\n")
         pinned = self.run_verb("status")
 
-        self.assertIn("unpinned: python@3.14", unpinned.stdout)
+        self.assertIn("unpinned: python@3.15", unpinned.stdout)
         self.assertNotIn("unpinned", pinned.stdout)
         before = int(unpinned.stdout.split("drift   : ")[1].split()[0])
         after = int(pinned.stdout.split("drift   : ")[1].split()[0])
         self.assertEqual(before - after, 1)
+
+
+    def drift(self, result):
+        return int(result.stdout.split("drift   : ")[1].split()[0])
+
+    def test_status_names_a_python3_that_is_not_the_pinned_python(self):
+        """sd:5047: Homebrew's default python moved to 3.15 and relinked
+        python3 off the pinned 3.14, which dropped its Full Disk Access."""
+        self.pins.write_text("pin python@3.15\n")
+        moved = self.run_verb("status", PY_VERSION="Python 3.16.0")
+        same = self.run_verb("status", PY_VERSION="Python 3.15.2")
+
+        self.assertIn("  python  : python3 is 3.16, pin is python@3.15: move the pin and re-grant "
+                      "Full Disk Access", moved.stdout)
+        self.assertNotIn("python3 is", same.stdout)
+        self.assertEqual(self.drift(moved) - self.drift(same), 1)
+
+    def test_a_python3_that_cannot_answer_is_unknown(self):
+        self.pins.write_text("pin python@3.15\n")
+        result = self.run_verb("status", PY_RC="1")
+
+        self.assertIn("  python  : python3 version unknown (brew or python3 did not answer)", result.stdout)
+
+    def test_no_pinned_python_installed_checks_no_python3(self):
+        result = self.run_verb("status", PYTHONS="python@3.12", PY_VERSION="Python 3.16.0")
+
+        self.assertNotIn("python  :", result.stdout)
 
 
     def test_a_list_brew_cannot_give_changes_nothing(self):

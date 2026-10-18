@@ -567,13 +567,17 @@ valid_profile() {
 
 # Formulae kept pinned (sd:3062). Homebrew python is ad-hoc signed, so every
 # patch upgrade drops the macOS grants its binary held; the operator unpins
-# and re-grants on purpose. python@3.12 is left as it is. opencode and codex
+# and re-grants on purpose. The python@ entry follows Homebrew's default
+# python on purpose: that moves about once a year, relinking python3 to the
+# new version, and the operator then moves the pin and re-grants Full Disk
+# Access; status names a python3 the pin does not match (sd:5047).
+# python@3.12 is left as it is. opencode and codex
 # are listed because the pack's merge gate runs a live test against the
 # installed binary, and the weekly upgrade must not move it under the gate
 # (sd:3542); the upgrade report lists what a pin holds back. A cask install
 # cannot be pinned, so only a formula install is held: codex is a cask on
 # the operator's machines, so its entry holds nothing there (sd:4738).
-BREW_PINNED="python@3.14 opencode codex"
+BREW_PINNED="python@3.15 opencode codex"
 
 # Each BREW_PINNED formula that is installed and not pinned, one per line.
 # Fails when brew cannot list either: unknown, not "nothing to pin" (sd:3536).
@@ -584,6 +588,24 @@ unpinned_formulae() {
     printf '%s\n' "$_have" | sed 's|.*/||' | grep -qx "$_f" || continue
     printf '%s\n' "$_pinned" | sed 's|.*/||' | grep -qx "$_f" || echo "$_f"
   done
+}
+
+# The drift line when PATH's python3 is not the python@ entry in BREW_PINNED
+# (sd:5047), else nothing: also when no python@ is pinned, it is not
+# installed, or no python3 is on PATH. Fails when brew or python3 cannot
+# answer: unknown, not a match. Reports only; moving the pin is the operator's.
+python_pin_drift() {
+  # shellcheck disable=SC2086 # one word per formula
+  _pp=$(printf '%s\n' $BREW_PINNED | grep '^python@' | head -1)
+  [ -n "$_pp" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  _have=$(bound_step 300 brew list --formula 2>/dev/null) || return 1
+  printf '%s\n' "$_have" | sed 's|.*/||' | grep -qx "$_pp" || return 0
+  _pv=$(bound_step 60 python3 --version 2>&1) || return 1
+  _pv=$(printf '%s\n' "$_pv" | sed -n 's/^Python \([0-9]*\.[0-9]*\).*/\1/p')
+  [ -n "$_pv" ] || return 1
+  [ "$_pv" = "${_pp#python@}" ] \
+    || echo "python3 is $_pv, pin is $_pp: move the pin and re-grant Full Disk Access"
 }
 
 stage_brew() {
@@ -5943,7 +5965,9 @@ cmd_status() {
     echo "pins"
     status_line unpinned "$up"
     [ -n "$up" ] || echo "  ok      $BREW_PINNED pinned or not installed"
-    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$up"; do
+    pd=$(python_pin_drift) || pd="python3 version unknown (brew or python3 did not answer)"
+    status_line python "$pd"
+    for v in "$mt" "$mb" "$xb" "$mc" "$xc" "$up" "$pd"; do
       drift=$((drift + $(printf '%s' "$v" | grep -c . || :)))
     done
   else
