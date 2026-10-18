@@ -671,12 +671,13 @@ class BuildIdentity(unittest.TestCase):
                 path.unlink()
                 self.assertEqual(digests(), before)
 
-    def test_the_pack_modules_name_every_bin_module_sd_lane_imports(self):
-        # A pin that gives `sd_lane` another bin/ import fails here, before a server misses its change.
+    def test_the_pack_modules_name_every_bin_module_sd_lane_and_sd_research_publish_import(self):
+        # A pin that gives `sd_lane` or `sd_research_publish` (sd:5102) another bin/ import fails here, before a server
+        # misses its change.
         from sd_dashboard import PACK_MODULES, pack_bin
 
         folder = pack_bin()
-        probe = ("import json, sys; sys.path[:0] = [sys.argv[2]]; sys.path.append(sys.argv[1]); import sd_lane; "
+        probe = ("import json, sys; sys.path[:0] = [sys.argv[2]]; sys.path.append(sys.argv[1]); import sd_lane, sd_research_publish; "
                  "print(json.dumps(sorted(name for name, module in sys.modules.items() "
                  "if (getattr(module, '__file__', None) or '').startswith(sys.argv[1] + '/'))))")
         done = subprocess.run([sys.executable, "-I", "-c", probe, str(folder), str(folder.parent / "lib")],
