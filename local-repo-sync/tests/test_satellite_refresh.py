@@ -129,7 +129,6 @@ class RefreshTest(unittest.TestCase):
                          (row["request"], row["state"], row["exit"], row["step"], row["line"], row["attempt"],
                           row["host"]))
         self.assertTrue(row["started"] <= row["finished"])
-        self.assertEqual({"hosts": [HOST]}, f.setting("refresh.satellites"))
 
         again = f.run("follow", expect=0)
         self.assertEqual(["update --apply"], f.full_updates())
@@ -241,17 +240,18 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(wanted, f.result()["request"])
         self.assertEqual(["update --apply", "update --apply"], f.full_updates())
 
-    def test_no_request_lists_the_satellite_and_runs_nothing(self):
+    def test_no_request_runs_nothing_and_writes_nothing(self):
         """NEW. With no request, follow runs as before, drains nothing, and
-        the satellite adds itself to the index the dashboard lists."""
+        writes no row: the dashboard lists the satellite from its job's run
+        reports, not from a row the check writes."""
         f = self.fixture()
 
         result = f.run("follow", expect=0)
 
         self.assertNotIn("lanes held", result.stdout)
         self.assertEqual([], f.full_updates())
-        self.assertEqual({"hosts": [HOST]}, f.setting("refresh.satellites"))
         self.assertIsNone(f.result())
+        self.assertEqual("0", f.call("print(connect(db).execute(\"SELECT count(*) FROM setting WHERE key LIKE 'refresh.%'\").fetchone()[0])").strip())
 
     def test_an_unreadable_request_fails_and_runs_nothing(self):
         """NEW. Failures: a request row that does not read is unknown, not
@@ -288,10 +288,16 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual([], f.full_updates())
 
     def test_document_reads_each_satellite_state(self):
-        """NEW. The dashboard's read: the request, and each listed host as
-        never, pending, running or done; a row that does not read is unread."""
+        """NEW. The dashboard's read: the request, and each host whose
+        repo-sync-follow job reported a run (the newest run per host that
+        cron-jobs records), as never, pending, running or done, with that
+        run's end; a row that does not read is unread. The reading host and
+        other jobs are not listed."""
         f = self.fixture()
-        f.put("refresh.satellites", {"hosts": ["alpha", "beta-2", "gamma", "delta"]})
+        for key in [f"cron-chain:repo-sync-follow@{h}" for h in ("gamma", "alpha", "delta", "beta-2", HOST)] + [
+                "cron-chain:nightly-sync@omega", "cron-report:repo-sync-follow"]:
+            f.call("writes.record_state(connect(db), 'heartbeat', key=values['key'], "
+                   "body={'run_id': 'r1', 'ended': '2026-10-18T20:05:00Z', 'item': None})", key=key)
         wanted = f.ask()
         f.put("refresh.result.beta_2", {"request": "old", "state": "done", "exit": 0})
         f.put("refresh.result.gamma", {"request": wanted, "state": "running", "attempt": 1})
@@ -300,8 +306,9 @@ class RefreshTest(unittest.TestCase):
         doc = json.loads(f.call("print(json.dumps(sr.document(connect(db))))"))
 
         self.assertEqual(wanted, doc["request"]["id"])
-        self.assertEqual([("alpha", "never"), ("beta-2", "pending"), ("gamma", "running"), ("delta", "unread")],
+        self.assertEqual([("alpha", "never"), ("beta-2", "pending"), ("delta", "unread"), ("gamma", "running")],
                          [(row["host"], row["state"]) for row in doc["satellites"]])
+        self.assertEqual({"2026-10-18T20:05:00Z"}, {row["followed"] for row in doc["satellites"]})
 
     def test_host_keys_are_setting_keys(self):
         """NEW. A host name with a hyphen or a leading digit still makes a valid setting key."""

@@ -26,8 +26,8 @@ source guarded on its own so one that fails is a reason and not an empty list
   and `last_request`, the last retry or cancel the page or the CLI sent and
   what launchctl answered, as v1 Operations > Jobs showed it.
 - `satellites`: `local-repo-sync/satellite_refresh.py`'s `document`, the
-  last Refresh satellites request and each satellite's result for it
-  (sd:5108).
+  last Refresh satellites request and each satellite's result for it; the
+  satellites are the hosts whose `repo-sync-follow` job reported a run (sd:5108).
 
 Each repo also carries the overview's columns (sd:1629): its required checks
 and `strict` from the protection reading, and `runtimes`, the Python and Node

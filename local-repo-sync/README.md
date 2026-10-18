@@ -304,10 +304,10 @@ setting row in the hub's workflow database, `refresh.request`, with a new id.
 Every satellite answers it on its next `follow` run; nothing runs SSH. The
 rows and the verbs that read and write them are `satellite_refresh.py`.
 
-1. `follow` asks `satellite_refresh.py check`. The check adds this host to
-   `refresh.satellites`, so the dashboard lists it, and says whether the
-   request is answered. A request this host's `refresh.result.<host>` row
-   does not name as done is pending.
+1. `follow` asks `satellite_refresh.py check` whether the request is
+   answered. A request this host's `refresh.result.<host>` row does not name
+   as done is pending. The dashboard lists each host whose
+   `repo-sync-follow` job reported a run to the workflow database.
 2. A pending request drains the lanes even at the hub's pin. With the lanes
    held, `follow` runs as above, then this checkout's
    `machine-setup.sh update --apply`, bounded at 1200 s.

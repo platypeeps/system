@@ -111,16 +111,20 @@ class TheDocument(ScreenCase):
         self.assertEqual(self.document()["satellites"], {"request": None, "satellites": []})
         sr = management_screen._satellite_refresh()
         asked = management_screen.refresh_satellites(self.connection)
+        # The hosts are those whose repo-sync-follow job reported a run (cron-jobs' newest run per host).
+        for host in ("sat-b", "sat-a"):
+            writes.record_state(self.connection, "heartbeat", key=f"cron-chain:repo-sync-follow@{host}",
+                                body={"run_id": "r1", "ended": "2026-10-18T20:05:00Z", "item": None})
         self.assertEqual(sr.check(self.connection, "sat-a"), (sr.PENDING, asked["id"], 1))
         sr.finish(self.connection, "sat-a", asked["id"], 1, 0, "machine-setup", "done: 0 failures")
-        sr.check(self.connection, "sat-b")
         satellites = self.document()["satellites"]
         self.assertEqual(satellites["request"], asked)
         rows = {row["host"]: row for row in satellites["satellites"]}
         self.assertEqual((rows["sat-a"]["state"], rows["sat-a"]["result"]["exit"], rows["sat-a"]["result"]["line"]),
                          ("done", 0, "done: 0 failures"))
-        self.assertEqual(rows["sat-b"]["state"], "never")
-        writes.set_setting(self.connection, sr.INDEX, "not json")
+        self.assertEqual((rows["sat-b"]["state"], rows["sat-b"]["followed"]), ("never", "2026-10-18T20:05:00Z"))
+        self.assertEqual(["sat-a", "sat-b"], [row["host"] for row in satellites["satellites"]])
+        writes.set_setting(self.connection, sr.REQUEST, "not json")
         doc = self.document()
         self.assertIsNone(doc["satellites"])
         self.assertIn("Expecting value", doc["sources"]["satellites"])

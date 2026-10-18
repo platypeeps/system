@@ -10,9 +10,10 @@ runs `machine-setup.sh update --apply`, and writes `start` before that and
 hub over the tailnet (`sd_db.remote`); nothing here runs SSH.
 
 One request serves every satellite: the hub holds no list of them, so it
-could not address one row per host before a satellite answered. Each
-satellite adds its host to `refresh.satellites` on its first check, so the
-dashboard can list a satellite before its first result.
+could not address one row per host before a satellite answered. The
+dashboard lists the hosts whose follow job reported a run: cron-jobs records
+each job's newest run per host as the heartbeat `cron-chain:<job>@<host>`
+(the pack's `reporting.CHAIN_KEY`), a clean run too.
 
 A result row says `running` from `start` until `finish`. A row still
 `running` for the request at the next check is a run that was stopped (the
@@ -37,8 +38,9 @@ import socket
 import sys
 
 REQUEST = "refresh.request"
-INDEX = "refresh.satellites"
 RESULT = "refresh.result."
+#: The cron job that runs `repo-sync.sh follow` on each satellite (local-cron-jobs/examples/repo-sync-follow.job).
+JOB = "repo-sync-follow"
 #: Runs per request: a second one finishes what a stopped first one began.
 ATTEMPTS = 2
 #: The longest last line a result keeps.
@@ -87,16 +89,34 @@ def request(connection):
     return value
 
 
-def document(connection):
-    """The request, and each listed satellite with its last result and its state for that request.
+def _followed(connection):
+    """`{host: end of its newest follow run}` for each host but this one whose `JOB` reported a run."""
+    from sd_db import reporting
 
+    prefix = f"{reporting.CHAIN_KEY}{JOB}@"
+    ended = {}
+    for key, body in connection.execute("SELECT key, body FROM state WHERE kind='heartbeat'"
+                                        " AND substr(key, 1, ?) = ? ORDER BY id", (len(prefix), prefix)):
+        try:
+            ended[key[len(prefix):]] = json.loads(body).get("ended")
+        except (TypeError, ValueError, AttributeError):
+            ended[key[len(prefix):]] = None
+    # The reader is the hub: a follow run there answers no request.
+    ended.pop(this_host(), None)
+    return ended
+
+
+def document(connection):
+    """The request, and each satellite with its last follow run, its last result and its state for that request.
+
+    The satellites are the hosts whose `JOB` reported a run (`_followed`).
     `state` is `never` (no result yet), `pending` (its result answers an
     older request), `running` or `done`; a row that does not read is
-    `unread` with its reason. A failed read of the index or the request raises.
+    `unread` with its reason. A failed read of the request raises.
     """
-    held = _read(connection, [REQUEST, INDEX])
-    wanted = _parse(REQUEST, held[REQUEST])
-    hosts = (_parse(INDEX, held[INDEX]) or {}).get("hosts") or []
+    wanted = _parse(REQUEST, _read(connection, [REQUEST])[REQUEST])
+    followed = _followed(connection)
+    hosts = sorted(followed)
     rows = []
     results = _read(connection, [host_key(host) for host in hosts]) if hosts else {}
     for host in hosts:
@@ -104,7 +124,8 @@ def document(connection):
         try:
             result = _parse(key, results[key])
         except ValueError as error:
-            rows.append({"host": host, "state": "unread", "reason": str(error), "result": None})
+            rows.append({"host": host, "state": "unread", "reason": str(error), "result": None,
+                         "followed": followed[host]})
             continue
         if result is None:
             state = "never"
@@ -112,21 +133,17 @@ def document(connection):
             state = "pending"
         else:
             state = result.get("state") if result.get("state") in ("running", "done") else "unread"
-        rows.append({"host": host, "state": state, "reason": "", "result": result})
+        rows.append({"host": host, "state": state, "reason": "", "result": result, "followed": followed[host]})
     return {"request": wanted, "satellites": rows}
 
 
 def check(connection, host):
-    """`(PENDING, request, attempt)` or `(NONE, None, 0)`; adds `host` to the index first when it is missing."""
-    from sd_db import database, writes
+    """`(PENDING, request, attempt)` or `(NONE, None, 0)`."""
+    from sd_db import database
 
     key = host_key(host)
     with database.transaction(connection):
-        held = _read(connection, [REQUEST, INDEX, key])
-        index = _parse(INDEX, held[INDEX]) or {}
-        hosts = index.get("hosts") or []
-        if host not in hosts:
-            writes.set_setting(connection, INDEX, json.dumps({"hosts": [*hosts, host]}), before=held[INDEX])
+        held = _read(connection, [REQUEST, key])
         wanted = _parse(REQUEST, held[REQUEST])
         result = _parse(key, held[key]) or {}
         if result.get("host", host) != host:
