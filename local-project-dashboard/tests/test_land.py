@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -283,9 +284,182 @@ class Resume(Fixture, ScreenCase):
         git("-C", str(path), "branch", f"land/sd-{item}", "HEAD")
         (path / "README").write_text("ahead\n")
         git("-C", str(path), "commit", "-qam", "more")
+        status, body = self.preview(path, str(item))
+        self.assertEqual(status, 409, body)
+        self.assertIn("another landing", body["error"])
+
+
+class TreeState(Fixture, ScreenCase):
+    """Land ships the working files, so every other view of the tree must agree with them or Land refuses first:
+    staged content the working file does not hold, an unmerged path, a merge in progress, an item with no work."""
+
+    def checkout_on(self, mode: str, item: int, name: str = "alpha") -> Path:
+        path = self.checkout(name)
+        if mode == "in place":
+            git("-C", str(path), "switch", "-q", "-c", f"sd-{item}-land")
+        return path
+
+    def test_a_staged_change_the_working_file_reverted_is_refused_and_kept_in_both_modes(self):
+        item = self.item("Land button")
+        for mode, name in (("branch", "alpha"), ("in place", "beta")):
+            with self.subTest(mode=mode):
+                path = self.checkout_on(mode, item, name)
+                (path / "README").write_text("staged\n")
+                git("-C", str(path), "add", "README")
+                (path / "README").write_text("r\n")
+                status, body = self.preview(path, str(item))
+                self.assertEqual(status, 409, body)
+                self.assertIn("README", body["error"])
+                self.assertEqual(git("-C", str(path), "show", ":README"), "staged")
+                git("-C", str(path), "add", "README")
+                self.assertEqual(self.preview(path, str(item))[0], 409, "the index now matches HEAD: nothing to land")
+
+    def test_a_staged_delete_with_the_file_still_on_disk_is_refused(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        git("-C", str(path), "rm", "-q", "--cached", "README")
+        status, body = self.preview(path, str(item))
+        self.assertEqual(status, 409, body)
+        self.assertIn("README", body["error"])
+
+    def test_a_partly_staged_file_lands_once_the_index_and_the_file_agree(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        (path / "README").write_text("staged\n")
+        git("-C", str(path), "add", "README")
+        (path / "README").write_text("staged\nand more\n")
+        self.assertEqual(self.preview(path, str(item))[0], 409)
+        git("-C", str(path), "add", "README")
         found = self.preview(path, str(item))
-        with self.assertRaisesRegex(ValueError, "another landing"):
-            self.land(path, str(item), found["revision"])
+        self.assertTrue(self.land(path, str(item), found["revision"])["ok"])
+        self.assertEqual(git("-C", str(path), "show", f"land/sd-{item}:README"), "staged\nand more")
+
+    def test_an_unmerged_path_or_a_merge_in_progress_is_refused(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        git("-C", str(path), "switch", "-q", "-c", "other")
+        (path / "README").write_text("other\n")
+        git("-C", str(path), "commit", "-qam", "other")
+        git("-C", str(path), "switch", "-q", "main")
+        (path / "README").write_text("main\n")
+        git("-C", str(path), "commit", "-qam", f"main (sd:{item})")
+        subprocess.run(["git", "-C", str(path), "merge", "-q", "other"], capture_output=True, check=False)
+        status, body = self.preview(path, str(item))
+        self.assertEqual(status, 409, body)
+        self.assertIn("merge", body["error"])
+        (path / "README").write_text("both\n")
+        git("-C", str(path), "add", "README")
+        status, body = self.preview(path, str(item))
+        self.assertEqual(status, 409, body)
+        self.assertIn("MERGE_HEAD", body["error"])
+
+    def test_a_staged_rename_lands_as_one_delete_and_one_add(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        git("-C", str(path), "mv", "lib/a.txt", "lib/b.txt")
+        found = self.preview(path, str(item))
+        self.assertEqual(found["groups"][0]["paths"], ["lib/a.txt", "lib/b.txt"])
+        self.assertTrue(self.land(path, str(item), found["revision"])["ok"])
+        tree = Path(found["worktree"])
+        self.assertEqual(((tree / "lib" / "a.txt").exists(), (tree / "lib" / "b.txt").read_text()), (False, "a\n"))
+        self.assertEqual(git("-C", str(path), "status", "--porcelain"), "")
+
+    def test_an_item_that_takes_no_path_and_no_commit_names_is_refused(self):
+        path = self.checkout()
+        one, two = self.item("Land button", repo=str(path)), self.item("Docs", repo=str(path))
+        (path / "lib" / "a.txt").write_text("changed\n")
+        status, body = self.preview(path, f"{one}; {two}: docs/")
+        self.assertEqual(status, 409, body)
+        self.assertIn(f"sd:{two} takes no changed path", body["error"])
+
+    def test_a_file_staged_apart_before_the_restore_is_kept(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        (path / "lib" / "a.txt").write_text("changed\n")
+        found = self.preview(path, str(item))
+        real = land._restore
+
+        def staged(where, head, tip, names):
+            (path / "lib" / "a.txt").write_text("staged\n")
+            git("-C", str(path), "add", "lib/a.txt")
+            (path / "lib" / "a.txt").write_text("changed\n")
+            return real(where, head, tip, names)
+        with patch.object(land, "_restore", side_effect=staged):
+            answer = self.land(path, str(item), found["revision"])
+        self.assertEqual(answer["kept"], ["lib/a.txt"])
+        self.assertEqual(git("-C", str(path), "show", ":lib/a.txt"), "staged")
+
+    def test_a_file_staged_apart_before_the_in_place_ref_moves_lands_nothing(self):
+        item = self.item("Land button")
+        path = self.checkout_on("in place", item)
+        head = git("-C", str(path), "rev-parse", "HEAD")
+        (path / "lib" / "a.txt").write_text("changed\n")
+        found = self.preview(path)
+        real = land._commit_chain
+
+        def staged(*args):
+            made = real(*args)
+            (path / "README").write_text("staged\n")
+            git("-C", str(path), "add", "README")
+            (path / "README").write_text("r\n")
+            return made
+        with patch.object(land, "_commit_chain", side_effect=staged):
+            with self.assertRaisesRegex(ValueError, "README"):
+                self.land(path, found["spec"], found["revision"])
+        self.assertEqual(git("-C", str(path), "rev-parse", "HEAD"), head)
+        self.assertEqual(git("-C", str(path), "show", ":README"), "staged")
+
+
+class ResumeEvidence(Fixture, ScreenCase):
+    """A land branch is resumed only when it holds every current change and names every item, and the lane has not
+    merged it already: the branch existing is not evidence of the same landing."""
+
+    def refused_once(self, path: Path, spec: str) -> dict:
+        found = self.preview(path, spec)
+        self.lane({"ok": False, "error": "hub down", "code": "stale_head"}, code=3)
+        self.assertEqual(self.land(path, spec, found["revision"])["lane"]["status"], "not queued")
+        self.lane({"ok": True, "status": "pending", "item": 0})
+        self.argv_log.unlink()
+        return found
+
+    def test_new_work_after_a_refused_enqueue_is_named_and_not_enqueued(self):
+        path = self.checkout()
+        item = self.item("Land button", repo=str(path))
+        (path / "lib" / "a.txt").write_text("changed\n")
+        self.refused_once(path, str(item))
+        (path / "README").write_text("later\n")
+        status, body = self.preview(path, str(item))
+        self.assertEqual(status, 409, body)
+        self.assertIn("README", body["error"])
+        self.assertFalse(self.argv_log.exists())
+
+    def test_a_resume_naming_an_item_no_landing_commit_names_is_refused(self):
+        path = self.checkout()
+        one, two = self.item("Land button", repo=str(path)), self.item("Docs", repo=str(path))
+        (path / "lib" / "a.txt").write_text("changed\n")
+        self.refused_once(path, str(one))
+        status, body = self.preview(path, f"{one}; {two}: docs/")
+        self.assertEqual(status, 409, body)
+        self.assertIn(f"sd:{two} takes no changed path", body["error"])
+
+    def test_a_landing_the_lane_already_merged_is_not_enqueued_again(self):
+        item = self.item("Land button")
+        for name, feature in (("alpha", False), ("beta", True)):
+            with self.subTest(feature=feature):
+                path = self.checkout(name)
+                if feature:
+                    git("-C", str(path), "switch", "-q", "-c", f"sd-{item}-land")
+                (path / "lib" / "a.txt").write_text("changed\n")
+                found = self.preview(path, str(item))
+                answer = self.land(path, str(item), found["revision"], claim="associate-only")
+                body = {"id": name, "item": item, "worktree": found["worktree"], "branch": answer["branch"],
+                        "status": "merged", "head": answer["head"], "repository": f"example/{name}"}
+                self.connection.execute("INSERT INTO state(kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                                        (f"lane:v1:example/{name}:{name}", "2026-10-18T20:00:00Z", json.dumps(body)))
+                self.connection.commit()
+                status, body = self.preview(path, str(item))
+                self.assertEqual(status, 409, body)
+                self.assertIn("already merged", body["error"])
 
 
 class FeatureBranch(Fixture, ScreenCase):

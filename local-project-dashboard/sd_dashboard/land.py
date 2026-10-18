@@ -27,6 +27,11 @@ A run that stopped after step 1 left only objects: nothing to undo. One that sto
 made is resumed: the preview names it, and Land skips step 1, adds the worktree if it is missing, restores what still
 matches, moves the default branch back if it still holds the commits, and enqueues. An enqueue the lane refused (exit 3
 with a refusal) left the commits; the answer says so and a second Land enqueues again.
+
+Land reads the files, so it refuses first where another view of the tree disagrees with them (`_settled`): a staged
+version the file no longer holds, an unmerged path, a merge or rebase in progress. A resume needs evidence that the
+branch is this landing: it holds HEAD and every current change, and the lane has not merged it. Every item must take a
+path or be named by a commit the lane gets, or the lane would take an item with nothing landed.
 """
 
 from __future__ import annotations
@@ -51,6 +56,8 @@ CLAIMS = ("deliver", "associate-only")
 #: Status output whose shape no config changes, as sd-ship's cleanup pins it.
 PINNED = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "status.showUntrackedFiles=all",
           "-c", "core.quotePath=false")
+#: What an operation in progress leaves in the git dir; a commit over it would drop the operation's own state.
+BUSY = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
 
 
 class Unknown(Exception):
@@ -115,6 +122,34 @@ def _changes(path: Path) -> list[str]:
             found.append(fields[index])
             index += 1
     return sorted(set(found))
+
+
+def _z(path: Path, *args: str) -> list[str]:
+    return [name for name in _git(path, *PINNED, *args).stdout.split("\0") if name]
+
+
+def _settled(path: Path, depth: int) -> None:
+    """Refuse a tree whose index or git dir holds work its files do not: Land ships the files, then refreshes the index.
+
+    A staged version the file no longer holds, a staged delete of a file still on disk, an unmerged path or an
+    operation in progress would be lost or committed over. An index that is the whole tree of one of the `depth`
+    commits before HEAD holds nothing new: an in-place Land stopped before `reset -q` left it.
+    """
+    unmerged = sorted(set(_z(path, "diff", "--name-only", "-z", "--diff-filter=U")))
+    if unmerged:
+        raise ValueError(f"{', '.join(unmerged[:6])}: unmerged; finish or abort the merge first. Nothing was landed.")
+    busy = [name for name in BUSY if (path / _out(path, "rev-parse", "--git-path", name)).exists()]
+    if busy:
+        raise ValueError(f"An operation is in progress ({', '.join(busy)}): finish or abort it first. Nothing was landed.")
+    staged = set(_z(path, "diff", "--cached", "--name-only", "-z", "--no-renames"))
+    loose = set(_z(path, "diff", "--name-only", "-z", "--no-renames")) | set(_z(path, "ls-files", "-z", "--others",
+                                                                                "--exclude-standard"))
+    apart = sorted(staged & loose)
+    if apart and _out(path, "write-tree") not in _out(path, "log", f"-{depth}", "--skip=1", "--format=%T", "HEAD").split():
+        names = " ".join(apart[:6])
+        raise ValueError(f"The index and the file differ for {names}: Land ships the files, so the staged version would "
+                         f"be lost. git add -- {names} lands the files; git restore --staged -- {names} drops the staged "
+                         "version. Nothing was landed.")
 
 
 def _assign(groups: list[tuple[int, list[str]]], changed: list[str]) -> tuple[dict[int, list[str]], list[str]]:
@@ -187,15 +222,42 @@ def _read(connection, key: str, spec: str | None) -> dict:
         groups = []
     first = groups[0][0] if groups else None
     land_branch, worktree = _names(path, first) if first else (None, None)
-    resume = bool(on_default and land_branch and _ref(path, f"refs/heads/{land_branch}"))
-    facts.update(mode="resume" if resume else "branch" if on_default else "in place",
+    tip = _ref(path, f"refs/heads/{land_branch}") if on_default and land_branch else None
+    resume = bool(tip)
+    facts.update(mode="resume" if resume else "branch" if on_default else "in place", tip=tip,
                  land_branch=land_branch if on_default else branch, worktree=str(worktree) if on_default and worktree else str(path))
+    _settled(path, max(1, len(groups)))
     if not changed and not commits and not resume:
         raise ValueError(f"{key} has no uncommitted change and no commit that origin/{default} lacks: nothing to land.")
     if not groups:
         facts.update(groups=[], left=changed, titles={})
         return facts
+    if resume:
+        # The branch existing is not evidence of this landing: it must hold HEAD and every current change.
+        if _git(path, "merge-base", "--is-ancestor", head, tip, check=False).returncode != 0:
+            raise ValueError(f"{land_branch} does not hold this checkout's HEAD {head[:12]}; it is another landing. "
+                             f"Remove it or name another item first. Nothing was landed.")
+        later = [name for name in changed if not _matches(path, tip, name)]
+        if later:
+            raise ValueError(f"{', '.join(later[:6])} changed after {land_branch} was made, and Land enqueues that branch "
+                             f"as it is. Set them aside (git stash -u), Land, then land them under another item. "
+                             f"Nothing was landed.")
+    shipped = tip if resume else head if facts["mode"] == "in place" and not changed else None
+    if shipped:
+        from .health_collectors import merged_heads
+
+        if (os.path.realpath(facts["worktree"]), shipped) in merged_heads(connection):
+            raise ValueError(f"The lane already merged {shipped[:12]} from {facts['worktree']}: remove "
+                             f"{facts['land_branch']} (Health > Checkouts) before Land runs for it again. Nothing was landed.")
     assigned, left = _assign(groups, changed if not resume else [])
+    # An item with no path and no commit naming it would be closed by the lane with nothing landed.
+    named = {int(n) for n in COMMIT_REF.findall(_out(path, "log", "--format=%B", f"{origin}..{tip or head}"))}
+    if facts["mode"] == "in place":
+        named |= {int(n) for n in BRANCH_REF.findall(branch)}
+    idle = [item for item, _ in groups if not assigned[item] and item not in named]
+    if idle:
+        raise ValueError(f"sd:{idle[0]} takes no changed path and no commit names it, so the lane would take it with "
+                         f"nothing landed. Name only the items with work. Nothing was landed.")
     facts["titles"] = _items(connection, [item for item, _ in groups])
     facts["groups"] = [{"item": item, "title": facts["titles"][item], "paths": assigned[item]} for item, _ in groups]
     facts["left"] = left
@@ -205,7 +267,7 @@ def _read(connection, key: str, spec: str | None) -> dict:
 def revision(facts: dict) -> str:
     """What the preview showed and the write must find again: the checkout, its HEAD, its changes and the plan."""
     subject = [facts["path"], facts["branch"], facts["head"], [c["sha"] for c in facts["commits"]], facts["changed"],
-               facts["spec"], facts["mode"], facts.get("groups", [])]
+               facts["spec"], facts["mode"], facts["tip"], facts.get("groups", [])]
     return hashlib.sha256(json.dumps(subject, sort_keys=True).encode()).hexdigest()
 
 
@@ -299,11 +361,18 @@ def _matches(path: Path, tip: str, name: str) -> bool:
     return _out(path, "hash-object", "--", name) == there.stdout.strip()
 
 
+def _blob(path: Path, rev: str) -> str:
+    """The object `<commit>:<path>` or `:<path>` (the index) names, or "" when there is none."""
+    return _git(path, "rev-parse", "-q", "--verify", rev, check=False).stdout.strip()
+
+
 def _restore(path: Path, head: str, tip: str, names: list[str]) -> tuple[list[str], list[str]]:
-    """Step 2's restore: each landed path back to HEAD in the checkout, only where its file matches the branch."""
+    """Step 2's restore: each landed path back to HEAD in the checkout, only where its file matches the branch and its
+    index entry holds nothing else (HEAD's version or the branch's)."""
     restored, kept = [], []
     for name in names:
-        if not _matches(path, tip, name):
+        if not _matches(path, tip, name) or _blob(path, f":{name}") not in (_blob(path, f"{head}:{name}"),
+                                                                            _blob(path, f"{tip}:{name}")):
             kept.append(name)
             continue
         if _git(path, "cat-file", "-e", f"{head}:{name}", check=False).returncode == 0:
@@ -327,15 +396,13 @@ def land(connection, values: dict):
     done: dict = {"branch": facts["land_branch"], "worktree": facts["worktree"], "mode": facts["mode"], "commits": []}
     try:
         if facts["mode"] == "resume":
-            tip = _ref(path, f"refs/heads/{facts['land_branch']}")
-            if _git(path, "merge-base", "--is-ancestor", head, tip, check=False).returncode != 0:
-                raise ValueError(f"{facts['land_branch']} does not hold this checkout's HEAD {head[:12]}; it is another "
-                                 f"landing. Remove it or name another item first. Nothing was landed.")
+            tip = facts["tip"]
         else:
             made = _commit_chain(path, head, facts["groups"], facts["titles"])
             done["commits"] = made
             tip = made[-1]["sha"] if made else head
             if facts["mode"] == "in place":
+                _settled(path, len(facts["groups"]))  # staged since the read: the index refresh would drop it
                 _git(path, "update-ref", "-m", "land (sd:5104)", f"refs/heads/{facts['branch']}", tip, head)
                 _git(path, "reset", "-q")
             else:
