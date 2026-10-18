@@ -110,7 +110,7 @@ the second column; the third column is free text.
 `make check` runs every suite, and merges gate on it through the local gate
 (`repo.ci=local`): `sd-ship merge` runs it via `sd-check` in a clean worktree of
 the pull request's head and posts `sd/local-gate`, the one required check. It
-needs `python3.14` on `PATH` and fetches the command pack at its pinned SHA
+needs `python3.15` on `PATH` and fetches the command pack at its pinned SHA
 into `.ci/`.
 
 `tests/ci-native.sh` holds the preflight and the `run_suite` lines, which are
