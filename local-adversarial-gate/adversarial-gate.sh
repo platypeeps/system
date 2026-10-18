@@ -164,23 +164,28 @@ ${2:?--set needs KEY=VALUE}"; shift 2 ;;
 }
 
 cmd_run() {
-  repo="" ; outfile="" ; model="" ; effort="" ; effort_given=0 ; timeout="1800" ; pass=""
-  while [ $# -gt 0 ]; do
+  repo="" ; outfile="" ; model="" ; effort="" ; effort_given=0 ; timeout="1800"
+  # The words for `render` (--lens, --set) are rotated to the end of "$@" as
+  # they are met, in order; `n` counts the words not yet read. Until sd:5064
+  # they went through an `eval` of single-quoted words, so a quote in a value
+  # broke the words apart and the shell ran what followed it.
+  n=$#
+  while [ "$n" -gt 0 ]; do
     # `[ $# -ge 2 ]` and not `${2:?}`: that form also rejected an EMPTY value,
     # and did it with the shell's own `2: parameter null or not set`, so
     # `--out ""` never reached the `--out is required` line below (sd:790).
     # An empty value is the flag's fault to report; only the flag as the
     # last word is a missing value.
-    [ "$#" -ge 2 ] || case "$1" in
+    [ "$n" -ge 2 ] || case "$1" in
       --repo|--out|--model|--effort|--timeout) die "run: $1 needs a value" ;;
     esac
     case "$1" in
-      --repo)    repo="$2"; shift 2 ;;
-      --out)     outfile="$2"; shift 2 ;;
-      --model)   model="$2"; shift 2 ;;
-      --effort)  effort="$2"; effort_given=1; shift 2 ;;
-      --timeout) timeout="$2"; shift 2 ;;
-      *) pass="$pass '$1'"; shift ;;
+      --repo)    repo="$2"; shift 2; n=$((n - 2)) ;;
+      --out)     outfile="$2"; shift 2; n=$((n - 2)) ;;
+      --model)   model="$2"; shift 2; n=$((n - 2)) ;;
+      --effort)  effort="$2"; effort_given=1; shift 2; n=$((n - 2)) ;;
+      --timeout) timeout="$2"; shift 2; n=$((n - 2)) ;;
+      *) set -- "$@" "$1"; shift; n=$((n - 1)) ;;
     esac
   done
   [ -n "$repo" ] || die "run: --repo is required"
@@ -196,7 +201,7 @@ cmd_run() {
   esac
   command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH"
   command -v perl >/dev/null 2>&1 || die "perl not found on PATH (it bounds the run)"
-  prompt="$(eval cmd_render $pass)"
+  prompt="$(cmd_render "$@")"
   set -- -s read-only -C "$repo" -o "$outfile" -
   [ -z "$effort" ] || set -- -c "model_reasoning_effort=$effort" "$@"
   [ -z "$model" ] || set -- -m "$model" "$@"
