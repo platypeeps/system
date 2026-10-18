@@ -145,13 +145,13 @@ function drawReader(p, s) {
     s.rows.length ? html`<ul class="srcs">${s.rows.map((r, i) => {
       const head = r.sec !== lastSec ? html`<li class="grp label">${r.sec || r.f}</li>` : ''; lastSec = r.sec;
       return html`${head}<li class="src" data-i="${i}" aria-current="${String(curSource === i)}"${r.cited ? html` data-cited` : ''}${r.key && litKeys.includes(r.key) ? html` data-lit` : ''}>
-        <button type="button"><span class="id" data-grade="${r.id}">${r.id}</span><span class="t">${r.title}<span class="u">${r.c3}</span></span></button>
+        <button type="button"><span class="id" data-grade="${r.grade || r.id}">${r.id}</span><span class="t">${r.title}<span class="u">${r.c3}</span></span></button>
         ${r.cited ? html`<button class="cites" type="button" data-cites="${i}" aria-label="Show the ${plural(r.cited, 'claim')} citing ${r.title}" title="Claims citing it">◆ ${r.cited}</button>` : html`<span></span>`}
         ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}</li>`;
     })}</ul>` : html`<p class="why">No table rows in the ledger: the reader reads Markdown tables.</p>`}${
     // build: the reader does not page; the document carries the first rows and the whole count.
     s.total > s.rows.length ? html`<p class="more">${s.rows.length} of ${s.total} rows shown. Open the ledger in the checkout for the rest.</p>` : ''}`);
-  const grades = {}; s.rows.forEach(r => { if (/^[ABCUM]$/.test(r.id)) grades[r.id] = (grades[r.id] || 0) + 1; });
+  const grades = {}; s.rows.forEach(r => { const g = r.grade || r.id; if (/^[ABCUM]$/.test(g)) grades[g] = (grades[g] || 0) + 1; });
   put(document.getElementById('reader-tally'), html`${['A', 'B', 'C', 'U', 'M'].filter(g => grades[g]).map(g => html`<span>${g} ${grades[g]}</span>`)}<span>${plural(s.total, 'row')}</span>`);
   shell.view.count('sources', s.total);
 }

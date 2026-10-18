@@ -511,7 +511,8 @@ def registry(repo: Path, time_left=None) -> dict:
         for key in claim["keys"]:
             cited[key] = cited.get(key, 0) + 1
     for row in rows:
-        del row["grade"]  # the claims read it; the page shows the row's own cells, so it stays off the print bound
+        if row["grade"] == row["id"] or not row["grade"]:
+            del row["grade"]  # a first-cell grade prints once, as the row's ID; only a Grade column adds the key
         row["key"] = row_key(row)
         row["cited"] = cited.get(row["key"], 0) if row["key"] else 0
     total = len(rows)

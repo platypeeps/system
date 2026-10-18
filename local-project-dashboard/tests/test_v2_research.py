@@ -268,6 +268,7 @@ class TheReader(unittest.TestCase):
         self.assertEqual([(c["text"], c["s"], c["grades"]) for c in found["claims"]],
                          [("S1 holds it.", "supported", "A"), ("S2 says so.", "unverified", "C")])
         self.assertEqual(found["graded"], 2)
+        self.assertEqual([r.get("grade") for r in found["rows"]], ["A", "C"])  # the page tallies and colours by it
 
     def test_a_document_the_claim_reader_skips_is_named_never_an_empty_success(self):
         repo = claimed(self.root)
