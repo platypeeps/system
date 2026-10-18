@@ -2654,8 +2654,9 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              target is named with the commands to run by hand, and follow
              still exits 0. Every check
              runs first: a failed fetch, a tag with no
-             pack= line, uncommitted changes or a drain timeout refuses with
-             nothing moved. When a move fails, each checkout it moved goes
+             pack= line or uncommitted changes refuses with nothing moved;
+             a drain timeout skips with nothing moved and exits 0, and the
+             next run tries again. When a move fails, each checkout it moved goes
              back to its old sha and the pack runs `make setup` again there,
              so the next run retries the pair. A run killed or rolled back
              after it wrote $XDG_STATE_HOME/repo-sync/follow-intent leaves
