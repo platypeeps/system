@@ -78,6 +78,24 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertNotIn("SD_REPORT_ATTENTION", run.stdout)
 
+    def test_a_line_an_earlier_digest_copied_into_a_log_is_not_a_run(self):
+        """sd:5043: a copied line puts the job name where the time goes, and
+        letters sort after "2026", so it counted: weekly-digest showed
+        1 ok / 739 FAILED. Only the log's own [job] lines count."""
+        now = datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        logs = pathlib.Path(self.env["WEEKLY_DIGEST_CRON_LOGS"])
+        (logs / "weekly-digest.log").write_text(
+            f"[weekly-digest] {now} starting (cwd: /)\n"
+            "  2026-08-23T03:27:58-0600 brew-doctor-nightly FAILED rc=1\n"
+            "  2026-08-23T04:41:20-0600 vault-map done\n"
+            f"[weekly-digest] {now} done\n")
+        (logs / "example-job.log").write_text(f"[example-job] {now} FAILED rc=1\n")
+        run = self.digest("check")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        rows = {line.split()[0]: line.split(None, 1)[1] for line in run.stdout.splitlines()
+                if line.startswith("  ") and line.split()[0] in ("weekly-digest", "example-job")}
+        self.assertEqual(rows, {"weekly-digest": "1 ok", "example-job": "0 ok / 1 FAILED"})
+
 
 if __name__ == "__main__":
     unittest.main()
