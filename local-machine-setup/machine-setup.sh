@@ -5895,6 +5895,11 @@ status_stage() {
   # plist is fine but which launchd is not running.
   n=$(printf '%s\n' "$out" | grep -cE 'DIFFERS|MISSING|STALE|ABSENT|UNLOADED|EXTRA|defaults (-currentHost )?write|^  extra ' || :)
   drift=$((drift + ${n:-0}))
+  # In-place drift, each line once: cmd_status asks for attention for it
+  # rather than failing the run (sd:5064).
+  d=$(printf '%s\n' "$out" | grep 'DIFFERS' | sed 's/^ *//' || :)
+  [ -z "$d" ] || differs="$differs$d
+"
 }
 
 # A drift line, printed only when it has something to say. An empty list used
@@ -5908,6 +5913,7 @@ status_line() { # label list
 
 cmd_status() {
   drift=0
+  differs=""
   # No profile directory: nothing to compare, convention 6's 3 and not drift's 1.
   require_config 3
   # Nor is there with no profile recorded (sd:3548).
@@ -6017,8 +6023,15 @@ cmd_status() {
   echo "drift   : $drift item(s)"
   # --fail-on-drift turns drift into exit 1, which is what lets a cron job
   # (as its last step) route "this machine drifted" into a failure report
-  # that Today shows.
-  if [ "$FAIL_ON_DRIFT" -eq 1 ] && [ "$drift" -gt 0 ]; then
+  # that Today shows. In-place drift (DIFFERS: a file edited here, a setting
+  # changed by hand) waits for a person to pick a side, so it failed the
+  # nightly every night until then: 8 of 10 nightly failures (sd:5064). It
+  # prints one SD_REPORT_ATTENTION line per finding instead, with no date, so
+  # the same lines fold into the open report; the rest of the drift is what
+  # the update before it could not fix, and still exits 1.
+  [ "$FAIL_ON_DRIFT" -eq 1 ] || return 0
+  printf '%s' "$differs" | awk -v p="SD_REPORT_ATTENTION: drift on $(hostname -s): " 'NF { print p $0 }'
+  if [ "$drift" -gt "$(printf '%s' "$differs" | grep -c . || :)" ]; then
     exit 1
   fi
 }
@@ -7394,7 +7407,9 @@ for a in "$@"; do
                    a file it changes that git does not hold as it is keeps a
                    dated .bak- copy beside it
   status           drift report: what the profile wants vs what is installed
-                   --fail-on-drift exits 1 when drift exists (for cron)
+                   --fail-on-drift exits 1 when drift exists (for cron);
+                   in-place drift (DIFFERS) prints an SD_REPORT_ATTENTION
+                   line per finding instead and alone exits 0
                    a drift report, not a convention-6 health status: it runs
                    every stage, so the health sweep leaves it out; exit 3
                    when there is no profile directory or no recorded profile
