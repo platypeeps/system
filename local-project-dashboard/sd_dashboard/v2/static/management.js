@@ -594,6 +594,9 @@ function registerCommands() {
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
     { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
+    // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
+    window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }),
+      when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first' }),
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
@@ -822,6 +825,7 @@ document.querySelector('main').addEventListener('click', e => {
 
 // ---------- Details pane ----------
 function defaultDetails() {
+  detailsId = null;
   if (view === 'repos' && repoParam && pending.length && REPOS.some(x => x.path === repoParam)) return showProposals();
   if (view === 'repos') {
     const r = repoParam && REPOS.find(x => x.path === repoParam);
@@ -856,8 +860,11 @@ function logDetail(c) {
   return html`${head}<p class="why">${g.cut ? `The last ${plural(g.text.split('\n').filter(Boolean).length, 'line')} of ` : ''}<span class="mono">${file}</span>, read ${hhmm(READ)} UTC.</p>
     ${g.text ? html`<pre class="code" tabindex="0" aria-label="${c.name} log">${g.text}</pre>` : html`<p class="empty">The log is empty.</p>`}`;
 }
+// sd:5064: an adversarial review's progress redraws the repo's Details while that repo is shown (runKey is the row id).
+let detailsId = null;
+document.addEventListener('adversarial:run', e => { if (detailsId && e.detail.key === detailsId) selectRow(detailsId, false); });
 function selectRow(id, open) {
-  markRow(id);
+  markRow(id); detailsId = id;
   const [kind, key] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
   const act = shell.commands.get(id) ? html`<h3>Act</h3>${shell.commands.bar(id)}` : '';
   let h = '';
@@ -888,7 +895,8 @@ function selectRow(id, open) {
       <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
-        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}`;
+        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
+      ${window.commands.reviewPane('repo', r.path)}`;
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>
