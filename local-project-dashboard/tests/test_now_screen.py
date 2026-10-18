@@ -598,8 +598,9 @@ class FailedJobs(ScreenCase):
         by_id = {row["id"]: row for row in now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"]}
         listed = {job["name"]: job for job in operations.inventory(self.connection, backend=jobs)["jobs"]}
         failed, stopped = by_id["job:nightly-sync:127"], by_id["job:stopped:interrupted9"]
-        self.assertEqual((failed["revision"], failed["exit"], failed["capability"]),
-                         (listed["nightly-sync"]["revision"], 127, {"allowed": True, "reason": ""}))
+        # The capability is the inventory's, whole: the pack adds fields to it (`label`, sd:4982).
+        self.assertEqual((failed["revision"], failed["exit"], failed["capability"]["allowed"], failed["capability"]),
+                         (listed["nightly-sync"]["revision"], 127, True, listed["nightly-sync"]["capabilities"]["retry"]))
         self.assertEqual((stopped["job"], stopped["revision"], stopped["exit"]), ("stopped", listed["stopped"]["revision"], None))
         # No retry, so nothing to bind: an unloaded row carries no revision.
         self.assertNotIn("revision", by_id["job:parked:unloaded"])
