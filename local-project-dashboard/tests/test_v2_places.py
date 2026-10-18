@@ -264,7 +264,10 @@ document.documentElement = { hasAttribute: () => false };
 const SECTIONS = VIEWS.map(([v, label, api]) => Object.assign(El('view-' + v), { dataset: Object.assign({ placeView: v, label }, api ? { api } : {}) }));
 document.querySelectorAll = sel => sel === '[data-place-view]' ? SECTIONS : [];
 const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView);
-const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); };
+// The shell's view switch (shell.js view:start): the first view shows at load, and each change fires 'shell:view'.
+let VIEW = VIEWS[0][0];
+window.shell.view = { current: () => VIEW, show: () => true, count: () => {} };
+const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } })); await flush(); };
 """ + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
@@ -280,14 +283,12 @@ const go = async hash => { location.hash = hash; (WIN_LISTENERS.hashchange || []
                 for view in ("tasks", "briefs", "reports")}
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
-        out = self.run_page("""R.sw = ELS['viewswitch'].html; R.first = shown(); R.gets0 = OUT.gets.slice();
+        out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();
 await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();
 await go('#view=reports'); R.reports = ELS['reports-rows'].html; R.third = shown();""", self.docs())
         r = out["R"]
         self.assertEqual([r["gets0"], r["first"], r["second"], r["gets1"], r["third"]], [[], ["overview"], ["tasks"], [], ["reports"]])
         self.assertEqual(out["gets"], ["/api/hoa/reports"])
-        self.assertEqual(re.findall(r'data-switch="(\w+)" aria-pressed="\w+">(\w+)<', r["sw"]),
-                         [("overview", "Overview"), ("tasks", "Tasks"), ("briefs", "Briefs"), ("reports", "Reports")])
         self.assertIn(f'href="/reports?row=r{self.alarm}"', r["reports"])
 
     def test_the_page_declares_its_views_for_the_shell_before_shell_js(self):
@@ -345,13 +346,13 @@ class TheTasksSwitch(Fixture):
 
     def test_each_view_narrows_the_board_to_its_realm_or_area(self):
         self.doc, self.details = self.realm_doc(), {}
-        body = (f"(0, eval)({json.dumps(PLACES_JS)});\n"
+        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
                 + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush();
-R.first = ELS['view-board'].html; R.sw = ELS['viewswitch'].html;
-for (const v of ['work', 'hoa', 'home', 'all']) { location.hash = '#view=' + v; (WIN_LISTENERS.hashchange || []).forEach(f => f()); await flush(); R[v] = ELS['view-board'].html; }""")
+R.first = ELS['view-board'].html; R.views = window.PAGE_VIEWS.map(v => v.id);
+for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: v } })); await flush(); R[v] = ELS['view-board'].html; }""")
         out = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)
         r = out["R"]
-        self.assertEqual(re.findall(r'data-switch="(\w+)"', r["sw"]), ["personal", "work", "hoa", "home", "all"])
+        self.assertEqual(r["views"], ["personal", "work", "hoa", "home", "all"])
         titles = ("Fix the valve log", "Clean the gutters", "Tune the gate")
         # sd:5064: Personal, the first view, is every row no realm claims: the hoa checkout's and the one with no repo.
         self.assertEqual([t in r["first"] for t in titles], [True, True, False])
