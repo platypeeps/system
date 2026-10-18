@@ -22,6 +22,8 @@ The quoted line in each finding is a line from the diff or the body, with its pa
 
 **6. Tests.** Would each new test fail without the change? A test that passes on the base commit proves nothing about the fix. Name the test and the line that would still pass.
 
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+
 ## Ending
 
 End with one line: should this change merge as it stands, YES or NO. If NO, name the single hypothesis that blocks it.

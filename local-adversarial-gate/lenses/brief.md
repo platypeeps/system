@@ -20,6 +20,8 @@ You see the brief and the repository, not the mail, feeds, pages or tools it was
 
 **6. Unverified passed off as verified.** A summary that reads as settled when its source is a rumour, a draft or a single message. A reader assumes the brief checked what it states.
 
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+
 ## Ending
 
 End with one line: can the reader act on this brief as written, YES or NO. If NO, name the single hypothesis that breaks it.

@@ -23,6 +23,8 @@ The quoted line in each finding is a line from a file, with its path. You see th
 
 **6. Weight.** A duplicated mechanism, dead code or a second way to do one thing that the history shows nobody uses. Name it; do not propose the replacement.
 
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+
 ## Ending
 
 End with one line: can the next maintainer trust this repository's documents and tests, YES or NO. If NO, name the single hypothesis that breaks that trust.

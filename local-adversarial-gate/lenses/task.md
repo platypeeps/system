@@ -22,6 +22,8 @@ You see the item and the repository, not the conversation that produced it. A fi
 
 **6. The cheaper path.** Is there a deletion, a reuse of an existing mechanism, or a smaller change that meets the same need? Name it. Do not design it.
 
+Give each hypothesis a `###` heading of its own: its rank and a short title, such as `### 1. The done check cannot fail`. The dashboard's note names the first three titles.
+
 ## Ending
 
 End with one line: should the item be built as written, YES or NO. If NO, name the single hypothesis that blocks it.

@@ -77,6 +77,14 @@ class TheDashboardLenses(unittest.TestCase):
                 self.assertIn("hypothes", prompt.lower())
                 self.assertIn("## Ending", prompt)
 
+    def test_each_lens_asks_for_a_titled_heading_per_hypothesis(self):
+        # The dashboard's note names the first titles, found by rank.py's heading rule; a real run on gpt-6-astra
+        # wrote its findings as bullets, with no heading to find (sd:5064).
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
+                self.assertIn("Give each hypothesis a `###` heading of its own", prompt)
+
     def test_the_change_lens_names_the_diff_it_reads(self):
         prompt = render("--lens", "change", "--set", "INPUT_PATH=/fixture/input.md", "--set", "BASE=1111111",
                         "--set", "HEAD=2222222")
