@@ -453,7 +453,7 @@ sys.exit(int((lines("rc") or ["0"])[0]))
 
 # A BSD stat that reports SF_DATALESS (0x40000000) for the listed paths.
 FAKE_BSD_STAT = """#!{python}
-import os, sys
+import os, sys, time
 state = os.environ["MS_FAKE"]
 args = sys.argv[1:]
 if args[0] != "-f":
@@ -461,6 +461,9 @@ if args[0] != "-f":
     sys.exit(1)
 fmt, path = args[1], args[-1]
 if fmt == "%Xf":
+    with open(os.path.join(state, "stat.log"), "a") as log:
+        log.write(path + "\\n")
+    time.sleep(float(os.environ.get("MS_STAT_DELAY", "0")))
     with open(os.path.join(state, "dataless")) as f:
         evicted = {{l.rstrip("\\n") for l in f}}
     print("40008060" if path in evicted else "8040")
@@ -512,13 +515,14 @@ class FakeTools(Fixture):
     def state_file(self, name: str, lines: list[str]) -> None:
         (self.state / name).write_text("".join(line + "\n" for line in lines))
 
-    def sync(self) -> subprocess.CompletedProcess:
+    def sync(self, **extra: str) -> subprocess.CompletedProcess:
         environment = dict(
             os.environ,
             MIRROR_SYNC_CONF=str(self.conf),
             MS_FAKE=str(self.state),
             MIRROR_SYNC_MATERIALIZE_WAIT="2",
             PATH=f"{self.work / 'fake-bin'}:{os.environ['PATH']}",
+            **extra,
         )
         for name in ("MIRROR_SYNC_BACKUP_ROOT", "MIRROR_SYNC_ADDITIVE"):
             environment.pop(name, None)
@@ -574,6 +578,22 @@ class EvictedDestination(FakeTools):
         self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
         self.assertIn(f"{self.source} (rsync error)", result.stdout)
         self.assertEqual(len(self.rsync_runs()), 1)
+
+    def test_the_wait_is_bounded_in_seconds_not_in_passes(self) -> None:
+        # sd:5064: each pass stats every pending file, so counting passes let
+        # a long list wait many times MIRROR_SYNC_MATERIALIZE_WAIT. One pass
+        # here takes longer than the 2 s wait: the listing's check and one
+        # pass, then the pair fails.
+        evicted = f"{self.mirror}/vault/.gitignore"
+        self.state_file("changed", ["vault/.gitignore"])
+        self.state_file("dataless", [evicted])
+        self.state_file("stuck", [evicted])
+
+        result = self.sync(MS_STAT_DELAY="2.5")
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"still evicted after 2s: {evicted}", result.stderr)
+        self.assertEqual((self.state / "stat.log").read_text().splitlines(), [evicted, evicted])
 
 
 class EscapedEvictedName(FakeTools):
