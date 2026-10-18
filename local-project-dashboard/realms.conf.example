@@ -1,0 +1,20 @@
+# Tasks' realm views (sd:5064): which checkouts are which part of your life.
+#
+# Copy this file to <config>/project-dashboard/realms.conf and edit it
+# (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system); the lines below
+# are examples. Paths are your own, so the real list stays outside the checkout.
+#
+# Pipe-separated, one glob per line:
+#
+#   realm|<id>|<label>|<glob>
+#
+# <id> is lower case with hyphens, and not personal, hoa, home or all. Each realm
+# is a view on Tasks, after Personal and before HOA, Home and All, in the order
+# of its first line. A task belongs to the first realm with a glob that matches
+# its repo path (* matches across folders; ~ is your home folder). A task with no
+# repo, or a repo no line matches, is Personal; a report is in no realm.
+# Without this file a task in a repo shows only under All, and the page says why.
+
+realm|work|Work|~/repos/example-work/*
+realm|brand|Brand|~/repos/example-brand/*
+realm|brand|Brand|~/repos/brand-site

@@ -10,9 +10,17 @@ window.PAGE_COMMANDS = [
   { label: 'Show the board', icon: 'kanban', key: 'v b', run: tasksView('board') },
   { label: 'Show the matrix', icon: 'grid-2x2', key: 'v m', run: tasksView('matrix') },
 ];
-// build (places): All | HOA | Home filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
-// #viewswitch. Home takes v o (g o opens the Home page), since v h is HOA's.
-window.PAGE_VIEWS = [{ id: 'all', label: 'All' }, { id: 'hoa', label: 'HOA' }, { id: 'home', label: 'Home', key: 'o' }];
+// build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
+// #viewswitch. sd:5064: Personal, then the realms realms.conf names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
+// and All. Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
+// other view, and not the list, board and matrix keys (v l, v b, v m), holds.
+window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  { id: 'hoa', label: 'HOA', key: 'h' }, { id: 'home', label: 'Home', key: 'o' }, { id: 'all', label: 'All', key: 'a' }];
+{
+  const used = new Set(['l', 'b', 'm', ...window.PAGE_VIEWS.map(v => v.key).filter(Boolean)]);
+  window.PAGE_VIEWS.forEach(v => { if (!v.key) { v.key = [...v.id].find(c => /[a-z]/.test(c) && !used.has(c)); used.add(v.key); } });
+}
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   // build: today is the viewer's day, not the mockup's observation day.
@@ -41,14 +49,14 @@ addEventListener('DOMContentLoaded', () => {
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
-    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, real: true });
+    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
-  // build (places): All | HOA | Home, the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule
-  // the HOA and Home pages' Tasks views use, so the HOA and Home views hold their rows.
-  let PLACE = 'all';
-  const inPlace = t => PLACE === 'all' || t.area === PLACE;
+  // build (places): the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule the HOA and Home pages'
+  // Tasks views use, so the HOA and Home views hold their rows; its realm is places.realm_of (sd:5064).
+  let PLACE = 'all', REALMS = null;
+  const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
   const placed = () => listed().filter(inPlace);
   const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
@@ -1004,7 +1012,10 @@ addEventListener('DOMContentLoaded', () => {
   };
   function subhead() {
     const parked = tasks.length - listed().length;
-    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
+    // A realm view without a readable realms.conf holds only the rows with no repo; it says why (sd:5064).
+    const why = REALMS && !['all', 'hoa', 'home'].includes(PLACE) && !['read', 'partial'].includes(REALMS.state)
+      ? ` · repos in no realm: ${REALMS.source} ${REALMS.state === 'missing' ? 'is missing; copy realms.conf.example there' : REALMS.problems[0] || 'was not read'}` : '';
+    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}`);
   }
   // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
   const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
@@ -1158,7 +1169,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null;
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null;
       ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
@@ -1174,6 +1185,6 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
-  document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) render(); }), { once: true });
+  document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) { subhead(); render(); } }), { once: true });
   suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });

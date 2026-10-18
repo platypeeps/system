@@ -131,7 +131,7 @@ class TheRegistry(unittest.TestCase):
         declared = dict(re.findall(r"^window\.(SHELL_\w+) = (.*);$", body, re.M))
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS,
-                          "SHELL_COUNTS": {"pages": {}}})
+                          "SHELL_COUNTS": {"pages": {}}, "SHELL_REALMS": []})
 
     def test_each_page_names_its_item(self):
         for page in registry().PAGES:

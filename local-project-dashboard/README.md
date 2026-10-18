@@ -708,7 +708,7 @@ first two learned the hard way on 2026-08-28 when the page sat on
 
 | Variable | Default |
 | --- | --- |
-| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, and the cron job files Toolbox reads from `cron-jobs/jobs` |
+| `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, `project-dashboard/realms.conf` (the Tasks realm views; copy `realms.conf.example`), and the cron job files Toolbox reads from `cron-jobs/jobs` |
 | `CRON_JOBS_EXTRA_DIRS` | none — further job directories Toolbox reads, as `cron-jobs.sh` does |
 | `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
 | `SD_DASHBOARD_PYTHON` | command pack `.venv/bin/python`; runs `serve`, `preflight`, `install`, `health` and `grants`, and so the tiles a Resources view renders |

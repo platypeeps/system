@@ -988,10 +988,12 @@ class Dashboard(BaseHTTPRequestHandler):
         Unversioned and never cached, since the badges change. A request without a session gets the map alone: the
         badges are workflow state, and a page on another site that loads this script sends no cookie (SameSite).
         """
-        from . import v2
+        from . import places, v2
 
-        badges = {}
+        badges, realms = {}, []
         if self._session(context):
+            # The realm labels are the operator's own (realms.conf), so a request without a session gets none.
+            realms = places.realms()["list"]
             try:
                 connection = sd_db.connect(self.database, write=False)
             except (FileNotFoundError, SdDbError, sqlite3.Error):
@@ -1002,7 +1004,7 @@ class Dashboard(BaseHTTPRequestHandler):
             finally:
                 if connection is not None:
                     connection.close()
-        self._send(200, v2.sections(badges), "text/javascript; charset=utf-8")
+        self._send(200, v2.sections(badges, realms), "text/javascript; charset=utf-8")
 
     def _json(self, status, value):
         # sd:874. `value` is usually a `workflow.item_state` readback, which
