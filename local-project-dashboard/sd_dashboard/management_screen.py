@@ -9,6 +9,10 @@ source guarded on its own so one that fails is a reason and not an empty list
   `.github/sd-review.json` read from disk and the protection reading
   `protection.rows` gives v1 /protection (the nightly collector's; nothing
   here calls GitHub).
+- `pulls`: each GitHub repository's open pull requests, by lower-cased
+  `owner/name`, from the shadow rows `sd shadow sync` keeps
+  (`progress.tracker_items`, as Trackers reads them): the repo row's
+  Adversarial review: PR picks one (sd:5100). Nothing here calls GitHub.
 - `git`: `fleet.collect("repos")`, v1 Operations > Repos, each row with
   `repos_screen.primary`'s state, headline, detail and remedy. Nothing fetches
   or pulls.
@@ -53,7 +57,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sd_db import channels, database, operations, protection, reads, repos, workflow
+from sd_db import channels, database, operations, progress, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
 from . import fix_session
@@ -254,6 +258,19 @@ def _repos(connection) -> list[dict]:
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
+    return out
+
+
+def _pulls(connection) -> dict:
+    """`owner/name` lower-cased -> its open pull requests, newest seen first, as `sd shadow sync` last saw them."""
+    out: dict = {}
+    for row in progress.tracker_items(connection, tracker="github"):
+        tail = (row["url"] or "").rpartition("/")[2]
+        number = row["number"] if type(row["number"]) is int else int(tail) if tail.isdigit() else None
+        if (row["kind"] or "") != "pull" or not row["repo"] or number is None:
+            continue
+        out.setdefault(row["repo"].lower(), []).append(
+            {"number": number, "title": row["title"] or "", "author": row["author"] or "", "url": row["url"]})
     return out
 
 
@@ -482,6 +499,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
     read = fleet or fleet_module.collect
     out: dict = {"read": now, "sources": {}}
     for source, collect in (("repos", lambda: _repos(connection)),
+                            ("pulls", lambda: _pulls(connection)),
                             ("git", lambda: _git(read, now)),
                             ("lane", lambda: _lane(connection)),
                             ("assignments", lambda: _assignments(connection)),

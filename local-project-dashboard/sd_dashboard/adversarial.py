@@ -9,19 +9,28 @@ wrote the work: codex, at the model and effort `<config>/adversarial-gate/.env` 
   repo    a registered repository, by its key or its path.
   change  a checkout directory, a worktree or a clone of a registered repository. Optional: `base`, the ref it is
           compared with (default `origin/HEAD`, then `origin/main`, then `main`); `item`, the item it belongs to; and
-          `body`, the file holding its pull-request body.
+          `body`, the file holding its pull-request body. With `pr`, a number (sd:5100), the target is a registered
+          repository and the change is that open pull request: it must be open in that repository's GitHub slug as
+          `sd shadow sync` last saw it, and its head is `refs/pull/<pr>/head` as `git ls-remote origin` names it. The
+          head commit must already be in the checkout: the dashboard fetches nothing, and a refusal names the fetch.
+  deep    a registered repository, reviewed by headless claude rather than codex (sd:5100): `lenses/deep.md` has the
+          lead fan out read-only sub-agents, one per area, then verify and rank what they find. Its model, effort and
+          bound are `DEEP_MODEL`, `DEEP_EFFORT` and `DEEP_TIMEOUT_MINUTES` in the same `.env`, else `DEEP_MODEL` at
+          `DEEP_EFFORT` for `DEEP_MINUTES`. Its lock is the repository's own, so one deep review runs per repository.
 
 `start` runs in the POST, in four steps, and answers 202 at once:
 
-1. The lock, `<state>/lock`, taken without waiting: a second run while one holds it is a 409 naming the run.
-2. The target, resolved to a checkout, its registered repository and the lens's inputs.
+1. The target, resolved to a checkout, its registered repository and the lens's inputs.
+2. The lock, taken without waiting: `<state>/lock` for a codex review, `<state>/deep-<checkout hash>.lock` for a deep
+   one. A second run while one holds it is a 409 naming the run.
 3. The run's state file, `<state>/runs/<id>.json`, as `queued`, with the item's or the change's text beside it as
    `<id>.input.md`. Codex writes its result beside them as `<id>.md`.
 4. This file as a script, in a session of its own, holding the lock's descriptor: the lock is released only when
-   the runner and every process under it have exited, so nothing runs codex beside it.
+   the runner and every process under it have exited, so nothing runs codex beside it, and no second deep review
+   reads the same repository.
 
-The runner (`run`) marks the run `running`, runs `adversarial-gate.sh run`, bounded by the gate at `TIMEOUT` (exit
-124) and here at `TIMEOUT + GRACE`, and marks it `done` or `failed` with the reason. It then files the outcome in the
+The runner (`run`) marks the run `running`, runs `adversarial-gate.sh run` (`deep` for a deep review), bounded by
+the gate at the run's timeout (exit 124) and here at that timeout plus `GRACE`, and marks it `done` or `failed` with the reason. It then files the outcome in the
 database the server reads, in one transaction, as the operator asked in note #22943 on sd:5064:
 
 - Each titled hypothesis is a recommendation: one Approve-or-Reject question in a review batch (`sd_db.review`,
@@ -46,6 +55,7 @@ from __future__ import annotations
 
 import datetime
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -56,23 +66,30 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ["EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT", "recommendations", "request", "run",
-           "start", "status"]
+__all__ = ["DEEP_EFFORT", "DEEP_MINUTES", "DEEP_MODEL", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT",
+           "recommendations", "request", "run", "start", "status"]
 
 #: This repository's checkout: a brief that names no repository is reviewed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
 GATE = CHECKOUT / "local-adversarial-gate" / "adversarial-gate.sh"
 RANK = CHECKOUT / "local-adversarial-gate" / "rank.py"
-KINDS = ("task", "brief", "repo", "change")
+KINDS = ("task", "brief", "repo", "change", "deep")
 #: The model and effort when `<config>/adversarial-gate/.env` names none.
 MODEL = "gpt-6-astra"
 EFFORT = "high"
 #: The gate's bound on codex, in seconds; the runner's own bound on the gate is `GRACE` longer.
 TIMEOUT = 1800
+#: A deep review's model, effort and bound in minutes when the `.env` names none: the claude CLI's alias for the
+#: latest Opus, and the highest effort `claude --effort` takes.
+DEEP_MODEL = "opus"
+DEEP_EFFORT = "max"
+DEEP_MINUTES = 90
 GRACE = 60
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
 GIT_SECONDS = 10
+#: The bound on `git ls-remote origin`, which asks the remote for a pull request's head.
+REMOTE_SECONDS = 20
 #: Hypotheses whose titles the note names.
 TOP = 3
 #: The longest pull-request body read into the input file, in bytes.
@@ -88,7 +105,7 @@ TITLE_CHARS = 120
 WHY_BYTES = 3000
 EVIDENCE_CHARS = 300
 EVIDENCE_LINES = 5
-RUN_ID = re.compile(r"(task|brief|repo|change)-[A-Za-z0-9._-]{1,60}-[0-9]{8}T[0-9]{6}Z")
+RUN_ID = re.compile(r"(task|brief|repo|change|deep)-[A-Za-z0-9._-]{1,60}-[0-9]{8}T[0-9]{6}Z")
 REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 #: A line the lenses ask for under each hypothesis, bulleted or bold or neither.
 TAG = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*)?(Recommendation|Evidence|Repo)(?:\*\*)?\s*:(?:\*\*)?\s*(.*?)\s*$", re.IGNORECASE)
@@ -108,17 +125,29 @@ def state_dir() -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / "adversarial-gate"
 
 
-def settings() -> tuple[str, str]:
-    """The model and effort: exported, else `<config>/adversarial-gate/.env`, else `MODEL` and `EFFORT`."""
+def settings(kind: str = "task") -> tuple[str, str, int]:
+    """The model, effort and timeout in seconds: exported, else `<config>/adversarial-gate/.env`, else the defaults.
+
+    A codex review reads `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT` and runs for `TIMEOUT`; a deep review reads
+    `DEEP_MODEL`, `DEEP_EFFORT` and `DEEP_TIMEOUT_MINUTES`. A bound that is not whole minutes is refused, not guessed.
+    """
     lib = str(CHECKOUT / "lib")
     if lib not in sys.path:
         sys.path.insert(0, lib)
     import system_tools_config
 
     saved = system_tools_config.read_env("adversarial-gate")
-    model = system_tools_config.setting("ADVERSARIAL_MODEL", saved) or MODEL
-    effort = system_tools_config.setting("ADVERSARIAL_EFFORT", saved) or EFFORT
-    return model, effort
+    if kind != "deep":
+        model = system_tools_config.setting("ADVERSARIAL_MODEL", saved) or MODEL
+        effort = system_tools_config.setting("ADVERSARIAL_EFFORT", saved) or EFFORT
+        return model, effort, TIMEOUT
+    model = system_tools_config.setting("DEEP_MODEL", saved) or DEEP_MODEL
+    effort = system_tools_config.setting("DEEP_EFFORT", saved) or DEEP_EFFORT
+    minutes = system_tools_config.setting("DEEP_TIMEOUT_MINUTES", saved) or str(DEEP_MINUTES)
+    if not re.fullmatch(r"[1-9][0-9]{0,3}", minutes):
+        raise ValueError(f"DEEP_TIMEOUT_MINUTES wants whole minutes, such as {DEEP_MINUTES}, not {minutes!r}; fix "
+                         f"<config>/adversarial-gate/.env or the exported value")
+    return model, effort, int(minutes) * 60
 
 
 def _stamp(now: datetime.datetime) -> str:
@@ -136,11 +165,11 @@ def _write(path: Path, document: dict) -> None:
     os.replace(partial, path)
 
 
-def _git(directory: Path, *args: str) -> str | None:
+def _git(directory: Path, *args: str, seconds: int = GIT_SECONDS) -> str | None:
     """One bounded git read; None when it fails, so a caller names what it could not learn."""
     try:
         done = subprocess.run(["git", "-C", str(directory), *args], capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=GIT_SECONDS, check=False)
+                              stdin=subprocess.DEVNULL, timeout=seconds, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout.strip() if done.returncode == 0 else None
@@ -291,6 +320,68 @@ def _resolve_change(connection, target, base, item, body) -> dict:
             "input": "\n".join(lines) + "\n", "sets": {"BASE": merge_base, "HEAD": head}}
 
 
+def _pull_number(row) -> int | None:
+    """A shadow row's pull-request number: its column, else its URL's last part."""
+    if type(row["number"]) is int:
+        return row["number"]
+    tail = (row["url"] or "").rpartition("/")[2]
+    return int(tail) if tail.isdigit() else None
+
+
+def _resolve_pull(connection, target, number, base, item) -> dict:
+    """An open pull request of a registered repository, as a change: its head from origin, its base as a change's."""
+    from sd_db import paths, progress, repos, workflow
+
+    if type(number) is not int or not 1 <= number <= 10_000_000:
+        raise ValueError("A pull request is its number.")
+    plan = _resolve_repo(connection, target)
+    checkout = plan["checkout"]
+    found = repos.parse_remote(repos.row_for(connection, target)["remote"])
+    if found.kind != "github":
+        raise workflow.WorkflowError(f"{target}'s origin is not on GitHub, so it has no pull requests to review")
+    slug = f"{found.owner}/{found.name}"
+    # The pull request must be one `sd shadow sync` saw open in this repository: a number alone could name another's.
+    pulls = [row for row in progress.tracker_items(connection, tracker="github")
+             if (row["kind"] or "") == "pull" and (row["repo"] or "").lower() == slug.lower()
+             and _pull_number(row) == number]
+    if not pulls:
+        raise workflow.WorkflowError(f"pull request #{number} is not open in {slug} as sd shadow sync last saw it")
+    pull = pulls[0]
+    said = _git(checkout, "ls-remote", "origin", f"refs/pull/{number}/head", seconds=REMOTE_SECONDS)
+    head = said.split()[0] if said else None
+    if not head or not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        raise workflow.WorkflowError(f"git ls-remote origin did not name pull request #{number}'s head in {checkout}, "
+                                     f"or git could not reach origin")
+    if _git(checkout, "cat-file", "-e", f"{head}^{{commit}}") is None:
+        raise workflow.WorkflowError(f"pull request #{number}'s head {head[:12]} is not in {checkout}; the dashboard "
+                                     f"fetches nothing. Run git -C {checkout} fetch origin pull/{number}/head, then "
+                                     f"start the review again")
+    if base is not None and (not isinstance(base, str) or not REF.fullmatch(base) or base.startswith("-")):
+        raise ValueError("A base is a git ref: letters, digits and . _ / -.")
+    named = next((ref for ref in ([base] if base else ["origin/HEAD", "origin/main", "main"])
+                  if _git(checkout, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")), None)
+    if named is None:
+        raise workflow.WorkflowError(f"{target} has no {'base ' + base if base else 'origin/HEAD, origin/main or main'} "
+                                     f"to compare with")
+    merge_base = _git(checkout, "merge-base", named, head)
+    if not merge_base:
+        raise workflow.WorkflowError(f"git found no merge base of {named} and pull request #{number} in {target}")
+    if merge_base == head:
+        raise workflow.WorkflowError(f"pull request #{number} has no commits on top of {named}; there is nothing to "
+                                     f"review")
+    owner = workflow.item_state(connection, _item_id(item, "item"))["item"]["id"] if item is not None else None
+    lines = [f"# Change: pull request #{number} in {slug}", "", f"- checkout: {checkout}",
+             f"- repository: {paths.key(str(checkout))}", f"- pull request: {pull['url']}",
+             f"- title: {pull['title'] or 'not recorded'}", f"- author: {pull['author'] or 'not recorded'}",
+             f"- head: {head}", f"- base: {named}, merge base {merge_base}",
+             f"- item: {'sd:' + str(owner) if owner else 'none'}", "", "## Pull-request body", "",
+             "Not read: the dashboard holds the pull request's title and not its body, and calls no GitHub API. "
+             "Review the diff and the commits alone; the head may not be checked out, so read files at the head with "
+             f"`git show {head}:<path>`."]
+    return {"checkout": checkout, "repo": checkout, "label": f"{checkout.name}-pr-{number}", "item": owner,
+            "input": "\n".join(lines) + "\n", "sets": {"BASE": merge_base, "HEAD": head}}
+
+
 def _item_id(value, name: str) -> int:
     if type(value) is str and re.fullmatch(r"[1-9][0-9]{0,18}", value):
         value = int(value)
@@ -315,7 +406,27 @@ def _database(connection) -> str:
     raise ValueError("The dashboard's database has no file the review's runner could open.")
 
 
-def start(connection, kind: str, target, *, base=None, item=None, body=None, now: datetime.datetime | None = None):
+def _resolve(connection, kind: str, target, base, item, body, pr) -> dict:
+    if kind == "task":
+        return _resolve_task(connection, target)
+    if kind == "brief":
+        return _resolve_brief(connection, target)
+    if kind in ("repo", "deep"):
+        return _resolve_repo(connection, target)
+    if pr is not None:
+        return _resolve_pull(connection, target, pr, base, item)
+    return _resolve_change(connection, target, base, item, body)
+
+
+def _lock(state: Path, kind: str, checkout: Path) -> Path:
+    """The lock a run holds: one for every codex review, and one per repository for a deep review."""
+    if kind != "deep":
+        return state / "lock"
+    return state / f"deep-{hashlib.sha256(str(checkout).encode()).hexdigest()[:16]}.lock"
+
+
+def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=None,
+          now: datetime.datetime | None = None):
     """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` when a run holds the lock."""
     import sd_db
 
@@ -323,21 +434,18 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, now
     state = state_dir()
     runs = state / "runs"
     runs.mkdir(parents=True, exist_ok=True)
-    handle = open(state / "lock", "a+", encoding="utf-8")
+    plan = _resolve(connection, kind, target, base, item, body, pr)
+    handle = open(_lock(state, kind, plan["checkout"]), "a+", encoding="utf-8")
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if kind == "deep":
+                return 409, {"error": f"A deep review of {plan['checkout'].name} is already running (run "
+                                      f"{_held_by(handle)}); one runs at a time per repository. Wait for it to "
+                                      f"finish, then start this one."}
             return 409, {"error": f"An adversarial review is already running (run {_held_by(handle)}); one runs at a "
                                   f"time. Wait for it to finish, then start this one."}
-        if kind == "task":
-            plan = _resolve_task(connection, target)
-        elif kind == "brief":
-            plan = _resolve_brief(connection, target)
-        elif kind == "repo":
-            plan = _resolve_repo(connection, target)
-        else:
-            plan = _resolve_change(connection, target, base, item, body)
         label = re.sub(r"[^A-Za-z0-9._-]", "-", plan["label"])[:60].strip("-.") or "x"
         run_id = f"{kind}-{label}-{_stamp(now)}"
         record = runs / f"{run_id}.json"
@@ -353,11 +461,11 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, now
         database = _database(connection)
         if written:
             written.write_text(plan["input"], encoding="utf-8")
-        model, effort = settings()
+        model, effort, timeout = settings(kind)
         document = {"id": run_id, "kind": kind, "target": str(target), "label": label, "state": "queued",
                     "reason": None, "repo": str(plan["repo"]), "checkout": str(plan["checkout"]),
                     "result": str(result), "input": str(written) if written else None, "item": plan["item"],
-                    "sets": sets, "model": model, "effort": effort, "timeout": TIMEOUT, "started": _iso(now),
+                    "sets": sets, "model": model, "effort": effort, "timeout": timeout, "started": _iso(now),
                     "finished": None, "filed": None, "brief": None, "brief_item": None, "batches": None, "pid": None,
                     "database": database, "library": str(Path(sd_db.__file__).resolve().parent.parent)}
         _write(record, document)
@@ -388,16 +496,18 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, now
 
 def request(values: dict):
     """The POST's checks, before the server opens a connection; the start as `action_route` returns one."""
-    if set(values) - {"kind", "target", "base", "item", "body"} or not {"kind", "target"} <= set(values):
-        raise ValueError("An adversarial review takes a kind and a target, and for a change an optional base, item "
-                         "and body.")
+    if set(values) - {"kind", "target", "base", "item", "body", "pr"} or not {"kind", "target"} <= set(values):
+        raise ValueError("An adversarial review takes a kind and a target, and for a change an optional base, item, "
+                         "body and pr.")
     kind = values["kind"]
     if kind not in KINDS:
         raise ValueError(f"An adversarial review's kind is one of {', '.join(KINDS)}.")
     if kind != "change" and set(values) - {"kind", "target"}:
-        raise ValueError("Only a change review takes a base, an item or a body.")
+        raise ValueError("Only a change review takes a base, an item, a body or a pr.")
+    if "pr" in values and "body" in values:
+        raise ValueError("A pull request's review reads no body file; the dashboard holds no pull-request body.")
     return lambda connection: start(connection, kind, values["target"], base=values.get("base"),
-                                    item=values.get("item"), body=values.get("body"))
+                                    item=values.get("item"), body=values.get("body"), pr=values.get("pr"))
 
 
 # -- the GET -----------------------------------------------------------------------------------------------------
@@ -406,7 +516,7 @@ def request(values: dict):
 def public(document: dict) -> dict:
     """What a page reads: the state file less the runner's own fields."""
     return {key: value for key, value in document.items()
-            if key not in ("pid", "sets", "timeout", "database", "library")}
+            if key not in ("pid", "sets", "database", "library")}
 
 
 def _alive(pid) -> bool:
@@ -541,7 +651,7 @@ def _brief_text(document: dict, verdict: str, found: list[dict], batches: list[t
              f"- Target: {target}, read in {document['checkout']}",
              f"- Model: {document['model']} at {document['effort']} effort",
              f"- Review batches: {named}; approve a question there to file its task, reject it to drop it",
-             f"- Result as codex wrote it: {document['result']}", "", "## Summary", "",
+             f"- Result as {_engine(document)} wrote it: {document['result']}", "", "## Summary", "",
              verdict or "The result ends with no verdict line.", "",
              f"Recommendations: {len(found)}. These are hypotheses for a person to check, not findings.", "",
              "## Recommendations", ""]
@@ -635,9 +745,13 @@ def _file(document: dict) -> str | None:
 # -- the runner --------------------------------------------------------------------------------------------------
 
 
-def _reason(log: str, code: int) -> str:
+def _engine(document: dict) -> str:
+    return "claude" if document["kind"] == "deep" else "codex"
+
+
+def _reason(log: str, code: int, document: dict) -> str:
     if code == 124:
-        return f"codex did not answer within {TIMEOUT} s; its process group was killed"
+        return f"{_engine(document)} did not answer within {document['timeout']} s; its process group was killed"
     said = [line.strip() for line in log.splitlines() if line.strip() and not line.startswith("# adversarial gate:")]
     return f"{said[-1]} (exit {code})" if said else f"the gate exited {code} with no message"
 
@@ -650,7 +764,8 @@ def run(record: Path, lock: int | None = None) -> int:
     document = json.loads(record.read_text(encoding="utf-8"))
     document.update(state="running", pid=os.getpid())
     _write(record, document)
-    argv = ["sh", str(GATE), "run", "--lens", document["kind"]]
+    # A deep review is the gate's `deep`, which runs claude on `lenses/deep.md`; every other kind is codex's `run`.
+    argv = ["sh", str(GATE), "deep" if document["kind"] == "deep" else "run", "--lens", document["kind"]]
     for key, value in document["sets"].items():
         argv += ["--set", f"{key}={value}"]
     argv += ["--repo", document["checkout"], "--out", document["result"], "--model", document["model"],
@@ -670,9 +785,9 @@ def run(record: Path, lock: int | None = None) -> int:
     if code is None:
         reason = f"the gate did not end within {document['timeout'] + GRACE} s; its process group was killed"
     elif code != 0:
-        reason = _reason(said, code)
+        reason = _reason(said, code, document)
     elif not result.is_file() or not result.read_text(encoding="utf-8", errors="replace").strip():
-        reason = "codex exited 0 but wrote no result"
+        reason = f"{_engine(document)} exited 0 but wrote no result"
     else:
         reason = None
     finished = _iso(datetime.datetime.now(datetime.timezone.utc))

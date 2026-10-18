@@ -222,6 +222,9 @@ One run at a time: the runner holds `~/.local/state/system/adversarial-gate/lock
 Codex writes its result beside the run's state file, `runs/<id>.md`; nothing lands in the reviewed checkout.
 A done run files, in one transaction in the server's database, review batches in queue `adversarial` (one Approve-or-Reject question per recommendation, one batch per repository) and a brief, `<day> - Adversarial review · <kind> <label> · <time>Z`, that names them.
 An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
+A change review with `pr` (sd:5100) reviews an open pull request of a registered repository: the shadow rows must hold it open, `git ls-remote origin` names its head, and a head the checkout lacks is refused with the fetch line, since nothing here fetches.
+A `deep` review (sd:5100) runs the gate's `deep`: headless `claude -p` on `lenses/deep.md` with only Read, Grep, Glob and Agent, at `DEEP_MODEL` (`opus`) and `DEEP_EFFORT` (`max`) for `DEEP_TIMEOUT_MINUTES` (90).
+Its lock is `deep-<checkout hash>.lock` beside the codex one, so one deep review runs per repository and a codex review may run beside it; the claude binary is `CLAUDE_BIN`, else `claude` on PATH, else `~/.local/bin/claude`.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,

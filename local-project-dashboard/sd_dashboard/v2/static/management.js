@@ -576,6 +576,9 @@ function objects() {
   CRON.forEach(c => out.push({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', running: c.state === 'running', pid: c.pid, exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
   return [...out, ...pending];
 }
+const registeredWhy = o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first';
+// sd:5100: the repo's open pull requests as `sd shadow sync` last saw them, keyed by its lower-cased GitHub slug.
+const pullsOf = o => (o.row.slug && DOC?.pulls?.[o.row.slug.toLowerCase()]) || [];
 const capWhy = (o, action, fallback) => { const c = o.caps?.[action]; return !c ? fallback : c.allowed || c.reason || fallback; };
 function registerCommands() {
   const C = shell.commands;
@@ -595,8 +598,22 @@ function registerCommands() {
     { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
-    window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }),
-      when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first' }),
+    window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }), when: registeredWhy }),
+    // sd:5100: one open pull request, picked from the shadow rows the document carries (`pulls`), reviewed by codex
+    // as a change at its head. The server checks the number against the same rows and fetches nothing.
+    window.commands.adversarialReview('repo', { id: 'repo.adversarial-pr', label: 'Adversarial review: PR',
+      does: 'Starts a codex review of one open pull request in the background; its brief lists tasks to pick.',
+      payload: (o, v) => ({ kind: 'change', target: o.path, pr: Number(v.pr || pullsOf(o)[0]?.number) }),
+      fields: o => [{ name: 'pr', label: 'Pull request', options: pullsOf(o).map(p => ({ value: String(p.number), label: `#${p.number} ${p.title}` })) }],
+      when: o => { const r = registeredWhy(o); if (r !== true) return r;
+        if (!DOC?.pulls) return `pull requests not read: ${why('pulls') || 'the reading carries none'}`;
+        if (!o.row.slug) return 'not a GitHub repository, so it has no pull requests';
+        return pullsOf(o).length > 0 || 'no open pull request as sd shadow sync last saw it'; } }),
+    // sd:5100: headless claude reads the whole checkout with read-only sub-agents; one runs per repository.
+    window.commands.adversarialReview('repo', { id: 'repo.deep-review', label: 'Deep review',
+      does: 'Runs a read-only claude review with up to 8 sub-agents in the background; its brief lists fixes to pick.',
+      payload: o => ({ kind: 'deep', target: o.path }), when: registeredWhy,
+      consequence: o => `Runs claude at the configured model and effort on ${o.label}, with up to 8 read-only sub-agents, for up to 90 minutes unless DEEP_TIMEOUT_MINUTES says otherwise. It changes nothing in the checkout. Its brief lists each fix as a question to approve or reject.` }),
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
@@ -860,9 +877,11 @@ function logDetail(c) {
   return html`${head}<p class="why">${g.cut ? `The last ${plural(g.text.split('\n').filter(Boolean).length, 'line')} of ` : ''}<span class="mono">${file}</span>, read ${hhmm(READ)} UTC.</p>
     ${g.text ? html`<pre class="code" tabindex="0" aria-label="${c.name} log">${g.text}</pre>` : html`<p class="empty">The log is empty.</p>`}`;
 }
-// sd:5064: an adversarial review's progress redraws the repo's Details while that repo is shown (runKey is the row id).
+// sd:5064: an adversarial review's progress redraws the repo's Details while that repo is shown. Its runKey is
+// `<kind>:<path>`: repo, change (a pull request, sd:5100) or deep, and the row id is `repo:<path>`.
 let detailsId = null;
-document.addEventListener('adversarial:run', e => { if (detailsId && e.detail.key === detailsId) selectRow(detailsId, false); });
+document.addEventListener('adversarial:run', e => { const k = e.detail.key, at = k.indexOf(':');
+  if (detailsId && ['repo', 'change', 'deep'].includes(k.slice(0, at)) && detailsId === `repo:${k.slice(at + 1)}`) selectRow(detailsId, false); });
 function selectRow(id, open) {
   markRow(id); detailsId = id;
   const [kind, key] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
@@ -896,7 +915,7 @@ function selectRow(id, open) {
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
-      ${window.commands.reviewPane('repo', r.path)}`;
+      ${window.commands.reviewPane('repo', r.path)}${window.commands.reviewPane('change', r.path, 'Adversarial review: PR')}${window.commands.reviewPane('deep', r.path, 'Deep review')}`;
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>

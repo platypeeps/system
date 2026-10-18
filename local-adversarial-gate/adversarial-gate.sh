@@ -16,6 +16,13 @@
 #       the same prompt, piped to `codex exec` in a read-only sandbox;
 #       --effort is codex's `-c model_reasoning_effort=LEVEL`
 #
+#   adversarial-gate deep --lens NAME [--set KEY=VALUE ...]
+#                         --repo DIR --out FILE [--model M] [--effort LEVEL]
+#                         [--timeout S]
+#       the same prompt, piped to headless `claude -p` in DIR, with only
+#       the read-only tools in DEEP_TOOLS: no edit, write, shell, network
+#       or MCP server. --effort is claude's --effort (low ... max)
+#
 #   adversarial-gate rank --in FILE   order an existing result by a Jev noul
 #
 #   adversarial-gate lenses           list the available lenses
@@ -113,7 +120,13 @@ jev_rank() {
   return 0
 }
 
-usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,45p' "$SELF" | sed 's/^# \{0,1\}//'; }
+
+# `deep`'s tools (sd:5100): the file readers and Agent, which starts the
+# sub-agents; a sub-agent gets this set and no more. No Edit, Write, Bash,
+# WebFetch or MCP tool, so the review cannot change the checkout, push or
+# post. tests/test_deep.py fails a tool outside its read-only list.
+DEEP_TOOLS="Read,Grep,Glob,Agent"
 
 lens_path() {
   case "$1" in
@@ -163,7 +176,10 @@ ${2:?--set needs KEY=VALUE}"; shift 2 ;;
     }'
 }
 
+# `cmd_run codex|claude ARGS`: `run` and `deep`, one parser and one bound.
 cmd_run() {
+  engine="$1"; shift
+  verb=run; [ "$engine" = codex ] || verb=deep
   repo="" ; outfile="" ; model="" ; effort="" ; effort_given=0 ; timeout="1800"
   # The words for `render` (--lens, --set) are rotated to the end of "$@" as
   # they are met, in order; `n` counts the words not yet read. Until sd:5064
@@ -177,7 +193,7 @@ cmd_run() {
     # An empty value is the flag's fault to report; only the flag as the
     # last word is a missing value.
     [ "$n" -ge 2 ] || case "$1" in
-      --repo|--out|--model|--effort|--timeout) die "run: $1 needs a value" ;;
+      --repo|--out|--model|--effort|--timeout) die "$verb: $1 needs a value" ;;
     esac
     case "$1" in
       --repo)    repo="$2"; shift 2; n=$((n - 2)) ;;
@@ -188,25 +204,57 @@ cmd_run() {
       *) set -- "$@" "$1"; shift; n=$((n - 1)) ;;
     esac
   done
-  [ -n "$repo" ] || die "run: --repo is required"
-  [ -n "$outfile" ] || die "run: --out is required"
+  [ -n "$repo" ] || die "$verb: --repo is required"
+  [ -n "$outfile" ] || die "$verb: --out is required"
   case "$timeout" in
-    ''|*[!0-9]*) die "run: --timeout wants seconds, a positive integer, not '$timeout'" ;;
+    ''|*[!0-9]*) die "$verb: --timeout wants seconds, a positive integer, not '$timeout'" ;;
   esac
-  [ "$timeout" -gt 0 ] || die "run: --timeout wants seconds, a positive integer, not '$timeout'"
+  [ "$timeout" -gt 0 ] || die "$verb: --timeout wants seconds, a positive integer, not '$timeout'"
   # The level lands in a `-c key=value` override, which codex parses as TOML:
   # a quote, an `=` or a newline would make it another override (sd:5064).
   [ "$effort_given" = 0 ] || case "$effort" in
-    ''|*[!a-z]*) die "run: --effort wants one lowercase word, such as high, not '$effort'" ;;
+    ''|*[!a-z]*) die "$verb: --effort wants one lowercase word, such as high, not '$effort'" ;;
   esac
-  command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH"
+  # The model is one argv word after --model or -m: a leading dash would make
+  # it a flag of the CLI's own, such as one that lifts the tool list.
+  case "$model" in
+    -*|*[!A-Za-z0-9._:/@-]*) die "$verb: --model wants a model id or alias, not '$model'" ;;
+  esac
   command -v perl >/dev/null 2>&1 || die "perl not found on PATH (it bounds the run)"
-  prompt="$(cmd_render "$@")"
-  set -- -s read-only -C "$repo" -o "$outfile" -
-  [ -z "$effort" ] || set -- -c "model_reasoning_effort=$effort" "$@"
-  [ -z "$model" ] || set -- -m "$model" "$@"
-  set -- codex exec "$@"
-  echo "# adversarial gate: read-only sandbox, $repo -> $outfile" >&2
+  if [ "$engine" = codex ]; then
+    command -v codex >/dev/null 2>&1 || die "codex CLI not found on PATH"
+    prompt="$(cmd_render "$@")"
+    set -- -s read-only -C "$repo" -o "$outfile" -
+    [ -z "$effort" ] || set -- -c "model_reasoning_effort=$effort" "$@"
+    [ -z "$model" ] || set -- -m "$model" "$@"
+    set -- codex exec "$@"
+    echo "# adversarial gate: read-only sandbox, $repo -> $outfile" >&2
+  else
+    [ -d "$repo" ] || die "deep: --repo $repo is not a directory"
+    # Resolved before env.sh is sourced, so a PATH it sets cannot swap the
+    # binary; CLAUDE_BIN is the seam the suites drive a stub through. The
+    # native installer puts claude in ~/.local/bin, which launchd's PATH
+    # lacks -- the same lookup as the dashboard's email_draft.py.
+    claude="${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}"
+    [ -x "$claude" ] || die "claude CLI not found on PATH or at $claude"
+    prompt="$(cmd_render "$@")"
+    case "$outfile" in /*) ;; *) outfile="$PWD/$outfile" ;; esac
+    set -- -p --restricted --strict-mcp-config --tools "$DEEP_TOOLS" \
+      --allowedTools "$DEEP_TOOLS" --permission-mode dontAsk \
+      --no-session-persistence --disable-slash-commands
+    [ -z "$effort" ] || set -- "$@" --effort "$effort"
+    [ -z "$model" ] || set -- "$@" --model "$model"
+    # The token for a headless run lives in the shell's env file, which a
+    # launchd job never reads, and launchd's 256 open files are too few:
+    # both are set in a shell of claude's own, so neither reaches this one.
+    set -- sh -c 'f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1
+ulimit -S -n 65536 2>/dev/null
+exec "$0" "$@"' "$claude" "$@"
+    echo "# adversarial gate: claude -p with $DEEP_TOOLS only, $repo -> $outfile" >&2
+    # claude prints its answer on stdout and reads the files under its cwd.
+    exec 3>&1 >"$outfile"
+    cd "$repo"
+  fi
   # The bound, applied. Until sd:790 `--timeout` was parsed into a variable
   # nothing read, and a reviewer that never answered held the caller for as
   # long as it liked. macOS ships no timeout(1) -- the one on this machine
@@ -223,7 +271,7 @@ cmd_run() {
   # timeout(1)'s own status, so a caller can tell it from the reviewer's
   # own failure; a child that dies of a signal otherwise exits 128+signal.
   status=0
-  printf '%s' "$prompt" | perl -e '
+  printf '%s' "$prompt" | GATE_VERB="$verb" GATE_ENGINE="$engine" perl -e '
     use POSIX ":sys_wait_h";
     my $secs = shift;
     my $pid = fork;
@@ -238,7 +286,7 @@ cmd_run() {
       }
       kill KILL => -$pid;
       waitpid($pid, 0) unless $gone;
-      print STDERR "adversarial-gate: run: codex did not answer within $secs s; its process group was killed (exit 124)\n";
+      print STDERR "adversarial-gate: $ENV{GATE_VERB}: $ENV{GATE_ENGINE} did not answer within $secs s; its process group was killed (exit 124)\n";
       exit 124;
     };
     alarm $secs;
@@ -246,6 +294,7 @@ cmd_run() {
     my $status = $?;
     exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
   ' "$timeout" "$@" || status=$?
+  [ "$engine" = codex ] || exec 1>&3 3>&-
   # Only a run that answered has findings to order, and the exit code is the
   # reviewer's either way: a cut-off run still exits 124.
   [ "$status" -eq 0 ] && jev_rank "$outfile"
@@ -254,7 +303,8 @@ cmd_run() {
 
 case "${1:-}" in
   render) shift; cmd_render "$@" ;;
-  run)    shift; cmd_run "$@" ;;
+  run)    shift; cmd_run codex "$@" ;;
+  deep)   shift; cmd_run claude "$@" ;;
   rank)   shift
           [ $# -eq 2 ] && [ "$1" = "--in" ] || die "usage: adversarial-gate rank --in FILE"
           [ -n "$2" ] || die "rank: --in needs a file"
@@ -267,5 +317,5 @@ case "${1:-}" in
     usage >&2
     exit 1
     ;;
-  *) die "unknown command '$1' (render | run | lenses | test)" ;;
+  *) die "unknown command '$1' (render | run | deep | rank | lenses | test)" ;;
 esac

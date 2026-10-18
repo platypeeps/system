@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import review, routine_briefs, workflow, writes
+from sd_db import review, routine_briefs, upsert_shadow, workflow, writes
 
 from sd_dashboard import adversarial
 
@@ -586,7 +586,7 @@ class OtherKinds(AdversarialCase):
 class TheRequestShape(AdversarialCase):
     def test_bad_requests_are_refused_before_anything_runs(self):
         item = self.task()
-        for payload, said in (({"kind": "essay", "target": item}, "kind is one of task, brief, repo, change"),
+        for payload, said in (({"kind": "essay", "target": item}, "kind is one of task, brief, repo, change, deep"),
                               ({"kind": "task"}, "takes a kind and a target"),
                               ({"kind": "task", "target": item, "extra": 1}, "takes a kind and a target"),
                               ({"kind": "task", "target": item, "base": "main"}, "Only a change review"),
@@ -605,3 +605,184 @@ class TheRequestShape(AdversarialCase):
     def test_a_missing_item_is_a_404(self):
         status, _, answer = self.review("task", 999999)
         self.assertEqual(status, 404, answer)
+
+
+class ThePullRequest(AdversarialCase):
+    """sd:5100: a repo row's open pull request, from the shadow rows `sd shadow sync` keeps, reviewed as a change."""
+
+    def setUp(self):
+        super().setUp()
+        # A bare origin that holds the pull request's head the way GitHub does, at refs/pull/<n>/head; the checkout's
+        # GitHub remote is rewritten to it, so `git ls-remote origin` reads it with no network.
+        self.origin = self.root / "origin.git"
+        git(self.root, "init", "-q", "--bare", str(self.origin))
+        self.remote = "https://github.com/example/checkout"
+        git(self.work, "remote", "add", "origin", self.remote)
+        git(self.work, "config", f"url.{self.origin}.insteadOf", self.remote)
+        git(self.work, "push", "-q", "origin", "main")
+        git(self.work, "update-ref", "refs/remotes/origin/main", "main")
+        writes.upsert_repo(self.connection, self.key, remote=self.remote)
+        self.main = git(self.work, "rev-parse", "main")
+        git(self.work, "switch", "-q", "-c", "feature")
+        (self.work / "x.txt").write_text("x\n")
+        git(self.work, "add", "x.txt")
+        git(self.work, "commit", "-q", "-m", "add x")
+        self.head = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "push", "-q", "origin", "feature:refs/pull/7/head")
+        git(self.work, "switch", "-q", "main")
+
+    def pull(self, number, *, repo="example/checkout", state="open"):
+        upsert_shadow(self.connection, tracker="github", url=f"https://github.com/{repo}/pull/{number}", repo=repo,
+                      number=number, kind="pull", title=f"Pull {number}", state=state, author="someone")
+
+    def test_an_open_pull_request_is_reviewed_with_the_change_lens_at_its_head(self):
+        self.pull(7)
+        item = self.task()
+        status, _, run = self.review("change", self.key, pr=7, item=item)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^change-checkout-pr-7-[0-9]{8}T[0-9]{6}Z$")
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        self.assertEqual(self.codex_argv()[7:9], ["-C", str(self.work)])
+        prompt = self.stdin.read_text()
+        self.assertIn("The document is a proposed change", prompt)
+        self.assertIn(f"git diff {self.main}...{self.head}", prompt)
+        given = Path(run["input"]).read_text()
+        for text in ("- pull request: https://github.com/example/checkout/pull/7", "- title: Pull 7",
+                     f"- head: {self.head}", f"merge base {self.main}", f"- item: sd:{item}"):
+            self.assertIn(text, given)
+        self.assertEqual(review.read(self.connection, done["batches"][0])["item"]["repo"], self.key)
+        # The checkout is where it was: still on main, nothing fetched into it beyond what it held.
+        self.assertEqual(git(self.work, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
+    def test_a_pull_request_the_shadow_rows_do_not_hold_open_here_is_refused(self):
+        self.pull(7, repo="example/other")
+        self.pull(9, state="closed")
+        for number in (7, 9, 11):
+            with self.subTest(pr=number):
+                status, _, answer = self.review("change", self.key, pr=number)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(f"pull request #{number} is not open in example/checkout", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_a_head_the_checkout_does_not_hold_is_refused_naming_the_fetch(self):
+        # Pushed from another clone, so origin has it and the checkout does not.
+        other = self.root / "elsewhere"
+        git(self.root, "clone", "-q", str(self.origin), str(other))
+        (other / "y.txt").write_text("y\n")
+        git(other, "add", "y.txt")
+        git(other, "commit", "-q", "-m", "add y")
+        git(other, "push", "-q", "origin", "HEAD:refs/pull/8/head")
+        self.pull(8)
+        status, _, answer = self.review("change", self.key, pr=8)
+        self.assertEqual(status, 400, answer)
+        self.assertIn(f"Run git -C {self.work} fetch origin pull/8/head", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_a_pull_request_review_takes_a_number_and_no_body(self):
+        self.pull(7)
+        for extra, said in (({"pr": "7"}, "A pull request is its number."),
+                            ({"pr": 7, "body": "/x"}, "reads no body file")):
+            with self.subTest(extra=extra):
+                status, _, answer = self.review("change", self.key, **extra)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(said, answer["error"])
+
+
+DEEP_CLAUDE = r"""#!/bin/sh
+printf '%s\n' "$@" > "$CODEX_ARGV"
+pwd > "$CODEX_ARGV.cwd"
+cat > "$CODEX_STDIN"
+mode=$(cat "$CODEX_MODE" 2>/dev/null || echo ok)
+if [ "$mode" = hold ]; then
+  n=0
+  while [ ! -f "$CODEX_RELEASE" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+fi
+cat "$CODEX_RESULT"
+"""
+
+
+class TheDeepReview(AdversarialCase):
+    """sd:5100: a registered repository reviewed by headless claude with read-only sub-agents, filed like the others."""
+
+    def setUp(self):
+        super().setUp()
+        self.claude = self.bin / "claude-double"
+        self.claude.write_text(DEEP_CLAUDE)
+        self.claude.chmod(0o755)
+        # The stand-in, reached by the gate's seam, and a fixture HOME, so the operator's shell env file is never read.
+        home = self.root / "home"
+        home.mkdir()
+        environment = patch.dict(os.environ, {"CLAUDE_BIN": str(self.claude), "HOME": str(home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("DEEP_MODEL", "DEEP_EFFORT", "DEEP_TIMEOUT_MINUTES"):
+            os.environ.pop(name, None)
+
+    def test_a_deep_review_runs_claude_read_only_in_the_checkout_and_files_a_brief(self):
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^deep-checkout-[0-9]{8}T[0-9]{6}Z$")
+        self.assertEqual((run["model"], run["effort"], run["timeout"]), ("opus", "max", 90 * 60))
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["item"], done["filed"]), ("done", None, "written"), done)
+        argv = self.codex_argv()
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob,Agent")
+        self.assertEqual((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]), ("opus", "max"))
+        self.assertEqual(Path(Path(f"{self.argv}.cwd").read_text().strip()).resolve(), self.work)
+        self.assertIn("**Use at most 8 areas.**", self.stdin.read_text())
+        self.assertIn("The document is a whole repository, `checkout`", self.stdin.read_text())
+        _, text, _ = self.brief(done["brief"])
+        self.assertIn(f"- Result as claude wrote it: {done['result']}", text)
+        self.assertIn("### 1. Add a test that fails before the fix", text.splitlines())
+        self.assertEqual(len(done["batches"]), 1)
+        self.assertEqual(git(self.work, "status", "--porcelain", "--ignored"), "")
+
+    def test_the_tool_config_names_the_deep_model_effort_and_bound(self):
+        (self.config / "adversarial-gate").mkdir(parents=True)
+        (self.config / "adversarial-gate" / ".env").write_text(
+            "DEEP_MODEL=fixture-model\nDEEP_EFFORT=high\nDEEP_TIMEOUT_MINUTES=5\n")
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        self.assertEqual((run["model"], run["effort"], run["timeout"]), ("fixture-model", "high", 300))
+        self.settled(run["id"])
+        argv = self.codex_argv()
+        self.assertEqual(argv[argv.index("--model") + 1], "fixture-model")
+
+    def test_a_bound_that_is_not_whole_minutes_is_refused(self):
+        os.environ["DEEP_TIMEOUT_MINUTES"] = "soon"
+        status, _, answer = self.review("deep", self.key)
+        self.assertEqual(status, 400, answer)
+        self.assertIn("DEEP_TIMEOUT_MINUTES wants whole minutes", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_a_second_deep_review_of_the_repository_is_refused_while_one_runs(self):
+        self.mode.write_text("hold")
+        status, _, first = self.review("deep", self.key)
+        self.assertEqual(status, 202, first)
+        self.wait_for_codex()
+        self.assertEqual(self.read(first["id"])[1]["state"], "running")
+        status, _, refused = self.review("deep", self.key)
+        self.assertEqual(status, 409, refused)
+        self.assertIn(f"A deep review of checkout is already running (run {first['id']})", refused["error"])
+        self.assertIn("one runs at a time per repository", refused["error"])
+        self.release.write_text("")
+        self.assertEqual(self.settled(first["id"])["state"], "done")
+        time.sleep(1.1)  # The next run's id carries the next second.
+        status, _, after = self.review("deep", self.key)
+        self.assertEqual(status, 202, after)
+        self.settled(after["id"])
+
+    def test_a_claude_that_answers_nothing_reads_failed_and_files_no_brief(self):
+        self.result_fixture.write_text("\n")
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["brief"]), ("failed", None), done)
+        self.assertEqual(done["reason"], "claude exited 0 but wrote no result")
+        self.assertEqual(self.batches(), [])
+
+    def test_an_unregistered_repository_is_refused(self):
+        status, _, answer = self.review("deep", str(self.root / "elsewhere"))
+        self.assertEqual(status, 400)
+        self.assertIn("is not a registered repository", answer["error"])
