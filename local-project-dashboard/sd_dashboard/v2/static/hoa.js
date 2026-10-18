@@ -1,5 +1,5 @@
 // HOA (sd:2116): the design source's products/system/designs/pages/hoa.js, ported. Each change from the reference is marked
-// "build:". The data is /api/hoa (hoa_screen.py): the asset map, the Mission export and the open followups of the checkout
+// "build:". The data is /api/hoa (hoa_screen.py): the asset map, the Mission export and the open items of the checkout
 // the repo table's hoa folder names, never sample data. A part that did not read is unknown with its reason.
 // build: no Leaflet. The design vendored Leaflet 1.9.4; this page draws the same vectors as one SVG with Fit, zoom and drag,
 // so the dashboard ships no third-party script. Clusters and the aerial button are not built (docs/pages/hoa.md).
@@ -11,6 +11,20 @@
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   let DOC = null, M = null, ASSETS = [], LOTS = [], OB = [], AL = [], CELLS = [];
   let selected = null, range = 7, selDay = null, zoom = 1, center = null, P = null;
+  // sd:4967: acknowledged alarm events hide unless Show acknowledged is on; ACKS is why Acknowledge is off, or ''.
+  let showAcked = false, ACKS = '';
+  // sd:4965: the age lamps, tools/source-ages.py's rows for the Mission export and Vantaca. A source past its end date
+  // (Vantaca after 2026-10-31) is retired and not drawn.
+  let SRC = [];
+  const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
+  const srcOf = key => SRC.find(r => r.source === key);
+// A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
+const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
+  : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
+  : j.state === 'idle' ? (j.last_exit === 0 ? 'last refresh finished' : 'refresh not run yet') : `refresh job ${j.state}`;
+// While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
+const SRC_POLL = 15000;
+let polling = 0;
   const hidden = new Set();
 
   const dl = pairs => html`<dl>${pairs.filter(p => p[1] !== '' && p[1] != null).map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>`;
@@ -21,9 +35,9 @@
 
   // ---------- Annunciator ----------
   // build: every cell is a reading of the document or unknown with its reason; the design's mail-only facts (the 05:50 fault,
-  // "9 overdue") have no reader, so Water is unknown and Followups counts the checkout's open followup notes.
+  // "9 overdue") have no reader, so Water is unknown and Tasks counts the checkout's open items (sd:4959: every kind).
   function readCells() {
-    const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.followups;
+    const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.items;
     const why = m.error || 'no rows in the export';
     const out = [{ id: 'water', label: 'Water', state: 'unknown', val: html`<b>—</b> not read`, small: 'no live reader: the export holds daily rows, not the pump now' }];
     out.push(la && num(la.tank_ft_mean) ? { id: 'tank', label: 'Tank level', state: 'ok', open: `day:${la.date}`, val: html`<b>${(+la.tank_ft_mean).toFixed(1)}</b> ft mean`, small: `${la.tank_ft_min}–${la.tank_ft_max} · ${day(la.date)} (latest row)` }
@@ -34,11 +48,11 @@
       : { id: 'aquifer', label: 'Aquifer', state: 'unknown', val: html`<b>—</b> not read`, small: why });
     const at = m.alarms_today, real = AL.filter(a => a.st === 'warning').length, tests = AL.filter(a => a.kind === 'generator' && /Running/.test(a.event)).length;
     out.push(at.count == null ? { id: 'alarms', label: 'Alarms today', state: 'unknown', open: AL[0]?.id, val: html`<b>—</b> ${at.reason}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` }
-      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
+      : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
     const late = OB.filter(o => o.state === 'warning').length, soon = OB.filter(o => o.state === 'caution').length;
-    out.push(f.error ? { id: 'followups', label: 'Followups', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
-      : late ? { id: 'followups', label: 'Followups', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
-      : { id: 'followups', label: 'Followups', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
+    out.push(f.error ? { id: 'tasks', label: 'Tasks', state: 'unknown', val: html`<b>—</b> not read`, small: f.error }
+      : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
+      : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
     out.push(m.latest ? { id: 'mission', label: 'Mission data', state: m.stale ? 'caution' : 'ok', open: 'source:mission', val: html`<b>${m.age_days} d</b> old`, small: `newest row ${m.latest}${m.error ? ' · a file did not read' : ''}` }
       : { id: 'mission', label: 'Mission data', state: 'unknown', open: m.dir ? 'source:mission' : null, val: html`<b>—</b> not read`, small: why });
     return out;
@@ -67,7 +81,7 @@
   const ORDER = ['tank', 'well', 'hydrant', 'valve'];
   const glyph = type => html`<svg viewBox="0 0 24 24" aria-hidden="true">${TYPES[type].svg}</svg>`;
   const stClass = s => s === 'in service' ? 'st-ok' : s === 'unknown' ? 'st-unknown' : 'st-out';
-  const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32];
+  const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32], LABEL_ZOOM = 4;
 
   function project() {
     const pts = [...LOTS.flatMap(l => l.rings.flat()), ...ASSETS.map(a => [a.lng, a.lat])];
@@ -87,8 +101,13 @@
     if (!P) { put(box, unknownBlock(DOC ? [DOC.base.error, DOC.assets.error].filter(Boolean).join(' · ') || 'the map files hold no features' : 'the HOA document did not arrive')); return; }
     const [vx, vy, vw, vh] = view(), u = vw / (box.clientWidth || W);
     const ring = r => `M${r.map(([x, y]) => `${P.x(x).toFixed(1)},${P.y(y).toFixed(1)}`).join('L')}Z`;
+    // sd:4964: a lot is a tap target (data-lot) titled by its address; zoomed in to LABEL_ZOOM, the address is drawn on it.
+    const key = l => l.kind === 'tract' ? html` data-tract="${l.ain || l.label}"` : l.kind === 'lot' ? html` data-lot="${l.index}"` : '';
+    const mid = r => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
+    const labels = zoom >= LABEL_ZOOM ? LOTS.filter(l => l.kind === 'lot' && l.address).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
+      return html`<text class="lot-label" x="${P.x(x).toFixed(1)}" y="${P.y(y).toFixed(1)}" font-size="${(11 * u).toFixed(2)}">${l.address}</text>`; }) : '';
     put(box, html`<svg class="map" viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" aria-label="HOA water assets map">
-      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${l.kind === 'tract' ? html` data-tract="${l.ain || l.label}"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.label || l.kind}</title></path>`)}
+      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || l.kind}</title></path>`)}${labels}
       ${ASSETS.filter(a => !hidden.has(a.type) && TYPES[a.type]).map(a => { const t = TYPES[a.type], g = t.size * u;
         return html`<g class="asset t-${a.type} ${stClass(a.status)}" data-asset="${a.id}" tabindex="0" role="button" aria-label="${a.name}, ${a.type}, ${a.status}"${a.id === selected?.slice(6) ? html` aria-current="true"` : ''} transform="translate(${(P.x(a.lng) - g / 2).toFixed(2)} ${(P.y(a.lat) - g / 2).toFixed(2)}) scale(${(g / 24).toFixed(4)})"><title>${a.name} · ${a.status}</title>${TYPES[a.type].svg}</g>`; })}
     </svg>`);
@@ -137,11 +156,21 @@
     const l = LOTS.find(x => (x.ain || x.label) === key); if (!l) return;
     show(html`<div class="kind"><span class="label">Tract</span></div><h2>${l.label || `Tract ${l.ain}`}</h2>${dl([['AIN', l.ain], ['Land use', l.luc], ['Acres', l.acres], ['Source', 'base.geojson']])}`, null, open);
   }
+  // sd:4964: a lot's address, owner of record and parcel come from the checkout's lot data (hoa_screen._lots); without it
+  // the lot is unknown with the reason, which names the script to run.
+  function selectLot(index, open) {
+    const l = LOTS.find(x => x.kind === 'lot' && String(x.index) === String(index)); if (!l) return;
+    const lots = DOC.lots;
+    selected = `lot:${l.index}`; mark(); drawMap();
+    show(html`<div class="kind"><span class="label">Lot</span></div><h2>${l.address || `Lot ${l.index + 1}`}</h2>
+      ${lots.error ? unknownBlock(lots.error) : dl([['Address', l.address || 'no match in the lot data'], ['Owner of record', l.owner], ['AIN', l.parcel],
+        ['Source', `county parcel layer, fetched ${lots.fetched_at.slice(0, 10)}`]])}`, null, open);
+  }
   function selectOb(id, open) {
     const o = OB.find(x => x.id === id); if (!o) return;
     selected = id; mark(); drawMap();
-    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">Followup · sd:${o.item}</span></div>
-      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', 'sd item, kind followup']])}
+    show(html`<div class="kind"><span class="g-${o.state}" aria-hidden="true">${GLYPH[o.state]}</span><span class="label">${o.kind[0].toUpperCase()}${o.kind.slice(1)} · sd:${o.item}</span></div>
+      <h2>${o.title}</h2>${dl([['Due', o.due ? `${o.due.slice(0, 10)} · ${dueText(o)}` : 'no due date'], ['Priority', o.priority == null ? '' : `P${o.priority}`], ['Status', o.status], ['Item', `sd:${o.item}`], ['Source', `sd item, kind ${o.kind}`]])}
       <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
       <p class="why">Drafting asks the HOA chat for an email. Nothing is sent: the HOA rule is no external action without your approval.</p>`, id, open);
   }
@@ -149,7 +178,21 @@
     const a = AL.find(x => x.id === id); if (!a) return;
     selected = id; mark(); drawMap();
     show(html`<div class="kind"><span class="g-${a.st}" aria-hidden="true">${GLYPH[a.st]}</span><span class="label">Alarm event · ${a.kind}</span></div><h2>${a.event}</h2>
-      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Source', 'alarm-events.csv']])}`, id, open);
+      ${dl([['When', `${a.datetime} (unit clock)`], ['Reads as', a.why], ['Minutes', a.minutes], ['Notified', a.notified], ['Acknowledged', a.acked ? 'yes, on this dashboard' : 'no'], ['Source', 'alarm-events.csv']])}
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}
+      <p class="why">Acknowledge marks the event on this dashboard only. Nothing reaches the Mission portal.</p>`, id, open);
+  }
+  // The source-ages row for Details: its lamp state, age and what to do.
+  const ageBlock = r => !r ? '' : html`<h3 class="label">Age · ${DOC.sources.command}</h3>${dl([['State', r.state === 'unknown' ? `not read: ${r.error}` : r.state],
+    ['Newest', r.latest ? `${r.latest} · ${r.age_days} d old` : 'no date found'], ['Allowed', `${r.allowed_days} d`], ['Ends', r.ends || ''], ['To do', r.state === 'stale' ? r.todo : ''],
+    ['Refresh job', !r.job ? '' : r.job.error || `${r.job.name} · ${refreshText(r.job)}`]])}`;
+  function selectSourceRow(id, open) {
+    const r = srcOf(id.slice(7)); if (!r) return;
+    const st = SRC_STATE[r.state] || 'unknown';
+    selected = id; mark();
+    show(html`<div class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span><span class="label">Source</span></div>
+      <h2>${r.label}</h2>${ageBlock(r)}
+      <h3 class="label">Act</h3>${window.shell.commands.bar(id)}`, id, open);
   }
   function selectSource(open) {
     const m = DOC.mission;
@@ -158,7 +201,8 @@
       <h2>Mission telemetry export</h2>
       ${dl([['Path', m.dir], ['Cadence', 'daily export, one row per day'], ['State', m.latest ? `${m.stale ? 'stale' : 'current'} · newest row ${m.latest} · ${m.age_days} d old` : 'not read']])}
       <h3 class="label">Files in this page</h3>${dl(m.files.map(f => [f.name, f.error ? `not read: ${f.error}` : `${f.rows} rows · latest ${f.latest.slice(0, 10)}`]))}
-      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>`, 'source:mission', open);
+      <p class="note">Tank level and Aquifer read analog-daily.csv; Pumps reads pump-daily.csv; Alarms reads alarm-events.csv. The pump export lags the analog export by one day.</p>
+      ${ageBlock(srcOf('mission'))}<h3 class="label">Act</h3>${window.shell.commands.bar('source:mission')}`, 'source:mission', open);
   }
   function selectDay(d, open, series) {
     const m = DOC.mission, a = m.analog.find(r => r.date === d), p = m.pump.find(r => r.date === d);
@@ -173,10 +217,12 @@
   function select(id, open) {
     if (!id) return;
     if (id.startsWith('asset:')) selectAsset(id, open);
-    else if (id.startsWith('followup:')) selectOb(id, open);
+    else if (id.startsWith('item:')) selectOb(id, open);
+    else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
     else if (id.startsWith('alarm:')) selectAlarm(id, open);
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
+    else if (id.startsWith('source:')) selectSourceRow(id, open);
   }
 
   // ---------- Trends ----------
@@ -187,11 +233,32 @@
   ];
   const TW = 300, TH = 72;
   const rowsOf = s => (DOC ? DOC.mission[s.file] : []).filter(r => num(r[s.y]) && (!s.lo || (num(r[s.lo]) && num(r[s.hi])))).slice(-range);
+  // sd:4969: the window's min is its lowest daily low and its max its highest daily high (the plotted value on a series with
+  // no band); the median is of the plotted daily values, the middle one or the mean of the middle two.
+  const lowOf = (s, r) => +r[s.lo || s.y], highOf = (s, r) => +r[s.hi || s.y];
+  function stats(s, rows) {
+    const ys = rows.map(r => +r[s.y]).sort((a, b) => a - b), mid = ys.length >> 1;
+    const lows = rows.map(r => lowOf(s, r)), highs = rows.map(r => highOf(s, r));
+    return { min: Math.min(...lows), median: ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2, max: Math.max(...highs),
+      at: { min: lows.indexOf(Math.min(...lows)), max: highs.indexOf(Math.max(...highs)) } };
+  }
+  // The problem level (hoa_screen.thresholds): a day is beyond it when its low is under a `below` level or its high over an
+  // `above` one.
+  const levelOf = s => DOC?.thresholds?.levels?.[s.key] || null;
+  const beyond = (s, r, lv) => lv.dir === 'below' ? lowOf(s, r) < lv.value : highOf(s, r) > lv.value;
+  function levelText(s, rows, lv) {
+    const t = DOC?.thresholds;
+    if (!lv) return t?.error ? html`<span class="g-unknown">▨ problem level not read: ${t.error}</span>` : html`no problem level set`;
+    const n = rows.filter(r => beyond(s, r, lv)).length;
+    return html`<span class="${n ? 'g-warning' : ''}">${n ? '■ ' : ''}problem level ${lv.dir} ${lv.value} ${s.unit} · ${n ? `${plural(n, 'day')} beyond` : 'no day beyond'}</span>`;
+  }
   function spark(s) {
     const rows = rowsOf(s);
     if (!rows.length) return html`<figure class="spark" data-series="${s.key}"><header><span class="label">${s.title}</span></header>${unknownBlock(DOC?.mission.error || `${s.src} has no rows`)}</figure>`;
-    const ys = rows.flatMap(r => [+r[s.y], s.lo ? +r[s.lo] : +r[s.y], s.hi ? +r[s.hi] : +r[s.y]]);
-    let min = s.zero ? 0 : Math.min(...ys), max = Math.max(...ys); if (max === min) max = min + 1;
+    const st = stats(s, rows), lv = levelOf(s), fix = v => (+v).toFixed(1);
+    let min = s.zero ? 0 : st.min, max = st.max;
+    if (lv) { min = Math.min(min, lv.value); max = Math.max(max, lv.value); }
+    if (max === min) max = min + 1;
     const n = rows.length, step = TW / n;
     const X = i => (i + 0.5) * step, Y = v => TH - ((v - min) / (max - min)) * (TH - 6) - 3;
     const marks = [];
@@ -200,69 +267,119 @@
       marks.push(html`<polyline class="ln" points="${rows.map((r, i) => `${X(i)},${Y(+r[s.y])}`).join(' ')}"/>`);
       marks.push(html`<circle class="last" cx="${X(n - 1)}" cy="${Y(+rows[n - 1][s.y])}" r="2.5"/>`);
     } else {
-      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+      marks.push(rows.map((r, i) => html`<rect class="bar${r.date === selDay ? ' sel' : ''}${lv && beyond(s, r, lv) ? ' over' : ''}" x="${X(i) - step * 0.35}" y="${Y(+r[s.y])}" width="${step * 0.7}" height="${TH - 3 - Y(+r[s.y])}"/>`));
+    }
+    marks.push(html`<circle class="ext" data-ext="min" cx="${X(st.at.min)}" cy="${Y(st.min)}" r="2"/><circle class="ext" data-ext="max" cx="${X(st.at.max)}" cy="${Y(st.max)}" r="2"/>`);
+    if (lv) {
+      marks.push(html`<line class="limit" x1="0" x2="${TW}" y1="${Y(lv.value)}" y2="${Y(lv.value)}"/>`);
+      if (s.kind === 'line') marks.push(rows.map((r, i) => beyond(s, r, lv) ? html`<circle class="over" cx="${X(i)}" cy="${Y(lv.dir === 'below' ? lowOf(s, r) : highOf(s, r))}" r="3"/>` : ''));
     }
     const picked = rows.find(r => r.date === selDay);
     const hits = html`${s.kind === 'line' ? rows.map((r, i) => html`<circle class="mk${r.date === selDay ? ' sel' : ''}" cx="${X(i)}" cy="${Y(+r[s.y])}" r="3.5"/>`) : ''}<rect class="hit scrub" x="0" y="0" width="${TW}" height="${TH}" tabindex="0" role="button" data-series="${s.key}" data-n="${n}" aria-label="${s.title}, ${n} days. ${picked ? `${picked.date}: ${picked[s.y]} ${s.unit}. ` : ''}Tap a day, or use the left and right arrow keys."/>`;
     const last = rows[n - 1];
     return html`<figure class="spark" data-series="${s.key}">
-      <header><span class="label">${s.title}</span><span class="now">${(+last[s.y]).toFixed(1)} <small>${s.unit} · ${day(last.date)}</small></span></header>
+      <header><span class="label">${s.title}</span><span class="now">${fix(last[s.y])} <small>${s.unit} · ${day(last.date)}</small></span></header>
       <svg viewBox="0 0 ${TW} ${TH}" preserveAspectRatio="none" role="img" aria-label="${s.title}, ${n} days">
         <line class="grid" x1="0" x2="${TW}" y1="${TH - 3}" y2="${TH - 3}"/>${marks}${hits}</svg>
-      <div class="axis"><span>${day(rows[0].date)}</span><span>${min.toFixed(s.zero ? 0 : 1)}–${max.toFixed(1)} ${s.unit}</span><span>${day(last.date)}</span></div>
+      <div class="axis"><span>${day(rows[0].date)}</span><span>${day(last.date)}</span></div>
+      <p class="stats"><span>min <b>${fix(st.min)}</b></span><span>median <b>${fix(st.median)}</b></span><span>max <b>${fix(st.max)}</b> ${s.unit}</span></p>
+      <p class="level">${levelText(s, rows, lv)}</p>
       <div class="sr"><table><caption>${s.title} (${s.unit}), from ${s.src}</caption><tbody>${rows.map(r => html`<tr><th scope="row">${r.date}</th><td>${r[s.y]}</td></tr>`)}</tbody></table></div>
     </figure>`;
   }
   const drawTrends = () => put($('trend-list'), html`${SERIES.map(spark)}`);
   const daysOf = sc => rowsOf(SERIES.find(x => x.key === sc.dataset.series)).map(r => r.date);
 
-  // ---------- Ledgers ----------
-  // build: the obligations are the checkout's open followup items (hoa_screen ranks them: overdue, due within a week, the rest).
-  // Every row is real; the design's sample rows are gone.
-  function drawLedgers() {
-    const C = window.shell.commands, f = DOC?.followups;
-    put($('ob-body'), f?.error ? html`<tr><td colspan="5">${unknownBlock(f.error)}</td></tr>`
-      : OB.length ? html`${OB.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
-        <td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
-        <td class="what"><button type="button">${o.title}</button> <span class="tag real">${o.priority == null ? '' : `P${o.priority} `}#${o.item}</span><div class="detail">${dueText(o)}</div></td>
-        <td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
+  function drawSources() {
+    const C = window.shell.commands, sr = DOC?.sources;
+    put($('src-body'), !DOC ? html`` : sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
+      : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
+        return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
+        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
+        <td class="act">${C.rowActions(id)}</td></tr>`; })}`
+      : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`);
+  }
+  // ---------- Tasks (sd:4959) ----------
+  // build: one table of every open item of the checkout, followups, tasks and work, where the design had followups alone.
+  // hoa_screen ranks them: overdue, due within a week, the rest. The id is its own first column; every column with data sorts
+  // through shell.list, and a third click on the sorted header returns to the rank. Kind narrows the rows; the default is all.
+  const KINDS = ['followup', 'task', 'work'], OB_ST = { sort: '', dir: 1 };
+  let kind = 'all';
+  const OB_COLS = [['item', 'ID', 'num'], ['rank', html`<span class="sr">Urgency</span>`], ['title', 'What'], ['kind', 'Kind', 'hide-sm'],
+    ['due', 'Due', 'hide-sm'], ['status', 'Status', 'hide-sm'], ['', html`<span class="sr">Actions</span>`]];
+  const OB_BY = { item: o => o.item, rank: o => OB.indexOf(o), title: o => o.title.toLowerCase(), kind: o => o.kind, due: o => o.due_days ?? Infinity, status: o => o.status };
+  function obRows() {
+    const rows = OB.filter(o => kind === 'all' || o.kind === kind), by = OB_BY[OB_ST.sort];
+    return by ? rows.sort((a, b) => { const x = by(a), y = by(b); return (x < y ? -1 : x > y ? 1 : 0) * OB_ST.dir; }) : rows;
+  }
+  function drawTasks() {
+    const C = window.shell.commands, f = DOC?.items, n = k => OB.filter(o => o.kind === k).length;
+    const kinds = [...new Set([...KINDS, ...OB.map(o => o.kind)])].filter(n);
+    if (!kinds.includes(kind)) kind = 'all';
+    put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? OB.length : n(k)}</b></button>`)}`);
+    put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
+    const rows = obRows();
+    put($('tasks-tally'), DOC && !f.error ? html`<span>${plural(rows.length, 'open item')}</span>` : html``);
+    put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
+      : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
+        <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>
+        <td class="what"><button type="button">${o.title}</button>${o.priority == null ? '' : html` <span class="tag real">P${o.priority}</span>`}<div class="detail">${dueText(o)}</div></td>
+        <td class="hide-sm">${o.kind}</td><td class="detail hide-sm">${dueText(o)}</td><td class="src hide-sm">${o.status}</td>
         <td class="act">${C.rowActions(o.id)}</td></tr>`)}`
-      : html`<tr><td colspan="5" class="why">No open followup item in the checkout.</td></tr>`);
-    const m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
-    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="6">${unknownBlock(alErr)}</td></tr>`
-      : AL.length ? html`${AL.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button></td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td></tr>`)}`
-      : html`<tr><td colspan="6" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
+      : html`<tr><td colspan="7" class="why">No open item in the checkout.</td></tr>`);
+  }
+
+  // ---------- Alarm ledger ----------
+  function drawLedgers() {
+    const C = window.shell.commands, m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
+    const acked = AL.filter(a => a.acked).length, shown = AL.filter(a => showAcked || !a.acked);
+    put($('al-show'), DOC && !alErr ? html`<button class="chip" type="button" aria-pressed="${String(showAcked)}">Show acknowledged <span class="n">${String(acked)}</span></button>` : html``);
+    put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
+      : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
+      : AL.length ? html`<tr><td colspan="7" class="why">Every alarm event in the last 30 days is acknowledged. Show acknowledged lists them.</td></tr>`
+      : html`<tr><td colspan="7" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
 
-  function draw() { lamps(); drawMap(); legend(); drawTrends(); drawLedgers(); }
+  function draw() { lamps(); drawSources(); drawMap(); legend(); drawTrends(); drawTasks(); drawLedgers(); }
 
   // ---------- Reader (read.js) ----------
   let reader = null;
   const load = () => reader.load();
+  // One timer at a time; each read that still sees a running job sets the next.
+  function poll() { if (!polling) polling = setTimeout(() => { polling = 0; reader.reread(); }, SRC_POLL); }
   const spec = {
     source: '/api/hoa', what: 'the HOA readings',
     adopt: doc => {
       DOC = doc; M = doc.mission;
       ASSETS = doc.assets.features; LOTS = doc.base.features;
-      OB = doc.followups.rows;
-      AL = M.alarms.slice().reverse().map((a, i) => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime}:${i}`, st, why }; });
+      OB = doc.items.rows;
+      // An event's id is its datetime and text, the server's view key (hoa_screen.alarm_key), so it holds across reads.
+      AL = M.alarms.slice().reverse().map(a => { const [st, why] = alarmState(a); return { ...a, id: `alarm:${a.datetime} ${a.event}`, st, why }; });
+      ACKS = M.acks && !M.acks.available ? `Acknowledge is off: ${M.acks.reason}` : '';
+      // The end date is the site's calendar day, so the read's time is compared in the browser's zone, not UTC.
+      const today = new Date(doc.read).toLocaleDateString('en-CA');
+      SRC = (doc.sources?.rows || []).filter(r => r.state !== 'retired' && !(r.ends && r.ends < today));
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, doc.followups.error && `Followups: ${doc.followups.error}`].filter(Boolean);
+      const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'followup', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title })),
-        ...AL.map(a => ({ id: a.id, type: 'alarm', label: a.event })),
-        ...(M.dir ? [{ id: 'source:mission', type: 'source', label: 'Mission export' }] : [])];
+        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind })),
+        ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
+        ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
+        // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
+        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
+      if (SRC.some(r => r.job?.state === 'running')) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = [];
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = [];
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -271,7 +388,7 @@
     current: () => selected,
     first: () => OB[0]?.id,
     select: (id, opened) => select(id, opened),
-    unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a followup, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
+    unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };
 
   window.PAGE_COMMANDS = [
@@ -288,9 +405,10 @@
     // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
     const openItem = o => S.openItem(o.item);
     C.register(
-      { id: 'followup.draft', on: 'followup', label: 'Draft followup', key: 'd', risk: 'safe', primary: () => true,
+      // A followup's first action drafts it; any other kind's opens the item (sd:4959).
+      { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
         run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },
-      { id: 'followup.open', on: 'followup', label: 'Open item', key: 'o', risk: 'safe', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
+      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
@@ -305,7 +423,8 @@
     $('map').addEventListener('click', e => {
       if (dragged) return;
       const a = e.target.closest('[data-asset]'); if (a) { select(`asset:${a.dataset.asset}`, true); return; }
-      const t = e.target.closest('[data-tract]'); if (t) selectTract(t.dataset.tract, true);
+      const t = e.target.closest('[data-tract]'); if (t) { selectTract(t.dataset.tract, true); return; }
+      const l = e.target.closest('[data-lot]'); if (l) selectLot(l.dataset.lot, true);
     });
     $('map').addEventListener('keydown', e => {
       const a = e.target.closest('[data-asset]');
@@ -348,12 +467,56 @@
       $('range').querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x === c ? 'true' : 'false'));
       drawTrends();
     });
-    ['ob-body', 'al-body'].forEach(b => $(b).addEventListener('click', e => {
+    // sortBy flips a sorted header; a third click, on a descending one, returns to the rank instead.
+    $('ob-head').addEventListener('click', e => {
+      const b = e.target.closest?.('button[data-sort]');
+      if (b && OB_ST.sort === b.dataset.sort && OB_ST.dir < 0) { OB_ST.sort = ''; S.list.keepFocus(e, drawTasks); }
+      else if (S.list.sortBy(e, OB_ST)) S.list.keepFocus(e, drawTasks);
+    });
+    $('ob-kinds').addEventListener('click', e => {
+      const b = e.target.closest('button[data-kind]'); if (!b) return;
+      kind = b.dataset.kind; drawTasks();
+    });
+    // ---------- Acknowledge (sd:4967) ----------
+    // The workflow database's view state, as Designs' Hide: POST /api/hoa/alarm. Undo is the same post with the old value.
+    // A 409 (the export no longer holds the event) names the event, and the shell reads again.
+    const ack = (o, acked) => S.post('/api/hoa/alarm', { key: o.key, acked }).then(v => reader.reread().then(() => v));
+    const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
+    C.register(
+      { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event here only; the Mission portal is not told. Undo shows it.',
+        key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. Show acknowledged lists it.`), undo: o => ack(o, false) },
+      { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
+        key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
+        run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
+    );
+    // ---------- Refresh a source (sd:4965) ----------
+    // Each refreshable source has a manual cron job (hoa_screen.REFRESH_JOBS). Its row registers Management's shared Retry
+    // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off
+    // reason. The run's state and its last output line come back with the next read.
+    const facts = o => { const j = srcOf(o.source)?.job || {};
+      return { name: j.name, service: j.service, failed: j.state === 'failed', exit: j.last_exit,
+        capability: j.error ? { allowed: false, reason: j.error } : j.state === 'running' ? { allowed: false, reason: `${j.name} is running now` } : j.capabilities?.retry }; };
+    const refresh = o => { const j = srcOf(o.source).job;
+      return S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision })
+        .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+    C.register(
+      { ...window.commands.retry({ job: facts, run: refresh }),
+        does: o => o.source === 'vantaca' ? 'Pulls Vantaca invoices once in signed-in Chrome, up to 2 h. Nothing to undo.'
+          : 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.' },
+      window.commands.showLog({ job: facts }),
+    );
+    $('al-show').addEventListener('click', e => {
+      if (!e.target.closest('.chip')) return;
+      showAcked = !showAcked; drawLedgers();
+    });
+    document.addEventListener('shell:picked', e => $('al-body').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
+    ['ob-body', 'al-body', 'src-body'].forEach(b => $(b).addEventListener('click', e => {
       if (e.target.closest('.rowact')) return;
       const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));
     document.addEventListener('shell:open', e => select(e.detail, true));
-    S.suggest(['Which HOA followup is most overdue, and who is it waiting on?', 'How did A2 pump runtime change over the last 30 days?', 'Which assets are not in service?']);
+    S.suggest(['Which HOA task is most overdue, and who is it waiting on?', 'How did A2 pump runtime change over the last 30 days?', 'Which assets are not in service?']);
     load();
   });
 })();

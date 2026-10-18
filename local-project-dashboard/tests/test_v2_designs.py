@@ -50,7 +50,8 @@ def page(path, **fields):
 #: A ledger with one page in each state and a product with a brief and no page.
 DOC = {
     "read": "2026-09-23T12:00:00Z", "root": "~/repos/example/ui-design", "head": "abc1234", "branch": "main", "caution": 3,
-    "products": [{"name": "brand", "title": "brand brief", "brief": "products/brand/README.md", "status": "extracted; no `redesign`.", "pages": 0},
+    "products": [{"name": "brand", "title": "brand brief", "brief": "products/brand/README.md", "status": "extracted; no `redesign`.", "pages": 0,
+                  "briefText": "# brand brief\n\n**Status:** extracted; no `redesign`.\n\nWho it is for.", "briefCut": False},
                  {"name": "system", "title": "system brief", "brief": "products/system/README.md", "status": "v2 drawn.", "pages": 4}],
     "pages": [
         page(f"{PAGES}/today.html", title="Today · system", shots=["products/system/designs/shots/v2-today-1440.png", "products/system/designs/shots/v2-today-375.png"],
@@ -180,9 +181,25 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
 
     def test_the_copy_only_commands_post_nothing_and_say_so(self):
-        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); shellRun(cmd('design.brief'), C.get('product:brand')); await flush();")
+        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); await flush();")
         self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it", "Copy the line to read the brand brief"])
+        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it"])
+
+    def test_read_brief_shows_the_brief_in_details(self):
+        # Tuning: Read brief only toasted "Copy the line", its line folded shut, so it seemed to do nothing. It now selects
+        # the row and shows the brief's text in Details, as the design source's run ("Brief of <product> shown") meant.
+        out = self.run_page(f"open('{PAGES}/today.html'); shellRun(cmd('design.brief'), C.get('product:brand')); await flush(); R.details = ELS.details.html;")
+        self.assertEqual(out["posts"], [])
+        self.assertEqual(out["toasts"], ["Brief of brand shown in Details"])
+        self.assertEqual(out["selected"][-1], "product:brand")
+        self.assertIn('<pre class="brief">', out["R"]["details"])
+        self.assertIn("Who it is for.", out["R"]["details"])
+
+    def test_a_cut_brief_says_where_the_rest_is(self):
+        doc = json.loads(json.dumps(DOC))
+        doc["products"][0]["briefCut"] = True
+        out = self.run_page("open('product:brand'); R.details = ELS.details.html;", answer=f"(path) => [200, {json.dumps(doc)}]")
+        self.assertIn("The rest is in products/brand/README.md.", out["R"]["details"])
 
     def test_retake_is_off_for_a_page_shots_mjs_does_not_draw(self):
         out = self.run_page("R.off = cmd('design.shots').when(C.get('products/system/designs/v1-today.html'));")
@@ -199,35 +216,61 @@ class TheScript(unittest.TestCase):
         self.assertIn("v1 mockup · uncommitted change in the working tree", rows)
         self.assertIn("brief only · a brief and no page yet", rows)
         self.assertEqual(re.findall(r'data-filter="(\w+)" data-state="(\w+)"', lamps),
-                         [("recent", "ok"), ("stale", "caution"), ("noshot", "caution"), ("dirty", "caution"), ("brief", "ok"), ("hidden", "ok")])
-        self.assertEqual(cell_grammar(self, lamps), [("button", s) for s in ("ok", "caution", "caution", "caution", "ok", "ok", None)])
+                         [("recent", "ok"), ("stale", "caution"), ("noshot", "caution"), ("dirty", "caution"), ("brief", "ok")])
+        self.assertEqual(cell_grammar(self, lamps), [("button", s) for s in ("ok", "caution", "caution", "caution", "ok", None)])
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', lamps, re.S),
-                         [("recent", "2"), ("stale", "1"), ("noshot", "1"), ("dirty", "1"), ("brief", "1"), ("hidden", "0")])
+                         [("recent", "2"), ("stale", "1"), ("noshot", "1"), ("dirty", "1"), ("brief", "1")])
         self.assertEqual(out["text"]["sub"], "4 pages in 2 products")
         self.assertEqual(out["text"]["src"], "~/repos/example/ui-design at abc1234")
         self.assertEqual(out["page_attention"], {"state": "caution", "n": 3, "what": "pages uncommitted or without a current screenshot"})
 
-    def test_a_hidden_row_leaves_the_ledger_the_lamps_and_the_badge_and_the_hidden_lamp_shows_it(self):
-        # sd:3447: the stale page is hidden, so the Shot stale lamp and the badge drop it; Hidden lists it alone.
+    SHOW_HIDDEN = "click({ s: '.chip[data-show]', dataset: { show: 'hidden' } });"
+    SHOW_CHIPS = r'data-show="(\w+)" aria-pressed="(\w+)">\w+ <span class="n">(\d+)</span>'
+
+    def hidden_doc(self):
+        """The ledger with the stale page hidden."""
         doc = json.loads(json.dumps(DOC))
         doc["pages"][1]["hidden"] = True
         doc["store"] = {"available": True, "reason": ""}
         doc["attention"] = designs._attention(doc)
-        out = self.run_page("R.lamps = ELS.annunciator.html; click({ s: '.annunciator .cell', dataset: { filter: 'hidden' } });"
-                            " R.hidden = ELS.rows.html; R.unhide = cmd('design.unhide').when(C.get('" + PAGES + "/tasks.html'));"
-                            " R.hide = cmd('design.hide').when(C.get('" + PAGES + "/tasks.html'));", answer=f"(path) => [200, {json.dumps(doc)}]")
+        return doc
+
+    def test_a_hidden_row_leaves_the_ledger_the_lamps_and_the_badge_and_show_hidden_lists_it(self):
+        # sd:3447: the stale page is hidden, so the Shot stale lamp and the badge drop it. Tuning: Show defaults to unhidden;
+        # Show hidden lists the hidden rows alone, and the lamps count the rows Show draws.
+        out = self.run_page(f"R.lamps = ELS.annunciator.html; R.show = ELS.show.html; {self.SHOW_HIDDEN}"
+                            " R.hidden = ELS.rows.html; R.lamps2 = ELS.annunciator.html; R.show2 = ELS.show.html;"
+                            " R.unhide = cmd('design.unhide').when(C.get('" + PAGES + "/tasks.html'));"
+                            " R.hide = cmd('design.hide').when(C.get('" + PAGES + "/tasks.html'));", answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]")
         self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', out["R"]["lamps"], re.S),
-                         [("recent", "2"), ("stale", "0"), ("noshot", "1"), ("dirty", "1"), ("brief", "1"), ("hidden", "1")])
+                         [("recent", "2"), ("stale", "0"), ("noshot", "1"), ("dirty", "1"), ("brief", "1")])
+        self.assertEqual(re.findall(self.SHOW_CHIPS, out["R"]["show"]), [("unhidden", "true", "4"), ("hidden", "false", "1")])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["hidden"]), [f"{PAGES}/tasks.html"])
+        self.assertEqual(re.findall(r'data-filter="(\w+)"[^>]*>.*?<b>(\d+)</b>', out["R"]["lamps2"], re.S),
+                         [("recent", "0"), ("stale", "1"), ("noshot", "0"), ("dirty", "0"), ("brief", "0")])
+        self.assertEqual(re.findall(self.SHOW_CHIPS, out["R"]["show2"]), [("unhidden", "false", "4"), ("hidden", "true", "1")])
+        self.assertEqual(out["urls"][-1], {"show": "hidden"})
         self.assertEqual((out["R"]["unhide"], out["R"]["hide"]), (True, "already hidden"))
         self.assertEqual(out["page_attention"]["n"], 2)
+
+    def test_show_hidden_comes_from_the_address_and_an_older_hidden_lamp_link_still_lands_there(self):
+        for search in ("?show=hidden", "?f=hidden"):
+            out = self.run_page("R.rows = ELS.rows.html; R.show = ELS.show.html;", answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]", search=search)
+            self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [f"{PAGES}/tasks.html"], search)
+            self.assertEqual(re.findall(self.SHOW_CHIPS, out["R"]["show"])[1], ("hidden", "true", "1"), search)
+
+    def test_a_lamp_and_show_hidden_combine(self):
+        out = self.run_page(f"{self.SHOW_HIDDEN} click({{ s: '.annunciator .cell', dataset: {{ filter: 'noshot' }} }}); R.rows = ELS.rows.html; R.empty = ELS.empty.textContent;",
+                            answer=f"(path) => [200, {json.dumps(self.hidden_doc())}]")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [])
+        self.assertEqual(out["urls"][-1], {"f": "noshot", "show": "hidden"})
 
     def test_hide_posts_the_row_and_undo_posts_it_back(self):
         out = self.run_page(f"shellRun(cmd('design.hide'), C.get('{PAGES}/notes.html')); await flush();"
                             " cmd('design.hide').undo(C.get('" + PAGES + "/notes.html')); await flush();")
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": True}],
                                                          ["/api/designs/view", {"id": f"{PAGES}/notes.html", "hidden": False}]])
-        self.assertEqual(out["toasts"][0], "Hidden: designs/pages/notes.html. The Hidden lamp shows it.")
+        self.assertEqual(out["toasts"][0], "Hidden: designs/pages/notes.html. Show hidden lists it.")
 
     def test_an_unread_store_hides_nothing_and_turns_hide_off_with_its_reason(self):
         doc = json.loads(json.dumps(DOC))

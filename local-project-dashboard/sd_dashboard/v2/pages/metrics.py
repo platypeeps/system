@@ -11,7 +11,7 @@ from . import Api, Page
 def _read(read):
     from ... import metrics_screen
 
-    return metrics_screen.document(read.connection, now=read.now)
+    return metrics_screen.document(read.connection, now=read.now, kept=read.metrics)
 
 
 PAGE = Page(

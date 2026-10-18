@@ -2,7 +2,10 @@
 
 Reports is at `/reports` (sd:2121): job-family lamps, a seven-day run cadence
 per job, the report ledger with filters and saved views, and Details with a
-line diff against the job's previous report. `GET /api/reports`
+line diff against the job's previous report. The shell's view switch, under
+the lamps, shows the Reports view (the ledger, the default) or the Cadence view
+(`#view=cadence`); a family lamp or a cadence row shows the Reports view.
+`GET /api/reports`
 (`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
 jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
 day the job's calendar leaves out is not scheduled. The families come from
@@ -18,12 +21,8 @@ the revision the acknowledge answered; `reporting.reopen` moves the report back
 to the status it was acknowledged from (sd:2395). The page reads
 `/api/reports` through the shared reader, `read.js` (sd:2487). The Job filter
 lists every job the reading names, with or without a report (sd:2430).
-Select clean reads `GET /api/reports/clean?before=<date>`,
-v1's preview, and the bulk bar acknowledges the picked reports one by one.
-The preview's Acknowledge is the attributed batch (`--all-clean --who`,
-sd:3386): it asks who, then posts `/api/reports/acknowledge-clean` with the
-preview's cutoff and plan. It moves every selected report or none; a report that
-changed since the preview refuses the batch, and the page previews again.
-Retry posts the job route, as Management does. No status mail is read: the
-dashboard holds no message store. The old Reports area was retired in sd:3402;
-the Resources views stay in the palette as Resources (classic).
+The bulk bar acknowledges picked reports one by one. A clean run files no
+report since the quiet-run rule, so the page has no clean preview or batch;
+`sd reports acknowledge --all-clean` stays a CLI verb.
+Retry posts the job route, as Management does. The old Reports area was
+retired in sd:3402; the Resources views stay in the palette as Resources (classic).

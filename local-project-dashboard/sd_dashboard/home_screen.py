@@ -11,9 +11,10 @@ checkout (`home-tiles.conf.example` is the template), one line per tile:
     headline|<entity_id>|<name>[|<type>]          the lamp above the groups (the problems sensor)
     tile|<group>|<entity_id>|<name>[|<type>]      a tile, in its group, in file order
 
-`<type>` is optional: `alarm`, `lock`, `toggle` or `sensor`, the command set
-the tile gets. Without it the page types the tile by its domain; a virtual
-binary sensor that works as a switch needs `toggle` said.
+`<type>` is optional: `alarm`, `lock`, `toggle` or `sensor`, how the tile
+reads its state. Without it the page types the tile by its domain; a virtual
+binary sensor that works as a switch needs `toggle` said. Its commands follow
+the domain alone (`SERVICES`).
 
 A line this module cannot read is named in `config.problems` with its line
 number and skipped; the other lines still count.
@@ -40,8 +41,16 @@ tile carries the short error; an entity the answer does not list is
 no document, error or log line holds it, nor the host. No proxy is used and
 no redirect is followed, so the token goes to that host alone.
 
-**No writes.** `writes.available` is false with `WRITES_REASON`: every command
-stays off. Nothing here writes to Home Assistant.
+**Service calls (sd:4966).** `POST /api/home/service {entity_id, service, before[, confirm]}` (`service`) calls one
+Home Assistant service on one tile, `POST /api/services/<domain>/<service>` with the read's base and token, bounded
+by `SERVICE_TIMEOUT`. It refuses (400, nothing sent) an entity the tile list does not name, a service `SERVICES` does
+not allow for the entity's domain, and a `danger` service whose `confirm` is not the entity id typed out; a `before`
+that is not the digest of the tile text the page showed is a 409. Each call is one record in the command journal
+(`runner_exec.execution_journal`, Activity's "Command journal"), on the Home page's item `JOURNAL_ITEM`: the output
+file is made, with the dispatch line, before the request leaves, and the note is written with the outcome after it,
+so a stop between the two leaves the file, never a note that waits for a reconcile no palette request can finish.
+Home Assistant's own reason for a refusal (401, 403, 400) reaches the page. Then the tile's state is read again with
+`GET /api/states/<entity_id>`. `writes.available` is true once the read worked; `writes.services` is `SERVICES`.
 """
 
 from __future__ import annotations
@@ -52,6 +61,8 @@ import json
 import os
 import re
 import socket
+import sqlite3
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -59,7 +70,8 @@ from urllib.parse import urlsplit
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["CONFIG", "KEY", "NOT_LISTED", "NO_TILES", "ROW_SOURCE", "TIMEOUT", "TYPES", "WRITES_REASON", "document", "parse", "save"]
+__all__ = ["CONFIG", "JOURNAL_ITEM", "KEY", "NOT_LISTED", "NO_TILES", "ROW_SOURCE", "SERVICES", "SERVICE_TIMEOUT", "TIMEOUT", "TYPES",
+           "document", "parse", "save", "service"]
 
 #: In this machine's config directory, never supplied by a request. The checkout ships `home-tiles.conf.example` only.
 CONFIG = _config_dir() / "home-tiles.conf"
@@ -79,8 +91,26 @@ TIMEOUT = 3.0
 #: The most bytes of `/api/states` read; a larger answer is a named error, not a partial list.
 LIMIT = 16 * 1024 * 1024
 
-#: Why no command runs, on every command: this slice reads Home Assistant and never writes to it.
-WRITES_REASON = "the dashboard sends no Home Assistant commands yet"
+#: The Home Assistant services a tile may call, by the entity's domain, each with its risk (sd:4966). `undo` and `safe`
+#: run on one click; `danger` changes physical security and needs the entity id typed in `confirm`. Every other domain
+#: and service is refused.
+_SWITCH = {"turn_on": "undo", "turn_off": "undo", "toggle": "undo"}
+SERVICES = {
+    "light": _SWITCH, "switch": _SWITCH, "fan": _SWITCH, "input_boolean": _SWITCH,
+    "scene": {"turn_on": "safe"}, "script": {"turn_on": "safe"}, "button": {"press": "safe"},
+    "lock": {"lock": "danger", "unlock": "danger"},
+    "alarm_control_panel": {"alarm_arm_home": "danger", "alarm_arm_away": "danger", "alarm_arm_night": "danger", "alarm_disarm": "danger"},
+    "cover": {"open_cover": "danger", "close_cover": "danger"},
+}
+
+#: Seconds for each socket step of one service call: Home Assistant answers once the service has run, and a lock takes a while.
+SERVICE_TIMEOUT = 10.0
+
+#: The item each service call's journal note goes on: the Home page's (sd:2117), which `v2/pages/home.py` names too.
+JOURNAL_ITEM = 2117
+
+#: The most bytes of a refusal's body read for Home Assistant's reason, and the most characters of it shown.
+REASON_BYTES, REASON_CHARS = 2048, 200
 
 #: A tile whose entity the read answer does not list.
 NOT_LISTED = "not in Home Assistant"
@@ -91,7 +121,7 @@ NO_TILES = "no tile list, so Home Assistant was not read"
 #: An HA entity id: `<domain>.<object_id>`, lower case, as HA writes them.
 ENTITY = re.compile(r"[a-z_]+\.[a-z0-9_]+")
 
-#: The command sets a tile can have (the design's object types on Home).
+#: The ways a tile can read its state (the design's object types on Home).
 TYPES = ("alarm", "lock", "toggle", "sensor")
 
 
@@ -299,7 +329,7 @@ def document(connection, *, now: str, config: Path | None = None, environ=None, 
         "read": now,
         "config": {"state": state, "source": source, "problems": problems, "editor": editor},
         "reader": reader,
-        "writes": {"available": False, "reason": WRITES_REASON},
+        "writes": {"available": reader["available"], "reason": "" if reader["available"] else reader["reason"], "services": {domain: dict(names) for domain, names in SERVICES.items()}},
         "headline": headline,
         "groups": groups,
     }
@@ -350,5 +380,169 @@ def save(payload) -> object:
         # Undo posts `previous`, so a text Save would refuse (a file with a skipped line) offers none.
         previous = shown if shown and not _refused(shown) else ""
         return {"saved": KEY, "text": text, "digest": _digest("database", text), "previous": previous}
+
+    return write
+
+
+def _reason(error: urllib.error.HTTPError) -> str:
+    """Home Assistant's own words for a refusal: the `message` of a JSON body, else its first line, short and printable."""
+    try:
+        body = error.read(REASON_BYTES).decode("utf-8", "replace")
+    except (OSError, http.client.HTTPException):
+        body = ""
+    try:
+        value = json.loads(body)
+    except ValueError:
+        value = None
+    text = value["message"] if isinstance(value, dict) and isinstance(value.get("message"), str) else (body.strip().splitlines() or [""])[0]
+    text = "".join(ch if ch.isprintable() else " " for ch in text).strip()[:REASON_CHARS]
+    return text or "no reason given"
+
+
+def _call(base: str, token: str, domain: str, name: str, entity: str, timeout: float) -> dict:
+    """One `POST /api/services/<domain>/<name>`: `exit` 0 when Home Assistant ran it, 1 when it refused or was not
+    reached, None when the request left and no answer came, so whether it ran is unknown."""
+    request = urllib.request.Request(f"{base}/api/services/{domain}/{name}", data=json.dumps({"entity_id": entity}).encode(), method="POST",
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return {"exit": 0, "status": response.status, "reason": ""}
+    except urllib.error.HTTPError as error:
+        try:
+            reason = _reason(error)
+        finally:
+            error.close()
+        verb = "refused" if error.code < 500 else "failed while it ran"
+        return {"exit": 1, "status": error.code, "reason": f"Home Assistant {verb} {domain}.{name} (HTTP {error.code}): {reason}"}
+    except (TimeoutError, socket.timeout):
+        pass
+    except urllib.error.URLError as error:
+        # A refused connection or an unknown host sent nothing; any other failure may have come after the request left.
+        if isinstance(error.reason, (ConnectionRefusedError, socket.gaierror)):
+            return {"exit": 1, "status": None, "reason": f"Home Assistant did not answer: {error.reason.__class__.__name__}; nothing was sent"}
+        if not isinstance(error.reason, (TimeoutError, socket.timeout)):
+            return {"exit": None, "status": None, "reason": f"Home Assistant's answer was lost ({error.reason.__class__.__name__}); {domain}.{name} may have run"}
+    except (OSError, http.client.HTTPException) as error:
+        return {"exit": None, "status": None, "reason": f"Home Assistant's answer was lost ({error.__class__.__name__}); {domain}.{name} may have run"}
+    return {"exit": None, "status": None, "reason": f"Home Assistant gave no answer within {timeout:g} s; {domain}.{name} may have run"}
+
+
+def _reread(base: str, token: str, entity: str, timeout: float) -> tuple[dict | None, str]:
+    """The tile's state after the call, from `GET /api/states/<entity_id>`, or None and why it was not read."""
+    request = urllib.request.Request(f"{base}/api/states/{entity}", headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            row = json.loads(response.read(LIMIT))
+    except urllib.error.HTTPError as error:
+        error.close()
+        return None, f"the state was not read again: HTTP {error.code}"
+    except (OSError, http.client.HTTPException, ValueError) as error:
+        return None, f"the state was not read again: {error.__class__.__name__}"
+    if not _row(row) or row["entity_id"] != entity:
+        return None, "the state was not read again: the answer is not this entity's state"
+    return _state(row), ""
+
+
+def _journal(connection, who: str, domain: str, name: str, entity: str):
+    """The journal record of one call, opened before it leaves: (output file, finish). `finish(outcome)` writes the
+    response line and then the note, ended, with its exit code (None: unknown), and answers the note id."""
+    from sd_db import runner_exec, writes
+
+    database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    value = {"version": 1, "item": JOURNAL_ITEM, "command": ["home-assistant", f"{domain}.{name}", entity], "scope": "home-assistant",
+             "service": f"{domain}.{name}", "entity_id": entity, "output_path": str(database.parent / "executions" / f"{uuid.uuid4().hex}.log")}
+    output = runner_exec.open_output(value)  # private, exclusive and fsynced, as a palette run's
+    started = writes.now()
+    try:
+        output.write((json.dumps({"event": "dispatch", "service": value["service"], "entity_id": entity}) + "\n").encode())
+        os.fsync(output.fileno())
+    except BaseException:
+        output.close()
+        raise
+
+    def finish(outcome: dict) -> tuple[int | None, str]:
+        # The call has happened: a failed journal write is named beside its outcome, never put in the outcome's place.
+        lost = ""
+        try:
+            output.write((json.dumps({"event": "response", "exit_code": outcome["exit"], "status": outcome["status"], "reason": outcome["reason"]}) + "\n").encode())
+            os.fsync(output.fileno())
+        except OSError as error:
+            lost = f"; the output file has no response line ({error.__class__.__name__})"
+        finally:
+            output.close()
+        from sd_db.database import transaction
+        from sd_db.errors import SdDbError
+
+        try:
+            with transaction(connection):
+                note = writes.add_note(connection, JOURNAL_ITEM, "exec", "{}", session=who, started=started, ended=writes.now(),
+                                       exit_code=outcome["exit"], output_path=value["output_path"])
+                # The journal reads a version 1 record whose `note` is its own id, as `runner_exec.prepare` writes it.
+                writes.set_note_body(connection, note, json.dumps({**value, "note": note, "status": outcome["status"]}, sort_keys=True))
+        except (sqlite3.Error, SdDbError) as error:
+            return None, f"the journal note was not written ({error.__class__.__name__}: {error}); its output is {Path(value['output_path']).name}{lost}"
+        return note, lost.lstrip("; ")
+
+    finish.abandon = output.close  # a stop before the outcome: the file keeps its dispatch line and no note is written
+    return finish
+
+
+def service(payload, who: str, *, environ=None, timeout: float = SERVICE_TIMEOUT) -> object:
+    """`POST /api/home/service {entity_id, service, before[, confirm]}` (sd:4966): the write that calls one Home Assistant
+    service on one tile, or `ValueError` (400) before anything is read or sent."""
+    keys = set(payload)
+    if keys - {"confirm"} != {"entity_id", "service", "before"} or not all(isinstance(payload[key], str) for key in keys):
+        raise ValueError("Expected {entity_id, service, before[, confirm]}: the tile, the service, the digest of the tile list the page showed,"
+                         " and for a security service the entity id typed out.")
+    entity, name = payload["entity_id"], payload["service"]
+    if not ENTITY.fullmatch(entity):
+        raise ValueError(f"{entity!r} is not an entity id (domain.object_id); nothing was sent.")
+    domain = entity.split(".", 1)[0]
+    allowed = SERVICES.get(domain, {})
+    if name not in allowed:
+        offered = f"it allows {', '.join(allowed)} on {domain}" if allowed else f"it calls no {domain} service"
+        raise ValueError(f"{domain}.{name} is not a service the dashboard calls: {offered}. Nothing was sent.")
+    if allowed[name] == "danger" and payload.get("confirm") != entity:
+        raise ValueError(f"{domain}.{name} changes physical security: type {entity} to confirm. Nothing was sent.")
+    stale = {"error": "The tile list changed since this page read it; nothing was sent. Read it again.", "reload": True}
+
+    def write(connection):
+        from sd_db import workflow
+        from sd_db.database import refuse_hub_only
+
+        try:
+            origin, text = _current(connection, CONFIG)
+        except _Unread as unread:
+            return 503, {"error": f"tile list not read: {unread}; nothing was sent"}
+        if _digest(origin, text) != payload["before"]:
+            return 409, stale
+        headline, groups, _ = parse(text or "")
+        if entity not in {tile["id"] for tile in ([headline] if headline else []) + [t for g in groups for t in g["tiles"]]}:
+            return 400, {"error": f"{entity} is not a tile in the tile list; nothing was sent."}
+        try:
+            base, token = _settings(os.environ if environ is None else environ)
+        except _Failed as failed:
+            return 503, {"error": f"{failed.reason}; nothing was sent"}
+        try:
+            workflow.item_state(connection, JOURNAL_ITEM)
+        except workflow.MissingItem:
+            return 503, {"error": f"the command journal's item sd:{JOURNAL_ITEM} is missing; nothing was sent"}
+        refuse_hub_only(connection, "the runner's executions directory")
+        finish = _journal(connection, who, domain, name, entity)
+        try:
+            outcome = _call(base, token, domain, name, entity, timeout)
+        except BaseException:
+            finish.abandon()
+            raise
+        note, unjournalled = finish(outcome)
+        journal = {"note": note, "journal": unjournalled}
+        if outcome["exit"] is None:
+            return 504, {"error": f"{outcome['reason']}. Read the tiles again before you retry.", "unknown": True, **journal}
+        if outcome["exit"]:
+            # A 4xx is a refusal; a 5xx is Home Assistant failing while it ran the service, which may have done part of it.
+            after = "Nothing changed." if outcome["status"] is None or outcome["status"] < 500 else "It may have partly run; read the tiles again."
+            return 502, {"error": f"{outcome['reason']}. {after}", "status": outcome["status"], **journal}
+        state, unread = _reread(base, token, entity, min(timeout, TIMEOUT))
+        return {"sent": f"{domain}.{name}", "entity_id": entity, "state": state, "reread": unread, **journal}
 
     return write

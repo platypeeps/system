@@ -41,9 +41,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # A notify.sh call that sends a scheduled report: `-k status` or `-k brief`.
 SENDER = re.compile(r"notify.*\s-k\s+(status|brief)\b|\$NOTIFY\".*\s-k\s+(status|brief)\b", re.I)
-# The obsidian digest mails an HTML card with signed action buttons, which
-# Reports cannot show; whether it keeps mailing is an open sd:3537 question.
-PENDING = {"local-obsidian-review/obsidian-review.sh"}
 
 
 def tracked_scripts():
@@ -57,7 +54,7 @@ class InventoryTest(unittest.TestCase):
         senders = []
         for name in tracked_scripts():
             for number, line in enumerate((ROOT / name).read_text(errors="replace").splitlines(), 1):
-                if SENDER.search(line) and not line.lstrip().startswith("#") and name not in PENDING:
+                if SENDER.search(line) and not line.lstrip().startswith("#"):
                     senders.append(f"{name}:{number}: {line.strip()}")
         self.assertEqual(senders, [])
 

@@ -648,6 +648,41 @@ class BuildIdentity(unittest.TestCase):
                 path.unlink()
                 self.assertEqual(self.digests(), before)
 
+    def test_a_pack_bin_module_the_queue_imports_changes_the_library_identity(self):
+        # sd:TBD: the Queue imports `sd_lane` from the pack's bin/, so a pack update to it must restart the server.
+        from sd_dashboard import PACK_MODULES
+
+        library = self.root / "pack" / "lib" / "sd_db"
+        library.mkdir(parents=True)
+        (library / "__init__.py").write_text("# package\n")
+        def digests():
+            return runtime.build_digests(library_root=library, dashboard_root=self.dashboard)
+        before = digests()
+        for name in PACK_MODULES:
+            with self.subTest(module=name):
+                path = self.root / "pack" / "bin" / f"{name}.py"
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("# v1\n")
+                added = digests()
+                self.assertNotEqual(added["library_digest"], before["library_digest"])
+                self.assertEqual(added["dashboard_digest"], before["dashboard_digest"])
+                path.write_text("# v2\n")
+                self.assertNotEqual(digests()["library_digest"], added["library_digest"])
+                path.unlink()
+                self.assertEqual(digests(), before)
+
+    def test_the_pack_modules_name_every_bin_module_sd_lane_imports(self):
+        # A pin that gives `sd_lane` another bin/ import fails here, before a server misses its change.
+        from sd_dashboard import PACK_MODULES, pack_bin
+
+        folder = pack_bin()
+        probe = ("import json, sys; sys.path[:0] = [sys.argv[2]]; sys.path.append(sys.argv[1]); import sd_lane; "
+                 "print(json.dumps(sorted(name for name, module in sys.modules.items() "
+                 "if (getattr(module, '__file__', None) or '').startswith(sys.argv[1] + '/'))))")
+        done = subprocess.run([sys.executable, "-I", "-c", probe, str(folder), str(folder.parent / "lib")],
+                              capture_output=True, text=True, check=True, cwd=self.root)
+        self.assertEqual(json.loads(done.stdout), sorted(PACK_MODULES))
+
     def test_health_keeps_startup_digests_and_refuses_changed_disk_build(self):
         from sd_db.migrate import initialise
         from sd_dashboard import server

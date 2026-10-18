@@ -1,7 +1,7 @@
 // Home (sd:2117): the design source's products/system/designs/v2/home.js at d82daa1, ported; home-kiosk.js sets the wall display flag. Each change from the reference is marked
 // "build:". The tiles are /api/home (home_screen.py): the entities <config>/project-dashboard/home-tiles.conf names, each with its
-// live Home Assistant state and last change, or a named error (sd:3427), never sample data. Every command is off with the
-// document's write reason: the page sends nothing to Home Assistant. Edit tiles (sd:3987) writes the tile list's setting row.
+// live Home Assistant state and last change, or a named error (sd:3427), never sample data. A tile's Act section calls the
+// Home Assistant services its domain allows through /api/home/service (sd:4966). Edit tiles (sd:3987) writes the tile list's setting row.
 const { html, put, plural } = window.markup;
 // Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 window.PAGE_COMMANDS = [{ label: 'Wall display', icon: 'maximize-2', run: () => document.dispatchEvent(new CustomEvent('home:kiosk', { detail: true })) }];
@@ -10,17 +10,55 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'HA not read' };
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest } = window.shell;
   const C = window.shell.commands;
-  const GLYPH = { ok: '●', caution: '▲', warning: '■', unknown: '▨' };
+  // neutral is no state: a door's open or closed is a fact, not a fault, so it has no colour and no glyph.
+  const GLYPH = { ok: '●', caution: '▲', warning: '■', unknown: '▨', neutral: '' };
   const domain = id => id.split('.')[0];
   const EVERY = 60 * 1000; // how often a visible page reads the tiles again
 
   // ---------- Data (build) ----------
   // E: entity id -> { id, name, domain, group, state, error }. HEAD: the headline entity or null. REASON: why the read gave no
-  // state, '' when it did. WRITES: why no command runs.
-  let E = {}, HEAD = null, GROUPS = [], REASON = '', WRITES = '', READ = null, CONFIG = null;
+  // state, '' when it did. WRITES: why no command runs, '' when they can. SERVICES: the server's allowlist, domain -> service -> risk.
+  let E = {}, HEAD = null, GROUPS = [], REASON = '', WRITES = '', SERVICES = {}, READ = null, CONFIG = null;
+  // build (sd:4959): a binary sensor reads by its Home Assistant device_class: [lamp when on, lamp when off, on words, off
+  // words, what on means]. On is good for the first group (connectivity off is caution, power off a plain fact), a fault for
+  // the second, and a plain fact for the third; a sensor with no class is neutral on/off, never a warning. The words follow Home Assistant's own state names.
+  const BINARY = {
+    connectivity: ['ok', 'caution', 'connected', 'disconnected', 'it is connected'], // off: a lost link is worth a look
+    power: ['ok', 'neutral', 'connected', 'disconnected', 'it is connected to power'],
+    plug: ['ok', 'neutral', 'plugged in', 'unplugged', 'it is plugged in'],
+    running: ['ok', 'neutral', 'running', 'not running', 'it is running'],
+    battery_charging: ['ok', 'neutral', 'charging', 'not charging', 'the battery is charging'],
+    presence: ['ok', 'neutral', 'home', 'away', 'someone is home'],
+    problem: ['warning', 'ok', 'problem', 'clear', 'a problem is reported'],
+    smoke: ['warning', 'ok', 'detected', 'clear', 'smoke is detected'],
+    gas: ['warning', 'ok', 'detected', 'clear', 'gas is detected'],
+    carbon_monoxide: ['warning', 'ok', 'detected', 'clear', 'carbon monoxide is detected'],
+    moisture: ['warning', 'ok', 'wet', 'dry', 'water is detected'],
+    safety: ['warning', 'ok', 'unsafe', 'safe', 'it is unsafe'],
+    tamper: ['warning', 'ok', 'tampered', 'clear', 'tampering is detected'],
+    heat: ['warning', 'ok', 'hot', 'normal', 'it is too hot'],
+    cold: ['warning', 'ok', 'cold', 'normal', 'it is too cold'],
+    door: ['neutral', 'neutral', 'open', 'closed', 'the door is open'],
+    window: ['neutral', 'neutral', 'open', 'closed', 'the window is open'],
+    opening: ['neutral', 'neutral', 'open', 'closed', 'it is open'],
+    garage_door: ['neutral', 'neutral', 'open', 'closed', 'the garage door is open'],
+    motion: ['neutral', 'neutral', 'motion', 'clear', 'motion is detected'],
+    occupancy: ['neutral', 'neutral', 'occupied', 'clear', 'the space is occupied'],
+  };
+  const binaryOf = id => BINARY[E[id]?.state?.device_class];
+  // What a state means, in one line for Details: the binary table above, else the domain's.
+  const DOMAIN_MEANS = { alarm_control_panel: 'the alarm mode: disarmed, armed home, armed away or triggered', lock: 'locked or unlocked; jammed means the lock did not finish moving',
+    input_boolean: 'on or off, a switch Home Assistant keeps', sensor: 'a value Home Assistant reports' };
+  function means(id) {
+    const e = E[id], b = binaryOf(id), dc = e.state?.device_class;
+    if (id === HEAD?.id) return 'on means problems are reported';
+    if (domain(id) === 'binary_sensor') return b ? `on means ${b[4]}` : 'on or off, with no device class to judge it by';
+    if (domain(id) === 'sensor' && dc) return `a ${dc.replace(/_/g, ' ')} Home Assistant reports`;
+    return DOMAIN_MEANS[domain(id)] || 'a state Home Assistant reports';
+  }
   // The reference's state grammar per entity kind: [lamp state, words]. A tile claims only a state it was given; one without
   // says why (its error). build: the headline reads on/off (the reference counted a sample attribute), and a binary sensor is
-  // lit by its domain, not by an id that holds "wan" or "fault".
+  // lit by its device_class (BINARY), not by an id that holds "wan" or "fault".
   function read(id) {
     const e = E[id];
     if (!e?.state) return ['unknown', e?.error || REASON || 'no reading'];
@@ -31,7 +69,7 @@ addEventListener('DOMContentLoaded', () => {
     if (typeOf(id) === 'lock') return s === 'locked' ? ['ok', 'locked'] : s === 'jammed' ? ['warning', 'jammed'] : ['caution', s];
     if (id.startsWith('sensor.backup')) return (Date.now() - new Date(s)) / 3600000 > 36 ? ['warning', 'stale · over 36 h'] : ['ok', 'succeeded'];
     if (typeOf(id) === 'toggle') return ['ok', s];
-    if (domain(id) === 'binary_sensor') return s === 'on' ? ['warning', 'detected'] : ['ok', 'clear'];
+    if (domain(id) === 'binary_sensor') { const b = binaryOf(id) || ['neutral', 'neutral', 'on', 'off']; return s === 'on' ? [b[0], b[2]] : s === 'off' ? [b[1], b[3]] : ['neutral', s]; }
     return ['ok', e.state.unit ? `${s} ${e.state.unit}` : s];
   }
   // The age: the shell's relative-time renderer fills each <time class="rel"> from its last change.
@@ -41,33 +79,70 @@ addEventListener('DOMContentLoaded', () => {
   const iconOf = id => id === HEAD?.id ? 'bell-ring' : id.startsWith('sensor.backup') ? 'hard-drive-download' : ICONS[domain(id)] || 'circle-help';
 
   // ---------- Commands (products/system/commands.md) ----------
-  // Home rule: safe toggles and lock run with Undo; arm, disarm and unlock ask first and get no Undo. The CLI line is the HA REST
-  // service call a writer will make. build: each write is off with the document's write reason, so none runs, and none declares
-  // an Undo it could not honour. Read state is copy only: its line names $HA_TOKEN and $HA_URL, never a value.
+  // sd:4966: a tile's commands are the Home Assistant services its domain allows, as the server's allowlist (writes.services)
+  // says; a domain with none is a read-only sensor. On and off run at once with Undo (the other one; Toggle undoes itself);
+  // scene, script and button run once with no Undo. Lock, alarm and cover change physical security: each asks for the entity
+  // id typed out, which the server checks, and has no Undo. Each posts /api/home/service with the tile list's digest; the
+  // answer carries the tile's state read again, which the tile shows at once; any failure but a 400 reads the tiles again. The CLI line is the same REST call; it names
+  // $HA_TOKEN and $HA_URL, never a value.
   const svcCli = svc => o => `curl -X POST -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/services/${svc(o).replace('.', '/')}" -d '{"entity_id":"${o.id}"}'`;
+  // build: a tile's configured type wins for how it reads (a virtual switch says toggle); otherwise the domain decides.
   const TYPE = { alarm_control_panel: 'alarm', lock: 'lock', input_boolean: 'toggle' };
-  // build: a tile's configured type wins (a virtual switch says toggle); otherwise the domain decides.
   const typeOf = id => E[id]?.type || TYPE[domain(id)] || 'sensor';
+  // The command set: the domain when the allowlist names it, else the read-only sensor's.
+  const kindOf = id => SERVICES[domain(id)] ? domain(id) : 'sensor';
   // build: the reference read the place from sample names; the tile's configured group names it here.
   const place = o => E[o.id]?.group || 'home';
-  const security = svc => o => `This calls ${svc} on ${o.id}. It changes physical security (${place(o)}).`;
-  const off = () => WRITES || 'not read yet';
-  const notSent = o => `Not sent: ${off()} · ${o.label}`;
+  const security = svc => o => `This calls ${svc} on ${o.id}. It changes physical security (${place(o)}). There is no Undo.`;
+  const valueOf = o => E[o.id]?.state?.value;
+  // A service is off when writes are, when the allowlist no longer names it, or when the tile has no state to act from.
+  const offFor = (d, svc) => o => WRITES || (!SERVICES[d]?.[svc] ? `the server does not allow ${d}.${svc}` : !E[o.id]?.state ? `no state read: ${E[o.id]?.error || REASON || 'not read'}` : true);
+  function send(o, svc, confirm) {
+    const body = { entity_id: o.id, service: svc, before: CONFIG?.editor?.digest || '', ...(confirm ? { confirm } : {}) };
+    return window.shell.post('/api/home/service', body).then(out => {
+      if (E[o.id] && out.state) { E[o.id].state = out.state; render(); if (selected === o.id) showDetails(o.id, false); }
+      const extra = [out.reread, out.journal].filter(Boolean).join('; ');
+      return `${o.label} · ${domain(o.id)}.${svc} sent${extra ? ` · ${extra}` : ''}`;
+    }, err => { if (err.status !== 400) reading.load(true); throw err; }); // only a 400 surely sent nothing
+  }
+  // One command per allowed service: domain, service, label, key, does, and the states it is the row's button in (none
+  // given: always; [] never).
+  const SWITCHES = ['light', 'switch', 'fan', 'input_boolean'];
+  const OPPOSITE = { turn_on: 'turn_off', turn_off: 'turn_on', toggle: 'toggle' };
+  const one = (d, svc, label, key, does, primaryOn) => ({ id: `${d}.${svc}`, on: d, label, key, does, executes: true,
+    primary: primaryOn ? o => primaryOn.includes(valueOf(o)) : () => true, when: offFor(d, svc), cli: svcCli(() => `${d}.${svc}`) });
+  const undoable = (d, svc, label, key, does, primaryOn) => ({ ...one(d, svc, label, key, does, primaryOn), risk: 'undo',
+    run: o => send(o, svc), undo: o => send(o, OPPOSITE[svc]).then(() => true) });
+  const safe = (d, svc, label, key, does) => ({ ...one(d, svc, label, key, does), risk: 'safe', run: o => send(o, svc) });
+  // The typed confirm: the shell's danger dialog with one required field; OK sends what was typed and the server compares it.
+  const danger = (d, svc, label, key, does, primaryOn) => ({ ...one(d, svc, label, key, does, primaryOn), risk: 'confirm', danger: () => true,
+    consequence: security(`${d}.${svc}`),
+    fields: o => [{ name: 'confirm', label: `Type ${o.id} to confirm`, required: true, placeholder: o.id, help: 'The dashboard sends it only when this matches the entity id.' }],
+    run: (o, v) => send(o, svc, v?.confirm) });
   function registerCommands() {
     C.register(
-      { id: 'alarm.arm_home', on: 'alarm', label: 'Arm home', key: 'h', risk: 'confirm', primary: () => true, when: off, cli: svcCli(() => 'alarm_control_panel.alarm_arm_home'), consequence: security('alarm_control_panel.alarm_arm_home'), run: notSent },
-      { id: 'alarm.arm_away', on: 'alarm', label: 'Arm away', key: 'w', risk: 'confirm', when: off, cli: svcCli(() => 'alarm_control_panel.alarm_arm_away'), consequence: security('alarm_control_panel.alarm_arm_away'), run: notSent },
-      { id: 'alarm.disarm', on: 'alarm', label: 'Disarm', key: 'd', risk: 'confirm', primary: () => true, when: off, cli: svcCli(() => 'alarm_control_panel.alarm_disarm'), consequence: security('alarm_control_panel.alarm_disarm'), run: notSent },
-      { id: 'lock.lock', on: 'lock', label: 'Lock', key: 'l', risk: 'undo', primary: () => true, when: off, cli: svcCli(() => 'lock.lock'), run: notSent },
-      { id: 'lock.unlock', on: 'lock', label: 'Unlock', key: 'u', risk: 'confirm', primary: () => true, when: off, cli: svcCli(() => 'lock.unlock'), consequence: security('lock.unlock'), run: notSent },
-      { id: 'toggle.on', on: 'toggle', label: 'Turn on', key: 'o', risk: 'undo', primary: () => true, when: off, cli: svcCli(() => 'input_boolean.turn_on'), run: notSent },
-      { id: 'toggle.off', on: 'toggle', label: 'Turn off', key: 'f', risk: 'undo', primary: () => true, when: off, cli: svcCli(() => 'input_boolean.turn_off'), run: notSent },
+      ...SWITCHES.flatMap(d => [
+        undoable(d, 'turn_on', 'Turn on', 'o', 'Turns it on through Home Assistant. Undo turns it off.', ['off']),
+        undoable(d, 'turn_off', 'Turn off', 'f', 'Turns it off through Home Assistant. Undo turns it on.', ['on']),
+        undoable(d, 'toggle', 'Toggle', 't', 'Flips it through Home Assistant. Undo flips it back.', []),
+      ]),
+      safe('scene', 'turn_on', 'Activate', 'a', 'Activates the scene. No Undo: the scene keeps no prior state.'),
+      safe('script', 'turn_on', 'Run', 'r', 'Runs the script through Home Assistant. No Undo.'),
+      safe('button', 'press', 'Press', 'p', 'Presses the button through Home Assistant. No Undo.'),
+      danger('lock', 'unlock', 'Unlock', 'u', 'Unlocks the door. Type the entity id first; no Undo.', ['locked', 'jammed']),
+      danger('lock', 'lock', 'Lock', 'l', 'Locks the door. Type the entity id first; no Undo.', ['unlocked', 'open']),
+      danger('alarm_control_panel', 'alarm_disarm', 'Disarm', 'd', 'Disarms the alarm. Type the entity id first; no Undo.', ['armed_home', 'armed_away', 'armed_night', 'triggered']),
+      danger('alarm_control_panel', 'alarm_arm_home', 'Arm home', 'h', 'Arms the alarm for home. Type the entity id first; no Undo.', ['disarmed']),
+      danger('alarm_control_panel', 'alarm_arm_away', 'Arm away', 'w', 'Arms the alarm for away. Type the entity id first; no Undo.', []),
+      danger('alarm_control_panel', 'alarm_arm_night', 'Arm night', 'n', 'Arms the alarm for night. Type the entity id first; no Undo.', []),
+      danger('cover', 'open_cover', 'Open', 'o', 'Opens the cover or garage door. Type the entity id first; no Undo.', ['closed']),
+      danger('cover', 'close_cover', 'Close', 'x', 'Closes the cover or garage door. Type the entity id first; no Undo.', ['open']),
       // Read-only sensors: the one command is the state read a reader makes.
-      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: false, cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: () => 'Copy the line; it reads HA_TOKEN and HA_URL from your shell' },
+      { id: 'sensor.read', on: 'sensor', label: 'Read state', key: 's', risk: 'safe', executes: false, does: 'Shows the curl line that reads this state; the dashboard does not run it.', cli: o => `curl -H "Authorization: Bearer $HA_TOKEN" "$HA_URL/api/states/${o.id}"`, run: () => 'Copy the line; it reads HA_TOKEN and HA_URL from your shell' },
     );
   }
   // build: a tile shows its commands only once one of them can run.
-  const actionable = id => !WRITES && typeOf(id) !== 'sensor';
+  const actionable = id => !WRITES && kindOf(id) !== 'sensor';
 
   // ---------- Render ----------
   const groupsEl = document.getElementById('groups');
@@ -103,6 +178,10 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Details ----------
   const details = document.getElementById('details');
+  // What the Act section's commands do, by command set (sd:4966).
+  const SECURITY = 'Changes physical security: you type the entity id to confirm, and there is no Undo.';
+  const ACT = { sensor: 'Read-only: Home Assistant has no service for this domain that the dashboard calls.', lock: SECURITY, alarm_control_panel: SECURITY, cover: SECURITY,
+    ...Object.fromEntries(SWITCHES.map(d => [d, 'Runs at once through Home Assistant; Undo for 10 seconds.'])), once: 'Runs once through Home Assistant; no Undo.' };
   function markSelected() { document.querySelectorAll('.tile').forEach(t => t.setAttribute('aria-current', String(t.dataset.id === selected))); }
   function showDetails(id, open = true) {
     const e = E[id]; if (!e) return;
@@ -111,15 +190,17 @@ addEventListener('DOMContentLoaded', () => {
     put(details, html`
       <div class="kind"><span class="label">${domain(id).replace(/_/g, ' ')}</span></div>
       <h2>${e.name}</h2>
+      <p class="means">${e.name}: ${means(id)}.</p>
       <dl>
         <dt>State</dt><dd class="g-${st}"><span aria-hidden="true">${GLYPH[st]}</span> ${words}${e.state ? html` <span class="g-queued">(${e.state.value})</span>` : ''}</dd>
         <dt>Entity</dt><dd><code>${id}</code></dd>
         <dt>Group</dt><dd>${e.group || 'headline'}</dd>
         <dt>Last changed</dt><dd>${e.state ? changedAt(id) : 'not read'}</dd>
+        <dt>Source</dt><dd>Home Assistant <code>/api/states</code>${e.state?.device_class ? html`, device class <code>${e.state.device_class}</code>` : ''}</dd>
       </dl>
       ${e.state ? '' : html`<p class="why">Not read: ${REASON || e.error || 'no reading'}.</p>`}
       <h3 class="label">Act</h3>${C.bar(id)}
-      <p class="why">${typeOf(id) === 'sensor' ? 'Read-only sensor. Nothing to act on from here.' : typeOf(id) === 'toggle' ? 'Runs at once; Undo for 10 seconds, once the dashboard sends it.' : 'Arm, disarm and unlock ask first and name the target; they have no Undo. Lock runs at once with Undo.'}</p>`);
+      <p class="why">${ACT[kindOf(id)] || ACT.once}</p>`);
     details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
     C.select(id);
     if (open && !document.documentElement.hasAttribute('data-kiosk')) window.shell.openPane('tab-details');
@@ -165,7 +246,7 @@ addEventListener('DOMContentLoaded', () => {
   function adopt(doc) {
     // body[data-observed] and data-interval (minutes) give the shell's staleness band on #refresh its reading time and cadence.
     READ = doc.read; document.body.dataset.observed = doc.read; document.body.dataset.interval = String(EVERY / 60000); CONFIG = doc.config; REASON = doc.reader?.available ? '' : (doc.reader?.reason || 'Home Assistant not read');
-    WRITES = doc.writes?.available ? '' : (doc.writes?.reason || 'no Home Assistant writes');
+    WRITES = doc.writes?.available ? '' : (doc.writes?.reason || 'no Home Assistant writes'); SERVICES = doc.writes?.services || {};
     HEAD = doc.headline; GROUPS = doc.groups || []; E = {};
     if (HEAD) E[HEAD.id] = { ...HEAD, group: null };
     GROUPS.forEach(g => g.tiles.forEach(t => { E[t.id] = { ...t, group: g.name }; }));
@@ -178,9 +259,9 @@ addEventListener('DOMContentLoaded', () => {
       : REASON ? { kind: 'partial', title: 'No state read', text: `The tiles are the configured entities; none has a state: ${REASON}.`, source: '/api/home' }
       : unread.length ? { kind: 'partial', title: 'Some tiles not read', text: `${plural(unread.length, 'tile')} without a state: ${unread.map(e => `${e.id} (${e.error || 'no reading'})`).join('; ')}.`, source: '/api/home' }
       : null;
-    return { objects: Object.values(E).map(e => ({ id: e.id, type: typeOf(e.id), label: e.name })), state };
+    return { objects: Object.values(E).map(e => ({ id: e.id, type: kindOf(e.id), label: e.name })), state };
   }
-  function clear(err) { document.getElementById('edit-tiles').disabled = true; E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; delete document.body.dataset.observed; }
+  function clear(err) { document.getElementById('edit-tiles').disabled = true; E = {}; HEAD = null; GROUPS = []; READ = null; CONFIG = null; REASON = `the tiles were not read: ${err.message}`; WRITES = REASON; SERVICES = {}; delete document.body.dataset.observed; }
   function unselect() {
     selected = null; markSelected();
     put(details, html`<p class="why">Select a tile to see its entity and its state.</p>`);

@@ -5,8 +5,9 @@
   Data: /api/designs (designs.ledger: every .html the tab serves under products/<product>/, its kind, title, size and last
   commit, its screenshots and which of them are stale, the working tree's changes, and each product's brief, including a
   product with a brief and no page), read when the page opens. Each page and screenshot opens at /designs/<path>, served
-  sandboxed as drawn. History, Retake screenshots and Read brief are copy only. Hide and Unhide post /api/designs/view
-  (sd:3447), the view state Documents' Hide writes; that is the page's one write. Nothing here is sample data. The old
+  sandboxed as drawn. History and Retake screenshots are copy only; Read brief shows a brief-only product's brief in Details, from the ledger. Hide and Unhide post /api/designs/view
+  (sd:3447), the view state Documents' Hide writes; that is the page's one write. Show lists unhidden rows by default, or
+  the hidden ones. Nothing here is sample data. The old
   listing was retired in sd:3402.
 -->
 <html lang="en">
@@ -51,6 +52,7 @@
       <div class="sec-head">
         <h2 id="list-h">Pages <button class="help" type="button" aria-label="Help: Pages" data-help="<b>One row per drawn page,</b> grouped by product; a product with a brief and no page has one row. <b>▲</b> means the page is uncommitted, has no screenshot, or has a stale one: the page or a file it loads changed after the capture. The time is that commit. Enter opens Details, where the page is one link away.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <div class="fgroup" id="show" role="group" aria-label="Show"></div>
         <p class="tally" id="tally"></p>
       </div>
       <table class="ledger" aria-labelledby="list-h">

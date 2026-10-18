@@ -8,7 +8,8 @@
 # by CRON_JOBS_EXTRA_DIRS (see below), as sourced shell vars. <config> is
 # ${SYSTEM_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/system}.
 # The repository ships no jobs; examples/ holds sample job files to copy.
-#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N)
+#   JOB_SCHEDULE   5-field cron, LOCAL time (supported: * N a,b,c */N), or
+#                  "manual": no calendar, it runs only when kickstarted
 #   JOB_PROMPT     prompt or /skill invocation passed to `claude -p`
 #   JOB_COMMAND    alternative to JOB_PROMPT: plain shell command run via
 #                  `bash -c` — for jobs that don't need Claude at all
@@ -410,7 +411,8 @@ write_plist() { # job name
     <string>$x_root</string>
 
 EOF
-    calendar_xml "$JOB_SCHEDULE"
+    # A manual job has no calendar: only `launchctl kickstart` starts it.
+    [ "$JOB_SCHEDULE" = manual ] || calendar_xml "$JOB_SCHEDULE"
     cat <<EOF
 
     <key>RunAtLoad</key>
@@ -1365,7 +1367,11 @@ cmd_install() {
   # record here would have to claim an exit code for a run that has not
   # happened, which is exactly the fabricated positive evidence the inverted
   # default exists to refuse. Silence needs no repair.
-  echo "installed: $job  (schedule: $JOB_SCHEDULE local, plist: $(plist_for "$job"))"
+  if [ "$JOB_SCHEDULE" = manual ]; then
+    echo "installed: $job  (schedule: manual, runs only when started, plist: $(plist_for "$job"))"
+  else
+    echo "installed: $job  (schedule: $JOB_SCHEDULE local, plist: $(plist_for "$job"))"
+  fi
 }
 
 # The lock only where there is a label to boot out: a job never loaded here
@@ -1450,6 +1456,9 @@ cmd_status() {
     echo "=== $job ==="
     if [ -f "$(plist_for "$job")" ]; then
       installed=$((installed + 1))
+      # The installed plist decides, not the job file: it is what launchd runs.
+      grep -q StartCalendarInterval "$(plist_for "$job")" ||
+        echo "  schedule: manual; runs only when started (launchctl kickstart)"
       if launchd_is_running "$job"; then
         echo "  a run is in progress; launchd has counted it and it has" \
              "not recorded an outcome yet"
@@ -1571,6 +1580,8 @@ cmd_watchdog() {
     [ -f "$(plist_for "$job")" ] || continue  # not installed on this machine
     [ "$job" = "watchdog-daily" ] && continue # its own log is this run
     load_job "$job"
+    # A manual job has no cadence to fall behind.
+    if [ "$JOB_SCHEDULE" = manual ]; then echo "manual  $job"; continue; fi
     set -f
     # shellcheck disable=SC2086
     set -- $JOB_SCHEDULE

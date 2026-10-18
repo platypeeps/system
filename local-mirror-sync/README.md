@@ -314,8 +314,8 @@ removed.
 `nas-full-copy.sh run` copies `NAS_COPY_SRC` to `NAS_COPY_DST` between 23:00
 and 05:00 with `rsync -rlt` and no `--delete`; the `nas-full-copy` cron job
 runs it. It stops rsync at 05:00 and the next night continues, refuses (exit 1)
-when either volume is not mounted, and notifies once when a run completes after
-an incomplete one. Set the two volumes in `<config>/mirror-sync/.env` (see
+when either volume is not mounted, and files one brief (`sd reports brief add`,
+shown on the dashboard's Today) when a run completes after an incomplete one. Set the two volumes in `<config>/mirror-sync/.env` (see
 `.env.example`). The last run's outcome and the lock sit in
 `${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/`, not in
 the config folder, which holds values only (sd:3990).

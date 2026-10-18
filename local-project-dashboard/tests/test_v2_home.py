@@ -76,7 +76,8 @@ def tearDownModule():
 
 
 class Stub:
-    """A Home Assistant stand-in on 127.0.0.1: records each request and answers as `answer(path)` says."""
+    """A Home Assistant stand-in on 127.0.0.1: records each request and answers as `answer(path)` says, or
+    `answer(path, "POST")` for a service call, whose body it records too."""
 
     def __init__(self, answer):
         calls = self.calls = []
@@ -84,7 +85,14 @@ class Stub:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 calls.append((self.path, self.headers.get("Authorization")))
-                status, body, headers = answer(self.path)
+                self.reply(*answer(self.path))
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                calls.append(("POST " + self.path, self.headers.get("Authorization"), json.loads(self.rfile.read(length) or b"null")))
+                self.reply(*answer(self.path, "POST"))
+
+            def reply(self, status, body, headers):
                 data = body if isinstance(body, bytes) else json.dumps(body).encode()
                 try:
                     self.send_response(status)
@@ -132,15 +140,22 @@ STATES = [
 ]
 
 
-#: The design's Home commands (design source products/system/designs/pages/home.html): id, object type, label, key, risk.
+#: Home's commands (sd:4966): one per service the server's allowlist names, on its domain, and the sensor's copy-only read.
+#: id, object type, label, key, risk.
 COMMANDS = [
-    ["alarm.arm_home", "alarm", "Arm home", "h", "confirm"],
-    ["alarm.arm_away", "alarm", "Arm away", "w", "confirm"],
-    ["alarm.disarm", "alarm", "Disarm", "d", "confirm"],
-    ["lock.lock", "lock", "Lock", "l", "undo"],
+    *[[f"{d}.{svc}", d, label, key, "undo"] for d in ("light", "switch", "fan", "input_boolean")
+      for svc, label, key in (("turn_on", "Turn on", "o"), ("turn_off", "Turn off", "f"), ("toggle", "Toggle", "t"))],
+    ["scene.turn_on", "scene", "Activate", "a", "safe"],
+    ["script.turn_on", "script", "Run", "r", "safe"],
+    ["button.press", "button", "Press", "p", "safe"],
     ["lock.unlock", "lock", "Unlock", "u", "confirm"],
-    ["toggle.on", "toggle", "Turn on", "o", "undo"],
-    ["toggle.off", "toggle", "Turn off", "f", "undo"],
+    ["lock.lock", "lock", "Lock", "l", "confirm"],
+    ["alarm_control_panel.alarm_disarm", "alarm_control_panel", "Disarm", "d", "confirm"],
+    ["alarm_control_panel.alarm_arm_home", "alarm_control_panel", "Arm home", "h", "confirm"],
+    ["alarm_control_panel.alarm_arm_away", "alarm_control_panel", "Arm away", "w", "confirm"],
+    ["alarm_control_panel.alarm_arm_night", "alarm_control_panel", "Arm night", "n", "confirm"],
+    ["cover.open_cover", "cover", "Open", "o", "confirm"],
+    ["cover.close_cover", "cover", "Close", "x", "confirm"],
     ["sensor.read", "sensor", "Read state", "s", "safe"],
 ]
 
@@ -324,10 +339,11 @@ class TheLiveRead(ScreenCase):
         doc = home_screen.document(self.connection, now=NOW, config=self.config / "home-tiles.conf", environ=self.env(stub.url))
         self.assertEqual((stub.calls, doc["groups"]), ([], []))
 
-    def test_writes_stay_off_with_their_own_reason_when_the_read_works(self):
+    def test_writes_follow_the_read_and_carry_the_allowlist(self):
         stub = self.stub()
-        doc = self.doc(self.env(stub.url))
-        self.assertEqual(doc["writes"], {"available": False, "reason": home_screen.WRITES_REASON})
+        self.assertEqual(self.doc(self.env(stub.url))["writes"], {"available": True, "reason": "", "services": home_screen.SERVICES})
+        refused = self.doc(self.env(self.stub(lambda path: (401, {"message": "Unauthorized"}, {})).url))
+        self.assertEqual(refused["writes"], {"available": False, "reason": refused["reader"]["reason"], "services": home_screen.SERVICES})
 
 
 class ThePage(BrowserSession):
@@ -338,7 +354,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Home · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "home.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "home.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -501,6 +517,185 @@ class TheSave(BrowserSession):
         self.assertEqual(self.held(), {})
 
 
+#: The tile list the service tests use: synthetic entities, one per kind of guard.
+SERVICE_TILES = ("headline|binary_sensor.example_problems|Problems\n"
+                 "tile|Lights|light.example_lamp|Lamp\n"
+                 "tile|Security|lock.example_door|Door\n"
+                 "tile|Security|alarm_control_panel.example_house|Alarm\n"
+                 "tile|Water|binary_sensor.example_leak|Leak\n")
+
+
+class TheService(BrowserSession):
+    """sd:4966: POST /api/home/service calls one allowed service on one listed tile, journals it and reads the tile again."""
+
+    def setUp(self):
+        super().setUp()
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.file = folder / "home-tiles.conf"
+        self.file.write_text(SERVICE_TILES, encoding="utf-8")
+        self.enterContext(mock.patch.object(home_screen, "CONFIG", self.file))
+        self.enterContext(mock.patch.object(home_screen, "JOURNAL_ITEM", self.item("Home page")))
+        self.after = {"light.example_lamp": "on", "lock.example_door": "unlocked"}
+        self.refuse = None  # (status, body) the next service call answers with
+
+        def answer(path, method="GET"):
+            if method == "POST":
+                return self.refuse or (200, [], {})
+            if path == "/api/states":
+                return 200, [entity("light.example_lamp", "off"), entity("lock.example_door", "locked")], {}
+            entity_id = path.rsplit("/", 1)[1]
+            return 200, entity(entity_id, self.after.get(entity_id, "on"), "2026-09-06T12:01:00+00:00"), {}
+
+        self.ha = Stub(answer)
+        self.addCleanup(self.ha.close)
+        self.enterContext(mock.patch.dict("os.environ", {"HA_TOKEN": HA_TOKEN, "HA_MCP_URL": f"{self.ha.url}/mcp_server/sse"}))
+
+    def digest(self):
+        status, _, body = self.request("/api/home", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        self.ha.calls.clear()
+        return json.loads(body)["config"]["editor"]["digest"]
+
+    def call(self, entity_id, name, **more):
+        return self.post("/api/home/service", {"entity_id": entity_id, "service": name, "before": self.digest(), **more})
+
+    def journal(self):
+        from sd_db import runner_exec
+
+        return runner_exec.execution_journal(self.connection)
+
+    def test_an_allowed_service_is_sent_journalled_and_the_tile_is_read_again(self):
+        status, _, answer = self.call("light.example_lamp", "turn_on")
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.ha.calls, [("POST /api/services/light/turn_on", f"Bearer {HA_TOKEN}", {"entity_id": "light.example_lamp"}),
+                                         ("/api/states/light.example_lamp", f"Bearer {HA_TOKEN}")])
+        self.assertEqual(answer["state"], {"value": "on", "changed": "2026-09-06T12:01:00+00:00", "device_class": None, "unit": None})
+        self.assertEqual((answer["sent"], answer["reread"]), ("light.turn_on", ""))
+        journal = self.journal()
+        self.assertEqual(journal["skipped"], {})
+        [row] = journal["executions"]
+        self.assertEqual((row["id"], row["item"], row["exit_code"], row["command"], row["scope"]),
+                         (answer["note"], home_screen.JOURNAL_ITEM, 0, ["home-assistant", "light.turn_on", "light.example_lamp"], "home-assistant"))
+        self.assertTrue(row["started"] and row["ended"])
+        # Activity's "Command journal" lists it, and its output reads through the palette's own reader.
+        from sd_dashboard import activity_screen
+
+        listed = activity_screen.commands(self.connection, datetime.now(timezone.utc) + timedelta(days=1), {}, {})
+        self.assertEqual([e["what"] for e in listed], ["home-assistant light.turn_on light.example_lamp · exit 0"])
+        status, _, out = self.request(f"/api/executions/{answer['note']}", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, out)
+        self.assertEqual([json.loads(line)["event"] for line in json.loads(out)["output"].splitlines()], ["dispatch", "response"])
+        self.assertNotIn(HA_TOKEN, out + json.dumps(answer))
+
+    def test_an_entity_outside_the_tile_list_is_refused_and_nothing_is_sent(self):
+        status, _, answer = self.call("light.example_other", "turn_on")
+        self.assertEqual(status, 400, answer)
+        self.assertIn("light.example_other is not a tile in the tile list; nothing was sent", answer["error"])
+        self.assertEqual((self.ha.calls, self.journal()["executions"]), ([], []))
+
+    def test_a_service_outside_the_allowlist_is_refused_and_nothing_is_sent(self):
+        for entity_id, name, why in (("lock.example_door", "open", "it allows lock, unlock on lock"),
+                                     ("binary_sensor.example_leak", "turn_on", "it calls no binary_sensor service"),
+                                     ("light.example_lamp", "../../config/core/restart", "it allows turn_on, turn_off, toggle on light")):
+            status, _, answer = self.call(entity_id, name)
+            self.assertEqual(status, 400, (name, answer))
+            self.assertIn(why, answer["error"])
+        self.assertEqual((self.ha.calls, self.journal()["executions"]), ([], []))
+
+    def test_a_danger_service_without_its_typed_confirm_is_refused(self):
+        for more in ({}, {"confirm": "yes"}, {"confirm": "lock.example"}):
+            status, _, answer = self.call("lock.example_door", "unlock", **more)
+            self.assertEqual(status, 400, (more, answer))
+            self.assertIn("changes physical security: type lock.example_door to confirm", answer["error"])
+        self.assertEqual(self.ha.calls, [])
+        status, _, answer = self.call("lock.example_door", "unlock", confirm="lock.example_door")
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.ha.calls[0], ("POST /api/services/lock/unlock", f"Bearer {HA_TOKEN}", {"entity_id": "lock.example_door"}))
+        self.assertEqual(answer["state"]["value"], "unlocked")
+
+    def test_a_refusal_from_home_assistant_shows_its_reason_and_is_journalled(self):
+        self.refuse = (403, {"message": "User does not have permission to call this service"}, {})
+        status, _, answer = self.call("light.example_lamp", "turn_off")
+        self.assertEqual(status, 502, answer)
+        self.assertEqual(answer["error"], "Home Assistant refused light.turn_off (HTTP 403): User does not have permission to call this service. Nothing changed.")
+        [row] = self.journal()["executions"]
+        self.assertEqual((row["id"], row["exit_code"]), (answer["note"], 1))
+        self.assertEqual(len(self.ha.calls), 1, "a refused call reads no state")
+        self.refuse = (401, b"401: Unauthorized", {"Content-Type": "text/plain"})
+        status, _, answer = self.call("light.example_lamp", "turn_off")
+        self.assertEqual((status, answer["error"]), (502, "Home Assistant refused light.turn_off (HTTP 401): 401: Unauthorized. Nothing changed."))
+        self.refuse = (500, {"message": "Error calling service"}, {})
+        status, _, answer = self.call("light.example_lamp", "turn_off")
+        self.assertEqual((status, answer["error"]), (502, "Home Assistant failed while it ran light.turn_off (HTTP 500): Error calling service. It may have partly run; read the tiles again."))
+
+    def test_a_call_with_no_answer_is_unknown_not_refused(self):
+        self.refuse = None
+        slow = Stub(lambda path, method="GET": (time.sleep(1.5), (200, [], {}))[1])
+        self.addCleanup(slow.close)
+        self.enterContext(mock.patch.dict("os.environ", {"HA_MCP_URL": f"{slow.url}/mcp_server/sse"}))
+        write = home_screen.service({"entity_id": "light.example_lamp", "service": "toggle", "before": self.digest()}, "local", timeout=0.5)
+        status, answer = write(self.connection)
+        self.assertEqual(status, 504, answer)
+        self.assertTrue(answer["unknown"])
+        self.assertIn("gave no answer within 0.5 s; light.toggle may have run", answer["error"])
+        [row] = self.journal()["executions"]
+        self.assertEqual((row["exit_code"], bool(row["ended"])), (None, True))
+
+    def test_a_stale_tile_list_is_refused_and_nothing_is_sent(self):
+        before = self.digest()
+        self.file.write_text(SERVICE_TILES + "tile|Lights|light.example_more|More\n", encoding="utf-8")
+        status, _, answer = self.post("/api/home/service", {"entity_id": "light.example_lamp", "service": "turn_on", "before": before})
+        self.assertEqual(status, 409, answer)
+        self.assertTrue(answer["reload"])
+        self.assertEqual(self.ha.calls, [])
+
+    def test_another_shape_is_refused(self):
+        before = self.digest()
+        for payload in ({"entity_id": "light.example_lamp", "service": "turn_on"},
+                        {"entity_id": "light.example_lamp", "service": "turn_on", "before": before, "data": "{}"},
+                        {"entity_id": "Light Lamp", "service": "turn_on", "before": before},
+                        {"entity_id": "light.example_lamp", "service": 3, "before": before}):
+            status, _, answer = self.post("/api/home/service", payload)
+            self.assertEqual(status, 400, (payload, answer))
+        self.assertEqual(self.ha.calls, [])
+
+    def test_the_journal_record_passes_the_backup_and_prune_checks_that_read_every_exec_note(self):
+        # Older state: the nightly backup and the output prune read every version 1 exec note and refuse one without its
+        # output in the executions directory; a Home record must pass both, or a call would break the next backup.
+        from sd_db import retention, runner_exec_backup
+
+        _, _, answer = self.call("light.example_lamp", "turn_on")
+        [(row, value)] = runner_exec_backup._notes(self.connection)
+        self.assertEqual((row["id"], value["note"]), (answer["note"], answer["note"]))
+        self.assertTrue(Path(row["output_path"]).is_file())
+        self.assertEqual(retention._output_files(self.connection, row)[0], Path(row["output_path"]))
+
+    def test_a_stop_after_the_request_left_leaves_the_output_file_and_the_next_call_still_runs(self):
+        # Steps: the output file and its dispatch line come first, the note last. A stop between them leaves a file and no
+        # note (no unfinished record that a reconcile could not finish); the next call makes its own file and note.
+        executions = self.path.parent / "executions"
+        with mock.patch.object(home_screen, "_call", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                home_screen.service({"entity_id": "light.example_lamp", "service": "turn_on", "before": self.digest()}, "local")(self.connection)
+        [left] = executions.iterdir()
+        self.assertEqual([json.loads(line)["event"] for line in left.read_text().splitlines()], ["dispatch"])
+        self.assertEqual(self.journal()["executions"], [])
+        status, _, answer = self.call("light.example_lamp", "turn_on")
+        self.assertEqual((status, len(self.journal()["executions"]), len(list(executions.iterdir()))), (200, 1, 2), answer)
+
+    def test_a_failed_journal_write_after_the_call_still_reports_the_outcome(self):
+        from sd_db import writes as sd_writes
+
+        with mock.patch.object(sd_writes, "add_note", side_effect=sqlite3.OperationalError("database is locked")):
+            answer = home_screen.service({"entity_id": "light.example_lamp", "service": "turn_on", "before": self.digest()}, "local")(self.connection)
+        self.assertEqual((answer["sent"], answer["note"], answer["state"]["value"]), ("light.turn_on", None, "on"), answer)
+        self.assertIn("the journal note was not written (OperationalError: database is locked)", answer["journal"])
+
+    def test_the_document_offers_writes_once_the_read_worked_with_the_allowlist(self):
+        status, _, body = self.request("/api/home", headers={"Cookie": self.cookie})
+        self.assertEqual(json.loads(body)["writes"], {"available": True, "reason": "", "services": home_screen.SERVICES})
+
+
 # The stand-in additions home.js and home-kiosk.js need beyond test_v2_tasks: a root element with attributes, a clock, and the shell's row, url and
 # closePane.
 ROOT = r"""
@@ -553,18 +748,92 @@ class TheScript(ScreenCase):
         return home_screen.document(self.connection, now=NOW, config=EXAMPLE, environ={
             "SYSTEM_TOOLS_CONFIG": os.environ["SYSTEM_TOOLS_CONFIG"], "HA_TOKEN": HA_TOKEN, "HA_MCP_URL": f"{stub.url}/mcp_server/sse"})
 
-    def test_every_write_is_off_with_the_write_reason_and_sends_nothing(self):
-        out = self.run_page("""const target = c => C.get(c.on === 'alarm' ? 'alarm_control_panel.house' : c.on === 'lock' ? 'lock.front_door'
-  : c.on === 'toggle' ? 'input_boolean.guest_mode' : 'binary_sensor.water_leak');
-R.when = REG.map(c => (c.when || (() => true))(target(c)));
-REG.forEach(c => shellRun(c, target(c))); await flush();""", answer=f"() => [200, {json.dumps(self.live())}]")
-        writes = [c for c in COMMANDS if c[0] != "sensor.read"]
-        self.assertEqual(out["R"]["when"], [home_screen.WRITES_REASON] * len(writes) + [True])
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["gets"], ["/api/home"])
+    def test_every_write_is_off_with_the_read_reason_until_home_assistant_is_read(self):
+        out = self.run_page("""R.when = REG.filter(c => c.id !== 'sensor.read').map(c => c.when({ id: 'light.example', type: c.on, label: 'x' }));
+R.act = ELS.groups.html.match(/<div class="act">([^<]*)<\\/div>/g);
+shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();""")
+        self.assertEqual(set(out["R"]["when"]), {self.doc["reader"]["reason"]})
+        self.assertEqual(set(out["R"]["act"]), {'<div class="act"></div>'}, "no tile offers a command while writes are off")
+        self.assertEqual((out["posts"], out["gets"], out["confirms"]), ([], ["/api/home"], []))
+
+    def test_every_does_line_keeps_the_shared_word_limit(self):
+        # The factories pass does by position, which test_v2_commands' scan cannot read, so the limit is checked here.
+        from test_v2_commands import WORDS
+        out = self.run_page("R.d = REG.map(c => [c.id, c.does]);")
+        long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
+        self.assertEqual(long, [], f"a does line over {WORDS} words")
+
+    def test_each_command_carries_a_does_line_and_the_rest_call_through_home_assistant(self):
+        out = self.run_page("R.c = REG.map(c => [c.id, typeof c.does, c.executes, c.cli({ id: 'x.y' })]);")
+        for command, does, executes, line in out["R"]["c"]:
+            self.assertEqual(does, "string", command)
+            if command != "sensor.read":
+                self.assertTrue(executes, command)
+                self.assertIn(f'"$HA_URL/api/services/{command.replace(".", "/", 1)}"', line)
+        unlock, disarm = self.run_page("R.d = [cmd('lock.unlock').does, cmd('alarm_control_panel.alarm_disarm').does];")["R"]["d"]
+        self.assertIn("Unlocks the door", unlock)
+        self.assertIn("Disarms the alarm", disarm)
+
+    def test_only_the_services_a_domain_allows_reach_its_tile(self):
+        out = self.run_page("R.t = ['alarm_control_panel.house', 'lock.front_door', 'input_boolean.guest_mode', 'binary_sensor.water_leak',"
+                            " 'binary_sensor.virtual_porch_light'].map(id => [id, C.get(id).type, REG.filter(c => c.on === C.get(id).type).map(c => c.id)]);",
+                            answer=f"() => [200, {json.dumps(self.live())}]")
+        self.assertEqual(out["R"]["t"], [
+            ["alarm_control_panel.house", "alarm_control_panel", [f"alarm_control_panel.{s}" for s in ("alarm_disarm", "alarm_arm_home", "alarm_arm_away", "alarm_arm_night")]],
+            ["lock.front_door", "lock", ["lock.unlock", "lock.lock"]],
+            ["input_boolean.guest_mode", "input_boolean", ["input_boolean.turn_on", "input_boolean.turn_off", "input_boolean.toggle"]],
+            ["binary_sensor.water_leak", "sensor", ["sensor.read"]],
+            # A binary sensor typed toggle still reads as a switch, but Home Assistant has no service for it.
+            ["binary_sensor.virtual_porch_light", "sensor", ["sensor.read"]],
+        ])
+        # The allowlist is the server's: a service the document no longer lists is off with that reason.
+        doc = self.live()
+        del doc["writes"]["services"]["lock"]["unlock"]
+        out = self.run_page("R.w = cmd('lock.unlock').when(C.get('lock.front_door'));", answer=f"() => [200, {json.dumps(doc)}]")
+        self.assertEqual(out["R"]["w"], "the server does not allow lock.unlock")
+
+    def answer_service(self, reply):
+        return f"(path, body) => path === '/api/home' ? [200, {json.dumps(self.live())}] : {reply}"
+
+    def test_a_one_click_service_posts_shows_the_state_read_again_and_undo_posts_the_other(self):
+        sent = {"sent": "input_boolean.turn_on", "entity_id": "input_boolean.guest_mode", "note": 7, "reread": "", "journal": "",
+                "state": {"value": "on", "changed": "2026-09-06T12:01:00+00:00", "device_class": None, "unit": None}}
+        out = self.run_page("""R.row = ELS.groups.html.includes('data-cmd'); shellRun(cmd('input_boolean.turn_on'), C.get('input_boolean.guest_mode')); await flush();
+R.tile = ELS.groups.html.match(/data-id="input_boolean.guest_mode"[\\s\\S]*?<\\/li>/)[0];
+await lastUndo().undo(); await flush();""", answer=self.answer_service(f"[200, {json.dumps(sent)}]"))
+        digest = self.live()["config"]["editor"]["digest"]
+        self.assertEqual(out["posts"], [["/api/home/service", {"entity_id": "input_boolean.guest_mode", "service": "turn_on", "before": digest}, 64],
+                                        ["/api/home/service", {"entity_id": "input_boolean.guest_mode", "service": "turn_off", "before": digest}, 64]])
         self.assertEqual(out["confirms"], [])
-        self.assertEqual([t[0] for t in out["toasts"]], [f"off: {home_screen.WRITES_REASON}"] * len(writes)
-                         + ["Copy the line; it reads HA_TOKEN and HA_URL from your shell"])
+        self.assertIn("</span>on</span>", out["R"]["tile"])
+        self.assertIn('datetime="2026-09-06T12:01:00+00:00"', out["R"]["tile"])
+        self.assertEqual(out["toasts"][0], ["Guest mode · input_boolean.turn_on sent", True])
+
+    def test_a_danger_service_asks_for_the_entity_id_typed_and_sends_what_was_typed(self):
+        out = self.run_page("""shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();
+R.fields = cmd('lock.unlock').fields(C.get('lock.front_door')); R.danger = cmd('lock.unlock').danger();
+R.says = cmd('lock.unlock').consequence(C.get('lock.front_door'));
+FIELD_VALUES.confirm = 'lock.front_door'; shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();""",
+                            answer=self.answer_service("[200, { sent: 'lock.unlock', state: null, reread: '', journal: '', note: 3 }]"))
+        self.assertEqual(out["confirms"], ["lock.unlock", "lock.unlock"])
+        self.assertEqual([(f["name"], f["required"], f["label"]) for f in out["R"]["fields"]], [("confirm", True, "Type lock.front_door to confirm")])
+        self.assertTrue(out["R"]["danger"])
+        self.assertIn("changes physical security", out["R"]["says"])
+        self.assertEqual([p[1].get("confirm") for p in out["posts"]], ["lock.front_door"], "nothing is sent until the field is typed")
+        self.assertIn("not run: OK is off until Type lock.front_door to confirm is typed", out["toasts"][0][0])
+
+    def test_a_refusal_shows_home_assistants_reason_and_an_unknown_outcome_reads_again(self):
+        refused = "Home Assistant refused input_boolean.turn_on (HTTP 403): User does not have permission. Nothing changed."
+        out = self.run_page("shellRun(cmd('input_boolean.turn_on'), C.get('input_boolean.guest_mode')); await flush();",
+                            answer=self.answer_service(f"[502, {{ error: {json.dumps(refused)} }}]"))
+        self.assertEqual(out["toasts"], [[f"Guest mode not changed: {refused}", False]])
+        self.assertEqual(out["gets"], ["/api/home", "/api/home"])
+        out = self.run_page("shellRun(cmd('input_boolean.turn_on'), C.get('input_boolean.guest_mode')); await flush();",
+                            answer=self.answer_service("[400, { error: 'input_boolean.open is not a service the dashboard calls' }]"))
+        self.assertEqual(out["gets"], ["/api/home"], "a 400 sent nothing, so nothing is read again")
+        out = self.run_page("shellRun(cmd('input_boolean.turn_on'), C.get('input_boolean.guest_mode')); await flush();",
+                            answer=self.answer_service("[504, { error: 'no answer; input_boolean.turn_on may have run.', unknown: true }]"))
+        self.assertEqual(out["gets"], ["/api/home", "/api/home"], "an unknown outcome reads the tiles again")
 
     def test_read_state_is_a_copy_only_line_that_names_the_token_and_never_holds_one(self):
         # A document that carries a token by mistake: nothing the page shows or copies may hold its value.
@@ -610,7 +879,7 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
             "sensor.backup_last_successful_automatic_backup": "ok", "input_boolean.guest_mode": "ok",
             "binary_sensor.virtual_porch_light": "ok"})
         for entity_id, words in (("alarm_control_panel.house", "armed home"), ("lock.front_door", "locked"),
-                                 ("binary_sensor.water_leak", "detected"), ("binary_sensor.wan_degraded", "unavailable · no reading"),
+                                 ("binary_sensor.water_leak", "wet"), ("binary_sensor.wan_degraded", "unavailable · no reading"),
                                  ("binary_sensor.smoke_sensors", home_screen.NOT_LISTED), ("input_boolean.guest_mode", "off")):
             self.assertIn(f"</span>{words}</span>", tiles[entity_id], entity_id)
         # The age: each read tile carries its last change for the shell's relative-time renderer; an unread one carries none.
@@ -655,9 +924,49 @@ open('binary_sensor.wan_degraded'); R.det = ELS.details.html; R.groups = ELS.gro
         self.assertNotRegex(out["R"]["groups"] + out["R"]["head"], r'data-state="(ok|caution|warning)"|●')
         self.assertEqual(len(re.findall(r'data-state="unknown"', out["R"]["groups"])), 8)
 
-    def test_a_configured_type_gives_the_tile_its_commands(self):
-        out = self.run_page("R.t = [C.get('binary_sensor.virtual_porch_light').type, C.get('binary_sensor.water_leak').type, C.get('input_boolean.guest_mode').type];")
-        self.assertEqual(out["R"]["t"], ["toggle", "sensor", "toggle"])
+
+    # sd:4959: a binary sensor reads by its Home Assistant device_class, never "detected" for every on.
+    def binary(self):
+        doc = self.live()
+        base = doc["groups"][0]["tiles"][0]
+        tile = lambda entity_id, value, device_class: dict(base, id=entity_id, name=entity_id.split(".")[1].replace("_", " ").capitalize(), type=None, error="",
+                                                           state={"value": value, "changed": "2026-09-06T11:00:00+00:00", "device_class": device_class, "unit": None})
+        doc["groups"].append({"name": "Binary", "tiles": [
+            tile("binary_sensor.house_powerwall_grid_status", "on", "power"), tile("binary_sensor.pump_fault", "on", "problem"),
+            tile("binary_sensor.side_door", "on", "door"), tile("binary_sensor.bare_switch", "on", None),
+            tile("binary_sensor.uplink", "off", "connectivity"), tile("binary_sensor.pump_fault_clear", "off", "problem"),
+            tile("binary_sensor.grid_off", "off", "power")]})
+        return doc
+
+    def test_a_binary_sensor_lamp_and_words_come_from_its_device_class(self):
+        out = self.run_page("R.groups = ELS.groups.html;", answer=f"() => [200, {json.dumps(self.binary())}]")
+        tiles = dict(re.findall(r'<div class="tile" data-id="([^"]+)"(.*?)</div></li>', out["R"]["groups"], re.S))
+        got = {i: (re.search(r'data-state="(\w+)"', t).group(1), re.search(r'</span>([^<]*)</span>\s*<time', t).group(1))
+               for i, t in tiles.items() if i.startswith("binary_sensor.") and i not in ("binary_sensor.smoke_sensors", "binary_sensor.wan_degraded", "binary_sensor.virtual_porch_light")}
+        self.assertEqual(got, {
+            "binary_sensor.water_leak": ("warning", "wet"),
+            "binary_sensor.house_powerwall_grid_status": ("ok", "connected"),
+            "binary_sensor.pump_fault": ("warning", "problem"),
+            "binary_sensor.side_door": ("neutral", "open"),
+            "binary_sensor.bare_switch": ("neutral", "on"),
+            # A lost connection is worth a look; power off is a plain fact (a grid outage the Powerwall carries).
+            "binary_sensor.uplink": ("caution", "disconnected"),
+            "binary_sensor.grid_off": ("neutral", "disconnected"),
+            "binary_sensor.pump_fault_clear": ("ok", "clear"),
+        })
+
+    def test_details_explain_the_state_in_one_line_and_name_its_source(self):
+        out = self.run_page("open('binary_sensor.house_powerwall_grid_status'); R.grid = ELS.details.html; open('binary_sensor.bare_switch'); R.bare = ELS.details.html;"
+                            " open('lock.front_door'); R.lock = ELS.details.html;", answer=f"() => [200, {json.dumps(self.binary())}]")
+        grid = out["R"]["grid"]
+        self.assertIn('<p class="means">House powerwall grid status: on means it is connected to power.</p>', grid)
+        self.assertIn("<code>binary_sensor.house_powerwall_grid_status</code>", grid)
+        self.assertIn('<time class="rel" datetime="2026-09-06T11:00:00+00:00"', grid)
+        self.assertRegex(grid, r"<dt>Source</dt><dd>Home Assistant <code>/api/states</code>, device class <code>power</code></dd>")
+        self.assertLess(grid.index('class="means"'), grid.index(">Act<"))
+        self.assertIn("Bare switch: on or off, with no device class to judge it by.", out["R"]["bare"])
+        self.assertIn("<dt>Source</dt><dd>Home Assistant <code>/api/states</code></dd>", out["R"]["bare"])
+        self.assertIn("Front door: locked or unlocked; jammed means the lock did not finish moving.", out["R"]["lock"])
 
     def test_details_name_the_entity_and_why_it_has_no_state(self):
         out = self.run_page("open('lock.front_door'); R.det = ELS.details.html; open('no.such'); R.after = ELS.details.html;")
@@ -792,7 +1101,8 @@ class TheEditor(TheScript):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "home", "Home", "/home", ("/api/home", "/api/home/tiles")
+    page, section, route, api = "home", "Home", "/home", ("/api/home", "/api/home/tiles", "/api/home/service", "/api/home/tasks",
+                                                     "/api/home/briefs", "/api/home/reports")
 
 
 if __name__ == "__main__":

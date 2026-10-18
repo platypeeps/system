@@ -41,11 +41,11 @@
   const openItem = n => { location.href = itemHref(n); return `#${n} opens in Tasks`; };
   // item:end
   const GROUPS = [
-    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l']]],
+    ['Now',       [['Today', 'sunrise', 't'], ['Briefs', 'inbox', 'i'], ['Review', 'list-checks', 'l'], ['Queue', 'git-merge', 'u']]],
     ['Work',      [['Tasks', 'list-todo', 'k'], ['Writing', 'pen-line', 'w'], ['Research', 'flask-conical', 'r'], ['Contributions', 'git-pull-request', 'c']]],
     ['Knowledge', [['Documents', 'file-text', 'd'], ['Notes', 'notebook-pen', 'n']]],
     ['Places',    [['HOA', 'droplets', 'h'], ['Home', 'house', 'o']]],
-    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Queue', 'git-merge', 'u'], ['Settings', 'sun-moon', 'v']]],
+    ['Fleet',     [['Skills', 'sparkles', 's'], ['Metrics', 'chart-no-axes-column', 'm'], ['Management', 'settings', 'g'], ['Health', 'heart-pulse', 'e'], ['Activity', 'activity', 'a'], ['Reports', 'clipboard-list', 'p'], ['Designs', 'palette', 'x'], ['Settings', 'sun-moon', 'v']]],
   ];
   // build: a page that is built sets window.SHELL_PAGES; a section missing from it shows as not built yet.
   const PAGES = window.SHELL_PAGES || { Today: 'today.html', Briefs: 'briefs.html', Tasks: 'tasks.html', Research: 'research.html', Documents: 'documents.html', HOA: 'hoa.html', Home: 'home.html', Skills: 'skills.html', Metrics: 'metrics.html', Activity: 'activity.html', Reports: 'reports.html', Writing: 'writing.html', Notes: 'notes.html', Contributions: 'contributions.html', Health: 'health.html', Management: 'management.html', Designs: 'designs.html' };
@@ -135,6 +135,103 @@
     const a = e.target.closest('a[data-unbuilt]');
     if (a) { e.preventDefault(); toast(`${a.dataset.section} is not ${window.SHELL_PAGES ? 'built yet, and has no classic screen' : 'in this mockup round'}.`); }
   });
+
+  // ---------- View switch: a page's sub-sections ----------
+  // view:start
+  // build (view switch): the one contract for a top-level page with sub-sections. The page declares them once, before shell.js:
+  //   window.PAGE_VIEWS = [{ id, label, key?, api? }, …]   id is [a-z0-9-]+; the first view is the default.
+  //   Each view's panel is the page's element id="view-<id>"; a view with no panel is not drawn. The shell makes the panels
+  //   tabpanels, hides all but the shown one, and puts the switch (WAI-ARIA tabs: ← → Home End) before the first panel, under
+  //   the lamps. The rail lists the views under the current page, each linking <page>#view=<id>.
+  //   A page whose views filter one surface instead (Tasks: All, HOA, Home) puts an empty <div id="viewswitch"> where the
+  //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
+  //   key: the letter after v that shows the view (default the id's first letter).
+  //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
+  //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
+  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it.
+  //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
+  //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
+  //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
+  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.id}`);
+  const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
+  const viewKey = v => v.key || v.id[0];
+  let viewNow = null, viewStarted = false, viewChord = 0;
+  const viewSeen = new Set(), viewTabs = [], viewLinks = [];
+  const viewOf = h => { const m = /^#view=([a-z0-9-]+)$/.exec(h || ''); return m && VIEW_LIST.some(v => v.id === m[1]) ? m[1] : null; };
+  function viewFire(id) {
+    const first = !viewSeen.has(id); viewSeen.add(id);
+    document.dispatchEvent(new CustomEvent('shell:view', { detail: { id, first, api: VIEW_LIST.find(v => v.id === id).api || null } }));
+  }
+  function viewApply(id) {
+    if (id === viewNow) return;
+    viewNow = id;
+    VIEW_LIST.forEach((v, i) => {
+      const on = v.id === id;
+      viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
+      const panel = viewPanel(v); if (panel) panel.hidden = !on;
+      if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
+    });
+    if (viewStarted) viewFire(id);
+  }
+  function viewShow(id) {
+    if (!VIEW_LIST.some(v => v.id === id)) return false;
+    if (location.hash !== `#view=${id}`) try { history.pushState(history.state, '', `#view=${id}`); } catch (_) {}
+    viewApply(id);
+    return true;
+  }
+  function viewCount(id, n) {
+    const t = viewTabs[VIEW_LIST.findIndex(v => v.id === id)]; if (!t) return;
+    const c = t.children[1]; c.hidden = n == null; c.textContent = n == null ? '' : String(n);
+  }
+  const view = { current: () => viewNow, show: viewShow, count: viewCount };
+  if (VIEW_LIST.length) {
+    const bar = document.createElement('div');
+    bar.className = 'viewswitch'; bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', `${page} views`);
+    const sub = document.createElement('ul');
+    sub.className = 'subnav'; sub.setAttribute('aria-label', `${page} views`);
+    VIEW_LIST.forEach(v => {
+      const t = document.createElement('button'), nm = document.createElement('span'), n = document.createElement('span');
+      t.type = 'button'; t.setAttribute('role', 'tab'); t.setAttribute('id', `vt-${v.id}`);
+      nm.className = 'nm'; nm.textContent = v.label; n.className = 'n'; n.hidden = true;
+      t.append(nm, n); t.addEventListener('click', () => viewShow(v.id));
+      bar.append(t); viewTabs.push(t);
+      const panel = viewPanel(v);
+      if (panel) { t.setAttribute('aria-controls', panel.id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); }
+      const li = document.createElement('li'), a = document.createElement('a');
+      a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
+      // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.
+      a.addEventListener('click', e => { e.preventDefault(); viewShow(v.id); });
+      li.append(a); sub.append(li); viewLinks.push(a);
+    });
+    // Roving focus: ← → Home End move between segments and show each (WAI-ARIA tabs, automatic activation).
+    bar.addEventListener('keydown', e => {
+      const i = viewTabs.indexOf(e.target), last = viewTabs.length - 1;
+      const to = { ArrowRight: i + 1 > last ? 0 : i + 1, ArrowLeft: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+      if (i < 0 || to === undefined) return;
+      e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
+    });
+    viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
+    rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
+    viewApply(viewOf(location.hash) || VIEW_LIST[0].id);
+    const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };
+    addEventListener('hashchange', follow); addEventListener('popstate', follow);
+    // v then the view's key. Registered before the shell's keys, so the second key (v r) does not also reload the page.
+    document.addEventListener('keydown', e => {
+      if (e.target.matches('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu') || window.shell?.chording?.()) return;
+      if (viewChord && Date.now() - viewChord < 1500) {
+        viewChord = 0; const v = VIEW_LIST.find(x => viewKey(x) === e.key);
+        if (v) { e.preventDefault(); e.stopImmediatePropagation(); viewShow(v.id); }
+        return;
+      }
+      if (e.key === 'v') viewChord = Date.now();
+    });
+    const names = VIEW_LIST.map(v => v.label);
+    window.PAGE_KEYS = (window.PAGE_KEYS || []).concat([[VIEW_LIST.map(v => `v ${viewKey(v)}`).join(' / '),
+      `${names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names.at(-1)}` : names[0]} view`]]);
+    const start = () => { viewStarted = true; viewFire(viewNow); };
+    document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', start) : start();
+  }
+  // view:end
 
   // ---------- Right pane: Details | Chat ----------
   const details = document.getElementById('details'); // page-owned
@@ -463,6 +560,10 @@
     const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
     return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
   };
+  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The Act bar
+  // shows it under the button and the ⋯ menu under the label, in view: the foundation has no hover-only affordances.
+  const doesOf = (c, o) => (typeof c.does === 'function' ? c.does(o) : c.does) || '';
+  let doesSeq = 0;
   // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
   const { plural } = window.markup;
@@ -582,13 +683,15 @@
     if (!L.length) return html`<span class="rowact"></span>`;
     return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command as a button; its CLI line, and the reason an off one is off, fold under "Same thing from the CLI",
-  // closed until opened (sd:3464).
+  // Details: every command as a button, with what it does under it (sd:4963); its CLI line, and the reason an off one is
+  // off, fold under "Same thing from the CLI", closed until opened (sd:3464).
   function bar(id) {
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    return html`<div class="actions">${on.map(c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}</div>
+    const button = (c, d) => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}"${d ? html` aria-describedby="does-${doesSeq}"` : ''}>${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
+    return html`<div class="actions">${on.map(c => { const d = doesOf(c, o); if (!d) return button(c, d); doesSeq += 1;
+      return html`<span class="act-row">${button(c, d)}<small class="does" id="does-${doesSeq}">${d}</small></span>`; })}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
@@ -602,7 +705,7 @@
     anchor?.setAttribute?.('aria-expanded', 'true');
     menuEl.setAttribute('aria-label', `Actions for ${o.label}`);
     const on = live(o);
-    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
+    put(menuEl, html`<p class="label">${o.label}</p>${on.map(c => html`<button role="menuitem" type="button" data-cmd="${c.id}" data-obj="${id}"><span>${c.label}${c.risk === 'confirm' || c.fields ? '…' : ''}</span><small>${doesOf(c, o)}</small><code>${shownCli(c, o)}</code>${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`)}
       <button role="menuitem" type="button" data-menu-open="${id}"><span>Open details</span><code></code><kbd>↵</kbd></button>
       <button role="menuitem" type="button" data-menu-ask="${id}"><span>Ask in chat</span><code></code><kbd>c</kbd></button>`);
     menuEl.hidden = false;
@@ -1188,8 +1291,8 @@
   // clearing, the failure states and the write barrier, in one place. A page without read.js before shell.js has no shell.read.
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
-  // build: (sd:2418) `read` joins the shell's API.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, views, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, list, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, views, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

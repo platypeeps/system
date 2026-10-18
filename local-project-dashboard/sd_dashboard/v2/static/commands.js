@@ -19,7 +19,7 @@
   // post(o, path), which answers the server's reply. A post with no answer may have started a session, so it says that. No Undo:
   // a session runs on. `item(o)` is the item id; `report(o)` is true for a report.
   function fix(on, { item, report, when = () => true, post }) {
-    return { id: `${on}.fix`, on, label: 'Fix', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot', when,
+    return { id: `${on}.fix`, on, label: 'Fix', does: o => report(o) ? 'Asks first, then starts claude in herdr to fix this report.' : 'Asks first, then starts claude in herdr as a builder on this item.', key: 'f', risk: 'safe', askFirst: true, executes: true, icon: 'bot', when,
       cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch',
       sends: o => `POST /api/items/${item(o)}/fix {revision}`,
       consequence: o => report(o)
@@ -30,12 +30,13 @@
         err => { throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) };
   }
 
-  // Retry: `sd jobs retry`, which sends the kickstart. `job(o)` names the row's facts: { name, service, failed, exit,
+  // Run now (jobs.retry): `sd jobs retry`, which sends the kickstart; the run-now pack allows an idle job's run too (sd:4982).
+  // `job(o)` names the row's facts: { name, service, failed, exit,
   // capability }; capability is operations.inventory's retry answer, and its reason is the off text. Exit 127 is "command
   // not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside the dashboard can be
   // tested (sd:3392). run(o) is the page's write; it words the answer with answered().
   function retry({ job, run }) {
-    return { id: 'jobs.retry', on: 'job', label: 'Retry', key: 't', risk: 'safe', bulk: true,
+    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', risk: 'safe', bulk: true,
       primary: o => !!job(o).failed && job(o).exit !== 127,
       when: o => { const j = job(o), c = j.capability; return !c ? (j.failed || 'no failed run to retry') : c.allowed || c.reason || 'launchd refuses a retry now'; },
       askFirst: o => job(o).exit === 127,
@@ -52,28 +53,28 @@
   // The one cron-jobs line (sd:3525): Reports' report.log prints it too, so no page names the wrapper or a checkout path.
   const logLine = name => `local-cron-jobs/cron-jobs.sh logs ${name}`;
   function showLog({ job, run = o => openSchedule(job(o).name) }) {
-    return { id: 'jobs.log', on: 'job', label: 'Show log', key: 'l', risk: 'safe', executes: false,
+    return { id: 'jobs.log', on: 'job', label: 'Show log', does: 'Shows the job\'s log.', key: 'l', risk: 'safe', executes: false,
       cli: o => logLine(job(o).name), run };
   }
 
   // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
   // `job(o)` names { service, exit }.
   function printJob({ job }) {
-    return { id: 'jobs.print', on: 'job', label: 'Print', key: 'p', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
+    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
       when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
       run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' };
   }
 
   // Show assignment: `sd assignments get` prints what the page's Details show, so the line is copy only. run(o) shows it.
   function showAssignment({ primary = () => true, run }) {
-    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', key: 'o', risk: 'safe', primary, executes: false,
+    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', does: 'Shows the assignment\'s record in Details.', key: 'o', risk: 'safe', primary, executes: false,
       cli: o => `sd assignments get ${o.n}`, run };
   }
 
   // Open a pull request on GitHub, in a new tab, from a pull request row or a review of one (`on`). `pr(o)` names
   // { repo: 'owner/name', number, url }.
   function openPullRequest({ on = 'pull request', pr, primary = () => true }) {
-    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', key: 'o', risk: 'safe', primary,
+    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', does: 'Opens the pull request on GitHub in a new tab.', key: 'o', risk: 'safe', primary,
       when: o => !!(pr(o).repo && pr(o).number) || 'the row names no pull request',
       cli: o => `gh pr view ${pr(o).number} --repo ${pr(o).repo} --web`,
       run: o => { window.open(pr(o).url || `https://github.com/${pr(o).repo}/pull/${pr(o).number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } };
@@ -91,7 +92,7 @@
       const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
       if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
     }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
-    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', key: 'r', risk: 'safe', primary: () => true,
+    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', does: 'Runs shadow sync now, for up to 2 minutes, then reads again.', key: 'r', risk: 'safe', primary: () => true,
       cli: () => 'sd shadow sync --max-seconds 120',
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }

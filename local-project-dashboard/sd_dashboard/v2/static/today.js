@@ -68,9 +68,11 @@
       const s = cell.dataset.src, why = DOC.sources[s], rows = ROWS.filter(r => r.source === s && r.kind !== 'dark');
       const val = cell.querySelector('.val');
       if (why) { cell.dataset.state = 'unknown'; cell.title = why; put(val, html`<span class="ph">not read</span>`); return; }
-      cell.removeAttribute('title');
+      // a fleet area the snapshot kept (sd:TBD): its read time; a stale one is unknown, never green, with the reason.
+      const seen = (DOC.observed || {})[s];
+      if (seen) cell.title = `observed ${seen.at.slice(11, 16)} UTC${seen.stale ? ` · stale: ${seen.stale}` : ''}`; else cell.removeAttribute('title');
       const st = rows.map(r => STATE[r.band]);
-      cell.dataset.state = st.includes('warning') ? 'warning' : st.includes('caution') ? 'caution' : 'ok';
+      cell.dataset.state = seen?.stale ? 'unknown' : st.includes('warning') ? 'warning' : st.includes('caution') ? 'caution' : 'ok';
       const n = k => rows.filter(r => r.kind === k).length;
       // sd:2014: interrupted, unloaded and unknown jobs are rows too; the lamp counts the failed ones and names the rest.
       const failed = rows.filter(r => r.state === 'failed').length, other = rows.length - failed;
@@ -79,7 +81,8 @@
         : s === 'sessions' ? html`<span class="ph"><b>${rows.reduce((a, r) => a + (+(r.id.split(':')[1]) || 0), 0)}</b> abandoned</span>`
         : html`<span class="ph"><b>${n('ahead')}</b> ahead</span> · <span class="ph">${n('dirty')} dirty</span>`);
     });
-    const d = new Date(DOC.now);
+    // the oldest reading on the page: a kept fleet area can be older than the document.
+    const d = new Date([DOC.now, ...Object.values(DOC.observed || {}).map(o => o.at)].map(t => new Date(t).getTime()).reduce((a, b) => Math.min(a, b)));
     put($('observed'), html`<b>${d.toISOString().slice(11, 16)}</b> UTC`);
   }
 
@@ -210,6 +213,8 @@
     document.dispatchEvent(new CustomEvent('intake:read', { detail: DOC ? { intake: DOC.intake || [], error: DOC.intake_error || '' } : { error: failed } }));
     // Your mail (sd:4191) too; mail.js draws it from the document's mail keys.
     document.dispatchEvent(new CustomEvent('mail:read', { detail: DOC || { mail_error: failed } }));
+    // Problem reports and new briefs too; today-reports.js draws them, or the failure that left none.
+    document.dispatchEvent(new CustomEvent('today-reports:read', { detail: DOC || { error: failed } }));
     if (DOC) return render();
     // Nothing from the last read stays on screen: rows, counts, lamps, the observed time, the selection and the badge.
     $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;

@@ -160,6 +160,23 @@ R.cleared = window.PAGE_LIST.clear(); R.shown = ROWS_EL.querySelectorAll().filte
 
 
 
+class TheLamps(TheReader):
+    """sd:TBD: a fleet area the server's snapshot kept says when it was read; a stale one is unknown, never green."""
+
+    CELLS = """const CELLS = ['repos', 'sessions'].map(src => { const c = El('div'), val = El('span');
+  c.dataset = { src }; c.querySelector = () => val; c.removeAttribute = k => { delete c[k]; }; c.val = val; return c; });
+document.querySelectorAll = sel => sel === '.cell[data-src]' ? CELLS : [];
+DOC0.observed = { repos: { at: '2026-09-06T11:31:00Z', stale: 'git did not answer' }, sessions: { at: '2026-09-06T11:58:00Z', stale: null } };
+refresh(); await flush();
+R.cells = CELLS.map(c => [c.dataset.src, c.dataset.state, c.title || null]); R.observed = ELS.observed.html;"""
+
+    def test_a_kept_fleet_area_shows_its_read_time_and_a_stale_one_is_unknown(self):
+        out = self.run_page(self.CELLS)
+        self.assertEqual(out["R"]["cells"], [["repos", "unknown", "observed 11:31 UTC · stale: git did not answer"],
+                                            ["sessions", "ok", "observed 11:58 UTC"]])
+        self.assertIn("<b>11:31</b> UTC", out["R"]["observed"])
+
+
 class TheFix(TheReader):
     """sd:3456: Fix on a work row Today lists posts /api/items/<id>/fix with the revision the Now read gave."""
 

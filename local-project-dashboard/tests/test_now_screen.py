@@ -212,9 +212,10 @@ class Document(ScreenCase):
                 repos=[repo("pushy", ahead=1), repo("messy", dirty=2)],
                 trees=[tree("gone", live=False)]))
         shadow.assert_called_once_with(self.connection, tracker="github")
-        self.assertEqual(set(document), {"rows", "sources", "now", "snoozed", "snooze_error", "work", "work_error", "active",
+        self.assertEqual(set(document), {"rows", "sources", "now", "observed", "snoozed", "snooze_error", "work", "work_error", "active",
                                          "waiting", "attention", "issues", "issues_error", "intake", "intake_error",
-                                         "mail", "mail_more", "mail_unread", "mail_error"})
+                                         "mail", "mail_more", "mail_unread", "mail_error", "problems", "problems_more",
+                                         "problems_capped", "problems_error", "briefs", "briefs_more", "briefs_error", "briefs_skipped"})
         self.assertEqual(document["now"], NOW)
         self.assertEqual([(row["rank"], row["id"], row["band"]) for row in document["rows"]], [
             (2, "pr:example/project#14:2", "look"),
@@ -597,8 +598,9 @@ class FailedJobs(ScreenCase):
         by_id = {row["id"]: row for row in now_screen.document(self.connection, now=NOW, fleet=self.fleet, jobs=jobs)["rows"]}
         listed = {job["name"]: job for job in operations.inventory(self.connection, backend=jobs)["jobs"]}
         failed, stopped = by_id["job:nightly-sync:127"], by_id["job:stopped:interrupted9"]
-        self.assertEqual((failed["revision"], failed["exit"], failed["capability"]),
-                         (listed["nightly-sync"]["revision"], 127, {"allowed": True, "reason": ""}))
+        # The capability is the inventory's, whole: the pack adds fields to it (`label`, sd:4982).
+        self.assertEqual((failed["revision"], failed["exit"], failed["capability"]["allowed"], failed["capability"]),
+                         (listed["nightly-sync"]["revision"], 127, True, listed["nightly-sync"]["capabilities"]["retry"]))
         self.assertEqual((stopped["job"], stopped["revision"], stopped["exit"]), ("stopped", listed["stopped"]["revision"], None))
         # No retry, so nothing to bind: an unloaded row carries no revision.
         self.assertNotIn("revision", by_id["job:parked:unloaded"])

@@ -3398,5 +3398,64 @@ class UsageTest(unittest.TestCase):
             self.assertIn(verb, bare.stderr)
 
 
+class ManualScheduleTest(unittest.TestCase):
+    """sd:4965. `JOB_SCHEDULE="manual"` installs a job that runs only when started.
+
+    REGRESSION. The plist carries no StartCalendarInterval and RunAtLoad is
+    false, so only `launchctl kickstart` (Management's Run now) starts it.
+    `install`, `list` and `status` say "manual", and `watchdog` measures no
+    cadence for it: a manual job has none, and its one-field schedule ended
+    the sweep on an unbound `$3`. launchctl is the stub on PATH.
+    """
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.destroy)
+        self.fx.write_job("demo", 'JOB_SCHEDULE="manual"\nJOB_COMMAND="true"\n')
+        self.plist = self.fx.home / "Library" / "LaunchAgents" / "local.system-tools.cron.demo.plist"
+
+    def run_script(self, *args, env=None):
+        base = {"PATH": self.fx.path(stub_bin(self.fx.tmp)), "HOME": str(self.fx.home),
+                "SYSTEM_TOOLS_CONFIG": str(self.fx.config), "CRON_TEST_HELD": "0", "CRON_TEST_RUNS": "0",
+                "CRON_TEST_BOOTSTRAP_COUNT": str(self.fx.tmp / "bootstrap-count")}
+        base.update(env or {})
+        return subprocess.run(["sh", str(self.fx.folder / "cron-jobs.sh"), *args],
+                              env=base, capture_output=True, text=True, timeout=60)
+
+    def test_install_writes_a_plist_with_no_calendar_and_no_run_at_load(self):
+        result = self.run_script("install", "demo")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("installed: demo  (schedule: manual, runs only when started", result.stdout)
+        config = plistlib.loads(self.plist.read_bytes())
+        self.assertNotIn("StartCalendarInterval", config)
+        self.assertIs(config["RunAtLoad"], False)
+        self.assertEqual(config["ProgramArguments"][-2:], ["exec", "demo"])
+
+    def test_a_scheduled_job_keeps_its_calendar(self):
+        self.fx.write_job("demo", 'JOB_SCHEDULE="5 3 * * *"\nJOB_COMMAND="true"\n')
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        config = plistlib.loads(self.plist.read_bytes())
+        self.assertEqual(config["StartCalendarInterval"], [{"Minute": 5, "Hour": 3}])
+
+    def test_list_and_status_say_manual(self):
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        listed = self.run_script("list")
+        self.assertRegex(listed.stdout, r"(?m)^demo\s+manual\s")
+        # Installed and never started: launchd holds the label at `runs = 0`.
+        status = self.run_script("status", "demo", env={"CRON_TEST_HELD": "1"})
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        self.assertIn("  schedule: manual; runs only when started (launchctl kickstart)", status.stdout)
+
+    def test_watchdog_skips_a_manual_job(self):
+        self.assertEqual(self.run_script("install", "demo").returncode, 0)
+        then = time.time() - 30 * 86400
+        os.utime(self.plist, (then, then))
+        result = self.run_script("watchdog")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("manual  demo", result.stdout)
+        self.assertNotIn("STALE", result.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

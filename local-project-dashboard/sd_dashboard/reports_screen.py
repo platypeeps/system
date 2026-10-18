@@ -12,12 +12,6 @@ page (`v2/reports.html`, at `/reports`); the page holds no rows:
   whether the log holds it, whatever the job's cadence (`cadence`); and the job families the config folder's
   `report-families.conf` names. Each source is guarded on its own: a failed
   one is `null` with its reason in `sources`, never an empty list.
-- `/api/reports/clean?before=YYYY-MM-DD` is `clean`: the selection
-  `reporting.clean_reports` makes for v1's preview, which writes nothing,
-  and the plan the attributed batch acknowledge posts (sd:3386).
-
-Status mail has no reader: the dashboard holds no message store, so
-`mail.available` is false with the reason.
 """
 
 import importlib.util
@@ -228,7 +222,6 @@ STAMP = re.compile(r"^\[[^\]\s]+\] (\d{4}-\d{2}-\d{2})T")
 #: A family line: `family|<key>|<label>|<icon>|<job>,<job>,...`.
 KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 JOB = re.compile(reporting.JOB_NAME)
-MAIL_REASON = "no status mail reader: the dashboard holds no message store, and Gmail holds the only copy"
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 
 
@@ -287,9 +280,10 @@ def local_days(now: str, *, tz=None) -> list[str]:
 
 
 def scheduled(schedule: list, day: str) -> bool:
-    """Whether a launchd calendar can fire on the day: an empty one (an interval job) always can."""
+    """Whether a launchd calendar can fire on the day. An empty one is a manual job (`JOB_SCHEDULE="manual"`, sd:4965),
+    which never does: only a kickstart starts it. cron-jobs.sh writes no interval job."""
     if not schedule:
-        return True
+        return False
     when = date.fromisoformat(day)
     weekday = (when.weekday() + 1) % 7  # launchd: 0 and 7 are Sunday
     for entry in schedule:
@@ -354,7 +348,7 @@ def cadence(jobs: list[dict] | None, logs: Path | None, days: list[str]) -> dict
         runs = (log["runs"].pop(last, [0, 0]) if last not in days else log["runs"].get(last, [0, 0])) if last else [0, 0]
         read = bool(log["log"] and last and log["from"] and last >= log["from"]
                     and not (log["cut"] and (not log["read_from"] or last <= log["read_from"])))
-        out[name] = log | {"scheduled": [scheduled(schedule, day) for day in days],
+        out[name] = log | {"manual": not schedule, "scheduled": [scheduled(schedule, day) for day in days],
                            "last": {"day": last, "read": read, "runs": runs if read else [0, 0]}}
     return out
 
@@ -438,8 +432,7 @@ def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = 
     """
     backend = jobs or operations.LaunchdBackend()
     days = local_days(now, tz=tz)
-    out: dict = {"read": now, "limit": 200, "days": days, "sources": {},
-                 "mail": {"available": False, "reason": MAIL_REASON}, "families": families(config)}
+    out: dict = {"read": now, "limit": 200, "days": days, "sources": {}, "families": families(config)}
     root = getattr(backend, "cron_root", None)
     logs = None if root is None else Path(root) / "logs"
     for source, collect in (("reports", lambda: _reports(connection)),
@@ -464,19 +457,4 @@ def _attention(reports) -> dict:
     if reports is None:
         return {"state": "unknown", "n": 0, "what": "reports not read"}
     return attention(("warning" if report["status"] != "done" and report["attention"] else "" for report in reports),
-                     {"warning": "reports want you", "caution": "status mails flagged"})
-
-
-def clean(connection, before: str, *, now: str) -> dict:
-    """v1's clean preview for one date: which open reports retention would settle, and why each other one waits.
-
-    Writes nothing. A date `reporting.cutoff` refuses, or one later than `now`, raises `WorkflowError`.
-    `plan` is the token the attributed batch posts with `before` (sd:3386): `acknowledge_clean` refuses it once the
-    selection or a selected report's revision moves. It is None when no batch can succeed: nothing selected, or over
-    `max_batch`.
-    """
-    preview = reporting.clean_reports(connection, before=reporting.cutoff(before),
-                                      now=datetime.fromisoformat(now.replace("Z", "+00:00")))
-    return {"before": preview["before"], "count": preview["count"], "max_batch": preview["max_batch"], "plan": preview["plan"],
-            "selected": [entry["id"] for entry in preview["selected"]],
-            "declined": [{"id": entry["id"], "why": entry["why"]} for entry in preview["declined"]]}
+                     {"warning": "reports want you", "caution": "reports want you"})

@@ -148,6 +148,29 @@ class TheDocument(Fixture):
         self.assertEqual(doc["trend"]["error"], "")
         self.assertEqual(doc["usage"]["error"], "")
 
+    def test_the_slow_parts_come_from_the_kept_reads_with_when_they_were_observed(self):
+        """sd:4955: the month and the week numbers take seconds; the server keeps them, so the request reads none."""
+        kept = {name: metrics_screen.slow(self.connection, name, now=NOW) for name in metrics_screen.SLOW}
+        answers = {"usage": dict(kept["usage"], observed="2026-09-06T11:59:00Z"),
+                   "numbers": dict(kept["numbers"], observed="2026-09-06T11:58:00Z", stale="git did not answer")}
+        with mock.patch.object(usage, "read", side_effect=AssertionError("usage.read ran")), \
+                mock.patch.object(reads, "weekly_numbers", side_effect=AssertionError("weekly_numbers ran")):
+            doc = metrics_screen.document(self.connection, now=NOW, kept=answers.__getitem__)
+        self.assertEqual(doc["usage"], answers["usage"])
+        self.assertEqual(doc["numbers"], answers["numbers"])
+        self.assertEqual(kept["usage"], self.doc()["usage"])
+        self.assertEqual(kept["numbers"], self.doc()["numbers"])
+
+    def test_a_kept_part_with_no_reading_is_its_error_and_a_stale_month_lights_no_lamp(self):
+        def kept(name):
+            raise sqlite3.OperationalError("database is locked")
+
+        doc = metrics_screen.document(self.connection, now=NOW, kept=kept)
+        self.assertEqual((doc["usage"], doc["numbers"]), ({"error": "OperationalError: database is locked"},) * 2)
+        stale = dict(self.doc()["usage"], observed="2026-09-06T11:31:00Z", stale="database is locked")
+        self.assertEqual(metrics_screen._attention(stale, self.doc()["trend"]),
+                         {"state": "unknown", "n": 0, "what": "readings not read"})
+
     def test_the_panels_no_reader_covers_are_named_with_their_reason(self):
         unread = {u["id"]: u["reason"] for u in self.doc()["unread"]}
         self.assertEqual(sorted(unread), ["ci", "flaky", "model"])
@@ -334,6 +357,19 @@ C.run(cmd('bill.cap'), OBJ.get('bill:capped')); await flush();""")
         self.assertIn("scorecard: OperationalError: database is locked", out["states"][-1]["text"])
         self.assertIn("<b>▨ Not read.</b> OperationalError: database is locked", out["R"]["sc"])
         self.assertIn('data-ev="bill:capped"', out["R"]["bills"])
+
+    def test_a_stale_month_lights_no_lamp_and_the_clock_shows_the_oldest_reading(self):
+        doc = self.doc()
+        doc["usage"] = dict(doc["usage"], observed="2026-09-06T11:31:00Z", stale="database is locked")
+        doc["numbers"] = dict(doc["numbers"], observed="2026-09-06T11:58:00Z")
+        doc["attention"] = metrics_screen._attention(doc["usage"], doc["trend"])
+        out = self.run_page("R.lamps = ELS.annunciator.html;", doc)
+        lamps = out["R"]["lamps"]
+        states = dict(re.findall(r'data-cell="([\w-]+)"[^>]*data-state="(\w+)"', lamps))
+        self.assertEqual({k: v for k, v in states.items() if k != "ci"}, {"spend": "unknown", "w-claude": "unknown", "bound": "unknown"})
+        self.assertIn("<b>11:31</b> UTC", lamps)
+        self.assertEqual(out["states"][-1]["kind"], "partial")
+        self.assertIn("usage: stale since 11:31 UTC: database is locked", out["states"][-1]["text"])
 
     def test_a_document_that_does_not_arrive_leaves_no_reading_and_says_so(self):
         out = self.run_page("""R.before = ELS.annunciator.html;

@@ -172,12 +172,12 @@ const NO_SWITCH = 'no render switch: SD_SKIP_RENDER skips every render';
 const DRAFT = { id: 'draft:request', type: 'document request draft', label: 'new document request', title: '', cmd: '' };
 // build: copy only. Filing the item and queueing the runner are two writes, and no verb deletes an item, so no Undo is declared.
 // The design's Run, r and undo read as a run with an Undo, and r is Render on a document (sd:3525): Request, safe, no key.
-const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', icon: 'plus', risk: 'safe', primary: () => true, executes: false,
+const REQUEST = { id: 'document.request', on: 'document request draft', label: 'Request', does: 'Gives the line that files this request; the dashboard files nothing.', icon: 'plus', risk: 'safe', primary: () => true, executes: false,
   when: o => (o.repoError || (!o.title ? 'type what you need first' : !o.repo ? 'name the repository: add repo:<name>' : true)), cli: o => o.cmd,
   run: () => 'Copy the line: the dashboard does not file document requests yet' };
 // Tag asks for the tag in a field filled with the one typed under Tags, else the last one applied, so no tag lands unseen
 // (sd:3523); Enter in the Tags field runs it without asking, since that field shows the tag. The toast names the tag.
-const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 'tag', risk: 'undo', bulk: true, when: storeOff,
+const TAG = { id: 'document.tag', on: 'document', label: 'Tag', does: 'Adds a tag to the document; Undo removes it.', key: 't', icon: 'tag', risk: 'undo', bulk: true, when: storeOff,
   fields: () => [{ name: 'tag', label: 'Tag', required: true, value: tagDraft(), placeholder: 'one word, such as q4', help: 'Spaces become hyphens.' }],
   cli: () => NO_CLI,
   run: (o, v) => {
@@ -190,7 +190,7 @@ const TAG = { id: 'document.tag', on: 'document', label: 'Tag', key: 't', icon: 
 const rootView = (o, change) => window.shell.post('/api/documents/view', { root: o.key, ...change }).then(v => reading.reread().then(() => v));
 const ROOT_CLI = 'no CLI: the root\'s view row; the dashboard writes it (POST /api/documents/view)';
 const ROOT_CMDS = [
-  { id: 'root.rename', on: 'document root', label: 'Rename root', icon: 'pen-line', risk: 'undo', when: storeOff, cli: () => ROOT_CLI,
+  { id: 'root.rename', on: 'document root', label: 'Rename root', does: 'Gives this root a display name; Undo restores the old name.', icon: 'pen-line', risk: 'undo', when: storeOff, cli: () => ROOT_CLI,
     fields: o => [{ name: 'label', label: 'Name', value: o.set || '', placeholder: o.derived, help: `Up to 60 characters; empty goes back to ${o.derived}.` }],
     run: (o, v) => {
       const label = String(v?.label ?? '').trim(), was = o.set || '';
@@ -198,39 +198,39 @@ const ROOT_CMDS = [
       return rootView(o, { label }).then(() => ({ text: label ? `Renamed ${o.label} to ${label}` : `${o.label} is ${o.derived} again`, was }));
     },
     undo: (o, v) => rootView(o, { label: v.was }) },
-  { id: 'root.hide', on: 'document root', label: 'Hide root', icon: 'eye-off', risk: 'undo', when: o => o.hidden ? 'already hidden' : storeOff(),
+  { id: 'root.hide', on: 'document root', label: 'Hide root', does: 'Hides this root from the list; Undo shows it again.', icon: 'eye-off', risk: 'undo', when: o => o.hidden ? 'already hidden' : storeOff(),
     cli: () => ROOT_CLI, run: o => rootView(o, { hidden: true }).then(() => `Hidden: ${o.label}. Hidden roots, under Repo, lists it.`),
     undo: o => rootView(o, { hidden: false }) },
-  { id: 'root.unhide', on: 'document root', label: 'Unhide root', icon: 'eye', risk: 'undo', primary: () => true, when: o => !o.hidden ? 'not hidden' : storeOff(),
+  { id: 'root.unhide', on: 'document root', label: 'Unhide root', does: 'Shows this root in the list again; Undo hides it.', icon: 'eye', risk: 'undo', primary: () => true, when: o => !o.hidden ? 'not hidden' : storeOff(),
     cli: () => ROOT_CLI, run: o => rootView(o, { hidden: false }).then(() => `Unhidden: ${o.label}`), undo: o => rootView(o, { hidden: true }) },
 ];
 function registerCommands() {
   const C = shell.commands;
   C.register(
     // build: copy only; the dashboard does not run a render. The reference's run said "Mockup: nothing ran."
-    { id: 'document.render', on: 'document', label: 'Render', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: false, primary: o => o.stale && rootOf(o).research,
+    { id: 'document.render', on: 'document', label: 'Render', does: 'Gives the line that renders this research page again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: false, primary: o => o.stale && rootOf(o).research,
       when: o => rootOf(o).research || 'not a research repo: no source renders this page',
       cli: o => `cd ${shq(checkoutOf(o))} && sd-research-kit render`, run: o => `Copy the line to render ${o.title}; the dashboard does not run it` },
     // build: the document's own address on this dashboard, not a fixed host.
-    { id: 'document.open', on: 'document', label: 'Open document', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
+    { id: 'document.open', on: 'document', label: 'Open document', does: 'Opens the rendered document in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
       cli: o => `open ${location.origin}${o.href}`, run: o => { window.open(o.href, '_blank', 'noopener'); return `Opened in a new tab · ${o.title}`; } },
-    { id: 'document.pin', on: 'document', label: 'Pin', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
+    { id: 'document.pin', on: 'document', label: 'Pin', does: 'Pins the document to the top of the list; Undo unpins it.', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: true }).then(() => `Pinned ${o.title}`), undo: o => view(o, { pinned: false }) },
-    { id: 'document.unpin', on: 'document', label: 'Unpin', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(),
+    { id: 'document.unpin', on: 'document', label: 'Unpin', does: 'Unpins the document; Undo pins it again.', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: false }).then(() => `Unpinned ${o.title}`), undo: o => view(o, { pinned: true }) },
     // Hiding the shown document moves Details to the next row (the reader's reconcile); Undo brings the row back.
-    { id: 'document.hide', on: 'document', label: 'Hide', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : storeOff(),
+    { id: 'document.hide', on: 'document', label: 'Hide', does: 'Hides the document from the list; Undo shows it again.', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { hidden: true }).then(() => `Hidden: ${o.title}. The Hidden filter shows it.`), undo: o => view(o, { hidden: false }) },
-    { id: 'document.unhide', on: 'document', label: 'Unhide', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : storeOff(),
+    { id: 'document.unhide', on: 'document', label: 'Unhide', does: 'Shows the document in the list again; Undo hides it.', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { hidden: false }).then(() => `Unhidden: ${o.title}`), undo: o => view(o, { hidden: true }) },
     TAG,
-    { id: 'document.untag', on: 'document tag', label: 'Untag', key: 'u', icon: 'x', risk: 'undo', when: storeOff, cli: () => NO_CLI,
+    { id: 'document.untag', on: 'document tag', label: 'Untag', does: 'Removes this tag from the document; Undo puts it back.', key: 'u', icon: 'x', risk: 'undo', when: storeOff, cli: () => NO_CLI,
       run: o => view(o.doc, { tags: o.doc.tags.filter(x => x !== o.tag) }).then(() => `Removed tag ${o.tag}`),
       undo: o => view(o.doc, { tags: o.doc.tags }) },
-    { id: 'document.skip', on: 'document', label: 'Disable render', key: 's', icon: 'ban', risk: 'safe',
+    { id: 'document.skip', on: 'document', label: 'Disable render', does: 'Proposes a documents.conf line that hides this document from the list.', key: 's', icon: 'ban', risk: 'safe',
       when: () => `${NO_SWITCH}, and skip|<key>|<file> in documents.conf hides a document from this list without stopping its render`,
       cli: o => `no CLI: proposes skip|${o.key}|${o.file} in documents.conf` },
-    { id: 'document.skip-repo', on: 'document', label: 'Disable render for repo', key: 'e', icon: 'ban', risk: 'safe',
+    { id: 'document.skip-repo', on: 'document', label: 'Disable render for repo', does: 'Proposes a documents.conf line that hides this root from the list.', key: 'e', icon: 'ban', risk: 'safe',
       when: () => `${NO_SWITCH}, and skip|<key> in documents.conf hides a root from this list without stopping its render`,
       cli: o => `no CLI: proposes skip|${o.key} in documents.conf` },
     REQUEST,

@@ -329,7 +329,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     return window.shell.post('/api/skills/intake', body).then(r => { intake = { for: key, body, report: r }; drawIntake(); return `Report for ${r.skill}: ${r.verdict.action}`; },
       e => { intake = { for: key, body, error: e.message }; drawIntake(); return e.message; });
   }
-  const APPROVE = { id: 'skill.intake.approve', on: 'intake report', label: 'Approve revision', risk: 'confirm',
+  const APPROVE = { id: 'skill.intake.approve', on: 'intake report', label: 'Approve revision', does: 'Installs this revision over the current copy; this cannot be undone.', risk: 'confirm',
     consequence: o => `This installs ${o.label} at revision ${o.revision} into ${o.destination}, replacing the copy there. It installs only what the report showed.`,
     cli: o => approveLine(o),
     run: o => { const at = intake;
@@ -395,35 +395,35 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const write = (o, action, label, done, body = {}) => window.shell.post(`/api/skills/${encodeURIComponent(o.id)}/${action}`, { revision: sk(o).revision, ...body })
     .then(out => { pend(o, label); reread(); return done(out); }, e => { load(); throw e; });
   const itemOf = out => out?.item?.id ? ` as item #${out.item.id}` : '';
-  const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', risk: 'confirm',
+  const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', does: 'Queues a task that moves the skill onto this path; it cannot be withdrawn.', risk: 'confirm',
     consequence: o => `This queues a task that moves ${o.id} into skills/ on the ${o.path} path, in an isolated checkout, and opens a pull request. No verb withdraws it.`,
     cli: o => `sd skill promote ${shq(o.id)} --path ${shq(o.path)}`,
     run: o => write(o, 'promote', `promotion to ${o.path} queued`, out => `Promotion of ${o.id} to ${o.path} queued${itemOf(out)}`, { path_name: o.path }) };
   function registerCommands() {
     C.register(
-      { id: 'skill.try', on: 'skill', label: 'Try', key: 't', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
+      { id: 'skill.try', on: 'skill', label: 'Try', does: 'Starts a 30-day trial at the next install; it cannot end early.', key: 't', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
         when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : queued(o, 'trial queued'),
         consequence: o => `This starts a 30-day trial of ${o.id}; it installs at the next sd install. No verb ends a trial early.`,
         cli: o => `sd skill try ${shq(o.id)}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
-      { id: 'skill.review', on: 'skill', label: 'Review', key: 'v', risk: 'confirm', bulk: true, when: o => queued(o, 'review queued'),
+      { id: 'skill.review', on: 'skill', label: 'Review', does: 'Queues an independent review of this skill; it cannot be withdrawn.', key: 'v', risk: 'confirm', bulk: true, when: o => queued(o, 'review queued'),
         consequence: o => `This queues a review of ${o.id} by a reviewer independent of its latest author. No verb withdraws it.`,
         cli: o => `sd skill review ${shq(o.id)}`, run: o => write(o, 'review', 'review queued', out => `Review of ${o.id} queued${itemOf(out)}`) },
-      { id: 'skill.promote', on: 'skill', label: 'Promote', key: 'p', risk: 'safe', fills: true, when: o => sk(o).status !== 'path' || `on ${sk(o).paths.join(', ')} already`,
+      { id: 'skill.promote', on: 'skill', label: 'Promote', does: 'Opens the form that picks a path to promote this skill to.', key: 'p', risk: 'safe', fills: true, when: o => sk(o).status !== 'path' || `on ${sk(o).paths.join(', ')} already`,
         cli: o => `sd skill promote ${shq(o.id)} --path PATH`, run: o => { select(o.id, true); openPromote(sk(o)); return null; } },
-      { id: 'skill.demote', on: 'skill', label: 'Demote', key: 'd', risk: 'confirm', primary: o => sk(o).status === 'path' && !total(sk(o)),
+      { id: 'skill.demote', on: 'skill', label: 'Demote', does: 'Queues a task that moves the skill off every path; it cannot be withdrawn.', key: 'd', risk: 'confirm', primary: o => sk(o).status === 'path' && !total(sk(o)),
         when: o => sk(o).status === 'path' ? queued(o, 'demotion queued') : 'not on a path',
         consequence: o => `This queues a task that moves ${o.id} from skills/ to contrib/ and off every path, and opens a pull request. No verb withdraws it.`,
         cli: o => `sd skill demote ${shq(o.id)}`, run: o => write(o, 'demote', 'demotion queued', out => `Removal of ${o.id} from paths queued${itemOf(out)}`) },
-      { id: 'skill.reimport', on: 'skill', label: 'Re-import', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
+      { id: 'skill.reimport', on: 'skill', label: 'Re-import', does: 'Reads the skill\'s source again and shows the intake report.', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
         cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
-      { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', key: 'i', risk: 'safe', primary: () => true,
+      { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', does: 'Reads this user skill\'s source and shows the intake report.', key: 'i', risk: 'safe', primary: () => true,
         cli: o => `sd skill intake ${shq(o.name)} --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user' }); } },
-      { id: 'skill.schedule', on: 'skill', label: 'Schedule', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
+      { id: 'skill.schedule', on: 'skill', label: 'Schedule', does: 'Says why not: a scheduled job is a launchd agent, and sd adds none.', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.
-      { id: 'skill.apply', on: 'skill', label: 'Apply', key: 'a', risk: 'confirm', when: () => 'apply review notes from the review item',
+      { id: 'skill.apply', on: 'skill', label: 'Apply', does: 'Applies review notes to the skill; run it from the review item.', key: 'a', risk: 'confirm', when: () => 'apply review notes from the review item',
         cli: () => 'sd skill apply ITEM NOTE…' },
-      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', key: 's', risk: 'safe', executes: false, primary: () => true,
+      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Gives the line that reads codex sessions into skill use records.', key: 's', risk: 'safe', executes: false, primary: () => true,
         cli: () => 'sd skill scan', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd skill scan' },
     );
   }

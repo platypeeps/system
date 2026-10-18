@@ -59,18 +59,22 @@
 
   // ---------- Annunciator ----------
   function readCells() {
-    const d = DOC, u = d.usage, out = [];
+    // a stale month (sd:4955) keeps its numbers on show, and lights no lamp: each of its cells is unknown.
+    const d = DOC, u = d.usage, out = [], stale = u.stale ? 'unknown' : '';
     out.push(u.error ? { id: 'spend', label: 'Spend month', state: 'unknown', val: html`<b>—</b> not read`, small: u.error }
-      : { id: 'spend', label: 'Spend month', state: 'ok', ev: 'spend', val: html`<b>${money(u.spent)}</b>`, small: `${u.month} to date · ${plural(u.bills.length, 'bill')}` });
-    if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, state: pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
+      : { id: 'spend', label: 'Spend month', state: stale || 'ok', ev: 'spend', val: html`<b>${money(u.spent)}</b>`, small: `${u.month} to date · ${plural(u.bills.length, 'bill')}` });
+    if (!u.error) u.meter.filter(m => m.window_minutes === d.trend.window).forEach(m => out.push({ id: `w-${m.provider}`, label: `${m.provider} week`, state: stale || pctState(m.used_percent), ev: `win:${m.provider}:${m.window_minutes}`,
       val: html`<b>${Math.round(m.used_percent)}%</b> used`, small: `meter ${String(m.timestamp).slice(5, 16).replace('T', ' ')}Z` }));
-    if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', state: u.bound.length ? 'caution' : 'ok', ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
+    if (!u.error) out.push({ id: 'bound', label: 'Estimated spend', state: stale || (u.bound.length ? 'caution' : 'ok'), ev: 'bound', val: html`<b>${u.bound.length}</b> bound`, small: u.bound.length ? 'rows to check against invoices' : 'no row to check' });
     out.push({ id: 'ci', label: 'CI 7d', state: 'unknown', ev: 'unread:ci', val: html`<b>—</b> not read`, small: 'no local-gate store' });
     return out;
   }
+  // the oldest reading on the page: a kept part (sd:4955) can be older than the request.
+  const oldest = d => [d.read, d.usage.observed, d.numbers.observed].filter(Boolean).sort()[0];
+  const hhmm = iso => `${iso.slice(11, 16)} UTC`;
   function lamps() {
     const clock = { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: html`<kbd>r</kbd>`,
-      val: html`<span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: DOC ? `${DOC.read.slice(0, 10)} · refresh` : 'refresh' };
+      val: html`<span class="ph"><b>${DOC ? oldest(DOC).slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: DOC ? `${oldest(DOC).slice(0, 10)} · refresh` : 'refresh' };
     put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}" data-ev="${c.ev || ''}"`,
       label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${G[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
   }
@@ -220,11 +224,11 @@
     adopt: doc => {
       DOC = doc; evidence(); CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
-      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed', 'controls'].filter(k => doc[k].error);
+      const failed = ['usage', 'trend', 'numbers', 'scorecard', 'skills', 'age', 'observed', 'controls'].filter(k => doc[k].error || doc[k].stale);
       FIRST = CELLS.find(c => c.state === 'warning' || c.state === 'caution')?.ev || Object.keys(EV).find(k => k.startsWith('win:')) || null;
       put($('subhead'), html`Spend against budget, the week, providers, skill use and the month's usage · read <time class="rel" datetime="${doc.read}"></time>`);
       return { objects: Object.entries(EV).map(([id, e]) => ({ ...e, id, type: e.type || 'reading', label: e.label || e.title })),
-        state: failed.length ? { kind: 'partial', text: `${failed.map(k => `${k}: ${doc[k].error}`).join(' · ')}. The other readings are current.`, source: '/api/metrics' } : null };
+        state: failed.length ? { kind: 'partial', text: `${failed.map(k => `${k}: ${doc[k].error || `stale since ${hhmm(doc[k].observed)}: ${doc[k].stale}`}`).join(' · ')}. The other readings are current.`, source: '/api/metrics' } : null };
     },
     clear: () => {
       DOC = null; EV = {}; CELLS = []; FIRST = null;
@@ -254,10 +258,10 @@
     const offWhy = o => !o.control ? (DOC?.controls?.error ? `the provider registry was not read: ${DOC.controls.error}` : 'not in the provider registry')
       : o.revision ? true : 'the page holds no registry revision';
     C.register(
-      { id: 'providers.configure', on: 'provider', label: 'Configure', key: 'f', risk: 'undo', executes: true, primary: () => true,
+      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', risk: 'undo', executes: true, primary: () => true,
         when: offWhy, fields: configureFields, consequence: () => 'Saves the enabled choices and both automatic role orders together, as the registry reads them now.',
         cli: () => 'sd providers configure --file CONFIG.json', run: (o, v) => configure(o, v) },
-      { id: 'bill.cap', on: 'bill', label: 'Cap', key: 'p', risk: 'undo', executes: true, primary: () => true,
+      { id: 'bill.cap', on: 'bill', label: 'Cap', does: o => o.control?.write === 'clear' ? 'Clears the legacy cap on this bill; this cannot be undone.' : 'Sets a monthly cap on this bill; Undo restores the old cap.', key: 'p', risk: 'undo', executes: true, primary: () => true,
         when: o => { const w = offWhy(o); return w !== true ? w : o.control.write ? true : o.control.why; },
         fields: o => o.control?.write === 'set' ? [{ name: 'cap', label: 'New cap, USD a month', required: true, placeholder: o.control.cap_usd_month == null ? 'none' : String(o.control.cap_usd_month),
           help: `Now ${o.control.cap_usd_month == null ? 'no cap' : money(o.control.cap_usd_month)}. Type none to clear it.` }] : [],

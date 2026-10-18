@@ -9,9 +9,11 @@
 # - Additive: no --delete, so nothing on the NAS is ever removed.
 # - Refuses (exit 1, cron failure notification) when either volume is not
 #   mounted, so a missing NAS never fills the system disk under /Volumes.
-# - Sends one notification when a run completes after an incomplete one:
-#   every source file then exists on the NAS with the same size and mtime.
-#   Later complete runs stay quiet until a run is incomplete again.
+# - Files one brief, shown on the dashboard's Today, when a run completes
+#   after an incomplete one: every source file then exists on the NAS with
+#   the same size and mtime. Later complete runs stay quiet until a run is
+#   incomplete again. A brief that cannot be filed prints an
+#   SD_REPORT_ATTENTION line, so the run's report asks for a person.
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,8 +35,6 @@ environment (exported, or in <config>/mirror-sync/.env; see .env.example):
   NAS_COPY_LOG_DIR            per-file rsync logs (default
                               $NAS_COPY_SRC/repo-storage/system/nas-full-copy);
                               a folder inside the source is excluded from the copy
-  NAS_COPY_NOTIFY             the command that announces a completed copy
-                              (default: local-notify to the local and ntfy channels)
   NAS_COPY_TIMEOUT, NAS_COPY_RSYNC, NAS_COPY_HOUR, NAS_COPY_SECONDS,
   NAS_COPY_SKIP_MOUNT_CHECK   test hooks
 
@@ -65,9 +65,20 @@ START_HOUR=23
 KEEP_LOG_DAYS=14
 TIMEOUT="${NAS_COPY_TIMEOUT:-/opt/homebrew/bin/timeout}"
 RSYNC="${NAS_COPY_RSYNC:-/usr/bin/rsync}"
-NOTIFY="${NAS_COPY_NOTIFY:-sh $DIR/../local-notify/notify.sh -t \"NAS copy complete\" -c local,ntfy -b}"
 
 say() { echo "[nas-full-copy] $(date '+%Y-%m-%dT%H:%M:%S%z') $*"; }
+
+# A completed copy is news, not an alarm: one brief in the workflow database,
+# shown on the dashboard's Today (operator ruling 2026-10-17), not a push.
+file_brief() { # text
+  bdir=$(mktemp -d) || return 1
+  brief="$bdir/$(date +%Y-%m-%d) - NAS Full Copy.md"
+  printf -- '---\njob: nas-full-copy\n---\n\n%s\n' "$1" > "$brief" \
+    && sd reports brief add --belongs-to "$(cd "$DIR/.." && pwd)" --replace "$brief"
+  filed=$?
+  rm -rf "$bdir"
+  return "$filed"
+}
 
 mounted() { # path fstype
   [ -n "${NAS_COPY_SKIP_MOUNT_CHECK:-}" ] && return 0
@@ -133,8 +144,8 @@ case $rc in
     echo synced > "$STATE_DIR/state"
     say "complete: $files files copied this run; every source file is on the NAS"
     if [ "$last" != synced ]; then
-      eval "$NOTIFY" "\"$SRC is fully copied to $DST ($files files in the last run).\"" \
-        || say "notification failed"
+      file_brief "$SRC is fully copied to $DST ($files files in the last run)." \
+        || echo "SD_REPORT_ATTENTION: nas-full-copy: the completed copy's brief was not filed"
     fi
     exit 0 ;;
   124|137)

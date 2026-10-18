@@ -11,11 +11,13 @@ const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknow
 const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
-let DOC = null, READ = '', GRANT = null;
+let DOC = null, READ = '';
 let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, SERVICES = [], CRON = [];
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
+// a fleet section's time: when the snapshot read it, and ▨ with the reason when its newest read failed.
+const seen = d => html`${hhmm(d?.observed || READ)} UTC${d?.stale ? html` · <span class="g-unknown">▨</span> stale: ${d.stale}` : ''}`;
 // build: the document's sources say which reads failed; a failed one renders as unknown with its reason, never as empty.
 const why = s => DOC?.sources?.[s] || '';
 function absorb(doc) {
@@ -38,7 +40,6 @@ function absorb(doc) {
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
     r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
-  GRANT = doc.grant || null;
   LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; SERVICES = doc.services || [];
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
@@ -75,7 +76,8 @@ function nextOf(e, from) {
   return null;
 }
 function human(schedule) {
-  if (!Array.isArray(schedule) || !schedule.length) return 'no calendar';
+  // build (sd:4965): no calendar is a manual job, JOB_SCHEDULE="manual"; launchd starts it only on Run now.
+  if (!Array.isArray(schedule) || !schedule.length) return 'manual';
   const W = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const two = n => String(n).padStart(2, '0');
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -172,7 +174,8 @@ function lamps() {
   const live = LANE ? LANE.live.length : 0;
   if (LANE) set('lane', 'ok', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}`);
   else set('lane', 'unknown', html`▨ not read`);
-  if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
+  if (SESS?.stale) set('sessions', 'unknown', html`▨ stale since ${hhmm(SESS.observed)} UTC`);
+  else if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
   set('deploys', 'unknown', html`▨ no deploy source`);
   if (DOC?.jobs) { const failed = CRON.filter(c => c.rank === 'warning').length; set('schedules', failed ? 'warning' : 'ok', html`<b>${failed}</b> failed ${failed ? '■ ' : ''}of ${CRON.length}`); }
@@ -242,8 +245,6 @@ function settingCells(r) {
   return html`<td class="d mono" data-k="floor">${reviewCell(r.review, 'floor')}</td><td class="d mono" data-k="copilot">${reviewCell(r.review, 'copilot')}</td>
     <td class="d mono" data-k="checks">${checksCell(r.protection)}</td><td class="d mono" data-k="python">${pinCell(r.runtimes, 'python')}</td><td class="d mono" data-k="node">${pinCell(r.runtimes, 'node')}</td>`;
 }
-const grantTally = () => DOC?.grant ? html`<span>machine merge grant <b>${GRANT.assistant_merge || 'unset'}</b>${GRANT.assistant_merge ? '' : ' (reads ask)'}</span>`
-  : html`<span><span class="g-unknown" aria-hidden="true">▨</span> machine merge grant not read: ${why('grant')}</span>`;
 function renderRepos() {
   const el = document.getElementById('view-repos');
   if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db repo list')); return; }
@@ -252,8 +253,8 @@ function renderRepos() {
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, <code>.github/sd-review.json</code> and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
-      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span>${grantTally()}</p>
-      <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${hhmm(READ)} UTC` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
+      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
+      <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
     <div class="filters" aria-label="Filters">
       <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
@@ -271,7 +272,7 @@ function renderRepos() {
         <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
     ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through a pull request to the repo's <code>.github/sd-review.json</code>, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>`
-      : html`<p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(READ)} UTC; nothing here fetches.</p>`}`);
+      : html`<p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(GIT?.observed || READ)} UTC; nothing here fetches.</p>`}`);
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
@@ -580,20 +581,20 @@ function registerCommands() {
   const C = shell.commands;
   C.register(
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
-    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
       run: o => flipRepo('runner-merge', o), undo: undoOf },
-    { id: 'repo.managed', on: 'repo', label: 'Switch managed', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.managed', on: 'repo', label: 'Switch managed', does: 'Switches whether sd manages this repo; Undo switches it back.', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo managed ${shq(o.path)} ${o.row.managed === 'yes' ? 'no' : 'yes'}`, executes: true,
       run: o => flipRepo('managed', o), undo: undoOf },
     // sd:3075: Move lane needs a host, so it opens the repo's settings page, where the lane_host field proposes the move.
-    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.lane-host', on: 'repo', label: 'Move lane', does: 'Opens the repo\'s settings page, where you move its lane.', key: 'h', risk: 'safe', executes: false, when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?view=repos&repo=${encodeURIComponent(o.path)}`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
-    { id: 'sddb.run', on: 'sd-db change', label: 'Run', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
+    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
         // write answered (sd:4632): the library keeps an inbound key the form never posts, so that row is not the posted value.
@@ -601,31 +602,31 @@ function registerCommands() {
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.
-    { id: 'file.prepare', on: 'file change', label: 'Prepare', key: 'p', risk: 'safe', primary: () => true, executes: false,
+    { id: 'file.prepare', on: 'file change', label: 'Prepare', does: 'Gives the sd-ship line that opens a pull request for this change.', key: 'p', risk: 'safe', primary: () => true, executes: false,
       cli: o => `sd-ship prepare --no-item --review-id ${o.branch.replace('/', '-')} --path .github/sd-review.json --title ${shq(o.title)}`,
       run: () => 'Copy it into a terminal in the checkout: the dashboard does not open pull requests' },
-    ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', risk: 'safe', executes: false,
+    ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
-    { id: 'item.show', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
+    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => window.shell.openItem(o.item) },
-    { id: 'wt.prune', on: 'worktrees', label: 'Prune', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
+    { id: 'wt.prune', on: 'worktrees', label: 'Prune', does: 'Removes records of worktrees whose folders are gone; this cannot be undone.', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.
-    { id: 'svc.restart', on: 'service', label: 'Restart', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
+    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
       consequence: o => `Stops and starts ${o.name}. Anything it serves drops for a few seconds.`, run: o => landing(service(o, 'restart'), () => `Restart requested · ${o.label}`) },
-    { id: 'svc.stop', on: 'service', label: 'Stop', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
+    { id: 'svc.stop', on: 'service', label: 'Stop', does: 'Stops the service through launchd; Start brings it back.', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
-    { id: 'svc.start', on: 'service', label: 'Start', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
+    { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // launchd calendar jobs. Retry (commands.js) posts /api/jobs/<name>/retry; operations.inventory's capability is the off
     // reason. Exit 127 is "command not found": Print is the row's act (sd:3392).
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
-      run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`)) }),
+      run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Run started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
-    { id: 'jobs.cancel', on: 'job', label: 'Cancel', key: 'x', risk: 'confirm', primary: o => o.running,
+    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', risk: 'confirm', primary: o => o.running,
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
@@ -706,7 +707,7 @@ function renderSessions() {
     && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
   const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
-    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Agent processes by name (claude, codex) are not read yet.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${hhmm(READ)} UTC</span>` : ''}</p></div>
+    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Agent processes by name (claude, codex) are not read yet.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${seen(SESS)}</span>` : ''}</p></div>
     ${!SESS ? unknown('Sessions were not read', why('sessions'), 'fleet sessions')
       : SESS.processes.length ? html`<table class="ledger" aria-labelledby="agents-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Command</th><th scope="col">Running for</th><th scope="col">PID</th></tr></thead>
       <tbody>${SESS.processes.map((p, i) => html`<tr data-id="proc:${i}"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${p.command}</button></td><td class="d mono" data-k="up">${p.elapsed}</td><td class="d num">${p.pid}</td></tr>`)}</tbody></table>`
@@ -722,7 +723,7 @@ function renderSessions() {
       <tbody>${rows.map(a => { const st = ASTATE[a.status] || 'unknown'; return html`<tr data-id="asg:${a.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono" data-k="agent">${a.provider || '—'}</td><td class="d mono"><time class="rel" datetime="${a.ended || ''}" data-empty="never"></time></td>${ACT('asg:' + a.id)}</tr>`; })}</tbody></table>`
       : html`<p class="empty">${histFilter ? `No ${histFilter} assignment among the latest ${latest.length}.` : text.q ? `No assignment matches “${text.q}”.` : 'No assignment has run.'}</p>`}`}
 
-    <div class="sec-head"><h2 id="wt-h">Worktrees</h2><p class="tally">fleet sessions · ${hhmm(READ)} UTC</p></div>
+    <div class="sec-head"><h2 id="wt-h">Worktrees</h2><p class="tally">fleet sessions · ${SESS ? seen(SESS) : `${hhmm(READ)} UTC`}</p></div>
     ${SESS ? html`<table class="ledger" aria-labelledby="wt-h"><tbody>
       <tr data-id="wt:abandoned"><td class="g g-${SESS.abandoned ? 'caution' : 'ok'}">${SESS.abandoned ? '▲' : '●'}<span class="sr">${SESS.abandoned ? 'caution' : 'ok'}</span></td><td class="what"><button type="button">${SESS.abandoned} abandoned worktrees</button></td><td class="d mono">registered, directory gone</td>${ACT('wt:abandoned')}</tr>
       <tr data-id="wt:live"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${SESS.registered - SESS.abandoned} live worktrees</button></td><td class="d mono">of ${SESS.registered} registered</td><td class="act end"></td></tr>

@@ -10,13 +10,16 @@
 #   headline|<entity_id>|<name>[|<type>]          the lamp above the groups
 #   tile|<group>|<entity_id>|<name>[|<type>]      a tile in its group
 #
-# <type> is optional: alarm, lock, toggle or sensor, the commands the tile
-# gets. Without it the domain decides; a virtual binary sensor that works as
-# a switch says toggle.
+# <type> is optional: alarm, lock, toggle or sensor, how the tile reads its
+# state. Without it the domain decides; a virtual binary sensor that works as
+# a switch says toggle. A tile's commands follow its domain: the Home Assistant
+# services the dashboard allows for it (home_screen.SERVICES).
 #
 # The page reads each tile's state and its age from Home Assistant, with the
 # URL and token local-ha-mcp uses (<config>/ha-mcp/.env); a tile it cannot read
-# names why. Every command that changes a device is off; Read state shows its curl line for Copy only. A line the page cannot read is named on the page and skipped.
+# names why. A light, switch, fan or input_boolean turns on and off with Undo; a scene, script or button runs once;
+# a lock, alarm or cover asks for its entity id typed out first. Any other domain gets Read state, a curl line for
+# Copy only. A line the page cannot read is named on the page and skipped.
 
 headline|binary_sensor.problems_active|Problems active
 

@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
-__all__ = ["Api", "Old", "PAGES", "Page", "Read", "attention", "collect"]
+__all__ = ["Api", "Old", "PAGES", "Page", "Read", "attention", "collect", "place_views"]
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,8 @@ class Read:
     jobs: Any = None
     services: Any = None
     ports: Any = None
+    #: The server's kept Metrics parts (sd:4955), `metrics_screen.SLOW` name -> document; None reads them now.
+    metrics: Any = None
     #: The checkout commit the server started on (sd:3528), for Health's dashboard row.
     served_commit: Any = None
 
@@ -95,6 +97,20 @@ def attention(states, what: dict[str, str]) -> dict:
     warning, caution = states.count("warning"), states.count("caution")
     state = "warning" if warning else "caution" if caution else "ok"
     return {"state": state, "n": warning or caution, "what": what.get(state, what["caution"])}
+
+
+def place_views(area: str, kinds=("tasks", "briefs", "reports")) -> tuple[Api, ...]:
+    """A place page's Tasks, Briefs and Reports reads (`places`), at `/api/<area>/<view>`: each view its own document."""
+
+    def view(kind: str) -> Api:
+        def read(read: Read):
+            from ... import places
+
+            return getattr(places, kind)(read.connection, area, now=read.now)
+
+        return Api(f"/api/{area}/{kind}", read)
+
+    return tuple(view(kind) for kind in kinds)
 
 
 def collect(paths, package: str) -> tuple[Page, ...]:

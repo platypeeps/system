@@ -5,7 +5,7 @@ nothing here can know that -- but that the tool is unchanged when it is off,
 unavailable or broken, and that turning it on moves cards around without
 adding, dropping or re-wiring one. The twelve-card cap is the sharp edge:
 Blog Ideas holds fourteen notes in the fixture, and the same twelve must
-reach the mail either way. The stub in `harness.py` stands in for `jev.sh`,
+reach the brief either way. The stub in `harness.py` stands in for `jev.sh`,
 so no test here touches the network.
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import math
 import os
 import pathlib
 import re
@@ -27,7 +26,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import harness  # noqa: E402
 
 GOLDEN_LIST = (harness.FIXTURES / "golden_list.txt").read_text()
-GOLDEN_HTML = (harness.FIXTURES / "golden_body.html").read_text().rstrip("\n")
+GOLDEN_BRIEF = (harness.FIXTURES / "golden_body.md").read_text().rstrip("\n")
 
 #: Unset is on, and unset is what every deployed run has, so the fixtures
 #: run the stage that way (sd:1183). `1` is checked once, explicitly, below.
@@ -62,16 +61,16 @@ class DigestTest(unittest.TestCase):
         self.root = harness.build_root(self.tmp.name)
 
     def digest(self, env=None):
-        out, html, rc = harness.run(self.root, env)
+        out, brief, rc = harness.run(self.root, env)
         self.assertEqual(rc, 0)
-        return harness.templated(out), harness.templated(html)
+        return harness.templated(out), harness.templated(brief)
 
     # --- the three ways Jev stays out of the way -------------------------
 
     def test_the_stage_switched_off_is_byte_for_byte_yesterdays_digest(self):
-        out, html = self.digest(OFF)
+        out, brief = self.digest(OFF)
         self.assertEqual(out, GOLDEN_LIST)
-        self.assertEqual(html, GOLDEN_HTML)
+        self.assertEqual(brief, GOLDEN_BRIEF)
 
     def test_the_golden_holds_on_any_day_the_run_is_pinned_to(self):
         """The golden is yesterday's digest on every day, not only today.
@@ -87,10 +86,10 @@ class DigestTest(unittest.TestCase):
             with self.subTest(day=day.isoformat()), \
                     tempfile.TemporaryDirectory() as tmp:
                 root = harness.build_root(tmp, today=day)
-                out, html, rc = harness.run(root, OFF, today=day)
+                out, brief, rc = harness.run(root, OFF, today=day)
                 self.assertEqual(rc, 0)
                 self.assertEqual(harness.templated(out, day), GOLDEN_LIST)
-                self.assertEqual(harness.templated(html, day), GOLDEN_HTML)
+                self.assertEqual(harness.templated(brief, day), GOLDEN_BRIEF)
 
     def test_the_stage_unset_orders_like_the_stage_switched_on(self):
         # The flip: every one of these integrations was opt-in, and an opt-in
@@ -100,9 +99,9 @@ class DigestTest(unittest.TestCase):
         self.assertNotEqual(self.digest(), self.digest(OFF))
 
     def test_jev_disabled_is_byte_for_byte_yesterdays_digest(self):
-        out, html = self.digest({**ON, "JEV_STUB_ENABLED_EXIT": "3"})
+        out, brief = self.digest({**ON, "JEV_STUB_ENABLED_EXIT": "3"})
         self.assertEqual(out, GOLDEN_LIST)
-        self.assertEqual(html, GOLDEN_HTML)
+        self.assertEqual(brief, GOLDEN_BRIEF)
 
     def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
         # sd:3990. Kept once in <config>/shared.env, not in each tool's .env.
@@ -110,20 +109,20 @@ class DigestTest(unittest.TestCase):
         (self.root / "config" / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.root / "vault"}"\n')
         home = self.root / "no-home"
         home.mkdir()
-        out, html, rc = harness.run(self.root, {"OBSIDIAN_VAULT": None, "HOME": str(home)})
+        out, brief, rc = harness.run(self.root, {"OBSIDIAN_VAULT": None, "HOME": str(home)})
         self.assertEqual(rc, 0)
         self.assertEqual(harness.templated(out), self.digest()[0])
 
     def test_a_failing_jev_leaves_the_digest_intact(self):
-        out, html = self.digest({**ON, "JEV_STUB_ASK_FAIL": "1"})
+        out, brief = self.digest({**ON, "JEV_STUB_ASK_FAIL": "1"})
         self.assertEqual(out, GOLDEN_LIST)
-        self.assertEqual(html, GOLDEN_HTML)
+        self.assertEqual(brief, GOLDEN_BRIEF)
 
     def test_a_failing_jev_says_so_on_stderr(self):
         env = dict(os.environ)
         env.update({
             "OBSIDIAN_VAULT": str(self.root / "vault"),
-            "NOTIFY_RECORD": str(self.root / "notify.args"),
+            **harness.sd_stub(self.root),
             "JEV_STUB_ASK_FAIL": "1",
         })
         env.pop("JEV_OBSIDIAN_REVIEW", None)
@@ -145,17 +144,17 @@ class DigestTest(unittest.TestCase):
         safe. It shells out to `tailscale funnel status`, and a stalled daemon
         makes it unbounded. The digest used to die on `subprocess.TimeoutExpired`
         -- which `except OSError` never caught -- after blocking. It must now
-        mail the same Open-only digest it mails when the signer is absent.
+        file the same Open-only digest it files when the signer is absent.
         """
-        out, html = self.digest({**OFF, "ACTIONS_STUB_HANG": "30"})
+        out, brief = self.digest({**OFF, "ACTIONS_STUB_HANG": "30"})
         self.assertEqual(out, GOLDEN_LIST)
-        self.assertEqual(html, GOLDEN_HTML)
+        self.assertEqual(brief, GOLDEN_BRIEF)
 
     def test_a_hanging_signer_names_the_endpoint_it_could_not_reach(self):
         env = dict(os.environ)
         env.update({
             "OBSIDIAN_VAULT": str(self.root / "vault"),
-            "NOTIFY_RECORD": str(self.root / "notify.args"),
+            **harness.sd_stub(self.root),
             "ACTIONS_STUB_HANG": "30",
         })
         proc = subprocess.run(
@@ -224,49 +223,49 @@ class DigestTest(unittest.TestCase):
     # --- a slow signer at night (sd:2536) ---------------------------------
 
     def signing(self, **extra):
-        """A run against a stub that signs; returns (stderr, html, url calls)."""
+        """A run against a stub that signs; returns (stderr, brief, url calls)."""
         record = self.root / "actions.calls"
         record.unlink(missing_ok=True)
         state = self.root / "stub-state"
         shutil.rmtree(state, ignore_errors=True)
         state.mkdir()
-        proc, html = harness.run_proc(self.root, {
+        proc, brief = harness.run_proc(self.root, {
             **OFF, "ACTIONS_STUB_RECORD": str(record), "ACTIONS_STUB_STATE": str(state),
             "ACTIONS_STUB_SIGNS": "https://mac.example.test", **extra})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         verbs = [line.split(" ", 1)[0] for line in record.read_text().splitlines() if line]
-        return proc.stderr, html, verbs.count("url")
+        return proc.stderr, brief, verbs.count("url")
 
     def test_a_signer_slower_than_five_seconds_still_signs(self):
         # 0.1 s by day, over 5 s under the nightly load: the old bound gave up.
-        err, html, _ = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="6")
+        err, brief, _ = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="6")
         self.assertNotIn("action links unsigned", err)
-        self.assertIn("https://mac.example.test/task?stub=1", html)
+        self.assertIn("https://mac.example.test/task?stub=1", brief)
 
     def test_a_signing_timeout_is_tried_once_more(self):
         _, _, links = self.signing()
         # sd:2683: every link's call shares the bound. At 1 s a call with no
         # hang ran out under a loaded gate and was retried too (57 != 56); at
         # 10 s only the hung first call runs out.
-        err, html, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="11", OBSIDIAN_REVIEW_SIGN_TIMEOUT="10")
+        err, brief, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="11", OBSIDIAN_REVIEW_SIGN_TIMEOUT="10")
         self.assertNotIn("action links unsigned", err)
-        self.assertIn("https://mac.example.test/task?stub=1", html)
+        self.assertIn("https://mac.example.test/task?stub=1", brief)
         self.assertEqual(calls, links + 1)
 
     def test_a_signer_that_never_answers_says_why_with_the_load(self):
-        err, html, calls = self.signing(ACTIONS_STUB_SIGN_HANG="3", OBSIDIAN_REVIEW_SIGN_TIMEOUT="1")
+        err, brief, calls = self.signing(ACTIONS_STUB_SIGN_HANG="3", OBSIDIAN_REVIEW_SIGN_TIMEOUT="1")
         self.assertEqual(err.count("action links unsigned"), 1, err)
         self.assertRegex(err, r"action links unsigned -- \S+task-actions\.sh did not sign "
                               r"within 1s, 2 times \(load averages [0-9.]+ [0-9.]+ [0-9.]+\)")
-        self.assertNotIn("/task?stub=1", html)
+        self.assertNotIn("/task?stub=1", brief)
         self.assertEqual(calls, 2)
 
     def test_a_signer_that_exits_non_zero_says_why(self):
         # Before sd:2536 a failed `url` gave an empty link and said nothing.
-        err, html, calls = self.signing(ACTIONS_STUB_SIGN_EXIT="1")
+        err, brief, calls = self.signing(ACTIONS_STUB_SIGN_EXIT="1")
         self.assertEqual(err.count("action links unsigned"), 1, err)
         self.assertRegex(err, r"task-actions\.sh url exited 1 \(load averages ")
-        self.assertNotIn("/task?stub=1", html)
+        self.assertNotIn("/task?stub=1", brief)
         self.assertEqual(calls, 1)
 
     def test_a_base_url_failure_says_why(self):
@@ -331,19 +330,19 @@ class DigestTest(unittest.TestCase):
     # --- and the one way it does something -------------------------------
 
     def test_jev_reorders_the_cards_and_the_sections(self):
-        out, html = self.digest(ON)
+        out, brief = self.digest(ON)
         self.assertEqual(sections(out),
                          list(reversed(harness.EXPECTED_SECTIONS)))
         for queue, notes in harness.EXPECTED_SHOWN.items():
             self.assertEqual(shown(out)[queue], list(reversed(notes)))
         self.assertNotEqual(out, GOLDEN_LIST)
-        self.assertIn("Ordered by Jev", html)
+        self.assertIn("Ordered by Jev", brief)
         self.assertIn("(ordered by Jev, most worth deciding first)", out)
 
     def test_the_item_set_never_changes(self):
         for env in (None, {**ON, "JEV_STUB_ENABLED_EXIT": "3"},
                     {**ON, "JEV_STUB_ASK_FAIL": "1"}, ON):
-            out, html = self.digest(env)
+            out, brief = self.digest(env)
             self.assertEqual(out.splitlines()[0], "20 awaiting decisions")
             picked = shown(out)
             self.assertEqual(sorted(picked), sorted(harness.EXPECTED_SHOWN))
@@ -352,19 +351,46 @@ class DigestTest(unittest.TestCase):
             # the two notes over the twelve-card cap stay over it
             self.assertNotIn("blog-01", out)
             self.assertNotIn("blog-02", out)
-            self.assertIn("… and 2 more in Obsidian", html)
+            self.assertIn("… and 2 more in Obsidian", brief)
             # and nothing whose status is not a pending decision appears
             for hidden in ("blog-accepted", "skill-done", "tip-ready-a"):
                 self.assertNotIn(hidden, out)
-            self.assertIn("2 tip(s) are `ready`", html)
+            self.assertIn("2 tip(s) are `ready`", brief)
 
     def test_the_buttons_and_their_links_are_untouched(self):
         plain = self.digest()[1]
         ranked = self.digest(ON)[1]
-        hrefs = lambda doc: sorted(re.findall(r'href="([^"]+)"', doc))
+        hrefs = lambda doc: sorted(re.findall(r"\]\(([^)]+)\)", doc))
+        self.assertTrue(hrefs(plain))
         self.assertEqual(hrefs(plain), hrefs(ranked))
-        self.assertEqual(sorted(re.findall(r">([^<>]+)</a>", plain)),
-                         sorted(re.findall(r">([^<>]+)</a>", ranked)))
+        self.assertEqual(sorted(re.findall(r"\[([^\]]+)\]\(", plain)),
+                         sorted(re.findall(r"\[([^\]]+)\]\(", ranked)))
+
+    # --- the digest is a brief on Today, not a mail ------------------------
+
+    def test_the_digest_is_filed_as_the_days_review_queue_brief(self):
+        """Operator ruling 2026-10-17: what the reports view shows is raised on Today, not mailed."""
+        out, brief, rc = harness.run(self.root, OFF)
+        self.assertEqual(rc, 0)
+        self.assertIn("brief filed", out)
+        args = (self.root / "sd.args").read_text().strip()
+        self.assertEqual(args, f"reports brief add --belongs-to {self.root} --replace "
+                               + args.split(" --replace ", 1)[1])
+        self.assertTrue(args.endswith(f"/{harness.TODAY.isoformat()} - Review Queue.md"), args)
+        self.assertTrue(brief.startswith("---\njob: obsidian-review-daily\n---\n\n**20** note(s) across 5 queue(s)"))
+        self.assertFalse((self.root / "local-notify").exists())
+
+    def test_a_brief_that_cannot_be_filed_exits_1(self):
+        proc, _ = harness.run_proc(self.root, {**OFF, "SD_EXIT": "2"})
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("brief NOT filed", proc.stderr)
+
+    def test_list_files_nothing(self):
+        env = {**os.environ, **harness.sd_stub(self.root), "OBSIDIAN_VAULT": str(self.root / "vault"), **OFF}
+        proc = subprocess.run(["sh", str(self.root / "local-obsidian-review" / "obsidian-review.sh"), "list"],
+                              capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse((self.root / "sd.args").exists())
 
     # --- what leaves the machine -----------------------------------------
 
@@ -401,93 +427,6 @@ class DigestTest(unittest.TestCase):
         expected = sum(len(v) for v in harness.EXPECTED_SHOWN.values())
         self.assertEqual(len(sent["questions"]), expected)
         self.assertEqual(len(sent["state"]["items"]), expected)
-
-
-# --- the mail wears the foundation's light palette (sd:3590) -------------
-
-TOKENS = (pathlib.Path(__file__).resolve().parents[2] / "local-project-dashboard"
-          / "sd_dashboard" / "v2" / "static" / "tokens.css")
-
-
-def light_hex(name: str) -> str:
-    """The light side of one foundation colour token, as sRGB hex."""
-    m = re.search(rf"--color-{name}:\s*light-dark\(oklch\(([\d.]+)%\s+([\d.]+)\s+([\d.]+)\)",
-                  TOKENS.read_text())
-    lightness, chroma, hue = float(m[1]) / 100, float(m[2]), math.radians(float(m[3]))
-    a, b = chroma * math.cos(hue), chroma * math.sin(hue)
-    l, m_, s = ((lightness + x) ** 3 for x in (0.3963377774 * a + 0.2158037573 * b,
-                                               -0.1055613458 * a - 0.0638541728 * b,
-                                               -0.0894841775 * a - 1.2914855480 * b))
-    lin = (4.0767416621 * l - 3.3077115913 * m_ + 0.2309699292 * s,
-           -1.2684380046 * l + 2.6097574011 * m_ - 0.3413193965 * s,
-           -0.0041960863 * l - 0.7034186147 * m_ + 1.7076147010 * s)
-    gamma = [12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055 for v in lin]
-    return "#" + "".join(f"{round(min(1, max(0, v)) * 255):02x}" for v in gamma)
-
-
-#: Every colour a mail may carry: foundation light tokens, by name.
-MAIL_TOKENS = ("paper", "panel", "rule", "ink", "ink-2", "muted", "ok", "caution", "warning")
-
-
-class MailPaletteTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = harness.build_root(self.tmp.name)
-        # A signer that answers, so the Mark done, Accept and Decline buttons are in the mail.
-        state = pathlib.Path(self.tmp.name) / "stub-state"
-        state.mkdir()
-        proc, self.html = harness.run_proc(self.root, {
-            "ACTIONS_STUB_STATE": str(state), "ACTIONS_STUB_SIGNS": "https://signer.example.test"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-
-    def test_every_colour_is_a_foundation_light_value_in_srgb_hex(self):
-        allowed = {light_hex(name) for name in MAIL_TOKENS}
-        found = re.findall(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch)\(", self.html)
-        self.assertTrue(found)
-        self.assertEqual(set(found) - allowed, set(), "a colour the foundation does not name")
-        self.assertNotRegex(self.html, r"\b(?:purple|violet|indigo)\b")
-
-    def test_every_style_attribute_is_well_formed(self):
-        # A double quote inside style="..." ends the attribute: the font stack
-        # once did, and the card lost its font and its ground.
-        for style in re.findall(r'style="([^"]*)"', self.html):
-            self.assertNotIn("<", style)
-            self.assertRegex(style.rstrip(";"), r"^(?:[a-z-]+:[^;]+;)*[a-z-]+:[^;]+$", style)
-        self.assertIn("background:" + light_hex("paper"), self.html.split(">", 1)[0])
-
-    def test_there_is_no_purple_button(self):
-        for colour in re.findall(r"background:(#[0-9a-f]{6})", self.html):
-            red, green, blue = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
-            self.assertFalse(blue > red > green, f"{colour} reads purple")
-
-    def test_a_coloured_button_carries_a_glyph_beside_its_label(self):
-        buttons = re.findall(r"<a [^>]*background:#[0-9a-f]{6}[^>]*>([^<]+)</a>", self.html)
-        self.assertTrue(buttons)
-        for label in buttons:
-            self.assertRegex(label, r"^[^\w\s] ", f"{label!r} has no glyph")
-
-    def test_a_coloured_state_carries_its_glyph(self):
-        warning, caution = light_hex("warning"), light_hex("caution")
-        states = re.findall(rf'<span style="color:({warning}|{caution});[^"]*">([^<]+)</span>', self.html)
-        self.assertEqual(states, [], "the review mail names no state colour in text")
-
-    def test_text_is_readable_on_its_ground(self):
-        def luminance(colour):
-            channels = [int(colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
-            lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
-            return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
-
-        def ratio(a, b):
-            hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
-            return (hi + 0.05) / (lo + 0.05)
-
-        panel, paper = light_hex("panel"), light_hex("paper")
-        for button in re.findall(r"color:" + panel + r";background:(#[0-9a-f]{6})", self.html):
-            self.assertGreaterEqual(ratio(panel, button), 4.5, button)
-        for name in ("muted", "warning", "caution", "ink-2"):
-            self.assertGreaterEqual(ratio(light_hex(name), panel), 4.5, name)
-        self.assertGreaterEqual(ratio(light_hex("muted"), paper), 4.5)
 
 
 if __name__ == "__main__":

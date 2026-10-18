@@ -78,6 +78,10 @@ TYPES = {
 
 SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
+#: The most of a brief-only product's brief the ledger carries as `briefText`, for Read brief to show; `briefCut` says
+#: when it holds less than the file. The tab still serves no Markdown: the text travels in the ledger, drawn as text.
+BRIEF_CHARS = 64_000
+
 #: The mockup page's policy, replacing the dashboard's for that one response.
 POLICY = (
     "sandbox allow-scripts; default-src 'none'; "
@@ -368,8 +372,8 @@ def _label(base: Path) -> str:
         return str(main)
 
 
-def _brief(base: Path, name: str) -> tuple[str, str, str]:
-    """(brief path, title, Status line) from a product's README.md; an empty brief is none.
+def _brief(base: Path, name: str) -> tuple[str, str, str, str]:
+    """(brief path, title, Status line, text) from a product's README.md; an empty brief is none.
 
     The brief is read only when it resolves inside the checkout, like a page.
     """
@@ -384,7 +388,7 @@ def _brief(base: Path, name: str) -> tuple[str, str, str]:
         pass
     status = re.search(r"^\*\*Status:\*\*\s*(.+)$", text, re.MULTILINE)
     title = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-    return (brief if text else "", title.group(1) if title else name, status.group(1) if status else "")
+    return (brief if text else "", title.group(1) if title else name, status.group(1) if status else "", text)
 
 
 def caution(page: dict) -> str:
@@ -428,10 +432,12 @@ def ledger(root: Path | None = None, *, now: datetime | None = None) -> dict:
     except (OSError, ValueError):
         recorded = {}
     for name in names:
-        brief, title, status = _brief(base, name)
+        brief, title, status, text = _brief(base, name)
         pages = listed.get(name, [])
         out["products"].append({"name": name, "title": title, "brief": brief,
                                 "status": status, "pages": len(pages)})
+        if brief and not pages:  # the only rows Read brief is on
+            out["products"][-1].update(briefText=text[:BRIEF_CHARS], briefCut=len(text) > BRIEF_CHARS)
         for path in pages:
             target = resolve(path, base)[0]
             html = _text(target.read_bytes())

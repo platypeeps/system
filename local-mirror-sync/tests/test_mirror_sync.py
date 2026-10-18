@@ -2776,6 +2776,9 @@ class NasFullCopy(unittest.TestCase):
         self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\nexit "${STUB_RC:-0}"\n')
         self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\nexec "$@"\n')
         self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
+        # `sd reports brief add ... <file>`: one line per call, then the brief's text, so a test reads both.
+        self.stub(stubs / "sd", '#!/bin/sh\nfor last; do :; done\nprintf "%s\\n" "$*" >> "$STUB_NOTIFIED"\n'
+                                'cat "$last" >> "$STUB_NOTIFIED.text"\nexit "${STUB_SD_RC:-0}"\n')
         self.stubs = stubs
         self.log_dir = self.src / "repo-storage/system/nas-full-copy"
 
@@ -2794,7 +2797,7 @@ class NasFullCopy(unittest.TestCase):
             "NAS_COPY_DST": str(self.dst),
             "NAS_COPY_RSYNC": str(self.stubs / "rsync"),
             "NAS_COPY_TIMEOUT": str(self.stubs / "timeout"),
-            "NAS_COPY_NOTIFY": f"printf '%s\\n' >> '{self.notified}'",
+            "STUB_NOTIFIED": str(self.notified),
             "NAS_COPY_SKIP_MOUNT_CHECK": "1",
             "NAS_COPY_HOUR": "23",
             "NAS_COPY_SECONDS": "3600",
@@ -2893,6 +2896,22 @@ class NasFullCopy(unittest.TestCase):
         again = self.run_copy()
         self.assertEqual(again.returncode, 0)
         self.assertEqual(len(self.notified.read_text().splitlines()), 1, "a later complete run stays quiet")
+
+    def test_the_completion_is_a_brief_in_the_workflow_database_not_a_push(self) -> None:
+        result = self.run_copy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [call] = self.notified.read_text().splitlines()
+        day = subprocess.run(["date", "+%Y-%m-%d"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertTrue(call.startswith(f"reports brief add --belongs-to {FOLDER.parent} --replace "), call)
+        self.assertTrue(call.endswith(f"/{day} - NAS Full Copy.md"), call)
+        text = Path(f"{self.notified}.text").read_text()
+        self.assertTrue(text.startswith("---\njob: nas-full-copy\n---\n"), text)
+        self.assertIn(f"{self.src} is fully copied to {self.dst}", text)
+
+    def test_a_brief_that_cannot_be_filed_asks_for_a_person(self) -> None:
+        result = self.run_copy(STUB_SD_RC="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SD_REPORT_ATTENTION: nas-full-copy: the completed copy's brief was not filed", result.stdout)
 
     def test_a_window_that_closes_is_incomplete_and_the_next_complete_run_notifies(self) -> None:
         closed = self.run_copy(rc=124)

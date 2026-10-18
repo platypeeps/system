@@ -494,12 +494,21 @@ class Ledger(unittest.TestCase):
 
     def test_the_brief_gives_title_and_status_and_a_brief_only_product_is_listed(self):
         products = {p["name"]: p for p in designs.ledger(self.root)["products"]}
+        # Tuning: a brief-only product carries its brief's text, which Read brief shows; a product with pages does not.
         self.assertEqual(products["brand"], {
             "name": "brand", "title": "brand brief", "brief": "products/brand/README.md",
-            "status": "extracted; no redesign started.", "pages": 0})
+            "status": "extracted; no redesign started.", "pages": 0,
+            "briefText": "# brand brief\n\n**Status:** extracted; no redesign started.\n", "briefCut": False})
         self.assertEqual(products["system"]["title"], "system \u2014 design brief")
         self.assertEqual(products["system"]["pages"], 3)
+        self.assertNotIn("briefText", products["system"])
         self.assertEqual(products["empty"]["brief"], "")
+        self.assertNotIn("briefText", products["empty"])
+
+    def test_a_long_brief_is_cut_and_says_so(self):
+        (self.root / "products" / "brand" / "README.md").write_text("# brand\n" + "x" * designs.BRIEF_CHARS, encoding="utf-8")
+        brand = {p["name"]: p for p in designs.ledger(self.root)["products"]}["brand"]
+        self.assertEqual((len(brand["briefText"]), brand["briefCut"]), (designs.BRIEF_CHARS, True))
 
     def test_caution_counts_uncommitted_unshot_and_stale_pages(self):
         found = designs.ledger(self.root)

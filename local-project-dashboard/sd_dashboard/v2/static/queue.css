@@ -2,14 +2,18 @@
  * Queue v2 (sd:2585): instrument panel, foundation tokens. Header readings (load5 and trend, gate slots) as one
  * mono strip; then one section per busy lane, one ledger row per item: glyph, state, subject, facts, controls
  * (a cancelled row reads quiet, as a held one does: it waits on the operator, not the lane);
- * idle lanes share one quiet line (sd:3284).
+ * idle lanes share one quiet line (sd:3284). Show (active | all) reuses Health's .fgroup chips.
  * Colour means state only: cyan live (merging, a gate running), green landed or passed, amber blocked, red failed. */
 .readings { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-xl); margin: 0 0 var(--space-sm); padding: var(--space-sm) var(--space-md); border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-md); background: var(--color-panel); }
 .readings div { display: grid; gap: var(--space-3xs); min-width: 0; }
 .readings dt { font: 500 var(--text-2xs)/1.2 var(--font-label); color: var(--color-muted); }
 .readings dd { margin: 0; font: 500 var(--text-md)/1.2 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink); }
 .readings dd small { font-size: var(--text-xs); color: var(--color-ink-2); margin-left: var(--space-2xs); }
-.edits { margin: 0 0 var(--space-lg); font-size: var(--text-sm); color: var(--color-ink-2); max-width: 72ch; }
+.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; margin: 0 0 var(--space-md); }
+.fgroup > .label { margin-right: var(--space-2xs); }
+.fgroup .chips { margin: 0; }
+.fgroup .chip .n { color: var(--color-muted); font-family: var(--font-data); }
+.edits { margin: 0 0 var(--space-sm); font-size: var(--text-sm); color: var(--color-ink-2); max-width: 72ch; }
 section.lane { margin: 0 0 var(--space-xl); }
 section.lane > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-sm); padding-bottom: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); margin-bottom: var(--space-xs); }
 section.lane > header h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-data); overflow-wrap: anywhere; min-width: 0; }

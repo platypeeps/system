@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import pack_library
+from . import PACK_MODULES, pack_bin, pack_library
 
 #: The launchd label prefix is shared by every system service, so a
 #: second install under another prefix keeps its own labels. The default is
@@ -200,6 +200,11 @@ def build_digests(*, library_root=None, dashboard_root=None):
     dashboard_root = Path(dashboard_root) if dashboard_root is not None else HERE
     try:
         library = _build_manifest(library_root)
+        # The pack `bin/` modules the Queue imports in-process (sd:TBD). An installed copy has no `bin/`: absent is
+        # recorded as None, as for the launcher below.
+        for name in PACK_MODULES:
+            path = pack_bin(library_root) / f"{name}.py"
+            library.append((f"bin/{name}.py", _file_digest(path) if path.exists() or path.is_symlink() else None))
         dashboard = [("sd_dashboard/" + name, digest)
                      for name, digest in _build_manifest(dashboard_root / "sd_dashboard")]
         # Ports uses these fixed repository dependencies outside the package;
