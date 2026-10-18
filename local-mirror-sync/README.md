@@ -315,7 +315,10 @@ removed.
 and 05:00 with `rsync -rlt` and no `--delete`; the `nas-full-copy` cron job
 runs it. It stops rsync at 05:00 and the next night continues, refuses (exit 1)
 when either volume is not mounted, and files one brief (`sd reports brief add`,
-shown on the dashboard's Today) when a run completes after an incomplete one. Set the two volumes in `<config>/mirror-sync/.env` (see
+shown on the dashboard's Today) when a run completes after an incomplete one.
+A failed rsync is retried up to 3 times, 5 minutes apart, while more than 300 s
+of window remain and both volumes are still mounted, each attempt with its own
+`.log` and `.err`; a passing SMB stall no longer ends the night (sd:2268). Set the two volumes in `<config>/mirror-sync/.env` (see
 `.env.example`). The last run's outcome and the lock sit in
 `${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/`, not in
 the config folder, which holds values only (sd:3990).

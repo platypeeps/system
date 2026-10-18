@@ -9,6 +9,9 @@
 # - Additive: no --delete, so nothing on the NAS is ever removed.
 # - Refuses (exit 1, cron failure notification) when either volume is not
 #   mounted, so a missing NAS never fills the system disk under /Volumes.
+# - Retries a failed rsync up to 3 times, 5 minutes apart, while more than
+#   300 s of window are left and both volumes are still mounted: a passing
+#   SMB stall used to end the night (sd:2268).
 # - Files one brief, shown on the dashboard's Today, when a run completes
 #   after an incomplete one: every source file then exists on the NAS with
 #   the same size and mtime. Later complete runs stay quiet until a run is
@@ -27,7 +30,7 @@ usage: nas-full-copy.sh run|help
 
   run   copy NAS_COPY_SRC to NAS_COPY_DST with rsync (-rlt, no --delete) until
         05:00; exits 0 outside the 23:00-05:00 window, 1 when a volume is not
-        mounted or rsync fails
+        mounted or rsync still fails after 3 retries 5 minutes apart
 
 environment (exported, or in <config>/mirror-sync/.env; see .env.example):
   NAS_COPY_SRC, NAS_COPY_DST  the disk to copy and the share to copy it to;
@@ -36,7 +39,7 @@ environment (exported, or in <config>/mirror-sync/.env; see .env.example):
                               $NAS_COPY_SRC/repo-storage/system/nas-full-copy);
                               a folder inside the source is excluded from the copy
   NAS_COPY_TIMEOUT, NAS_COPY_RSYNC, NAS_COPY_HOUR, NAS_COPY_SECONDS,
-  NAS_COPY_SKIP_MOUNT_CHECK   test hooks
+  NAS_COPY_SKIP_MOUNT_CHECK, NAS_COPY_RETRY_WAIT   test hooks
 
 state (the last run's outcome and the lock) is in
 ${XDG_STATE_HOME:-~/.local/state}/system/mirror-sync/nas-full-copy/.
@@ -63,6 +66,10 @@ esac
 END_HOUR=5
 START_HOUR=23
 KEEP_LOG_DAYS=14
+# ponytail: 3 retries 5 minutes apart ride out a passing SMB stall; a share
+# still failing after 15 minutes is down, and the cron failure says so.
+RETRIES=3
+RETRY_WAIT="${NAS_COPY_RETRY_WAIT:-300}"
 TIMEOUT="${NAS_COPY_TIMEOUT:-/opt/homebrew/bin/timeout}"
 RSYNC="${NAS_COPY_RSYNC:-/usr/bin/rsync}"
 
@@ -110,33 +117,52 @@ echo $$ > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT
 trap 'exit 143' INT TERM
 
-# Seconds until the next END_HOUR:00.
+# The window ends at the next END_HOUR:00 (epoch seconds).
 if [ -z "${NAS_COPY_SECONDS:-}" ]; then
   if [ "$hour" -ge "$START_HOUR" ]; then day="-v+1d"; else day="-v+0d"; fi
   deadline=$(date -j "$day" -v"${END_HOUR}"H -v0M -v0S +%s)
-  secs=$(( deadline - $(date +%s) ))
 else
-  secs="$NAS_COPY_SECONDS"
+  deadline=$(( $(date +%s) + NAS_COPY_SECONDS ))
 fi
+secs=$(( deadline - $(date +%s) ))
 [ "$secs" -gt 300 ] || { say "skipped: only ${secs}s left in the window"; exit 0; }
 
 stamp=$(date +%Y-%m-%dT%H%M%S)
-log="$LOG_DIR/$stamp.log"; err="$LOG_DIR/$stamp.err"
 find "$LOG_DIR" -type f -name '*.log*' -mtime +"$KEEP_LOG_DAYS" -delete 2>/dev/null
 find "$LOG_DIR" -type f -name '*.err' -mtime +"$KEEP_LOG_DAYS" -delete 2>/dev/null
 
-say "copying $SRC/ -> $DST/ for up to $(( secs / 60 )) minutes; log $log"
-# No -o/-g: neither the noowners source nor the SMB share keeps owners, and one
-# failed fchownat stopped the whole 2026-09-28 run (openrsync aborts on any error).
-# No -p: the SMB share keeps no modes, so -p re-set every file's mode each night
-# (134k of 187k changes on 2026-10-10) and the window closed before new files.
-caffeinate -i "$TIMEOUT" --kill-after=120 "$secs" "$RSYNC" -rlt --itemize-changes --stats \
-  --exclude=/.Spotlight-V100/ --exclude=/.Trashes/ --exclude=/.fseventsd/ \
-  --exclude=/.TemporaryItems/ --exclude=/.DocumentRevisions-V100/ \
-  ${LOG_EXCLUDE:+"--exclude=$LOG_EXCLUDE"} \
-  "$SRC/" "$DST/" > "$log" 2> "$err"
-rc=$?
-files=$(grep -c '^>f' "$log" 2>/dev/null || true)
+# One rsync per attempt, each with its own .log and .err, until it ends with 0
+# or the window, the retries run out, too little window is left after the
+# wait, or a volume is gone.
+attempt=0
+files=0
+while :; do
+  suffix=""; [ "$attempt" -eq 0 ] || suffix="-retry$attempt"
+  log="$LOG_DIR/$stamp$suffix.log"; err="$LOG_DIR/$stamp$suffix.err"
+  say "copying $SRC/ -> $DST/ for up to $(( secs / 60 )) minutes; log $log"
+  # No -o/-g: neither the noowners source nor the SMB share keeps owners, and one
+  # failed fchownat stopped the whole 2026-09-28 run (openrsync aborts on any error).
+  # No -p: the SMB share keeps no modes, so -p re-set every file's mode each night
+  # (134k of 187k changes on 2026-10-10) and the window closed before new files.
+  caffeinate -i "$TIMEOUT" --kill-after=120 "$secs" "$RSYNC" -rlt --itemize-changes --stats \
+    --exclude=/.Spotlight-V100/ --exclude=/.Trashes/ --exclude=/.fseventsd/ \
+    --exclude=/.TemporaryItems/ --exclude=/.DocumentRevisions-V100/ \
+    ${LOG_EXCLUDE:+"--exclude=$LOG_EXCLUDE"} \
+    "$SRC/" "$DST/" > "$log" 2> "$err"
+  rc=$?
+  n=$(grep -c '^>f' "$log" 2>/dev/null) || :
+  files=$(( files + ${n:-0} ))
+  case $rc in 0|124|137) break ;; esac
+  [ "$attempt" -lt "$RETRIES" ] || break
+  [ $(( deadline - $(date +%s) - RETRY_WAIT )) -gt 300 ] || break
+  attempt=$(( attempt + 1 ))
+  say "rsync failed rc=$rc; retry $attempt of $RETRIES in ${RETRY_WAIT}s"
+  # In the background, so a TERM from the job's limit ends the wait at once.
+  sleep "$RETRY_WAIT" & wait $!
+  mounted "$SRC" apfs || { say "refused: $SRC is not mounted (apfs)"; break; }
+  mounted "$DST" smbfs || { say "refused: $DST is not mounted (smbfs)"; break; }
+  secs=$(( deadline - $(date +%s) ))
+done
 last=$(cat "$STATE_DIR/state" 2>/dev/null || echo incomplete)
 
 case $rc in

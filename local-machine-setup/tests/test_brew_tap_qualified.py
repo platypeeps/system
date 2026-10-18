@@ -41,7 +41,7 @@ BREW_STUB = f"""#!/bin/sh
 case "$*" in
   "list --formula") printf '%s\\n' {FORMULA} ;;
   "list --cask") : ;;
-  leaves) printf '%s\\n' {QUALIFIED} ;;
+  leaves|"leaves --installed-on-request") printf '%s\\n' {QUALIFIED} ;;
   tap) printf '%s\\n' {TAP} ;;
   --prefix) echo /usr/local ;;
 esac

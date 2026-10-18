@@ -75,6 +75,9 @@ with its path, beside a new Claude Code Caskroom binary (the `claude-code@latest
 cask, sd:4738) or python Cellar path, the two known grant droppers. Leftovers or a missing grant print an
 `SD_REPORT_ATTENTION:` line, so the run's report reaches Reports and Today;
 nothing is mailed or pushed (sd:3454). A missing grant does not fail the job.
+A step that fails because sudo has no terminal (a cask with a pkg installer,
+`mas upgrade`) is deferred, not failed: the report names each leftover as a
+command to run in a terminal, such as `brew upgrade --cask example-cask` (sd:5046).
 After the cask upgrade the sweep runs the brew stage's quarantine check on `claude`:
 a quarantined binary under launchd waits on a Gatekeeper prompt no one can answer
 with the screen locked (sd:4787).
@@ -170,7 +173,7 @@ Run in order. Pass one as the second argument to run it alone.
 
 | Stage | What it does | Delegates to |
 | --- | --- | --- |
-| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.14: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
+| `brew` | taps, formulae, casks, and `brew pin` for each formula in `BREW_PINNED` (python@3.15: Homebrew python is ad-hoc signed, so each patch upgrade drops its TCC grants; the pin follows Homebrew's default python, and `status` names a PATH `python3` of another version, sd:5047; opencode and codex: the pack's merge gate runs a live test against the installed binary, sd:3542; a cask install is not pinned, and codex is a cask on the operator's machines; `status` counts an unpinned one as drift, and `upgrade-report` lists a newer version as held, not failed); the `claude-code@latest` cask's `claude` loses `com.apple.quarantine` only when `codesign` verifies it, `spctl` calls it notarized and its team is `Q6L2SF6YDW`, else the stage fails naming the check (sd:4787) | — |
 | `release` | the `.release` tools: an entry is `ok` when each bin is in `~/.local/bin` (`MACHINE_SETUP_RELEASE_BIN`) and its tag, owner/repo and asset are recorded under the state folder's `release/`, `MISSING` when not, `DIFFERS` when the recorded tag is not the pinned one or the line names another owner/repo or asset; a record that holds the tag alone reinstalls once. `--apply` downloads the archive, checks its `.sha256` when the release publishes one, takes exactly one executable file per bin, moves every bin into place, then writes the record; a failed step installs nothing new and records nothing. Runs right after `brew`, so later stages find what it installs | `curl`, `tar`, `unzip` |
 | `appstore` | Mac App Store apps. An app that `mas list` shows under another id with the same name, such as a beta under id 0, counts as installed, and `capture` keeps its profile entry. A failed `mas install` prints `FAILED` and the run goes on | `mas` |
 | `bin` | symlink CLI tools onto PATH | `local-bin-links` |
@@ -672,8 +675,9 @@ on this machine, and
 - `status` compares against `brew list --formula`, not `brew leaves`: a manifest
   entry can be installed as another formula's dependency (`ripgrep` is here) and
   `leaves` omits those, which reported them as missing when they were present.
-  Extras are compared against `leaves`, since the full list would name every
-  transitive dependency.
+  Extras are compared against `leaves --installed-on-request`, since the full
+  list would name every transitive dependency and plain `leaves` names a
+  build-only one; `capture` and `triage` read the same list (sd:5049).
 - Tap-qualified entries (`openclaw/tap/goplaces`) are listed by their bare name;
   both the install check and the drift report normalize before comparing.
 - `capture` writes only what `common` does not already provide, so profile files

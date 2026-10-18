@@ -37,10 +37,22 @@ LIB = FOLDER.parent / "lib"
 # `brew upgrade` clear it; BREW_CLEANUP_FAIL fails `brew cleanup`.
 # CLAUDE_LINK and CLAUDE_NEW: `brew upgrade --cask --greedy` relinks the
 # claude cask's binary to its new Caskroom path (sd:4738).
-# BREW_FAIL names one call, its arguments as logged, that exits 1.
+# BREW_FAIL names one call, its arguments as logged, that exits 1. BREW_SUDO
+# names one call that prints what sudo prints with no terminal and exits 1
+# (sd:5046); with STUB_SUDO_HANG it then hangs. MAS_SUDO is mas's.
+SUDO_REFUSED = r"""
+if [ "$*" = "$STUB_SUDO" ]; then
+  echo "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper" >&2
+  echo "sudo: a password is required" >&2
+  [ -z "$STUB_SUDO_HANG" ] || exec sleep 60
+  exit 1
+fi
+"""
+
 BREW_STUB = r"""#!/bin/sh
 echo "$*" >> "$BREW_LOG"
 [ "$*" != "$BREW_FAIL" ] || exit 1
+""" + SUDO_REFUSED.replace("STUB_SUDO\"", "BREW_SUDO\"") + r"""
 case "$*" in
   "outdated --formula --quiet") [ -n "$BREW_QUIET" ] || [ -e "$BREW_LOG.upgraded" ] || echo "${BREW_OUTDATED:-example-formula}"
                                 [ -z "$STUB_PINNED" ] || echo "$STUB_PINNED"
@@ -59,9 +71,12 @@ esac
 exit 0
 """
 
+# MAS_OUTDATED is what `mas outdated` prints.
 MAS_STUB = r"""#!/bin/sh
 echo "$*" >> "$MAS_LOG"
 [ "$*" != "$MAS_FAIL" ] || exit 1
+""" + SUDO_REFUSED.replace("STUB_SUDO\"", "MAS_SUDO\"") + r"""
+[ "$*" != outdated ] || [ -z "$MAS_OUTDATED" ] || echo "$MAS_OUTDATED"
 exit 0
 """
 
@@ -491,6 +506,70 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(process.returncode, 143, stdout + stderr)
         self.assertNotIn("No such file or directory", stdout + stderr)
         self.assertFalse(self.notify_log.exists(), "a killed run mailed a report")
+
+    def test_a_cask_that_needs_sudo_is_an_action_not_a_failed_sweep(self):
+        """sd:5046: an unattended run has no terminal for sudo, so a cask with
+        a pkg installer fails `brew upgrade --cask --greedy`. The report asks
+        the operator to run the cask's upgrade in a terminal."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
+                               BREW_SUDO="upgrade --cask --greedy")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("upgrade sweep exited nonzero", result.stdout)
+        self.assertIn("needs sudo (cask) — run in a terminal:\n  brew upgrade --cask example-cask\n", result.stdout)
+        self.assertEqual(self.findings(result), ["needs sudo, run in a terminal: brew upgrade --cask example-cask"])
+
+    def test_an_app_store_upgrade_that_needs_sudo_names_each_app(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", MAS_SUDO="upgrade",
+                               MAS_OUTDATED="497799835 Example App (1.0 -> 1.1)")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.mas_log.read_text().splitlines().count("upgrade"), 1)
+        self.assertEqual(self.findings(result),
+                         ["needs sudo, run in a terminal: mas upgrade 497799835  # Example App (1.0 -> 1.1)"])
+
+    def test_a_sweep_that_needs_sudo_defers_the_step_and_exits_0(self):
+        result = self.run_verb("upgrade", "--apply", BREW_SUDO="upgrade --cask --greedy")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("  DEFER   needs sudo: brew upgrade --cask --greedy", result.stdout)
+        self.assertIn("deferred — 1 action(s) still need sudo. Run these, then re-run:\n"
+                      "    brew upgrade --cask --greedy\n"
+                      "    machine-setup.sh upgrade --apply\n", result.stdout)
+        self.assertNotIn("failed steps", result.stdout)
+        # The step's own output still reaches the report.
+        self.assertIn("sudo: a password is required", result.stdout + result.stderr)
+        self.assertEqual(self.mas_log.read_text(), "upgrade\n", "the steps after it still run")
+
+    def test_a_failure_beside_a_refused_sudo_still_fails_the_sweep(self):
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
+                               BREW_SUDO="upgrade --cask --greedy", BREW_CLEANUP_FAIL="1")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        found = self.findings(result)
+        self.assertEqual(found[0], "needs sudo, run in a terminal: brew upgrade --cask example-cask")
+        self.assertRegex(found[1], r"^upgrade sweep failed \[\d+\]$")
+        self.assertEqual(len(found), 2, found)
+
+    def test_a_cask_step_that_fails_without_sudo_is_a_failed_sweep(self):
+        """sd:5046: only sudo's own refusal is an action; any other failure of
+        the same step stays a failed sweep with its leftovers."""
+        result = self.run_verb("upgrade-report", BREW_UPGRADES_ALL="1", BREW_GREEDY_CASK="example-cask",
+                               BREW_FAIL="upgrade --cask --greedy")
+
+        found = self.findings(result)
+        self.assertEqual(found[0], "still outdated (cask): example-cask")
+        self.assertRegex(found[1], r"^upgrade sweep failed \[\d+\]$")
+        self.assertNotIn("DEFER", result.stdout)
+
+    def test_a_step_that_hangs_after_a_refused_sudo_is_a_failure(self):
+        """A step stopped at its bound is unknown, not a deferral."""
+        result = self.run_verb("upgrade", "--apply", MACHINE_SETUP_STEP_TIMEOUT="2",
+                               BREW_SUDO="upgrade", STUB_SUDO_HANG="1")
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("failed steps: brew upgrade", result.stdout)
+        self.assertNotIn("DEFER", result.stdout)
 
     def test_a_dry_run_runs_no_step(self):
         result = self.run_verb("upgrade")

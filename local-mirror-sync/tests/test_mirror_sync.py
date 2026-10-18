@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -2773,7 +2774,13 @@ class NasFullCopy(unittest.TestCase):
         stubs.mkdir()
         self.calls = self.work / "rsync-calls"
         self.notified = self.work / "notified"
-        self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\nexit "${STUB_RC:-0}"\n')
+        # STUB_RCS: one exit code per call, in order (sd:2268); STUB_RC after them.
+        # STUB_DROP_SHARE: the call takes the share out of the mount table.
+        self.stub(stubs / "rsync", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_CALLS"\n'
+                                   'n=$(wc -l < "$STUB_CALLS")\nset -- ${STUB_RCS:-} ""\nshift $(( n - 1 < $# - 1 ? n - 1 : $# - 1 ))\n'
+                                   '[ -z "${STUB_DROP_SHARE:-}" ] || { grep -v smbfs "$STUB_MOUNTS" > "$STUB_MOUNTS.new"; '
+                                   'mv "$STUB_MOUNTS.new" "$STUB_MOUNTS"; }\n'
+                                   'exit "${1:-${STUB_RC:-0}}"\n')
         self.stub(stubs / "timeout", '#!/bin/sh\nshift 2\nexec "$@"\n')
         self.stub(stubs / "caffeinate", '#!/bin/sh\nshift\nexec "$@"\n')
         # `sd reports brief add ... <file>`: one line per call, then the brief's text, so a test reads both.
@@ -2787,7 +2794,7 @@ class NasFullCopy(unittest.TestCase):
         path.write_text(text)
         path.chmod(0o755)
 
-    def run_copy(self, *args: str, rc: int = 0, **extra: str) -> subprocess.CompletedProcess:
+    def env(self, rc: int = 0, **extra: str | None) -> dict:
         env = {
             "PATH": f"{self.stubs}:/usr/bin:/bin",
             "HOME": str(self.work),
@@ -2801,13 +2808,19 @@ class NasFullCopy(unittest.TestCase):
             "NAS_COPY_SKIP_MOUNT_CHECK": "1",
             "NAS_COPY_HOUR": "23",
             "NAS_COPY_SECONDS": "3600",
+            "NAS_COPY_RETRY_WAIT": "0",
             "STUB_CALLS": str(self.calls),
             "STUB_RC": str(rc),
             **extra,
         }
-        env = {key: value for key, value in env.items() if value is not None}
-        return subprocess.run(["sh", str(NAS_FULL_COPY), *(args or ("run",))], env=env,
+        return {key: value for key, value in env.items() if value is not None}
+
+    def run_copy(self, *args: str, rc: int = 0, **extra: str | None) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(NAS_FULL_COPY), *(args or ("run",))], env=self.env(rc, **extra),
                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+    def attempts(self) -> int:
+        return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
     @property
     def state_dir(self) -> Path:
@@ -2928,6 +2941,74 @@ class NasFullCopy(unittest.TestCase):
         self.assertEqual(failed.returncode, 1)
         self.assertIn("FAILED rc=23", failed.stdout)
         self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
+
+    def test_a_failed_rsync_is_retried_and_a_good_retry_completes(self) -> None:
+        """sd:2268: an SMB stall at 00:08 on 2026-10-17 failed rsync, and the
+        night's last five hours went unused. A retry runs for what is left."""
+        result = self.run_copy(STUB_RCS="23 0")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 2)
+        self.assertIn("rsync failed rc=23; retry 1 of 3", result.stdout)
+        self.assertIn("complete:", result.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "synced")
+        self.assertEqual(len(list(self.log_dir.glob("*.log"))), 2, "each attempt keeps its own log")
+        self.assertEqual(len(list(self.log_dir.glob("*.err"))), 2, "each attempt keeps its own errors")
+
+    def test_a_retry_the_window_closes_on_continues_tomorrow(self) -> None:
+        result = self.run_copy(STUB_RCS="23 124")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 2)
+        self.assertIn("continues tomorrow night", result.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
+
+    def test_three_failed_retries_fail_the_job_as_before(self) -> None:
+        result = self.run_copy(rc=23)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 4, "one run and three retries")
+        self.assertIn("retry 3 of 3", result.stdout)
+        self.assertNotIn("retry 4", result.stdout)
+        self.assertIn("FAILED rc=23", result.stdout)
+        self.assertEqual((self.state_dir / "state").read_text().strip(), "incomplete")
+
+    def test_no_retry_when_the_wait_leaves_300s_or_less(self) -> None:
+        result = self.run_copy(rc=23, NAS_COPY_SECONDS="400", NAS_COPY_RETRY_WAIT="150")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 1)
+        self.assertIn("FAILED rc=23", result.stdout)
+
+    def test_a_share_gone_before_a_retry_is_refused(self) -> None:
+        dst = self.work / "Backup.NAS"
+        mounts = self.work / "mounts"
+        mounts.write_text(f"/dev/disk1s1 on {self.src} (apfs, local, journaled)\n"
+                          f"//host/share on {dst} (smbfs, nodev, nosuid)\n")
+        self.stub(self.stubs / "mount", f"#!/bin/sh\ncat '{mounts}'\n")
+        result = self.run_copy(rc=23, NAS_COPY_SKIP_MOUNT_CHECK=None, NAS_COPY_DST=str(dst),
+                               STUB_MOUNTS=str(mounts), STUB_DROP_SHARE="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(self.attempts(), 1)
+        self.assertIn(f"refused: {dst} is not mounted", result.stdout)
+        self.assertIn("FAILED rc=23", result.stdout)
+
+    def test_a_term_in_the_retry_wait_ends_the_run_and_frees_the_lock(self) -> None:
+        """Steps class: the job's limit can stop the run between two attempts;
+        it ends at once, and the lock goes with it."""
+        process = subprocess.Popen(["sh", str(NAS_FULL_COPY), "run"],
+                                   env=self.env(23, NAS_COPY_RETRY_WAIT="60"),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        deadline = time.monotonic() + 20
+        while not self.attempts() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(self.attempts(), 1, "rsync never ran")
+        time.sleep(1)  # into the wait
+        os.killpg(process.pid, signal.SIGTERM)
+        started = time.monotonic()
+        out, err = process.communicate(timeout=30)
+        self.assertLess(time.monotonic() - started, 10, "the wait held the TERM")
+        self.assertEqual(process.returncode, 143, out + err)
+        self.assertEqual(self.attempts(), 1)
+        self.assertFalse((self.state_dir / "lock").exists(), "the lock goes with the run")
 
     def test_a_live_lock_skips_and_a_stale_one_is_removed(self) -> None:
         lock = self.state_dir / "lock"
