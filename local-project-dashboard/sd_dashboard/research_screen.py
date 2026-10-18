@@ -14,9 +14,10 @@ directory holds Markdown), the source registry (the Markdown tables in
 claim map. None runs repository code, and none writes.
 
 **The claim map** (sd:5064 ruling). A claim is a sentence in the map, brief
-or published documents (`CLAIM_DIRS`) that links the URL of a ledger row; the
-row's grade decides it: supported when an A, B or M row backs it, unverified
-when only C, U or ungraded rows do. A Status section is a change log, so the
+or published documents (`CLAIM_DIRS`) that cites a ledger row: it links the
+row's URL or a deeper path under it, or names the row's ID. The row's grade
+decides it: supported when an A, B or M row backs it, unverified when only C,
+U or ungraded rows do. A Status section is a change log, so the
 design's START HERE reading was dropped, and with it the inferred and corrected
 states. A document the reader does not read is named with its reason.
 
@@ -172,7 +173,7 @@ def sources(key: str, *, now: str, backend=None) -> dict | None:
             "total": found.get("total", 0),
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
             "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
-                       "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
+                       "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
             if isinstance(found.get("claims"), list) else None}
 
 
@@ -351,6 +352,33 @@ def source_key(url: str) -> str:
     return url.strip().split("#", 1)[0].rstrip("/")
 
 
+#: A ledger ID as the ledgers write it in their first column: one word with a digit, such as S12, P2, LOG-21201 or
+#: S3-old. A grade letter has no digit, and a title has spaces, so neither is an ID.
+ID = re.compile(r"(?=\S*\d)[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+
+
+def is_id(text: str) -> bool:
+    return len(text) <= 20 and bool(ID.fullmatch(text))
+
+
+def row_key(row: dict) -> str:
+    """A ledger row's key: its URL's, else its ID's (`id:S12`), else none."""
+    if row.get("url"):
+        return source_key(row["url"])
+    return f"id:{row['id']}" if is_id(row["id"]) else ""
+
+
+def ledger_key(key: str, index) -> str | None:
+    """The ledger row a link cites: its own URL, or else the longest ledger URL on the same host whose path holds the
+    link's at a path boundary (`/org/repo` holds `/org/repo/blob/x`, not `/org/repository`)."""
+    while key not in index:
+        head, sep, _ = key.rpartition("/")
+        if not sep or head.endswith(":/") or "://" not in head:
+            return None
+        key = head
+    return key
+
+
 FENCE = re.compile(r"(```|~~~)")
 #: A line that starts a unit of its own: a heading, a list item or a table row.
 STARTS = re.compile(r"(#{1,6}\s|[-*+]\s|\d{1,3}[.)]\s|\|)")
@@ -406,13 +434,20 @@ def sentences(text: str):
 
 
 def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
-    """The claim map (sd:5064 ruling): each sentence in the map, brief and published documents that links a ledger row's
-    URL. A claim is supported when it cites an A, B or M row, and unverified when it cites only C, U or ungraded rows.
-    A document that is not read is named with its reason; the walk stops at its file bound and at the child's deadline."""
-    index = {}
+    """The claim map (sd:5064 ruling): each sentence in the map, brief and published documents that cites a ledger row,
+    by its URL, a deeper path under it, or its ID. A claim is supported when it cites an A, B or M row, and unverified
+    when it cites only C, U or ungraded rows; a ledger without grades leaves every claim unverified. A document that is
+    not read is named with its reason; the walk stops at its file bound and at the child's deadline."""
+    index, ids = {}, {}
     for row in rows:
-        if row.get("url"):
-            index.setdefault(source_key(row["url"]), set()).add(row["id"] if row["id"] in GRADES else "")
+        key = row_key(row)
+        if key:
+            index.setdefault(key, set()).add(row["id"] if row["id"] in GRADES else "")
+            if is_id(row["id"]):
+                ids.setdefault(row["id"], set()).add(key)
+    # The IDs this ledger holds, longest first, each a whole word: S12 is not S120, S12-old or the section S12.3.
+    alternatives = "|".join(map(re.escape, sorted(ids, key=len, reverse=True)))
+    named = re.compile(rf"(?<![\w-])({alternatives})(?![\w-]|\.\d)") if ids else None
     found, unread, read = [], [], 0
     paths = [path for name in CLAIM_DIRS if (repo / name).is_dir() and not (repo / name).is_symlink()
              for path in sorted((repo / name).rglob("*.md"))]
@@ -435,18 +470,21 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
         read += 1
         for line, unit in units(text):
             for offset, sentence in sentences(unit):
-                keys = [key for key in dict.fromkeys(source_key(m.group(2) if m.re is LINK else m.group(1))
-                                                     for m in [*LINK.finditer(sentence), *BARE.finditer(sentence)])
-                        if key in index]
+                linked = (ledger_key(source_key(m.group(2) if m.re is LINK else m.group(1)), index)
+                          for m in [*LINK.finditer(sentence), *BARE.finditer(sentence)])
+                cited = (key for m in (named.finditer(sentence) if named else ()) for key in sorted(ids[m.group(1)]))
+                keys = [key for key in dict.fromkeys([*linked, *cited]) if key]
                 if keys:
-                    grades = set().union(*(index[key] for key in keys))
+                    grades = set().union(*(index[key] for key in keys)) - {""}
                     found.append({"doc": name, "line": line + offset, "text": _cell(" ".join(sentence.split()), CLAIM_CHARS),
-                                  "s": "supported" if grades & SUPPORTING else "unverified", "keys": keys})
+                                  "s": "supported" if grades & SUPPORTING else "unverified", "grades": "".join(sorted(grades)),
+                                  "keys": keys})
     if len(unread) > UNREAD:
         # The list of skipped documents is bounded too: the rest are counted in one entry.
         unread[UNREAD - 1:] = [{"doc": f"{len(unread) - UNREAD + 1} more documents", "error": "skipped as well; the list stops here"}]
     tally = {state: sum(claim["s"] == state for claim in found) for state in ("supported", "unverified")}
-    return {"claims": found, "tally": tally, "read": read, "unread": unread}
+    tally["ungraded"] = sum(not claim["grades"] for claim in found)  # unverified because no cited row has a grade
+    return {"claims": found, "tally": tally, "read": read, "unread": unread, "graded": sum(row["id"] in GRADES for row in rows)}
 
 
 def registry(repo: Path, time_left=None) -> dict:
@@ -469,7 +507,7 @@ def registry(repo: Path, time_left=None) -> dict:
         for key in claim["keys"]:
             cited[key] = cited.get(key, 0) + 1
     for row in rows:
-        row["key"] = source_key(row["url"]) if row["url"] else ""
+        row["key"] = row_key(row)
         row["cited"] = cited.get(row["key"], 0) if row["key"] else 0
     total = len(rows)
     # Cited rows are kept first, so a claim can light its sources; the rest fill to ROWS. Both stay in ledger order.
@@ -477,7 +515,7 @@ def registry(repo: Path, time_left=None) -> dict:
     rows = [rows[i] for i in keep]
     shown = mapped["claims"][:CLAIMS]
     out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown,
-           "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "docs_read": mapped["read"],
+           "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "graded": mapped["graded"], "docs_read": mapped["read"],
            "unread": mapped["unread"]}
     # Past PRINT_BYTES, drop from the end of whichever list prints more: claims or rows.
     size = _printed(out)

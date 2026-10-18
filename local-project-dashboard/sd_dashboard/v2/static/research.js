@@ -164,7 +164,8 @@ reader.addEventListener('click', e => {
 
 // ---------- Claim map ----------
 // Read with the ledger (research_screen.claims, the sd:5064 ruling): each sentence in the map, brief and published documents that
-// links a ledger row's URL. Supported cites an A, B or M row; unverified cites only C, U or ungraded rows.
+// cites a ledger row by its URL, a deeper path under it, or its ID. Supported cites an A, B or M row; unverified cites only C, U
+// or ungraded rows, so a ledger without grades leaves every claim unverified, and the legend says so with the count.
 // build: the reference read claims by hand from one project's Status section, with inferred and corrected states; neither is read.
 const claimsEl = document.getElementById('claims');
 const VERDICT = { supported: ['●', 'ok'], unverified: ['▨', 'unknown'] };
@@ -198,7 +199,8 @@ function drawClaims(p, s) {
     return;
   }
   put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
-    <p class="vlegend"><span>● supported: cites an A, B or M source</span><span>▨ unverified: cites only C, U or ungraded sources</span></p>
+    <p class="vlegend"><span>● supported: cites an A, B or M source</span><span>▨ unverified: cites only C, U or ungraded sources</span>${
+      c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
       <span class="g g-${VERDICT[x.s][1]}" title="${x.s}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
       <button type="button">${x.text}</button>
@@ -267,17 +269,17 @@ function showSource(i) {
   shell.setContext(s.title.slice(0, 40)); swap();
 }
 function citedBy(r) {
-  if (!r.key) return html`<p class="why">No link in this ledger row, so no claim can cite it.</p>`;
+  if (!r.key) return html`<p class="why">No link or ID in this ledger row, so no claim can cite it.</p>`;
   const map = SOURCES.get(selected)?.claims;
   if (!map) return html`<p class="why">Not known: the claim map was not read.</p>`;
   const by = map.rows.filter(x => x.keys.includes(r.key));
-  if (!r.cited) return html`<p class="why">No sentence in ${map.dirs.join(', ')} links this source.</p>`;
+  if (!r.cited) return html`<p class="why">No sentence in ${map.dirs.join(', ')} cites this source.</p>`;
   return html`<ul class="claims">${by.map(x => html`<li class="claim"><span class="g g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span><span>${x.text} · ${x.doc}:${x.line}</span></li>`)}</ul>${
     r.cited > by.length ? html`<p class="more">${by.length} of ${plural(r.cited, 'claim')} listed: the reading passed its print bound.</p>` : ''}`;
 }
 function showClaim(s, x) {
   put(details, html`<p class="kind"><span class="g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span> Claim · ${x.s}</p><h2>${x.text}</h2>
-    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? 'cites an A, B or M source' : 'cites only C, U or ungraded sources'}</dd></dl>
+    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? `cites an A, B or M source (grades ${x.grades})` : x.grades ? `cites only ${x.grades.split('').join(' and ')} sources` : 'cites only ungraded sources'}</dd></dl>
     <h3>Sources</h3><ul class="claims">${x.keys.map(k => { const r = s.rows.find(y => y.key === k);
       return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
   shell.setContext(x.text.slice(0, 40)); swap();

@@ -4,7 +4,7 @@
   research.css at 7f50ad4 (last changed af211c7), with design.md and commands.md.
   Data: /api/research (research_screen.document: collectors.collect_research, every checkout with a research.conf.py) when the
   page opens, and /api/research/<checkout> (research_screen.sources: its SOURCES.md and 10-sources/ ledgers, and the claim map
-  from its 20-map, 30-brief and 40-docs sentences that link a ledger URL, sd:5064) per selection.
+  from its 20-map, 30-brief and 40-docs sentences that cite a ledger row by URL or ID, sd:5064) per selection.
   The design's data/research-sources.js and its project list are sample data and do not ship. Nothing reads review rounds yet,
   so they say so; Render and Review are copy only, and Start research is off: nothing here writes.
   Views: the shell's view switch (shell.js, view block) shows one panel, #view-projects (the board, first), #view-sources or
@@ -76,7 +76,7 @@
 
     <section id="view-claims" aria-labelledby="claims-h">
       <div class="sec-head">
-        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that links a URL in the ledger. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones. Tap a claim to light its sources.">
+        <h2 id="claims-h">Claim map <span class="for" id="claims-for"></span> <button class="help" type="button" aria-label="Help: Claim map" data-help="<b>Claims against their sources.</b> A claim is a sentence in 20-map, 30-brief or 40-docs that cites a ledger row: it links the row's URL or a deeper path under it, or names the row's ID. Supported ● cites an A, B or M source; unverified ▨ cites only C, U or ungraded ones, so a ledger without grades leaves every claim unverified. Tap a claim to light its sources.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       </div>
       <div id="claims"></div>

@@ -10,9 +10,11 @@ config the collector refuses shows as unknown with the refusal.
 checkout's ledger: the Markdown tables in `SOURCES.md`,
 `10-sources/registry.md` and `10-sources/references.md`, with or without
 outer pipes (sd:2414), up to 60 rows with the whole count, cited rows first. Any other path is a 404.
-The same document carries the claim map (sd:5064): each sentence in `20-map`, `30-brief` and `40-docs` that links a
-ledger row's URL, matched without its fragment or trailing slash. A claim is supported when it cites an A, B or M row,
-and unverified when it cites only C, U or ungraded rows. A document the reader skips (a link, over 2 MB, past the
+The same document carries the claim map (sd:5064): each sentence in `20-map`, `30-brief` and `40-docs` that cites a
+ledger row. It cites a row by linking its URL (without fragment or trailing slash) or a deeper path under it on the
+same host, where the longest row URL wins, or by naming the row's ID: a first-column word with a digit, such as `S12` or
+`LOG-21201`, matched whole. A claim is supported when it cites an A, B or M row, and unverified when it cites only C, U
+or ungraded rows; a ledger without grades leaves every claim unverified, and the page says so with the count. A document the reader skips (a link, over 2 MB, past the
 200-document bound or the deadline) is named with its reason. Nothing reads review rounds yet, so they show as unknown
 with that reason. Render and Review are
 copy only: the dashboard does not run `sd-research-kit`. Start research is
