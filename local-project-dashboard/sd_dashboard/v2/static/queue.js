@@ -56,10 +56,19 @@
     cancelled: r => [[...G.queued, 'cancelled'], 'CANCELLED', html`cancelled at ${at(r.finished)} · head ${r.head || 'not recorded'}${DOC.requeue ? '' : ` · Re-queue off: ${DOC.requeue_off || 'not known whether the pack takes it'}`}`],
     landed: r => [G.ok, 'LANDED', html`${r.pr ? `PR #${r.pr}` : 'PR not named'} · merge ${r.commit || 'not recorded'} · ${at(r.finished)}`],
   };
+  // Each entry row is a command object (sd:5064): its menu offers Adversarial review of the worktree the lane recorded.
+  // A building row is a builder's gate log, not an entry, so it has none.
+  const entryId = (lane, r) => `entry:${lane.path}:${r.item}`;
+  function putEntries() {
+    const C = window.shell.commands;
+    DOC.lanes.forEach(l => l.rows.filter(r => r.state !== 'building').forEach(r => C.put({ id: entryId(l, r), type: 'entry', label: `sd:${r.item}`, item: r.item, worktree: r.worktree, repo: l.repo })));
+  }
   function row(lane, r, last) {
     const [g, st, facts] = VIEW[r.state](r);
     const subject = r.state === 'building' ? html`<code>${r.builder}</code>` : html`<code>sd:${String(r.item)}</code>${r.title}`;
-    return html`<li class="qrow" data-state="${r.state}"${r.held ? html` data-held=""` : ''}><span class="g g-${g[0]}" aria-hidden="true">${g[1]}</span><span class="st">${st}</span><span class="s"><span><span class="sr">${g[2] || g[0]} · </span>${subject}</span><small>${facts}</small></span>${r.state === 'next' ? controls(lane, r, last) : r.state === 'blocked' ? again(lane, r) : r.state === 'cancelled' ? back(lane, r) : r.state === 'merging' ? free(lane, r) : html`<span></span>`}</li>`;
+    const ctl = r.state === 'next' ? controls(lane, r, last) : r.state === 'blocked' ? again(lane, r) : r.state === 'cancelled' ? back(lane, r) : r.state === 'merging' ? free(lane, r) : html``;
+    const id = r.state === 'building' ? null : entryId(lane, r);
+    return html`<li class="qrow" data-state="${r.state}"${r.held ? html` data-held=""` : ''}><span class="g g-${g[0]}" aria-hidden="true">${g[1]}</span><span class="st">${st}</span><span class="s"><span><span class="sr">${g[2] || g[0]} · </span>${subject}</span><small>${facts}</small></span><span class="ends">${ctl}${id ? window.shell.commands.rowActions(id) : ''}</span></li>`;
   }
   function lane(l) {
     const last = l.rows.filter(r => r.state === 'next').length, s = said[l.path], rows = drawn(l);
@@ -70,6 +79,7 @@
   }
   function draw() {
     if (!DOC) { put($('readings'), html``); put($('show'), html``); put($('lanes'), html``); return; }
+    putEntries();
     const L = DOC.load, gates = DOC.gates;
     put($('readings'), html`<div><dt>load5</dt><dd>${L.load5.toFixed(1)}<small>1m ${L.load1.toFixed(1)} · 15m ${L.load15.toFixed(1)} · ${TREND[L.trend]}</small></dd></div>
       <div><dt>gates running / cap</dt><dd>${gates.error ? html`▨ <small>${gates.error}</small>` : html`${gates.running} / ${gates.cap}<small>${gates.waiting} waiting</small>`}</dd></div>
@@ -155,8 +165,16 @@
   }
   window.queueAct = act; // for the page test
 
+  // The last entry a review started for shows its run in Details; commands.js reads the run every 10 s until it settles.
+  document.addEventListener('adversarial:run', e => {
+    if (e.detail.key.startsWith('change:')) put($('adv'), html`${window.commands.reviewPane('change', e.detail.key.slice('change:'.length))}`);
+  });
+
   window.PAGE_ATTENTION = { state: 'ok', n: 0, what: 'blocked' };
   document.addEventListener('DOMContentLoaded', () => {
+    window.shell.commands.register(window.commands.adversarialReview('entry', {
+      payload: o => ({ kind: 'change', target: o.worktree, item: o.item }),
+      when: o => !!o.worktree || 'the lane recorded no worktree for this entry' }));
     $('reload').addEventListener('click', load);
     show = new URLSearchParams(location.search).get('show') === 'all' ? 'all' : 'active';
     $('show').addEventListener('click', e => {
