@@ -20,15 +20,23 @@ send() { # port label session prompt
     failed=1
     resp=""
   }
-  # The recorder exits 2 when the answer carries an error or no text.
-  line=$(python3 -c 'import json,sys
+  # The recorder exits 2 when the answer carries an error or no text, and
+  # names the case and the error on stderr. Aura answers a provider failure
+  # with HTTP 200 and the error as the reply (sd:5073), so that reply is an
+  # error too.
+  line=$(python3 -c 'import json,re,sys
 r=sys.argv[1]
 try:
     d=json.loads(r); txt=(d.get("choices") or [{}])[0].get("message",{}).get("content"); err=d.get("error")
 except Exception:
     txt=None; err=r[:300]
+if not err and txt and re.match(r"The upstream model provider \(.*?\) returned an error", txt):
+    err=txt[:400]
 print(json.dumps({"case":sys.argv[2],"port":sys.argv[3],"secs":int(sys.argv[4]),"answer":(txt or "")[:400],"error":err}))
-sys.exit(2 if err or not txt else 0)' \
+if err or not txt:
+    detail=err if isinstance(err,str) else json.dumps(err) if err else "no answer text"
+    print("scenarios.sh: %s: %s" % (sys.argv[2], detail.splitlines()[0] if detail.strip() else "empty reply"), file=sys.stderr)
+    sys.exit(2)' \
     "$resp" "$2" "$1" "$(( $(date +%s) - t0 ))") || failed=1
   printf '%s\n' "$line" | tee -a "$out"
 }

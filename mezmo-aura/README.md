@@ -63,7 +63,11 @@ server configs into `experiment/state/` from the checkout's
 listen on `127.0.0.1:3101` (orchestration) and `:3102` (single agent);
 `AURA_ORCH_PORT` and `AURA_SINGLE_PORT` move them. Answers go to
 `experiment/state/responses.jsonl`. `experiment run` sends every request,
-then exits 1 when any one failed or came back without an answer.
+then exits 1 when any one failed or came back without an answer. Aura
+answers a model provider's failure with HTTP 200 and the error as the
+reply, so such a reply counts as failed too: stderr names the case and the
+error line. The servers run with `AURA_DEBUG_PROVIDER_ERRORS=true`, so that
+line carries the provider's own words, such as "No endpoints found".
 
 To point the experiment at other MCP servers, such as the Mezmo dev
 endpoint, give `experiment start --overlay <file.toml>`. Each

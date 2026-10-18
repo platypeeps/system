@@ -36,6 +36,9 @@ services:
       CONFIG_PATH: "/app/config/config.toml"
       AURA_CUSTOM_EVENTS: "false"
       AURA_EMIT_REASONING: "false"
+      # A provider failure's own text in the reply, not a generic line, so
+      # scenarios.sh can name it (sd:5073).
+      AURA_DEBUG_PROVIDER_ERRORS: "true"
       TOOL_RESULT_MODE: "none"
       OTEL_EXPORTER_OTLP_ENDPOINT: ${AURA_OTLP_ENDPOINT}
       OTEL_RECORD_CONTENT: "true"

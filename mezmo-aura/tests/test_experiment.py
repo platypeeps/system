@@ -143,6 +143,10 @@ echo "$*" >> "$STUB_CURL_LOG"
 case "${STUB_CURL:-ok}" in
   fail) exit 7 ;;
   error) echo '{"error":{"message":"upstream failed"}}' ;;
+  provider) case "$*" in
+      *3102*) echo '{"choices":[{"message":{"content":"The upstream model provider (openrouter/example/model-a) returned an error: No endpoints found for example/model-a."}}]}' ;;
+      *) echo '{"choices":[{"message":{"content":"42"}}]}' ;;
+    esac ;;
   *) echo '{"choices":[{"message":{"content":"42"}}]}' ;;
 esac
 """
@@ -188,6 +192,24 @@ class ARun(RunCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         responses = self.state("responses.jsonl")
         self.assertIn("upstream failed", responses)
+
+
+class AProviderError(RunCase):
+    """sd:5073: Aura answers a provider failure with HTTP 200 and the error as
+    the reply text, so the run recorded it as an answer and exited 0."""
+
+    def test_a_provider_error_answer_fails_the_run_naming_case_and_error(self):
+        done = self.run_scenarios("provider")
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertEqual(self.requests_sent(), 6)
+        self.assertIn("scenarios.sh: single-arith: The upstream model provider "
+                      "(openrouter/example/model-a) returned an error: No endpoints found", done.stderr)
+        self.assertNotIn("orch-mixed:", done.stderr)
+
+    def test_the_servers_surface_the_provider_detail(self):
+        compose = (FOLDER / "experiment" / "docker-compose.yml").read_text(encoding="utf-8")
+        env = compose.split("environment: &aura-env", 1)[1].split("volumes:", 1)[0]
+        self.assertRegex(env, r'\n\s+AURA_DEBUG_PROVIDER_ERRORS: "true"\n')
 
 
 class APromptFile(RunCase):
