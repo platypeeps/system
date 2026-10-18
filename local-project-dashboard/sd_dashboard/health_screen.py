@@ -859,6 +859,8 @@ class _Scans:
         self.last: dict[str, tuple[str, object]] = {}
         #: Each area as a read last settled it, before the snooze split, for `summary`.
         self.areas: dict[str, dict] = {}
+        #: Each area's newest failed scan, `(started, reason)`, until a scan succeeds: `kept` marks what it serves.
+        self.failed: dict[str, tuple[str, str]] = {}
 
     def start(self, key: str, read, *, now: str, fresh: float | None = None) -> tuple[str, Future, bool]:
         """The area's scan, the time it started and whether it was already running.
@@ -867,7 +869,7 @@ class _Scans:
         failed run drops the kept answer, so the next read runs again rather than show the answer before the failure.
         """
         with self.lock:
-            running, last = self.running, self.last
+            running, last, failed = self.running, self.last, self.failed
             held = running.get(key)
             if held and not held[1].done():
                 return held[0], held[1], True
@@ -883,12 +885,14 @@ class _Scans:
             try:
                 found = read()
             except BaseException as failure:  # noqa: BLE001 - the request that reads the future settles it
-                if fresh is not None:
-                    with self.lock:
+                with self.lock:
+                    failed[key] = (now, str(failure) or repr(failure))
+                    if fresh is not None:
                         last.pop(key, None)
                 future.set_exception(failure)
             else:
                 with self.lock:
+                    failed.pop(key, None)
                     last[key] = (now, found)
                 future.set_result(found)
         threading.Thread(target=scan, name=f"health-{key}", daemon=True).start()
@@ -902,21 +906,28 @@ class _Scans:
     def kept(self, key: str) -> dict | None:
         """The area's newest answer: what a read settled, or a scan that finished after it, settled now."""
         with self.lock:
-            area, last = self.areas.get(key), self.last.get(key)
+            area, last, failed = self.areas.get(key), self.last.get(key), self.failed.get(key)
         # A scan that started after the kept read, or as it did when that read was cut short, is newer; a failed scan
         # keeps no answer, so a failure is never replaced by the success before it.
         if last and (area is None or last[0] > (area["at"] or "")
                      or ((area["error"] or area["stale"]) and last[0] >= (area["at"] or ""))):
             name, source, missing = next((name, source, missing) for one, name, source, missing in AREAS if one == key)
-            fresh = _area(key, name, source, missing, at=last[0])
-            _settle(fresh, name, lambda: last[1])
-            return fresh
+            area = _area(key, name, source, missing, at=last[0])
+            _settle(area, name, lambda: last[1])
+        # A scan that failed after this answer was read: the rows stay, marked with the failure and their age, so the
+        # lamp is not green; with no answer the failure is the area's error.
+        if failed and (area is None or (not area["error"] and failed[0] > (area["at"] or ""))):
+            why = f"the refresh at {failed[0]} failed: {failed[1]}"
+            if area is None:
+                name, source, missing = next((name, source, missing) for one, name, source, missing in AREAS if one == key)
+                return {**_area(key, name, source, missing, at=failed[0]), "error": why}
+            return {**area, "stale": "; ".join(filter(None, (area["stale"], f"{why}; these rows are the read of {area['at']}")))}
         return area
 
     def clear(self) -> None:
         """Forget every scan and answer; a scan still running writes only into what it started with."""
         with self.lock:
-            self.running, self.last, self.areas = {}, {}, {}
+            self.running, self.last, self.areas, self.failed = {}, {}, {}, {}
 
 
 _SCANS = _Scans()

@@ -1193,6 +1193,49 @@ class TheViews(Collectors, ScreenCase):
         self.assertEqual((lamps["wt"]["state"], lamps["wt"]["error"]),
                          ("unknown", "fleet collection was stopped at its budget: sessions"))
 
+    def failing_summary(self, later):
+        """A summary at `later` whose background scan of every pooled area raises, waited on until each has failed."""
+        def broken(*_args, **_kwargs):
+            raise OSError("the mount did not answer")
+        seams = self.seams(fleet=broken, ports=broken, disk=broken, branches=broken, doctor=broken)
+        health_screen.summary(self.connection, now=later, **seams)
+        for key in health_screen.POOLED:
+            self.assertIsInstance(health_screen._SCANS.running[key][1].exception(timeout=5), OSError, key)
+        return {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=later, **seams)["lamps"]}
+
+    def test_a_failed_background_refresh_marks_each_pooled_areas_kept_rows_stale(self):
+        # sd:4960 review: a failed summary scan dropped its answer but left the view's area, served with no marker.
+        for view, *_ in health_screen.VIEWS:
+            health_screen.part(self.connection, view, now=NOW, **self.seams())
+        later = "2026-09-06T12:30:00Z"
+        lamps = self.failing_summary(later)
+        for key in health_screen.POOLED:
+            with self.subTest(area=key):
+                lamp = lamps[key]
+                self.assertEqual((lamp["error"], lamp["at"]), ("", NOW))
+                self.assertEqual(lamp["stale"], f"the refresh at {later} failed: the mount did not answer; "
+                                                f"these rows are the read of {NOW}")
+                self.assertNotEqual(lamp["state"], "ok", "a stale area showed a green lamp")
+                self.assertIsNotNone(lamp["n"], "the kept rows were dropped")
+
+    def test_a_failed_background_refresh_with_no_read_before_it_is_its_error(self):
+        later = "2026-09-06T12:30:00Z"
+        lamps = self.failing_summary(later)
+        for key in health_screen.POOLED:
+            with self.subTest(area=key):
+                self.assertEqual((lamps[key]["state"], lamps[key]["at"], lamps[key]["error"]),
+                                 ("unknown", later, f"the refresh at {later} failed: the mount did not answer"))
+
+    def test_a_view_read_after_a_failed_refresh_clears_the_mark(self):
+        for view, *_ in health_screen.VIEWS:
+            health_screen.part(self.connection, view, now=NOW, **self.seams())
+        self.failing_summary("2026-09-06T12:30:00Z")
+        newer = "2026-09-06T12:40:00Z"
+        health_screen.part(self.connection, "checkouts", now=newer, **self.seams())
+        with patch.object(health_screen, "SUMMARY_FRESH_SECONDS", 10 ** 6):
+            lamps = {lamp["id"]: lamp for lamp in health_screen.summary(self.connection, now=newer, **self.seams())["lamps"]}
+        self.assertEqual((lamps["wt"]["stale"], lamps["wt"]["error"], lamps["wt"]["at"]), ("", "", newer))
+
     def test_a_scan_that_finishes_after_its_view_was_cut_short_shows_in_the_next_summary(self):
         release = threading.Event()
         self.addCleanup(release.set)
