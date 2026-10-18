@@ -1593,6 +1593,73 @@ follow() {
   return 1
 }
 
+# --- refresh satellites (sd:5108) ---------------------------------------------
+# The dashboard's Refresh satellites control writes one request row in the hub's
+# database; follow, the job already scheduled here, answers it (operator ruling
+# on sd:5108). satellite_refresh.py reads and writes the rows over the tailnet.
+# The full machine-setup update runs with the lanes held, as follow's two
+# stages do. The cron stage cannot boot this job out under it: cron-jobs.sh
+# refuses to reinstall a job while a run holds the job's lock (sd:3317).
+REFRESH_SETUP_BOUND=1200
+
+# satellite_refresh.py VERB ARGS, bounded: the hub may not answer.
+refresh_ask() {
+  st_bounded 120 python3 "$DIR/satellite_refresh.py" "$@" < /dev/null
+}
+
+# The child a drain runs, with the lanes held: follow, then the request.
+# follow runs in a subshell with errexit on, so its failure is recorded
+# rather than ending this run first. A request is answered by follow's
+# result when follow failed, else by machine-setup's. The result row reads
+# `running` between start and finish, so a run stopped there is run again
+# once (satellite_refresh.py). A failed step is written as its failure.
+refresh_answer() {
+  set +e
+  (set -e; follow)
+  r_follow=$?
+  set -e
+  r_rc=0
+  refresh_ask check > "$TMPD/ask" 2> "$TMPD/ask.err" || r_rc=$?
+  case "$r_rc" in
+    0) ;;
+    1) return "$r_follow" ;;
+    3) echo "follow: refresh request not read: the hub did not answer; the next run asks again"
+       return "$r_follow" ;;
+    *) flag "!!! failed: refresh request not read: $(tail -1 "$TMPD/ask.err")"
+       return 1 ;;
+  esac
+  r_id= r_attempt=
+  read -r _ r_id r_attempt < "$TMPD/ask" || :
+  case "$r_id:$r_attempt" in
+    *[!0-9a-f:]*|:*|*:) flag "!!! failed: refresh request not read: satellite_refresh.py check said '$(cat "$TMPD/ask")'"
+       return 1 ;;
+  esac
+  echo "=== refresh request $r_id, attempt $r_attempt"
+  if ! refresh_ask start "$r_id" "$r_attempt" 2> "$TMPD/ask.err"; then
+    flag "!!! failed: refresh request $r_id not started: $(tail -1 "$TMPD/ask.err"); nothing ran, the next run asks again"
+    return 1
+  fi
+  if [ "$r_follow" -ne 0 ]; then
+    r_step=follow r_code=$r_follow
+    r_line=$(tail -1 "$TMPD/flagged" 2>/dev/null || :)
+    [ -n "$r_line" ] || r_line="follow exited $r_follow"
+  else
+    r_step=machine-setup r_code=0
+    r_ms="$(hub_dir system)/local-machine-setup/machine-setup.sh"
+    echo "--- machine-setup update --apply"
+    bound_step "$REFRESH_SETUP_BOUND" sh "$r_ms" update --apply < /dev/null > "$TMPD/setup" 2>&1 || r_code=$?
+    cat "$TMPD/setup"
+    r_line=$(grep -v '^\[step ' "$TMPD/setup" | sed '/^[[:space:]]*$/d' | tail -1 || :)
+    [ -n "$r_line" ] || r_line="machine-setup update --apply exited $r_code"
+  fi
+  if ! refresh_ask finish "$r_id" "$r_attempt" "$r_code" "$r_step" "$r_line" 2> "$TMPD/ask.err"; then
+    flag "!!! failed: refresh request $r_id: $r_step exited $r_code, not recorded: $(tail -1 "$TMPD/ask.err"); the row still reads running, so the next run runs it again"
+    return 1
+  fi
+  echo "refresh : $r_step exited $r_code"
+  return "$r_code"
+}
+
 # --- hygiene (sd:1987) ------------------------------------------------------
 # Sweeps what agents leave behind in each conf checkout: worktree
 # registrations whose directory is gone, locks held by a dead process,
@@ -2353,7 +2420,25 @@ case "$1" in
     TMPD=$(mktemp -d)
     trap 'rm -rf "$TMPD"' EXIT INT TERM
     load_list
-    follow
+    # A satellite asks for a refresh request first (sd:5108). Nothing pending,
+    # or a hub that does not answer, runs follow as before: a laptop away from
+    # the tailnet has nothing to answer, as the satellite stage's SKIP says. A
+    # request, or an answer follow may change (a refused build, any other
+    # failure), drains, and the child follows and asks again.
+    if ! is_satellite; then
+      follow
+    elif [ "${REPO_SYNC_LANES_HELD:-}" = 1 ]; then
+      refresh_answer
+    else
+      a_rc=0
+      refresh_ask check > /dev/null 2> "$TMPD/ask.err" || a_rc=$?
+      case "$a_rc" in
+        1) follow ;;
+        3) echo "follow: refresh request not read: the hub did not answer; the next run asks again"
+           follow ;;
+        *) drain_exec follow ;;
+      esac
+    fi
     ;;
   check)
     TMPD=$(mktemp -d)
@@ -2664,7 +2749,13 @@ usage: repo-sync.sh sync|check|list|reconcile|hygiene|nightly|refresh|follow|tes
              again, even at the pin; only a proven update deletes it.
              Already there, or no hub-pin tag, is a no-op. On the hub it says so and
              does nothing. On a satellite, sync and nightly never pull system or
-             pack; only follow moves them.
+             pack; only follow moves them. When the dashboard's Refresh
+             satellites wrote a request this satellite has not answered,
+             follow drains first, follows, then runs machine-setup.sh
+             update --apply (bounded at 1200 s) with the lanes held, and
+             writes the result to the hub (satellite_refresh.py, sd:5108).
+             A failed step writes its failure; a hub that does not answer
+             skips the request until the next run.
   test       run the regression suite in tests/ (unittest; override the
              interpreter with PYTHON). Covers reconcile, list and nightly
              against fixture trees and a stub sd-db; sync's clone path is not covered,
