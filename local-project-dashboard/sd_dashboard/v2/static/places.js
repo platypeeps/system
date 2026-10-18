@@ -74,8 +74,8 @@
 
   // A place page: <body data-place="hoa|home"> and one block per view, id="view-<id>" with data-place-view, its data-label,
   // and data-api when the view reads its own document. A view reads each time it shows, not only the first ('shell:view'
-  // first), since nothing else reads it again. The wall display (html[data-kiosk], home-kiosk.js) stays on the Overview: it
-  // declares no views.
+  // first), since nothing else reads it again. The wall display (data-kiosk on the root element, home-kiosk.js) stays on
+  // the Overview: it declares no views.
   const blocks = [...document.querySelectorAll('[data-place-view]')];
   function place() {
     viewSwitch(id => {
