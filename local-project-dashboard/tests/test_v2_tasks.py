@@ -390,7 +390,7 @@ function shellBulk(c, objs) {
 }
 C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
-window.shell = { commands: C, post, getJSON, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
+window.shell = { commands: C, post, getJSON, shown, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -1414,6 +1414,33 @@ shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush(); await 
                          ["Review started · run r1", "Adversarial review filed · run r1 · brief sd:77; Details links it"])
         self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
         self.assertIn(f'<a href="/tasks?row={plan}">#{plan}</a>', out["R"]["det"])
+
+    def test_a_late_poll_for_an_older_run_does_not_draw_over_the_newer_run(self):
+        """Lane review on 16cad7b5 (class pass): r1's poll answers after r2 started on the same row; Details keep r2."""
+        plan = self.ids["plan"]
+        answer = f"""(() => {{ globalThis.HELD = new Promise(r => {{ globalThis.RELEASE = r; }}); let n = 0;
+return path => path === '/api/adversarial' ? [202, {{ id: `r${{++n}}`, state: 'queued', item: {plan}, filed: null }}]
+  : path === '/api/adversarial/r1' ? HELD.then(() => [200, {{ id: 'r1', state: 'failed', item: null, reason: 'stale', filed: null }}])
+  : path === '/api/adversarial/r2' ? [200, {{ id: 'r2', state: 'done', item: {plan}, filed: 'written', brief_item: 88 }}] : [404, {{ error: 'no answer' }}]; }})()"""
+        out = self.run_page(f"""C.select('{plan}'); window.shell.row?.('{plan}');
+shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush();
+shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush(); await flush();
+RELEASE(); await flush(); await flush(); R.det = ELS.details.html;""", answer, search=f"?row={plan}")
+        self.assertIn('<a href="/item/88">brief sd:88</a>', out["R"]["det"])
+        self.assertNotIn("run r1", out["R"]["det"])
+        self.assertFalse(any("run r1:" in t[0] for t in out["toasts"]), out["toasts"])
+
+    def test_a_run_answer_for_a_row_no_longer_shown_leaves_details_alone(self):
+        """Class pass on 16cad7b5: the pane listener compares the run's row with the row Details shows when the answer lands."""
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(() => {{ globalThis.HELD = new Promise(r => {{ globalThis.RELEASE = r; }});
+return path => path === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: {plan}, filed: null }}]
+  : path === '/api/adversarial/r1' ? HELD.then(() => [200, {{ id: 'r1', state: 'done', item: {plan}, filed: 'written', brief_item: 77 }}])
+  : [404, {{ error: 'no answer' }}]; }})()"""
+        out = self.run_page(f"""shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush();
+open('{ask}'); await flush(); RELEASE(); await flush(); await flush(); R.det = ELS.details.html;""", answer, search=f"?row={plan}")
+        self.assertIn("<h2>Answer the question</h2>", out["R"]["det"])
+        self.assertNotIn("adv-run", out["R"]["det"])
 
     def test_a_refused_adversarial_review_toasts_the_servers_sentence(self):
         plan = self.ids["plan"]
