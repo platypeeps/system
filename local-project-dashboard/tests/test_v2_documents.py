@@ -45,6 +45,7 @@ from test_v2_registry import Registers
 V2 = Path(v2.__file__).resolve().parent
 DOCUMENTS_JS = (V2 / "static" / "documents.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 
 #: The design's Documents commands (design source products/system/designs/pages/documents.js): id, object type, label, key, risk.
 COMMANDS = [
@@ -65,6 +66,9 @@ COMMANDS = [
     ["root.rename", "document root", "Rename root", None, "undo"],
     ["root.hide", "document root", "Hide root", None, "undo"],
     ["root.unhide", "document root", "Unhide root", None, "undo"],
+    # sd:5102: Publish to a destination and Publish now, declared in commands.js.
+    ["document.publish", "document destination", "Publish to", None, "safe"],
+    ["document.publish-now", "document", "Publish now", None, "safe"],
 ]
 
 #: Seconds since the epoch, a day apart: the fixture's files and sources are dated with them.
@@ -344,7 +348,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Documents · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "documents.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "documents.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -418,7 +422,7 @@ class TheScript(ScreenCase):
         answer = answer or f"() => [200, {json.dumps(self.doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; location.origin = 'http://dash.example.test';\nvar ROW = {row};\n"
                   + MARKUP_JS + "\nconst mk = window.markup.html;\n"
-                  + SHELL + SHELL_MORE + shell_more + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + DOCUMENTS_JS
+                  + SHELL + SHELL_MORE + shell_more + "\n" + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + DOCUMENTS_JS
                   + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.page_attention = window.PAGE_ATTENTION;"
@@ -814,7 +818,8 @@ R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAG
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view")
+    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view", "/api/documents/publish",
+                                                                         "/api/documents/publish-now", "/api/documents/publish-now/drain-x-20261018T000000Z")
 
 
 if __name__ == "__main__":
