@@ -81,13 +81,14 @@ class OperationsActions(BrowserSession):
                 self.assertIn("only a currently running job can cancel", observed["capabilities"]["cancel"]["reason"])
         self.assertEqual((job("failed-fixture")["last_exit"], job("failed-fixture")["last_signal"]), (1, None))
         # Cancel the running job, then observe launchd's SIGTERM line on that
-        # same run: the stop was meant, so the job is Idle and without a retry.
+        # same run: the stop was meant, so the job is Idle. An idle job may run
+        # now (sd:4982), so its retry is allowed.
         state = job("running-fixture")
         self.assertEqual(self.post("/api/jobs/running-fixture/cancel", {"revision": state["revision"]})[0], 200)
         self.backend.states["running-fixture"], self.backend.signals["running-fixture"] = "interrupted", 15
         cancelled = job("running-fixture")
         self.assertEqual((cancelled["state"], cancelled["last_signal"]), ("idle", 15))
-        self.assertFalse(cancelled["capabilities"]["retry"]["allowed"])
+        self.assertTrue(cancelled["capabilities"]["retry"]["allowed"])
         # Reload the label (a new lifetime, runs = 1 again) and observe an
         # external SIGTERM on the new run 1: the old cancel is no evidence for
         # it, so the job is Interrupted with its retry.
