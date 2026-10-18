@@ -44,6 +44,7 @@ leak-guard.sh — refuse a push that adds a line matching a private pattern.
 
 Usage:
   leak-guard.sh check [--range A..B]
+  leak-guard.sh scan                   (text on stdin)
   leak-guard.sh hook REMOTE [URL]      (git pre-push; refs on stdin)
   leak-guard.sh install [REPO]
   leak-guard.sh remove [REPO]
@@ -53,6 +54,10 @@ Usage:
 Verbs:
   check    Check the commits in A..B. Without --range, check the commits on
            HEAD that no remote-tracking ref has.
+  scan     Check the text on stdin. Prints the number of each line that
+           matches a pattern, never the line. Exit 0 clean, 1 a match,
+           2 a pattern grep cannot compile, 3 no pattern file or no pattern:
+           unknown, not clean. The dashboard's File issue action runs it.
   hook     What the pre-push hook runs. Reads git's pre-push lines on stdin
            and checks each pushed ref's new commits.
   install  Write REPO's pre-push hook (default: the current repository). It
@@ -67,7 +72,7 @@ Patterns:
   ${XDG_CONFIG_HOME:-$HOME/.config}/system. LEAK_GUARD_PATTERNS names another
   file. A missing file prints a warning and passes.
 
-Exit codes: 0 clean, 1 a match, 2 usage or git error.
+Exit codes: 0 clean, 1 a match, 2 usage or git error; scan adds 3.
 USAGE
 }
 
@@ -165,6 +170,28 @@ cmd_check() {
   fi
 }
 
+# scan: the text on stdin, through the same reader and `grep -E -f` as a push.
+# A missing or empty pattern file is exit 3, not 0: a caller filing text
+# outside this machine must not read "no patterns" as "clean" (sd:5103).
+# grep's own messages are dropped: a compile error can quote the pattern.
+cmd_scan() {
+  [ $# -eq 0 ] || die "scan reads stdin and takes no argument"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/leak-guard.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  load_patterns "$work/patterns" || exit 3
+  cat >"$work/text"
+  set +e
+  grep -a -n -E -f "$work/patterns" "$work/text" >"$work/matches" 2>/dev/null
+  code=$?
+  set -e
+  case "$code" in
+    0) cut -d: -f1 "$work/matches"; exit 1 ;;
+    1) exit 0 ;;
+    *) printf '%s: grep could not apply %s (exit %s); fix the file\n' "$ME" "$PATTERNS" "$code" >&2; exit 2 ;;
+  esac
+}
+
 # git runs pre-push with the remote name and URL as arguments and one line per
 # ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
 cmd_hook() {
@@ -252,6 +279,7 @@ cmd="$1"
 shift
 case "$cmd" in
   check) cmd_check "$@" ;;
+  scan) cmd_scan "$@" ;;
   hook) cmd_hook "$@" ;;
   install) cmd_install "$@" ;;
   remove) cmd_remove "$@" ;;

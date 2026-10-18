@@ -36,7 +36,8 @@ Close of sd:3012), and Unpark (the edit route with `parked_at: null`, sd:3012).
 Fix (`/fix`, sd:3456) is new, and Reports and Today post it too: `fix_session`
 starts a herdr session for the item and adds a note. Draft email (`/draft-email`, sd:3463) is Tasks' alone:
 `email_draft` has claude write an email about a task or followup and saves it as a Gmail draft, never sent, with a note
-naming it. Nothing here writes.
+naming it. File GitHub issue and File Jira issue (`/file-issue`, sd:5103) are `issue_filing`'s: each row carries
+`issue_targets`, where each would file or why it is off, and `issue_link`, the issue its ref names. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from sd_db.protection import github_slug
 from sd_db.sources.vault import SOURCE as VAULT
 from sd_db.workflow import WorkflowError
 
-from . import issues
+from . import issue_filing, issues
 from .markup import href
 
 __all__ = ["details", "document"]
@@ -110,8 +111,11 @@ def _document(connection, *, now: str) -> dict:
     found = realms()
     rules = found["list"] if found["state"] in ("read", "partial") else None
     out = []
+    filing = {}
     for row in rows:
         state = workflow.item_state(connection, row["id"])
+        if row["repo"] not in filing:
+            filing[row["repo"]] = issue_filing.targets(connection, row["repo"])
         out.append({
             "id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
             "priority": row["priority"], "due": row["due"],
@@ -133,6 +137,9 @@ def _document(connection, *, now: str) -> dict:
             "area": area_of(row["repo"], row["kind"], hoa),
             # The realm Tasks' Personal, Work and other realm views filter on (sd:5064, `places.realm_of`).
             "realm": realm_of(row["repo"], row["kind"], rules),
+            # File GitHub issue and File Jira issue (sd:5103): where each would file, or why it is off; and the
+            # issue the item's ref names, for the row's link icon.
+            "issue_targets": filing[row["repo"]], "issue_link": issue_filing.link_of(state["item"]),
             **_base_fields(state["item"]),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.

@@ -224,6 +224,12 @@ A done run files, in one transaction in the server's database, review batches in
 An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
+File GitHub issue and File Jira issue on Tasks (sd:5103, `issue_filing.py`) draft with Draft email's `claude -p` line: no tools, no MCP servers, 180 seconds.
+`POST /api/items/<id>/file-issue` answers 202 with a run id; `GET /api/issue-runs/<id>` reads the draft; only `POST /api/issue-runs/<id>/confirm` with the previewed text's digest files.
+One draft or filing at a time: the runner holds `~/.local/state/system/issue-filing/lock`. A draft that `local-leak-guard/leak-guard.sh scan` refuses, or that finds no `<config>/privacy-patterns`, is blocked.
+GitHub files through `gh issue create`, on the LaunchAgent's PATH or at `/opt/homebrew/bin/gh`, signed in as the operator; Jira through `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`, read from the server's environment (`<config>/project-dashboard/.env` or exported), as the Re-run collector reads them.
+A filing with no answer is recorded as not known, never as not filed.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists
