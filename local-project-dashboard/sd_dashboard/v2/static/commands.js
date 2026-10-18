@@ -201,7 +201,8 @@
   // The Details section: one checkbox per destination, each a registered `<on> destination` object, and the last drain's state.
   function publishPane(on, o) {
     const p = o && o.pub; if (!p || !p.choice) return '';
-    const { html } = window.markup, c = p.choice;
+    const { html } = window.markup;
+    const c = p.choice;
     const box = ch => {
       const id = `pub:${o.id}:${ch}`, set = c[ch];
       window.shell.commands.put({ id, type: `${on} destination`, label: `${PUB_NAME[ch]} for ${o.label}`, row: o, channel: ch, name: PUB_NAME[ch], set, why: c.why });
