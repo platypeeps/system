@@ -58,6 +58,17 @@ def _place(connection) -> Path:
     return place
 
 
+def _environment() -> dict:
+    """The server's environment, with `~/.local/bin` on PATH: the run calls `sd` and `sd-ship`, which install there,
+    and the LaunchAgent's PATH (`runtime.LAUNCH_PATH`) may not hold that folder."""
+    environment = dict(os.environ)
+    local = str(Path.home() / ".local" / "bin")
+    parts = environment.get("PATH", "").split(":")
+    if local not in parts:
+        environment["PATH"] = ":".join([part for part in parts if part] + [local])
+    return environment
+
+
 def start(connection):
     """Steps 1 to 3 above: `(202, {"started", "repo", "command"})`, or `(409, {"error"})` while a run holds the lock."""
     place = _place(connection)
@@ -81,7 +92,7 @@ def start(connection):
             log.flush()
             runner = subprocess.Popen([sys.executable, str(place / SCRIPT), "run"], cwd=str(place),
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                      pass_fds=(handle.fileno(),), start_new_session=True)
+                                      pass_fds=(handle.fileno(),), start_new_session=True, env=_environment())
         # Reaped here when it ends, so a long-lived server keeps no zombie; a restart hands it to launchd instead.
         threading.Thread(target=runner.wait, name="hoa sweep", daemon=True).start()
         return 202, {"started": started, "repo": str(place), "command": COMMAND}

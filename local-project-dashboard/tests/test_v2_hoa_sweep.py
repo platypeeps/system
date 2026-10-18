@@ -33,6 +33,7 @@ elif sys.argv[1:] == ["run"]:
     if (here / "die").exists():
         print("boom: the stub died before its record")
         sys.exit(1)
+    (here / "path.txt").write_text(__import__("os").environ.get("PATH", ""))
     with open(here / "runs.txt", "a") as runs:
         runs.write("run\n")
     started = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
@@ -91,6 +92,8 @@ class RunSweep(BrowserSession):
         self.assertEqual(status, 202, body)
         self.assertEqual((body["repo"], body["command"]), (str(self.hoa), "python3 tools/sweep.py run"))
         wait(self, lambda: self.runs() == 1, "the stub's run")
+        # The run calls sd and sd-ship, which install in ~/.local/bin, a folder the LaunchAgent's PATH may lack.
+        self.assertIn(str(Path.home() / ".local" / "bin"), (self.hoa / "path.txt").read_text().split(":"))
         self.assertTrue(self.read()["running"])
 
         status, _, body = self.post("/api/hoa/sweep", {})

@@ -224,6 +224,11 @@ A done run files, in one transaction in the server's database, review batches in
 An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
+Run sweep on HOA (sd:5095, `hoa_sweep.py`) runs the hoa checkout's `tools/sweep.py run`, detached, from that checkout.
+`POST /api/hoa/sweep` answers 202 at once; a second while a run holds `~/.local/state/system/hoa-sweep/lock` is a 409.
+The run calls `sd`, `sd-ship`, `git` and `claude`: the start adds `~/.local/bin` to the LaunchAgent's PATH, and the script finds claude as the portal pulls do.
+Its stdout and stderr go to `start.log` beside the lock; the script keeps its own record and log under `~/.local/state/hoa-sweep/`.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists
