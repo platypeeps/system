@@ -65,6 +65,7 @@ Ask only for: a destructive or irreversible action, publishing outside managed r
 Also ask, and probe until clear, when a requirement, scope or approach is uncertain and two readings lead to different work.
 Take the operator through open questions one at a time (AskUserQuestion in Claude Code, one question per call): give context and cost/benefit, put your recommended option first, marked "(Recommended)"; use a numbered text question only where no such tool exists.
 In an unattended run (builder, lane, scheduled job), file the question with `sd task note --kind question` for the dashboard and continue with work that does not depend on it.
+Record an answer with `sd task note N "<ruling>" --kind decision --answers <note>`: a bare decision leaves the question in Decisions waiting (sd:5014).
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
 Write a park trigger as an sd item that must reach done, or a named measurement with an owner and a date: two free-text triggers fired unnoticed (sd:2453, sd:3355).
 When the operator asks for status (`sd-status`, `sd today`, "status"), report: done recently (merged or not, with PR and commit), landing soon, open items and follow-ups from this session, then numbered next steps to pick by number; give each a duration or delivery time; show up to five per section, the rest stay in the database for `sd today` and the dashboard.

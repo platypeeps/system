@@ -38,7 +38,10 @@ class ReportTest(unittest.TestCase):
         _stub(self.bin / "docker", "exit 1\n")
         _stub(self.bin / "hostname", 'echo "fixturehost"\n')
         # FAKE_DAY stands for the run's date, which the reason must not carry.
+        # The weekday is FAKE_WEEKDAY, Monday unless a test sets it: the real
+        # one made the Sunday-only docker step run, and fail a clean run, on Sundays.
         _stub(self.bin / "date", '''[ -n "$FAKE_DAY" ] && [ "$1" = "+%Y-%m-%d" ] && { echo "$FAKE_DAY"; exit 0; }
+[ "$1" = "+%u" ] && { echo "${FAKE_WEEKDAY:-1}"; exit 0; }
 exec /bin/date "$@"
 ''')
         # df reports DF_USED percent used, 50 unless a test sets it.
@@ -108,6 +111,11 @@ exec /bin/date "$@"
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("all checks clean", run.stdout)
         self.assertEqual(self.attention(run), [])
+
+    def test_the_docker_prune_runs_on_sundays_only(self):
+        run = self.maintenance("# nothing to check\n", FAKE_WEEKDAY="7")
+        self.assertIn("docker prune skipped", run.stdout)
+        self.assertNotIn("docker prune", self.maintenance("# nothing to check\n", FAKE_WEEKDAY="6").stdout)
 
     def test_a_mount_counts_only_at_its_own_mountpoint(self):
         """sd:3718: a mountpoint ends at " (" or " type ", not at a space, so
