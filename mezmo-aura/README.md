@@ -16,7 +16,7 @@ installed or run from a source checkout), CLI, and quick curl smoke tests.
 ./aura.sh models             # GET /v1/models
 ./aura.sh prompt "text"      # POST a chat completion
 ./aura.sh image              # build aura-local:instrumented from $AURA_REPO
-./aura.sh experiment start [--overlay servers.toml]   # math MCP + two Aura servers from that image
+./aura.sh experiment start [--overlay servers.toml] [--target dev]   # math MCP + two Aura servers from that image
 ./aura.sh experiment run [--prompts prompts.txt]      # the six math requests, or your prompts
 ./aura.sh experiment inspect [summary|tree]
 ./aura.sh experiment stop
@@ -63,14 +63,19 @@ server configs into `experiment/state/` from the checkout's
 listen on `127.0.0.1:3101` (orchestration) and `:3102` (single agent);
 `AURA_ORCH_PORT` and `AURA_SINGLE_PORT` move them. Answers go to
 `experiment/state/responses.jsonl`. `experiment run` sends every request,
-then exits 1 when any one failed or came back without an answer.
+then exits 1 when any one failed or came back without an answer. Aura
+answers a model provider's failure with HTTP 200 and the error as the
+reply, so such a reply counts as failed too: stderr names the case and the
+error line. The servers run with `AURA_DEBUG_PROVIDER_ERRORS=true`, so that
+line carries the provider's own words, such as "No endpoints found".
 
 To point the experiment at other MCP servers, such as the Mezmo dev
 endpoint, give `experiment start --overlay <file.toml>`. Each
 `[mcp.servers.<name>]` table in the file replaces the example's server of
 that name, sub-tables included, or adds a new one; both configs get it.
-The file may hold nothing else, and start refuses an overlay it cannot merge
-cleanly. Write the key as a template, never as a value:
+Worker tables may join them (below). The file may hold nothing else, and
+start refuses an overlay it cannot merge cleanly. Write the key as a
+template, never as a value:
 
 ```toml
 [mcp.servers.mezmo-dev]
@@ -81,9 +86,40 @@ url = "https://mcp.example.test/mcp"
 Authorization = "Bearer {{ env.MEZMO_SERVICE_KEY }}"
 ```
 
+The orchestration server hands tools to its workers, and each
+`[orchestration.worker.<name>]` table's `mcp_filter` decides which tools that
+worker sees. An overlay server alone therefore reaches the single agent but
+not the workers. The overlay may also hold worker tables, which replace the
+example's worker of that name, sub-tables included, or add one:
+
+```toml
+[orchestration.worker.traces]
+description = "Reads traces through the dev MCP server"
+turn_depth = 5
+mcp_filter = ["list_failed_traces", "get_trace_spans"]
+preamble = "You read traces. Report what the tools return."
+```
+
 Compose passes `MEZMO_SERVICE_KEY` into both servers by name, so its value
 stays in the environment; start refuses an overlay that holds the value.
 Without `--overlay`, the configs are the math example as before.
+
+The experiment picks its own Mezmo target and ignores the shell's
+`MEZMO_TARGET`, whose default may be production. The target is
+`--target <name>` on `start` or `run`, else `AURA_MEZMO_TARGET` from `.env`,
+else `dev`. Its values come from `AURA_MEZMO_<NAME>_SERVICE_KEY` and
+`AURA_MEZMO_<NAME>_MCP_URL`, the name upper-cased with `-` as `_`. The
+experiment drops every exported `MEZMO_*` value, then passes only the
+target's values to the servers, as `MEZMO_TARGET`, `MEZMO_SERVICE_KEY` and
+`MEZMO_MCP_URL`. An overlay may read the URL as `{{ env.MEZMO_MCP_URL }}`.
+Start refuses an overlay that reads a value the target lacks, and a target
+name holding "prod" unless `--allow-prod` is given. `experiment/state/target`
+names the target the running servers carry. Start and stop delete it before
+they change the servers, and only a start that Compose confirmed writes it
+again, so a failed start or stop leaves `run` refusing. Start recreates the
+servers every time, because a server reads its config only when it starts.
+`run` refuses another target or none, and each answer in `responses.jsonl`
+names the target.
 
 `experiment run --prompts <file>` sends each line of the file to both
 servers, as cases `single-p<n>` and `orch-p<n>`; blank lines and lines
@@ -97,7 +133,7 @@ Private values live outside the checkout, in `<config>/mezmo-aura/`.
 
 | File | Holds |
 |---|---|
-| `.env` | `OPENAI_API_KEY`, `MEZMO_SERVICE_KEY`, `AURA_REPO`; `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` for the experiment. Copy `.env.example`. |
+| `.env` | `OPENAI_API_KEY`, `MEZMO_SERVICE_KEY`, `AURA_REPO`; `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `AURA_MEZMO_TARGET` and each target's `AURA_MEZMO_<NAME>_SERVICE_KEY` and `AURA_MEZMO_<NAME>_MCP_URL` for the experiment. Copy `.env.example`. |
 | `config.toml` | Optional. Replaces `config.toml` beside the script. |
 
 Values already exported win over `.env`.

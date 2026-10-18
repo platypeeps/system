@@ -1,5 +1,5 @@
-/* Places: the HOA and Home pages' views and Tasks' All | HOA | Home (places.js). Tokens only.
- * The view switch is the Tasks .seg (segmented control, tasks.css) until the shell carries one; each place view is one section
+/* Places: the HOA and Home pages' views and Tasks' place views (places.js). Tokens only.
+ * The view switch is the shell's (shell.js view:start); each place view is one section
  * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). Rows are not selectable: the item,
  * brief or report link opens it on the page that acts on it.
  * Hallmark · component: place view · genre: modern-minimal · theme: design.md instrument panel
@@ -7,15 +7,6 @@
  * error (▨ Not read, with the reason) · empty (a row naming what was looked for) */
 .place-switch { margin: 0 0 var(--space-md); }
 .place-switch:empty, html[data-kiosk] .place-switch { display: none; }
-.place-switch .seg { display: inline-grid; grid-auto-flow: column; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
-.place-switch .seg button {
-  display: inline-flex; align-items: center; min-height: 2.25rem; padding: 0 var(--space-sm); white-space: nowrap;
-  border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); font: 500 var(--text-sm)/1 var(--font-ui); cursor: pointer;
-}
-.place-switch .seg button:hover { color: var(--color-ink); background: var(--color-well); }
-.place-switch .seg button:active { background: var(--color-well); }
-.place-switch .seg button[aria-pressed="true"] { color: var(--color-ink); background: var(--color-well); box-shadow: inset 0 -2px 0 var(--color-accent); }
-.place-switch .seg button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 
 .place-view { margin: 0 0 var(--space-xl); min-width: 0; }
 .place-view .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }
@@ -45,6 +36,5 @@
   .place-rows .hide-sm { display: none; }
 }
 @media (pointer: coarse) {
-  .place-switch .seg button { min-height: var(--row-touch); }
   .place-rows a { display: inline-block; min-height: var(--row-touch); line-height: var(--row-touch); }
 }

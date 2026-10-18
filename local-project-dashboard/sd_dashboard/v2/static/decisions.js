@@ -1,6 +1,8 @@
-// Today's Decisions (sd:3012): each question note with Option: lines, one button per option. It loads before shell.js.
+// Today's Decisions (sd:3012): each open question note, one button per option. It loads before shell.js.
 // Rows: /api/decisions (sd_dashboard.decisions.document). A click posts /api/decisions/answer with the item, note, option
 // and the item revision the read gave; the server writes the ruling and resolves the question in one transaction.
+// A question with fewer than two Option: lines (sd:5064) gets a text box: its words post as the option, the same ruling
+// `sd task note N "<words>" --kind decision --answers <note>` writes.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
   const { html, put } = window.markup;
@@ -10,7 +12,7 @@
   // LIST is the last read; null when it failed. RULED and REFUSED hold what a click did to a row until the next read.
   // REVIEW counts the questions on review batches (sd:3709): Review asks them, so Today draws one line that links there.
   let LIST = [], REVIEW = 0, reads = 0, failed = '';
-  const RULED = new Map(), REFUSED = new Map(), BUSY = new Set();
+  const RULED = new Map(), REFUSED = new Map(), BUSY = new Set(), DRAFT = new Map();
   const REC = /\s*\(recommended\)\s*$/i;
   // Sort (sd:3455): the shell's sort header, in memory as Today's other tables. The read's order (priority, then the oldest)
   // stands until a header is pressed; a tie keeps it.
@@ -20,14 +22,20 @@
   const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Item'], ['question', 'Question'], [null, 'Choose', 'act']];
   const sorted = list => !SORT.sort ? list : [...list].sort((a, b) => { const x = BY[SORT.sort](a), y = BY[SORT.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * SORT.dir; });
 
+  const refused = d => REFUSED.has(d.note) ? html`<p class="refused" role="alert">Not recorded: ${REFUSED.get(d.note)}</p>` : '';
   function choices(d) {
     const ruled = RULED.get(d.note);
     if (ruled) return html`<p class="ruled"><span class="g-ok" aria-hidden="true">●</span> Ruled: ${ruled.option} · note #${ruled.id}</p>`;
+    // sd:5064: a free-text question; a typed draft survives a redraw.
+    if (d.options.length < 2) {
+      const off = BUSY.has(d.note) ? html` disabled` : '';
+      return html`<form class="answer" data-note="${d.note}"><label class="sr" for="${`answer-${d.note}`}">${`Answer note ${d.note}`}</label><input id="${`answer-${d.note}`}" name="answer" autocomplete="off" maxlength="4000" placeholder="${d.options[0] || 'Your answer'}" value="${DRAFT.get(d.note) || ''}"${off}><button type="submit" class="btn sm"${off}>Answer</button></form>${refused(d)}`;
+    }
     // sd:3451: an option that ends "(Recommended)" comes first as the filled button with a tag; its index and posted text stay.
     const opts = d.options.map((o, i) => ({ o, i, rec: REC.test(o) }));
     opts.sort((a, b) => b.rec - a.rec);
     return html`<div class="choices" role="group" aria-label="${`Choose for note ${d.note}`}">${opts.map(({ o, i, rec }) => html`<button type="button" class="${rec ? 'btn sm rec' : 'btn quiet sm'}" data-note="${d.note}" data-option="${i}" title="${o}"${BUSY.has(d.note) ? html` disabled` : ''}><span>${rec ? o.replace(REC, '') : o}</span>${rec ? html`<span class="tag">Recommended</span>` : ''}</button>`)}</div>
-      ${REFUSED.has(d.note) ? html`<p class="refused" role="alert">Not recorded: ${REFUSED.get(d.note)}</p>` : ''}`;
+      ${refused(d)}`;
   }
 
   // today.js counts the waiting decisions in Today's badge; a failed read counts none.
@@ -48,7 +56,7 @@
       <td class="what"><a href="${window.shell.itemHref(d.item)}"><span class="id">#${d.item}</span> ${d.title}</a><span class="repo">${repoName(d.repo)}</span></td>
       <td class="question">${d.question}<span class="asked-at">note #${d.note} · asked <time class="rel" datetime="${d.asked}"></time></span></td>
       <td class="act">${choices(d)}</td></tr>`; })}`
-      : html`<tr class="empty"><td colspan="4">No decision waits on you. A question note with two Option: lines appears here.</td></tr>`);
+      : html`<tr class="empty"><td colspan="4">No decision waits on you. An open question note appears here; one with two Option: lines gets a button each.</td></tr>`);
     const waiting = LIST.filter(d => !RULED.has(d.note)).length;
     put($('decisions-tally'), LIST.length ? html`<span class="g-caution">▲ ${waiting} waiting</span>${RULED.size ? html`<span class="g-ok">● ${RULED.size} ruled</span>` : ''}` : html``);
     tell(waiting);
@@ -70,14 +78,16 @@
 
   function say(text) { const p = $('decisions-note'); p.textContent = text; p.hidden = !text; }
 
-  async function choose(note, i) {
+  // i picks an option; words answer a free-text question.
+  async function choose(note, i, words) {
     const d = (LIST || []).find(x => x.note === note);
-    if (!d || BUSY.has(note) || RULED.has(note) || !(i in d.options)) return;
+    const option = words != null ? words.trim() : d && d.options.length >= 2 ? d.options[i] : undefined;
+    if (!d || BUSY.has(note) || RULED.has(note) || !option || (words != null) !== (d.options.length < 2)) return;
     BUSY.add(note); REFUSED.delete(note); draw();
     try {
-      const out = await window.shell.post('/api/decisions/answer', { item: d.item, note, revision: d.revision, option: d.options[i] });
-      BUSY.delete(note);
-      RULED.set(note, { option: d.options[i], id: out.ruling.id });
+      const out = await window.shell.post('/api/decisions/answer', { item: d.item, note, revision: d.revision, option });
+      BUSY.delete(note); DRAFT.delete(note);
+      RULED.set(note, { option, id: out.ruling.id });
       // The answer changed the item: its other decisions carry the revision the answer returned.
       LIST.forEach(x => { if (x.item === d.item) x.revision = out.revision; });
       draw();
@@ -93,6 +103,11 @@
       const b = e.target.closest('button[data-option]');
       if (b && !b.disabled) choose(+b.dataset.note, +b.dataset.option);
     });
+    $('decisions').addEventListener('submit', e => {
+      const f = e.target.closest('form.answer'); if (!f) return;
+      e.preventDefault(); choose(+f.dataset.note, null, f.elements.answer.value);
+    });
+    $('decisions').addEventListener('input', e => { const f = e.target.closest('form.answer'); if (f) DRAFT.set(+f.dataset.note, e.target.value); });
     $('refresh').addEventListener('click', () => { say(''); load(); });
     $('decisions-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, SORT)) window.shell.list.keepFocus(e, draw); });
     put($('decisions-head'), window.shell.list.sortHead(COLS, SORT)); // drawn before the read, so a failed one keeps the columns

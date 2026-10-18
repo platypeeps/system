@@ -566,7 +566,9 @@ materialize_pending() {
     echo "--- downloading evicted destination file: $f"
     brctl download "$f" || echo "!!! brctl download failed: $f" >&2
   done < "$PENDING"
-  waited=0
+  # Wall time, not a count of passes: each pass stats every pending file, so
+  # a long list waited many times MATERIALIZE_WAIT (sd:5064).
+  start=$(date +%s)
   while :; do
     left=""
     while IFS= read -r f; do
@@ -577,8 +579,8 @@ materialize_pending() {
       sed 's/^/--- downloaded: /' "$PENDING"
       return 0
     fi
-    [ "$waited" -lt "$MATERIALIZE_WAIT" ] || break
-    sleep 1; waited=$((waited + 1))
+    [ $(( $(date +%s) - start )) -lt "$MATERIALIZE_WAIT" ] || break
+    sleep 1
   done
   printf '%s' "$left" | sed "s/^/!!! still evicted after ${MATERIALIZE_WAIT}s: /" >&2
   return 1

@@ -27,6 +27,8 @@ adversarial-gate render --lens writing-draft \
     --set DRAFT_PATH=content/2026/x/index.md \
     --set RESEARCH_PATH=content/2026/x/research.md
 adversarial-gate run --lens research-brief --repo . --out adversarial.md --timeout 900
+adversarial-gate run --lens repo --set REPO_NAME=x --repo . --out review.md \
+    --model gpt-6-astra --effort high          # effort: codex's model_reasoning_effort
 adversarial-gate rank --in adversarial.md     # order an existing result (see below)
 adversarial-gate test -v                      # the unittest suite under tests/
 ```
@@ -51,6 +53,17 @@ does not otherwise have.
 `--lens` also takes a path, so a repo with a document type of its own can keep its lens
 in its own checkout and still get the shared core.
 
+`--model` is codex's `-m`, and `--effort` its `-c model_reasoning_effort=LEVEL`; without
+them codex uses its own configuration. `--effort` takes one lowercase word (`low`, `medium`,
+`high`): the value lands in a TOML override, where a quote or an `=` would be another one.
+`run` reads no config of its own. The dashboard's Adversarial review action (sd:5064,
+`local-project-dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
+`<config>/adversarial-gate/.env`, `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, and falls back
+to `gpt-6-astra` and `high`; copy `.env.example` there to change them.
+The four dashboard lenses ask for `Recommendation:`, `Evidence:` and `Repo:` lines under each
+hypothesis: the action lists them in a brief and asks each as a review question, which the
+operator approves into a task or rejects.
+
 ## Contents
 
 | File | What it is |
@@ -58,6 +71,11 @@ in its own checkout and still get the shared core.
 | `core.md` | The stance, the four-part finding format, the confidence tags, and the caveats. Shared by every lens. |
 | `lenses/writing-draft.md` | Blog/article drafts with a `research.md` behind them. Takes `{DRAFT_PATH}` and `{RESEARCH_PATH}`, and reads the repository's `profile/guardrails.md` when it has one. |
 | `lenses/research-brief.md` | Research briefs: load-bearing claims, numbers, the unstated assumption. |
+| `lenses/task.md` | A work item before it is built: the problem, the done condition, scope, conflicts with the rules. Takes `{INPUT_PATH}` (the item's text) and `{DESIGN_PATH}` (its design document, or `none`). |
+| `lenses/brief.md` | A routine brief a reader acts on: the action it drives, dates, attribution, omissions. Takes `{INPUT_PATH}`. |
+| `lenses/repo.md` | A whole checkout: documents the code contradicts, rules it breaks, failure handling, tests. Takes `{REPO_NAME}`. |
+| `lenses/change.md` | A branch against its base plus its pull-request body: claims, failure paths, steps, older state, guards, tests. Takes `{INPUT_PATH}`, `{BASE}` and `{HEAD}`. |
+| `.env.example` | The dashboard action's model and effort, both commented out: the defaults apply without a copy. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `rank`, `lenses`, `test`. |
 | `rank.py` | The optional Jev ordering: parse the findings, ask one question each, reorder and label. Never removes one. |
 | `tests/test_run.py` | The `run` regression suite (sd:790): the bound fires, an empty or missing `--out` is refused. |

@@ -1,4 +1,4 @@
-// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports) and Tasks' All | HOA | Home.
+// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports) and Tasks' place views.
 // Data: a place view with data-api reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py).
 // Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
 // read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
@@ -7,31 +7,15 @@
 //
 // Adapter: viewSwitch(show) is the one place a page meets the shell's view switch (shell.js view:start). The page declares
 // window.PAGE_VIEWS = [{ id, label, key?, api? }] before shell.js; show(id) runs for the view shown, at shell:ready and on
-// each change. With shell.view the shell draws the switch, hides the view-<id> panels and fires 'shell:view'. Without it
-// (until that shell lands), this draws a segmented control into #viewswitch and keeps #view=<id>.
+// each change. The shell draws the switch into #viewswitch, hides the view-<id> panels and fires 'shell:view'.
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
 
   // Called at shell:ready, after the shell's first 'shell:view': the view already shown is shown here.
   function viewSwitch(show) {
-    const S = window.shell, views = window.PAGE_VIEWS || [];
-    if (S.view) { document.addEventListener('shell:view', e => show(e.detail.id)); if (S.view.current()) show(S.view.current()); return; }
-    const slot = $('viewswitch'); if (!slot) return;
-    const ids = views.map(v => v.id);
-    const current = () => { const m = /^#view=([a-z-]+)$/.exec(location.hash); return m && ids.includes(m[1]) ? m[1] : ids[0]; };
-    put(slot, html`<div class="seg" role="group" aria-label="${slot.dataset.label || 'View'}">${views.map(v => html`<button type="button" data-switch="${v.id}" aria-pressed="false">${v.label}</button>`)}</div>`);
-    const apply = () => {
-      const id = current();
-      slot.querySelectorAll('button[data-switch]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.switch === id)));
-      show(id);
-    };
-    slot.addEventListener('click', e => {
-      const b = e.target.closest('button[data-switch]'); if (!b) return;
-      if (location.hash === `#view=${b.dataset.switch}`) apply(); else location.hash = `view=${b.dataset.switch}`;
-    });
-    addEventListener('hashchange', apply);
-    apply();
+    document.addEventListener('shell:view', e => show(e.detail.id));
+    if (window.shell.view.current()) show(window.shell.view.current());
   }
 
   const GLYPH = { ok: '●', caution: '▲', warning: '■', queued: '◌', unknown: '▨' };

@@ -13,7 +13,7 @@ import json
 import threading
 import unittest
 
-from sd_dashboard import fleet, metrics_screen, now_screen, server, snapshot
+from sd_dashboard import fleet, health_screen, metrics_screen, now_screen, server, snapshot
 
 from support import NOW, ScreenCase
 from test_workflow_actions import BrowserSession
@@ -69,6 +69,18 @@ class TheSnapshot(unittest.TestCase):
         value, observed, stale = self.kept.read()
         self.assertEqual((value, stale, self.source.calls), ({"n": 1}, None, 1))
         self.assertEqual(observed, "2026-08-29T10:40:00Z")
+
+    def test_warm_starts_one_read_without_waiting_and_the_first_request_joins_it(self):
+        """sd:5064: the server warms its kept reads at start; a request that comes before the read ends waits on it."""
+        self.source.release.clear()
+        self.kept.warm()
+        self.assertTrue(self.source.entered.wait(10))
+        self.kept.warm()  # one runs: no second read
+        self.source.release.set()
+        self.assertEqual(self.kept.read()[0], {"n": 1})
+        self.kept.warm()  # a document is kept: nothing starts
+        self.wait_idle()
+        self.assertEqual((self.source.calls, self.source.most), (1, 1))
 
     def test_a_fresh_document_is_answered_without_a_refresh(self):
         self.kept.read()
@@ -221,15 +233,79 @@ class Spy:
         self.invalidated += 1
 
 
+class Usage:
+    """`/api/usage`'s kept-month seam: `Snapshot.read`'s triple, and its invalidations counted."""
+
+    def __init__(self):
+        self.invalidated, self.answer = 0, ('{"kept": true}\n', "2026-09-06T11:59:00Z", None)
+
+    def read(self):
+        return self.answer
+
+    def invalidate(self):
+        self.invalidated += 1
+
+
 class TheServer(BrowserSession):
     fleet_backend = Spy({"repos": [], "worktrees": [], "processes": []})
     metrics_backend = Spy({"error": "the kept part", "observed": "2026-09-06T11:59:00Z"})
+    usage_backend = Usage()
 
-    def test_a_write_invalidates_the_fleet_and_metrics_snapshots(self):
-        before = (self.fleet_backend.invalidated, self.metrics_backend.invalidated)
+    def test_a_write_invalidates_the_fleet_metrics_and_usage_snapshots(self):
+        kept = (self.fleet_backend, self.metrics_backend, self.usage_backend)
+        before = [one.invalidated for one in kept]
         status, _, answer = self.post("/api/items", {"title": "a new item"})
         self.assertEqual(status, 201, answer)
-        self.assertEqual((self.fleet_backend.invalidated, self.metrics_backend.invalidated), (before[0] + 1, before[1] + 1))
+        self.assertEqual([one.invalidated for one in kept], [n + 1 for n in before])
+
+    def test_usage_answers_the_kept_month_and_a_named_month_reads_now(self):
+        """sd:5064: /api/usage took 1.7 s a read; the current month comes from its snapshot, a named one as before."""
+        status, _, body = self.request("/api/usage", headers={"Cookie": self.cookie})
+        self.assertEqual((status, body), (200, '{"kept": true}\n'))
+        status, _, body = self.request(f"/api/usage?month={server._now()[:7]}", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["month"], server._now()[:7])
+
+    def test_a_usage_month_whose_newest_read_failed_is_not_served_as_current(self):
+        self.usage_backend.answer = ('{"kept": true}\n', "2026-09-06T11:59:00Z", "database is locked")
+        self.addCleanup(setattr, self.usage_backend, "answer", ('{"kept": true}\n', "2026-09-06T11:59:00Z", None))
+        status, _, body = self.request("/api/usage", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"], "Usage was not read again: database is locked; the last read began 2026-09-06T11:59:00Z.")
+
+    def test_the_kept_usage_read_is_the_verbs_bytes_for_the_current_month(self):
+        value, observed, stale = server._usage_kept(self.path).read()
+        self.assertEqual((json.loads(value)["month"], stale), (server._now()[:7], None))
+
+    def test_warm_starts_every_kept_read_and_healths_scans_off_the_calling_thread(self):
+        from unittest import mock
+
+        class Warm:
+            def __init__(self):
+                self.warmed = 0
+
+            def warm(self):
+                self.warmed += 1
+        kept, summed = (Warm(), Warm(), Warm()), threading.Event()
+        seen = {}
+
+        def summary(connection, *, now, fleet):
+            seen.update(thread=threading.current_thread(), fleet=fleet)
+            summed.set()
+        with mock.patch.object(health_screen, "summary", summary):
+            server._warm(self.path, kept)
+            self.assertTrue(summed.wait(10))
+        self.assertEqual([one.warmed for one in kept], [1, 1, 1])
+        self.assertIsNot(seen["thread"], threading.current_thread())
+        self.assertIs(seen["fleet"], kept[0])
+
+    def test_serving_runs_the_warm_up_main_sets(self):
+        built = server.build(self.path, port=0)
+        self.addCleanup(built.server_close)
+        warmed = []
+        built.warm_up = lambda: (warmed.append(1), threading.Thread(target=built.shutdown, daemon=True).start())
+        built.serve_forever(poll_interval=0.01)
+        self.assertEqual(warmed, [1])
 
     def test_metrics_reads_its_slow_parts_from_the_kept_reads(self):
         status, _, body = self.request("/api/metrics", headers={"Cookie": self.cookie})
@@ -258,6 +334,7 @@ class TheServer(BrowserSession):
         self.assertIsInstance(built["fleet_backend"], snapshot.Fleet)
         self.assertIsInstance(built["metrics_backend"], snapshot.Kept)
         self.assertEqual(tuple(built["metrics_backend"]._kept), metrics_screen.SLOW)
+        self.assertIsInstance(built["usage_backend"], snapshot.Snapshot)
 
 
 if __name__ == "__main__":

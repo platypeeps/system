@@ -10,9 +10,17 @@ window.PAGE_COMMANDS = [
   { label: 'Show the board', icon: 'kanban', key: 'v b', run: tasksView('board') },
   { label: 'Show the matrix', icon: 'grid-2x2', key: 'v m', run: tasksView('matrix') },
 ];
-// build (places): All | HOA | Home filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
-// #viewswitch. Home takes v o (g o opens the Home page), since v h is HOA's.
-window.PAGE_VIEWS = [{ id: 'all', label: 'All' }, { id: 'hoa', label: 'HOA' }, { id: 'home', label: 'Home', key: 'o' }];
+// build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
+// #viewswitch. sd:5064: Personal, then the realms realms.conf names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
+// and All. Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
+// other view, and not the list, board and matrix keys (v l, v b, v m), holds.
+window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  { id: 'hoa', label: 'HOA', key: 'h' }, { id: 'home', label: 'Home', key: 'o' }, { id: 'all', label: 'All', key: 'a' }];
+{
+  const used = new Set(['l', 'b', 'm', ...window.PAGE_VIEWS.map(v => v.key).filter(Boolean)]);
+  window.PAGE_VIEWS.forEach(v => { if (!v.key) { v.key = [...v.id].find(c => /[a-z]/.test(c) && !used.has(c)); used.add(v.key); } });
+}
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   // build: today is the viewer's day, not the mockup's observation day.
@@ -41,14 +49,14 @@ addEventListener('DOMContentLoaded', () => {
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
-    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, real: true });
+    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
-  // build (places): All | HOA | Home, the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule
-  // the HOA and Home pages' Tasks views use, so the HOA and Home views hold their rows.
-  let PLACE = 'all';
-  const inPlace = t => PLACE === 'all' || t.area === PLACE;
+  // build (places): the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule the HOA and Home pages'
+  // Tasks views use, so the HOA and Home views hold their rows; its realm is places.realm_of (sd:5064).
+  let PLACE = 'all', REALMS = null;
+  const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
   const placed = () => listed().filter(inPlace);
   const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
@@ -218,29 +226,28 @@ addEventListener('DOMContentLoaded', () => {
     const bases = [...new Set(tasks.map(t => t.base).filter(Boolean))].sort();
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
-    const grp = (key, name, opts, help) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${String(F[key].has(v))}">${l}</button>`)}</div>${help || ''}</div>`;
-    // build (sd:3441): Kind and Repo, which grow with the rows, are comboboxes: one value or All. Values the address names
-    // that no row has are options too, and more than one shows as a count until one is picked.
-    const combo = (key, name, opts) => { const all = [...new Set([...opts, ...F[key]])], n = F[key].size;
-      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>All</option>${
-        all.map(v => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${v}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select></div>`; };
-    put(document.getElementById('filters'), html`${combo('kind', 'Kind', kinds)}${bases.length || F.base.size ? combo('base', 'Base', bases) : ''}${combo('repo', 'Repo', repos)}${
-      grp('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']])}${
-      grp('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. Chips in one group widen the view; groups narrow it.">${ICON('circle-help')}</button>`)}${
-      grp('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
-      grp('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
-      grp('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`)}${
-      grp('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`)}${
+    // build (sd:3441, sd:5064): every filter is a dropdown, one value or All; the active-filter chips under them are the only
+    // chips. Values the address names that no row has are options too, and more than one (?p=1,2) shows as a count until one
+    // is picked. Each option is [value, label]; `all` names the empty choice.
+    const combo = (key, name, opts, help, all = 'All') => { const vals = [...new Map([...opts, ...[...F[key]].map(v => [v, fvalue(key, v)])])], n = F[key].size;
+      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>${all}</option>${
+        vals.map(([v, l]) => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${l}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select>${help || ''}</div>`; };
+    const same = vs => vs.map(v => [v, v]);
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', same(kinds))}${bases.length || F.base.size ? combo('base', 'Base', same(bases)) : ''}${combo('repo', 'Repo', same(repos))}${
+      combo('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']].map(([v, l]) => [v || 'unset', l]))}${
+      combo('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. An old link may name two buckets; they widen the view, and filters narrow it.">${ICON('circle-help')}</button>`)}${
+      combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
+      combo('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
+      combo('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`, 'Done too')}${
+      combo('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`, 'Not parked')}${
       (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
   const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
-  const fvalue = (k, v) => k === 'p' ? (v ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
+  const fvalue = (k, v) => k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
     : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : k === 'parked' ? 'parked only' : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
-    const c = e.target.closest('[data-f]');
-    if (c) { const s = F[c.dataset.f]; s.has(c.dataset.v) ? s.delete(c.dataset.v) : s.add(c.dataset.v); L.page = 1; render(); return; }
     if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
     const u = e.target.closest('[data-unfilter]'); if (!u) return;
     const [k, v] = u.dataset.unfilter.split(/:(.*)/);
@@ -256,7 +263,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
-  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : '')) && (!F.due.size || F.due.has(dueBucket(t)))
+  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
@@ -411,6 +418,10 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.status === 'done' ? 'it is done' : true; },
       post: (o, path) => { const t = must(o);
         return write(t.key, () => path, {}).then(v => { redrawDet(t.id); return v; }, err => { if (err.stale) refused(); throw err; }); } }),
+    // Adversarial review (sd:5064): the shared declaration (commands.js); the server reviews the item in its repository,
+    // so an item with none is off.
+    window.commands.adversarialReview('item', { payload: o => ({ kind: 'task', target: T(o).id }),
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !t.repo_path ? 'it has no repository to review in' : true; } }),
     // Draft email (sd:3463, email_draft): claude writes an email from the item's title and notes, and workspace-mcp saves it
     // as a Gmail draft with no recipient. Nothing sends it. It asks first, since it runs a model and writes to Gmail. An
     // answered refusal reads the rows again: a failure writes a note, so the row's revision moved. A post with no answer
@@ -574,7 +585,7 @@ addEventListener('DOMContentLoaded', () => {
     const v = list.pageOf(all, L);
     // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
     const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
-    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
+    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list" data-tfilter="page"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
       ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button><span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
@@ -618,6 +629,7 @@ addEventListener('DOMContentLoaded', () => {
       </dl>
       ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
+      ${window.commands.reviewPane('task', t.id)}
       ${more(t, dis)}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
     if (mine) {
@@ -758,7 +770,7 @@ addEventListener('DOMContentLoaded', () => {
   function render() {
     putAll();
     renderFilters();
-    writeURL(); window.shell.views(VIEWS);
+    writeURL();
     if (view === 'board') renderBoard(); else if (view === 'matrix') renderMatrix(); else renderList();
     // design.md § Selection: a filter or view change that hides the selected task moves the selection to the first visible
     // one, so x, . and the palette never act on a hidden card (review 2026-09-29, item 10).
@@ -1005,22 +1017,39 @@ addEventListener('DOMContentLoaded', () => {
   };
   function subhead() {
     const parked = tasks.length - listed().length;
-    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
+    // A realm view without a readable realms.conf holds only the rows with no repo; it says why (sd:5064).
+    const why = REALMS && !['all', 'hoa', 'home'].includes(PLACE) && !['read', 'partial'].includes(REALMS.state)
+      ? ` · repos in no realm: ${REALMS.source} ${REALMS.state === 'missing' ? 'is missing; copy realms.conf.example there' : REALMS.problems[0] || 'was not read'}` : '';
+    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}`);
   }
+  // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
+  const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
+  const VIEW_ICON = { list: 'list-todo', board: 'kanban', matrix: 'grid-2x2' }, VIEW_NAME = { list: 'List', board: 'Board', matrix: 'Matrix' };
+  const viewItems = () => [...viewMenu.querySelectorAll('[role="menuitemradio"]')];
+  function viewMenuOpen(open) {
+    viewMenu.hidden = !open; viewBtn.setAttribute('aria-expanded', String(open));
+    if (open) (viewItems().find(b => b.getAttribute('aria-checked') === 'true') || viewItems()[0]).focus();
+  }
+  viewBtn.addEventListener('click', () => viewMenuOpen(viewMenu.hidden));
+  viewMenu.addEventListener('keydown', e => {
+    const items = viewItems(), i = items.indexOf(document.activeElement), last = items.length - 1;
+    const to = { ArrowDown: i >= last ? 0 : i + 1, ArrowUp: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+    if (to !== undefined) { e.preventDefault(); items[to].focus(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); viewMenuOpen(false); viewBtn.focus(); return; }
+    if (e.key === 'Tab') { viewMenuOpen(false); return; }
+    e.stopPropagation(); // a letter here is not the shell's (j, k, g); Enter and Space press the item
+  });
+  viewMenu.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setView(b.dataset.view); viewMenuOpen(false); viewBtn.focus(); });
+  document.addEventListener('click', e => { if (!viewMenu.hidden && !e.target.closest?.('.viewpick')) viewMenuOpen(false); });
   function setView(v) {
     view = v;
-    document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === v));
+    viewItems().forEach(b => b.setAttribute('aria-checked', String(b.dataset.view === v)));
+    viewBtn.setAttribute('aria-label', `View: ${VIEW_NAME[v]}`);
+    put(viewBtn, html`<svg class="i" aria-hidden="true"><use href="#i-${VIEW_ICON[v]}"/></svg>`);
     ['board', 'matrix', 'list'].forEach(x => { const el = document.getElementById('view-' + x); el.hidden = x !== v; if (x !== v) el.replaceChildren(); });
     subhead();
     render();
   }
-  // Saved views: each is a URL. The shell renders the chips and lists them in the palette.
-  const VIEWS = [
-    { name: 'Overdue', params: { due: 'overdue' } },
-    { name: 'Due this week', params: { due: 'overdue,week' } },
-    { name: 'P1 and P2', params: { p: '1,2' } },
-    { name: 'No due date', params: { due: 'none' } },
-  ];
   function readFilterURL() {
     const q = new URLSearchParams(location.search);
     FKEYS.forEach(key => (q.get(key) || '').split(',').filter(Boolean).forEach(v => F[key].add(v)));
@@ -1040,7 +1069,6 @@ addEventListener('DOMContentLoaded', () => {
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
   }
-  document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 
   // ---------- Shapeshift: add or find ----------
   const inp = document.getElementById('shift-in'), prev = document.getElementById('shift-preview'), ghost = document.getElementById('shift-ghost');
@@ -1146,7 +1174,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null;
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null;
       ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
@@ -1162,6 +1190,7 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
-  document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) render(); }), { once: true });
+  document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected)?.id}`) renderDetails(); });
+  document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) { subhead(); render(); } }), { once: true });
   suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });

@@ -20,9 +20,10 @@
 #                  `RESULT: ` line must match it, or the run fails
 #   JOB_TIMEOUT    optional run limit: seconds, or N followed by s, m or h;
 #                  0 turns it off. Default: CRON_JOBS_JOB_TIMEOUT, else 2h.
-#                  A run past it has its process group sent TERM, then KILL
-#                  after CRON_JOBS_TIMEOUT_GRACE seconds (default 10), and
-#                  fails with exit 124.
+#                  A run past it logs its process group's processes, has
+#                  the group sent TERM, then KILL after
+#                  CRON_JOBS_TIMEOUT_GRACE seconds (default 10), and fails
+#                  with exit 124.
 #
 # Usage:
 #   cron-jobs.sh list                     jobs, schedules, installed/loaded state, folder
@@ -700,6 +701,16 @@ eval {
 };
 if (defined $status) { exit($status & 127 ? 128 + ($status & 127) : $status >> 8) }
 say_log("timed out after ${limit}s (JOB_TIMEOUT); sending TERM to process group $pid");
+# What hung: each process of the group, before TERM changes it (sd:5064).
+my @tree;
+if (open(my $ps, "-|", "ps", "-A", "-o", "pid=,ppid=,pgid=,etime=,command=")) {
+  chomp(my @all = <$ps>);
+  close $ps;
+  @tree = grep { (split " ", $_)[2] == $pid } @all;
+}
+@tree ? print STDERR map { "  " . substr(join(" ", split(" ", $_, 5)), 0, 300) . "\n" }
+                     "PID PPID PGID ELAPSED COMMAND", @tree
+      : say_log("process tree of group $pid unknown: ps listed none of it");
 kill "TERM", -$pid;
 my $end = Time::HiRes::time() + $grace;
 while (1) {

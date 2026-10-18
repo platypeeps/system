@@ -54,6 +54,7 @@ DAYS = ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08", "2
 #: The design's Reports commands (design source products/system/designs/pages/reports.js): id, object type, label, key, risk.
 COMMANDS = [
     ["report.ack", "report", "Acknowledge", "a", "undo"],  # the design's risk: reporting.reopen is its Undo (sd:2395)
+    ["report.resolve", "report", "Resolve followup", "e", "confirm"],  # sd:5064: no route reopens a note, so it asks
     ["report.show", "report", "Open item", "o", "safe"],
     ["report.log", "report", "Show log", "l", "safe"],
     ["report.task", "report", "Make task", "k", "safe"],
@@ -507,7 +508,43 @@ class TheScript(ScreenCase):
         self.assertEqual(out["posts"], [[f"/api/reports/{n}/acknowledge", {"revision": revision}, 64]])
         self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
         self.assertEqual(out["gets"], ["/api/reports", "/api/reports"])
-        self.assertEqual(out["confirms"], [])
+        # sd:5064: it asks for an optional reason; left empty, no note is written.
+        self.assertEqual(out["confirms"], ["report.ack"])
+
+    def test_a_reason_is_a_comment_written_just_before_the_acknowledge_under_the_revision_it_answered(self):
+        """sd:5064: the reason lands as a comment note first; the acknowledge carries the revision that note answered."""
+        n = self.ids["clean"]
+        revision = workflow.item_state(self.connection, n)["revision"]
+        answer = self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)).replace(
+            "(path, body) => ", "(path, body) => path.endsWith('/notes') ? [200, { note: 9, revision: 'after-note' }] : ", 1)
+        out = self.run_page(f"FIELD_VALUES = {{ reason: \"it's fine\" }}; R.cli = cmd('report.ack').cli(C.get('r{n}'), FIELD_VALUES);"
+                            f" shellRun(cmd('report.ack'), C.get('r{n}')); await flush();", answer=answer)
+        self.assertEqual(out["posts"], [[f"/api/items/{n}/notes", {"body": "it's fine", "kind": "comment", "revision": revision}, 64],
+                                        [f"/api/reports/{n}/acknowledge", {"revision": "after-note"}, 64]])
+        self.assertEqual(out["R"]["cli"], f"sd task note {n} 'it'\\''s fine' && sd reports acknowledge {n}")
+        self.assertEqual(out["toasts"][-1], [f"Acknowledged · #{n}", True])
+
+    def test_a_refused_reason_note_stops_the_acknowledge(self):
+        n = self.ids["clean"]
+        answer = self.ANSWERED.replace("DOC_JSON", json.dumps(self.doc)).replace(
+            "(path, body) => ", "(path, body) => path.endsWith('/notes') ? [409, { error: 'the item changed' }] : ", 1)
+        out = self.run_page(f"FIELD_VALUES = {{ reason: 'why' }}; shellRun(cmd('report.ack'), C.get('r{n}')); await flush();", answer=answer)
+        self.assertEqual([p[0] for p in out["posts"]], [f"/api/items/{n}/notes"])
+        self.assertIn("the item changed", out["toasts"][-1][0])
+
+    def test_resolve_followup_asks_and_resolves_the_followup_that_holds_the_report(self):
+        """sd:5064: the followup that holds a report is resolved from the page, through the notes' /resolve route."""
+        n = self.ids["failed"]
+        note = next(r for r in self.doc["reports"] if r["id"] == n)["followups"][0]
+        revision = workflow.item_state(self.connection, n)["revision"]
+        answer = f"(path, body) => path.endsWith('/resolve') ? [200, {{ revision: 'after-resolve' }}] : path === '/api/reports' ? [200, {json.dumps(self.doc)}] : [200, {{}}]"
+        out = self.run_page(f"""R.off = [cmd('report.resolve').when(C.get('r{self.ids['clean']}')), cmd('report.resolve').when(C.get('r{self.ids['done']}'))];
+R.cli = cmd('report.resolve').cli(C.get('r{n}')); shellRun(cmd('report.resolve'), C.get('r{n}')); await flush();""", answer=answer)
+        self.assertEqual(out["R"]["off"], ["no open followup holds it", "already acknowledged"])
+        self.assertEqual(out["confirms"], ["report.resolve"])
+        self.assertEqual(out["posts"], [[f"/api/notes/{note}/resolve", {"revision": revision}, 64]])
+        self.assertEqual(out["R"]["cli"], f"sd note resolve {note}")
+        self.assertEqual(out["toasts"][-1], [f"Followup resolved · note {note}", False])
 
     def test_fix_asks_first_posts_the_report_revision_and_names_the_debug_session(self):
         """sd:3456. Fix on a report: a debug session, asked first; it is off once the report is acknowledged."""
@@ -896,24 +933,36 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertNotIn("Newer", (V2 / "reports.html").read_text(encoding="utf-8"))
 
     def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
-        opts = "document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
-        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]);"
-                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'act' }")
-                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.act = [F.act, ELS['f-act'].checked];"
+        # sd:5064: Needs action is a Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.
+        opts = ("document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
+                "document.getElementById('f-status').options = [{ value: '' }, { value: 'act' }, { value: 'open' }, { value: 'done' }];")
+        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]); R.st = [F.status, ELS['f-status'].value];"
+                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'status' }")
+                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.st2 = [F.status, ELS['f-status'].value];"
                             + "ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
                             + " R.chips3 = ELS.chips.html; R.url3 = String(OUT.urls[OUT.urls.length - 1]);"
-                            + " R.F = [F.job, F.act, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
+                            + " R.F = [F.job, F.status, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
                             prelude="location.search = '?job=nightly-sync&act=1&q=sync';\n" + opts)
-        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "act", "q"])
+        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "status", "q"])
+        self.assertIn("Status: Needs action", out["R"]["chips"])
         self.assertIn("3 filters · ", out["R"]["chips"])
-        self.assertEqual(out["R"]["url"], "job=nightly-sync&act=1&q=sync")
+        self.assertEqual(out["R"]["st"], ["act", "act"])
+        self.assertEqual(out["R"]["url"], "job=nightly-sync&status=act&q=sync")
         self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips2"]), ["job", "q"])
         self.assertEqual(out["R"]["url2"], "job=nightly-sync&q=sync")
-        self.assertEqual(out["R"]["act"], [False, False])
+        self.assertEqual(out["R"]["st2"], ["", ""])
         self.assertEqual(out["R"]["chips3"], "")
         self.assertEqual(out["R"]["url3"], "")
-        self.assertEqual(out["R"]["F"], ["", False, "", "", ""])
+        self.assertEqual(out["R"]["F"], ["", "", "", "", ""])
         self.assertEqual(out["R"]["n"], out["R"]["all"])
+
+    def test_the_page_has_no_view_chips_and_no_needs_action_checkbox(self):
+        # sd:5064: the dropdowns are the one filter control, so the saved-view row and the f-act box are gone.
+        page = (V2 / "reports.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="views"', page)
+        self.assertNotIn('id="f-act"', page)
+        self.assertIn('<option value="act">Needs action</option>', page)
+        self.assertNotIn("shell.views", REPORTS_JS)
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", REPORTS_JS)

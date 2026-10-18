@@ -99,7 +99,7 @@ def document(connection, *, now: str) -> dict:
 
 def _document(connection, *, now: str) -> dict:
     from .hoa_screen import checkout
-    from .places import area_of
+    from .places import area_of, realm_of, realms
     from .screens import _repo_labels
 
     # The parked rows follow the listed ones (sd:3012): the page shows them only under its Parked chip, for Unpark.
@@ -107,6 +107,8 @@ def _document(connection, *, now: str) -> dict:
     label = _repo_labels(row["repo"] for row in rows)
     live = _assignment_states(connection, now=now)
     hoa = checkout(connection)[0]
+    found = realms()
+    rules = found["list"] if found["state"] in ("read", "partial") else None
     out = []
     for row in rows:
         state = workflow.item_state(connection, row["id"])
@@ -129,13 +131,15 @@ def _document(connection, *, now: str) -> dict:
             "parked": row["parked_at"],
             # The place Tasks' HOA and Home views filter on: the HOA and Home pages' Tasks rule (`places.area_of`).
             "area": area_of(row["repo"], row["kind"], hoa),
+            # The realm Tasks' Personal, Work and other realm views filter on (sd:5064, `places.realm_of`).
+            "realm": realm_of(row["repo"], row["kind"], rules),
             **_base_fields(state["item"]),
         })
     # The histogram's buckets with nothing counted: their keys and the labels Operations draws on its bars.
     ages = [{"key": bucket.key, "label": bucket.label} for bucket in reads.age_histogram([], now=now)]
     # Your issues (sd:4628): each repo's open issues assigned to or filed by the operator, drawn under the views.
     return {"read": now, "statuses": list(STATUSES), "ages": ages, "rows": out, "attention": _attention(out, now=now),
-            **issues.document(connection)}
+            "realms": {key: found[key] for key in ("state", "source", "problems")}, **issues.document(connection)}
 
 
 def _base_fields(item) -> dict:

@@ -7,7 +7,7 @@
   Show: active rows (merging, next, held, building, blocked) by default; All adds cancelled and landed rows.
   Writes: /api/queue/move, which runs sd-ship lane move|hold|release|cancel|retry and nothing else; cancel, a running
   row's Release (lane cancel --expected-claim) and approve ask first; a cancelled row's Re-queue (lane retry
-  --expected-head) runs at once, as Retry does.
+  --expected-head) runs at once, as Retry does. An entry's Adversarial review posts /api/adversarial (sd:5064).
   Nothing here is sample data.
 -->
 <html lang="en">
@@ -39,10 +39,11 @@
   <div class="fgroup" id="show" role="group" aria-label="Show"></div>
   <div id="lanes"></div>
 </main>
-<div class="details" id="details"><p class="note">Up, down, top, hold, release and cancel run sd-ship lane on the lane you pick; Release on a running row runs lane cancel on the claim the row showed. Cancel, Release and Approve ask first. Nothing else writes here.</p></div>
+<div class="details" id="details"><p class="note">Up, down, top, hold, release and cancel run sd-ship lane on the lane you pick; Release on a running row runs lane cancel on the claim the row showed. Cancel, Release and Approve ask first. Adversarial review starts a codex review of an entry's worktree in the background; nothing else writes here.</p><div id="adv"></div></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
+<script src="/ui/commands.js"></script>
 <script src="/ui/queue.js"></script>
 <script src="/ui/shell.js"></script>
 </body>

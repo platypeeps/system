@@ -3,7 +3,8 @@ month and week numbers.
 
 `fleet.collect` runs a child that reads git in every checkout, 1 to 1.5 s on the hub, and Today, Management and
 Health each waited on it per request. `Fleet` is that seam, `area -> document`, answered from one `Snapshot` per area.
-Metrics' `usage.read` (1.7 s of SQL) and `reads.weekly_numbers` (1.4 s of git) are another `Kept`, built in `server`.
+Metrics' `usage.read` (1.7 s of SQL) and `reads.weekly_numbers` (1.4 s of git) are another `Kept`, built in `server`,
+and `/api/usage`'s month is a `Snapshot` there too (sd:5064). The served dashboard warms each at start.
 
 A `Snapshot` answers its last document at once, with `observed`, the UTC time the read that made it began, so a page
 says what it saw and when (principle 11). It waits only when it has no document, when the document is older than
@@ -72,6 +73,12 @@ class Snapshot:
         with self._condition:
             self._before = self._started
 
+    def warm(self):
+        """Start a read without waiting on it, unless one runs or a document is kept: the server's start (sd:5064)."""
+        with self._condition:
+            if self._value is None and not self._running:
+                self._start()
+
     def idle(self, seconds):
         """Wait until no read runs, up to `seconds`; whether none does. For tests and the measurement."""
         with self._condition:
@@ -129,6 +136,10 @@ class Kept:
     def invalidate(self):
         for kept in self._kept.values():
             kept.invalidate()
+
+    def warm(self):
+        for kept in self._kept.values():
+            kept.warm()
 
     def idle(self, seconds):
         return all(kept.idle(seconds) for kept in self._kept.values())

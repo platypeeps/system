@@ -43,5 +43,62 @@ class WritingDraftReadsTheGuardrails(unittest.TestCase):
         self.assertNotRegex(self.prompt, r"\{[A-Z_]+\}")
 
 
+#: The dashboard's four lenses (sd:5064) and the placeholders each one takes.
+DASHBOARD_LENSES = {
+    "task": ("INPUT_PATH", "DESIGN_PATH"),
+    "brief": ("INPUT_PATH",),
+    "repo": ("REPO_NAME",),
+    "change": ("INPUT_PATH", "BASE", "HEAD"),
+}
+
+
+class TheDashboardLenses(unittest.TestCase):
+    def test_each_lens_is_listed(self):
+        listed = subprocess.run(["sh", str(SCRIPT), "lenses"], capture_output=True, text=True, timeout=30,
+                                check=True).stdout.split()
+        for lens in DASHBOARD_LENSES:
+            self.assertIn(lens, listed)
+
+    def test_each_lens_fills_every_placeholder_it_takes_and_no_other(self):
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                sets = sum((["--set", f"{key}=/fixture/{key.lower()}"] for key in keys), [])
+                prompt = render("--lens", lens, *sets)
+                self.assertNotRegex(prompt, r"\{[A-Z_]+\}")
+                for key in keys:
+                    self.assertIn(f"/fixture/{key.lower()}", prompt)
+
+    def test_each_lens_keeps_the_core_contract_and_asks_for_hypotheses(self):
+        core = (SCRIPT.parent / "core.md").read_text()
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
+                self.assertTrue(prompt.startswith(core.splitlines()[0]))
+                self.assertIn("hypothes", prompt.lower())
+                self.assertIn("## Ending", prompt)
+
+    def test_each_lens_asks_for_a_titled_heading_per_hypothesis(self):
+        # The dashboard's note names the first titles, found by rank.py's heading rule; a real run on gpt-6-astra
+        # wrote its findings as bullets, with no heading to find (sd:5064).
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
+                self.assertIn("Give each hypothesis a `###` heading of its own", prompt)
+
+    def test_each_lens_asks_for_the_lines_a_recommendation_is_filed_from(self):
+        # The dashboard files each hypothesis as a review question; the approved task takes its title from
+        # `Recommendation:`, its evidence from `Evidence:` and its repository from `Repo:` (sd:5064).
+        for lens, keys in DASHBOARD_LENSES.items():
+            with self.subTest(lens=lens):
+                prompt = render("--lens", lens, *sum((["--set", f"{key}=x"] for key in keys), []))
+                for tag in ("`Recommendation:`", "`Evidence:`", "`Repo:`"):
+                    self.assertIn(tag, prompt)
+
+    def test_the_change_lens_names_the_diff_it_reads(self):
+        prompt = render("--lens", "change", "--set", "INPUT_PATH=/fixture/input.md", "--set", "BASE=1111111",
+                        "--set", "HEAD=2222222")
+        self.assertIn("git diff 1111111...2222222", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

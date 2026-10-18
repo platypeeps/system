@@ -120,7 +120,7 @@ class TheDefault(BrowserSession):
         declared = dict(re.findall(r"^window\.(SHELL_\w+) = (.*);$", body, re.M))
         self.assertEqual({key: json.loads(value) for key, value in declared.items()},
                          {"SHELL_PAGES": v2.SECTIONS, "SHELL_CLASSIC": v2.CLASSIC, "SHELL_SCREENS": v2.SCREENS,
-                          "SHELL_COUNTS": {"pages": {}}})
+                          "SHELL_COUNTS": {"pages": {}}, "SHELL_REALMS": []})
         reachable = set(v2.CLASSIC.values()) | set(v2.SCREENS.values())
         for required in ("/operations?area=usage", "/operations?area=services", "/operations?area=resources",
                          "/operations?area=trackers", "/operations?area=sessions", "/protection",

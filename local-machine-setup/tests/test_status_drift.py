@@ -183,6 +183,43 @@ class StatusDrift(unittest.TestCase):
         present = self.drift(self.status().stdout)
         self.assertEqual(missing - present, 1)
 
+    def in_place_only(self):
+        """A machine whose one drift is a file edited in place: the system
+        stage alone, with its other findings settled, and a repeating wake."""
+        script = self.folder / "machine-setup.sh"
+        script.write_text(re.sub(r'^STAGES="[^"]*"', 'STAGES="brew system"', script.read_text(), count=1, flags=re.M))
+        write_exec(self.stubs / "hostname", "#!/bin/sh\necho fixturehost\n")
+        write_exec(self.stubs / "pmset", "#!/bin/sh\nprintf 'Repeating power events:\\n  wakepoweron at 2:40AM every day\\n'\n")
+        self.sudoers.parent.mkdir(parents=True)
+        self.sudoers.write_text("# fixture drop-in\n")
+
+    @staticmethod
+    def asks(out):
+        return [line for line in out.splitlines() if line.startswith("SD_REPORT_ATTENTION: ")]
+
+    def test_in_place_drift_asks_for_attention_and_exits_0(self):
+        # sd:5064: a file edited in place (DIFFERS) failed the nightly every
+        # night until someone chose a side. It asks for attention instead, one
+        # line per finding with no date; other drift still exits 1.
+        self.in_place_only()
+        run = self.status("--fail-on-drift", firewall="on", taps=TAP)
+        self.assertEqual(self.asks(run.stdout),
+                         ["SD_REPORT_ATTENTION: drift on fixturehost: DIFFERS ~/.ssh is not 700"], run.stdout)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(self.status("--fail-on-drift", firewall="on", taps=TAP).stdout, run.stdout)
+
+    def test_drift_other_than_in_place_still_exits_1(self):
+        self.in_place_only()
+        self.sudoers.unlink()
+        run = self.status("--fail-on-drift", firewall="on", taps=TAP)
+        self.assertIn("  MISSING Spotlight read sudoers drop-in\n", run.stdout)
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertTrue(all(": DIFFERS " in line for line in self.asks(run.stdout)), run.stdout)
+
+    def test_a_plain_status_asks_for_nothing(self):
+        self.in_place_only()
+        self.assertEqual(self.asks(self.status(firewall="on", taps=TAP).stdout), [])
+
 
 if __name__ == "__main__":
     unittest.main()

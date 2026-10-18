@@ -132,7 +132,9 @@ A run that hangs would hold the job's lock, and every later slot would log
 `skipped: previous run still active` and exit 0. `JOB_TIMEOUT` bounds each run.
 A job that sets none gets `CRON_JOBS_JOB_TIMEOUT` from `.env`, else two hours.
 The job runs in a process group of its own. At the limit, the log gets
-`timed out after <N>s (JOB_TIMEOUT); sending TERM to process group <pgid>`.
+`timed out after <N>s (JOB_TIMEOUT); sending TERM to process group <pgid>`,
+then one indented line per process of the group (pid, parent, group, elapsed
+time, command), so the log names what hung.
 Anything still running 10 seconds later gets KILL, with a second log line.
 The run then fails with exit 124, and the failure reporting below applies.
 Killing the group releases the lock, so the next slot runs as scheduled.

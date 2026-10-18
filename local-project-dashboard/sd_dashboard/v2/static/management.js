@@ -261,7 +261,7 @@ function renderRepos() {
       <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
       ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
     </div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
         <td class="what"><button type="button">${r.name}</button>${r.registered ? '' : html`<span class="unreg">not registered</span>`}</td>
@@ -594,6 +594,9 @@ function registerCommands() {
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
     { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
+    // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
+    window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }),
+      when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first' }),
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
@@ -683,7 +686,7 @@ function renderLane() {
       : html`<p class="empty">No item waits at ready_to_send.</p>`}
     <div class="sec-head"><h2 id="merged-h">Recent merges</h2><p class="tally">latest ${LANE.merges.length} merge assignments</p></div>
     ${shell.list.chips(textChip(), rows.length, LANE.merges.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h" data-tfilter="page"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
       <tbody>${rows.slice().sort((a, b) => (LS.sort === 'id' ? a.id - b.id : String(a.ended || '').localeCompare(String(b.ended || ''))) * LS.dir).map(m => { const st = m.status === 'done' ? 'ok' : m.status === 'blocked' ? 'caution' : 'queued'; return html`<tr data-id="merge:${m.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${st}</span></td>
         <td class="what"><button type="button">#${m.id} ${m.title || 'merge'}</button></td><td class="d mono" data-k="repo">${asgRepo(m)}</td><td class="d mono"><time class="rel" datetime="${m.ended || ''}" data-empty="never"></time></td>
         <td class="d mono">${m.status}</td>${ACT('merge:' + m.id)}</tr>`; })}</tbody></table>`
@@ -762,7 +765,7 @@ function renderDeploys() {
       : html`<div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
       <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
     ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
       <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${svcWhat(s)}</td><td class="d mono">${s.state}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>${shell.list.pager(rows.length, DS, 'services')}`
       : html`<p class="empty">${SERVICES.length ? html`No service matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No installed service was found.'}</p>`}`}`);
 }
@@ -798,7 +801,7 @@ function renderSchedules() {
     <div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
       <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
     ${shell.list.chips(textChip(), rows.length, CRON.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
       <tbody>${shown.map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
         <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
         <td class="d num" data-k="exit">${c.last_signal != null ? `sig ${c.last_signal}` : c.last_exit === null || c.last_exit === undefined ? html`<span class="no">—</span>` : c.last_exit}</td>${ACT('cron:' + c.name)}</tr>`)}</tbody></table>${shell.list.pager(rows.length, SS, 'jobs')}`
@@ -822,6 +825,7 @@ document.querySelector('main').addEventListener('click', e => {
 
 // ---------- Details pane ----------
 function defaultDetails() {
+  detailsId = null;
   if (view === 'repos' && repoParam && pending.length && REPOS.some(x => x.path === repoParam)) return showProposals();
   if (view === 'repos') {
     const r = repoParam && REPOS.find(x => x.path === repoParam);
@@ -856,8 +860,11 @@ function logDetail(c) {
   return html`${head}<p class="why">${g.cut ? `The last ${plural(g.text.split('\n').filter(Boolean).length, 'line')} of ` : ''}<span class="mono">${file}</span>, read ${hhmm(READ)} UTC.</p>
     ${g.text ? html`<pre class="code" tabindex="0" aria-label="${c.name} log">${g.text}</pre>` : html`<p class="empty">The log is empty.</p>`}`;
 }
+// sd:5064: an adversarial review's progress redraws the repo's Details while that repo is shown (runKey is the row id).
+let detailsId = null;
+document.addEventListener('adversarial:run', e => { if (detailsId && e.detail.key === detailsId) selectRow(detailsId, false); });
 function selectRow(id, open) {
-  markRow(id);
+  markRow(id); detailsId = id;
   const [kind, key] = [id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)];
   const act = shell.commands.get(id) ? html`<h3>Act</h3>${shell.commands.bar(id)}` : '';
   let h = '';
@@ -888,7 +895,8 @@ function selectRow(id, open) {
       <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?view=repos&amp;repo=${encodeURIComponent(r.path)}">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
-        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}`;
+        : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
+      ${window.commands.reviewPane('repo', r.path)}`;
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>

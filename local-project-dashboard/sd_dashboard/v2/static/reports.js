@@ -151,7 +151,7 @@ byId('cad-more').addEventListener('click', () => { cadAll = !cadAll; renderCad()
 byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); window.shell.view.show('reports'); byId('led-h').scrollIntoView?.({ block: 'start' }); });
 
 // Filters.
-const F = { job: '', status: '', day: '', act: false, fam: '', q: '' };
+const F = { job: '', status: '', day: '', fam: '', q: '' };
 let picks = new Set(), days = [];
 function fillFilters() {
   // Every job the reading names, not only jobs with a report row: a cadence row sets this filter, and readURL takes ?job=
@@ -165,7 +165,6 @@ function fillFilters() {
 function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; L.page = 1; renderCad(); renderRows(); }
 byId('f-job').addEventListener('change', e => setJob(e.target.value));
 [['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; L.page = 1; renderRows(); }));
-byId('f-act').addEventListener('change', e => { F.act = e.target.checked; L.page = 1; renderRows(); });
 byId('annunciator').addEventListener('click', e => {
   const c = e.target.closest('button.cell'); if (!c) return;
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
@@ -175,19 +174,20 @@ byId('annunciator').addEventListener('click', e => {
 });
 
 // Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
-const STATUS = { open: 'Open', done: 'Acknowledged' };
+// Status folds the old Needs action view in (sd:5064): act is an open report that needs attention.
+const STATUS = { act: 'Needs action', open: 'Open', done: 'Acknowledged' };
 const shortDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 function activeFilters() {
   return [F.job && { key: 'job', label: `Job: ${F.job}` },
     F.status && { key: 'status', label: `Status: ${STATUS[F.status]}` }, F.day && { key: 'day', label: `Day: ${shortDay(F.day)}` },
-    F.act && { key: 'act', label: 'Needs action' }, F.fam && { key: 'fam', label: `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}` },
+    F.fam && { key: 'fam', label: `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}` },
     F.q && { key: 'q', label: `Text: ${F.q}` }].filter(Boolean);
 }
 // Each remover leaves the list to draw once, after it.
 const UNFILTER = {
   job: () => { jobFilter = ''; F.job = ''; byId('f-job').value = ''; renderCad(); },
   status: () => { F.status = ''; byId('f-status').value = ''; },
-  day: () => { F.day = ''; byId('f-day').value = ''; }, act: () => { F.act = false; byId('f-act').checked = false; },
+  day: () => { F.day = ''; byId('f-day').value = ''; },
   fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
   q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
 };
@@ -211,10 +211,10 @@ byId('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(
 byId('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, renderRows); });
 function matches(r) {
   if (F.job && r.job !== F.job) return false;
+  if (F.status === 'act' && !r.act) return false;
   if (F.status === 'open' && !r.open) return false;
   if (F.status === 'done' && r.open) return false;
   if (F.day && r.at.slice(0, 10) !== F.day) return false;
-  if (F.act && !r.act) return false;
   if (F.fam && FAM_OF[r.job] !== F.fam) return false;
   if (F.q && !(r.what + ' ' + r.detail + ' ' + r.job + ' ' + (r.source.body || '')).toLowerCase().includes(F.q)) return false;
   return true;
@@ -290,7 +290,7 @@ function show(id) {
   const rep = x.repeats ? `${x.repeats.count} runs, last ended ${x.repeats.last ? new Date(x.repeats.last).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'not recorded'}` : 'one run';
   // build: a report's open followups, and fields the store cannot parse, are named where the design had only the attention line.
   const waits = !x.fields_read ? html`<p class="why">This report's stored fields are missing or not valid JSON, so its source cannot be read. This page withholds Acknowledge: one click would close a report nobody has read. Read its log, then acknowledge report ${x.id} in a terminal: <code>sd reports acknowledge ${x.id}</code>.</p>`
-    : r.open && x.followups.length ? html`<p class="why">An open followup (${x.followups.map(n => `note ${n}`).join(', ')}) holds this report. Resolve it with <code>sd note resolve ${x.followups[0]}</code>, then acknowledge.</p>` : '';
+    : r.open && x.followups.length ? html`<p class="why">An open followup (${x.followups.map(n => `note ${n}`).join(', ')}) holds this report. Resolve it with Resolve followup, or <code>sd note resolve ${x.followups[0]}</code>, then acknowledge.</p>` : '';
   put(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${G[r.s]}</span> Database report #${x.id} · ${r.open ? (r.attn ? 'needs attention' : 'open') : 'acknowledged'}</p>
     <h2>${r.what}</h2>
     <h3>Act</h3>${window.shell.commands.bar(id)}${jobAct}
@@ -307,16 +307,12 @@ function show(id) {
   window.shell.suggest([`What changed in ${r.job} since its last good run?`, `Why did ${r.job} ${r.attn ? 'fail' : 'report'} this time?`, `Show every open report from ${FAMILIES.find(f => f[0] === FAM_OF[r.job])?.[1] || 'this family'}`]);
   details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
 }
-// The URL carries the filters and the row, so a view can be bookmarked and the saved-view chips know which one is current.
-const views = () => [
-  { name: 'Needs action', params: { act: '1' } },
-  { name: 'Open reports', params: { status: 'open' } },
-  ...(days[0] ? [{ name: 'Newest day', params: { day: days[0] } }] : []),
-];
+// The URL carries the filters and the row, so a filtered list can be bookmarked. The dropdowns are the one filter control;
+// an old ?act=1 link (the Needs action view and checkbox) lands on Status: Needs action (sd:5064).
 function readURL() {
   const p = new URLSearchParams(location.search);
+  if (p.get('act') === '1' && !p.get('status')) p.set('status', 'act');
   ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (!v) return; const el = byId('f-' + k); if ([...el.options].some(o => o.value === v)) { F[k] = v; el.value = v; } });
-  F.act = p.get('act') === '1'; byId('f-act').checked = F.act;
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
   if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
@@ -326,12 +322,10 @@ function readURL() {
 function writeURL() {
   const p = new URLSearchParams();
   ['job', 'status', 'day'].forEach(k => { if (F[k]) p.set(k, F[k]); });
-  if (F.act) p.set('act', '1');
   if (F.fam) p.set('fam', F.fam);
   if (F.q) p.set('q', F.q);
   window.shell.list.listQuery(p, L, LIST);
   window.shell.url(p); // the shell keeps ?row=
-  window.shell.views(views());
 }
 function select(id, open) { show(id); writeURL(); if (open) window.shell.openPane('tab-details'); }
 tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
@@ -372,7 +366,7 @@ window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: 
 
 window.PAGE_COMMANDS = [
   { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
-  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-act').checked = true; F.act = true; L.page = 1; renderRows(); } },
+  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-status').value = 'act'; F.status = 'act'; L.page = 1; renderRows(); } },
 ];
 
 // ---------- Commands (products/system/commands.md) ----------
@@ -399,10 +393,20 @@ async function write(path, body) {
   return out;
 }
 // The acknowledge answers the report's new revision; the Undo reopens under it, so a report changed since is refused (sd:2395).
-async function acknowledge(o) {
-  const out = await write(`/api/reports/${o.n}/acknowledge`, { revision: o.source.revision });
+// sd:5064: an optional reason is a comment note written just before, and the acknowledge goes under the revision it answered.
+// A refused acknowledge leaves that comment on the open report; it says why, so nothing needs taking back.
+async function acknowledge(o, v = {}) {
+  let revision = o.source.revision;
+  if (v.reason) {
+    try { revision = (await window.shell.post(`/api/items/${o.n}/notes`, { body: v.reason, kind: 'comment', revision })).revision; }
+    catch (err) { if (err.stale) load(); throw err; }
+  }
+  const out = await write(`/api/reports/${o.n}/acknowledge`, { revision });
   return { text: `Acknowledged · #${o.n}`, revision: out.revision };
 }
+// sd:5064: Resolve followup resolves the oldest open followup that holds a report, through the item routes' /resolve.
+const resolveFollowup = o => write(`/api/notes/${o.source.followups[0]}/resolve`, { revision: o.source.revision })
+  .then(() => `Followup resolved · note ${o.source.followups[0]}`);
 const reopen = (o, acked) => write(`/api/reports/${o.n}/reopen`, { revision: acked.revision }).then(() => true);
 function registerCommands() {
   const C = window.shell.commands;
@@ -417,7 +421,14 @@ function registerCommands() {
     { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
-      cli: o => `sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
+      fields: () => [{ name: 'reason', label: 'Reason (optional)', placeholder: 'why it can close', help: 'Written on the report as a comment just before it is acknowledged. Leave it empty for none.' }],
+      cli: (o, v = {}) => `${v.reason ? `sd task note ${o.n} ${shq(v.reason)} && ` : ''}sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
+    // sd:5064: an open followup holds the report; this resolves it, as sd note resolve does, so Acknowledge can follow. No
+    // route reopens a note, so it asks first.
+    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', risk: 'confirm', journal: o => o.n, executes: true,
+      primary: o => o.open, when: o => !o.open ? 'already acknowledged' : !o.source.followups.length ? 'no open followup holds it' : true,
+      consequence: o => `Note ${o.source.followups[0]} is resolved. No dashboard control reopens it.`,
+      cli: o => `sd note resolve ${o.source.followups[0] ?? '<note>'}`, sends: o => `POST /api/notes/${o.source.followups[0]}/resolve {revision}`, run: resolveFollowup },
     // build: the report opens as its row on Tasks, the item address every page uses (sd:3526).
     { id: 'report.show', on: 'report', label: 'Open item', does: 'Opens the report\'s work item.', key: 'o', risk: 'safe', journal: o => o.n, executes: false, cli: o => `sd task show ${o.n}`,
       run: o => window.shell.openItem(o.n) },

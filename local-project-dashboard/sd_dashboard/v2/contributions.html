@@ -32,10 +32,7 @@
       <h1>Contributions</h1>
       <p id="sub">Reading the contributions…</p>
     </div>
-    <nav class="seg" id="mode" aria-label="View">
-      <a href="/contributions" aria-current="page"><span>Open</span></a>
-      <a href="/operations?area=trackers"><span>Trackers</span></a>
-    </nav>
+    <a class="to-trackers" href="/operations?area=trackers"><span>Trackers</span><svg class="i" aria-hidden="true"><use href="#i-arrow-up-right"/></svg></a>
     <label class="filter">
       <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
       <span class="sr">Filter contributions</span>
@@ -55,20 +52,20 @@
   <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
   <p class="source" id="source"></p>
 
-  <section id="open-sec" aria-labelledby="open-h">
+  <section id="view-open" aria-labelledby="open-h">
     <div class="sec-head">
       <h2 id="open-h">Open <button class="help" type="button" aria-label="Help: Open" data-help="<b>Waiting on you first, then on them.</b> Acknowledge clears the attention events on a row; it never completes a task or sends anything. Make task files a task linked to the contribution by its GitHub URL. Dismiss moves a row with no item to Closed. Draft nudge gives the gh line to copy; the dashboard posts nothing.">
         <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       <p class="tally" id="tally"></p>
     </div>
-    <table class="ledger" aria-labelledby="open-h">
+    <table class="ledger" aria-labelledby="open-h" data-tfilter="page">
       <thead id="rows-head"></thead>
       <tbody id="rows"></tbody>
     </table>
     <p class="filtered" id="filtered" hidden></p>
   </section>
 
-  <section class="settled" id="settled-sec" aria-labelledby="settled-h">
+  <section class="settled" id="view-settled" aria-labelledby="settled-h">
     <div class="sec-head">
       <h2 id="settled-h">Settled</h2>
       <p class="tally" id="settled-tally"></p>

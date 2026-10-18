@@ -529,6 +529,25 @@ esac
         self.assertLess(set(one), set(both))
         self.assertEqual(len([l for l in both if "kernel panic" in l]), 2, both)
 
+    def test_crashes_count_once_per_process_and_jetsam_is_no_crash(self):
+        """sd:5064: a JetsamEvent report is memory pressure, not a crash; an
+        ExcUserFault_ report names the same process as its crash report; and a
+        name with a space kept only its first word in the headline."""
+        reports = self.tmp / "reports-dedupe"
+        reports.mkdir()
+        for f in ("JetsamEvent" + stamped(hours=1), "Example Helper" + stamped(hours=1),
+                  "Example Helper" + stamped(hours=2), "ExcUserFault_Example Helper" + stamped(hours=3)):
+            (reports / (f + ".ips")).write_text("{}\n")
+        out = self.run_check("dedupe", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        self.assertNotIn("Jetsam", out)
+        self.assertNotIn("ExcUserFault", out)
+        self.assertIn("Example Helper(3) ", out)
+        self.assertEqual([l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ") and "Example" in l],
+                         [l for l in out.splitlines() if l.startswith("SD_REPORT_ATTENTION: ")
+                          and l.endswith(": app crash report(s) in the last day: Example Helper")])
+        self.assertEqual(len([l for l in out.splitlines() if l.endswith("last day: Example Helper")]), 1, out)
+
     def test_ssd_wear_re_raises_in_5_percent_steps(self):
         """REGRESSION (sd:4682). Wear only grows; one key for 85% and over hid
         it growing after an acknowledgement. Each 5% step from 85 is a new

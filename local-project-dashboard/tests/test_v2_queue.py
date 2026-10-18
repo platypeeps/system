@@ -42,6 +42,7 @@ from test_workflow_actions import BrowserSession
 
 V2 = Path(v2.__file__).resolve().parent
 QUEUE_JS = (V2 / "static" / "queue.js").read_text(encoding="utf-8")
+COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 CLOCK = queue_screen._when(NOW)
 
@@ -151,6 +152,18 @@ class TheRows(Lane, ScreenCase):
         self.assertEqual([(row["state"], row.get("item") or row.get("builder")) for row in rows], [
             ("merging", 3), ("next", 9), ("next", 12), ("building", "queue-notes-1"), ("building", "sd1775-2"),
             ("blocked", 5), ("blocked", 4), ("cancelled", 1), ("landed", 7)])
+
+    def worktrees(self):
+        """The fixture with the worktree `lane enqueue` records on the next and blocked rows (sd:5064)."""
+        self.list([{**e, "worktree": f"/work/sd-{e['item']}"} if e["status"] in ("pending", "prepared") else e
+                   for e in self.entries()])
+
+    def test_a_lane_row_carries_the_worktree_its_entry_recorded(self):
+        self.worktrees()
+        rows = self.doc()["lanes"][0]["rows"]
+        self.assertEqual([(row["state"], row.get("worktree")) for row in rows], [
+            ("merging", None), ("next", "/work/sd-9"), ("next", "/work/sd-12"), ("building", None), ("building", None),
+            ("blocked", "/work/sd-5"), ("blocked", None), ("cancelled", None), ("landed", None)])
 
     def test_the_badge_counts_the_blocked_rows(self):
         # sd:3446: the read's rule, which every page's rail shows from the page's last read.
@@ -635,6 +648,8 @@ class TheMove(Lane, BrowserSession):
         status, _, body = self.request("/queue", headers={"Cookie": self.cookie})
         self.assertEqual(status, 200)
         self.assertIn('<script src="/ui/queue.js?v=', body)
+        scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
+        self.assertLess(scripts.index("commands.js"), scripts.index("queue.js"))
         status, _, body = self.request("/api/queue", headers={"Cookie": self.cookie})
         self.assertEqual((status, len(json.loads(body)["lanes"])), (200, 1))
 
@@ -926,8 +941,8 @@ class TheScript(Lane, ScreenCase):
         doc = queue_screen.document(self.connection, now=NOW)
         script = (STAND_IN + f"location.search = {json.dumps(search)};\n" + MARKUP_JS + "\nconst mk = window.markup.html;\n" + SHELL + READ_SHELL
                   + f"\nvar DOC = {json.dumps(doc)}, MOVE = {json.dumps(list(move))};\n"
-                  + "ANSWER = (path, body) => path === '/api/queue' ? [200, DOC] : path === '/api/queue/move' ? MOVE : [404, { error: 'no answer' }];\n"
-                  + QUEUE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + "ANSWER = (path, body) => path === '/api/queue' ? [200, DOC] : path === '/api/queue/move' ? MOVE : (window.ELSE || (() => [404, { error: 'no answer' }]))(path, body);\n"
+                  + COMMANDS_JS + QUEUE_JS + "\nvar R = {};\n(async () => { try {\n(DOC_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = []; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
@@ -946,6 +961,21 @@ class TheScript(Lane, ScreenCase):
             ("cancelled", "queued", "◌", "CANCELLED"), ("landed", "ok", "●", "LANDED")])
         self.assertIn("<b>operator acts</b>", lanes)
         self.assertIn("PR #161", lanes)
+
+    def test_adversarial_review_on_a_lane_row_posts_its_worktree_and_item(self):
+        """sd:5064: a lane row with a recorded worktree asks for {kind: change, target, item}; Details follow the run."""
+        self.list([{**e, "worktree": f"/work/sd-{e['item']}"} if e["item"] == 12 else e for e in self.entries()])
+        out = self.run_page(f"""window.ELSE = (p, b) => p === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: 12, filed: null }}]
+  : p === '/api/adversarial/r1' ? [200, {{ id: 'r1', state: 'done', item: 12, filed: 'written', brief_item: 77 }}] : [404, {{ error: 'no' }}];
+const c = REG.find(x => x.id === 'entry.adversarial-review'); R.on = c.on;
+R.off = c.when(C.get('entry:{self.checkout}:5')); R.objs = [...OBJ.keys()];
+shellRun(c, C.get('entry:{self.checkout}:12')); await flush(); await flush();
+R.det = ELS.adv.html;""")
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "change", "target": "/work/sd-12", "item": 12}, 64]])
+        self.assertEqual(out["R"]["off"], "the lane recorded no worktree for this entry")
+        # Building rows are builder gate logs, not entries: no object, so no command.
+        self.assertEqual(len(out["R"]["objs"]), 7)
+        self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
 
     # Tuning: Show draws the active rows by default: merging, next (held too), building and blocked; All adds the ended
     # ones, cancelled and landed. The badge and each lane's counts read every row, whatever Show draws.

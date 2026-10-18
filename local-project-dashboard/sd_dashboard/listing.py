@@ -34,7 +34,7 @@ affordances come from.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 from urllib.parse import urlencode
 
 from .markup import Markup, escape, join, tag
@@ -372,7 +372,3 @@ class Listing:
             class_="listing",
             data_listing=self.name,
         )
-
-
-def columns_of(pairs: Iterable[tuple[str, str, Callable[[object], object]]]) -> list[Column]:
-    return [Column(key=key, label=label, value=value) for key, label, value in pairs]

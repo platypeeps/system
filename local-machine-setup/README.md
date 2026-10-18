@@ -461,6 +461,10 @@ pins in a brew block of its own.
 it as its last step, after `update --apply`, turns drift the update could not
 fix into a failure report that Today shows; `local-cron-jobs/examples/` ships
 no such job, so write one in the config folder. A clean machine stays silent.
+In-place drift, a `DIFFERS` line such as a dotfile edited here, waits for a
+person to pick a side, so it does not fail the run: it prints one
+`SD_REPORT_ATTENTION: drift on <host>: <line>` line per finding, and the run
+exits 0 when that is all the drift there is (sd:5064).
 
 ### Additive capture, unattended
 
