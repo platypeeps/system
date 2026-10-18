@@ -18,7 +18,7 @@
   let SRC = [];
   const SRC_STATE = { ok: 'ok', stale: 'caution', unknown: 'unknown' };
   const srcOf = key => SRC.find(r => r.source === key);
-  // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (hoa_sweep.status): running, and the last run.
+  // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
 // A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
@@ -539,7 +539,7 @@ let polling = 0;
       window.commands.showLog({ job: facts }),
     );
     // ---------- Run sweep (sd:5095) ----------
-    // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (hoa_sweep.py); a 409 names the run going.
+    // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.
     C.register({ id: 'sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs the HOA sweep headless: drafts followups, never sends; lands through the lane.',
       key: 'w', risk: 'safe', askFirst: true, executes: true, primary: () => true,

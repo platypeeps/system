@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import hoa_sweep
+from sd_dashboard import sweep
 
 from test_workflow_actions import BrowserSession
 
@@ -66,7 +66,7 @@ class RunSweep(BrowserSession):
         (self.hoa / "tools").mkdir(parents=True)
         (self.hoa / "tools" / "sweep.py").write_text(STUB)
         self.repo(str(self.hoa))
-        patch = mock.patch.object(hoa_sweep, "state_dir", return_value=root / "state")
+        patch = mock.patch.object(sweep, "state_dir", return_value=root / "state")
         patch.start()
         self.addCleanup(patch.stop)
         # A run still waiting when a test ends is released, so no stub outlives its folder.
@@ -74,7 +74,7 @@ class RunSweep(BrowserSession):
 
     def finish(self):
         (self.hoa / "release").touch()
-        wait(self, lambda: not hoa_sweep.status(self.hoa)["running"], "the run to end")
+        wait(self, lambda: not sweep.status(self.hoa)["running"], "the run to end")
 
     def runs(self):
         try:
@@ -98,7 +98,7 @@ class RunSweep(BrowserSession):
 
         status, _, body = self.post("/api/hoa/sweep", {})
         self.assertEqual(status, 409, body)
-        self.assertIn("A sweep is already running", body["error"])
+        self.assertIn("A hoa sweep is already running", body["error"])
         time.sleep(0.3)
         self.assertEqual(self.runs(), 1)
 
@@ -114,7 +114,7 @@ class RunSweep(BrowserSession):
         (self.hoa / "die").touch()
         status, _, _ = self.post("/api/hoa/sweep", {})
         self.assertEqual(status, 202)
-        wait(self, lambda: not hoa_sweep.status(self.hoa)["running"], "the stub to die")
+        wait(self, lambda: not sweep.status(self.hoa)["running"], "the stub to die")
         doc = self.read()
         self.assertEqual(doc["last"]["state"], "failed")
         self.assertIn("ended without a record of its own", doc["last"]["reason"])

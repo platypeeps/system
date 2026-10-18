@@ -15,15 +15,15 @@ def _read(read):
 
 
 def _sweep(read):
-    from ... import hoa_screen, hoa_sweep
+    from ... import hoa_screen, sweep
 
-    return hoa_sweep.status(hoa_screen.checkout(read.connection)[1])
+    return sweep.status(hoa_screen.checkout(read.connection)[1])
 
 
 def _run_sweep(payload, principal):
-    from ... import hoa_sweep
+    from ... import sweep
 
-    return hoa_sweep.request(dict(payload))
+    return sweep.request(dict(payload))
 
 
 def _ack(payload, principal):

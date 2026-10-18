@@ -1,19 +1,24 @@
-"""Run sweep (sd:5095): one click on the HOA page runs the hoa checkout's standard sweep, headless, end to end.
+"""Run sweep: one click runs a realm's standard sweep, headless, end to end. One mechanism, three realms (`REALMS`).
 
-The sweep is the checkout's `tools/sweep.py run`: one `claude -p` with an exact allowlist that reviews the week's
-changes, reads both Drives and the alias mail, updates the status and the VP brief, saves followups as Gmail drafts
-(never sent) and hands its commit to the lane. That script holds the allowlist, its own lock and its record; this
-module only starts it and reads it back, as `adversarial` starts the gate.
+- `hoa` (sd:5095), on the HOA page: the hoa checkout's `tools/sweep.py run`, one `claude -p` with an exact allowlist
+  that reviews the week's changes, reads both Drives and the alias mail, updates the status and the VP brief, saves
+  followups as Gmail drafts (never sent) and hands its commit to the lane. That script holds its prompt and record.
+- `work` and `personal` (sd:5096, sd:5097), on the Tasks page's Work and Personal views: `realm_sweep run <realm>`
+  from this checkout. It leaves a brief, sd followups and Gmail drafts, and commits to no repository.
 
-`start` answers `POST /api/hoa/sweep`, in three steps, and answers 202 at once:
+This module only starts a run and reads it back, as `adversarial` starts the gate. `start` answers `POST /api/hoa/sweep`
+and `POST /api/tasks/sweep {"realm"}`, in three steps, and answers 202 at once:
 
-1. The checkout: the repo the table holds as `hoa` (`hoa_screen.checkout`), with `SCRIPT` in it; none is a 400.
-2. The lock, `<state>/lock`, taken without waiting: a second start while a run holds it is a 409 naming when it started.
-3. `SCRIPT run` in a session of its own, holding the lock's descriptor, so the lock is released only when the run exits.
+1. The runner: for `hoa`, the repo the table holds as `hoa` (`hoa_screen.checkout`) with `SCRIPT` in it, none a 400;
+   for the others, `REALM_RUNNER` from this checkout.
+2. The realm's lock, `<state>/lock`, taken without waiting: a second start of that realm while a run holds it is a 409
+   naming when it started. Each realm has its own state folder, so the Work and Personal sweeps may run together.
+3. The runner in a session of its own, holding the lock's descriptor, so the lock is released only when the run exits.
    Its stdout and stderr go to `<state>/start.log`: a run that dies before it writes its record leaves its reason there.
 
-`status` answers `GET /api/hoa/sweep/status` (and `/api/hoa`'s `sweep` part): `SCRIPT status --json`, bounded by `SECONDS`,
-plus whether this dashboard's lock is held. A start newer than the record's own start, with the lock free, means the
+`status` answers `GET /api/hoa/sweep/status` (and `/api/hoa`'s `sweep` part) with `SCRIPT status --json`, bounded by
+`SECONDS`, and `GET /api/tasks/sweep/status` (and `/api/tasks`' `sweeps`) with `realm_sweep.status`, read in process;
+each plus whether this dashboard's lock is held. A start newer than the record's own start, with the lock free, means the
 run ended without a record of its own: that reads `failed`, naming `start.log`, never the older run's outcome.
 """
 
@@ -28,17 +33,22 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ["COMMAND", "SCRIPT", "SECONDS", "request", "start", "state_dir", "status"]
+__all__ = ["COMMAND", "REALMS", "REALM_RUNNER", "SCRIPT", "SECONDS", "request", "request_realm", "start", "state_dir",
+           "status"]
 
 SCRIPT = "tools/sweep.py"
 COMMAND = f"python3 {SCRIPT} run"
 #: How long `SCRIPT status --json` may take before the read names it as not read.
 SECONDS = 10
+REALMS = ("hoa", "work", "personal")
+#: The Work and Personal runner, before its `run <realm>`; it runs from `DASHBOARD`.
+REALM_RUNNER = (sys.executable, "-m", "sd_dashboard.realm_sweep")
+DASHBOARD = Path(__file__).resolve().parent.parent
 
 
-def state_dir() -> Path:
-    """`st_state_dir hoa-sweep`: what the dashboard's starts write and nobody edits."""
-    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / "hoa-sweep"
+def state_dir(realm: str = "hoa") -> Path:
+    """`st_state_dir <realm>-sweep`: what the dashboard's starts, and the Work and Personal runs, write."""
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / f"{realm}-sweep"
 
 
 def _now() -> str:
@@ -69,10 +79,18 @@ def _environment() -> dict:
     return environment
 
 
-def start(connection):
+def _runner(connection, realm: str) -> tuple[Path, list[str], str]:
+    """Step 1: the folder the run starts in, its argv, and the command as the page shows it."""
+    if realm == "hoa":
+        place = _place(connection)
+        return place, [sys.executable, str(place / SCRIPT), "run"], COMMAND
+    return DASHBOARD, [*REALM_RUNNER, "run", realm], f"python3 -m sd_dashboard.realm_sweep run {realm}"
+
+
+def start(connection, realm: str = "hoa"):
     """Steps 1 to 3 above: `(202, {"started", "repo", "command"})`, or `(409, {"error"})` while a run holds the lock."""
-    place = _place(connection)
-    state = state_dir()
+    place, argv, command = _runner(connection, realm)
+    state = state_dir(realm)
     state.mkdir(parents=True, exist_ok=True)
     handle = open(state / "lock", "a+", encoding="utf-8")
     try:
@@ -80,7 +98,7 @@ def start(connection):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             handle.seek(0)
-            return 409, {"error": f"A sweep is already running (started {handle.read().strip() or 'at an unknown time'}); "
+            return 409, {"error": f"A {realm} sweep is already running (started {handle.read().strip() or 'at an unknown time'}); "
                                   f"one runs at a time. Wait for it to end, then start the next."}
         started = _now()
         handle.seek(0)
@@ -88,14 +106,14 @@ def start(connection):
         handle.write(started)
         handle.flush()
         with open(state / "start.log", "w", encoding="utf-8") as log:
-            log.write(f"{started} {COMMAND} in {place}\n")
+            log.write(f"{started} {command} in {place}\n")
             log.flush()
-            runner = subprocess.Popen([sys.executable, str(place / SCRIPT), "run"], cwd=str(place),
+            runner = subprocess.Popen(argv, cwd=str(place),
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                       pass_fds=(handle.fileno(),), start_new_session=True, env=_environment())
         # Reaped here when it ends, so a long-lived server keeps no zombie; a restart hands it to launchd instead.
-        threading.Thread(target=runner.wait, name="hoa sweep", daemon=True).start()
-        return 202, {"started": started, "repo": str(place), "command": COMMAND}
+        threading.Thread(target=runner.wait, name=f"{realm} sweep", daemon=True).start()
+        return 202, {"started": started, "repo": str(place), "command": command}
     finally:
         handle.close()
 
@@ -105,6 +123,14 @@ def request(values: dict):
     if values:
         raise ValueError("Run sweep takes no fields.")
     return start
+
+
+def request_realm(values: dict):
+    """`POST /api/tasks/sweep`'s checks: one field, `realm`, work or personal; the HOA sweep has its own route."""
+    realm = values.get("realm")
+    if set(values) != {"realm"} or realm not in REALMS[1:]:
+        raise ValueError("Run sweep takes one field, realm: work or personal.")
+    return lambda connection: start(connection, realm)
 
 
 def _held(state: Path) -> str | None:
@@ -129,9 +155,20 @@ def _since(text) -> datetime.datetime | None:
         return None
 
 
-def status(place: Path | None) -> dict:
+def status(place: Path | None, realm: str = "hoa") -> dict:
     """The sweep's state for the page: `running`, `last` (the record), `error`, `command`, `repo`, `start_log`."""
-    state = state_dir()
+    state = state_dir(realm)
+    if realm != "hoa":
+        from . import realm_sweep
+
+        place, _, command = _runner(None, realm)
+        out = {"running": False, "last": None, "error": "", "command": command, "repo": str(place),
+               "start_log": str(state / "start.log")}
+        try:
+            record = realm_sweep.status(realm)
+        except (OSError, ValueError) as error:
+            record, out["error"] = None, f"{state / 'last.json'} did not read: {error}"
+        return _judged(out, state, record)
     out = {"running": False, "last": None, "error": "", "command": COMMAND, "repo": str(place or ""),
            "start_log": str(state / "start.log")}
     if place is None:
@@ -141,7 +178,6 @@ def status(place: Path | None) -> dict:
     if not script.is_file():
         out["error"] = f"{SCRIPT} is not in the checkout"
         return out
-    held = _held(state)
     try:
         done = subprocess.run([sys.executable, str(script), "status", "--json"], cwd=place, capture_output=True,
                               text=True, timeout=SECONDS, check=False)
@@ -157,7 +193,12 @@ def status(place: Path | None) -> dict:
     else:
         if record is None:
             out["error"] = f"{SCRIPT} status exited {done.returncode}: {(done.stderr.strip().splitlines() or [''])[0]}"
-    out["running"] = bool(held) or bool(record and record.get("running"))
+    return _judged(out, state, record)
+
+
+def _judged(out: dict, state: Path, record: dict | None) -> dict:
+    """`out` with `running` and `last`: a start of ours newer than the record's, with the lock free, reads failed."""
+    out["running"] = bool(_held(state)) or bool(record and record.get("running"))
     try:
         began = (state / "lock").read_text(encoding="utf-8").strip()
     except OSError:

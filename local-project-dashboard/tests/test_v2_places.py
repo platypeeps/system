@@ -370,6 +370,35 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
         self.assertEqual([t in r["board"] for t in ("Fix the valve log", "Clean the gutters", "Tune the gate")], [False, True, False])
         self.assertIn("repos in no realm: &lt;config&gt;/project-dashboard/realms.conf is missing; copy realms.conf.example there", r["sub"])
 
+    def test_the_personal_and_work_views_carry_their_sweep_and_run_sweep_posts_the_realm(self):
+        """sd:5096, sd:5097: the subhead names the realm's last sweep on Personal and Work only; Run sweep posts the
+        realm, and is off while that realm's run goes. A running sweep reads again after SWEEP_POLL, not at once."""
+        self.doc, self.details = self.realm_doc(), {}
+        never = {"running": False, "error": "", "command": "python3 -m sd_dashboard.realm_sweep run personal",
+                 "last": {"state": "never"}}
+        going = {"running": True, "error": "", "command": "python3 -m sd_dashboard.realm_sweep run work",
+                 "last": {"state": "running", "started": "2026-09-06T11:30:00+00:00"}}
+        self.doc["sweeps"] = {"personal": never, "work": going}
+        prelude = self.REALMS + "var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };\n"
+        answer = "(path, body) => path === '/api/tasks/sweep' ? [202, { started: '2026-09-06T12:01:00+00:00', repo: '/x', command: 'c' }] : null"
+        body = (f"window.shell.view = {{ current: () => 'personal', show: () => true, count: () => {{}} }};\n(0, eval)({json.dumps(PLACES_JS)});\n"
+                + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.personal = ELS.subhead.html;
+document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'work' } })); await flush(); R.work = ELS.subhead.html;
+document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'all' } })); await flush(); R.all = ELS.subhead.html;
+R.objects = [...OBJ.keys()].filter(k => k.startsWith('sweep:')); R.timers = TIMERS.slice();
+C.run(cmd('realm-sweep.run'), C.get('sweep:work')); await flush();
+C.run(cmd('realm-sweep.run'), C.get('sweep:personal')); await flush();""")
+        out = test_v2_tasks.TheScript.run_page(self, body, answer=answer, prelude=prelude)
+        r = out["R"]
+        self.assertIn('data-sweep="personal">Personal sweep not run yet', r["personal"])
+        self.assertIn('data-sweep="work">Work sweep running since 11:30 UTC', r["work"])
+        self.assertNotIn("data-sweep", r["all"])
+        self.assertEqual(sorted(r["objects"]), ["sweep:personal", "sweep:work"])
+        self.assertEqual(r["timers"], [15000])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/tasks/sweep", {"realm": "personal"}]])
+        self.assertIn(["off: a sweep is running now", False], out["toasts"])
+        self.assertIn(["Personal sweep started 12:01 UTC · Tasks reads again until it ends", False], out["toasts"])
+
     def test_the_view_keys_skip_the_list_board_and_matrix_keys(self):
         body = "R.views = window.PAGE_VIEWS.map(v => [v.id, v.key]);"
         prelude = "globalThis.SHELL_REALMS = [{ id: 'work', label: 'Work' }, { id: 'brand', label: 'Brand' }, { id: 'lab', label: 'Lab' }, { id: 'all', label: 'Sneaky' }];\n"

@@ -1,6 +1,7 @@
 """Tasks (sd:2124): the page's rows and one item's Details, read as v1 /backlog and /item/<id> read them. The page
 takes v1's status, age, active, q and page filters, which Operations > Progress linked until sd:3402 (sd:2589). A /backlog address
-opens this page with its query (sd:2356)."""
+opens this page with its query (sd:2356). The Personal and Work views' Run sweep posts /api/tasks/sweep (sd:5096,
+sd:5097), which starts that realm's sweep in the background; GET /api/tasks/sweep/status reads both realms' last runs."""
 
 from __future__ import annotations
 
@@ -22,12 +23,25 @@ def _details(read):
     return tasks_screen.details(read.connection, number, now=read.now)
 
 
+def _sweeps(read):
+    from ... import sweep
+
+    return {realm: sweep.status(None, realm) for realm in sweep.REALMS[1:]}
+
+
+def _run_sweep(payload, principal):
+    from ... import sweep
+
+    return sweep.request_realm(dict(payload))
+
+
 PAGE = Page(
     section="Tasks",
     routes=("/tasks",),
     html="tasks.html",
     item="sd:2124",
-    api=(Api("/api/tasks", _rows), Api(pattern=r"/api/tasks/[1-9][0-9]{0,18}", example="/api/tasks/1", read=_details)),
+    api=(Api("/api/tasks", _rows), Api(pattern=r"/api/tasks/[1-9][0-9]{0,18}", example="/api/tasks/1", read=_details),
+         Api("/api/tasks/sweep", write=_run_sweep), Api("/api/tasks/sweep/status", _sweeps)),
     count="/api/tasks",
     live=True,
 )

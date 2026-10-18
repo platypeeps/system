@@ -1,0 +1,443 @@
+"""The Work and Personal sweeps (sd:5096, sd:5097): one headless `claude -p` per realm, started from the Tasks page.
+
+    python3 -m sd_dashboard.realm_sweep run work|personal             the sweep, now; one run per realm at a time
+    python3 -m sd_dashboard.realm_sweep status work|personal [--json] the last run: running, its end, its log
+
+    environment: XDG_STATE_HOME, XDG_CONFIG_HOME, SYSTEM_TOOLS_CONFIG, CLAUDE_BIN, WORKSPACE_MCP_URL,
+    REALM_SWEEP_SD (default sd), REALM_SWEEP_TIMEOUT (seconds, default 3600)
+
+A run leaves three things and commits to no repository: a dated brief on the Briefs page (`<day> - Work sweep` or
+`<day> - Personal sweep`) with the status and the changes since the last run; sd followups, one per action, deduped by
+`--ref` and against the open items; and Gmail drafts, never sent. The HOA sweep is the hoa checkout's own
+(`tools/sweep.py`), with its own prompt; `sweep.py` starts all three.
+
+Sources:
+
+- personal: the personal Google account's mail and its My Drive changes. The `mail` filter leaves out the HOA aliases
+  and `skip-drives` the HOA shared Drives: the HOA sweep owns them.
+- work: the work Google account's mail and Drive changes, Notion page changes, Jira issues assigned to, mentioning or
+  watched by the operator, and GitHub pull requests and reviews requesting the operator, and mentions.
+
+The accounts are `google.accounts.<realm>.email` in the pack's machine config (`<XDG_CONFIG_HOME>/sd-ai-command-pack/
+config.json`). The filters are this machine's `<config>/project-dashboard/sweep.conf` (`sweep.conf.example`).
+
+The run has an exact allowlist, `--permission-mode dontAsk`, and never skips permission checks. Its MCP tools read
+(`MCP_READS`); its one write is `draft_gmail_message`. No tool that sends, forwards or labels mail, writes Drive, Notion
+or Jira, or comments on GitHub is allowed, and `DENIED` names them as well. Bash runs only `sd store items`,
+`sd task show|note` and the realm's `sd task add`; Write reaches only the run folder. The Personal run loads
+workspace-mcp alone (`--strict-mcp-config`). The Work run also needs notion, jira and github, which the user's Claude
+config holds with their credentials, so it loads that config's servers, and dontAsk refuses every tool not listed.
+
+Steps, and what a stop between them leaves:
+
+1. The lock, `<state>/sweep.lock`: a second run of the realm exits 3 and writes nothing.
+2. `<state>/last.json` as `running`, naming the run folder, the log, the brief and the pid. `status` reads a `running`
+   record whose pid is gone as failed, so a stop from here on reads failed.
+3. The model run, in `<state>/runs/<stamp>/`. Followups and drafts land as it goes; a stop leaves them without a brief.
+   The next run finds them: a followup's `--ref` refuses a second add, and a thread with a draft gets no other.
+4. The brief filed with `sd reports brief add --replace`. A stop before it leaves the brief in the run folder. Before
+   its model, each run reads today's filed brief, if any, and keeps its changes, so a second run in a day replaces it
+   with more; a read that failed for another reason than "no brief" stops the run there.
+5. `last.json` as `done` or `failed`, with the exit code and the reason. Only a done run moves `since` on.
+
+Exit codes: 0 done, 3 another run of the realm holds the lock, 1 failed.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import datetime
+import fcntl
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+from .documents import _config_dir, pipe_lines
+from .sweep import DASHBOARD, state_dir
+
+REALMS = ("work", "personal")
+SERIES = {"work": "Work sweep", "personal": "Personal sweep"}
+EXIT_OK, EXIT_NONE, EXIT_ERROR = 0, 3, 1
+TIMEOUT = 3600
+SD_SECONDS = 60
+#: The checkout the briefs belong to: `sd reports brief add` files a brief only under a registered repository.
+REPO = DASHBOARD.parent
+
+#: `<realm>|<key>|<value>` keys; `REQUIRED` must be set, the others may be left out and the brief names the gap.
+KEYS = {"personal": ("mail", "skip-drives"), "work": ("mail", "skip-drives", "notion", "jira", "github", "followups")}
+REQUIRED = {"personal": ("mail",), "work": ("mail", "followups")}
+
+BUILT_IN_TOOLS = "Bash,Read,Write,ToolSearch"
+DRAFT = "draft_gmail_message"
+#: The reads, by MCP server. The Work run has all four; the Personal run workspace-mcp alone.
+MCP_READS = {
+    "workspace-mcp": ("search_gmail_messages", "get_gmail_message_content", "get_gmail_messages_content_batch",
+                      "get_gmail_thread_content", "search_drive_files", "get_drive_file_content", "get_doc_content",
+                      "get_doc_as_markdown"),
+    "notion": ("notion-search", "notion-fetch"),
+    "jira": ("jira_search_issues", "jira_get_my_issues", "jira_get_issue", "jira_get_comments"),
+    "github": ("get_me", "search_pull_requests", "search_issues", "pull_request_read", "issue_read",
+               "list_notifications"),
+}
+#: Denied by name as well: dontAsk refuses what is not allowed, and a deny wins over an allow a settings file adds.
+DENIED = (
+    "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Skill",
+    *(f"mcp__workspace-mcp__{n}" for n in (
+        "send_gmail_message", "modify_gmail_message_labels", "batch_modify_gmail_message_labels", "manage_gmail_filter",
+        "manage_gmail_label", "create_drive_file", "update_drive_file", "copy_drive_file", "create_drive_folder",
+        "manage_drive_access", "set_drive_file_permissions", "create_doc", "modify_doc_text", "batch_update_doc")),
+    *(f"mcp__notion__notion-{n}" for n in (
+        "create-pages", "update-page", "move-pages", "duplicate-page", "create-database", "update-database",
+        "create-comment")),
+    *(f"mcp__jira__jira_{n}" for n in (
+        "create_issue", "update_issue", "transition_issue", "add_comment", "add_attachment", "delete_attachment",
+        "create_subtask", "create_issue_link")),
+    *(f"mcp__github__{n}" for n in (
+        "add_issue_comment", "add_comment_to_pending_review", "pull_request_review_write", "create_pull_request",
+        "update_pull_request", "merge_pull_request", "issue_write", "request_copilot_review", "create_or_update_file",
+        "push_files")),
+)
+TOLD = (
+    "This unattended run has no person to answer. Bash runs only the sd commands the prompt names, each on its own: "
+    "no cd, no pipes, no $(...). Write reaches only the run folder. Gmail allows reading and draft_gmail_message, "
+    "nothing that sends; Drive, Notion, Jira and GitHub allow reading only. An MCP server may still be connecting when "
+    "the run starts: if ToolSearch reports it still connecting, wait and search again, up to five times, before "
+    "treating that source as unreachable."
+)
+RUN_ENV_DEFAULTS = {"MCP_CONNECT_TIMEOUT_MS": "60000", "MCP_TOOL_TIMEOUT": "600000"}
+# Claude Code strips CLAUDE_CODE_OAUTH_TOKEN from a session's shell, and the dashboard server under launchd never had
+# it, so the run sources the file that holds it, as local-cron-jobs does. A machine without the file runs on.
+WITH_TOKEN = ('[ ! -f "$HOME/.config/shell/env.sh" ] || . "$HOME/.config/shell/env.sh" >/dev/null 2>&1; exec "$@"')
+RESULT_OK = re.compile(r"^RESULT: ok\s*$")
+
+PROMPT = """You run the operator's {label} for them, unattended. Nobody answers questions. Do the steps in order.
+
+Facts:
+- Google account: {account}. Every Gmail and Drive call names it as user_google_email.
+- Since: {since}. Read what changed after it.
+- Run folder: {folder}. Write files only there.
+- Brief file: {brief}
+- Today's brief so far: {earlier}
+- Followup reference: {realm}-sweep:<source>-<id>
+
+This machine's filters (a source marked "not configured" is skipped and named under Gaps):
+{filters}
+
+{steps}
+Followups. For each action the operator owns, keep one sd item:
+- Read the open items once: `sd store items --open --json`.
+- An open item that covers the action gets a note: `sd task note <id> "<what changed>" --kind followup`.
+- Otherwise file one: `{add} --ref {realm}-sweep:<source>-<id> "<title>"`. <source> is gmail, drive, notion, jira or
+  github; <id> is that source's thread id, file id, page id, issue key or owner/repo#number. A refusal that names an
+  existing item means it is filed already: leave it.
+
+Drafts. For each reply the operator owes, save one Gmail draft in {account} with draft_gmail_message, in the
+thread it answers. Search `in:drafts` first and skip a thread that already has a draft. Never send.
+
+Brief. Write {brief} with the Write tool. It opens with these three lines:
+---
+series: {series}
+---
+Then `## Status` (what needs the operator now, most urgent first), `## Changes since {since}` (one short part per
+source), `## Followups` (each sd item filed or noted, with its id), `## Drafts` (each draft saved, by subject) and
+`## Gaps` (each source not read, and why). If today's brief so far is a file, read it and keep its changes. Plain
+sentences, no tables, no message bodies quoted at length.
+
+Reply with a short report. Its last line is `RESULT: ok`, or `RESULT: failed, <step>: <reason>` when a step could not
+finish. A source that could not be read is a gap in the brief, not a failure.
+"""
+STEPS = {
+    "personal": """Mail. Search Gmail with the mail filter and `after:` the Since date. Read the threads that ask the operator
+for something, change a commitment, or carry a deadline.
+
+Drive. Search Drive for files in the account's My Drive modified after Since. Skip the shared Drives that skip-drives
+names; the HOA sweep owns them.
+""",
+    "work": """Mail. Search Gmail with the mail filter and `after:` the Since date. Read the threads that ask the operator
+for something, change a commitment, or carry a deadline.
+
+Drive. Search Drive for files modified after Since, in My Drive and the shared Drives, except those skip-drives names.
+
+Notion. Search Notion within the notion scope for pages edited after Since, and read those that concern the
+operator. If Notion does not answer, or answers from a workspace that is not the work one, say so under Gaps.
+
+Jira. Search issues within the jira scope, updated after Since, that are assigned to the operator, mention them, or
+that they watch: (assignee = currentUser() OR watcher = currentUser() OR text ~ currentUser()).
+
+GitHub. Within the github scope, find open pull requests that request the operator's review (review-requested:@me),
+reviews on their own open pull requests (author:@me), and mentions (mentions:@me), updated after Since.
+""",
+}
+
+
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def accounts_path() -> Path:
+    """The pack's machine config, by its rule (`sd_lib.machine_config_path`)."""
+    home = os.environ.get("XDG_CONFIG_HOME") or Path(os.environ.get("HOME") or Path.home()) / ".config"
+    return Path(home) / "sd-ai-command-pack" / "config.json"
+
+
+def account(realm: str) -> tuple[str, str]:
+    """`(address, "")`, or `("", why not)`: `google.accounts.<realm>.email`, never a literal."""
+    path = accounts_path()
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))["google"]["accounts"][realm]["email"]
+    except FileNotFoundError:
+        return "", f"{path} is missing"
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return "", f"{path} holds no google.accounts.{realm}.email ({error.__class__.__name__})"
+    if not isinstance(found, str) or "@" not in found:
+        return "", f"{path}: google.accounts.{realm}.email is not an address"
+    return found, ""
+
+
+def filters(realm: str, config: Path | None = None) -> tuple[dict, str]:
+    """`({key: value}, "")` from `sweep.conf`'s `<realm>|<key>|<value>` lines, or `({}, why not)`."""
+    config = _config_dir() / "sweep.conf" if config is None else config
+    source = f"<config>/project-dashboard/{config.name}"
+    try:
+        text = config.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, f"{source} is missing; copy local-project-dashboard/sweep.conf.example there and edit it"
+    except (OSError, UnicodeDecodeError) as error:
+        return {}, f"{source} was not read: {error.__class__.__name__}"
+    found = {}
+    for number, line, fields in pipe_lines(text):
+        if len(fields) < 3 or fields[0] not in REALMS or fields[1] not in KEYS[fields[0]]:
+            return {}, f"{source} line {number}: not <realm>|<key>|<value> with a known realm and key: {line}"
+        if fields[0] == realm:
+            found[fields[1]] = "|".join(fields[2:])
+    if found.get("followups"):
+        found["followups"] = os.path.expanduser(found["followups"])
+    missing = [key for key in REQUIRED[realm] if not found.get(key)]
+    if missing:
+        return {}, f"{source} has no {', '.join(f'{realm}|{key}|<value>' for key in missing)} line"
+    return found, ""
+
+
+def allowed_tools(realm: str, folder: Path, followups: str = "") -> list[str]:
+    """The run's exact allowlist: reads, the run folder, the realm's sd verbs and the one Gmail draft tool."""
+    add = "sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {followups}"
+    servers = ("workspace-mcp",) if realm == "personal" else tuple(MCP_READS)
+    return [
+        f"Read(/{folder}/**)", f"Write(/{folder}/**)",
+        "Bash(sd store items:*)", "Bash(sd task show:*)", "Bash(sd task note:*)", f"Bash({add}:*)",
+        *(f"mcp__{server}__{name}" for server in servers for name in MCP_READS[server]),
+        f"mcp__workspace-mcp__{DRAFT}",
+    ]
+
+
+def claude_argv(claude: str, realm: str, prompt: str, mcp_url: str, allowed: list[str]) -> list[str]:
+    """The run: an exact allowlist, never skipped permissions; the Personal run has workspace-mcp alone."""
+    servers = ["--strict-mcp-config", "--mcp-config",
+               json.dumps({"mcpServers": {"workspace-mcp": {"type": "http", "url": mcp_url}}})] if realm == "personal" else []
+    return [
+        claude, "-p", prompt,
+        "--permission-mode", "dontAsk",
+        "--permission-prompts", "none",
+        "--setting-sources", "project",
+        *servers,
+        "--tools", BUILT_IN_TOOLS,
+        "--allowedTools", ",".join(allowed),
+        "--disallowedTools", ",".join(DENIED),
+        "--append-system-prompt", TOLD,
+    ]
+
+
+def claude_binary() -> str:
+    """CLAUDE_BIN, then `claude` on PATH, then ~/.local/bin/claude, as local-cron-jobs does."""
+    return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
+
+
+def ask(argv: list[str], cwd: Path, timeout: int, out) -> tuple[int, str]:
+    """Run claude headless, its reply to `out`, and judge the reply's last `RESULT:` line: ok is 0, anything else 1.
+
+    `claude -p` exits 0 whatever the prompt concluded. The run gets its own process group, so a timeout stops its MCP
+    children too. SD_HANDOFF_RESTORE=0: an unattended run must not consume a handoff written for a person's session.
+    """
+    env = {**RUN_ENV_DEFAULTS, **os.environ, "SD_HANDOFF_RESTORE": "0"}
+    try:
+        proc = subprocess.Popen(["sh", "-c", WITH_TOKEN, "claude-run", *argv], cwd=cwd, env=env, text=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except OSError as error:
+        return EXIT_ERROR, f"cannot start {argv[0]}: {error}"
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return EXIT_ERROR, f"the run passed {timeout}s and was stopped"
+    print(stdout.rstrip(), file=out)
+    if proc.returncode != 0:
+        tail = (stderr or stdout).strip().splitlines()[-1:] or [""]
+        return EXIT_ERROR, f"claude exited {proc.returncode}: {tail[0][:200]}"
+    results = [line.strip() for line in stdout.splitlines() if line.startswith("RESULT: ")]
+    last = results[-1] if results else ""
+    return (EXIT_OK, last) if RESULT_OK.match(last) else (EXIT_ERROR, last or "no RESULT: line in the reply")
+
+
+def sd(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([os.environ.get("REALM_SWEEP_SD", "sd"), *args], capture_output=True, text=True,
+                          timeout=SD_SECONDS, check=False, stdin=subprocess.DEVNULL)
+
+
+def write_record(path: Path, record: dict) -> None:
+    """Replace the record whole, so a reader never sees half of one."""
+    partial = path.with_name(path.name + ".partial")
+    partial.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(partial, path)
+
+
+def read_record(realm: str) -> dict | None:
+    try:
+        return json.loads((state_dir(realm) / "last.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
+def alive(pid) -> bool:
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def status(realm: str) -> dict:
+    """The last run as the dashboard reads it: `running`, `state`, `exit`, `reason`, `log`, `brief`, times.
+
+    A record that does not read raises OSError or ValueError; the caller names it.
+    """
+    record = read_record(realm)
+    if record is None:
+        return {"running": False, "state": "never", "reason": f"no {realm} sweep has run here"}
+    if record.get("state") == "running" and not alive(record.get("pid")):
+        record.update(state="failed", reason=f"the run (pid {record.get('pid')}) stopped without recording an "
+                                             f"outcome; see {record.get('log')}")
+    record["running"] = record.get("state") == "running"
+    return record
+
+
+def run(realm: str, out, err) -> int:
+    """Step 1: the realm's lock, without waiting; the sweep under it."""
+    state = state_dir(realm)
+    (state / "runs").mkdir(parents=True, exist_ok=True)
+    with open(state / "sweep.lock", "w", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"sweep: another {realm} sweep is already running", file=err)
+            return EXIT_NONE
+        return sweep(realm, state, out, err)
+
+
+def sweep(realm: str, state: Path, out, err) -> int:
+    """Steps 2 to 5 above."""
+    try:
+        previous = read_record(realm) or {}
+    except (OSError, ValueError):
+        previous = {}
+    # Only a done run moves `since` on: after a failed one the next run reads the same span again.
+    since = previous.get("started") if previous.get("state") == "done" else previous.get("since")
+    started = _now()
+    stamp = started.strftime("%Y%m%d-%H%M%S-%f")
+    folder = state / "runs" / stamp
+    folder.mkdir(parents=True)
+    log = folder / "run.log"
+    day = started.astimezone().date().isoformat()
+    stem = f"{day} - {SERIES[realm]}"
+    brief = folder / f"{stem}.md"
+    record = {"state": "running", "started": started.isoformat(timespec="seconds"), "finished": None, "exit": None,
+              "reason": None, "since": since, "log": str(log), "brief": str(brief), "pid": os.getpid()}
+    write_record(state / "last.json", record)
+
+    def end(code: int, reason: str) -> int:
+        record.update(state="done" if code == EXIT_OK else "failed", exit=code, reason=reason,
+                      finished=_now().isoformat(timespec="seconds"))
+        write_record(state / "last.json", record)
+        print(f"sweep: exit {code}: {reason}", file=out if code == EXIT_OK else err)
+        return code
+
+    address, problem = account(realm)
+    if not address:
+        return end(EXIT_ERROR, f"no Google account for the {realm} sweep: {problem}")
+    found, problem = filters(realm)
+    if problem:
+        return end(EXIT_ERROR, problem)
+    earlier = folder / "earlier.md"
+    try:
+        shown = sd("reports", "brief", "show", stem)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return end(EXIT_ERROR, f"today's brief was not read: {error}")
+    # Only "no brief has the stem" means none yet: any other failure is unknown, and a replace after it could drop the
+    # changes an earlier run filed today.
+    if shown.returncode == 0 and shown.stdout.strip():
+        earlier.write_text(shown.stdout, encoding="utf-8")
+    elif shown.returncode != 0 and "no brief has the stem" not in shown.stderr:
+        return end(EXIT_ERROR, f"today's brief was not read: {(shown.stderr or shown.stdout).strip()[:200]}")
+    prompt = PROMPT.format(
+        label=SERIES[realm].lower(), account=address, folder=folder, brief=brief, realm=realm, series=SERIES[realm],
+        since=since or "seven days ago (no earlier sweep finished here)",
+        earlier=earlier if earlier.exists() else "none yet",
+        filters="\n".join(f"- {key}: {found.get(key) or 'not configured'}" for key in KEYS[realm] if key != "followups"),
+        steps=STEPS[realm],
+        add="sd task add --kind personal" if realm == "personal" else f"sd task add --belongs-to {found['followups']}")
+    argv = claude_argv(claude_binary(), realm, prompt, os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp"),
+                       allowed_tools(realm, folder, found.get("followups", "")))
+    with log.open("a", encoding="utf-8") as logged:
+        code, reason = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged)
+    if code != EXIT_OK:
+        return end(code, reason)
+    if not brief.is_file():
+        return end(EXIT_ERROR, f"the run ended {reason!r} but wrote no brief at {brief}")
+    try:
+        filed = sd("reports", "brief", "add", "--file", str(brief), "--belongs-to", str(REPO), "--replace")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return end(EXIT_ERROR, f"the brief was not filed: {error}")
+    if filed.returncode != 0:
+        return end(EXIT_ERROR, f"the brief was not filed: {(filed.stderr or filed.stdout).strip()[:200]}")
+    return end(EXIT_OK, f"{filed.stdout.strip()}; {reason}")
+
+
+def main(argv: list[str], out=None, err=None) -> int:
+    out = sys.stdout if out is None else out
+    err = sys.stderr if err is None else err
+    verb = argv[0] if argv else ""
+    if verb in ("-h", "--help", "help"):
+        print("\n\n".join(__doc__.strip().split("\n\n")[1:3]), file=out)
+        return 0
+    if verb == "run" and argv[1:2] and argv[1] in REALMS and len(argv) == 2:
+        return run(argv[1], out, err)
+    if verb == "status" and argv[1:2] and argv[1] in REALMS and argv[2:] in ([], ["--json"]):
+        try:
+            found = status(argv[1])
+        except (OSError, ValueError) as error:
+            print(f"sweep: {state_dir(argv[1]) / 'last.json'} did not read: {error}", file=err)
+            return EXIT_ERROR
+        if argv[2:]:
+            print(json.dumps(found, sort_keys=True), file=out)
+        else:
+            print(f"{found['state']}" + (f", exit {found['exit']}" if found.get("exit") is not None else "")
+                  + (f": {found['reason']}" if found.get("reason") else "")
+                  + (f"\nlog: {found['log']}" if found.get("log") else ""), file=out)
+        return 0
+    print("usage: python3 -m sd_dashboard.realm_sweep run|status work|personal [--json]", file=err)
+    return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
