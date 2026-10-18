@@ -321,16 +321,23 @@ class TheOutcome(AdversarialCase):
 
     def test_hypotheses_sharing_a_long_heading_each_get_a_subject_within_the_store_s_bound(self):
         # Round 1 class: a batch's subjects were made unique by adding a mark each, past the store's 200 characters.
+        # A 60-character label and a 120-character heading make a subject of about 186 characters before any mark, so 20 repeats pass 200.
+        checkout = self.root / ("a-checkout-whose-name-runs-to-the-label-bound-" + "x" * 14)
+        checkout.mkdir()
+        git(checkout, "init", "-q", "-b", "main")
+        key = self.repo(str(checkout))
         heading = ("The same long heading " * 12).strip()
         self.result_fixture.write_text("# Adversarial review\n\n" + "".join(
-            f"## {n}. {heading}\n\nConfidence: **LIKELY**\n\n- **Recommendation:** Fix part {n}\n\n" for n in range(1, 16))
+            f"## {n}. {heading}\n\nConfidence: **LIKELY**\n\n- **Recommendation:** Fix part {n}\n\n" for n in range(1, 21))
             + "Does the central conclusion survive hostile reading? NO.\n")
-        _, done = self.filed()
-        self.assertEqual(done["filed"], "written", done)
+        status, _, run = self.review("repo", key)
+        self.assertEqual(status, 202, run)
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
         subjects = [q["subject"] for q in review.read(self.connection, done["batches"][0])["questions"]]
-        self.assertEqual((len(subjects), len(set(subjects))), (15, 15))
+        self.assertEqual((len(subjects), len(set(subjects))), (20, 20))
         self.assertLessEqual(max(map(len, subjects)), review.SUBJECT_CHARS)
-        self.assertEqual([subject[-5:] for subject in subjects[12:]], [" (13)", " (14)", " (15)"])
+        self.assertEqual([subject[-5:] for subject in subjects[17:]], [" (18)", " (19)", " (20)"])
 
     def test_a_result_with_no_titled_hypothesis_files_a_brief_and_no_batch(self):
         self.result_fixture.write_text("Nothing survives.\n")
