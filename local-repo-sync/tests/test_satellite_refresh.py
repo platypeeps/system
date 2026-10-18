@@ -251,7 +251,7 @@ class RefreshTest(unittest.TestCase):
         self.assertNotIn("lanes held", result.stdout)
         self.assertEqual([], f.full_updates())
         self.assertIsNone(f.result())
-        self.assertEqual("0", f.call("print(connect(db).execute(\"SELECT count(*) FROM setting WHERE key LIKE 'refresh.%'\").fetchone()[0])").strip())
+        self.assertEqual("0", f.call("print(connect(db).execute(\"SELECT count(*) FROM state WHERE kind='setting' AND key LIKE 'refresh.%'\").fetchone()[0])").strip())
 
     def test_an_unreadable_request_fails_and_runs_nothing(self):
         """NEW. Failures: a request row that does not read is unknown, not
