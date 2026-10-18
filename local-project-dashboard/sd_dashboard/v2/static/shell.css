@@ -403,7 +403,7 @@ select.cap-in { min-height: var(--row-touch); }
 .viewswitch [role="tab"]:focus-visible { outline-offset: calc(-1 * var(--rule-focus)); }
 .viewswitch .n { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
 .viewswitch [aria-selected="true"] .n { color: var(--color-ink-2); }
-.viewswitch .n[hidden], main [role="tabpanel"][hidden] { display: none; }
+.viewswitch .n[hidden], .viewswitch [role="tab"][hidden], main [role="tabpanel"][hidden] { display: none; }
 /* The rail lists the current page's views under it, their names in line with the page's. */
 .rail nav .subnav { margin: var(--space-3xs) 0 var(--space-2xs); padding-left: calc(var(--icon-sm) + var(--space-xs)); }
 .rail nav .subnav a { min-height: 1.75rem; font-size: var(--text-xs); color: var(--color-muted); }

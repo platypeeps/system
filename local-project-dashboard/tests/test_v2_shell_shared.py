@@ -693,6 +693,15 @@ function run() { OUT.R = R; OUT.STORE = STORE; return JSON.stringify(OUT); }
         for kept in ({"sd.view./tasks": "cadence"}, {"sd.view./reports": "gone-for-good"}, {"sd.view./reports": "<b>"}):
             self.assertEqual(self.run_view("R.cur = view.current();", store=kept)["R"]["cur"], "reports", kept)
 
+    def test_a_hidden_view_does_not_show_and_hiding_the_shown_one_shows_the_first_left(self):
+        # sd:5064: Writing hides a realm view no piece is in: its segment and rail entry go, and v-keys and show() skip it.
+        out = self.run_view("view.hide('reports', true); R.cur = view.current(); R.tab = SWITCH_TABS[0].hidden; R.li = MADE.filter(e => e.tagName === 'li')[0].hidden;"
+                            " R.back = view.show('reports'); R.cur2 = view.current(); view.hide('reports', false); R.again = view.show('reports');")
+        r = out["R"]
+        self.assertEqual((r["cur"], r["tab"], r["li"], r["back"], r["cur2"], r["again"]), ("cadence", True, True, False, "cadence", True))
+        # The tab's display: inline-flex would beat the hidden attribute without its own rule.
+        self.assertRegex(SHELL_CSS, r'\.viewswitch \[role="tab"\]\[hidden\][^{]*\{ display: none; \}')
+
     def test_a_keep_false_view_is_never_restored_and_storage_that_throws_is_no_view(self):
         out = self.run_view("R.cur = view.current();", store={"sd.view./reports": "cadence"}, keep=False)
         self.assertEqual(out["R"]["cur"], "reports")

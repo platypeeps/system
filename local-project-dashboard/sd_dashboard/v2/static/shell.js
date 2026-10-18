@@ -150,7 +150,9 @@
   //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
   //   view with keep: false (Designs' Hidden) is never restored, so the page opens on its default.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
-  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it.
+  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it. shell.view.hide(id, on) hides a
+  //   view's segment and rail entry, for a view with nothing in it (Writing's realms, sd:5064); a hidden view does not show,
+  //   and hiding the shown one shows the first view left.
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
   //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
   //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
@@ -158,7 +160,7 @@
   const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
-  const viewSeen = new Set(), viewTabs = [], viewLinks = [];
+  const viewSeen = new Set(), viewTabs = [], viewLinks = [], viewItems = [];
   const VKEY = `sd.view.${location.pathname}`;
   const viewKept = () => { try { const id = localStorage.getItem(VKEY); return VIEW_LIST.some(v => v.id === id && v.keep !== false) ? id : null; } catch (_) { return null; } };
   const viewOf = h => { const m = /^#view=([a-z0-9-]+)$/.exec(h || ''); return m && VIEW_LIST.some(v => v.id === m[1]) ? m[1] : null; };
@@ -177,8 +179,9 @@
     });
     if (viewStarted) viewFire(id);
   }
+  const viewOpen = i => i >= 0 && !viewTabs[i].hidden;
   function viewShow(id) {
-    if (!VIEW_LIST.some(v => v.id === id)) return false;
+    if (!viewOpen(VIEW_LIST.findIndex(v => v.id === id))) return false;
     if (location.hash !== `#view=${id}`) try { history.pushState(history.state, '', `#view=${id}`); } catch (_) {}
     try { localStorage.setItem(VKEY, id); } catch (_) {}
     viewApply(id);
@@ -188,7 +191,12 @@
     const t = viewTabs[VIEW_LIST.findIndex(v => v.id === id)]; if (!t) return;
     const c = t.children[1]; c.hidden = n == null; c.textContent = n == null ? '' : String(n);
   }
-  const view = { current: () => viewNow, show: viewShow, count: viewCount };
+  function viewHide(id, on) {
+    const i = VIEW_LIST.findIndex(v => v.id === id); if (i < 0) return;
+    viewTabs[i].hidden = !!on; viewItems[i].hidden = !!on;
+    if (on && viewNow === id) { const left = VIEW_LIST.find((v, j) => viewOpen(j)); if (left) viewApply(left.id); }
+  }
+  const view = { current: () => viewNow, show: viewShow, count: viewCount, hide: viewHide };
   if (VIEW_LIST.length) {
     const bar = document.createElement('div');
     bar.className = 'viewswitch'; bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', `${page} views`);
@@ -206,13 +214,14 @@
       a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
       // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.
       a.addEventListener('click', e => { e.preventDefault(); viewShow(v.id); });
-      li.append(a); sub.append(li); viewLinks.push(a);
+      li.append(a); sub.append(li); viewLinks.push(a); viewItems.push(li);
     });
     // Roving focus: ← → Home End move between segments and show each (WAI-ARIA tabs, automatic activation).
     bar.addEventListener('keydown', e => {
-      const i = viewTabs.indexOf(e.target), last = viewTabs.length - 1;
-      const to = { ArrowRight: i + 1 > last ? 0 : i + 1, ArrowLeft: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
-      if (i < 0 || to === undefined) return;
+      const open = viewTabs.filter(t => !t.hidden), i = open.indexOf(e.target), last = open.length - 1;
+      const k = { ArrowRight: i + 1 > last ? 0 : i + 1, ArrowLeft: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+      if (i < 0 || k === undefined) return;
+      const to = viewTabs.indexOf(open[k]);
       e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
     });
     viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);

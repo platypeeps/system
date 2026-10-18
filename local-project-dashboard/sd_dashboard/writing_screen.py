@@ -2,7 +2,8 @@
 
 `document` is each piece's stage, gates and next moves as `writing.piece_state` gives them, its files' sizes, and the
 opening of its draft. The repository goes out by its folder name only, so no local path leaves. Its `attention` is the
-page's rail badge (sd:3446, `_attention`).
+page's rail badge (sd:3446, `_attention`). Each piece's `realm` is `places.realm_of` of its repo, the rule Tasks' realm
+views use (sd:5064).
 """
 
 from pathlib import Path
@@ -11,6 +12,7 @@ from sd_db import writing
 from sd_db.workflow import WorkflowError
 
 from .markup import href
+from .places import realm_of, realms
 
 
 #: Draft paragraphs the editor shows; the rest stay in the file.
@@ -27,6 +29,8 @@ def _draft(document: str | None) -> tuple[list[str], int]:
 def document(connection, *, now):
     """What the v2 Writing page reads: every piece, parked ones too, with its gates, moves and files."""
     pieces = []
+    found = realms()
+    rules = found["list"] if found["state"] in ("read", "partial") else None
     for row in writing.list_pieces(connection, include_parked=True):
         full = writing.piece_state(connection, row["id"])
         state = full["writing"]
@@ -40,7 +44,7 @@ def document(connection, *, now):
         live = next((claim for claim in reversed(claims) if claim["url"]), None)
         pieces.append({
             "id": row["id"], "title": row["title"], "stage": row["stage"], "parked": state["parked"], "piece": row["piece"],
-            "repo": Path(row["repo"]).name, "folder": "content-parked" if (row["path"] or "").startswith("content-parked/") else "content",
+            "repo": Path(row["repo"]).name, "realm": realm_of(row["repo"], row["kind"], rules), "folder": "content-parked" if (row["path"] or "").startswith("content-parked/") else "content",
             "updated": row["updated_at"], "revision": full["revision"],
             "gates_ok": gates["ok"], "problems": gates["problems"], "owner": state["owner"],
             "ready_recorded": bool(row["ready_digest"]) and row["ready_digest"] == gates["digest"],
@@ -48,7 +52,8 @@ def document(connection, *, now):
             "next": state["available_stages"], "corrections": state["correction_stages"],
             "files": files, "draft": draft, "words": words,
         })
-    return {"read": now, "stages": list(writing.STAGES), "pieces": pieces, "attention": _attention(pieces)}
+    return {"read": now, "stages": list(writing.STAGES), "pieces": pieces, "attention": _attention(pieces),
+            "realms": {key: found[key] for key in ("state", "source", "problems")}}
 
 
 def _gate_state(piece) -> str:
