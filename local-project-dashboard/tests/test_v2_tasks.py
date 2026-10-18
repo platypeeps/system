@@ -670,6 +670,7 @@ class TheScript(ScreenCase):
             ["item.unpark", "item", "safe", None, True, True, False],
             ["item.note", "item", "safe", "n", None, True, False],
             ["item.fix", "item", "safe", "f", True, True, False],
+            ["item.adversarial-review", "item", "safe", None, True, True, False],
             ["item.email", "item", "safe", None, True, True, False],
             ["item.delete", "item", "confirm", None, None, False, False],
             ["work.relink", "item", "safe", "l", True, True, False],
@@ -1397,6 +1398,28 @@ shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
         self.assertTrue(out["R"]["cli"].startswith("no sd verb:"))
         self.assertEqual(out["posts"], [[f"/api/items/{plan}/fix", {"revision": self.row("plan")["revision"]}, 64]])
         self.assertEqual(out["toasts"], [[f"Fix started · #{plan} · builder session in herdr pane w9:p1", False]])
+
+    def test_adversarial_review_starts_in_the_background_and_details_follow_the_run(self):
+        """sd:5064: the row posts {kind: task, target}; the page reads the run until it is filed, and Details link the brief."""
+        plan, ask = self.ids["plan"], self.ids["ask"]
+        answer = f"""(path, body) => path === '/api/adversarial' ? [202, {{ id: 'r1', state: 'queued', item: {plan}, filed: null }}]
+  : path === '/api/adversarial/r1' ? [200, {{ id: 'r1', state: 'done', item: {plan}, filed: 'written', brief_item: 77 }}] : [404, {{ error: 'no answer' }}]"""
+        out = self.run_page(f"""R.off = cmd('item.adversarial-review').when(C.get('{ask}'));
+C.select('{plan}'); window.shell.row?.('{plan}');
+shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush(); await flush(); R.det = ELS.details.html;""", answer, search=f"?row={plan}")
+        self.assertEqual(out["R"]["off"], "it has no repository to review in")
+        self.assertEqual(out["posts"], [["/api/adversarial", {"kind": "task", "target": plan}, 64]])
+        self.assertEqual(out["gets"].count("/api/adversarial/r1"), 1)
+        self.assertEqual([t[0] for t in out["toasts"]],
+                         ["Review started · run r1", "Adversarial review filed · run r1 · brief sd:77; Details links it"])
+        self.assertIn('<a href="/item/77">brief sd:77</a>', out["R"]["det"])
+        self.assertIn(f'<a href="/tasks?row={plan}">#{plan}</a>', out["R"]["det"])
+
+    def test_a_refused_adversarial_review_toasts_the_servers_sentence(self):
+        plan = self.ids["plan"]
+        answer = """(path, body) => [409, { error: 'An adversarial review is already running (run r0); one runs at a time.' }]"""
+        out = self.run_page(f"""shellRun(cmd('item.adversarial-review'), C.get('{plan}')); await flush();""", answer)
+        self.assertEqual(out["toasts"], [["An adversarial review is already running (run r0); one runs at a time.", False]])
 
     def test_a_refused_fix_says_why_and_offers_no_undo(self):
         plan = self.ids["plan"]

@@ -418,6 +418,10 @@ addEventListener('DOMContentLoaded', () => {
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : t.status === 'done' ? 'it is done' : true; },
       post: (o, path) => { const t = must(o);
         return write(t.key, () => path, {}).then(v => { redrawDet(t.id); return v; }, err => { if (err.stale) refused(); throw err; }); } }),
+    // Adversarial review (sd:5064): the shared declaration (commands.js); the server reviews the item in its repository,
+    // so an item with none is off.
+    window.commands.adversarialReview('item', { payload: o => ({ kind: 'task', target: T(o).id }),
+      when: o => { const t = T(o); return !t ? 'the task is no longer listed' : !t.repo_path ? 'it has no repository to review in' : true; } }),
     // Draft email (sd:3463, email_draft): claude writes an email from the item's title and notes, and workspace-mcp saves it
     // as a Gmail draft with no recipient. Nothing sends it. It asks first, since it runs a model and writes to Gmail. An
     // answered refusal reads the rows again: a failure writes a note, so the row's revision moved. A post with no answer
@@ -625,6 +629,7 @@ addEventListener('DOMContentLoaded', () => {
       </dl>
       ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
+      ${window.commands.reviewPane('task', t.id)}
       ${more(t, dis)}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
     if (mine) {
@@ -1185,6 +1190,7 @@ addEventListener('DOMContentLoaded', () => {
   function load() { return reading.load(); }
   function reread() { return reading.reread(); }
   load();
+  document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected)?.id}`) renderDetails(); });
   document.addEventListener('shell:ready', () => window.places.viewSwitch(id => { if (id === PLACE) return; PLACE = id; L.page = 1; if (READ) { subhead(); render(); } }), { once: true });
   suggest(['What is overdue across repos?', 'Which ready tasks are oldest?', 'Draft the reply that closes the selected task']);
 });
