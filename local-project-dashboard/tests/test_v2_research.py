@@ -839,6 +839,46 @@ shellRun(cmd('source.adversarial-review'), o); await flush(); await flush(); R.e
         self.assertEqual(out["gets"].count("/api/research/research/beta"), 2)
         self.assertIn('<a href="/item/92">brief sd:92</a>', out["R"]["end"])
 
+    def test_add_source_lists_what_add_writes_and_posts_pasted_urls_to_reading_by_default(self):
+        # sd:5112: no project picked, so the target is research/reading; a bad line keeps Add off and says why.
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                  " : path === '/api/research/intake' ? [200, { item: 77, branch: 'source-intake/20261018T210000Z',"
+                  " added: [{ kind: 'url', title: 'A', key: 'https://example.test/a' }], enqueued: true }] : [404, { error: 'no' }]")
+        out = self.run_page("""const urls = ELS['intake-urls'], typed = v => { urls.value = v; urls.listeners.input.forEach(f => f()); };
+typed('https://example.test/a\\nnot-a-url'); R.bad = ELS['intake-list'].html; R.off = ELS['intake-add'].disabled;
+R.to = ELS['intake-to'].value; R.targets = ELS['intake-to'].html;
+typed('https://example.test/a'); R.on = ELS['intake-add'].disabled; R.label = ELS['intake-add'].textContent;
+ELS.intake.listeners.submit.forEach(f => f({ preventDefault() {} })); await flush(); await flush();
+R.said = ELS['intake-said'].html; R.left = urls.value;""", answer=answer)
+        self.assertIn("not an http or https address", out["R"]["bad"])
+        self.assertIn("a U row; its title is read on Add", out["R"]["bad"])
+        self.assertTrue(out["R"]["off"])
+        self.assertEqual(out["R"]["to"], "research/reading")
+        self.assertIn('<option value="research/reading" selected>reading · no topic repo</option>', out["R"]["targets"])
+        self.assertIn('<option value="research/beta">', out["R"]["targets"])
+        self.assertEqual((out["R"]["on"], out["R"]["label"]), (False, "Add 1 source"))
+        self.assertEqual(out["posts"], [["/api/research/intake", {"target": "research/reading",
+                                                                  "urls": ["https://example.test/a"], "files": []}, 64]])
+        self.assertIn('Queued: 1 row on source-intake/20261018T210000Z as <a href="/item/77">sd:77</a>.', out["R"]["said"])
+        self.assertIn("once the lane merges it", out["R"]["said"])
+        self.assertEqual(out["R"]["left"], "")
+
+    def test_a_file_dropped_on_the_sources_panel_is_listed_with_where_it_goes(self):
+        # sd:5112: the board's own first-row select leaves the target on reading; the viewer picks beta in the box.
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); R.auto = ELS['intake-to'].value;
+ELS['intake-to'].value = 'research/beta'; ELS['intake-to'].listeners.change.forEach(f => f());
+const files = [{ name: 'note.pdf', size: 2048 }, { name: 'scan.pdf', size: 6 * 1024 * 1024 }, { name: 'tool.exe', size: 10 }];
+ELS['view-sources'].listeners.drop.forEach(f => f({ preventDefault() {}, dataTransfer: { files, getData: () => '' } }));
+R.list = ELS['intake-list'].html; R.off = ELS['intake-add'].disabled; R.to = ELS['intake-to'].value;
+ELS['intake-list'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-unfile]' ? { dataset: { unfile: '2' } } : null } }));
+R.on = ELS['intake-add'].disabled; R.label = ELS['intake-add'].textContent;""")
+        self.assertIn("note.pdf · 2 KB</span><span class=\"w\">committed in 10-sources/files", out["R"]["list"])
+        self.assertIn("scan.pdf · 6.0 MB</span><span class=\"w\">over 5 MB: kept under the bulk storage root, linked", out["R"]["list"])
+        self.assertIn("not added: PDF, Markdown, HTML or text only", out["R"]["list"])
+        self.assertTrue(out["R"]["off"])
+        self.assertEqual((out["R"]["auto"], out["R"]["to"]), ("research/reading", "research/beta"))
+        self.assertEqual((out["R"]["on"], out["R"]["label"]), (False, "Add 2 sources"))
+
     def test_adversarial_review_on_a_source_is_off_when_its_briefs_cannot_be_read(self):
         self.ledger["reviews"], self.ledger["reviews_error"] = None, "~/repos/research/beta is not a registered repository"
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush();

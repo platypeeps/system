@@ -342,6 +342,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
         return adversarial.request(values)
+    if path == "/api/research/intake":
+        from . import source_intake
+
+        # sd:5112: pasted URLs and staged files become ledger rows on a fresh branch, landed through the lane.
+        return source_intake.request(values, principal)
     if path == "/api/adversarial/settings":
         from . import adversarial
 
@@ -1046,6 +1051,17 @@ class Dashboard(BaseHTTPRequestHandler):
                 or not session or not re.fullmatch(r"[a-f0-9]{64}", csrf)
                 or not hmac.compare_digest(csrf, self._csrf(session))):
             return self._json(403, {"error": "Open the dashboard again before saving. The browser session, identity or origin is invalid."})
+        if urlsplit(self.path).path == "/api/research/intake/file" and not urlsplit(self.path).query:
+            from . import source_intake
+
+            # sd:5112: a dropped file's raw bytes, past the JSON bound; the intake request names it by its hash.
+            if self.headers.get_content_type() != "application/octet-stream" or self.headers.get("Transfer-Encoding"):
+                return self._json(415, {"error": "Expected the file's bytes as application/octet-stream."})
+            try:
+                return self._json(*source_intake.stage(self.headers.get("X-SD-File-Name", ""),
+                                                        self.headers.get("Content-Length", ""), self.rfile))
+            except OSError as problem:
+                return self._json(503, {"error": f"The file was not staged: {problem}"})
         if self.headers.get_content_type() != "application/json":
             return self._json(415, {"error": "Expected application/json."})
         lengths = self.headers.get_all("Content-Length", [])

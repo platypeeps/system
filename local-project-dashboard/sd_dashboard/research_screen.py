@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import posixpath
 import re
 import sys
 import time
@@ -317,6 +318,21 @@ def _url(cells: list[str]) -> str:
     return ""
 
 
+#: A Markdown link to a file rather than a page, `[name](files/x.pdf)` or `[name](</abs/path x.pdf>)` (sd:5112).
+FILE_LINK = re.compile(r"\]\((?:<([^>\n]+)>|((?![a-z][a-z0-9+.-]*:|#)[^)\s]+))\)")
+
+
+def _file(cells: list[str], ledger: str) -> str:
+    """The first file a cell links, as a path under the checkout, or absolute when the link is; "" when none."""
+    for cell in cells:
+        match = FILE_LINK.search(cell)
+        if match:
+            target = match.group(1) or match.group(2)
+            path = target if target.startswith("/") else posixpath.normpath(posixpath.join(posixpath.dirname(ledger), target))
+            return path if len(path) <= 400 and not path.startswith("..") else ""
+    return ""
+
+
 def _row(line: str) -> list[str]:
     body = line.strip()
     body = body[1:] if body.startswith("|") else body
@@ -356,6 +372,8 @@ def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
                              "c4": _cell(cells[-1]) if len(cells) > 3 else "",
                              "h": [heads[0] if heads else "", heads[1] if len(heads) > 1 else "",
                                    heads[2] if len(heads) > 2 else "", heads[-1] if len(heads) > 3 else ""]})
+                if linked := _file(cells[1:], name):
+                    rows[-1]["file"] = linked  # only on a row that links a file: every byte counts against PRINT_BYTES
         elif not started and stripped and stripped != "---":
             prov.append(stripped)
         elif not stripped:
@@ -380,10 +398,13 @@ def is_id(text: str) -> bool:
 
 
 def row_key(row: dict) -> str:
-    """A ledger row's key: its URL's, else its ID's (`id:S12`), else none."""
+    """A ledger row's key: its URL's, else its ID's (`id:S12`), else the file it links (`file:10-sources/files/x.pdf`),
+    else none."""
     if row.get("url"):
         return source_key(row["url"])
-    return f"id:{row['id']}" if is_id(row["id"]) else ""
+    if is_id(row["id"]):
+        return f"id:{row['id']}"
+    return f"file:{row['file']}" if row.get("file") else ""
 
 
 def ledger_key(key: str, index) -> str | None:

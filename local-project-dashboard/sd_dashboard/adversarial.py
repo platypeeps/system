@@ -482,7 +482,7 @@ def _resolve_source(connection, target, source) -> dict:
              f"- repository: {paths.key(str(repo))}", f"- source key: {source}",
              f"- ledger: {row['f']}, section {row.get('sec') or 'none'}",
              f"- grade: {row.get('grade') or (row['id'] if row['id'] in research_screen.GRADES else 'none')}",
-             f"- link: {row.get('url') or 'none'}",
+             f"- link: {row.get('url') or row.get('file') or 'none'}",
              f"- {heads[2] or 'third column'}: {row.get('c3') or 'empty'}",
              *([f"- {heads[3] or 'last column'}: {row['c4']}"] if row.get("c4") else []), "",
              "## Claims that cite it", ""]
@@ -496,7 +496,8 @@ def _resolve_source(connection, target, source) -> dict:
     lines += ["", "## The source as fetched", ""]
     label = f"{checkout.name}-{row['id'] if research_screen.is_id(row['id']) else source.split('://')[-1]}"
     return {"checkout": checkout, "repo": repo, "label": label, "item": None, "input": "\n".join(lines) + "\n",
-            "sets": {}, "extra": {"source": source, "fetch": row.get("url") or None}}
+            "sets": {}, "extra": {"source": source, "fetch": row.get("url") or None,
+                                                 "file": None if row.get("url") else row.get("file") or None}}
 
 
 def _item_id(value, name: str) -> int:
@@ -1019,7 +1020,11 @@ def run(record: Path, lock: int | None = None) -> int:
     if document["kind"] == "source":
         # The source as the input's last section, fetched here so codex's sandbox needs no network (sd:5101).
         with open(document["input"], "a", encoding="utf-8") as sink:
+            # A file the ledger links (sd:5112) is read where it lies: codex reads the checkout, and nothing else.
             sink.write(_fetch(document["fetch"]) if document.get("fetch") else
+                       f"Not fetched: the source is the file {document['file']} the ledger links. Read it in the "
+                       f"checkout; a file outside the checkout is not readable here, so its claims are unchecked.\n"
+                       if document.get("file") else
                        "Not fetched: the ledger row has no link, so the claims are unchecked against the source.\n")
     argv = ["sh", str(GATE), "deep" if document["kind"] == "deep" else "run", "--lens", document["kind"]]
     for key, value in document["sets"].items():

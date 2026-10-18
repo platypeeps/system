@@ -19,8 +19,11 @@
   // with no status got no answer, so a write's outcome is not known. A page script runs before shell.js, so it calls
   // window.shell.post / shell.getJSON when it acts, not while it loads.
   const csrf = () => document.querySelector('meta[name="sd-csrf"]')?.content || '';
-  async function post(path, body) {
-    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SD-CSRF': csrf() }, body: JSON.stringify(body) });
+  // A Blob body (a dropped file, sd:5112) is sent as is, with the caller's extra headers.
+  async function post(path, body, headers) {
+    const blob = typeof Blob !== 'undefined' && body instanceof Blob;
+    const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': blob ? 'application/octet-stream' : 'application/json', 'X-SD-CSRF': csrf(), ...headers },
+      body: blob ? body : JSON.stringify(body) });
     const out = await r.json().catch(() => ({}));
     if (!r.ok) { const e = new Error(out.error || `HTTP ${r.status}`); e.stale = r.status === 409; e.status = r.status; throw e; }
     return out;

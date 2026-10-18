@@ -228,6 +228,11 @@ Its lock is `deep-<checkout hash>.lock` beside the codex one, so one deep review
 A `source` review (sd:5101) runs codex on one research ledger row; its runner fetches the row's link first, one GET bounded at 20 s and 2 MB, so a source review reaches the network from the server's process, and a failed fetch is written into the input as not known.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
+Add source (sd:5112, `source_intake.py`) on the Research page writes ledger rows without a model and never writes the operator's checkout.
+A dropped file is staged first, raw, through `POST /api/research/intake/file` (up to 200 MB, under `~/.local/state/system/source-intake/staged/`, a day at most); `POST /api/research/intake` then fetches origin, adds a worktree in `~/worktrees/` on `source-intake/<stamp>` at `origin/main`, appends one grade `U` row per source, commits as `Authored-with: script`, files an item with `--ref source-intake:<stamp>` and runs `sd-ship lane enqueue --deliver`.
+A file over 5 MB goes under `sd.bulk_storage_root` as `<root>/<checkout>/sources/`, and its row links it there; a URL's title comes from the source review's bounded fetch, so the server reaches the network here too.
+A failure before the item removes the worktree, its branch and any bulk copy; a failed enqueue keeps them and notes the item with the line that retries.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists

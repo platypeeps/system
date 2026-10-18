@@ -119,3 +119,33 @@
 @media (forced-colors: active) {
   .track i.on, .rounds i.on { background: CanvasText; }
 }
+
+/* Add source (sd:5112). Hallmark · component: drop zone · genre: utilitarian (locked foundation tokens)
+ * states: default · hover · focus · active · disabled · loading (Adding…) · error (data-bad, .no) · success (status line)
+ * One quiet well above the ledger; a drag over the panel draws a dashed accent edge and says what a drop does. */
+.intake { display: grid; gap: var(--space-2xs); margin: 0 0 var(--space-sm); padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-well); }
+.intake h3 { margin: 0; }
+.intake textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 2.5rem; resize: vertical; padding: var(--space-2xs) var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: var(--color-paper); color: var(--color-ink); font: 400 var(--text-sm)/1.45 var(--font-data); }
+.intake textarea:hover { border-color: var(--color-ink-2); }
+.intake textarea:focus-visible, .intake select:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.intake-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); font: 400 var(--text-xs)/1.3 var(--font-ui); color: var(--color-ink-2); }
+.intake-bar select { min-width: 0; max-width: 16rem; min-height: 2rem; font: 400 var(--text-xs)/1 var(--font-data); }
+.intake-bar label.btn { cursor: pointer; white-space: nowrap; }
+.intake-bar label.btn:has(+ input:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.intake-bar .hint { flex: 1 1 12rem; color: var(--color-muted); }
+.intake-bar .btn[type="submit"] { margin-left: auto; white-space: nowrap; }
+.intake-list { list-style: none; margin: 0; padding: 0; }
+.intake-list li { display: grid; grid-template-columns: 2.75rem minmax(0, 1fr) auto auto; gap: var(--space-xs); align-items: center; min-height: var(--row); border-top: var(--rule-hair) solid var(--color-rule-2); font: 400 var(--text-xs)/1.35 var(--font-data); }
+.intake-list .k { color: var(--color-muted); }
+.intake-list .t { overflow-wrap: anywhere; color: var(--color-ink); }
+.intake-list .w { color: var(--color-ink-2); }
+.intake-list li[data-bad] .w { color: var(--color-warning-ink); }
+.intake-list li:not(:has(button)) { grid-template-columns: 2.75rem minmax(0, 1fr) auto; }
+.intake-said { margin: 0; font: 400 var(--text-xs)/1.45 var(--font-ui); color: var(--color-ink-2); }
+.intake-said:empty { display: none; }
+#view-sources { position: relative; }
+#view-sources[data-drop] .intake { border: 2px dashed var(--color-accent); background: var(--color-accent-bg); }
+#view-sources[data-drop] .intake .hint { color: var(--color-accent-ink); font-weight: 600; }
+@media (max-width: 480px) { .intake-list li { grid-template-columns: minmax(0, 1fr) auto; } .intake-list .k { display: none; } .intake-list .w { grid-column: 1; } }
+@media (pointer: coarse) { .intake-bar select, .intake-bar .btn { min-height: var(--row-touch); } }
+
