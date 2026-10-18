@@ -4,7 +4,19 @@
 // The work items `sd today` lists (sd:3271) are the document's `work`: their own table, the same Snooze, keyed today:item:<id>.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
+// sd:5080: Today's areas are the shell's views (shell.js, view:start): Now; Work (working now, your work); Inbox (problem
+// reports, new briefs, mail); Issues (yours, intake); Decisions. Each tab counts what waits on you there; a section's
+// script reports its number through window.todayCount(key, n), and n null means not read, which hides the tab's count.
+window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'work', label: 'Work' }, { id: 'inbox', label: 'Inbox', key: 'm' },
+  { id: 'issues', label: 'Issues' }, { id: 'decisions', label: 'Decisions' }];
 (() => {
+  const VIEW_OF = { now: 'now', work: 'work', problems: 'inbox', briefs: 'inbox', mail: 'inbox', issues: 'issues', intake: 'issues', decisions: 'decisions' };
+  const COUNTS = {};
+  window.todayCount = (key, n) => {
+    COUNTS[key] = n; const view = VIEW_OF[key];
+    const mine = Object.keys(VIEW_OF).filter(k => VIEW_OF[k] === view && k in COUNTS).map(k => COUNTS[k]);
+    window.shell?.view?.count(view, mine.some(x => x == null) ? null : mine.reduce((a, b) => a + b, 0));
+  };
   // The rail's map (built sections, and the old screen each unported one opens) is /ui/sections.js, loaded before this.
   // Capture (n) and the field's task mode file through the shell's default capture (sd:3520): POST /api/items.
 
@@ -115,6 +127,7 @@
   function render() {
     nowTable();
     const count = s => ROWS.filter(r => STATE[r.band] === s).length;
+    window.todayCount('now', count('warning') + count('caution'));
     put($('tally'), html`<span class="g-warning">■ ${count('warning')} warning</span><span class="g-caution">▲ ${count('caution')} caution</span><span class="g-queued">◌ ${count('queued')} queued</span>`);
     const d = new Date(DOC.now);
     put($('subhead'), html`${d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })} · <b>${ROWS.length}</b> thing${ROWS.length === 1 ? '' : 's'} want${ROWS.length === 1 ? 's' : ''} you, loudest first · read <time class="rel" datetime="${DOC.now}"></time>`);
@@ -164,6 +177,7 @@
         <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="4">Nothing is due and nothing is in progress.</td></tr>`);
     const n = WORK.filter(late).length;
+    window.todayCount('work', WORK_ERROR ? null : WORK.length);
     put($('work-tally'), WORK.length ? html`<span>${WORK.length} listed</span>${n ? html`<span class="g-caution">▲ ${n} overdue</span>` : ''}` : html``);
   }
 
@@ -220,7 +234,7 @@
     $('subhead').textContent = `Now could not be read: ${failed}. Refresh tries again.`;
     document.querySelectorAll('.cell[data-src]').forEach(cell => { cell.dataset.state = 'unknown'; cell.title = 'Now could not be read'; put(cell.querySelector('.val'), html`<span class="ph">not read</span>`); });
     put($('observed'), html`<span class="ph">not read</span>`);
-    put($('tally'), html``);
+    put($('tally'), html``); window.todayCount('now', null); window.todayCount('work', null);
     put($('rows'), html`<tr class="empty"><td colspan="5">Now could not be read: ${failed}</td></tr>`);
     put($('work'), html`<tr class="empty"><td colspan="4">Work could not be read: ${failed}. Refresh tries again.</td></tr>`);
     put($('work-tally'), html``);
@@ -287,6 +301,7 @@
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();
       srcFilter = srcFilter === c.dataset.src ? null : c.dataset.src;
+      window.shell.view.show('now'); // a lamp filters Now
       document.querySelectorAll('.cell[data-src]').forEach(x => x.setAttribute('aria-pressed', x.dataset.src === srcFilter));
       applyFilter();
     });
