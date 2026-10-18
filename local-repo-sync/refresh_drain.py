@@ -45,7 +45,8 @@ with the lane locks.
 The wait is bounded: 45 minutes in total for the refresh lock, the lane
 locks and the gate together (operator ruling), or REPO_SYNC_DRAIN_WAIT
 seconds. Past it, refresh refuses with nothing moved and names what was
-busy.
+busy. Follow skips instead and exits 0 (sd:5111): it runs every five
+minutes, so the next slot tries again, and a busy lane is no failure.
 
 Usage: refresh_drain.py <repo-sync.sh> refresh|follow [path ...], or <machine-setup.sh> promote [args ...]
 """
@@ -68,9 +69,10 @@ MANUAL = ("To move a checkout by hand while no lane runs: "
 
 
 class Refused(Exception):
-    def __init__(self, message, manual=False):
+    def __init__(self, message, manual=False, busy=False):
         super().__init__(message)
         self.manual = manual
+        self.busy = busy
 
 
 def lane_root(env, local=False):
@@ -136,7 +138,7 @@ def wait(busy, deadline, limit):
             return
         now = time.monotonic()
         if now >= deadline:
-            raise Refused(f"still waiting for {what} after {limit}s")
+            raise Refused(f"still waiting for {what} after {limit}s", busy=True)
         if noted is None or now - noted >= NOTE_EVERY:
             print(f"waiting for {what}", flush=True)
             noted = now
@@ -344,6 +346,9 @@ def main(argv):
         # ship run by hand holds no lane lock (sd:4012).
         held = drain(env, names, gate=verb in ("refresh", "promote"), promote=verb == "promote")
     except Refused as refusal:
+        if verb == "follow" and refusal.busy:
+            print(f"repo-sync.sh follow: skipped, nothing moved: {refusal}; the next run tries again")
+            return 0
         print(f"repo-sync.sh {verb}: refused, nothing moved: {refusal}", file=sys.stderr)
         if refusal.manual:
             print(MANUAL, file=sys.stderr)

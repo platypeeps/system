@@ -680,15 +680,16 @@ class FollowTest(unittest.TestCase):
         self.assertFalse(f.intent.exists())
 
     def test_kill_in_the_drain_keeps_the_marker_for_the_next_run(self):
-        """NEW (round 6, kill point 2). A drain that refuses moves nothing and
-        leaves the marker; the next run drains, sets up and deletes it."""
+        """NEW (round 6, kill point 2). A drain that times out moves nothing and
+        leaves the marker; the next run drains, sets up and deletes it. The
+        timeout skips with exit 0 (sd:5111)."""
         f = self.fixture()
         system, pack, old = self.pair(f)
         f.set_hub_pin(system, old[0], pack=old[1])
         f.leave_intent(*old)
         proc = f.hold(f.lane("busy-repo"), 30)
 
-        f.run("follow", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "1"})
+        f.run("follow", expect=0, extra_env={"REPO_SYNC_DRAIN_WAIT": "1"})
 
         proc.kill(), proc.wait(), proc.stdout.close()
         self.assertTrue(f.intent.exists())
@@ -870,16 +871,31 @@ class FollowTest(unittest.TestCase):
         self.assertNotIn("lanes held", result.stdout)
 
     def test_the_drain_runs_first(self):
-        """NEW. A busy lane past the bound refuses before anything moves."""
+        """REGRESSION (sd:5111). A busy lane past the bound skips before
+        anything moves, and exits 0: the next slot tries again. Two busy-lane
+        runs on 2026-10-18 exited 1 and opened a report (sd:5067)."""
         f = self.fixture()
         system, pack, old = self.pair(f)
         f.set_hub_pin(system, f.advance_origin(system), pack=old[1])
         proc = f.hold(f.lane("busy-repo"), 30)
         self.addCleanup(lambda: (proc.kill(), proc.wait(), proc.stdout.close()))
 
-        result = f.run("follow", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "1"})
+        result = f.run("follow", expect=0, extra_env={"REPO_SYNC_DRAIN_WAIT": "1"})
 
-        self.assertIn("busy-repo", result.stderr)
+        self.assertIn("busy-repo", result.stdout)
+        self.assertIn("repo-sync.sh follow: skipped, nothing moved", result.stdout)
+        self.assertNotIn("SD_REPORT_ATTENTION", result.stdout + result.stderr)
+        self.assertEqual(old, (f.head(system), f.head(pack)))
+
+    def test_a_refusal_other_than_a_busy_lane_still_fails(self):
+        """NEW (sd:5111). Only the wait running out skips; any other drain
+        refusal still exits 1 with nothing moved."""
+        f = self.fixture()
+        system, pack, old = self.pair(f)
+        f.set_hub_pin(system, f.advance_origin(system), pack=old[1])
+
+        result = f.run("follow", expect=1, extra_env={"REPO_SYNC_DRAIN_WAIT": "abc"})
+
         self.assertIn("repo-sync.sh follow: refused, nothing moved", result.stderr)
         self.assertEqual(old, (f.head(system), f.head(pack)))
 
