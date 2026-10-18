@@ -1006,9 +1006,30 @@ addEventListener('DOMContentLoaded', () => {
     const parked = tasks.length - listed().length;
     put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}`);
   }
+  // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
+  const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
+  const VIEW_ICON = { list: 'list-todo', board: 'kanban', matrix: 'grid-2x2' }, VIEW_NAME = { list: 'List', board: 'Board', matrix: 'Matrix' };
+  const viewItems = () => [...viewMenu.querySelectorAll('[role="menuitemradio"]')];
+  function viewMenuOpen(open) {
+    viewMenu.hidden = !open; viewBtn.setAttribute('aria-expanded', String(open));
+    if (open) (viewItems().find(b => b.getAttribute('aria-checked') === 'true') || viewItems()[0]).focus();
+  }
+  viewBtn.addEventListener('click', () => viewMenuOpen(viewMenu.hidden));
+  viewMenu.addEventListener('keydown', e => {
+    const items = viewItems(), i = items.indexOf(document.activeElement), last = items.length - 1;
+    const to = { ArrowDown: i >= last ? 0 : i + 1, ArrowUp: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+    if (to !== undefined) { e.preventDefault(); items[to].focus(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); viewMenuOpen(false); viewBtn.focus(); return; }
+    if (e.key === 'Tab') { viewMenuOpen(false); return; }
+    e.stopPropagation(); // a letter here is not the shell's (j, k, g); Enter and Space press the item
+  });
+  viewMenu.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setView(b.dataset.view); viewMenuOpen(false); viewBtn.focus(); });
+  document.addEventListener('click', e => { if (!viewMenu.hidden && !e.target.closest?.('.viewpick')) viewMenuOpen(false); });
   function setView(v) {
     view = v;
-    document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === v));
+    viewItems().forEach(b => b.setAttribute('aria-checked', String(b.dataset.view === v)));
+    viewBtn.setAttribute('aria-label', `View: ${VIEW_NAME[v]}`);
+    put(viewBtn, html`<svg class="i" aria-hidden="true"><use href="#i-${VIEW_ICON[v]}"/></svg>`);
     ['board', 'matrix', 'list'].forEach(x => { const el = document.getElementById('view-' + x); el.hidden = x !== v; if (x !== v) el.replaceChildren(); });
     subhead();
     render();
@@ -1032,7 +1053,6 @@ addEventListener('DOMContentLoaded', () => {
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
   }
-  document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 
   // ---------- Shapeshift: add or find ----------
   const inp = document.getElementById('shift-in'), prev = document.getElementById('shift-preview'), ghost = document.getElementById('shift-ghost');

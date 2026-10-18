@@ -681,6 +681,47 @@ class TheScript(ScreenCase):
             ["asg.get", "assignment", "safe", "o", False, True, False],  # copy only: Details show it (sd:3524)
         ])
 
+    # sd:5064: the List / Board / Matrix switch is one icon button whose menu lists the three views.
+    VIEW_MENU = r"""const items = ['list', 'board', 'matrix'].map(v => { const b = El('item-' + v); b.dataset.view = v; b.attrs = {};
+  b.setAttribute = (k, x) => { b.attrs[k] = String(x); }; b.getAttribute = k => k in b.attrs ? b.attrs[k] : null; b.focus = () => { document.activeElement = b; OUT.focus.push(v); }; return b; });
+OUT.focus = []; const btn = ELS['view-btn'], menu = ELS['view-menu']; btn.attrs = {}; btn.setAttribute = (k, x) => { btn.attrs[k] = String(x); };
+btn.focus = () => { document.activeElement = btn; OUT.focus.push('button'); };
+menu.querySelectorAll = () => items; menu.hidden = true;
+const key = (k) => { const ev = { key: k, preventDefault() { ev.prevented = true; }, stopPropagation() { ev.stopped = true; } }; menu.listeners.keydown[0](ev); return ev; };
+"""
+
+    def test_the_view_button_shows_the_current_views_icon_and_names_it(self):
+        out = self.run_page(self.VIEW_MENU + """document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'matrix' })); await flush();
+R.label = btn.attrs['aria-label']; R.icon = btn.html; R.checked = items.map(b => b.attrs['aria-checked']);""")
+        self.assertEqual(out["R"]["label"], "View: Matrix")
+        self.assertIn('<use href="#i-grid-2x2"/>', out["R"]["icon"])
+        self.assertEqual(out["R"]["checked"], ["false", "false", "true"])
+        self.assertIn("view=matrix", out["urls"][-1])
+
+    def test_the_view_menu_opens_on_the_checked_view_and_arrows_escape_and_a_pick_work(self):
+        out = self.run_page(self.VIEW_MENU + """document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'board' })); await flush();
+btn.listeners.click[0]({ target: btn }); R.open = [menu.hidden, btn.attrs['aria-expanded'], OUT.focus.slice()];
+key('ArrowDown'); key('ArrowDown'); key('ArrowUp'); key('End'); key('Home'); R.moved = OUT.focus.slice(1);
+const letter = key('j'); R.letter = !!letter.stopped;
+const esc = key('Escape'); R.esc = [menu.hidden, btn.attrs['aria-expanded'], OUT.focus.at(-1), !!esc.stopped];
+btn.listeners.click[0]({ target: btn }); menu.listeners.click[0]({ target: { closest: s => s === '[data-view]' ? items[0] : null } }); await flush();
+R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
+        self.assertEqual(out["R"]["open"], [False, "true", ["board"]])
+        self.assertEqual(out["R"]["moved"], ["matrix", "list", "matrix", "matrix", "list"])
+        self.assertTrue(out["R"]["letter"], "a letter in the menu reached the shell's keys")
+        self.assertEqual(out["R"]["esc"], [True, "false", "button", True])
+        self.assertEqual(out["R"]["pick"], [True, "View: List", "button"])
+        self.assertIn("view=list", out["urls"][-1])
+
+    def test_the_view_menu_markup_is_a_menu_of_radio_items_and_keeps_the_keys(self):
+        page = (V2 / "tasks.html").read_text(encoding="utf-8")
+        self.assertIn('<button type="button" class="viewpick-btn" id="view-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="view-menu" aria-label="View: Board">', page)
+        self.assertIn('<div class="actmenu viewmenu" id="view-menu" role="menu" aria-label="View" hidden>', page)
+        self.assertEqual(re.findall(r'role="menuitemradio" data-view="(\w+)" aria-checked="(\w+)"><svg class="i" aria-hidden="true"><use href="#i-([\w-]+)"/></svg><span>(\w+)</span><kbd>(v \w)</kbd>', page),
+                         [("list", "false", "list-todo", "List", "v l"), ("board", "true", "kanban", "Board", "v b"), ("matrix", "false", "grid-2x2", "Matrix", "v m")])
+        self.assertNotIn('class="seg" role="group" aria-label="View"', page)
+        self.assertIn('aria-label="Help: views"', page)
+
     def test_the_page_reads_the_rows_and_draws_the_kind_and_repo_filters(self):
         out = self.run_page("R.filters = ELS.filters.html; R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/tasks"])
