@@ -85,7 +85,9 @@ fails is a row on Now. The served process keeps each fleet area (`snapshot.Fleet
 and Metrics' month and week numbers (`server._metrics_kept`) in memory: a request gets the last reading with its `observed` time, a
 reading past 45 seconds starts one background refresh, any write the server answers
 makes the next read wait for a fresh one, and a failed refresh keeps the last
-reading marked `stale` with its reason. A restart reads again.
+reading marked `stale` with its reason. `/api/usage` without `?month=` is kept the same way (`server._usage_kept`);
+there a stale reading answers 503, not old bytes. A restart reads again, and starts these reads, Health's walkers and its
+doctor in the background as serving begins (`server._warm`, sd:5064).
 
 ## Private front door
 
