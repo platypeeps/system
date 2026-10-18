@@ -116,6 +116,55 @@ class TheSubset(unittest.TestCase):
         self.assertEqual(markdown(""), "")
 
 
+class Links(unittest.TestCase):
+    """The schemes a link may carry, and the one escape its text gets (sd:5000)."""
+
+    @staticmethod
+    def anchors(rendered):
+        """(href, text) of every `<a>`, as a browser decodes them."""
+        from html.parser import HTMLParser
+
+        found, inside = [], []
+
+        class Anchors(HTMLParser):
+            def handle_starttag(self, name, attrs):
+                if name == "a":
+                    found.append([dict(attrs).get("href"), ""])
+                    inside.append(True)
+
+            def handle_endtag(self, name):
+                if name == "a":
+                    inside.clear()
+
+            def handle_data(self, data):
+                if inside:
+                    found[-1][1] += data
+
+        Anchors(convert_charrefs=True).feed(str(rendered))
+        return [tuple(pair) for pair in found]
+
+    def test_an_obsidian_link_in_a_brief_opens_the_note(self):
+        # REGRESSION. A brief links its vault notes as `obsidian://open?...`,
+        # and the subset showed every one as source text.
+        url = "obsidian://open?vault=Example&file=Daily%2F2026-10-17"
+        self.assertEqual(self.anchors(markdown(f"See [the note]({url}).")), [(url, "the note")])
+
+    def test_a_query_string_and_a_label_are_escaped_once(self):
+        # REGRESSION. The link was matched in text already escaped, then
+        # escaped again by `tag`, so `&` reached the browser as `&amp;` and
+        # the address named a parameter `amp;b`.
+        url = "https://example.test/x?a=1&b=2"
+        self.assertEqual(self.anchors(markdown(f"[A & B]({url})")), [(url, "A & B")])
+
+    def test_every_other_scheme_stays_text(self):
+        for url in ("javascript:alert(1)", "javascript://%0aalert(1)", "data:text/html,x", "vbscript:x",
+                    "file:///etc/hosts", "obsidian:open", "obsidianx://open", "ftp://example.test/"):
+            with self.subTest(url):
+                rendered = markdown(f"[x]({url})")
+                self.assertEqual(self.anchors(rendered), [])
+                self.assertIn("[x](", rendered)
+
+
 class Shapes(unittest.TestCase):
     """SVG shapes are not HTML void elements, and the difference is a bug."""
 

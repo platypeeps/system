@@ -14,8 +14,8 @@ nothing here for them to name.
 
 Markdown is a *subset*, allow-listed, not a sanitiser run over a general
 renderer: headings, paragraphs, lists, block quotes, fenced and inline code,
-emphasis, and links whose scheme is `http` or `https`. A `javascript:` or
-`data:` href is rendered as the text it is. Raw HTML in the source is never
+emphasis, and links whose scheme is `http`, `https` or `obsidian`. A
+`javascript:` or `data:` href is rendered as the text it is. Raw HTML in the source is never
 markup -- it is escaped and shown, which is the fixture artifact criterion 12
 puts through this function.
 """
@@ -28,9 +28,10 @@ from urllib.parse import urlsplit
 
 __all__ = ["Markup", "attribute", "escape", "href", "join", "markdown", "tag", "text"]
 
-#: The two schemes a link may carry. Everything else -- `javascript:`,
+#: The schemes a link may carry. `obsidian://` opens a vault note, which a
+#: routine brief links to (sd:5000). Everything else -- `javascript:`,
 #: `data:`, `vbscript:`, a scheme-relative `//host` -- renders as text.
-LINK_SCHEMES = ("http://", "https://", "/")
+LINK_SCHEMES = ("http://", "https://", "obsidian://", "/")
 
 
 def href(url: str, schemes: tuple[str, ...] = ("https", "http")) -> str | None:
@@ -144,8 +145,11 @@ def _link(match: re.Match[str]) -> str:
         # operator sees exactly what the artifact said and the browser is
         # never asked to resolve it.
         return str(escape(match.group(0)))
+    # Both halves were matched in escaped text: the label stays as it is,
+    # and the href is unescaped once, since `tag` escapes it again; else an
+    # `&` in a query reached the browser as `&amp;` (sd:5000).
     return str(
-        tag("a", label, href=href, rel="noopener noreferrer nofollow")
+        tag("a", Markup(label), href=html.unescape(href), rel="noopener noreferrer nofollow")
     )
 
 

@@ -224,6 +224,20 @@ class TheItemPage(BriefCase):
         self.assertNotIn("Report source", page)
         self.assertNotIn("acknowledge", page.lower())
 
+    def test_an_obsidian_link_in_a_brief_is_a_link_and_javascript_stays_text(self):
+        # REGRESSION (sd:5000). The page showed a brief's vault links as
+        # source text; Today's and Briefs' Read both open this page.
+        url = link("2026-09-06 - Intel Brief")
+        item = routine_briefs.add(self.connection, "2026-09-07 - Intel Brief",
+                                  f"---\nseries: x\n---\n\nSee [yesterday]({url}) and [this](javascript:alert(1)).\n",
+                                  repo=REPO, who="test", at="2026-09-07T09:00:00+00:00")["item"]
+        self.connection.commit()
+        page = self.render(f"/item/{item}")
+        hrefs = re.findall(r'<a href="([^"]*)"', page)
+        self.assertIn(url.replace("&", "&amp;"), hrefs)
+        self.assertFalse([h for h in hrefs if h.lower().startswith("javascript")], hrefs)
+        self.assertIn("[this](javascript:alert(1))", page)
+
     def test_report_controls_draw_nothing_for_a_brief(self):
         from sd_dashboard import reports_screen
         from sd_db import workflow
