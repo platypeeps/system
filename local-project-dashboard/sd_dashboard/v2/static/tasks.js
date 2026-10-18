@@ -945,7 +945,8 @@ addEventListener('DOMContentLoaded', () => {
     put(startDlg, html`<form method="dialog" class="date-form">
       <h2 id="start-h">Start next ready tasks</h2>
       <p class="why">${unread(P.running)} of ${P.cap} builders run · five-minute load ${unread(P.load)} of ${unread(P.load_max)}</p>
-      ${P.refusal ? html`<p class="why">▲ Nothing can start: ${P.refusal}.</p>` : html`
+      ${P.refusal ? html`<p class="why">▲ Nothing can start: ${P.refusal}.</p>
+        ${P.holders?.length ? html`<p><a class="btn quiet" href="/management?view=sessions">Open Management › Sessions</a></p>` : ''}` : html`
         <label class="label" for="start-n">Builders to start (1–${P.room})</label>
         <input id="start-n" type="number" min="1" max="${P.room}" value="${P.room}" required>
         <ol class="start-list">${P.start.map((r, i) => html`<li data-i="${i}"><code>#${r.id}</code> ${r.title}</li>`)}</ol>`}

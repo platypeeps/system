@@ -385,7 +385,8 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
             "waiting_for": raw.get("waitingFor") if isinstance(raw.get("waitingFor"), str) else "",
             "last_action": _iso(last), "age": age, "age_text": elapsed(age) if age is not None else "",
             "builder": builder, "tasks": tasks,
-            "agents": [{key: agent[key] for key in ("name", "builder", "state", "items", "description")} | {"last": _iso(agent["last"])}
+            "agents": [{key: agent[key] for key in ("name", "builder", "state", "items", "description")}
+                       | {"last": _iso(agent["last"]), "age": int(clock - agent["last"])}
                        for agent in agents if agent["state"] != "idle"],
             "watches": watches, "checkouts": checkouts, "unmatched": unmatched,
             "safe": {"state": safe, "why": no + unknown}}
@@ -394,15 +395,23 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
 def builders(sessions: list[dict] | None, why: str) -> dict:
     """How many builders run on this Mac: running builder subagents and busy or waiting Fix sessions; None when not known."""
     if sessions is None:
-        return {"running": None, "why": why or "no session was listed"}
+        return {"running": None, "why": why or "no session was listed", "holders": []}
     blind = [row["name"] or row["id"] for row in sessions
              if any(reason.startswith(("no transcript", "its transcript")) for reason in row["safe"]["why"])]
     if blind:
-        return {"running": None, "why": f"the transcripts of {', '.join(blind)} were not read"}
-    # Stalled and unknown hold their slot: only a finished answer or an idle session frees it.
-    count = sum(1 for row in sessions for agent in row["agents"] if agent["builder"] and agent["state"] != "idle")
-    count += sum(1 for row in sessions if row["builder"] and row["status"] != "idle")
-    return {"running": count, "why": ""}
+        return {"running": None, "why": f"the transcripts of {', '.join(blind)} were not read", "holders": []}
+    # Stalled and unknown hold their slot: only a finished answer or an idle session frees it. `holders` names each
+    # slot, stalled first, so a full cap says which sessions to end (operator ruling on sd:5106 round 1).
+    holders = []
+    for row in sessions:
+        where = {"session": row["name"] or row["id"][:8], "repo": Path(row["cwd"]).name if row["cwd"] else row["name"]}
+        holders += [where | {"agent": agent["name"], "state": agent["state"], "age": agent["age"]}
+                    for agent in row["agents"] if agent["builder"] and agent["state"] != "idle"]
+        if row["builder"] and row["status"] != "idle":
+            holders.append(where | {"agent": "", "state": "running" if row["status"] == "busy" else row["status"], "age": row["age"]})
+    order = {"stalled": 0, "unknown": 1, "waiting": 2, "running": 3}
+    holders.sort(key=lambda h: (order.get(h["state"], 1), -(h["age"] or 0)))
+    return {"running": len(holders), "why": "", "holders": holders}
 
 
 def document(connection, *, now: str, fleet=None, agents=None, processes=None, work=None, root=None) -> dict:

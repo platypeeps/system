@@ -166,7 +166,8 @@ class StartNext(ScreenCase):
         for n in range(6):
             log = folder / f"agent-a{n}.jsonl"
             log.write_text(mid_turn if n == 0 else "")
-            os.utime(log, (0, 0))  # untouched since 1970: stalled, or unread
+            then = 1788696000 - 3 * 3600 - 60 * n  # NOW less 3 h and n minutes: stalled, or unread
+            os.utime(log, (then, then))
             (folder / f"agent-a{n}.meta.json").write_text(json.dumps(
                 {"customAgentType": "sd-slice-builder", "name": f"builder-{chr(97 + n)}", "description": f"Build sd:{held}" if n == 0 else ""}))
         agents = [{"pid": 1, "cwd": str(self.work), "sessionId": "lead-session-1", "name": "lead", "status": "idle"}]
@@ -176,7 +177,14 @@ class StartNext(ScreenCase):
                                             work=lambda path: None, fleet=lambda area: {"worktrees": []})
 
         out = self.plan(sessions=document)
-        self.assertEqual((out["running"], out["room"], out["refusal"]), (6, 0, "6 builders run already; the cap is 6"))
+        # Operator ruling (sd:5106 round 1): a full cap names the sessions holding it, stalled first, and where to end them.
+        self.assertEqual((out["running"], out["room"]), (6, 0))
+        self.assertEqual(out["refusal"], "6 builders run already; the cap is 6. Stalled: checkout builder-a (3h 0m). Unknown: "
+                                         "checkout builder-f (3h 5m), checkout builder-e (3h 4m), checkout builder-d (3h 3m), "
+                                         "checkout builder-c (3h 2m), checkout builder-b (3h 1m). End a session in Management > "
+                                         "Sessions to free its slots")
+        self.assertEqual(out["holders"][0], {"session": "lead", "repo": "checkout", "agent": "builder-a", "state": "stalled",
+                                             "age": 10800})
         self.assertEqual({row["id"]: row["why"] for row in out["skipped"]}[held], "a live Claude session works on it")
         self.assertEqual([row["id"] for row in out["eligible"]], [other])
 

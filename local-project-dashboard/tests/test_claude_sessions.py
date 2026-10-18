@@ -41,6 +41,11 @@ def agent(session=LEAD, *, pid=100, status="idle", cwd="/work/system", name="sys
     return row
 
 
+def counted(builders):
+    """The count and its reason; `holders` names the slots, checked on its own."""
+    return {key: builders[key] for key in ("running", "why")}
+
+
 def clean(path):
     return {"branch": "HEAD", "dirty": 0, "unpushed": 0}
 
@@ -79,7 +84,7 @@ class Sessions(ScreenCase):
         self.assertEqual((row["status"], row["waiting"], row["safe"]), ("idle", False, {"state": "yes", "why": []}))
         self.assertEqual((row["last_action"], row["age"], row["age_text"]), ("2026-09-06T11:50:00Z", 600, "10m"))
         self.assertEqual(doc["sources"], {"agents": "", "processes": "", "worktrees": ""})
-        self.assertEqual(doc["builders"], {"running": 0, "why": ""})
+        self.assertEqual(counted(doc["builders"]), {"running": 0, "why": ""})
 
     def test_a_session_waiting_on_the_operator_ranks_first_and_says_what_holds_it(self):
         self.transcript(age=10)
@@ -133,7 +138,7 @@ class Sessions(ScreenCase):
                 doc = self.read([agent(session)], fleet=trees)
                 row = doc["sessions"][0]
                 self.assertEqual(row["safe"], {"state": state, "why": [why]})
-                self.assertEqual(doc["builders"], {"running": 1, "why": ""})
+                self.assertEqual(counted(doc["builders"]), {"running": 1, "why": ""})
                 self.assertEqual([t["item"] for t in row["tasks"]], [item])
         # A final answer is the evidence that frees it.
         self.transcript(OTHER)
@@ -182,13 +187,14 @@ class Sessions(ScreenCase):
             "claude agents gave no status, so whether it works or waits on you is not known",
             "claude agents gave no pid, so its lane watches were not read",
             "claude agents gave no cwd, so its checkout was not read"])
-        self.assertEqual(doc["builders"], {"running": 1, "why": ""})
+        self.assertEqual(counted(doc["builders"]), {"running": 1, "why": ""})
+        self.assertEqual(doc["builders"]["holders"], [{"session": "system", "repo": "system", "agent": "", "state": "unknown", "age": 60}])
 
     def test_a_first_prompt_past_the_head_is_still_read_and_one_never_found_is_unread(self):
         item = self.item("Long head")
         filler = [{"type": "summary", "summary": "x" * 1000} for _ in range(100)]
         self.transcript(records=filler + [record("user", text=fix_session.prompt("task", item)), record("assistant", blocks=("tool_use",))])
-        self.assertEqual(self.read([agent(status="busy")])["builders"], {"running": 1, "why": ""})
+        self.assertEqual(counted(self.read([agent(status="busy")])["builders"]), {"running": 1, "why": ""})
         self.transcript(records=[{"type": "summary", "summary": "x" * (claude_sessions.TAIL_MAX + 10)}])
         doc = self.read([agent(status="busy")])
         self.assertIsNone(doc["builders"]["running"])
@@ -234,9 +240,9 @@ class Sessions(ScreenCase):
         row = doc["sessions"][0]
         self.assertTrue(row["builder"])
         self.assertEqual(row["tasks"][0]["via"], "Fix builder prompt")
-        self.assertEqual(doc["builders"], {"running": 1, "why": ""})
+        self.assertEqual(counted(doc["builders"]), {"running": 1, "why": ""})
         self.transcript(records=[record("user", text=fix_session.prompt("task", item)), record("assistant", stop="end_turn")])
-        self.assertEqual(self.read([agent(status="idle")])["builders"], {"running": 0, "why": ""})
+        self.assertEqual(counted(self.read([agent(status="idle")])["builders"]), {"running": 0, "why": ""})
 
     def test_the_branch_of_the_cwd_names_its_task(self):
         self.transcript()
@@ -269,7 +275,7 @@ class Sessions(ScreenCase):
         # claude itself not answering: no session list, which is not an empty one.
         doc = claude_sessions.document(None, now=NOW, agents=broken, fleet=lambda area: {"worktrees": []}, root=self.home)
         self.assertIsNone(doc["sessions"])
-        self.assertEqual(doc["builders"], {"running": None, "why": "ps gave no answer in 10 s"})
+        self.assertEqual(counted(doc["builders"]), {"running": None, "why": "ps gave no answer in 10 s"})
         doc = claude_sessions.document(None, now=NOW, agents=lambda: {"not": "a list"}, root=self.home)
         self.assertEqual(doc["sources"]["agents"], "claude agents --json answered no session list")
 

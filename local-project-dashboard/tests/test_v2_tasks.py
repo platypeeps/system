@@ -1495,6 +1495,14 @@ R.shown = D.html; R.before = OUT.posts.length; D.returnValue = 'start'; D.onclos
         self.assertIn("▨ of 6 builders run", out["R"]["shown"])
         self.assertIn("▲ Nothing can start: the running builders were not counted: ps failed.", out["R"]["shown"])
         self.assertNotIn('value="start"', out["R"]["shown"])
+        self.assertNotIn("view=sessions", out["R"]["shown"])
+        self.assertEqual(out["posts"], [])
+        full = dict(self.START_PLAN, running=6, room=0, start=[], refusal="6 builders run already; the cap is 6. Stalled: "
+                    "research b4211 (3h 0m). End a session in Management > Sessions to free its slots",
+                    holders=[{"session": "research", "repo": "research", "agent": "b4211", "state": "stalled", "age": 10800}])
+        out = self.start_next(full, "[500, { error: 'not called' }]")
+        self.assertIn("Stalled: research b4211 (3h 0m).", out["R"]["shown"])
+        self.assertIn('<a class="btn quiet" href="/management?view=sessions">Open Management › Sessions</a>', out["R"]["shown"])
         self.assertEqual(out["posts"], [])
         partial = ("[200, { started: [{ id: 11 }], failed: { id: 12, status: 504, error: 'herdr.sh launch gave no answer in 90 s' },"
                    " not_started: [13] }]")

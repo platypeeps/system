@@ -31,7 +31,7 @@ from sd_db import reads, workflow
 from sd_db.errors import SdDbError
 
 from . import claude_sessions, fix_session
-from .active_sessions import Unread, _reason
+from .active_sessions import Unread, _reason, elapsed
 
 __all__ = ["CAP", "plan", "request", "run"]
 
@@ -71,6 +71,19 @@ def _load(gate) -> tuple[float, float]:
     return float(load[1]), float(cap)
 
 
+def _holders(holders: list[dict]) -> str:
+    """The sessions holding the slots, by state, stalled first: `. Stalled: traces-research b4211 (3h); …`."""
+    if not holders:
+        return ""
+    groups: dict[str, list[str]] = {}
+    for holder in holders:
+        name = f"{holder['repo']} {holder['agent'] or 'Fix session ' + holder['session']}"
+        age = f" ({elapsed(holder['age'])})" if isinstance(holder.get("age"), int) else ""
+        groups.setdefault(holder["state"], []).append(name + age)
+    return "".join(f". {state.capitalize()}: {', '.join(names)}" for state, names in groups.items()) + \
+        ". End a session in Management > Sessions to free its slots"
+
+
 def plan(connection, *, now: str, sessions=None, gate=None) -> dict:
     """What Start next would start now: `start`, the items in order with their revisions; `room`; `refusal`.
 
@@ -105,14 +118,15 @@ def plan(connection, *, now: str, sessions=None, gate=None) -> dict:
     if running is None:
         refusal = refusal or f"the running builders were not counted: {why}"
     elif running >= CAP:
-        refusal = refusal or f"{running} builders run already; the cap is {CAP}"
+        refusal = refusal or f"{running} builders run already; the cap is {CAP}" + _holders(claude["builders"].get("holders") or [])
     if load is not None and load > load_max:
         refusal = refusal or f"the five-minute load is {load:g}, above the cap of {load_max:g}"
     if not eligible and not refusal:
         refusal = "no ready item is left to start"
     room = 0 if refusal else min(CAP - running, len(eligible))
     return {"read": now, "cap": CAP, "running": running, "load": load, "load_max": load_max, "room": room,
-            "refusal": refusal, "start": eligible[:room], "eligible": eligible, "skipped": skipped}
+            "refusal": refusal, "start": eligible[:room], "eligible": eligible, "skipped": skipped,
+            "holders": claude["builders"].get("holders") or [] if running is not None and running >= CAP else []}
 
 
 def run(connection, *, now: str, items: list[dict], who: str, sessions=None, gate=None, launch=None) -> dict:
