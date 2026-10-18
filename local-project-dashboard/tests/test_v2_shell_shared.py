@@ -804,13 +804,21 @@ class TheSelect(unittest.TestCase):
         # The option popup follows the theme: tokens.css sets color-scheme on :root.
         self.assertIn("color-scheme", (STATIC / "tokens.css").read_text(encoding="utf-8"))
 
-    def test_a_select_has_the_chips_height_and_radius(self):
-        # The operator's ask: a filter select sits in a row of chips, so it takes their height and pill radius.
+    def test_a_filter_bar_select_has_the_chips_shape_and_a_form_select_the_inputs(self):
+        # The operator's ruling: a filter-bar select sits with chips, so it takes their height and pill radius; a form
+        # select (Details, Settings, Management, dialogs) keeps the text inputs' radius, and its page sets their height.
         chip = re.search(r"^\.chip \{([^}]*)\}", SHELL_CSS, re.M).group(1)
         select = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        bar = re.search(r"^:where\(\.filters select, \.tgrid select\) \{([^}]*)\}", SHELL_CSS, re.M)
+        self.assertIsNotNone(bar, "shell.css has no filter-bar select rule")
         for prop in ("min-height", "border-radius"):
             want = re.search(rf"\b{prop}: ([^;]+);", chip).group(1)
-            self.assertEqual(re.search(rf"\b{prop}: ([^;]+);", select).group(1), want, prop)
+            self.assertEqual(re.search(rf"\b{prop}: ([^;]+);", bar.group(1)).group(1), want, prop)
+        self.assertIn("border-radius: var(--radius-md);", select)
+        for name in ("settings.css", "management.css", "tasks.css"):
+            css = (STATIC / name).read_text(encoding="utf-8")
+            field = re.search(r"select\.fld \{ min-height: ([^;]+);", css).group(1)
+            self.assertEqual(re.search(r"\.fld:not\(select\) \{ min-height: ([^;]+);", css).group(1), field, name)
         # A filter bar sizes no select of its own (Reports' .filters select was row-touch tall); a coarse pointer's
         # row-touch comes from the shared rule.
         reports = (STATIC / "reports.css").read_text(encoding="utf-8")
@@ -826,6 +834,8 @@ class TheSelect(unittest.TestCase):
                 continue
             css = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
             for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+                if selector.strip().startswith(":where("):
+                    continue  # the shell's shared rules, which may list several selects in one :where()
                 names = [part.strip() for part in selector.split(",") if re.search(r"\bselect\b(?![-\w])", part)]
                 names = [n for n in names if not n.startswith(":where(") and "tile-f" not in n and ":not(select)" not in n]
                 if names and redraw.search(body):
