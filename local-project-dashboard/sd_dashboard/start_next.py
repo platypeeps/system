@@ -20,6 +20,7 @@ A count or a load that could not be read is a refusal with its reason, never roo
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import sqlite3
 import subprocess
@@ -63,8 +64,9 @@ def gate_status() -> dict:
 def _load(gate) -> tuple[float, float]:
     answer = (gate or gate_status)()
     load, cap = answer.get("load") if isinstance(answer, dict) else None, answer.get("load_max") if isinstance(answer, dict) else None
-    if not (isinstance(load, list) and len(load) >= 2 and all(isinstance(x, (int, float)) for x in load[:2])
-            and isinstance(cap, (int, float))):
+    # NaN compares false with everything, so a NaN load would never be above the cap: it is unread, like inf.
+    if not (isinstance(load, list) and len(load) >= 2 and all(isinstance(x, (int, float)) and math.isfinite(x) for x in load[:2])
+            and isinstance(cap, (int, float)) and math.isfinite(cap)):
         raise Unread("sd gate status gave no load or load cap")
     return float(load[1]), float(cap)
 

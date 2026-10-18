@@ -91,6 +91,8 @@ class StartNext(ScreenCase):
             (dict(sessions=sessions(running=None, why="claude agents --json gave no answer in 10 s")),
              "the running builders were not counted: claude agents --json gave no answer in 10 s"),
             (dict(gate=lambda: {"load": []}), "the load was not read: sd gate status gave no load or load cap"),
+            (dict(gate=gate(load5=float("nan"))), "the load was not read: sd gate status gave no load or load cap"),
+            (dict(gate=gate(load_max=float("inf"))), "the load was not read: sd gate status gave no load or load cap"),
         ]
         for seams, refusal in cases:
             out = self.plan(**seams)
@@ -148,6 +150,35 @@ class StartNext(ScreenCase):
         out = self.run_plan([{"id": row["id"], "revision": row["revision"]} for row in again["start"]])
         self.assertEqual([row["id"] for row in out["started"]], [second])
         self.assertEqual(self.launched, [f"sd-{first}", f"sd-{second}"])
+
+    def test_a_stalled_or_unread_builder_holds_its_slot_and_its_item(self):
+        """Review class (sd:5106 round 1): the real sessions document, with one builder stalled past `STALL` and five
+        whose logs hold no record, leaves no room, and the stalled builder's item is not offered again."""
+        import json
+        import os
+        from sd_dashboard import claude_sessions
+        held, other = self.ready("Held by a stalled builder"), self.ready("Next")
+        home = Path(self.tmp.name) / "claude"
+        folder = home / "projects" / "-w" / "lead-session-1" / "subagents"
+        folder.mkdir(parents=True)
+        (home / "projects" / "-w" / "lead-session-1.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "go"}}) + "\n")
+        mid_turn = json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use"}]}}) + "\n"
+        for n in range(6):
+            log = folder / f"agent-a{n}.jsonl"
+            log.write_text(mid_turn if n == 0 else "")
+            os.utime(log, (0, 0))  # untouched since 1970: stalled, or unread
+            (folder / f"agent-a{n}.meta.json").write_text(json.dumps(
+                {"customAgentType": "sd-slice-builder", "name": f"builder-{chr(97 + n)}", "description": f"Build sd:{held}" if n == 0 else ""}))
+        agents = [{"pid": 1, "cwd": str(self.work), "sessionId": "lead-session-1", "name": "lead", "status": "idle"}]
+
+        def document(connection, *, now):
+            return claude_sessions.document(connection, now=now, agents=lambda: agents, processes=list, root=home,
+                                            work=lambda path: None, fleet=lambda area: {"worktrees": []})
+
+        out = self.plan(sessions=document)
+        self.assertEqual((out["running"], out["room"], out["refusal"]), (6, 0, "6 builders run already; the cap is 6"))
+        self.assertEqual({row["id"]: row["why"] for row in out["skipped"]}[held], "a live Claude session works on it")
+        self.assertEqual([row["id"] for row in out["eligible"]], [other])
 
     def test_the_post_takes_only_distinct_id_and_revision_pairs_up_to_the_cap(self):
         good = {"id": 1, "revision": "r"}
