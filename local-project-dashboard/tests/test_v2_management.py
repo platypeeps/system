@@ -920,6 +920,22 @@ R.lamp = ELS.annunciator.html.split('data-view="sessions"')[1].split('data-view=
         self.assertIn("claude is not on PATH", out["R"]["sess"])
         self.assertNotIn("on you", out["R"]["lamp"])
 
+    def test_sessions_or_a_status_not_read_leave_the_lamp_unknown_not_ok(self):
+        """Review class (sd:5106 round 1): a wait that was not read is not "nobody waits"."""
+        quiet = dict(self.doc["sessions"], abandoned=0)
+        cell = """R.lamp = ELS.annunciator.html.split('data-view="sessions"')[1].split('data-view=')[0]; R.sess = ELS['view-sessions'].html;"""
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=None), search="?view=sessions")
+        self.assertIn('data-state="unknown"', out["R"]["lamp"])
+        self.assertIn("Claude sessions not read", out["R"]["lamp"])
+        unheard = dict(CLAUDE, sessions=[dict(claude_row("s-mute", "mute", status="unknown", safe="unknown"), waiting=None)])
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=unheard), search="?view=sessions")
+        self.assertIn('data-state="unknown"', out["R"]["lamp"])
+        self.assertIn("not known to wait", out["R"]["lamp"])
+        self.assertIn("▨</span> not read</td>", out["R"]["sess"])
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=dict(CLAUDE, sessions=[claude_row("s-idle", "system")])),
+                            search="?view=sessions")
+        self.assertIn('data-state="ok"', out["R"]["lamp"])
+
     def test_a_snapshot_section_says_when_it_was_observed_and_a_stale_one_is_not_green(self):
         git = dict(self.doc["git"], observed="2026-09-06T11:52:00Z", stale=None)
         sess = dict(self.doc["sessions"], observed="2026-09-06T11:31:00Z", stale="git did not answer")

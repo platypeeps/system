@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sd_dashboard import claude_sessions, fix_session
 
-from support import ScreenCase
+from support import ScreenCase, transition
 
 NOW = "2026-09-06T12:00:00Z"
 CLOCK = 1788696000.0  # NOW as a timestamp
@@ -89,21 +89,110 @@ class Sessions(ScreenCase):
         self.assertEqual((first["id"], first["waiting"], first["waiting_for"]), (OTHER, True, "permission: Bash"))
         self.assertEqual(first["safe"], {"state": "no", "why": ["it waits on you: permission: Bash"]})
 
-    def test_a_running_builder_names_the_task_and_blocks_exit_and_a_stalled_one_does_neither(self):
+    def test_a_running_builder_names_the_task_and_blocks_exit(self):
         self.transcript()
         item = self.item("Sessions screen")
         self.subagent(LEAD, f"b{item}-sessions", MID_TURN, age=120, description="Build sessions")
         self.subagent(LEAD, "old-reader", MID_TURN, age=claude_sessions.STALL + 60, kind="general-purpose")
-        self.subagent(LEAD, "done-builder", FINISHED, age=60, description="Build sd:999999")
-        row = self.read([agent()])["sessions"][0]
+        trees = lambda area: {"worktrees": [{"path": "/wt/s", "branch": f"review/sd{item}-s", "live": True}]}
+        row = self.read([agent()], fleet=trees)["sessions"][0]
         self.assertEqual(row["tasks"], [{"item": item, "via": f"builder b{item}-sessions", "title": "Sessions screen",
                                          "status": "planning"}])
-        self.assertEqual(row["safe"], {"state": "no", "why": [f"builder b{item}-sessions is running"]})
+        self.assertEqual(row["safe"]["why"][0], f"builder b{item}-sessions is running")
         self.assertEqual([(a["name"], a["state"]) for a in row["agents"]],
                          [(f"b{item}-sessions", "running"), ("old-reader", "stalled")])
         # The age is the newest write of the session or any of its agents.
         self.assertEqual(row["age"], 60)
-        self.assertEqual(self.read([agent()])["builders"], {"running": 1, "why": ""})
+
+    def test_stalled_or_unread_counts_as_active_until_a_final_answer(self):
+        """Review class (sd:5106 round 1): an unknown or stale reading counts as idle, done or safe. Each reading here
+        lacks completion evidence, so the session is not safe to exit and its builder holds a Start next slot."""
+        item = self.item("Builder under test")
+        trees = lambda area: {"worktrees": [{"path": "/wt/b", "branch": f"sd{item}-b", "live": True}]}
+
+        def meta_only(session, name):
+            folder = self.home / "projects" / "-work-system" / session / "subagents"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"agent-a{name}-0.meta.json").write_text(json.dumps(
+                {"agentType": name, "customAgentType": "sd-slice-builder", "name": name, "description": f"Build sd:{item}"}))
+
+        cases = {
+            "stalled": (lambda s: self.subagent(s, "b", MID_TURN, age=claude_sessions.STALL + 60, description=f"Build sd:{item}"),
+                        "no", "builder b stalled: no write for 31m and no final answer"),
+            "no record read": (lambda s: self.subagent(s, "b", [], description=f"Build sd:{item}"),
+                               "unknown", "builder b was not read, so it is not known to be done"),
+            "old, no record read": (lambda s: self.subagent(s, "b", [], age=claude_sessions.STALL + 60, description=f"Build sd:{item}"),
+                                    "unknown", "builder b was not read, so it is not known to be done"),
+            "no log yet": (lambda s: meta_only(s, "b"), "unknown", "builder b was not read, so it is not known to be done"),
+        }
+        for case, (make, state, why) in cases.items():
+            with self.subTest(case):
+                session = f"{len(case):02d}{case.replace(' ', '').replace(',', '')}"[:20].ljust(12, "0")
+                self.transcript(session)
+                make(session)
+                doc = self.read([agent(session)], fleet=trees)
+                row = doc["sessions"][0]
+                self.assertEqual(row["safe"], {"state": state, "why": [why]})
+                self.assertEqual(doc["builders"], {"running": 1, "why": ""})
+                self.assertEqual([t["item"] for t in row["tasks"]], [item])
+        # A final answer is the evidence that frees it.
+        self.transcript(OTHER)
+        self.subagent(OTHER, "b", FINISHED, age=claude_sessions.STALL + 60, description=f"Build sd:{item}")
+        doc = self.read([agent(OTHER)], fleet=trees)
+        self.assertEqual((doc["sessions"][0]["safe"]["state"], doc["builders"]["running"]), ("yes", 0))
+
+    def test_a_report_to_its_caller_then_silence_is_a_final_answer(self):
+        """A builder reports with SendMessage or SubagentHandback and then freezes: the report's answer is its last record."""
+        def handed(tool, ident="t1"):
+            return [record("user", text="go"),
+                    {"type": "assistant", "message": {"role": "assistant", "stop_reason": "tool_use",
+                                                      "content": [{"type": "tool_use", "id": ident, "name": tool}]}},
+                    {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": ident}]}}]
+        cases = [("SendMessage", claude_sessions.SETTLE + 1, "idle"), ("SubagentHandback", claude_sessions.STALL + 60, "idle"),
+                 ("SendMessage", 10, "running"), ("Bash", claude_sessions.STALL + 60, "stalled")]
+        for tool, age, state in cases:
+            with self.subTest(tool=tool, age=age):
+                log = self.subagent(LEAD, "b", handed(tool), age=age)
+                self.assertEqual(claude_sessions._subagents(self.transcript(), CLOCK)[0]["state"], state)
+                log.unlink()
+
+    def test_a_finished_builder_whose_worktree_is_not_found_is_unknown_until_its_item_is_done(self):
+        self.transcript()
+        item = self.item("Landed elsewhere", kind="task")
+        self.subagent(LEAD, "b", FINISHED, description=f"Build sd:{item}")
+        self.subagent(LEAD, "nameless", FINISHED)
+        row = self.read([agent()])["sessions"][0]
+        self.assertEqual(row["safe"], {"state": "unknown", "why": [
+            "builder nameless names no item, so its worktree was not read",
+            f"no live worktree names #{item}, and the item is not done, so its builder's work was not read"]})
+        (self.home / "projects" / "-work-system" / LEAD / "subagents" / "agent-anameless-0.meta.json").unlink()
+        transition(self.connection, item, "done", who="human")
+        self.assertEqual(self.read([agent()])["sessions"][0]["safe"], {"state": "yes", "why": []})
+
+    def test_a_missing_status_pid_or_cwd_is_unknown_and_a_fix_session_without_status_holds_a_slot(self):
+        item = self.item("Started by Fix")
+        self.transcript(records=[record("user", text=fix_session.prompt("task", item)), record("assistant", stop="end_turn")])
+        bare = agent()
+        for key in ("status", "pid", "cwd"):
+            bare.pop(key)
+        doc = self.read([bare])
+        row = doc["sessions"][0]
+        self.assertEqual((row["status"], row["waiting"], row["safe"]["state"]), ("unknown", None, "unknown"))
+        self.assertEqual(row["safe"]["why"], [
+            "claude agents gave no status, so whether it works or waits on you is not known",
+            "claude agents gave no pid, so its lane watches were not read",
+            "claude agents gave no cwd, so its checkout was not read"])
+        self.assertEqual(doc["builders"], {"running": 1, "why": ""})
+
+    def test_a_first_prompt_past_the_head_is_still_read_and_one_never_found_is_unread(self):
+        item = self.item("Long head")
+        filler = [{"type": "summary", "summary": "x" * 1000} for _ in range(100)]
+        self.transcript(records=filler + [record("user", text=fix_session.prompt("task", item)), record("assistant", blocks=("tool_use",))])
+        self.assertEqual(self.read([agent(status="busy")])["builders"], {"running": 1, "why": ""})
+        self.transcript(records=[{"type": "summary", "summary": "x" * (claude_sessions.TAIL_MAX + 10)}])
+        doc = self.read([agent(status="busy")])
+        self.assertIsNone(doc["builders"]["running"])
+        self.assertIn("its transcript could not be read: no first prompt in its first 4 MiB", doc["sessions"][0]["safe"]["why"])
 
     def test_the_turn_reads_the_last_record_even_past_the_tail_and_a_question_is_still_a_turn(self):
         long = record("assistant", stop="end_turn", text="x" * (claude_sessions.TAIL_BYTES * 2))

@@ -172,9 +172,12 @@ function lamps() {
   const live = LANE ? LANE.live.length : 0;
   if (LANE) set('lane', 'ok', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}`);
   else set('lane', 'unknown', html`▨ not read`);
-  // build (sd:5106): a Claude session that waits on the operator lights the lamp first.
+  // build (sd:5106): a Claude session that waits on the operator lights the lamp first. Sessions not read, or one whose
+  // status was not read, are not "nobody waits": the lamp is unknown unless an abandoned worktree already lights it.
   const waiting = CLAUDE ? CLAUDE.sessions.filter(r => r.waiting).length : 0;
+  const unheard = CLAUDE ? CLAUDE.sessions.filter(r => r.waiting === null).length : null;
   if (waiting) set('sessions', 'caution', html`<b>${waiting}</b> ▲ ${waiting === 1 ? 'waits' : 'wait'} on you`);
+  else if (unheard !== 0 && !SESS?.abandoned) set('sessions', 'unknown', unheard === null ? html`▨ Claude sessions not read` : html`<b>${unheard}</b> ▨ not known to wait`);
   else if (SESS?.stale) set('sessions', 'unknown', html`▨ stale since ${hhmm(SESS.observed)} UTC`);
   else if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
@@ -724,7 +727,7 @@ function renderClaude() {
     <tbody>${rows.map(r => { const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state]; return html`<tr data-id="cs:${r.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${r.status}</span></td>
       <td class="what"><button type="button">${r.name || r.id.slice(0, 8)}</button></td><td class="d mono" data-k="task">${taskText(r)}</td>
       <td class="d mono"><time class="rel" datetime="${r.last_action}" data-empty="not read"></time></td>
-      <td class="d">${r.waiting ? html`<span class="g-caution" aria-hidden="true">▲</span> ${r.waiting_for || 'yes'}` : 'no'}</td>
+      <td class="d">${r.waiting ? html`<span class="g-caution" aria-hidden="true">▲</span> ${r.waiting_for || 'yes'}` : r.waiting === null ? html`<span class="g-unknown" aria-hidden="true">▨</span> not read` : 'no'}</td>
       <td class="d"><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}${r.safe.why.length ? html` · ${r.safe.why[0]}` : ''}</td></tr>`; })}</tbody></table>`;
 }
 function claudeDetails(r, act) {
@@ -734,7 +737,7 @@ function claudeDetails(r, act) {
     <dl><dt>Session</dt><dd class="mono">${r.id}</dd><dt>Directory</dt><dd class="mono">${r.cwd || '—'}</dd><dt>PID</dt><dd class="mono">${r.pid ?? '—'}</dd>
     <dt>Started</dt><dd><time class="rel" datetime="${r.started}" data-long data-empty="not read"></time></dd>
     <dt>Last action</dt><dd><time class="rel" datetime="${r.last_action}" data-long data-empty="not read"></time></dd>
-    <dt>Waits on you</dt><dd>${r.waiting ? r.waiting_for || 'yes' : 'no'}</dd>
+    <dt>Waits on you</dt><dd>${r.waiting ? r.waiting_for || 'yes' : r.waiting === null ? 'not read' : 'no'}</dd>
     <dt>Safe to exit</dt><dd><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}</dd></dl>
     ${r.safe.why.length ? html`<h3>Why not</h3>${list(r.safe.why, w => w)}` : ''}
     <h3>Tasks</h3>${list(r.tasks, t => html`<span class="mono">#${t.item}</span> ${t.title || '(not read)'} · via ${t.via}`, 'No item is tied to this session.')}
@@ -751,7 +754,7 @@ function renderSessions() {
     && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
   const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
-    <div class="sec-head"><h2 id="claude-h">Claude sessions <button class="help" type="button" aria-label="Help: Claude sessions" data-help="<b>This Mac's Claude sessions.</b> From claude agents --json, each session's transcripts, ps and git. Safe to exit means idle, no agent or lane watch under it, and no unpushed work in its checkouts.">${I('circle-help')}</button></h2><p class="tally">${CLAUDE ? html`<span>${plural(CLAUDE.sessions.length, 'session')}</span><span>${CLAUDE.builders.running == null ? html`<span class="g-unknown" aria-hidden="true">▨</span> builders not counted` : plural(CLAUDE.builders.running, 'builder') + ' running'}</span><span>claude agents · ${hhmm(CLAUDE.read)} UTC</span>` : ''}</p></div>
+    <div class="sec-head"><h2 id="claude-h">Claude sessions <button class="help" type="button" aria-label="Help: Claude sessions" data-help="<b>This Mac's Claude sessions.</b> From claude agents --json, each session's transcripts, ps and git. Safe to exit means idle, no agent or lane watch under it, and no unpushed work in its checkouts. A stalled or unread agent counts as running until it gives a final answer.">${I('circle-help')}</button></h2><p class="tally">${CLAUDE ? html`<span>${plural(CLAUDE.sessions.length, 'session')}</span><span>${CLAUDE.builders.running == null ? html`<span class="g-unknown" aria-hidden="true">▨</span> builders not counted` : plural(CLAUDE.builders.running, 'builder') + ' running'}</span><span>claude agents · ${hhmm(CLAUDE.read)} UTC</span>` : ''}</p></div>
     ${renderClaude()}
 
     <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Claude sessions are listed above; codex processes are not read.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${seen(SESS)}</span>` : ''}</p></div>

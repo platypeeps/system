@@ -6,20 +6,25 @@ No ledger records a session; each fact is read from what Claude Code, git and `p
               `waiting`, with `waitingFor` when a permission prompt or a question holds it). `waiting` is "waits on
               the operator".
   transcripts `<claude home>/projects/*/<session id>.jsonl` and its `subagents/agent-*.jsonl` with `.meta.json`. The
-              newest write of either is the age of the last action. A subagent whose last turn record is not a
-              finished answer is running; one untouched for `STALL` seconds is stalled, not running. A session whose
-              first prompt is Fix's builder prompt (`fix_session.BUILD`) is a builder itself.
+              newest write of either is the age of the last action. A subagent is idle only on completion evidence:
+              its last turn record is a finished answer, or the answer to its report to its caller (`REPORTS`)
+              with nothing written for `SETTLE` seconds after it. One whose last record is not is running, or stalled once
+              untouched for `STALL` seconds; one whose log or last record was not read is unknown. Stalled and
+              unknown still count as active (sd:5106 review). A session whose first prompt is Fix's builder prompt
+              (`fix_session.BUILD`) is a builder itself.
   processes   one `ps`: an `sd-ship ... lane watch` that descends from the session's pid is its lane watch.
   git         the session's cwd and each live worktree (`fleet.collect("sessions")`) whose branch names an item its
-              builders work on: uncommitted files and commits no remote-tracking ref holds.
+              builders work on: uncommitted files and commits no remote-tracking ref holds. A builder whose item
+              names no live worktree is unknown until that item is done.
 
 The current task is the item the cwd's branch names, the item Fix's prompt names, and each item a builder's
 description names (`sd:N`); each carries its `via`. Safe to exit is `yes` only when the session is idle, nothing
 runs under it, and no checkout above holds unpushed work; a fact that could not be read makes it `unknown` with
 the reason, never `yes`. Sessions on other machines are not listed: `claude agents` lists this Mac's.
 
-`builders` counts the builders running on this Mac, for Tasks' Start next (sd:5107): running builder subagents and
-busy or waiting Fix sessions. A source that could not be read makes it None with the reason.
+`builders` counts the builders running on this Mac, for Tasks' Start next (sd:5107): every builder subagent that is
+not idle (running, stalled or unknown) and every Fix session that `claude agents` does not call idle. A source that
+could not be read makes it None with the reason.
 """
 
 from __future__ import annotations
@@ -51,6 +56,10 @@ TAIL_MAX = 1 << 22
 #: How much of a transcript's start is read for its first prompt.
 HEAD_BYTES = 1 << 16
 STATUSES = ("busy", "idle", "waiting")
+#: The tools an agent reports to its caller with. An agent whose last record is that report's answer, and that wrote
+#: nothing for `SETTLE` seconds after it, has handed its turn back: a builder reports, then freezes.
+REPORTS = ("SubagentHandback", "SendMessage")
+SETTLE = 120
 SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,63}", re.ASCII)
 ITEM_TEXT = re.compile(r"\bsd:(\d{1,9})\b", re.ASCII)
 #: An item number in an agent's name: `b5106-sessions`, `sys-4914-4912`, `sd3456`.
@@ -165,22 +174,45 @@ def _records_from_end(path: Path):
 
 
 def _turn(path: Path) -> str:
-    """`running` when the last turn record is not a finished answer, `idle` when it is, `unknown` when none was read."""
-    for record in _records_from_end(path):
-        kind = record.get("type")
-        if kind == "user":
-            return "running"
-        if kind == "assistant":
-            message = record.get("message") if isinstance(record.get("message"), dict) else {}
-            content = message.get("content") if isinstance(message.get("content"), list) else []
-            asks = any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
-            return "idle" if message.get("stop_reason") == "end_turn" and not asks else "running"
-    return "unknown"
+    """`idle` when the last turn record is a finished answer, `reported` when it is the answer to the agent's own report
+    to its caller (`REPORTS`), `running` for any other record, and `unknown` when none was read."""
+    records = [record for record in _records_from_end(path) if record.get("type") in ("user", "assistant")]
+    if not records:
+        return "unknown"
+    last = records[0]
+    message = last.get("message") if isinstance(last.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    blocks = [block for block in content if isinstance(block, dict)]
+    if last["type"] == "assistant":
+        asks = any(block.get("type") == "tool_use" for block in blocks)
+        return "idle" if message.get("stop_reason") == "end_turn" and not asks else "running"
+    answered = {block.get("tool_use_id") for block in blocks if block.get("type") == "tool_result"}
+    for record in records[1:]:
+        if record["type"] != "assistant":
+            continue
+        asked = record.get("message", {}).get("content") if isinstance(record.get("message"), dict) else None
+        names = {block.get("id"): block.get("name") for block in asked or [] if isinstance(block, dict) and block.get("type") == "tool_use"}
+        if answered and answered <= set(names) and all(names[key] in REPORTS for key in answered):
+            return "reported"
+        break
+    return "running"
 
 
 def _first_prompt(path: Path) -> str:
-    with path.open("rb") as handle:
-        head = handle.read(HEAD_BYTES)
+    """The first user record's text. None within `TAIL_MAX` bytes of a longer file is unread, not "no prompt"."""
+    size, span = path.stat().st_size, HEAD_BYTES
+    while True:
+        with path.open("rb") as handle:
+            head = handle.read(span)
+        found = _prompt_in(head)
+        if found is not None or size <= span:
+            return found or ""
+        if span >= TAIL_MAX:
+            raise Unread(f"no first prompt in its first {TAIL_MAX >> 20} MiB")
+        span *= 4
+
+
+def _prompt_in(head: bytes) -> str | None:
     for line in head.split(b"\n"):
         try:
             record = json.loads(line)
@@ -195,7 +227,7 @@ def _first_prompt(path: Path) -> str:
         if isinstance(content, list):
             return " ".join(block.get("text", "") for block in content if isinstance(block, dict) and isinstance(block.get("text"), str))
         return ""
-    return ""
+    return None
 
 
 def _subagents(transcript: Path, clock: float) -> list[dict]:
@@ -209,10 +241,11 @@ def _subagents(transcript: Path, clock: float) -> list[dict]:
         if not isinstance(meta, dict):
             raise Unread(f"{meta_path.name} is not an object")
         when = log.stat().st_mtime if log.is_file() else meta_path.stat().st_mtime
-        state = "idle"
-        if log.is_file() and clock - when < STALL:
-            state = _turn(log)
-        elif log.is_file() and _turn(log) == "running":
+        # Only a finished answer is idle: no log yet, or no record read, is unknown, and silence is not completion.
+        state = _turn(log) if log.is_file() else "unknown"
+        if state == "reported":
+            state = "idle" if clock - when >= SETTLE else "running"
+        elif state == "running" and clock - when >= STALL:
             state = "stalled"
         kinds = " ".join(str(meta.get(key) or "") for key in ("agentType", "customAgentType", "spawnedAgentType"))
         numbers = ITEM_TEXT.findall(str(meta.get("description") or "")) + NAME_ITEM.findall(str(meta.get("name") or ""))
@@ -279,33 +312,53 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
             unknown.append(f"its transcript could not be read: {_reason(failure)}")
     for agent in agents:
         last = max(last or 0, agent["last"])
+        label = f"{'builder' if agent['builder'] else 'agent'} {agent['name']}"
+        if agent["state"] == "idle":
+            continue
         if agent["state"] == "running":
-            no.append(f"{'builder' if agent['builder'] else 'agent'} {agent['name']} is running")
-            for item in agent["items"]:
-                task(item, f"builder {agent['name']}" if agent["builder"] else f"agent {agent['name']}")
+            no.append(f"{label} is running")
+        elif agent["state"] == "stalled":
+            no.append(f"{label} stalled: no write for {elapsed(int(clock - agent['last']))} and no final answer")
+        else:
+            unknown.append(f"{label} was not read, so it is not known to be done")
+        for item in agent["items"]:
+            task(item, label)
     if status == "busy":
         no.append("it is working on a turn")
     elif status == "waiting":
         no.append("it waits on you" + (f": {raw['waitingFor']}" if isinstance(raw.get("waitingFor"), str) and raw["waitingFor"] else ""))
     elif status == "unknown":
-        unknown.append("claude agents gave no status")
+        unknown.append("claude agents gave no status, so whether it works or waits on you is not known")
 
     watches = []
     if procs_error:
         unknown.append(f"the process table was not read: {procs_error}")
-    elif pid is not None:
+    elif pid is None:
+        unknown.append("claude agents gave no pid, so its lane watches were not read")
+    else:
         watches = [{"pid": child, "command": command} for child, command in _descendants(procs, pid) if WATCH.search(command)]
         no.extend(f"lane watch pid {watch['pid']} runs under it" for watch in watches)
 
     # The checkouts whose unpushed work the session answers for: its cwd, and the worktrees its builders' items name.
     paths = [cwd] if cwd else []
+    if not cwd:
+        unknown.append("claude agents gave no cwd, so its checkout was not read")
     items = {item for agent in agents if agent["builder"] for item in agent["items"]}
     if items and trees_error:
         unknown.append(f"its builders' worktrees were not read: {trees_error}")
+    tied = set()
     for tree in trees:
         found = BRANCH_ITEM.search(tree["branch"])
-        if found and _item_id(found[1]) in items and tree["path"] not in paths:
-            paths.append(tree["path"])
+        if found and _item_id(found[1]) in items:
+            tied.add(_item_id(found[1]))
+            if tree["path"] not in paths:
+                paths.append(tree["path"])
+    # A builder's worktree is found by the item its branch names; one not found was not read. `document` releases an
+    # item that is done (its work landed); a builder that names no item stays unknown.
+    unmatched = sorted(items - tied) if not trees_error else []
+    for agent in agents:
+        if agent["builder"] and not agent["items"]:
+            unknown.append(f"builder {agent['name']} names no item, so its worktree was not read")
     checkouts = []
     for path in paths:
         try:
@@ -328,13 +381,13 @@ def _session(raw: dict, *, root: Path, clock: float, procs, procs_error: str, tr
     age = int(clock - last) if last is not None else None
     return {"id": session, "name": str(raw.get("name") or ""), "kind": str(raw.get("kind") or ""), "pid": pid, "cwd": cwd,
             "started": _iso(started), "status": status,
-            "waiting": status == "waiting",
+            "waiting": None if status == "unknown" else status == "waiting",
             "waiting_for": raw.get("waitingFor") if isinstance(raw.get("waitingFor"), str) else "",
             "last_action": _iso(last), "age": age, "age_text": elapsed(age) if age is not None else "",
             "builder": builder, "tasks": tasks,
             "agents": [{key: agent[key] for key in ("name", "builder", "state", "items", "description")} | {"last": _iso(agent["last"])}
                        for agent in agents if agent["state"] != "idle"],
-            "watches": watches, "checkouts": checkouts,
+            "watches": watches, "checkouts": checkouts, "unmatched": unmatched,
             "safe": {"state": safe, "why": no + unknown}}
 
 
@@ -346,8 +399,9 @@ def builders(sessions: list[dict] | None, why: str) -> dict:
              if any(reason.startswith(("no transcript", "its transcript")) for reason in row["safe"]["why"])]
     if blind:
         return {"running": None, "why": f"the transcripts of {', '.join(blind)} were not read"}
-    count = sum(1 for row in sessions for agent in row["agents"] if agent["builder"] and agent["state"] == "running")
-    count += sum(1 for row in sessions if row["builder"] and row["status"] in ("busy", "waiting"))
+    # Stalled and unknown hold their slot: only a finished answer or an idle session frees it.
+    count = sum(1 for row in sessions for agent in row["agents"] if agent["builder"] and agent["state"] != "idle")
+    count += sum(1 for row in sessions if row["builder"] and row["status"] != "idle")
     return {"running": count, "why": ""}
 
 
@@ -395,6 +449,23 @@ def document(connection, *, now: str, fleet=None, agents=None, processes=None, w
                 f"SELECT id, title, status FROM item WHERE id IN ({marks})", numbers)}
         except (sqlite3.Error, SdDbError):
             titles = None
+    # A builder whose item names no live worktree: done (its work landed) releases it; anything else is unread.
+    pending = {row["id"]: row.pop("unmatched") for row in sessions}
+    asked = sorted({item for items in pending.values() for item in items})
+    done = set()
+    if asked and connection is not None:
+        try:
+            done = {row[0] for row in connection.execute(
+                f"SELECT id FROM item WHERE status = 'done' AND id IN ({', '.join('?' * len(asked))})", asked)}
+        except (sqlite3.Error, SdDbError):
+            done = set()
+    for row in sessions:
+        open_items = [item for item in pending[row["id"]] if item not in done]
+        if open_items:
+            row["safe"]["why"].append("no live worktree names " + ", ".join(f"#{item}" for item in open_items)
+                                      + ", and the item is not done, so its builder's work was not read")
+            if row["safe"]["state"] == "yes":
+                row["safe"]["state"] = "unknown"
     for row in sessions:
         # A number no item holds is a name that only looked like one; with the items unread, each stays untitled.
         row["tasks"] = [task | {"title": "", "status": ""} if titles is None
