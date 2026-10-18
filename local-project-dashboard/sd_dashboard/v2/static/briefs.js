@@ -158,7 +158,7 @@ addEventListener('DOMContentLoaded', () => {
         <td class="what"><button type="button">${b.subj}<small>${b.lead}</small></button></td>
         <td class="src">${b.src}</td>
         <td class="at">${b.at ? html`<time datetime="${b.at}" title="${ago(b.at)}">${b.day.slice(5)} ${hhmm(b.at)}</time>` : html`<span title="time not known: the note changed after its day">${b.day.slice(5)} –</span>`}</td>
-        <td class="act">${C.rowActions(b.id)}</td></tr>`;
+        <td class="act">${window.commands.published(b.pub)}${C.rowActions(b.id)}</td></tr>`;
     })}`);
     const empty = document.getElementById('empty');
     empty.hidden = !LOADED || !!all.length;
@@ -200,6 +200,7 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Body · first lines</h3><div class="mailbody">${b.lead}${b.lead.length >= 200 ? '…' : ''}</div>
       <p class="why off">First lines only. Read opens the whole brief.</p>
       <h3>Act</h3>${C.bar(id)}
+      ${window.commands.publishPane('brief', { id: b.id, label: b.subj, item: b.item, pub: b.pub })}
       ${window.commands.reviewPane('brief', b.item)}
       ${b.src === REVIEW_SRC ? html`<section class="recs" id="recs" aria-live="polite"><h3>Create tasks</h3><p class="why off">Reading its recommendations…</p></section>` : ''}`);
     if (b.src === REVIEW_SRC) loadRecs(b.item);
@@ -279,6 +280,7 @@ addEventListener('DOMContentLoaded', () => {
     if (b.dataset.recs === 'create') ruleEach('Approve', open.filter(q => CHOSEN.has(q.note)));
     if (b.dataset.recs === 'reject') ruleEach('Reject', open.filter(q => !CHOSEN.has(q.note)));
   });
+  document.addEventListener('publish:run', e => { if (selected === e.detail.key) show(selected); });
   document.addEventListener('adversarial:run', e => { const b = BRIEFS.find(r => r.id === selected); if (b && e.detail.key === `brief:${b.item}`) show(b.id); });
 
   // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
@@ -297,6 +299,9 @@ addEventListener('DOMContentLoaded', () => {
         run: o => { window.open(o.open, '_blank', 'noopener'); return 'Obsidian opens the copy'; } },
       // sd:5064: a codex review of the brief's item, in the background; its own brief lists the tasks to pick.
       window.commands.adversarialReview('brief', { payload: o => ({ kind: 'brief', target: o.item }) }),
+      // sd:5102: Publish to (the item's fields.publish) and Publish now, declared once in commands.js.
+      ...window.commands.publishCommands('brief', { base: '/api/briefs', payload: o => ({ item: o.item }), reread: () => briefs.reread(),
+        cli: () => 'no sd verb: the dashboard writes the brief\'s fields.publish and queues it through sd-research-kit' }),
     );
   }
   document.addEventListener('shell:open', e => { if (BRIEFS.some(b => b.id === e.detail)) select(e.detail, true); });
@@ -353,7 +358,7 @@ addEventListener('DOMContentLoaded', () => {
         : !BRIEFS.length ? { kind: 'empty', title: 'No briefs', text: 'The workflow database holds no routine brief.', source }
         : READER.skipped || capped() ? { kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown}; older briefs are in the database. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source }
         : null;
-      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, item: b.item, open: b.open, copy: b.copy })), state };
+      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, item: b.item, open: b.open, copy: b.copy, pub: b.pub || null })), state };
     },
     // Nothing from the last read stays on screen: rows, lanes and the observed time.
     clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; COPIES = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },

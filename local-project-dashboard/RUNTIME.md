@@ -231,6 +231,12 @@ Its stdout and stderr go to `start.log` beside the lock; the script keeps its ow
 Run sweep on Tasks' Personal and Work views (sd:5096, sd:5097) is the same start with a realm: `POST /api/tasks/sweep {"realm"}` runs `python3 -m sd_dashboard.realm_sweep run <realm>` from this folder.
 Each realm holds its own lock, `~/.local/state/system/<realm>-sweep/lock`, so the two may run together; the run keeps `last.json` and `runs/` there.
 It reads its filters from the workflow database's `sweep.<realm>.*` settings (sd:5109, Settings edits them) and `google.accounts.<realm>.email` from that database or the pack's config.json; it files its brief with `sd reports brief add`, under this checkout.
+Publishing (sd:5102, `publishing.py`, `publish_drain.py`) reuses the pack's mirror queue and receipts; it adds no store.
+Publish to on Documents adds the contract's `drive=dict()` or `notion=dict()` key to a trusted `research.conf.py` entry, then runs `sd-research-kit publish`.
+Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue_briefs`; each brief render queues it again.
+Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
+It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
+The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.
 
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications

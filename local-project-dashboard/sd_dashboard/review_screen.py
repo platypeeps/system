@@ -1,12 +1,13 @@
-"""Review (sd:3709): the labelling queue's page, one question at a time (design docs/work/2026-10-12-review-queue).
+"""Review (sd:3709): the labelling queue's page, one row per question (design docs/work/2026-10-12-review-queue).
 
 A batch is a task filed under `review:<queue>:<batch>` by `sd-db review file`; its questions are question notes and a
 label is the Decisions ruling. Every read and write here is `sd_db.review`'s, the code `sd-db review` runs, so the page
 and the CLI verb share one path (operator ruling Q3); the page adds no store and no second writer.
 
 - `document` is `/api/review`: each open batch, nightly suggestions first and then by age, with the revision read
-  before the batch, so a change between the two makes the page stale (409), never newer than what it shows; and each
-  open question. A blind or sealed batch sends the question text and options only: no subject and no evidence.
+  before the batch, so a change between the two makes the page stale (409), never newer than what it shows; each open
+  question; and in `reviewed` each ruled or expired one, with `label` and `ruling`. A blind or sealed batch sends the
+  question text, options and label only: no subject and no evidence.
   A batch whose notes do not read as one is listed with its reason, never dropped.
 - `rule_request` is `/api/review/rule`: `review.rule`, under the batch revision the page read.
 - `withdraw_request` is `/api/review/withdraw`: `review.withdraw`, the undo.
@@ -47,7 +48,7 @@ def _rows(connection):
 def document(connection) -> dict:
     from sd_db import review
 
-    batches, questions = [], []
+    batches, questions, reviewed = [], [], []
     rows = _rows(connection)
     # One batched revision read for the page; `review.read` still reads each batch's notes (sd:3531).
     revisions = reads.revisions(connection, [row["id"] for row in rows])
@@ -70,23 +71,28 @@ def document(connection) -> dict:
                         "questions": len(found["questions"]), "open": found["open"], "labels": found["labels"],
                         "error": None})
         for question in found["questions"]:
-            if not question["open"]:
-                continue
             shown = {"item": item, "note": question["note"], "text": question["text"],
                      "options": question["options"], "asked": question["asked_at"]}
             if not blind:
                 shown.update(subject=question["subject"], evidence=question["evidence"])
-            questions.append(shown)
+            if question["open"]:
+                questions.append(shown)
+            else:
+                # Show reviewed (sd:5123): a ruled or expired question, with its label and ruling (None when expired).
+                # Its own list, so a page on the previous build, which reads every entry in `questions` as open, never
+                # offers it as open.
+                reviewed.append({**shown, "open": False, "label": question["label"], "ruling": question["ruling"]})
     order = {batch["item"]: number for number, batch in
              enumerate(sorted(batches, key=lambda batch: not batch["nightly"]))}
     batches.sort(key=lambda batch: order[batch["item"]])
-    questions.sort(key=lambda question: (order[question["item"]], question["note"]))
+    for found_list in (questions, reviewed):
+        found_list.sort(key=lambda question: (order[question["item"]], question["note"]))
     # The rail badge (sd:3446): every open question in a batch that reads. The page keeps its own badge current between
     # reads as its labels land, from the same batches' `open`.
     from .v2.pages import attention
 
     found = attention(["caution"] * sum(batch.get("open") or 0 for batch in batches), {"caution": "questions open"})
-    return {"batches": batches, "questions": questions, "attention": found}
+    return {"batches": batches, "questions": questions, "reviewed": reviewed, "attention": found}
 
 
 def _frontmatter(text: str) -> dict[str, str]:
