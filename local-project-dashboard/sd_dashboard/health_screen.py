@@ -836,7 +836,8 @@ PAGE_SECONDS = 13.0
 #: The areas whose reader walks subprocesses, each on its own scan thread; Protection, Dependencies, Security and
 #: Credentials read only the database, on this thread.
 POOLED = ("disk", "wt", "br", "ports", "doc")
-#: How long a doctor answer stands before a page read starts another run, and how long a page waits on a run in flight.
+#: How long a doctor answer stands before a page read starts another run, and how long a page waits on a run in flight
+#: when no answer is kept.
 DOCTOR_FRESH_SECONDS = 600
 DOCTOR_WAIT_SECONDS = 2.0
 
@@ -1037,10 +1038,13 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         area = _area(key, name, source, missing, at=now)
         if key in running:
             since, scan, joined = running[key]
-            # The doctor is last in AREAS: the page has waited on the others, and gives it only a short wait more.
+            # The doctor is last in AREAS: the page has waited on the others, and gives it only a short wait more. A run
+            # takes about 10 s, so with an answer kept the page shows that at once, marked stale (sd:5064).
             wait = max(0.0, stop - time.monotonic())
+            if key == "doc":
+                wait = 0.0 if _SCANS.last.get(key) else min(wait, DOCTOR_WAIT_SECONDS)
             try:
-                scan.result(timeout=min(wait, DOCTOR_WAIT_SECONDS) if key == "doc" else wait)
+                scan.result(timeout=wait)
             except FutureTimeout:
                 why = (f"machine-setup.sh doctor started at {since} and is still running (its deadline is "
                        f"{health_collectors.DOCTOR_SECONDS:g} seconds); read Health again for its answer" if key == "doc" else

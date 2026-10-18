@@ -100,6 +100,41 @@ def _metrics_kept(database):
     return Kept({name: (lambda name=name: read(name)) for name in metrics_screen.SLOW})
 
 
+def _usage_kept(database):
+    """`/api/usage`'s current month, the 1.7 s `usage.read`, kept in a snapshot (sd:5064); each read opens its own connection."""
+    from .snapshot import Snapshot
+    from .usage_screen import document
+
+    def read():
+        connection = sd_db.connect(database, write=False)
+        try:
+            return document(connection, now=_now(), month=None)
+        finally:
+            connection.close()
+
+    return Snapshot(read)
+
+
+def _warm(database, kept) -> None:
+    """Start the slow reads in the background so the first page after a start finds them (sd:5064): each kept read, and
+    Health's walkers and doctor, as `health_screen.summary` starts them."""
+    from . import health_screen
+
+    for one in kept:
+        one.warm()
+
+    def health():
+        try:
+            connection = sd_db.connect(database, write=False)
+            try:
+                health_screen.summary(connection, now=_now(), fleet=kept[0])
+            finally:
+                connection.close()
+        except Exception as failure:  # noqa: BLE001 - a warm-up that fails leaves the first page to read as before
+            print(f"sd-dashboard: the Health warm-up did not start: {failure!r}", file=sys.stderr, flush=True)
+    threading.Thread(target=health, name="sd-dashboard-warm", daemon=True).start()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -565,6 +600,8 @@ class Dashboard(BaseHTTPRequestHandler):
     fleet_backend = None
     #: `metrics_screen.document`'s kept slow parts, `name -> document` (sd:4955); None reads them per request.
     metrics_backend = None
+    #: `/api/usage`'s current month kept (`_usage_kept`, sd:5064); None reads it per request.
+    usage_backend = None
     #: `now_screen.document`'s Jev command for the failed-job shadow; None asks nothing.
     jev_command = None
     frontdoor: auth.FrontDoor | None = None
@@ -789,7 +826,12 @@ class Dashboard(BaseHTTPRequestHandler):
                     if set(parameters) - {"month"} or any(len(values) != 1 for values in parameters.values()):
                         return self._json(400, {"error": "Usage takes one month, YYYY-MM."})
                     try:
-                        body = document(connection, now=self.clock(), month=parameters.get("month", [None])[0])
+                        if self.usage_backend is not None and "month" not in parameters:
+                            body, observed, stale = self.usage_backend.read()
+                            if stale:
+                                return self._json(503, {"error": f"Usage was not read again: {stale}; the last read began {observed}."})
+                        else:
+                            body = document(connection, now=self.clock(), month=parameters.get("month", [None])[0])
                     except SdDbError as error:
                         return self._json(400, {"error": str(error)})
                     return self._send(200, body.encode("utf-8"), "application/json; charset=utf-8")
@@ -1016,7 +1058,7 @@ class Dashboard(BaseHTTPRequestHandler):
             finally:
                 connection.close()
                 # Any write may have changed what a snapshot shows: the next read waits for a new one (sd:4955).
-                for kept in (self.fleet_backend, self.metrics_backend):
+                for kept in (self.fleet_backend, self.metrics_backend, self.usage_backend):
                     invalidate = getattr(kept, "invalidate", None)
                     if invalidate is not None:
                         invalidate()
@@ -1148,6 +1190,8 @@ class DashboardServer(Listener):
 
     direct_server = None
     direct_thread = None
+    #: Starts the slow reads in the background as serving begins (`_warm`, sd:5064); `main` sets it. None warms nothing.
+    warm_up = None
     # The new build's start check as a command; `main` sets it for a --config start. None never restarts.
     restart_probe = None
     refused_build = None
@@ -1212,6 +1256,8 @@ class DashboardServer(Listener):
             self.direct_server.server_close()
 
     def serve_forever(self, poll_interval=0.5):
+        if self.warm_up is not None:
+            self.warm_up()
         try:
             if self.direct_server is not None:
                 self.direct_thread = threading.Thread(
@@ -1247,7 +1293,8 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
           host: str = "127.0.0.1", operations_backend=None,
           frontdoor: auth.FrontDoor | None = None, frontdoor_check=None,
           services_backend=None, ports_backend=None,
-          peer_lookup=None, fleet_backend=None, metrics_backend=None, jev=None, bind=True) -> ThreadingHTTPServer:
+          peer_lookup=None, fleet_backend=None, metrics_backend=None, usage_backend=None, jev=None,
+          bind=True) -> ThreadingHTTPServer:
     """Build the loopback server and optional, separately authenticated IP socket.
 
     `bind=False` builds both without binding: the restart probe's check, while the old server holds the ports.
@@ -1270,6 +1317,7 @@ def build(database: Path | str | None = None, *, port: int = DEFAULT_PORT,
         "ports_backend": ports_backend,
         "fleet_backend": staticmethod(fleet_backend) if fleet_backend else None,
         "metrics_backend": staticmethod(metrics_backend) if metrics_backend else None,
+        "usage_backend": usage_backend,
         "jev_command": list(jev) if jev else None,
         "frontdoor": frontdoor,
         "frontdoor_check": staticmethod(frontdoor_check) if frontdoor_check else None,
@@ -1325,10 +1373,13 @@ def main(argv: list[str] | None = None, *, serve: bool = True) -> int:
 
     options["fleet_backend"] = Fleet()
     options["metrics_backend"] = _metrics_kept(arguments.database)
+    options["usage_backend"] = _usage_kept(arguments.database)
     server = build(arguments.database, port=arguments.port, bind=serve, **options)
     if not serve:
         server.server_close()
         return 0
+    kept = (options["fleet_backend"], options["metrics_backend"], options["usage_backend"])
+    server.warm_up = lambda: _warm(arguments.database, kept)
     if arguments.config:
         # The restart probe, two steps from this checkout. First its dashboard.sh preflight, which runs
         # its bootstrap.py and runtime. Then a fresh interpreter imports the serving code, as bootstrap.py

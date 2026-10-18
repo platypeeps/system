@@ -25,7 +25,7 @@ class ServerStartup(unittest.TestCase):
             with patch.object(runtime, "installed_library") as library, patch.object(server, "build", return_value=listening) as build:
                 self.assertEqual(server.main(["--config", str(config), "--port", "8787"]), 0)
             library.assert_called_once_with("/fixture/sd.db")
-            build.assert_called_once_with("/fixture/sd.db", port=8787, bind=True, jev=runtime.jev_command(), fleet_backend=ANY, metrics_backend=ANY)
+            build.assert_called_once_with("/fixture/sd.db", port=8787, bind=True, jev=runtime.jev_command(), fleet_backend=ANY, metrics_backend=ANY, usage_backend=ANY)
             listening.server_close.assert_called_once()
 
     def test_changed_build_exits_non_zero_for_launchd_to_restart(self):

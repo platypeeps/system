@@ -1006,6 +1006,26 @@ class TheDoctor(Collectors, ScreenCase):
         self.assertEqual(area["rows"], [])
         self.assertIn(f"machine-setup.sh doctor started at {NOW} and is still running", area["error"])
 
+    def test_a_kept_answer_is_shown_at_once_while_the_next_run_goes(self):
+        """sd:5064: a run takes about 10 s, so the 2 s wait always ran out; with an answer kept the page shows it, stale."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+        runs = []
+
+        def second_blocks():
+            runs.append(1)
+            if len(runs) == 2:
+                release.wait(10)
+            return CLEAN_DOCTOR
+        first = self.area(self.doc(doctor=second_blocks))
+        started = time.monotonic()
+        with patch.object(health_screen, "DOCTOR_WAIT_SECONDS", 5.0):
+            later = self.area(self.doc(doctor=second_blocks, now="2026-09-06T12:11:00Z"))
+        self.assertLess(time.monotonic() - started, 2.0, "the page waited on a doctor run it had an answer for")
+        self.assertEqual((len(runs), later["rows"], later["at"]), (2, first["rows"], NOW))
+        self.assertIn("is still running", later["stale"])
+        self.assertIn(f"these rows are the read of {NOW}", later["stale"])
+
     def test_an_answer_stands_for_ten_minutes_and_a_failed_run_drops_it(self):
         runs, release = [], threading.Event()
         self.addCleanup(release.set)
