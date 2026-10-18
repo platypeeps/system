@@ -132,8 +132,21 @@ class TheDocument(ScreenCase):
         bodies = [n["body"] for n in workflow.item_state(self.connection, ids["open"])["notes"] if n["kind"] == "decision"]
         self.assertEqual(bodies, [f"Ruling on note #{note}: no", f"Withdrawn: ruling #{out['ruling']} on note #{note}"])
 
+    def test_a_ruled_question_is_listed_as_reviewed_with_its_label(self):
+        # sd:5123: Show reviewed lists the ruled questions of an open batch, each with the choice made and its ruling, in
+        # their own list: `questions` stays open-only, as a page on the previous build reads it.
+        ids = seed(self)
+        first, second = questions_of(self.connection, ids["open"])[:2]
+        revision = workflow.item_state(self.connection, ids["open"])["revision"]
+        out = review_screen.rule_request({"item": ids["open"], "note": first, "option": "no", "revision": revision})(self.connection)
+        doc = review_screen.document(self.connection)
+        self.assertEqual([(q["note"], q["open"], q["label"], q["ruling"]) for q in doc["reviewed"]], [(first, False, "no", out["ruling"])])
+        self.assertEqual(doc["reviewed"][0]["subject"], "example.test/repo@1a2b3c4:file1.py")
+        self.assertIn(second, [q["note"] for q in doc["questions"]])
+        self.assertNotIn("label", doc["questions"][0])
+
     def test_nothing_open_is_an_empty_document(self):
-        self.assertEqual(review_screen.document(self.connection), {"batches": [], "questions": [],
+        self.assertEqual(review_screen.document(self.connection), {"batches": [], "questions": [], "reviewed": [],
                                                                    "attention": {"state": "ok", "n": 0, "what": "questions open"}})
 
 
@@ -214,6 +227,18 @@ class TodaysDecisions(ScreenCase):
         self.assertTrue(f"review:labels:C1".startswith(decisions.BATCH_PREFIX))
 
 
+class ThePage(unittest.TestCase):
+    def test_the_page_has_no_details_pane_and_docks_no_side_pane(self):
+        # sd:5123: the row carries the question; the shell's pane opens only for Chat (c), as the sheet it is below 1240px.
+        page = (V2 / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="details"', page)
+        self.assertIn("#tab-details { display: none; }", PAGE_CSS)
+        wide = re.search(r"@media \(min-width: 1240px\) \{(.*?)\n\}", PAGE_CSS, re.S)
+        self.assertIsNotNone(wide)
+        self.assertIn(".pane:not([data-open]) { display: none; }", wide.group(1))
+        self.assertNotIn("openPane", PAGE_JS)
+
+
 class TheStylesheet(unittest.TestCase):
     def test_review_css_names_tokens_and_no_colour_literal(self):
         self.assertTrue(PAGE_CSS)
@@ -258,25 +283,109 @@ class TheScript(unittest.TestCase):
       : path === '/api/review/rule' ? [200, { item: body.item, note: body.note, revision: String(body.note).padStart(64, '0'), ruling: 100 + body.note }]
       : [200, { item: 11, revision: 'c'.repeat(64), withdrawal: 500 }]"""
 
-    def test_the_lamps_rows_and_details_draw_and_values_stay_text(self):
-        out = self.run_page("R.lamps = ELS.annunciator.html; R.rows = ELS.rows.html; R.details = ELS.details.html; R.sub = ELS.sub.textContent;",
+    def test_the_lamps_and_rows_draw_and_values_stay_text(self):
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.rows = ELS.rows.html; R.sub = ELS.sub.textContent;",
                             "(path, body) => [200, DOC]", doc=doc_with())
         self.assertEqual(out["gets"], ["/api/review"])
         self.assertIn("Nightly review", out["R"]["lamps"])
         self.assertIn("<b>3</b> of 3 open", out["R"]["lamps"])
         self.assertEqual(out["R"]["rows"].count('<tr data-id="q'), 3)
-        self.assertIn('data-i="2"><kbd>3</kbd><span>Later &lt;b&gt;</span>', out["R"]["details"])
+        self.assertNotIn("<b>", out["R"]["rows"])
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · read ")
 
-    def test_details_marks_the_proposed_option_in_an_open_batch_only(self):
+    def test_each_row_carries_its_question_context_and_one_button_per_option(self):
+        # sd:5123: no Details pane; the row holds the question, its subject and evidence, and the options as buttons.
+        doc = doc_with(2)
+        doc["questions"][0].update(subject="span:error.type", evidence=["Judge: skeleton, an enum"])
+        out = self.run_page("R.rows = ELS.rows.html; R.details = 'details' in ELS;", "(path, body) => [200, DOC]", doc=doc)
+        rows = out["R"]["rows"]
+        self.assertFalse(out["R"]["details"])  # the page never reads a Details element
+        self.assertIn('<p class="ask">Question 10?</p>', rows)
+        self.assertIn('<span class="subject">span:error.type</span>', rows)
+        self.assertIn("Judge: skeleton, an enum", rows)
+        self.assertIn('data-note="10" data-i="2" aria-keyshortcuts="3"><kbd>3</kbd><span>Later &lt;b&gt;</span></button>', rows)
+        self.assertEqual(rows.count('class="btn quiet sm opt"'), 6)
+        # The whole question opens in place, in the row.
+        self.assertIn('<details class="more"><summary>Whole question</summary><p class="full">Question 10?\nmore</p>', rows)
+
+    def test_the_row_marks_the_proposed_option_in_an_open_batch_only(self):
         # A Kev file's proposal is an evidence line (sd:4789); its digit is the accept.
         for mode, marked in (("open", True), ("blind", False)):
             doc = doc_with(1, mode=mode)
             doc["questions"][0]["evidence"] = ["Proposed label: Reject"]
-            out = self.run_page("R.details = ELS.details.html;", "(path, body) => [200, DOC]", doc=doc)
+            out = self.run_page("R.rows = ELS.rows.html;", "(path, body) => [200, DOC]", doc=doc)
             with self.subTest(mode):
-                self.assertEqual('<span>Reject</span><span class="tag">proposed</span>' in out["R"]["details"], marked)
-                self.assertEqual(out["R"]["details"].count('class="tag">proposed'), int(marked))
+                self.assertEqual('<span>Reject</span><span class="tag">proposed</span>' in out["R"]["rows"], marked)
+                self.assertEqual(out["R"]["rows"].count('class="tag">proposed'), int(marked))
+
+    # A click on a row's option: the event's target is the button, whose data-note and data-i name the question and option.
+    CLICK = ("const click = (sel, data) => ELS.rows.listeners.click.forEach(f => f({ target: { closest: s => s === sel"
+             " ? { dataset: data, disabled: false } : null } }));\n")
+
+    def test_one_click_on_a_rows_option_labels_that_question_hides_it_and_moves_on(self):
+        out = self.run_page(self.CLICK + "ELS.rows.querySelector = s => ({ focus() { (OUT.focused = OUT.focused || []).push(s); }, scrollIntoView() {} });"
+                            " click('button[data-i]', { note: '11', i: '1' }); await flush(); R.rows = ELS.rows.html;",
+                            self.RULE, doc=doc_with(3))
+        self.assertEqual([p[1]["note"] for p in out["posts"]], [11])
+        self.assertEqual(out["posts"][0][1]["option"], "Reject")
+        self.assertNotIn('data-id="q11"', out["R"]["rows"])
+        self.assertEqual(out["R"]["rows"].count('<tr data-id="q'), 2)
+        self.assertEqual(out["selected"], "q12")
+        # Focus follows to the next question's first option, so the next click or Tab starts there.
+        self.assertIn('tr[data-id="q12"] .opt', out["focused"])
+        self.assertEqual(out["toasts"][-1], ["Labelled note #11: Reject", True])
+
+    def test_undo_after_a_click_brings_focus_back_to_the_reopened_question(self):
+        # Focus in the ledger follows the selection, so the focused button and a digit name the same question.
+        out = self.run_page(self.CLICK + "const focused = [];"
+                            " ELS.rows.contains = () => true; ELS.rows.querySelector = s => ({ contains: () => false, scrollIntoView() {},"
+                            " focus() { focused.push(s); }, querySelector: t => ({ focus() { focused.push(s + ' ' + t); } }) });"
+                            " click('button[data-i]', { note: '10', i: '0' }); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();"
+                            " R.focused = focused;",
+                            """(path, body) => path === '/api/review/rule' ? [200, { item: 11, note: body.note, revision: 'b'.repeat(64), ruling: 110 }]
+                              : path === '/api/review/withdraw' ? [200, { item: 11, revision: 'c'.repeat(64), withdrawal: 111 }] : [200, JSON.parse(JSON.stringify(DOC))]""",
+                            doc=doc_with(3))
+        self.assertEqual(out["selected"], "q10")
+        self.assertEqual(out["R"]["focused"][-1], 'tr[data-id="q10"] .opt, [data-withdraw], summary')
+
+    def reviewed_doc(self):
+        doc = doc_with(3, open=2, labels=1)
+        doc["reviewed"] = [{**doc["questions"].pop(), "open": False, "label": "Reject", "ruling": 90}]
+        return doc
+
+    def test_a_reviewed_row_is_hidden_until_show_reviewed_brings_it_back_marked(self):
+        out = self.run_page("R.rows = ELS.rows.html; R.tally = ELS.tally.html; window.shell.url = p => { OUT.url = p.toString(); };"
+                            " ELS.tally.listeners.click[0]({ target: { closest: s => s === '#show-reviewed' ? {} : null } });"
+                            " R.after = ELS.rows.html; R.pressed = ELS.tally.html;",
+                            "(path, body) => [200, DOC]", doc=self.reviewed_doc())
+        self.assertEqual(out["R"]["rows"].count('<tr data-id="q'), 2)
+        self.assertNotIn('data-id="q12"', out["R"]["rows"])
+        self.assertIn('id="show-reviewed" aria-pressed="false">Show reviewed <span class="n">1</span></button>', out["R"]["tally"])
+        self.assertEqual(out["R"]["after"].count('<tr data-id="q'), 3)
+        self.assertIn('<tr data-id="q12" data-reviewed=""', out["R"]["after"])
+        self.assertIn('<p class="chose">Labelled <b>Reject</b>', out["R"]["after"])
+        self.assertIn('aria-pressed="true"', out["R"]["pressed"])
+        self.assertEqual(out["url"], "reviewed=1")
+
+    def test_show_reviewed_from_the_address_and_a_label_keeps_its_row_marked(self):
+        out = self.run_page("key('2'); await flush(); R.rows = ELS.rows.html;", self.RULE, search="?reviewed=1", doc=self.reviewed_doc())
+        self.assertEqual([p[1]["note"] for p in out["posts"]], [10])
+        self.assertIn('<tr data-id="q10" data-reviewed=""', out["R"]["rows"])
+        self.assertIn('<p class="chose">Labelled <b>Reject</b>', out["R"]["rows"].split('data-id="q11"')[0])
+        self.assertEqual(out["selected"], "q11")
+
+    def test_withdraw_on_a_reviewed_row_posts_its_ruling_and_reopens_it(self):
+        out = self.run_page(self.CLICK + "click('button[data-withdraw]', { withdraw: '12' }); await flush();",
+                            self.RULE, search="?reviewed=1", doc=self.reviewed_doc())
+        self.assertEqual(out["posts"], [["/api/review/withdraw", {"item": 11, "ruling": 90, "revision": "a" * 64}, 64]])
+        self.assertEqual(out["selected"], "q12")
+
+    def test_enter_opens_the_selected_rows_whole_question_in_place(self):
+        out = self.run_page("document.dispatchEvent(new CustomEvent('shell:open', { detail: 'q10' })); R.rows = ELS.rows.html;",
+                            "(path, body) => [200, DOC]", doc=doc_with(2))
+        self.assertIn('data-id="q10"', out["R"]["rows"])
+        self.assertEqual(out["R"]["rows"].count('<details class="more" open>'), 1)
+        self.assertLess(out["R"]["rows"].index('<details class="more" open>'), out["R"]["rows"].index('data-id="q11"'))
 
     def test_ten_digits_write_ten_labels_in_turn_and_u_withdraws_the_last(self):
         doc = doc_with(10)
@@ -317,7 +426,7 @@ class TheScript(unittest.TestCase):
     def test_a_finished_blind_batch_downloads_from_its_header_with_no_question_selected(self):
         doc = doc_with(3, mode="blind", open=0, labels=3)
         doc["questions"] = []
-        out = self.run_page("R.tally = ELS.tally.html; R.details = ELS.details.html; " + self.DOWNLOAD, self.EXPORT,
+        out = self.run_page("R.tally = ELS.tally.html; " + self.DOWNLOAD, self.EXPORT,
                             search="?batch=11", doc=doc)
         self.assertIsNone(out["selected"])
         self.assertIn('id="export">Download labels</button>', out["R"]["tally"])
@@ -327,11 +436,11 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["saved"], ["review-nightly-x.jsonl"])
 
     def test_a_blind_batch_with_open_questions_keeps_download_off_and_says_why(self):
-        out = self.run_page("R.tally = ELS.tally.html; R.details = ELS.details.html;", self.EXPORT,
+        out = self.run_page("R.tally = ELS.tally.html; R.rows = ELS.rows.html;", self.EXPORT,
                             search="?batch=11", doc=doc_with(2, mode="blind"))
         self.assertIn('id="export" disabled>Download labels</button>', out["R"]["tally"])
         self.assertIn("A blind batch downloads once every question is ruled.", out["R"]["tally"])
-        self.assertNotIn('id="export"', out["R"]["details"])
+        self.assertNotIn('id="export"', out["R"]["rows"])
 
     def test_the_batch_header_links_the_batch_task_with_no_question_selected(self):
         # A comment on the whole batch is a note on its task; the header links it, so it waits on no question.
@@ -392,7 +501,7 @@ class TheScript(unittest.TestCase):
         self.assertIn("/^[1-9]$/", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"e\.key === '[jknu]'")
         out = self.run_page("R.keys = window.PAGE_KEYS.map(k => k[0]);", "(path, body) => [200, { batches: [], questions: [] }]")
-        self.assertEqual(out["R"]["keys"], ["1 – 9", "j / k", "u", "n", "Esc"])
+        self.assertEqual(out["R"]["keys"], ["1 – 9", "j / k", "↵", "u", "n", "Esc"])
         self.assertEqual(out["states"][-1]["kind"], "empty")
 
 

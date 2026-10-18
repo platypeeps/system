@@ -224,6 +224,13 @@ A done run files, in one transaction in the server's database, review batches in
 An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
+Publishing (sd:5102, `publishing.py`, `publish_drain.py`) reuses the pack's mirror queue and receipts; it adds no store.
+Publish to on Documents adds the contract's `drive=dict()` or `notion=dict()` key to a trusted `research.conf.py` entry, then runs `sd-research-kit publish`.
+Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue_briefs`; each brief render queues it again.
+Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
+It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
+The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.
+
 File GitHub issue and File Jira issue on Tasks (sd:5103, `issue_filing.py`) draft with Draft email's `claude -p` line: no tools, no MCP servers, 180 seconds.
 `POST /api/items/<id>/file-issue` answers 202 with a run id; `GET /api/issue-runs/<id>` reads the draft; only `POST /api/issue-runs/<id>/confirm` with the previewed text's digest files.
 One draft or filing at a time: the runner holds `~/.local/state/system/issue-filing/lock`. A draft that `local-leak-guard/leak-guard.sh scan` refuses, or that finds no `<config>/privacy-patterns`, is blocked.

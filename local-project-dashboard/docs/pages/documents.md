@@ -27,3 +27,10 @@ which is not read. Disable render is off: no render switch exists. The page read
 shell's reader, `read.js` (sd:2490): only the newest read draws, a document
 the read no longer lists runs no command, and a failed read clears the rows.
 `?page=` takes a whole page number only (sd:2427).
+
+A research document's row shows one icon per destination holding a copy
+(sd:5102): Drive, Notion, Obsidian. Each opens the copy in a new tab; a queued
+copy is dimmed. Details' Publish to ticks Drive or Notion: it adds the key to
+`research.conf.py` and queues through `sd-research-kit publish`. Obsidian
+follows the repo's channels setting. Publish now drains that row's requests;
+RUNTIME.md names the run.
