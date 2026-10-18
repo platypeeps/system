@@ -675,8 +675,9 @@ on this machine, and
 - `status` compares against `brew list --formula`, not `brew leaves`: a manifest
   entry can be installed as another formula's dependency (`ripgrep` is here) and
   `leaves` omits those, which reported them as missing when they were present.
-  Extras are compared against `leaves`, since the full list would name every
-  transitive dependency.
+  Extras are compared against `leaves --installed-on-request`, since the full
+  list would name every transitive dependency and plain `leaves` names a
+  build-only one; `capture` and `triage` read the same list (sd:5049).
 - Tap-qualified entries (`openclaw/tap/goplaces`) are listed by their bare name;
   both the install check and the drift report normalize before comparing.
 - `capture` writes only what `common` does not already provide, so profile files

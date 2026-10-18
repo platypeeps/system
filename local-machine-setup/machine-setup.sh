@@ -3439,10 +3439,12 @@ cmd_capture() {
   # subtracts the common manifest instead of dumping the whole machine.
   # Not piped: a pipeline's status is sort's, and a list brew could not give
   # would read as nothing installed (sd:3536). No brew lists nothing.
+  # --installed-on-request: a build-only dependency is a leaf too, and no
+  # profile should name it (sd:5049).
   : > "$tmp/raw.tap"; : > "$tmp/raw.brew"; : > "$tmp/raw.cask"
   if command -v brew >/dev/null 2>&1 \
       && { ! bound_step 300 brew tap > "$tmp/raw.tap" 2>/dev/null \
-        || ! bound_step 300 brew leaves > "$tmp/raw.brew" 2>/dev/null \
+        || ! bound_step 300 brew leaves --installed-on-request > "$tmp/raw.brew" 2>/dev/null \
         || ! bound_step 300 brew list --cask > "$tmp/raw.cask" 2>/dev/null; }; then
     echo "capture: brew could not list what is installed; nothing captured" >&2
     exit 1
@@ -3951,7 +3953,7 @@ cmd_triage() {
     if [ -n "$only_kind" ] && [ "$only_kind" != "$kind" ]; then continue; fi
     case "$kind" in
       brew) command -v brew >/dev/null 2>&1 || continue
-            bound_step 300 brew leaves 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have" ;;
+            bound_step 300 brew leaves --installed-on-request 2>/dev/null | sed 's|.*/||' | sort > "$tmp/have" ;;
       cask) command -v brew >/dev/null 2>&1 || continue
             bound_step 300 brew list --cask 2>/dev/null | sort > "$tmp/have" ;;
       mas)  command -v mas >/dev/null 2>&1 || continue
@@ -5947,7 +5949,9 @@ cmd_status() {
     manifest brew | sed 's|.*/||' | sort -u > "$tmp/want.brew"
     echo "brew formulae"
     mb=$(comm -13 "$tmp/have.brew" "$tmp/want.brew")
-    bound_step 300 brew leaves 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
+    # Extra is what someone installed by name: a build-only dependency is a
+    # leaf too, and was reported as drift (sd:5049).
+    bound_step 300 brew leaves --installed-on-request 2>/dev/null | sed 's|.*/||' | sort -u > "$tmp/leaves.brew"
     xb=$(comm -23 "$tmp/leaves.brew" "$tmp/want.brew")
     status_line missing "$mb"
     status_line extra "$xb"

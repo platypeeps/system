@@ -755,7 +755,7 @@ class PartialInstall(Case):
 # is logged.
 BREW_STUB = r"""#!/bin/sh
 case "$*" in
-  "list --formula"|leaves) for f in $BREW_HAVE; do echo "$f"; done ;;
+  "list --formula"|leaves|"leaves --installed-on-request") for f in $BREW_HAVE; do echo "$f"; done ;;
   install*) echo "brew $*" >> "$CURL_LOG" ;;
   --prefix) echo /usr/local ;;
 esac
