@@ -41,8 +41,9 @@ usage: health-check.sh run|check|test
          tree of scratch tools; extra arguments go to unittest (-v).
 
 checks:
-  - app crash reports (.ips) from the last day, kernel panics from the
-    last week (~/Library and /Library DiagnosticReports)
+  - app crash reports (.ips) from the last day, one count per process and
+    no JetsamEvent, kernel panics from the last week (~/Library and
+    /Library DiagnosticReports)
   - launchd: every loaded $SYSTEM_TOOLS_LABEL_PREFIX.* (default
     local.system-tools.*) job/agent whose last exit was nonzero
   - disk0 SMART status, NVMe wear/media errors via smartctl if installed
@@ -249,8 +250,10 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   find "$d" -maxdepth 1 -name '*.panic' 2>/dev/null | while read -r p; do
     ! recent_report "$p" "$CUT_WEEK" 7 || echo "$p" >> "$TMPD/panics"
   done
-  find "$d" -maxdepth 1 -name '*.ips' 2>/dev/null | while read -r p; do
-    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//' >> "$TMPD/crashes"
+  # One name per process (sd:5064): a JetsamEvent report is memory pressure,
+  # not a crash, and an ExcUserFault_ report names the process it faulted.
+  find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
+    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//' >> "$TMPD/crashes"
   done
 done
 if [ -s "$TMPD/panics" ]; then
@@ -260,7 +263,8 @@ if [ -s "$TMPD/panics" ]; then
     "$(sed 's|.*/||; s/^/kernel panic report(s) in the last 7 days: /' "$TMPD/panics")"
 fi
 if [ -s "$TMPD/crashes" ]; then
-  apps=$(sort "$TMPD/crashes" | uniq -c | sort -rn | awk '{ printf "%s(%s) ", $2, $1 }')
+  # The whole name: a process name can hold spaces.
+  apps=$(sort "$TMPD/crashes" | uniq -c | sort -rn | awk '{ n = $1; sub(/^ *[0-9]+ /, ""); printf "%s(%s) ", $0, n }')
   finding "app crash report(s) in the last day: $apps" \
     "read the report in Console.app > Crash Reports; if one app repeats, update or reinstall it" \
     "app crash report(s) in the last day: $(wc -l < "$TMPD/crashes" | tr -d ' ') report(s) from $(sort -u "$TMPD/crashes" | wc -l | tr -d ' ') app(s)" \

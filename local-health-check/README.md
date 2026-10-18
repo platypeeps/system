@@ -26,7 +26,9 @@ nothing is mailed (sd:3454). A clean run prints no such line.
 ## Checks
 
 - app crash reports (`.ips`, last day) and kernel panics (last week) from
-  both DiagnosticReports folders
+  both DiagnosticReports folders; crashes count once per process name, an
+  `ExcUserFault_` report under its process, and `JetsamEvent` reports
+  (memory pressure, not a crash) are left out
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
   LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status
