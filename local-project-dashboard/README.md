@@ -674,12 +674,12 @@ first two learned the hard way on 2026-08-28 when the page sat on
   `.venv/bin/python`, which is Homebrew python@3.13 and execs that framework's
   `Python.app/Contents/MacOS/Python`. `dashboard.sh tile` and
   `dashboard.sh queue-open` run it under `DASHBOARD_PYTHON` from `<config>/project-dashboard/.env`, today
-  `/opt/homebrew/bin/python3`, which is Homebrew python@3.14 and execs a
+  `/opt/homebrew/bin/python3`, which is Homebrew python@3.15 and execs a
   different `Python.app`. `DASHBOARD_PYTHON` therefore does not govern what the
   dashboard's own pages read. The Resources path is the one the dashboard
   exercises, and it works: on 2026-09-14 its Briefs view rendered 96 rows from
   the launchd server with no refusal, so the python@3.13 binary holds the
-  grant. Whether the python@3.14 binary holds it under launchd has not been
+  grant. Whether the python@3.15 binary holds it under launchd has not been
   measured — a shell has Documents access of its own, so running the tile by
   hand cannot answer it. `dashboard.sh grants` is the measurement: it probes
   both interpreter paths for the vault read and prints one line each, naming

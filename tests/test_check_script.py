@@ -115,10 +115,10 @@ class CheckFixture(unittest.TestCase):
             "commit", "-qm", "pack", cwd=self.clone)
         self.pin = git("rev-parse", "HEAD", cwd=self.clone)
         (self.root / ".sd-pack-rev").write_text(self.pin + "\n")
-        # check.sh asks for python3.14 by name.
+        # check.sh asks for python3.15 by name.
         self.bin = self.base / "bin"
         self.bin.mkdir()
-        (self.bin / "python3.14").symlink_to(sys.executable)
+        (self.bin / "python3.15").symlink_to(sys.executable)
         self.cores = os.cpu_count() or 4
 
     def check(self, *args, expect=0, **extra):

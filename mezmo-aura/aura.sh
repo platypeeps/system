@@ -109,13 +109,15 @@ need_llm() {
 }
 
 # Writes the two server configs from the checkout's math example: the model
-# from the environment, and orchestration off for the single-agent server.
+# from the environment, the MCP servers of an --overlay file, and
+# orchestration off for the single-agent server.
 render_configs() {
   mkdir -p "$EXP/state"
   sed -e 's/^provider = .*/provider = "{{ env.LLM_PROVIDER }}"/' \
       -e 's/^api_key = .*/api_key = "{{ env.LLM_API_KEY }}"/' \
       -e 's/^model = .*/model = "{{ env.LLM_MODEL }}"/' \
       "$AURA_REPO/$EXAMPLE/config.toml" > "$EXP/state/config-orch.toml"
+  [ -z "$OVERLAY" ] || apply_overlay "$OVERLAY" "$EXP/state/config-orch.toml"
   sed -e '/^\[orchestration\]/,/^enabled/ s/^enabled = true/enabled = false/' \
       "$EXP/state/config-orch.toml" > "$EXP/state/config-single.toml"
   # An upstream change to the example would leave a config that silently
@@ -129,6 +131,60 @@ render_configs() {
   }
 }
 
+# apply_overlay <overlay.toml> <config>: each [mcp.servers.<name>] table in the
+# overlay replaces the config's table of that name, sub-tables included, or
+# adds it. The overlay may hold nothing else, and the merged config must parse
+# to exactly that, or the config is left as it was and start refuses.
+# A key belongs in the overlay as {{ env.MEZMO_SERVICE_KEY }}: its value would
+# land in experiment/state/, so an overlay holding it is refused.
+apply_overlay() {
+  python3 - "$1" "$2" <<'PY_OVERLAY'
+import os, re, sys, tomllib
+
+overlay_path, config_path = sys.argv[1:3]
+
+def refuse(message):
+    print(f"aura.sh: overlay {overlay_path}: {message}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    with open(overlay_path, encoding="utf-8") as f:
+        text = f.read()
+    overlay = tomllib.loads(text)
+except (OSError, tomllib.TOMLDecodeError) as e:
+    refuse(str(e))
+servers = overlay.get("mcp", {}).get("servers")
+if set(overlay) != {"mcp"} or set(overlay["mcp"]) != {"servers"} or not servers:
+    refuse("may hold only [mcp.servers.<name>] tables")
+key = os.environ.get("MEZMO_SERVICE_KEY")
+if key and key in text:
+    refuse("holds the value of MEZMO_SERVICE_KEY; write {{ env.MEZMO_SERVICE_KEY }} instead")
+
+with open(config_path, encoding="utf-8") as f:
+    base_text = f.read()
+base = tomllib.loads(base_text)
+kept, dropping = [], False
+for line in base_text.splitlines(keepends=True):
+    header = re.match(r"\s*\[+\s*([^\]]*)", line)
+    if header:
+        parts = header.group(1).strip().split(".")
+        dropping = parts[:2] == ["mcp", "servers"] and len(parts) > 2 and parts[2] in servers
+    if not dropping:
+        kept.append(line)
+merged_text = "".join(kept).rstrip("\n") + "\n\n# From the experiment start overlay.\n" + text
+expected = dict(base, mcp=dict(base.get("mcp", {})))
+expected["mcp"]["servers"] = {**expected["mcp"].get("servers", {}), **servers}
+try:
+    merged = tomllib.loads(merged_text)
+except tomllib.TOMLDecodeError as e:
+    refuse(f"the merged config does not parse: {e}")
+if merged != expected:
+    refuse("the merged config is not the example plus these servers; update apply_overlay")
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write(merged_text)
+PY_OVERLAY
+}
+
 experiment_env() {
   # Compose passes these into the servers by name, so an exported-only setup
   # with no .env works, and no other key in .env reaches the containers.
@@ -137,6 +193,28 @@ experiment_env() {
   export AURA_ORCH_PORT="${AURA_ORCH_PORT:-3101}"
   export AURA_SINGLE_PORT="${AURA_SINGLE_PORT:-3102}"
   export AURA_OTLP_ENDPOINT="${AURA_OTLP_ENDPOINT:-http://host.docker.internal:$GENAI_TRACES_GRPC_PORT}"
+}
+
+# experiment_option <--flag> experiment <verb> [<--flag> <file>]: sets OVERLAY
+# for --overlay, AURA_PROMPTS for --prompts, to the file's absolute path.
+# Anything else, or a file that is not there, refuses before any work starts.
+experiment_option() {
+  _flag=$1
+  shift 3
+  [ "$#" -eq 0 ] && return 0
+  if [ "$#" -ne 2 ] || [ "$1" != "$_flag" ]; then
+    echo "aura.sh: experiment: unknown arguments: $*; the only option here is $_flag <file>" >&2
+    exit 1
+  fi
+  if [ ! -f "$2" ] || [ ! -r "$2" ]; then
+    echo "aura.sh: $_flag $2: no readable file there" >&2
+    exit 1
+  fi
+  _file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+  case "$_flag" in
+    --overlay) OVERLAY=$_file ;;
+    --prompts) AURA_PROMPTS=$_file ;;
+  esac
 }
 
 experiment_compose() {
@@ -212,6 +290,8 @@ case "$1" in
   experiment)
     case "${2:-}" in
       start)
+        OVERLAY=""
+        experiment_option --overlay "$@"
         need_repo
         need_llm
         if ! source_label="$(docker image inspect -f '{{ index .Config.Labels "aura.source" }}' "$AURA_IMAGE" 2>/dev/null)"; then
@@ -239,7 +319,10 @@ case "$1" in
         experiment_compose down
         ;;
       run)
+        AURA_PROMPTS=""
+        experiment_option --prompts "$@"
         experiment_env
+        export AURA_PROMPTS
         exec sh "$EXP/scenarios.sh"
         ;;
       inspect)
@@ -250,7 +333,7 @@ case "$1" in
         experiment_compose ps
         ;;
       *)
-        echo "usage: $(basename "$0") experiment start|stop|run|inspect [summary|tree]|ps" >&2
+        echo "usage: $(basename "$0") experiment start [--overlay <file>]|stop|run [--prompts <file>]|inspect [summary|tree]|ps" >&2
         exit 1
         ;;
     esac
@@ -276,11 +359,17 @@ usage: aura.sh install|server|server-repo|cli|health|models|prompt [text]
   prompt       send one chat completion ("Hello" if no text given)
   image        build $AURA_IMAGE (default aura-local:instrumented) from the
                $AURA_REPO checkout, labelled with its branch and commit
-  experiment start   run the math MCP server and two Aura servers
+  experiment start [--overlay <file.toml>]
+                     run the math MCP server and two Aura servers
                      (orchestration on 127.0.0.1:3101, single agent on :3102)
                      from $AURA_IMAGE; refuses without the image or a healthy
-                     local-genai-traces
-  experiment run     send the fixed scenario requests
+                     local-genai-traces. Each [mcp.servers.<name>] table of the
+                     overlay replaces that server or adds it; the overlay may
+                     hold nothing else, and names the key as
+                     {{ env.MEZMO_SERVICE_KEY }}, never its value
+  experiment run [--prompts <file>]
+                     send the six math requests, or each line of the file to
+                     both servers (blank lines and # lines skipped)
   experiment inspect [summary|tree]  summarise the aura spans in
                      local-genai-traces' raw file
   experiment stop|ps stop the experiment, or list its containers
@@ -296,6 +385,8 @@ config:
                                    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY for the
                                    experiment; copy .env.example. Exported
                                    values win.
+                                   The experiment passes MEZMO_SERVICE_KEY to
+                                   its servers by name only.
   <config>/mezmo-aura/config.toml  replaces config.toml beside this script.
   <config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system.
   <config>/aura/ is the folder before sd:2539: with only it present, every

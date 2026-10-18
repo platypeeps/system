@@ -15,7 +15,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # two subcommands a person runs from a shell, and for nothing else. `serve`
 # runs under SD_DASHBOARD_PYTHON (below), and a Resources view runs the tile as
 # a child of that server under its own sys.executable — so the same tile has
-# two interpreters, today Homebrew python@3.14 on this path and Homebrew
+# two interpreters, today Homebrew python@3.15 on this path and Homebrew
 # python@3.13 on that one. That matters because the vault is under ~/Documents
 # behind Full Disk Access, macOS grants FDA to a binary, and each path needs
 # its own grant. A tile under an ungranted interpreter does not report an empty

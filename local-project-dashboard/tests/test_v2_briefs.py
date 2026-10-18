@@ -113,6 +113,16 @@ class TheDocument(BriefCase):
         digest = doc["briefs"][3]
         self.assertEqual((digest["day"], digest["at"], digest["src"]), ("2026-09-03", None, "Weekly Digest"))
 
+    def test_a_series_is_its_stem_up_to_the_first_middle_dot(self):
+        """sd:5064: each adversarial review is its own stem, so the target and time follow a ` · `; the page groups
+        every review under one source, as it groups one job's briefs."""
+        for stem in ("2026-09-06 - Adversarial review · task 12 · 101500Z",
+                     "2026-09-06 - Adversarial review · repo system · 111500Z"):
+            routine_briefs.add(self.connection, stem, "---\nreview: adversarial\n---\n\nNo recommendations.\n",
+                               repo=REPO, who="test")
+        found = [b for b in self.doc()["briefs"] if "Adversarial" in b["id"]]
+        self.assertEqual([b["src"] for b in found], ["Adversarial review", "Adversarial review"])
+
     def test_open_needs_an_ok_render_newer_than_the_row_and_read_needs_nothing(self):
         doc = self.doc()
         by = {b["id"]: b for b in doc["briefs"]}
