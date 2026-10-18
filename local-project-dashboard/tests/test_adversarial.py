@@ -509,6 +509,18 @@ class OtherKinds(AdversarialCase):
         self.assertIsNotNone(self.brief(done["brief"]))
         self.assertEqual(len(done["batches"]), 1)
 
+    def test_a_checkout_whose_path_holds_a_quote_is_reviewed(self):
+        # The gate passes its words without `eval` now (sd:5064), so the dashboard no longer refuses such a path.
+        quoted = self.root / "it's-repo"
+        quoted.mkdir()
+        git(quoted, "init", "-q", "-b", "main")
+        key = self.repo(str(quoted))
+        status, _, run = self.review("repo", key)
+        self.assertEqual(status, 202, run)
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        self.assertEqual(self.codex_argv()[7:9], ["-C", str(quoted)])
+
     def test_an_unregistered_repository_is_refused(self):
         status, _, answer = self.review("repo", str(self.root / "elsewhere"))
         self.assertEqual(status, 400)
