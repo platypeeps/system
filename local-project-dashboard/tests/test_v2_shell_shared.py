@@ -132,10 +132,10 @@ class TheShownGuard(unittest.TestCase):
 
     def test_a_newer_read_or_another_subject_ends_an_older_reads_check(self):
         out = run_js("""let on = 'a';
-  const a1 = shown('recs', 'a', () => on); R.first = a1();
-  const a2 = shown('recs', 'a', () => on); R.older = a1(); R.newer = a2();
-  R.away = shown('recs', 'b', () => on); R.kept = a2();
-  const other = shown('poll', 'a', () => on); R.slots = [a2(), other()];
+  const a1 = stillShown('recs', 'a', () => on); R.first = a1();
+  const a2 = stillShown('recs', 'a', () => on); R.older = a1(); R.newer = a2();
+  R.away = stillShown('recs', 'b', () => on); R.kept = a2();
+  const other = stillShown('poll', 'a', () => on); R.slots = [a2(), other()];
   on = 'b'; R.moved = [a2(), other()];
   on = 'a'; R.back = a2();""")
         self.assertEqual(out, {"first": True, "older": False, "newer": True, "away": None, "kept": True,
