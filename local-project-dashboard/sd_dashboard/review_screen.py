@@ -100,10 +100,10 @@ def recommendations(connection, item: int):
     """An adversarial brief's batches and every question in them, or `(404, error)` for any other item."""
     from sd_db import review
 
-    row = connection.execute("SELECT body FROM item WHERE id = ? AND source = 'brief'", (item,)).fetchone()
     try:
-        found = json.loads(row["body"] or "{}") if row is not None else {}
-    except ValueError:
+        row = workflow.item_state(connection, item)["item"]
+        found = json.loads(row["body"] or "{}") if row["source"] == "brief" else {}
+    except (workflow.MissingItem, ValueError):
         found = {}
     head = _frontmatter(found.get("text") or "" if isinstance(found, dict) else "")
     if head.get("review") != "adversarial":
