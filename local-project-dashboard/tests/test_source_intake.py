@@ -237,12 +237,55 @@ class SourceIntake(BrowserSession):
             with self.subTest(payload=payload):
                 status, _, answer = self.intake(**payload)
                 self.assertEqual(status, 400, answer)
-                self.assertIn("Already in the ledger, so nothing was added", answer["error"])
+                self.assertIn("Not added, and nothing was written", answer["error"])
                 self.assertIn(said, answer["error"])
                 self.assertNothingLeft()
                 self.assertCheckoutUntouched()
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM item WHERE external_id LIKE 'source-intake:%'")
                          .fetchone()[0], 0)
+
+    def test_sources_in_one_batch_that_repeat_each_other_are_refused_before_any_write(self):
+        # Round 1 class: each source was checked against the checkout, not against the others in its batch.
+        bulk = self.root / "bulk"
+        os.environ["FIXTURE_BULK"] = str(bulk)
+        with patch("sd_dashboard.source_intake.FILE_BYTES", 8):
+            first, second = self.drop("report?.txt", b"one"), self.drop("report!.txt", b"two")
+            self.assertEqual((first[1]["name"], second[1]["name"]), ("report.txt", "report.txt"))
+            cases = (
+                ([first[1], second[1]], "report.txt (another file dropped with it is stored under that name)"),
+                # A case-insensitive disk holds these as one file.
+                ([self.drop("Notes.md", b"upper")[1], self.drop("notes.md", b"lower")[1]],
+                 "notes.md (another file dropped with it is stored under that name)"),
+                ([self.drop("same.md", b"same")[1], self.drop("same.md", b"same")[1]],
+                 "same.md (the same file as same.md, dropped with it)"),
+                # One copy would go to the checkout and one under the bulk root; the name is one in the ledger.
+                ([self.drop("scan.pdf", b"small")[1], self.drop("scan!.pdf", b"over eight bytes")[1]],
+                 "scan.pdf (another file dropped with it is stored under that name)"))
+            for files, said in cases:
+                with self.subTest(said=said):
+                    status, _, answer = self.intake(files=files)
+                    self.assertEqual(status, 400, answer)
+                    self.assertIn(said, answer["error"])
+                    self.assertNothingLeft()
+                    self.assertCheckoutUntouched()
+                    self.assertFalse((bulk / "reading" / "sources").exists() and
+                                     list((bulk / "reading" / "sources").iterdir()))
+                    for one in files:
+                        self.assertTrue((self.root / "state" / "system" / "source-intake" / "staged" /
+                                         one["sha256"]).is_file())
+
+    def test_a_url_or_s_id_another_ledger_of_the_checkout_holds_is_taken(self):
+        # The rows go in registry.md, but SOURCES.md is a ledger of the same checkout and the claim map reads both.
+        self.publish(IDS, ("SOURCES.md", b"# Older\n\n| ID | Source | Note |\n| --- | --- | --- |\n"
+                                         b"| S7 | [Elsewhere](https://example.test/elsewhere) | kept |\n"))
+        status, _, answer = self.intake(urls=["https://example.test/elsewhere"])
+        self.assertEqual(status, 400, answer)
+        self.assertIn("https://example.test/elsewhere (already in SOURCES.md)", answer["error"])
+        self.assertNothingLeft()
+        status, _, answer = self.intake(urls=["https://example.test/a"])
+        self.assertEqual(status, 200, answer)
+        self.assertTrue(self.added(answer)[1][-1].startswith("| S8 | [The Spec - v2](https://example.test/a) |"),
+                        self.added(answer)[1][-1])
 
     def test_a_failed_enqueue_keeps_the_commit_and_notes_the_line_that_retries(self):
         os.environ["FIXTURE_SHIP_FAIL"] = "1"

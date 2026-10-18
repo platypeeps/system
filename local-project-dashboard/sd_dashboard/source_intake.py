@@ -244,31 +244,44 @@ def add(connection, *, target: str, urls: list, files: list, who: str) -> dict:
     copied: list[Path] = []
     try:
         ledger, heads, end, lines = _table(work)
-        _, rows = research_screen.parse_registry(ledger.read_text(encoding="utf-8"), ledger.relative_to(work).as_posix())
-        held = {research_screen.source_key(row["url"]) for row in rows if row["url"]}
+        # Every ledger of the checkout, not just the one the rows go in: the claim map reads an S-ID checkout-wide.
+        texts = {name: (work / name).read_text(encoding="utf-8") for name in research_screen.REGISTRIES
+                 if (work / name).is_file()}
+        held = {research_screen.source_key(row["url"]): row["f"] for name, text in texts.items()
+                for row in research_screen.parse_registry(text, name)[1] if row["url"]}
         files_dir = work / "10-sources" / "files"
         # ponytail: hashes every stored file on each add, and S-IDs count from origin/main, so two adds queued at once can
         # take one S-ID; keep a hash index beside the files, or allocate from the lane's queue, if either starts to bite.
-        hashes = {_sha(path): path.name for folder in (files_dir, shelf) if folder and folder.is_dir()
-                  for path in folder.iterdir() if path.is_file()}
-        refused = [url for url in urls if research_screen.source_key(url) in held]
-        seen: set = set()
+        stored = [path for folder in (files_dir, shelf) if folder and folder.is_dir()
+                  for path in folder.iterdir() if path.is_file()]
+        hashes = {_sha(path): path.name for path in stored}
+        # Names compare case-folded: a case-insensitive disk holds Report.txt and report.txt as one file.
+        taken = {path.name.casefold() for path in stored}
+        # Each source is checked against what the checkout holds and against the sources before it in this batch.
+        refused, urls_seen, shas_seen, names_seen = [], {}, {}, set()
         for url in urls:
             key = research_screen.source_key(url)
-            if key in seen:
-                refused.append(url)
-            seen.add(key)
+            if key in held:
+                refused.append(f"{url} (already in {held[key]})")
+            elif key in urls_seen:
+                refused.append(f"{url} (the same source as {urls_seen[key]})")
+            urls_seen.setdefault(key, url)
         for one, name in zip(files, named):
-            if one["sha256"] in hashes:
-                refused.append(f"{name} (the same file as {hashes[one['sha256']]})")
-            elif one["sha256"] in seen:
-                refused.append(name)
-            elif (files_dir / name).exists() or (shelf and (shelf / name).exists()):
+            sha, folded = one["sha256"], name.casefold()
+            if sha in hashes:
+                refused.append(f"{name} (the same file as {hashes[sha]})")
+            elif sha in shas_seen:
+                refused.append(f"{name} (the same file as {shas_seen[sha]}, dropped with it)")
+            elif folded in taken:
                 refused.append(f"{name} (another file has that name)")
-            seen.add(one["sha256"])
+            elif folded in names_seen:
+                refused.append(f"{name} (another file dropped with it is stored under that name)")
+            shas_seen.setdefault(sha, name)
+            names_seen.add(folded)
         if refused:
-            raise workflow.WorkflowError(f"Already in the ledger, so nothing was added: {', '.join(refused)}")
-        numbers = [int(m.group(1)) for line in lines if (m := re.match(r"\|\s*S(\d+)\b", line.strip()))]
+            raise workflow.WorkflowError(f"Not added, and nothing was written: {', '.join(refused)}")
+        numbers = [int(m.group(1)) for text in texts.values() for line in text.splitlines()
+                   if (m := re.match(r"\|\s*S(\d+)\b", line.strip()))]
         next_id = max(numbers, default=0) + 1
         day = stamp[:4] + "-" + stamp[4:6] + "-" + stamp[6:8]
         added, new = [], []
