@@ -478,7 +478,7 @@ def _journal(connection, who: str, domain: str, name: str, entity: str):
                 note = writes.add_note(connection, JOURNAL_ITEM, "exec", "{}", session=who, started=started, ended=writes.now(),
                                        exit_code=outcome["exit"], output_path=value["output_path"])
                 # The journal reads a version 1 record whose `note` is its own id, as `runner_exec.prepare` writes it.
-                connection.execute("UPDATE note SET body=? WHERE id=?", (json.dumps({**value, "note": note, "status": outcome["status"]}, sort_keys=True), note))
+                writes.set_note_body(connection, note, json.dumps({**value, "note": note, "status": outcome["status"]}, sort_keys=True))
         except (sqlite3.Error, SdDbError) as error:
             return None, f"the journal note was not written ({error.__class__.__name__}: {error}); its output is {Path(value['output_path']).name}{lost}"
         return note, lost.lstrip("; ")
