@@ -1,5 +1,6 @@
 #!/bin/sh
-# Send a small fixed set of requests to the two experiment servers.
+# Send a small fixed set of requests to the two experiment servers, or each
+# prompt of $AURA_PROMPTS to both: one per line, blank and # lines skipped.
 # Each request carries a user, metadata and a session header, so the traces
 # show where caller tags land. Answers go to $AURA_EXPERIMENT_STATE/responses.jsonl.
 # aura.sh experiment run sets the variables; run it through that.
@@ -34,12 +35,29 @@ sys.exit(2 if err or not txt else 0)' \
 
 S="$AURA_SINGLE_PORT"
 O="$AURA_ORCH_PORT"
-send "$S" single-arith  s-arith  "What is 17 multiplied by 23, plus 5?"
-send "$S" single-div0   s-div0   "Divide 10 by 0 using your tools and report exactly what the tool returned."
-send "$S" single-stats  s-stats  "What is the mean and the median of 3, 7, 8, 10 and 41?"
-send "$S" single-direct s-direct "In one sentence, what is a median?"
-send "$O" orch-mixed    o-mixed  "Compute the mean of 2, 4 and 9, then multiply it by the sine of 30 degrees."
-send "$O" orch-div0     o-div0   "Divide 100 by the result of 5 minus 5, and tell me what happened."
+if [ -n "${AURA_PROMPTS:-}" ]; then
+  # A prompt line holds a non-blank character and does not start with #.
+  # A file with none would send nothing and read as a complete run.
+  grep -Eq '^[^#[:space:]]|^[[:space:]]+[^[:space:]]' "$AURA_PROMPTS" || {
+    echo "scenarios.sh: $AURA_PROMPTS holds no prompt" >&2
+    exit 1
+  }
+  n=0
+  while IFS= read -r prompt || [ -n "$prompt" ]; do
+    case "$prompt" in '#'*) continue ;; esac
+    case "$prompt" in *[![:space:]]*) ;; *) continue ;; esac
+    n=$((n + 1))
+    send "$S" "single-p$n" "s-p$n" "$prompt" < /dev/null
+    send "$O" "orch-p$n" "o-p$n" "$prompt" < /dev/null
+  done < "$AURA_PROMPTS"
+else
+  send "$S" single-arith  s-arith  "What is 17 multiplied by 23, plus 5?"
+  send "$S" single-div0   s-div0   "Divide 10 by 0 using your tools and report exactly what the tool returned."
+  send "$S" single-stats  s-stats  "What is the mean and the median of 3, 7, 8, 10 and 41?"
+  send "$S" single-direct s-direct "In one sentence, what is a median?"
+  send "$O" orch-mixed    o-mixed  "Compute the mean of 2, 4 and 9, then multiply it by the sine of 30 degrees."
+  send "$O" orch-div0     o-div0   "Divide 100 by the result of 5 minus 5, and tell me what happened."
+fi
 if [ "$failed" -ne 0 ]; then
   echo "scenarios.sh: at least one request failed; see $out" >&2
   exit 1

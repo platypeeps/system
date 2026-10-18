@@ -32,7 +32,7 @@ case "${1:-}" in
 esac
 
 cd "$CI_SYSTEM_ROOT"
-python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), sys.version'
+python3 -c 'import sys; assert sys.version_info[:2] == (3, 15), sys.version'
 test -f "$SD_ACCEPTANCE_PACK/bin/sd-ship"
 test -f "$SD_ACCEPTANCE_PACK/bin/sd-docs-lint"
 
@@ -227,7 +227,7 @@ if [ -n "$unwired" ]; then
 fi
 
 # No --copies: a copied uv-managed python cannot find its libpython, and
-# check.sh takes the first python3.14 on the caller's PATH.
+# check.sh takes the first python3.15 on the caller's PATH.
 python3 -m venv "$CI_WORK_ROOT/venv"
 export PYTHON="$CI_WORK_ROOT/venv/bin/python"
 # The pack owns sd_db (sd:2997): install the pinned pack's lib/, the one copy

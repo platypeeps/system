@@ -70,7 +70,7 @@ it inherits the server's own interpreter -- `SD_DASHBOARD_PYTHON`, which the
 LaunchAgent sets to the command pack's `.venv/bin/python`, today Homebrew
 python@3.13, execing that framework's `Python.app/Contents/MacOS/Python`.
 `dashboard.sh tile <tab>` runs it under `DASHBOARD_PYTHON` from `.env`, today
-`/opt/homebrew/bin/python3`, which is Homebrew python@3.14 and execs a
+`/opt/homebrew/bin/python3`, which is Homebrew python@3.15 and execs a
 different `Python.app` binary. A shebang would add a third, whatever `python3`
 resolves to on the caller's PATH, so this file names none and lets each caller
 say.
@@ -83,7 +83,7 @@ probes the read in a child first, and a refusal becomes the tile's exit 1 with
 the reason, naming the interpreter to grant. The Resources path is the one this
 machine exercises: on 2026-09-14 its Briefs view rendered from the launchd
 server with no refusal, so the python@3.13 binary holds the grant. Whether the
-python@3.14 binary does was not measured under launchd; a shell has its own
+python@3.15 binary does was not measured under launchd; a shell has its own
 Documents access and cannot answer it. That is also why nothing reported a
 grant one path lost: `vault_blocked` names the interpreter it runs under, on
 the tile that was asked, and a `brew upgrade python` on the other Cellar
