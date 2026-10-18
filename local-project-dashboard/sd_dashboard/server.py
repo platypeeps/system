@@ -302,6 +302,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
     if registered is not None:
         return registered.write(payload, principal)
     values = dict(payload)
+    if path == "/api/adversarial":
+        from . import adversarial
+
+        # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
+        return adversarial.request(values)
     if path == "/api/snooze":
         from . import snooze
 
@@ -715,6 +720,13 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._document(path[len("/documents/") :])
         if path.startswith("/designs/"):
             return self._design(path[len("/designs/") :])
+        if path.startswith("/api/adversarial/") and not split.query:
+            from . import adversarial
+
+            # sd:5064: one review run's state, from its state file; no database read.
+            if not self._session(context):
+                return self._json(403, {"error": "Open a dashboard page before reading a review run."})
+            return self._json(*adversarial.status(path[len("/api/adversarial/"):]))
         parameters = parse_qs(split.query, keep_blank_values=True)
         try:
             connection = sd_db.connect(self.database, write=False)
