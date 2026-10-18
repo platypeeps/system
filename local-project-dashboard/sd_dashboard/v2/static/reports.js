@@ -428,7 +428,7 @@ function registerCommands() {
     // Retry (commands.js): it posts /api/jobs/<name>/retry with the job's revision; operations.inventory's capability is the
     // off reason (sd:2118).
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
-      run: async o => window.commands.answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Retry started · ${o.job}`) }),
+      run: async o => window.commands.answered(await write(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }), o.job, 'retried', `Run started · ${o.job}`) }),
   );
 }
 document.addEventListener('shell:open', e => { if (ROWS.some(r => r.id === e.detail)) select(e.detail, true); });

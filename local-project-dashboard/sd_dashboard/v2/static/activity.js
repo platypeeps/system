@@ -455,7 +455,7 @@ addEventListener('DOMContentLoaded', () => {
       return { text: `Not known whether ${o.job} was retried: ${err.message}` };
     }
     await reread();
-    return { text: window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`) };
+    return { text: window.commands.answered(out, o.job, 'retried', `Run started · ${o.job}`) };
   }
 
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });

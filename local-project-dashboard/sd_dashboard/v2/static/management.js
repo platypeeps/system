@@ -623,7 +623,7 @@ function registerCommands() {
     // launchd calendar jobs. Retry (commands.js) posts /api/jobs/<name>/retry; operations.inventory's capability is the off
     // reason. Exit 127 is "command not found": Print is the row's act (sd:3392).
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
-      run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Retry started · ${o.job}`)) }),
+      run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Run started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
     { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', risk: 'confirm', primary: o => o.running,

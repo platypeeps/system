@@ -829,7 +829,7 @@ R.other = !!c.askFirst(C.get('job:weekly-scan')); shellRun(c, o); await flush();
         self.assertIn("exit 127", out["R"]["says"])
         self.assertEqual(out["confirms"], ["jobs.retry"])
         self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
-        self.assertEqual(out["toasts"][-1], ["Retry started · nightly-sync", False])
+        self.assertEqual(out["toasts"][-1], ["Run started · nightly-sync", False])
 
     def test_a_job_is_failed_by_its_state_not_by_whether_launchd_allows_a_run(self):
         """sd:4965: the run-now pack allows a retry of an idle job too, so an allowed retry no longer means a failed run."""
@@ -847,10 +847,9 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         out = self.run_page("shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush(); R.off = cmd('jobs.retry').when(C.get('job:weekly-scan'));",
                             answer=self.LAUNCHCTL.replace("ANSWER", "{ request: { status: 'accepted', message: 'launchctl accepted the request' } }").replace("DOC_JSON", json.dumps(self.doc)))
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": job["revision"]}, 64]])
-        self.assertEqual(out["toasts"][-1], ["Retry started · nightly-sync", False])
-        idle = next(j for j in self.doc["jobs"] if j["name"] == "weekly-scan")
-        self.assertEqual(out["R"]["off"], idle["capabilities"]["retry"]["reason"])
-        self.assertIn("can retry", out["R"]["off"])
+        self.assertEqual(out["toasts"][-1], ["Run started · nightly-sync", False])
+        # An idle job may run now (sd:4982), so Run now is on for it too.
+        self.assertIs(out["R"]["off"], True)
 
     # The list grammar from shell.list (sd:2527, sd:2528, sd:2529). Each click goes to the listener the page put on its holder.
     CLICK = "ELS['%s'].listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } });"

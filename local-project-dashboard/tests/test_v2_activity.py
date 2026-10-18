@@ -149,7 +149,7 @@ class TheDocument(ScreenCase):
         self.assertTrue(failed["retry"]["allowed"])
         self.assertEqual(failed["exit"], 7, "the exit code Retry's 127 guard reads (sd:2415)")
         self.assertEqual(self.by_id["job:backup"]["s"], "ok")
-        self.assertFalse(self.by_id["job:backup"]["retry"]["allowed"])
+        self.assertTrue(self.by_id["job:backup"]["retry"]["allowed"], "an idle job may run now (sd:4982)")
         self.assertNotIn("job:weekly", self.by_id)
         self.assertNotIn("job:lost-log", self.by_id)
         self.assertEqual(self.doc["undated"], ["lost-log", "lost-stop"])
@@ -389,19 +389,19 @@ R.rows = ELS.rows.html;""")
         self.assertIn(">status · exit 0<", out["R"]["rows"])
         self.assertNotIn("Port the page<small>", out["R"]["rows"])
 
-    def test_retry_is_on_only_for_a_failed_job_and_posts_its_revision(self):
+    def test_run_now_is_on_for_an_idle_job_too_and_posts_its_revision(self):
         failed = next(e for e in self.doc["events"] if e["id"] == "job:nightly-sync")
         out = self.run_page("""R.off = cmd('jobs.retry').when(C.get('job:backup'));
 R.cli = cmd('jobs.retry').cli(C.get('job:nightly-sync'));
 R.sends = cmd('jobs.retry').sends ? cmd('jobs.retry').sends(C.get('job:nightly-sync')) : null;
 shellRun(cmd('jobs.retry'), C.get('job:nightly-sync')); await flush();""", ACCEPTED)
-        # The capability is the server's answer, so its reason is the off text on every page (sd:3524).
-        self.assertEqual(out["R"]["off"], "only a currently failed or interrupted job can retry")
+        # The capability is the server's answer (sd:3524); an idle job may run now (sd:4982).
+        self.assertIs(out["R"]["off"], True)
         # The line to copy is the sd verb, which passes the operation gate and the audit; kickstart is only what it sends.
         self.assertEqual(out["R"]["cli"], "sd jobs retry nightly-sync")
         self.assertEqual(out["R"]["sends"], "launchctl kickstart fixture/nightly-sync")
         self.assertEqual(out["posts"], [["/api/jobs/nightly-sync/retry", {"revision": failed["revision"]}, 64]])
-        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
+        self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]])
 
     def test_show_log_opens_the_jobs_row_on_management_schedules_and_keeps_the_line_to_copy(self):
         # sd:2392, ruling #8769: the row on Schedules, filtered to the job so a fleet of more than 25 jobs still shows it.
@@ -615,7 +615,7 @@ R.rows = ELS.rows.html; R.type = C.get('{n}').type; R.details = ELS.details.html
         self.assertIn("The change landed", out["states"][-1]["text"])
         self.assertIn(f'data-id="{n}"', out["R"]["rows"], "the rows stay on screen")
         self.assertEqual(out["R"]["type"], "not listed", "no command runs on a row the reread did not confirm")
-        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
+        self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]])
 
     def test_a_bulk_retry_ends_in_at_most_two_reads(self):
         """sd:2489. The write barrier: N landed writes share one reread queued behind the read in flight."""
@@ -641,7 +641,7 @@ shellRun(c, o); await flush();""", ACCEPTED, doc=doc)
         self.assertIn("exit 127", out["R"]["says"])
         self.assertEqual(out["confirms"], ["jobs.retry"])
         self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
-        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]], "the launchctl answer's wording stays")
+        self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]], "the launchctl answer's wording stays")
 
     def test_retry_after_another_exit_does_not_ask(self):
         out = self.run_page("const c = cmd('jobs.retry'), o = C.get('job:nightly-sync'); R.ask = !!c.askFirst(o);"
@@ -661,7 +661,7 @@ shellRun(c, o); await flush();""", ACCEPTED, doc=doc)
     def test_retry_words_its_toast_from_launchctls_answer(self):
         """sd:3391, as Management words it (sd:3388): a 200 carries launchctl's answer; only `accepted` started a retry."""
         for answer, toast in {
-            ACCEPTED: "Retry started · nightly-sync",
+            ACCEPTED: "Run started · nightly-sync",
             "(p, b) => [200, {request: {status: 'failed', message: 'launchctl refused the request (exit 3)'}}]":
                 "nightly-sync not retried: launchctl refused the request (exit 3)",
             "(p, b) => [200, {request: {status: 'unknown', message: 'launchctl timed out; the request outcome is unknown'}}]":

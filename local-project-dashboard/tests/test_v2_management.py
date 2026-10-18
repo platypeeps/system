@@ -1084,14 +1084,15 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertEqual(out["toasts"][-1], [f"{path} not changed: managed is yes now, not no", False])
         self.assertEqual(out["gets"], ["/api/management", "/api/management"])
 
-    def test_a_failed_job_retries_through_its_route_and_an_idle_one_is_off(self):
-        revision = next(j for j in self.doc["jobs"] if j["name"] == "nightly-sync")["revision"]
+    def test_a_failed_job_and_an_idle_one_run_through_their_routes(self):
+        # An idle job may run now (sd:4982), so Run now is on for both.
+        revision = {j["name"]: j["revision"] for j in self.doc["jobs"]}
         out = self.run_page("""C.run(cmd('jobs.retry'), C.get('cron:nightly-sync')); await flush();
 C.run(cmd('jobs.retry'), C.get('cron:quiet')); await flush();""",
                             answer="(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]")
-        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/nightly-sync/retry", {"revision": revision})])
-        self.assertEqual(out["toasts"][0], ["Retry started · nightly-sync", False])
-        self.assertTrue(out["toasts"][1][0].startswith("off: "), out["toasts"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/jobs/nightly-sync/retry", {"revision": revision["nightly-sync"]}),
+                                                               ("/api/jobs/quiet/retry", {"revision": revision["quiet"]})])
+        self.assertEqual(out["toasts"], [["Run started · nightly-sync", False], ["Run started · quiet", False]])
 
 
     def test_after_exit_127_retry_asks_first_naming_the_exit_and_print_is_the_rows_act(self):
@@ -1105,7 +1106,7 @@ C.run(c, o); await flush();""", answer="(p, b) => [200, {request: {status: 'acce
         self.assertIn("exit 127", out["R"]["says"])
         self.assertEqual(out["confirms"], ["jobs.retry"])
         self.assertEqual([p for p, _, _ in out["posts"]], ["/api/jobs/nightly-sync/retry"])
-        self.assertEqual(out["toasts"], [["Retry started · nightly-sync", False]])
+        self.assertEqual(out["toasts"], [["Run started · nightly-sync", False]])
 
     def test_after_another_exit_retry_is_the_rows_act_and_does_not_ask(self):
         out = self.run_page("""const c = cmd('jobs.retry'), o = C.get('cron:nightly-sync');
@@ -1115,7 +1116,7 @@ R.got = [!!c.primary(o), !!cmd('jobs.print').primary(o), !!c.askFirst(o)];""")
     def test_a_retry_shows_launchctls_answer_when_it_did_not_accept(self):
         """sd:3388: a 200 carries launchctl's answer; only `accepted` started a retry."""
         cases = {
-            "(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]": "Retry started · nightly-sync",
+            "(p, b) => [200, {request: {status: 'accepted', message: 'launchctl accepted the request'}}]": "Run started · nightly-sync",
             "(p, b) => [200, {request: {status: 'failed', message: 'launchctl refused the request (exit 3)'}}]":
                 "nightly-sync not retried: launchctl refused the request (exit 3)",
             "(p, b) => [200, {request: {status: 'unknown', message: 'launchctl timed out; the request outcome is unknown'}}]":
