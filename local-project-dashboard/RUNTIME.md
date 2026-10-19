@@ -55,7 +55,9 @@ process ID must match the newly loaded LaunchAgent. Health reports the build
 captured when the server started and becomes unhealthy if its files change;
 an older process cannot claim the new bytes just installed.
 It also reports `commit`, the checkout HEAD it started on; `dashboard.sh health`
-exits 1 when that is not the checkout's HEAD now, and prints the kickstart line (sd:3528). A server started
+exits 1 when that is not the checkout's HEAD now, and prints the kickstart line (sd:3528).
+It also exits 1 when the installed LaunchAgent's PATH no longer finds `sd`, or its plist does not read,
+and names the reinstall (sd:5288). A server started
 with `--config` rechecks those files every 30 seconds. On a change it runs the
 new checkout's `dashboard.sh preflight`, then the new code's own start in a
 child process: imports, configuration, library and listeners, short

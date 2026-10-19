@@ -1095,10 +1095,15 @@ class ServedCommit(unittest.TestCase):
 
     SERVED = {"ok": True, "service": "sd-dashboard", "pid": 4242}
 
-    def health(self, served, checkout):
-        """`runtime health` against a healthy server that answers `served`; (exit code, stdout, stderr)."""
+    def health(self, served, checkout, plist=None):
+        """`runtime health` against a healthy server that answers `served`, under a HOME of its own whose installed
+        LaunchAgent is `plist` (bytes, or none installed); (exit code, stdout, stderr)."""
         temporary = tempfile.TemporaryDirectory(prefix="dashboard-commit-")
         self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        if plist is not None:
+            (self.home / "Library/LaunchAgents").mkdir(parents=True)
+            (self.home / "Library/LaunchAgents" / f"{runtime.LABEL}.plist").write_bytes(plist)
         config = Path(temporary.name) / "dashboard.json"
         config.write_text(json.dumps({"port": 8767}))
         answer = dict(self.SERVED, **({} if served is ... else {"commit": served}))
@@ -1107,9 +1112,34 @@ class ServedCommit(unittest.TestCase):
         with patch.object(sys, "argv", ["runtime", "health", "--config", str(config)]), \
                 patch.object(runtime, "health_check", return_value=answer), \
                 patch.object(runtime, "checkout_commit", create=True, **checkout), \
+                patch.dict(os.environ, {"HOME": temporary.name}), \
                 patch("sys.stdout", out), patch("sys.stderr", err):
             code = runtime.main()
         return code, out.getvalue(), err.getvalue()
+
+    def agent(self, folder):
+        """An installed LaunchAgent whose PATH is `folder`, as install wrote it before sd moved."""
+        return plistlib.dumps({"Label": runtime.LABEL, "EnvironmentVariables": {"PATH": f"/usr/bin:/bin:{folder}"}})
+
+    def test_an_installed_path_that_no_longer_finds_sd_fails_naming_the_reinstall(self):
+        """sd:5288: install froze sd's folder into the agent's PATH; sd moved, Notes lost it, and health stayed green."""
+        old, new = (Path(tempfile.mkdtemp(prefix=f"dashboard-{name}-")) for name in ("old", "new"))
+        self.addCleanup(shutil.rmtree, old)
+        self.addCleanup(shutil.rmtree, new)
+        (new / "sd").write_text("#!/bin/sh\n")
+        (new / "sd").chmod(0o755)
+        code, out, err = self.health("a" * 40, "a" * 40, self.agent(old))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("installed LaunchAgent's PATH no longer finds sd", err)
+        self.assertIn("dashboard.sh install --apply", err)
+        code, _, err = self.health("a" * 40, "a" * 40, self.agent(new))
+        self.assertEqual((code, err), (0, ""))
+
+    def test_an_installed_agent_that_does_not_read_fails_too(self):
+        """A plist health cannot read is not a pass: its PATH is unknown."""
+        code, _, err = self.health("a" * 40, "a" * 40, b"not a plist")
+        self.assertEqual(code, 1)
+        self.assertIn("does not read", err)
 
     def test_the_checkout_commit_passes_and_is_shown(self):
         code, out, err = self.health("a" * 40, "a" * 40)

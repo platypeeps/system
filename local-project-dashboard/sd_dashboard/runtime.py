@@ -408,6 +408,24 @@ def launch_gaps(environment):
         [] if environment.get("OBSIDIAN_VAULT") else ["OBSIDIAN_VAULT is not set"])
 
 
+def installed_gap(home=None):
+    """Why the installed LaunchAgent's PATH no longer finds `sd`, else "" (sd:5288): install froze sd's folder into it,
+    and a later move of sd left Notes and Settings without it while health stayed green. No plist is no agent to
+    check; a plist that does not read is a gap, since its PATH is unknown."""
+    home = Path(home) if home is not None else Path.home()
+    target = home / "Library/LaunchAgents" / f"{LABEL}.plist"
+    reinstall = "run `dashboard.sh install`, then `dashboard.sh install --apply --expected-fingerprint <its fingerprint>`"
+    if not target.exists():
+        return ""
+    try:
+        path = plistlib.loads(target.read_bytes()).get("EnvironmentVariables", {}).get("PATH", "")
+    except (OSError, ValueError, AttributeError) as error:
+        return f"the installed LaunchAgent {target} does not read ({error}); {reinstall}"
+    if shutil.which("sd", path=path):
+        return ""
+    return f"the installed LaunchAgent's PATH no longer finds sd ({target}, PATH={path}); {reinstall}"
+
+
 def preflight(config_path, *, home=None):
     home = Path(home) if home is not None else Path.home()
     config_path = Path(config_path).expanduser().resolve()
@@ -649,7 +667,7 @@ def main():
             config = read_config(args.config)
             load_frontdoor(args.config, config["port"])
             result = health_check(config["port"], wait=args.wait)
-            behind = served_behind(result.get("commit"))
+            behind = served_behind(result.get("commit")) or installed_gap()
             if behind:
                 raise RuntimeRefused(behind)
         elif args.action == "install" and args.apply:
