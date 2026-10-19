@@ -428,36 +428,44 @@ class PromptJobDebugFileTest(unittest.TestCase):
         self.assertEqual(list(self.logs.glob("*.debug.*")), [])
         self.assertNotIn(" agent: ", (self.logs / "plain.log").read_text())
 
-    def test_a_failed_run_keeps_its_debug_file_and_a_passed_run_removes_it(self):
-        # REGRESSION (sd:972). Only a failure is worth a trace; a passing run
-        # four times a day would otherwise leave one each time.
+    def test_a_passed_run_keeps_its_debug_file_as_a_failed_run_does(self):
+        # sd:5293 (ruling on note #24979): a passed run's trace stays too, so
+        # the next locked-session stall can be compared with a passing run.
+        # sd:972 removed it; the prune below still bounds the count.
         self.fx.write_job("nightly", PROMPT_JOB)
         result = self.fx.exec_job("nightly", {"FAKE_CLAUDE_EXIT": "1", "PATH": self.quiet_path()})
         self.assertEqual(result.returncode, 1, result.stderr)
-        kept = self.debug_file_argument()
-        self.assertTrue(kept.exists(), f"a failed run's debug file is gone: {kept}")
-        self.assertEqual(self.debug_files(), [kept])
+        failed = self.debug_file_argument()
+        self.assertTrue(failed.exists(), f"a failed run's debug file is gone: {failed}")
 
         result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
-        removed = self.debug_file_argument()
-        self.assertFalse(removed.exists(), f"a passed run's debug file stayed: {removed}")
-        self.assertEqual(self.debug_files(), [kept])
+        passed = self.debug_file_argument()
+        self.assertTrue(passed.exists(), f"a passed run's debug file is gone: {passed}")
+        self.assertEqual(self.debug_files(), sorted([failed, passed]))
 
     def test_a_run_keeps_the_newest_five_debug_files(self):
-        # REGRESSION (sd:972). Bounded, or a job that fails every night grows
-        # the log dir without end.
+        # REGRESSION (sd:972). Bounded, or a job that runs every night grows
+        # the log dir without end. Four older traces and a passing run are
+        # five, all kept; a sixth run prunes the oldest.
         self.fx.write_job("nightly", PROMPT_JOB)
         now = int(time.time())
         older = []
-        for n in range(6):
+        for n in range(4):
             path = self.logs / f"nightly.debug.2026091{n}T030000Z-{100 + n}.log"
             path.write_text("old trace\n")
             os.utime(path, (now - 3600 * (6 - n), now - 3600 * (6 - n)))
             older.append(path)
         result = self.fx.exec_job("nightly")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.debug_files(), sorted(older[1:]))
+        fifth = self.debug_file_argument()
+        self.assertEqual(self.debug_files(), sorted(older + [fifth]))
+        os.utime(fifth, (now - 60, now - 60))
+        result = self.fx.exec_job("nightly")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sixth = self.debug_file_argument()
+        self.assertNotEqual(sixth, fifth)
+        self.assertEqual(self.debug_files(), sorted(older[1:] + [fifth, sixth]))
 
 
 # The quarantine stubs record each call in $CALLS. A file's quarantine is a
