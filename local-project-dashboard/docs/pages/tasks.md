@@ -46,3 +46,12 @@ row carries `area` from `places.area_of`, the rule the HOA and Home pages'
 Tasks views use: the hoa checkout's items, or items with no repo. A report is
 in neither. The address keeps the choice as `#view=<id>`. The views are `window.PAGE_VIEWS` in `tasks.js`;
 they have no panels, so the switch goes in `#viewswitch`. Home's key is `v o`, since `v h` is HOA's.
+
+The Personal and Work views carry Run sweep (sd:5096, sd:5097) in their subhead, with the realm's last run.
+It posts `/api/tasks/sweep {"realm"}`, which starts `realm_sweep run <realm>` in the background, one run per realm
+(`sd_dashboard/sweep.py`); a second start of a running realm is a 409. The run reads that realm's Google account, mail and Drive,
+and for Work also Notion, Jira and GitHub; it files a `<day> - Work sweep` or `<day> - Personal sweep` brief and sd
+followups, and saves Gmail drafts. It sends nothing and commits nothing. Its filters are the
+`sweep.<realm>.*` settings in the workflow database, which Settings edits under Sweeps (sd:5109); `/api/tasks`' `sweeps` and `GET /api/tasks/sweep/status` read each realm's last run.
+Each source keeps its own checkpoint: a done run that could not read one says "not read: jira", and that source
+is read again from its older time next run.

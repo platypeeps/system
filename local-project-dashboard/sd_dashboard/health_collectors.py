@@ -12,6 +12,14 @@ branch itself is left out. A merged branch checked out in a worktree is its
 own list, because `git branch -d` refuses it. A repository with no
 `origin/HEAD`, or one git cannot read, is named rather than read as clean.
 
+**Merged worktrees** (sd:5105) are part of the Branches reading: a registered repository's linked worktree whose
+`HEAD` is the head a lane entry merged from that worktree (`head`, or an older entry's `expected_head`). The lane
+squash-merges, so `origin/HEAD` does not contain that head, and a fresh worktree at `origin/HEAD` is no evidence
+of a merge: only the lane entry ties the tree to a merge. Each tree carries why it stays, or nothing when it can
+go: a process with its working folder inside (one `lsof -a -d cwd -Fn`), uncommitted or untracked files, ignored
+files other than build output and tool caches, or a branch other than the one the lane merged. A probe that gave
+no answer is a reason to stay, never a pass.
+
 **Disk** (sd:2202) is the design's "where the space went", in three parts:
 
 - volume use from `df -kPl`, local file systems only, so a network mount
@@ -56,8 +64,8 @@ from sd_db import paths, reads, repos
 
 from . import documents
 
-__all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "DOCTOR_SECONDS", "branch_scan", "disk_scan", "doctor_scan", "parse_doctor",
-           "revision", "storage_roots"]
+__all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "DOCTOR_SECONDS", "branch_scan", "disk_scan", "doctor_scan", "merged_heads",
+           "merged_tree_kept", "merged_worktrees", "parse_doctor", "revision", "storage_roots"]
 
 #: Each reader's overall budget. Branches is two git calls per registered repository; Disk is df, a few git calls per repository and the du walks, which get what is left.
 BRANCH_SECONDS = 8.0
@@ -66,6 +74,10 @@ DISK_SECONDS = 8.0
 COMMAND_SECONDS = 20.0
 #: The build output folders the 2026-09-25 rule names.
 BUILD_DIRS = ("target", "node_modules", ".venv")
+#: Ignored folders and files a merged worktree may hold and still be removed: build output and tool caches.
+DISPOSABLE = (*BUILD_DIRS, "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".DS_Store")
+#: A full object name, SHA-1 or SHA-256.
+OBJECT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 class Walk:
@@ -164,11 +176,15 @@ def branches_revision(key: str, deletable: list) -> str:
 
 
 def branch_scan(connection: sqlite3.Connection, *, within: float = BRANCH_SECONDS,
-                repo_paths: list[str] | None = None) -> dict:
-    """Each registered repository's local branches already in `origin/HEAD`, and the repositories not read."""
+                repo_paths: list[str] | None = None, heads: dict | None = None) -> dict:
+    """Each registered repository's local branches already in `origin/HEAD`, the repositories not read, and the
+    worktrees the lane merged when `heads`, `merged_heads`' answer, is given: Health reads it on its own thread, since
+    this walk runs on another and a sqlite connection belongs to the thread that opened it."""
     walk = Walk(within, "the merged-branch walk")
-    scan: dict = {"repos": 0, "merged": [], "no_default": [], "unread": []}
-    for key in _registered(connection, repo_paths):
+    keys = _registered(connection, repo_paths)
+    scan: dict = {"repos": 0, "merged": [], "no_default": [], "unread": [],
+                  "worktrees": None if heads is None else merged_worktrees(walk, keys, heads)}
+    for key in keys:
         path = paths.disk(key)
         state, deletable, checked_out = merged_branches(walk, path)
         if state != "ok":
@@ -179,6 +195,81 @@ def branch_scan(connection: sqlite3.Connection, *, within: float = BRANCH_SECOND
             scan["merged"].append({"repo": key, "path": str(path), "deletable": [(name, date) for name, date, _ in deletable],
                                    "checked_out": checked_out, "revision": branches_revision(key, deletable)})
     return scan
+
+
+def merged_heads(connection: sqlite3.Connection) -> dict[tuple[str, str], dict]:
+    """(resolved worktree, merged head) to the lane entry's item and branch, for each entry the lane merged.
+
+    A body that is not a lane entry, or that names no full head, names no merge and is passed over.
+    """
+    found = {}
+    for _, _, body in reads.lane_entries(connection):
+        try:
+            entry = json.loads(body)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(entry, dict) or entry.get("status") != "merged":
+            continue
+        head, tree, branch = entry.get("head") or entry.get("expected_head"), entry.get("worktree"), entry.get("branch")
+        if isinstance(head, str) and OBJECT.fullmatch(head) and isinstance(tree, str) and tree.startswith("/"):
+            found[(os.path.realpath(tree), head)] = {"item": entry.get("item"),
+                                                     "branch": branch if isinstance(branch, str) else ""}
+    return found
+
+
+def _cwds(walk: Walk) -> list[str] | None:
+    """Every process's working folder `lsof` can see, or None when it gave no answer."""
+    done = walk.run(["lsof", "-a", "-d", "cwd", "-Fn"])
+    if done is None or done.returncode not in (0, 1) or not done.stdout.strip():
+        return None
+    return [line[1:] for line in done.stdout.splitlines() if line.startswith("n")]
+
+
+def _disposable(name: str) -> bool:
+    return any(part in DISPOSABLE or part.endswith(".egg-info") for part in name.rstrip("/").split("/"))
+
+
+def merged_tree_kept(walk: Walk, tree: dict, cwds: list[str] | None) -> str:
+    """'' when a merged worktree can go; otherwise why it stays. A probe that gave no answer keeps it."""
+    if tree["branch"] not in ("", tree["lane_branch"]):
+        return f"it is on {tree['branch']}, not the merged branch {tree['lane_branch'] or '(none)'}"
+    if cwds is None:
+        return "not known whether a process works in it: lsof gave no answer"
+    real = os.path.realpath(tree["path"])
+    busy = next((cwd for cwd in cwds if cwd == real or cwd.startswith(real + os.sep)), None)
+    if busy:
+        return f"a process works in {busy}"
+    status = walk.git(Path(tree["path"]), "status", "--porcelain", "-z", "--ignored")
+    if status is None or status.returncode != 0:
+        return "its status was not read"
+    for entry in filter(None, status.stdout.split("\0")):
+        # The first entry that is not ignored answers, before a rename's second path could be read as an entry.
+        if not entry.startswith("!! "):
+            return "it has uncommitted or untracked files"
+        if not _disposable(entry[3:]):
+            return f"it holds ignored files that are not build output: {entry[3:]}"
+    return ""
+
+
+def worktrees_revision(trees: list[dict]) -> str:
+    """The `wt:merged` row's subject: each merged worktree's path, head, branches and whether it can go."""
+    return revision(["wt:merged", sorted([tree["path"], tree["head"], tree["branch"], tree["lane_branch"],
+                                          not tree["kept"]] for tree in trees)])
+
+
+def merged_worktrees(walk: Walk, keys: list[str], heads: dict) -> dict:
+    """The registered repositories' linked worktrees at a head the lane merged, each with why it stays ('' to go)."""
+    trees = []
+    cwds = _cwds(walk) if heads else None
+    for key in keys if heads else []:
+        path = paths.disk(key)
+        for tree in _worktrees(walk, path):
+            entry = heads.get((os.path.realpath(tree["path"]), tree["head"]))
+            if entry is None or not os.path.isdir(tree["path"]):
+                continue
+            tree = {**tree, "repo": key, "repo_path": str(path), "item": entry["item"], "lane_branch": entry["branch"]}
+            trees.append({**tree, "kept": merged_tree_kept(walk, tree, cwds)})
+    return {"trees": trees, "revision": worktrees_revision(trees)}
 
 
 def _storage_config() -> Path:
