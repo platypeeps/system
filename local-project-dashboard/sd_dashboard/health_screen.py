@@ -289,7 +289,7 @@ def _unread_repos(found: list[str], area: str, reason: str, fix: str, key: str) 
     count = len(found)
     return {"id": f"{area}:{key}", "state": "unknown", "type": "check",
             "what": f"{count} {_plural(count, 'repo has', 'repos have')} {reason.split(',')[0]}: not read",
-            "detail": reason, "kind": f"{'Branches' if area == 'br' else 'Disk'} · not read",
+            "detail": reason, "kind": f"{'Branches' if area in ('br', 'wt') else 'Disk'} · not read",
             "facts": {"Repos": str(count)}, "list": list(found), "cli": fix}
 
 
@@ -349,15 +349,19 @@ def _branch_rows(scan: dict) -> list[dict]:
 def _merged_worktree_rows(found: dict | None) -> list[dict]:
     """The worktrees the lane merged that are still on disk (sd:5105); `found` is None from a seam that predates them."""
     trees = (found or {}).get("trees") or []
+    unread = (found or {}).get("unread") or []
+    # A repository whose worktree list failed is named, never read as having no merged worktree.
+    rows = [_unread_repos(unread, "wt", "a git error, so its merged worktrees were not listed",
+                          "git -C <repo> worktree list --porcelain", "unread")] if unread else []
     if not trees:
-        return []
+        return rows
     go = [tree for tree in trees if not tree["kept"]]
 
     def remove(tree: dict) -> str:
         repo, path, branch = shlex.quote(tree["repo_path"]), shlex.quote(tree["path"]), tree["lane_branch"]
         return (f"git -C {repo} worktree remove {path}"
                 + (f" && git -C {repo} update-ref -d {shlex.quote('refs/heads/' + branch)} {tree['head']}" if branch else ""))
-    return [{
+    return rows + [{
         "id": "wt:merged", "state": "caution" if go else "queued", "type": "merged worktrees",
         "what": f"{len(trees)} merged {_plural(len(trees), 'worktree is', 'worktrees are')} still on disk",
         "detail": " · ".join(tree["path"] for tree in trees[:4]) + (f" · +{len(trees) - 4}" if len(trees) > 4 else ""),

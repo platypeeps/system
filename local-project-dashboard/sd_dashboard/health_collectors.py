@@ -260,17 +260,21 @@ def worktrees_revision(trees: list[dict]) -> str:
 
 def merged_worktrees(walk: Walk, keys: list[str], heads: dict) -> dict:
     """The registered repositories' linked worktrees at a head the lane merged, each with why it stays ('' to go)."""
-    trees = []
+    trees, unread = [], []
     cwds = _cwds(walk) if heads else None
     for key in keys if heads else []:
         path = paths.disk(key)
-        for tree in _worktrees(walk, path):
+        listed = _read_worktrees(walk, path)
+        if listed is None:
+            unread.append(key)
+            continue
+        for tree in listed:
             entry = heads.get((os.path.realpath(tree["path"]), tree["head"]))
             if entry is None or not os.path.isdir(tree["path"]):
                 continue
             tree = {**tree, "repo": key, "repo_path": str(path), "item": entry["item"], "lane_branch": entry["branch"]}
             trees.append({**tree, "kept": merged_tree_kept(walk, tree, cwds)})
-    return {"trees": trees, "revision": worktrees_revision(trees)}
+    return {"trees": trees, "unread": unread, "revision": worktrees_revision(trees)}
 
 
 #: The storage folders' setting row (sd:5109). The file it replaced is read only while the database has never held it.
@@ -330,10 +334,17 @@ def _volumes(walk: Walk) -> list[dict]:
 
 
 def _worktrees(walk: Walk, path: Path) -> list[dict]:
-    """The repository's linked worktrees (the first entry is the checkout itself) with their HEAD and branch."""
+    return _read_worktrees(walk, path) or []
+
+
+def _read_worktrees(walk: Walk, path: Path) -> list[dict] | None:
+    """The repository's linked worktrees (the first entry is the checkout itself) with their HEAD and branch.
+
+    None when git gave no list: that is not a repository with no linked worktrees.
+    """
     listed = walk.git(path, "worktree", "list", "--porcelain")
     if listed is None or listed.returncode != 0:
-        return []
+        return None
     trees, current = [], {}
     for line in listed.stdout.splitlines() + [""]:
         if not line:

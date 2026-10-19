@@ -53,8 +53,9 @@ CLAUDE = ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>
           '--restricted --no-session-persistence --tools "Read,Edit,Bash" --add-dir "$1" "$2" "$3" --allowedTools "$4"')
 STEP5_DOC = "write `page=` or `file=` into {conf}, on the entry the request names; change nothing else in it."
 #: A brief's designation is its item's `fields.publish`; step 6 records the URL on that item (`fields.published`), and the
-#: pack's next brief render pins that URL as `page=` or `file=` (contract § A routine brief), so the drain writes no file.
-STEP5_BRIEF = "skip it: this is a routine brief, and step 6 records the URL on its item, which pins the copy next time."
+#: delivered URL carries into the same container on the next publish; it no longer pins the copy, so the drain writes no file.
+STEP5_BRIEF = ("skip it: this is a routine brief, and step 6 records the URL on its item; "
+               "the delivered URL carries into the same container next time.")
 PROMPT = """Drain these mirror requests by the publication contract, {contract},
 section "How an outward mirror is updated", steps 1 to 6. Read that section first, then follow it exactly.
 

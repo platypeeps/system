@@ -80,6 +80,8 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   process works in it (`lsof -a -d cwd -Fn`, and no answer keeps every
   tree), uncommitted or untracked files, ignored files other than build
   output and tool caches, or a branch other than the merged one.
+  A repository whose `git worktree list` failed is named in an unknown row
+  (sd:5120), never read as having no merged worktree.
 - Disk draws a bar per volume from `df -kPl` (the data volume and each volume
   under `/Volumes`; local file systems only), with a row for each volume past
   80% (caution) or 90% (warning). It lists the three biggest subfolders of
