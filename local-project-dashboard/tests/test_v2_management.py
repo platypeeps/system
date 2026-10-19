@@ -1562,6 +1562,26 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
         self.assertEqual(out["R"]["p"], ["declaration change", "~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo declare "
                                          f"'{path}' review '{{\"copilot_review\":{{\"automatic_deep\":false}},\"severity_floor\":\"low\"}}'"])
 
+    def test_two_pending_edits_draft_lines_that_each_carry_both(self):
+        """sd:5159 review: each line replaced the whole declaration from the first reading, so running the second dropped
+        the first edit. Every pending line now carries every pending edit; withdrawing one drops it from the rest."""
+        out = self.proposal(self.LAST, """propose('severity_floor', 'low'); propose('automatic_deep', 'true');
+R.both = pending.map(p => JSON.parse(cmd('declaration.copy').cli(p).split(' review ')[1].slice(1, -1)));
+withdraw('severity_floor', true); R.left = pending.map(p => JSON.parse(cmd('declaration.copy').cli(p).split(' review ')[1].slice(1, -1)));""")
+        both = {"copilot_review": {"automatic_deep": True}, "severity_floor": "low"}
+        self.assertEqual(out["R"]["both"], [both, both])
+        self.assertEqual(out["R"]["left"], [{"copilot_review": {"automatic_deep": True}, "severity_floor": "high"}])
+
+    def test_a_new_reading_redrafts_the_pending_line_on_it(self):
+        """sd:5159 review, class pass: a reread while a line waits must not leave it writing back the older declaration."""
+        doc = json.loads(json.dumps(self.doc))
+        row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
+        row["review"] = {"declaration": '{\n  "categories": ["x"],\n  "severity_floor": "high"\n}', "severity_floor": "high"}
+        out = self.proposal(self.LAST, """propose('severity_floor', 'low');
+DOC0.repos.find(r => r.path === repoParam).review = %s; await reread();
+R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1].slice(1, -1));""" % json.dumps(row["review"]))
+        self.assertEqual(out["R"]["line"], {"categories": ["x"], "severity_floor": "low"})
+
     def settings_page(self, review, body):
         doc = json.loads(json.dumps(self.doc))
         next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])["review"] = review
@@ -1574,6 +1594,14 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
         self.assertNotIn("sd-review.json", out["R"]["html"])
         self.assertTrue(out["R"]["cli"].endswith(f"repo declare '{self.ids['checkout']}' review '{{\"severity_floor\":\"high\"}}'"),
                         out["R"]["cli"])
+
+    def test_a_pending_starter_folds_into_a_declaration_a_new_reading_finds(self):
+        click = "ELS['view-repos'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-create-review]' ? {} : null } }));"
+        found = {"declaration": '{\n  "categories": ["x"]\n}', "severity_floor": None, "automatic_deep": None}
+        out = self.settings_page({"declaration": None}, f"""{click}
+DOC0.repos.find(r => r.path === repoParam).review = {json.dumps(found)}; await reread();
+R.line = JSON.parse(cmd('declaration.copy').cli(pending[0]).split(' review ')[1].slice(1, -1));""")
+        self.assertEqual(out["R"]["line"], {"categories": ["x"], "severity_floor": "high"})
 
     def test_an_unread_declaration_offers_no_add(self):
         out = self.settings_page({"declaration": None, "error": "not read: the database is locked"}, "R.html = ELS['view-repos'].html;")

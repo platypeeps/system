@@ -40,6 +40,8 @@ function absorb(doc) {
   const unreg = (GIT?.repos || []).filter(g => !REPOS.some(r => r.path === tilde(g.path)))
     .map(g => ({ path: tilde(g.path), remote: '', managed: '—', merge: '—', lane: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
   ALL = [...REPOS, ...unreg];
+  // A new reading of a declaration redrafts each pending line on it (restateDeclaration), so no line writes back an old one.
+  [...new Set(pending.filter(x => x.edit).map(x => x.repo?.path))].forEach(restateDeclaration);
   ALL.forEach(r => { const g = r.git; r.branch = g ? g.branch : '—'; r.lag = g && g.behind_default !== null ? g.behind_default : -1; r.fetched = g ? g.fetched_iso || '' : ''; });
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
@@ -470,15 +472,15 @@ function propose(key, value) {
       note: want === 'off' ? "This repo's tasks offer no File Jira issue." : `File Jira issue files this repo's tasks in Jira project ${want}, after a preview you confirm.` };
   } else if (key === 'severity_floor' || key === 'automatic_deep') {
     if (value === String(key === 'severity_floor' ? rv.severity_floor || '' : rv.automatic_deep)) return withdraw(key);
-    const change = reviewDiff(rv.declaration || '', body => {
+    const edit = body => {
       if (key === 'severity_floor') { if (value) body.severity_floor = value; else delete body.severity_floor; return; }
       const copilot = body.copilot_review && typeof body.copilot_review === 'object' && !Array.isArray(body.copilot_review) ? body.copilot_review : {};
       body.copilot_review = { ...copilot, automatic_deep: value === 'true' };
-    });
-    if (!change) { shell.toast('Not proposed: the review declaration is not a JSON object'); return; }
-    p = { key, value, route: 'declare', icon: 'terminal', title: `review declaration · ${key} → ${value || 'unset'}`, diff: change.diff,
-      cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq(change.after)}`,
-      note: 'Replaces the review declaration on the row; the next review reads it. Nothing changes until the line runs.' };
+    };
+    if (!reviewDiff(rv.declaration || '', edit)) { shell.toast('Not proposed: the review declaration is not a JSON object'); return; }
+    // The diff and the line are set by restateDeclaration, with every other pending edit for this repo.
+    p = { key, value, route: 'declare', icon: 'terminal', title: `review declaration · ${key} → ${value || 'unset'}`, edit,
+      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until the line runs.' };
   }
   if (p) addProposal(p);
 }
@@ -508,18 +510,28 @@ function lineDiff(a, b) {
   return out;
 }
 const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · copy'] };
+// sd:5159 review: the row holds one review declaration, so each pending line for a repo carries every pending edit for it,
+// made on the reading in the order they were proposed. Running any one line, or all of them, leaves the same row.
+function restateDeclaration(path) {
+  const r = REPOS.find(x => x.path === path), edits = pending.filter(x => x.edit && x.repo?.path === path).reverse();
+  const change = r && edits.length ? reviewDiff(r.review?.declaration || '', body => edits.forEach(x => x.edit(body))) : null;
+  if (change) edits.forEach(x => { x.diff = change.diff; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
+}
 function addProposal(p) {
   const r = REPOS.find(x => x.path === repoParam);
   p.id = `prop:${p.key}`; p.type = ROUTE[p.route][0]; p.label = p.title; p.repo = r;
   const i = pending.findIndex(x => x.key === p.key);
   if (i >= 0 && pending[i].title === p.title) return;
   if (i >= 0) pending.splice(i, 1);
-  shell.commands.put(p); pending.unshift(p);
+  pending.unshift(p);
+  if (p.edit) restateDeclaration(r.path);
+  shell.commands.put(p);
   markPending(p.key);
   showProposals(true);
 }
 function dropProposal(p) {
   const i = pending.indexOf(p); if (i >= 0) pending.splice(i, 1);
+  if (p.edit) restateDeclaration(p.repo.path);
   renderRepos(); pending.length ? showProposals() : defaultDetails();
 }
 function diffHTML(d) { return html`<pre class="diff">${d.map(([k, l]) => html`<span class="${k}">${k === 'add' ? '+ ' : k === 'del' ? '− ' : k === 'hd' ? '' : '  '}${l}</span>`)}</pre>`; }
@@ -542,7 +554,9 @@ document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('[data-ch-clear]')) propose('channels', null);
   if (e.target.closest('[data-create-review]')) {
     const r = REPOS.find(x => x.path === repoParam);
-    addProposal({ key: 'review-declaration', route: 'declare', icon: 'terminal', title: 'review declaration · new', cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq('{"severity_floor":"high"}')}`,
+    // `edit` lets restateDeclaration fold the starter into a declaration a later reading finds, rather than replace it.
+    addProposal({ key: 'review-declaration', route: 'declare', icon: 'terminal', title: 'review declaration · new', edit: body => { body.severity_floor = 'high'; },
+      cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq('{"severity_floor":"high"}')}`,
       diff: [['hd', '@@ new review declaration @@'], ['add', '{'], ['add', '  "severity_floor": "high"'], ['add', '}']],
       note: 'A starting declaration with the floor the managed repos use. Nothing changes until the line runs.' });
   }
