@@ -1600,7 +1600,8 @@ follow() {
 # The full machine-setup update runs with the lanes held, as follow's two
 # stages do. The cron stage cannot boot this job out under it: cron-jobs.sh
 # refuses to reinstall a job while a run holds the job's lock (sd:3317).
-REFRESH_SETUP_BOUND=1200
+# REPO_SYNC_REFRESH_BOUND exists for the tests, to expire the bound in seconds.
+REFRESH_SETUP_BOUND=${REPO_SYNC_REFRESH_BOUND:-1200}
 
 # satellite_refresh.py VERB ARGS, bounded: the hub may not answer.
 refresh_ask() {
@@ -1647,10 +1648,29 @@ refresh_answer() {
     r_step=machine-setup r_code=0
     r_ms="$(hub_dir system)/local-machine-setup/machine-setup.sh"
     echo "--- machine-setup update --apply"
-    bound_step "$REFRESH_SETUP_BOUND" sh "$r_ms" update --apply < /dev/null > "$TMPD/setup" 2>&1 || r_code=$?
+    # machine-setup bounds its own steps (st_step), each in a process group
+    # of its own that this bound's KILL does not reach. So this bound waits
+    # longer than theirs before its KILL: an inner bound ends its group
+    # first, and no step outlives the update holding the drain's lane locks.
+    # Still under cron-jobs' 10 s grace at the job's limit. The update runs
+    # with the default grace, not this one.
+    (ST_BOUNDED_GRACE=$((ST_BOUNDED_DEFAULT_GRACE + 3))
+     bound_step "$REFRESH_SETUP_BOUND" env -u ST_BOUNDED_GRACE sh "$r_ms" update --apply) \
+      < /dev/null > "$TMPD/setup" 2>&1 || r_code=$?
     cat "$TMPD/setup"
     r_line=$(grep -v '^\[step ' "$TMPD/setup" | sed '/^[[:space:]]*$/d' | tail -1 || :)
     [ -n "$r_line" ] || r_line="machine-setup update --apply exited $r_code"
+    # The exit alone does not say the update worked: a stage reports some
+    # failures as a FAILED line only and goes on (cron_jobs, for a job whose
+    # run holds its lock). A FAILED line fails the result; grep's 2, an
+    # output it could not read, fails it too.
+    r_fr=0
+    grep -E '^[[:space:]]*FAILED[[:space:]]' "$TMPD/setup" > "$TMPD/setup.failed" || r_fr=$?
+    if [ "$r_code" -eq 0 ] && [ "$r_fr" -ne 1 ]; then
+      r_code=1
+      r_line=$(tail -1 "$TMPD/setup.failed" 2>/dev/null | sed 's/^[[:space:]]*//' || :)
+      [ -n "$r_line" ] || r_line="machine-setup update --apply: its output could not be read"
+    fi
   fi
   if ! refresh_ask finish "$r_id" "$r_attempt" "$r_code" "$r_step" "$r_line" 2> "$TMPD/ask.err"; then
     flag "!!! failed: refresh request $r_id: $r_step exited $r_code, not recorded: $(tail -1 "$TMPD/ask.err"); the row still reads running, so the next run runs it again"

@@ -168,11 +168,12 @@ class RefreshTest(unittest.TestCase):
         f = self.fixture()
         wanted = f.ask()
         # machine-setup's parent is st_bounded's perl, in a group of its own;
-        # above it are bound_step's subshell and the shell that runs the
-        # request, the drain's child. KILL to both, as a job limit ends that
-        # group, and no trap runs. The suite's own group is not signalled.
+        # above it are bound_step's subshell, the subshell that sets the
+        # bound's grace, and the shell that runs the request, the drain's
+        # child. KILL to all three, as a job limit ends that group, and no
+        # trap runs. The suite's own group is not signalled.
         kill = ('p2=$(ps -o ppid= -p "$PPID" | tr -d " "); p3=$(ps -o ppid= -p "$p2" | tr -d " "); '
-                'kill -KILL "$p3" "$p2"')
+                'p4=$(ps -o ppid= -p "$p3" | tr -d " "); kill -KILL "$p4" "$p3" "$p2"')
 
         f.run("follow", expect=137, extra_env={"FULL_HOOK": kill})
         stopped = f.result()
@@ -227,6 +228,37 @@ class RefreshTest(unittest.TestCase):
         self.assertIn("the row still reads running", result.stdout)
         self.assertEqual(["update --apply"], f.full_updates())
         self.assertEqual(["check", "check", "start", "finish"], self.asked(f))
+
+    def test_the_bound_ends_a_step_machine_setup_bounds_itself(self):
+        """NEW. Steps: machine-setup bounds its own steps (st_step), each in a
+        process group of its own that the refresh bound's KILL never reaches.
+        When the refresh bound expires, a command that ignores TERM under such
+        an inner bound must still end, or it would hold the lane locks the
+        drain passed down. The result is the bound's 124."""
+        f = self.fixture()
+        f.ask()
+        pid_file = pathlib.Path(str(f.update_log) + ".pid")
+        # The inner grace sits one second above the default, so the outer
+        # bound's own grace decides the outcome, not a race between equal ones.
+        # The command closes every inherited descriptor, so a survivor cannot
+        # hold the suite's pipes open until it ends on its own.
+        hook = ('. "$BOUNDED_LIB"; ST_BOUNDED_GRACE=6 st_bounded 60 sh -c \'trap "" TERM; '
+                'echo $$ > "$UPDATE_LOG.pid"; exec perl -MPOSIX -e "POSIX::close(\\$_) for 0..1023; sleep 60"\'')
+
+        f.run("follow", expect=124, extra_env={"FULL_HOOK": hook, "REPO_SYNC_REFRESH_BOUND": "2",
+                                               "BOUNDED_LIB": str(FOLDER.parent / "lib" / "bounded.sh")})
+
+        pid = int(pid_file.read_text())
+        alive = True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            alive = False
+        if alive:
+            os.kill(pid, 9)
+        self.assertFalse(alive, "the inner step outlived the refresh bound")
+        row = f.result()
+        self.assertEqual(("done", 124, "machine-setup"), (row["state"], row["exit"], row["step"]))
 
     def test_a_new_request_while_one_was_answered_runs_again(self):
         """NEW. A request with a new id is pending again, whatever the last result said."""
@@ -320,13 +352,36 @@ class RefreshTest(unittest.TestCase):
 
     def test_a_result_row_another_host_wrote_is_refused(self):
         """NEW. Evidence: the row names the host that wrote it. Two hosts
-        whose names map to one key fail the check, never answer for each other."""
+        whose names map to one key never answer for each other: check, start
+        and finish refuse, and the dashboard shows the row as unread, not as
+        the other host's success."""
         f = self.fixture()
         wanted = f.ask()
+        f.call("writes.record_state(connect(db), 'heartbeat', key='cron-chain:repo-sync-follow@sat_1', body={})")
         out = f.call("c = connect(db); writes.set_setting(c, sr.host_key('sat-1'), json.dumps({'host': 'sat-1', "
                      "'request': values['id'], 'state': 'done', 'exit': 0}))\n"
-                     "try:\n    sr.check(c, 'sat_1')\nexcept ValueError as e:\n    print(e)", id=wanted)
-        self.assertIn("holds sat-1's result, not sat_1's", out)
+                     "for verb in (lambda: sr.check(c, 'sat_1'), lambda: sr.start(c, 'sat_1', values['id'], 1),\n"
+                     "             lambda: sr.finish(c, 'sat_1', values['id'], 1, 0, 'machine-setup', 'ok')):\n"
+                     "    try:\n        verb(); print('wrote')\n    except ValueError as e:\n        print(e)\n"
+                     "print(json.dumps(sr.document(c)['satellites']))", id=wanted)
+        lines = out.splitlines()
+        self.assertEqual(["refresh.result.sat_1 holds sat-1's result, not sat_1's"] * 3, lines[:3])
+        self.assertEqual([("sat_1", "unread")], [(row["host"], row["state"]) for row in json.loads(lines[3])])
+        self.assertEqual("sat-1", f.setting("refresh.result.sat_1")["host"])
+
+    def test_a_failed_line_from_a_zero_exit_is_a_failure(self):
+        """NEW. Failures: machine-setup reports some failures only as a
+        FAILED line and exits 0 (a cron job it could not reinstall while a run
+        holds the job's lock). The result is that failure, never a success."""
+        f = self.fixture()
+        f.ask()
+        failed = "  FAILED  repo-sync-follow — cron-jobs.sh install repo-sync-follow did not finish; the next update retries it"
+
+        f.run("follow", expect=1, extra_env={"FULL_LINE": failed})
+
+        row = f.result()
+        self.assertEqual(("done", 1, "machine-setup", failed.strip()),
+                         (row["state"], row["exit"], row["step"], row["line"]))
 
     def test_exit_codes_name_the_hub_failures(self):
         """NEW. A hub that does not answer exits 3 and a refused build 4, so

@@ -73,6 +73,17 @@ def _parse(key, value):
     return loaded
 
 
+def _owned(key, value, host):
+    """`host`'s result row as an object ({} for none); a row another host wrote raises ValueError.
+
+    Two hosts whose names map to one key (`host_key`): neither may answer or show for the other.
+    """
+    result = _parse(key, value) or {}
+    if result.get("host", host) != host:
+        raise ValueError(f"{key} holds {result.get('host')}'s result, not {host}'s")
+    return result
+
+
 def _read(connection, keys):
     from sd_db import writes
 
@@ -122,7 +133,7 @@ def document(connection):
     for host in hosts:
         key = host_key(host)
         try:
-            result = _parse(key, results[key])
+            result = _owned(key, results[key], host) or None
         except ValueError as error:
             rows.append({"host": host, "state": "unread", "reason": str(error), "result": None,
                          "followed": followed[host]})
@@ -145,10 +156,7 @@ def check(connection, host):
     with database.transaction(connection):
         held = _read(connection, [REQUEST, key])
         wanted = _parse(REQUEST, held[REQUEST])
-        result = _parse(key, held[key]) or {}
-        if result.get("host", host) != host:
-            # Two hosts whose names map to one key: neither may answer for the other.
-            raise ValueError(f"{key} holds {result.get('host')}'s result, not {host}'s")
+        result = _owned(key, held[key], host)
         if wanted is None or result.get("request") == wanted["id"] and result.get("state") == "done":
             return NONE, None, 0
         if result.get("request") != wanted["id"]:
@@ -174,16 +182,18 @@ def _write(connection, host, request_id, attempt, state, *, started, code=None, 
 
 
 def start(connection, host, request_id, attempt):
-    from sd_db import writes
+    from sd_db import database, writes
 
-    _write(connection, host, request_id, attempt, "running", started=writes.now())
+    with database.transaction(connection):
+        _owned(host_key(host), _read(connection, [host_key(host)])[host_key(host)], host)
+        _write(connection, host, request_id, attempt, "running", started=writes.now())
 
 
 def finish(connection, host, request_id, attempt, code, step, line):
     from sd_db import database
 
     with database.transaction(connection):
-        result = _parse(host_key(host), _read(connection, [host_key(host)])[host_key(host)]) or {}
+        result = _owned(host_key(host), _read(connection, [host_key(host)])[host_key(host)], host)
         started = result.get("started") if result.get("request") == request_id else None
         _write(connection, host, request_id, attempt, "done", started=started, code=code, step=step, line=line)
 
