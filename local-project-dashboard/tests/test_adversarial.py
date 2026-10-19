@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -206,9 +207,12 @@ class TheTaskReview(AdversarialCase):
         # Nothing lands in the reviewed checkout: no result file and no .gitignore line.
         self.assertEqual(git(self.work, "status", "--porcelain", "--ignored"), "")
 
-    def test_the_tool_config_names_the_model_and_effort(self):
+    def test_the_setting_rows_name_the_model_and_effort(self):
+        """sd:5109: the adversarial.model and adversarial.effort rows, not <config>/adversarial-gate/.env."""
         (self.config / "adversarial-gate").mkdir(parents=True)
-        (self.config / "adversarial-gate" / ".env").write_text("ADVERSARIAL_MODEL=gpt-fixture\nADVERSARIAL_EFFORT=low\n")
+        (self.config / "adversarial-gate" / ".env").write_text("ADVERSARIAL_MODEL=gpt-file\nADVERSARIAL_EFFORT=medium\n")
+        writes.set_setting(self.connection, "adversarial.model", "gpt-fixture")
+        writes.set_setting(self.connection, "adversarial.effort", "low")
         status, _, run = self.review("task", self.task())
         self.assertEqual(status, 202, run)
         self.settled(run["id"])
@@ -427,6 +431,21 @@ class OneAtATime(AdversarialCase):
 
 
 class FailedRuns(AdversarialCase):
+    def test_a_failed_settings_read_starts_no_run_and_releases_the_lock(self):
+        """sd:5109: the model and effort are unknown when their rows do not read: no run file, codex never runs."""
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(writes, "read_settings", refuse):
+            status, _, answer = self.review("task", self.task())
+        self.assertEqual(status, 503, answer)
+        self.assertIn("did not read from the workflow database", answer["error"])
+        self.assertEqual(sorted(self.runs.glob("*")) if self.runs.exists() else [], [])
+        self.assertFalse(self.argv.exists())
+        status, _, run = self.review("task", self.task())
+        self.assertEqual(status, 202, run)
+        self.settled(run["id"])
+
     def test_a_codex_failure_reads_failed_with_its_own_words_and_notes_the_failure(self):
         self.mode.write_text("fail")
         item = self.task()

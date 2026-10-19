@@ -30,9 +30,9 @@ repo's tests use synthetic names.
 Each trend shows its window's min (lowest daily low), median (of the daily
 values) and max (highest daily high), with faint marks at the min and max
 (sd:4969). A problem level is a dashed line, and a day beyond it is a warning.
-The levels are per machine, in `<config>/project-dashboard/hoa-thresholds.conf`
-(template `hoa-thresholds.conf.example`): the hoa checkout states its levels in
-prose only. Without the file a trend says "no problem level set".
+The levels are the `dashboard.hoa_thresholds` setting, edited on Settings
+(sd:5109): the hoa checkout states its levels in prose only. Without it a
+trend says "no problem level set".
 
 Acknowledge on an alarm event (sd:4967) posts `/api/hoa/alarm`, the workflow
 database's `view` state that Designs' Hide writes, keyed
@@ -74,7 +74,7 @@ every column sorts (a third click returns to the rank), and Kind narrows the row
 Briefs and Reports each read their own document, `GET /api/hoa/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
 A brief is hoa's when its series, lower-cased with spaces as hyphens,
-names a job of the `hoa` family in `report-families.conf`, or it is filed under the hoa checkout; a report
+names a job of the `hoa` family in `dashboard.report_families`, or it is filed under the hoa checkout; a report
 is hoa's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
 The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws

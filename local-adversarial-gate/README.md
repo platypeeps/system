@@ -60,8 +60,8 @@ them codex uses its own configuration. `--effort` takes one lowercase word (`low
 `high`): the value lands in a TOML override, where a quote or an `=` would be another one.
 `run` reads no config of its own. The dashboard's Adversarial review action (sd:5064,
 `local-project-dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
-`<config>/adversarial-gate/.env`, `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, and falls back
-to `gpt-6-astra` and `high`; copy `.env.example` there to change them.
+the workflow database settings `adversarial.model` and `adversarial.effort`, edited on the
+dashboard's Settings page (sd:5109), and falls back to `gpt-6-astra` and `high`.
 The dashboard lenses ask for `Recommendation:`, `Evidence:` and `Repo:` lines under each
 hypothesis: the action lists them in a brief and asks each as a review question, which the
 operator approves into a task or rejects.
@@ -99,7 +99,6 @@ Its settings are workflow-database setting rows, not `.env` keys (sd:5109): `adv
 | `lenses/deep.md` | A whole checkout, in depth, for `deep`: the lead fans out up to `{AGENTS}` read-only sub-agents, then verifies, deduplicates and ranks. Takes `{REPO_NAME}` and `{AGENTS}`. |
 | `lenses/source.md` | One research ledger row and the claims citing it, against the source as the dashboard fetched it: misreads, overclaims, missing caveats, the grade, stale or moved pages. Takes `{INPUT_PATH}`. |
 | `lenses/change.md` | A branch against its base plus its pull-request body: claims, failure paths, steps, older state, guards, tests. Takes `{INPUT_PATH}`, `{BASE}` and `{HEAD}`. |
-| `.env.example` | The codex action's model and effort, both commented out: the defaults apply without a copy. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `deep`, `rank`, `lenses`, `test`. |
 | `rank.py` | The optional Jev ordering: parse the findings, ask one question each, reorder and label. Never removes one. |
 | `tests/test_deep.py` | `deep` against a fake claude: the tool list holds no write tool, the lens reaches claude in the checkout, the bound kills its tree. |

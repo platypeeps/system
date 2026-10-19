@@ -1,8 +1,8 @@
 """Adversarial review (sd:5064): one click runs `local-adversarial-gate` on a task, a brief, a repository or a change.
 
 The operator asked on 2026-10-18 (a note on sd:5064) for a hostile second read by another model than the one that
-wrote the work: codex, at the model and effort `<config>/adversarial-gate/.env` names (`ADVERSARIAL_MODEL`,
-`ADVERSARIAL_EFFORT`), else `MODEL` at `EFFORT`. A page posts `/api/adversarial` with `{"kind", "target"}`:
+wrote the work: codex, at the model and effort the `adversarial.model` and `adversarial.effort` setting rows hold
+(sd:5109; Settings edits them), else `MODEL` at `EFFORT`. A page posts `/api/adversarial` with `{"kind", "target"}`:
 
   task    an item id. The item's repository is the checkout; an item without one is refused, as Fix refuses it.
   brief   the id of a routine brief (kind `report`, source `brief`). Its repository, else this checkout.
@@ -70,21 +70,22 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
-__all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "TIMEOUT",
-           "deep_settings", "recommendations", "request", "run", "save_settings", "settings", "start", "status"]
+__all__ = ["DEEP", "EFFORT", "GATE", "KINDS", "MODEL", "NOTE", "QUEUE", "SETTINGS", "TIMEOUT", "deep_settings",
+           "recommendations", "request", "run", "run_settings", "save_settings", "settings", "start", "status"]
 
 #: This repository's checkout: a brief that names no repository is reviewed here.
 CHECKOUT = Path(__file__).resolve().parents[2]
 GATE = CHECKOUT / "local-adversarial-gate" / "adversarial-gate.sh"
 RANK = CHECKOUT / "local-adversarial-gate" / "rank.py"
 KINDS = ("task", "brief", "repo", "change", "deep", "source")
-#: The model and effort when `<config>/adversarial-gate/.env` names none.
+#: The model and effort when no `adversarial.model` or `adversarial.effort` row names one.
 MODEL = "gpt-6-astra"
 EFFORT = "high"
 #: The gate's bound on codex, in seconds; the runner's own bound on the gate is `GRACE` longer.
@@ -150,24 +151,34 @@ def state_dir() -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "system" / "adversarial-gate"
 
 
-def settings(kind: str = "task", connection=None) -> tuple[str, str, int, dict]:
+#: The setting rows (sd:5109) and what Settings says each holds; a key with no row, or a cleared one, is the default.
+SETTINGS = {
+    "adversarial.model": f"The codex model the adversarial review runs, passed as codex exec -m. Unset is {MODEL}.",
+    "adversarial.effort": f"Its reasoning effort, one lower-case word such as low, medium or high. Unset is {EFFORT}.",
+}
+#: What a value may hold: it reaches codex's argv as one word.
+PATTERNS = {"adversarial.model": r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}", "adversarial.effort": r"[a-z]{1,20}"}
+
+
+def settings(connection) -> tuple[str, str]:
+    """The model and effort: the setting rows, else `MODEL` and `EFFORT`. A failed read raises: it is unknown, not unset."""
+    from sd_db import writes
+
+    held = writes.read_settings(connection, list(SETTINGS))
+    return held.get("adversarial.model") or MODEL, held.get("adversarial.effort") or EFFORT
+
+
+def run_settings(connection, kind: str) -> tuple[str, str, int, dict]:
     """The model, effort, timeout in seconds and the lens's extra `--set` values for a run of `kind`.
 
-    A codex review reads `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, exported or in `<config>/adversarial-gate/.env`,
-    and runs for `TIMEOUT`. A deep review reads its `DEEP` setting rows from `connection` (`deep_settings`).
+    A codex review reads the `SETTINGS` rows (`settings`) and runs for `TIMEOUT`. A deep review reads its `DEEP`
+    setting rows (`deep_settings`).
     """
     if kind == "deep":
         held = {key: one["value"] for key, one in deep_settings(connection).items()}
         return (held["adversarial.deep.model"], held["adversarial.deep.effort"],
                 int(held["adversarial.deep.bound_minutes"]) * 60, {"AGENTS": held["adversarial.deep.agents"]})
-    lib = str(CHECKOUT / "lib")
-    if lib not in sys.path:
-        sys.path.insert(0, lib)
-    import system_tools_config
-
-    saved = system_tools_config.read_env("adversarial-gate")
-    model = system_tools_config.setting("ADVERSARIAL_MODEL", saved) or MODEL
-    effort = system_tools_config.setting("ADVERSARIAL_EFFORT", saved) or EFFORT
+    model, effort = settings(connection)
     return model, effort, TIMEOUT, {}
 
 
@@ -559,8 +570,6 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
     runs = state / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     plan = _resolve(connection, kind, target, base, item, body, pr, source)
-    model, effort, timeout, extra = settings(kind, connection)
-    plan["sets"].update(extra)
     handle = open(_lock(state, kind, plan["checkout"]), "a+", encoding="utf-8")
     try:
         try:
@@ -572,6 +581,12 @@ def start(connection, kind: str, target, *, base=None, item=None, body=None, pr=
                                       f"finish, then start this one."}
             return 409, {"error": f"An adversarial review is already running (run {_held_by(handle)}); one runs at a "
                                   f"time. Wait for it to finish, then start this one."}
+        # Before any state is written: a failed read leaves no run behind, and `finally` releases the lock.
+        try:
+            model, effort, timeout, extra = run_settings(connection, kind)
+        except (sd_db.SdDbError, sqlite3.Error) as unread:
+            return 503, {"error": f"The review's model and effort did not read from the workflow database: {unread}"}
+        plan["sets"].update(extra)
         label = re.sub(r"[^A-Za-z0-9._-]", "-", plan["label"])[:60].strip("-.") or "x"
         run_id = f"{kind}-{label}-{_stamp(now)}"
         record = runs / f"{run_id}.json"

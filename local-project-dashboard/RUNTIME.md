@@ -217,7 +217,7 @@ A draft call with no answer is recorded as not known, never as no draft.
 
 Adversarial review (sd:5064, `adversarial.py`) runs `local-adversarial-gate/adversarial-gate.sh run` from this checkout on a task, a brief, a repository or a change.
 `POST /api/adversarial` answers 202 with a run id at once; `GET /api/adversarial/<id>` reads `queued`, `running`, `done` or `failed` with the reason.
-The model and effort come from `<config>/adversarial-gate/.env`, else `gpt-6-astra` at `high`; codex runs read-only, bounded at 1800 seconds.
+The model and effort come from the `adversarial.model` and `adversarial.effort` settings (sd:5109), read before the run writes any state, else `gpt-6-astra` at `high`; codex runs read-only, bounded at 1800 seconds.
 One run at a time: the runner holds `~/.local/state/system/adversarial-gate/lock`, and a second request is a 409 naming the first.
 Codex writes its result beside the run's state file, `runs/<id>.md`; nothing lands in the reviewed checkout.
 A done run files, in one transaction in the server's database, review batches in queue `adversarial` (one Approve-or-Reject question per recommendation, one batch per repository) and a brief, `<day> - Adversarial review · <kind> <label> · <time>Z`, that names them.
