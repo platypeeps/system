@@ -123,11 +123,36 @@ class TheDocument(ScreenCase):
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
         self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "claude",
-                                                          "services", "jobs")})
+                                                          "services", "jobs", "satellites")})
         self.assertEqual(doc["read"], NOW)
         # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
         self.assertNotIn("archive", doc)
         self.assertNotIn("heartbeat", doc["lane"])
+
+    def test_satellites_carry_the_request_and_each_result_and_a_bad_row_is_a_reason(self):
+        """sd:5108: the Refresh satellites rows the satellites write, read through `satellite_refresh.document`."""
+        from sd_db import writes
+
+        self.assertEqual(self.document()["satellites"], {"request": None, "satellites": []})
+        sr = management_screen._satellite_refresh()
+        asked = management_screen.refresh_satellites(self.connection)
+        # The hosts are those whose repo-sync-follow job reported a run (cron-jobs' newest run per host).
+        for host in ("sat-b", "sat-a"):
+            writes.record_state(self.connection, "heartbeat", key=f"cron-chain:repo-sync-follow@{host}",
+                                body={"run_id": "r1", "ended": "2026-10-18T20:05:00Z", "item": None})
+        self.assertEqual(sr.check(self.connection, "sat-a"), (sr.PENDING, asked["id"], 1))
+        sr.finish(self.connection, "sat-a", asked["id"], 1, 0, "machine-setup", "done: 0 failures")
+        satellites = self.document()["satellites"]
+        self.assertEqual(satellites["request"], asked)
+        rows = {row["host"]: row for row in satellites["satellites"]}
+        self.assertEqual((rows["sat-a"]["state"], rows["sat-a"]["result"]["exit"], rows["sat-a"]["result"]["line"]),
+                         ("done", 0, "done: 0 failures"))
+        self.assertEqual((rows["sat-b"]["state"], rows["sat-b"]["followed"]), ("never", "2026-10-18T20:05:00Z"))
+        self.assertEqual(["sat-a", "sat-b"], [row["host"] for row in satellites["satellites"]])
+        writes.set_setting(self.connection, sr.REQUEST, "not json")
+        doc = self.document()
+        self.assertIsNone(doc["satellites"])
+        self.assertIn("Expecting value", doc["sources"]["satellites"])
 
     def test_a_job_carries_its_last_run_from_the_wrappers_stamp(self):
         """sd:2210: launchd keeps no run time; the cron-jobs wrapper stamps each run's start, end and exit."""
@@ -688,6 +713,19 @@ class ThePage(BrowserSession):
         status, _, got = self.post("/api/repos/channels", {**body, "value": None, "before": '{"notion":{"folder":"Example"}}'})
         self.assertEqual((status, got["value"]), (200, "none"))
 
+    def test_refresh_satellites_writes_a_new_request_and_takes_no_values(self):
+        """sd:5108: each post is a new request id; a post that carries values is refused and writes nothing."""
+        status, _, first = self.post("/api/satellites/refresh", {})
+        self.assertEqual(status, 200)
+        self.assertRegex(first["id"], r"^[0-9a-f]{16}$")
+        status, _, second = self.post("/api/satellites/refresh", {})
+        self.assertNotEqual(second["id"], first["id"])
+        status, _, got = self.post("/api/satellites/refresh", {"host": "sat-a"})
+        self.assertEqual(status, 400)
+        self.assertIn("takes no values", got["error"])
+        doc = json.loads(self.request("/api/management", headers={"Cookie": self.cookie})[2])
+        self.assertEqual(doc["satellites"]["request"], second)
+
     def test_the_repo_write_is_refused_on_a_satellite(self):
         """sd:1629: the POST passes the session and CSRF checks, then the verb refuses: a 400 naming the hub, no change."""
         body = {"path": self.ids["checkout"], "value": "yes", "before": "no"}
@@ -777,6 +815,7 @@ class TheScript(PageScript):
             ["svc.restart", "service", "confirm", "t", None, False],
             ["svc.stop", "service", "confirm", "s", None, False],
             ["svc.start", "service", "safe", "a", None, False],
+            ["sats.refresh", "satellite refresh", "confirm", None, True, False],
             ["jobs.retry", "job", "safe", "t", None, False],
             ["jobs.cancel", "job", "confirm", "x", None, False],
             ["jobs.log", "job", "safe", "l", False, False],
@@ -1622,6 +1661,59 @@ class TheJobLogAndCancel(PageScript):
         out = self.run_page("R.a = ELS['view-deploys'].html;", doc=self.services(30), search="?view=deploys&q=gui/501 svc-1")
         self.assertIn("10 of 30", out["R"]["a"])
         self.assertIn("svc-19", out["R"]["a"])
+
+
+
+class TheSatellites(PageScript):
+    """sd:5108: Deploys lists each satellite's last refresh result and sends Refresh satellites."""
+
+    def doc_with(self, *satellites, request=None):
+        return dict(self.doc, satellites={"request": request, "satellites": list(satellites)})
+
+    @staticmethod
+    def sat(host, state, **result):
+        return {"host": host, "state": state, "reason": "", "result": result or None}
+
+    def test_deploys_draws_each_result_and_the_lamp_counts_a_failure(self):
+        request = {"id": "ab12cd34ef56ab78", "at": "2026-09-06T02:00:00Z"}
+        doc = self.doc_with(self.sat("sat-a", "done", request=request["id"], attempt=1, started="2026-09-06T02:01:00Z",
+                                     finished="2026-09-06T02:04:00Z", exit=0, step="machine-setup", line="done: 0 failures"),
+                            self.sat("sat-b", "done", request=request["id"], attempt=2, started="2026-09-06T02:01:00Z",
+                                     finished="2026-09-06T02:09:00Z", exit=1, step="machine-setup", line="1 stage failed: cron"),
+                            {"host": "sat-c", "state": "unread", "reason": "Expecting value", "result": None},
+                            request=request)
+        out = self.run_page("R.dep = ELS['view-deploys'].html; R.lamps = ELS.annunciator.html; selectRow('sat:sat-b', false); R.det = ELS.details.html;",
+                            doc=doc, search="?view=deploys")
+        dep = out["R"]["dep"]
+        self.assertIn("3 satellites", dep)
+        self.assertIn('<tr data-id="sats:request">', dep)
+        self.assertIn("ab12cd34ef56ab78", dep)
+        self.assertIn("machine-setup: done: 0 failures", dep)
+        self.assertIn("done · attempt 2", dep)
+        self.assertIn("machine-setup: 1 stage failed: cron", dep)
+        self.assertIn("Expecting value", dep)
+        self.assertIn('data-view="deploys" data-state="warning"', out["R"]["lamps"])
+        self.assertIn("■ 1 failed", out["R"]["lamps"])
+        self.assertIn("<dt>Exit</dt><dd>1</dd>", out["R"]["det"])
+        self.assertIn("1 stage failed: cron", out["R"]["det"])
+
+    def test_a_satellites_read_that_failed_is_unknown_with_its_reason(self):
+        doc = dict(self.doc, satellites=None, sources=dict(self.doc["sources"], satellites="the hub did not answer"))
+        out = self.run_page("R.dep = ELS['view-deploys'].html;", doc=doc, search="?view=deploys")
+        self.assertIn("Satellites were not read", out["R"]["dep"])
+        self.assertIn("the hub did not answer", out["R"]["dep"])
+
+    def test_refresh_satellites_confirms_then_posts_and_toasts_after_the_write(self):
+        out = self.run_page("R.why = cmd('sats.refresh').consequence(C.get('sats:request'));"
+                            " C.run(cmd('sats.refresh'), C.get('sats:request')); R.early = OUT.toasts.length; await flush();",
+                            doc=self.doc_with(), search="?view=deploys",
+                            answer="(p, b) => [200, {id: 'ab12cd34ef56ab78', at: '2026-09-06T02:00:00Z'}]")
+        self.assertEqual(out["confirms"], ["sats.refresh"])
+        self.assertIn("machine-setup update --apply", out["R"]["why"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/satellites/refresh", {})])
+        self.assertEqual(out["R"]["early"], 0, "the toast came before the write landed")
+        self.assertEqual(out["toasts"][0], ["Refresh requested · ab12cd34ef56ab78", False])
+        self.assertEqual(out["gets"], ["/api/management", "/api/management"])
 
 
 class TheRegistration(Registers, unittest.TestCase):

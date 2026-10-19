@@ -16,7 +16,7 @@ const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
-let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [];
+let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [], SATS = null;
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
@@ -44,7 +44,7 @@ function absorb(doc) {
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
     r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
-  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || [];
+  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || []; SATS = doc.satellites || null;
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
 // Age of the last fetch at the reading, as v1 words it (repos_screen._age).
@@ -181,7 +181,10 @@ function lamps() {
   else if (SESS?.stale) set('sessions', 'unknown', html`▨ stale since ${hhmm(SESS.observed)} UTC`);
   else if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
-  set('deploys', 'unknown', html`▨ no deploy source`);
+  // sd:5108: Deploys counts the satellites' refresh results; with none listed it stays unknown, as no deploy source.
+  if (SATS?.satellites.length) { const n = k => SATS.satellites.filter(x => SATSTATE(x) === k).length;
+    set('deploys', n('warning') ? 'warning' : n('queued') ? 'queued' : n('unknown') ? 'unknown' : 'ok', html`<b>${SATS.satellites.length}</b> satellites · ${n('warning') ? `■ ${n('warning')} failed` : n('queued') ? `${n('queued')} waiting` : 'refreshed'}`); }
+  else set('deploys', 'unknown', html`▨ no deploy source`);
   if (DOC?.jobs) { const failed = CRON.filter(c => c.rank === 'warning').length; set('schedules', failed ? 'warning' : 'ok', html`<b>${failed}</b> failed ${failed ? '■ ' : ''}of ${CRON.length}`); }
   else set('schedules', 'unknown', html`▨ not read`);
   put(document.getElementById('annunciator'), cells([...window.PAGE_VIEWS.map(v => ({ button: true, state: L[v.id].state, pressed: v.id === view,
@@ -582,6 +585,8 @@ function objects() {
     { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
     ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
   SERVICES.forEach(s => out.push({ id: `svc:${s.label}`, type: 'service', label: s.name, name: s.label, running: s.state === 'running', revision: s.revision, caps: s.capabilities || {} }));
+  if (SATS) out.push({ id: 'sats:request', type: 'satellite refresh', label: 'Refresh satellites', request: SATS.request },
+    ...SATS.satellites.map(x => ({ id: `sat:${x.host}`, type: 'satellite', label: x.host })));
   CRON.forEach(c => out.push({ id: `cron:${c.name}`, type: 'job', label: c.name, job: c.name, name: c.name, service: c.service, failed: c.rank === 'warning', running: c.state === 'running', pid: c.pid, exit: c.last_exit, revision: c.revision, caps: c.capabilities || {} }));
   return [...out, ...pending];
 }
@@ -639,6 +644,11 @@ function registerCommands() {
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
     { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
+    // sd:5108: one request row in the hub database; each satellite's next repo-sync follow run (every 5 min) answers it.
+    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', risk: 'confirm', primary: () => true,
+      cli: () => 'no CLI: the dashboard writes the refresh.request row', executes: true,
+      consequence: () => 'Each satellite, on its next repo-sync follow run (every five minutes), drains its lanes, follows the hub\'s pins and runs machine-setup update --apply, then writes its result here.',
+      run: () => landing(refreshSatellites(), v => `Refresh requested · ${v.id}`) },
     // launchd calendar jobs. Retry (commands.js) posts /api/jobs/<name>/retry; operations.inventory's capability is the off
     // reason. Exit 127 is "command not found": Print is the row's act (sd:3392).
     window.commands.retry({ job: o => ({ name: o.job, service: o.service, failed: o.failed, exit: o.exit, capability: o.caps.retry }),
@@ -653,6 +663,7 @@ function registerCommands() {
     window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
   );
 }
+async function refreshSatellites() { const got = await window.shell.post('/api/satellites/refresh', {}); await reread(); return got; }
 // Land (sd:5104): no git state, an unread tree or nothing new is the off reason; the server reads the tree again anyway.
 const landWhy = o => { const g = o.row.git;
   if (!o.row.registered) return 'not registered in sd-db: sd-db repo add registers it first';
@@ -832,6 +843,8 @@ document.getElementById('view-sessions').addEventListener('click', e => {
 // ---------- Deploys ----------
 const SVCSTATE = s => s.state === 'running' ? 'ok' : s.state === 'failed' ? 'warning' : ['unknown'].includes(s.state) ? 'unknown' : 'queued';
 const DS = { sort: 'name', dir: 1, page: 1, size: 25 };
+// sd:5108: a satellite's result for the last request; one that failed is a warning, one not yet answered waits.
+const SATSTATE = x => x.state === 'done' ? (x.result?.exit === 0 ? 'ok' : 'warning') : ['pending', 'running'].includes(x.state) ? 'queued' : 'unknown';
 const svcWhat = s => `${s.category} · ${s.scope}`;
 const SVCSORT = { name: s => s.name, what: svcWhat, state: s => s.state };
 // build (sd:3388): free text matches every column v1's filter read (name, label, scope, domain, category, state); state:<word>
@@ -851,6 +864,11 @@ function renderDeploys() {
   put(el, html`
     <div class="sec-head"><h2 id="dep-h">Deploys <button class="help" type="button" aria-label="Help: Deploys" data-help="<b>Unknown, not empty.</b> Nothing in the fleet records a deploy yet, and the dashboard has no deploy collector. The services below are what is installed on this Mac now.">${I('circle-help')}</button></h2></div>
     ${unknown('No deploy source', 'The dashboard has no deploy collector, so this list cannot fill. The services below are what runs on this Mac now.')}
+    <div class="sec-head"><h2 id="sat-h">Satellites <button class="help" type="button" aria-label="Help: Satellites" data-help="<b>Refresh satellites.</b> The request is one row in the hub database. Each satellite answers it on its next repo-sync follow run: it follows the hub's pins, runs machine-setup update --apply and writes its result. A satellite is listed once its repo-sync-follow job has reported a run.">${I('circle-help')}</button></h2><p class="tally">${SATS ? html`<span>${plural(SATS.satellites.length, 'satellite')}</span><span>hub database · ${hhmm(READ)} UTC</span>` : ''}</p></div>
+    ${!SATS ? unknown('Satellites were not read', why('satellites'), 'local-repo-sync/satellite_refresh.py') : html`<table class="ledger" aria-labelledby="sat-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Satellite</th><th scope="col">State</th><th scope="col">When</th><th scope="col" class="num">Exit</th><th scope="col">Last line</th>${ACTH}</tr></thead>
+      <tbody><tr data-id="sats:request"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">Refresh request</button></td><td class="d mono">${SATS.request ? SATS.request.id : 'none sent'}</td><td class="d mono"><time class="rel" datetime="${SATS.request?.at || ''}" data-empty="never"></time></td><td class="d num"></td><td class="d"></td>${ACT('sats:request')}</tr>
+      ${SATS.satellites.map(x => { const st = SATSTATE(x), r = x.result || {}; return html`<tr data-id="sat:${x.host}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${x.state}</span></td><td class="what"><button type="button">${x.host}</button></td><td class="d mono">${x.state}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ''}</td><td class="d mono"><time class="rel" datetime="${r.finished || r.started || ''}" data-empty="never"></time></td><td class="d num" data-k="exit">${r.exit ?? '—'}</td><td class="d mono">${x.state === 'unread' ? x.reason : r.step ? `${r.step}: ${r.line}` : '—'}</td><td class="act end"></td></tr>`; })}</tbody></table>
+      ${SATS.satellites.length ? '' : html`<p class="empty">No satellite's repo-sync-follow job has reported a run yet.</p>`}`}
     <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">launchd · ${hhmm(READ)} UTC</p></div>
     ${!DOC.services ? unknown('Services were not read', why('services'), 'sd services list')
       : html`<div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
@@ -999,6 +1017,16 @@ function selectRow(id, open) {
     h = key === 'abandoned'
       ? html`<p class="kind"><span class="g-caution">▲</span> Worktrees · abandoned</p><h2>${SESS.abandoned} abandoned worktrees</h2><dl><dt>What</dt><dd>registered, directory gone</dd><dt>Source</dt><dd>fleet sessions</dd></dl>${act}`
       : html`<p class="kind"><span class="g-ok">●</span> Worktrees · live</p><h2>${SESS.registered - SESS.abandoned} live worktrees</h2><dl><dt>Registered</dt><dd>${SESS.registered}</dd></dl>`;
+  } else if (kind === 'sats') {
+    const q = SATS?.request;
+    h = html`<p class="kind">${I('rotate-ccw')} Refresh satellites</p><h2>Refresh satellites</h2><dl><dt>Last request</dt><dd>${q ? q.id : 'none sent'}</dd><dt>Sent</dt><dd><time class="rel" datetime="${q?.at || ''}" data-long data-empty="never"></time></dd></dl>
+      <p class="why">Each satellite answers on its next repo-sync follow run, every five minutes, once its lanes drain. A run stopped part way runs once more; a second stop is written as failed.</p>${act}`;
+  } else if (kind === 'sat') {
+    const x = SATS?.satellites.find(y => y.host === key); if (!x) return;
+    const st = SATSTATE(x), r = x.result || {};
+    h = html`<p class="kind"><span class="g-${st}">${GLYPH[st]}</span> Satellite · ${x.state}</p><h2>${x.host}</h2>
+      ${x.state === 'unread' ? html`<p class="why"><span class="g-unknown" aria-hidden="true">▨</span> Its result was not read: ${x.reason}.</p>` : html`<dl><dt>Last follow</dt><dd><time class="rel" datetime="${x.followed || ''}" data-long data-empty="never"></time></dd><dt>Request</dt><dd>${r.request || '—'}${r.attempt ? ` · attempt ${r.attempt}` : ''}</dd><dt>Started</dt><dd><time class="rel" datetime="${r.started || ''}" data-long data-empty="never"></time></dd><dt>Finished</dt><dd><time class="rel" datetime="${r.finished || ''}" data-long data-empty="never"></time></dd>
+      <dt>Exit</dt><dd>${r.exit ?? '—'}</dd><dt>Step</dt><dd>${r.step || '—'}</dd><dt>Last line</dt><dd class="mono">${r.line || '—'}</dd></dl>`}`;
   } else if (kind === 'svc') {
     const s = SERVICES.find(x => x.label === key); if (!s) return;
     const st = SVCSTATE(s);
@@ -1058,7 +1086,7 @@ function adopt(doc) {
   return { objects: objects(), state: failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null };
 }
 function clear(err) {
-  DOC = null; READ = ''; GIT = LANE = ASG = SESS = CLAUDE = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
+  DOC = null; READ = ''; GIT = LANE = ASG = SESS = CLAUDE = SATS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
   FAILED = err.message;
 }
 function draw() {

@@ -81,7 +81,17 @@ FENCE_STUB = ('#!/bin/sh\n[ "$1" = fence ] || exit 2\n'
               'exit "${FENCE_RC:-0}"\n')
 
 
+# satellite_refresh.py (sd:5108): the request check follow asks first on a
+# satellite. Exits SATELLITE_REFRESH_RC, 1 (nothing pending) when unset;
+# test_satellite_refresh.py runs the real one against a real database.
+SATELLITE_REFRESH_STUB = 'import os, sys\nsys.exit(int(os.environ.get("SATELLITE_REFRESH_RC", "1")))\n'
+
+
 class FollowFixture(DrainFixture):
+    def __init__(self):
+        super().__init__()
+        (self.folder / "satellite_refresh.py").write_text(SATELLITE_REFRESH_STUB)
+
     def satellite(self):
         config = self.tmp / "home" / ".config" / "sd"
         config.mkdir(parents=True, exist_ok=True)
