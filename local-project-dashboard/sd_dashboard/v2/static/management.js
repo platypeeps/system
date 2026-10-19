@@ -645,7 +645,7 @@ function registerCommands() {
     { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // sd:5108: one request row in the hub database; each satellite's next repo-sync follow run (every 5 min) answers it.
-    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks every satellite to follow the hub\'s pins and run machine-setup update --apply on its next follow run.', risk: 'confirm', primary: () => true,
+    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', risk: 'confirm', primary: () => true,
       cli: () => 'no CLI: the dashboard writes the refresh.request row', executes: true,
       consequence: () => 'Each satellite, on its next repo-sync follow run (every five minutes), drains its lanes, follows the hub\'s pins and runs machine-setup update --apply, then writes its result here.',
       run: () => landing(refreshSatellites(), v => `Refresh requested · ${v.id}`) },
