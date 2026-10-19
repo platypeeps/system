@@ -53,6 +53,12 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
+**Status**, the tab after Now, shows the sections `sd today` and `sd-status` print (sd:5099).
+`/api/today/status` is the pack's `sd_db.today.sections` unchanged, so the tab and the command cannot drift.
+A bar shows where the work is: delivered in 24 h, landing, planned, unscheduled and blocked. Its key links each count
+to its section. Each section shows its first 5 rows, as the command does, and Show all opens the rest.
+The gate slots come from `sd gate status --json`; a failed read shows as unknown with its reason.
+
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
 `sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.

@@ -10,6 +10,8 @@
   Problem reports and New briefs (operator ruling 2026-10-17): open reports that ask for a person and the last week's unseen
   briefs, from the same document (problems, briefs); today-reports.js draws them, Acknowledge and Seen post the Reports and snooze routes.
   Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
+  Status (sd:5099): /api/today/status, the sections `sd today` prints (sd_db.today.sections), read by today-status.js when the view
+  first shows and on Refresh.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
   The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
@@ -82,6 +84,17 @@
         </table>
         <p class="filtered" id="filtered" hidden></p>
         <div id="snoozed"></div>
+      </section>
+    </div>
+    <div id="view-status" aria-label="Status" hidden>
+      <section aria-labelledby="status-h">
+        <div class="sec-head">
+          <h2 id="status-h">Status <button class="help" type="button" aria-label="Help: Status" data-help="&lt;b&gt;What &lt;code&gt;sd today&lt;/code&gt; and &lt;code&gt;sd-status&lt;/code&gt; print.&lt;/b&gt; The bar shows where the work is: delivered in the last 24 hours, landing now, planned, unscheduled and blocked; each key opens its section. A section shows its first 5 rows, as the command does; Show all opens the rest. Sections with nothing in them share the last line.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="status-tally"></p>
+        </div>
+        <div class="flow" id="status-flow"></div>
+        <div id="status-sections"><p class="st-line">Reading status…</p></div>
       </section>
     </div>
     <div id="view-work" aria-label="Work" hidden>
@@ -195,6 +208,7 @@
 <script src="/ui/mail.js"></script>
 <script src="/ui/today-reports.js"></script>
 <script src="/ui/today.js"></script>
+<script src="/ui/today-status.js"></script>
 <script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
