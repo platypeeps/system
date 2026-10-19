@@ -15,6 +15,7 @@ buttons. The browser half -- the look at 1440 and 375 px, the confirm dialog -- 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import unittest
@@ -151,8 +152,8 @@ class TheDocument(ScreenCase):
             doc = self.doc(given=many)
         self.assertEqual(len(doc["rows"]), 1)
         self.assertEqual(doc["counts"], {
-            "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0},
-            "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1}})
+            "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0, "github": 0},
+            "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1, "github": 0}})
 
     def test_settled_checkouts_named_alike_stay_two_entries(self):
         # Review 2 of PR #72 (aa5a4f3222ed): the label `local: project` keyed the fold, so two checkouts became one entry.
@@ -204,6 +205,36 @@ class TheDocument(ScreenCase):
         self.assertEqual(mixed["delivery"]["entries"], [
             {"source": "github:" + EXTERNAL, "reason": "Merged", "status": "unknown", "acknowledged_at": None}])
 
+    def test_each_row_carries_when_github_settled_it_and_the_window_counts_every_dated_row(self):
+        # sd:5301: the shadow collector records when GitHub merged or closed a row (pack sd:5303); the page dates it.
+        doc = self.doc(given=[
+            contribution(1, "awaiting_you", merged_at="2026-09-05T03:00:00Z", closed_at="2026-09-05T03:00:00Z"),
+            contribution(2, "awaiting_them", repo="other/lib", merged_at=None, closed_at=None),
+            contribution(3, "merged", merged_at="2026-09-01T10:00:00Z", closed_at="2026-09-01T10:00:00Z"),
+            contribution(4, "closed", repo="other/lib", merged_at=None, closed_at="2026-08-30T10:00:00Z"),
+            contribution(5, "merged", merged_at="2026-06-01T10:00:00Z", closed_at=None),
+            contribution(6, "closed", merged_at=None, closed_at=None),
+            contribution(7, "merged", merged_at="not a date", closed_at=None)])
+        self.assertTrue(doc["github_dates"])
+        self.assertEqual([(r["merged_at"], r["closed_at"]) for r in doc["rows"]],
+                         [("2026-09-05T03:00:00Z", "2026-09-05T03:00:00Z"), (None, None)])
+        self.assertEqual((doc["counts"]["internal"]["github"], doc["counts"]["external"]["github"]), (1, 0))
+        self.assertEqual(doc["settled_recent"], [
+            {"at": "2026-09-05T03:00:00Z", "how": "merged", "internal": True},
+            {"at": "2026-09-01T10:00:00Z", "how": "merged", "internal": True},
+            {"at": "2026-08-30T10:00:00Z", "how": "closed", "internal": False}])
+        # Settled rows only: one dated before the window, two with no date GitHub gave (one unreadable).
+        self.assertEqual(doc["settled_older"], {"internal": 1, "external": 0})
+        self.assertEqual(doc["settled_undated"], {"internal": 2, "external": 0})
+
+    def test_a_projection_from_a_pack_before_settle_dates_reads_them_as_unknown(self):
+        # Older state: a pack before sd:5303 gives rows no `merged_at` key at all; that is unknown, never an error or "open".
+        doc = self.doc()
+        self.assertFalse(doc["github_dates"])
+        self.assertEqual({(r["merged_at"], r["closed_at"]) for r in doc["rows"]}, {(None, None)})
+        self.assertEqual(doc["settled_recent"], [])
+        self.assertEqual(doc["counts"]["internal"]["github"], 0)
+
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
 
@@ -213,6 +244,8 @@ class TheDocument(ScreenCase):
         doc = contribution_screen.document(self.connection, now=NOW)
         self.assertEqual(tuple(self.connection.iterdump()), before)
         self.assertEqual(doc["rows"][0]["title"], "Ready patch <safe>")
+        # The pinned pack's projection carries the settle dates (pack sd:5303), so the page reads them as recorded.
+        self.assertTrue(doc["github_dates"])
 
 
 class ThePage(BrowserSession):
@@ -339,7 +372,7 @@ class Script(ScreenCase):
         with mock.patch.object(contribution_screen.contributions, "projection", return_value=rows()):
             self.doc = contribution_screen.document(self.connection, now=NOW)
 
-    def run_page(self, body, answer=None, search="", extra=""):
+    def run_page(self, body, answer=None, search="", extra="", tz="America/Denver"):
         answer = answer or ("(path, body) => path === '/api/contributions/page' ? [200, DOC] : path === '/api/contributions/task'"
                             " ? [200, { item: { id: 42, title: body.title } }] : [200, { ok: true }]")
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
@@ -349,7 +382,7 @@ class Script(ScreenCase):
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
                   + " OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
-                                capture_output=True, text=True, timeout=60, check=False)
+                                capture_output=True, text=True, timeout=60, check=False, env={**os.environ, "TZ": tz})
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)
         self.assertIsNone(out["error"])
@@ -504,21 +537,73 @@ R.off = [w('contribution.ack', 'issue:""" + ISSUE + """'), w('contribution.nudge
                                            "not filed on GitHub", True])
 
     def test_the_page_draws_lanes_lamps_and_settled_counts_and_claims_no_github_reading(self):
+        # The document here comes from rows without settle dates, as a pack before sd:5303 sends them.
         out = self.run_page("R.note = ELS['tp-note'].textContent; R.tally = ELS['settled-tally'].textContent;")
         rows, lamps, settled = out["html"]["rows"], out["html"]["annunciator"], out["html"]["bars"]
         self.assertEqual(re.findall(r'<tr class="lane" data-lane="(\w+)"', rows), ["newly_unblocked", "awaiting_you", "awaiting_them"])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', rows), [r["key"] for r in self.doc["rows"]])
         self.assertEqual(re.findall(r'data-cell="(\w+)" data-state="(\w+)"', lamps),
                          [("newly_unblocked", "caution"), ("awaiting_you", "caution"), ("awaiting_them", "ok"), ("github", "unknown")])
-        self.assertIn("not checked", lamps)
+        self.assertIn("not recorded", lamps)
         self.assertEqual(cell_grammar(self, lamps), [("button", "caution"), ("button", "caution"), ("button", "ok"), ("div", "unknown")])
         self.assertNotIn("GitHub now", rows)
+        self.assertNotIn("GitHub merged", rows)
         self.assertIn('title="example/project">example/project</span><span class="v">2</span>', settled)
-        self.assertIn("No merge or close dates recorded", out["R"]["note"])
+        self.assertIn("This sd records no merge or close dates", out["R"]["note"])
         self.assertEqual(out["R"]["tally"], "3 rows · 2 merged · 1 closed")
         self.assertEqual(out["attention"], {"state": "caution", "n": 2, "what": "contributions want you"})
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertEqual((out["states"][-1]["kind"], out["states"][-1]["title"]), ("partial", "GitHub sync not fresh"))
+
+    def dated(self):
+        """The document with settle dates: the newly unblocked row merged on GitHub, three settled rows in the window."""
+        self.doc["github_dates"] = True
+        for row in self.doc["rows"]:
+            row.update(merged_at=None, closed_at=None)
+        self.doc["rows"][0].update(merged_at="2026-09-05T03:00:00Z", closed_at="2026-09-05T03:00:00Z")
+        self.doc["counts"]["internal"]["github"] = 1
+        self.doc["settled_recent"] = [{"at": "2026-09-05T03:00:00Z", "how": "merged", "internal": True},
+                                      {"at": "2026-09-05T01:00:00Z", "how": "closed", "internal": True},
+                                      {"at": "2026-08-01T10:00:00Z", "how": "merged", "internal": False}]
+        self.doc["settled_older"] = {"internal": 0, "external": 2}
+        self.doc["settled_undated"] = {"internal": 1, "external": 0}
+
+    def test_github_settle_dates_light_the_lamp_date_the_row_and_details(self):
+        # sd:5301: the dates come from the shadow collector; the dashboard still makes no GitHub call.
+        self.dated()
+        out = self.run_page(f"R.rows = ELS.rows.html; R.lamps = ELS.annunciator.html; open('{ONE}'); R.d = ELS.details.html;")
+        self.assertIn(('github', 'caution'), re.findall(r'data-cell="(\w+)" data-state="(\w+)"', out["R"]["lamps"]))
+        self.assertEqual(cell_grammar(self, out["R"]["lamps"])[-1], ("button", "caution"))
+        self.assertNotIn("does not read GitHub", out["R"]["lamps"])
+        self.assertIn('GitHub merged <time class="rel" datetime="2026-09-05T03:00:00Z"></time>', out["R"]["rows"])
+        self.assertEqual(out["R"]["rows"].count("GitHub merged"), 1)
+        self.assertIn('<dt>On GitHub</dt><dd>merged <time class="rel" datetime="2026-09-05T03:00:00Z" data-long=""></time></dd>', out["R"]["d"])
+        out = self.run_page("R.rows = ELS.rows.html;", search="?lane=github")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), [ONE])
+        self.assertEqual(out["urls"][-1], {"lane": "github"})
+
+    def test_settled_per_day_counts_local_days(self):
+        # 03:00 and 01:00 UTC on 5 September are the evening of the 4th in Denver and the 5th in Tokyo.
+        self.dated()
+        body = "R.tp = ELS.tp.html; R.label = ELS.tp.attrs['aria-label']; R.note = ELS['tp-note'].textContent;"
+        keep = "ELS.tp = El('tp'); ELS.tp.attrs = {}; ELS.tp.setAttribute = (k, v) => { ELS.tp.attrs[k] = v; };"
+        denver, tokyo = self.run_page(body, extra=keep, tz="America/Denver"), self.run_page(body, extra=keep, tz="Asia/Tokyo")
+        self.assertIn("<title>Sep 4: 1 merged, 1 closed</title>", denver["R"]["tp"])
+        self.assertIn("<title>Sep 5: 1 merged, 1 closed</title>", tokyo["R"]["tp"])
+        self.assertEqual(denver["R"]["tp"].count("<title>"), 28)
+        self.assertEqual(denver["R"]["label"], "1 merged and 1 closed from Aug 10 to Sep 6; busiest day Sep 4 with 2")
+        # The row from 1 August is outside the window: it counts as older, with the two the server counted.
+        self.assertIn("3 settled before this window.", denver["R"]["note"])
+        self.assertIn("1 settled row has no merge or close date.", denver["R"]["note"])
+        self.assertNotIn("No merge or close dates recorded", denver["R"]["note"])
+
+    def test_a_document_without_settle_dates_says_they_are_not_recorded(self):
+        # Older state: a pack before sd:5303 sends no dates; the lamp and the chart say unknown, never zero.
+        out = self.run_page("R.lamps = ELS.annunciator.html; R.tp = ELS.tp.html; R.note = ELS['tp-note'].textContent;")
+        self.assertIn(('github', 'unknown'), re.findall(r'data-cell="(\w+)" data-state="(\w+)"', out["R"]["lamps"]))
+        self.assertIn("not recorded", out["R"]["lamps"])
+        self.assertEqual(out["R"]["tp"], "")
+        self.assertIn("This sd records no merge or close dates", out["R"]["note"])
 
     def test_the_scope_and_lane_filter_the_ledger(self):
         out = self.run_page("""R.all = ELS.rows.html; document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'external' }));

@@ -3,7 +3,8 @@
   Contributions (sd:2113), at /contributions. Built from the design source's products/system/designs/v2/contributions.html,
   contributions.js and contributions.css at b2b8c2b, with design.md and commands.md.
   Data: /api/contributions/page (contribution_screen.document: the projection v1 /classic/contributions renders, open rows
-  capped, settled rows counted per repository, and the GitHub tracker's freshness), read when the page opens and after a write.
+  capped, settled rows counted per repository and per local day by the dates the shadow collector records, sd:5301, and the
+  GitHub tracker's freshness), read when the page opens and after a write.
   Details shows each row's dependencies, test evidence and notification delivery (sd:3394), every local path cut to its last part.
   Writes: Acknowledge (POST /api/contributions/acknowledge), Make task (POST /api/contributions/task, a task linked to the
   contribution by its GitHub URL) and Dismiss (POST /api/contributions/dismiss, sd:3432: closes a row with no item), each asked first. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
@@ -71,6 +72,8 @@
       <p class="tally" id="settled-tally"></p>
     </div>
     <h3 class="sub">Settled per day · last 28 days</h3>
+    <p class="tp-key"><span><i class="m"></i>merged</span><span><i class="c"></i>closed</span></p>
+    <div class="tp" id="tp" role="img"></div>
     <p class="tp-note" id="tp-note"></p>
     <h3 class="sub">Per repository</h3>
     <div class="bars" id="bars" role="img"></div>
