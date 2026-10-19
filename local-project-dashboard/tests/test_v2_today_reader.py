@@ -33,7 +33,9 @@ SNOOZE_JS = (V2 / "static" / "snooze.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
-RECONCILE = re.search(r"^  function reconcile\(.*?^  }$", SHELL_JS, re.S | re.M).group(0)
+# reconcile reads the walk's rule for a shown row (sd:5113), so the extract carries that line too.
+RECONCILE = (re.search(r"^  const shownRow = .*$", SHELL_JS, re.M).group(0) + "\n"
+             + re.search(r"^  function reconcile\(.*?^  }$", SHELL_JS, re.S | re.M).group(0))
 
 # What today.js reads beyond the Tasks stand-in: the address it writes ?row= into, and the ledger's rows as elements that
 # keep their hidden flag and aria-selected between calls. The shell's row is the address's, as shell.js reads it.
@@ -48,7 +50,7 @@ var ROWS_EL = document.getElementById('rows'), ROW_CACHE = { html: null, els: []
 ROWS_EL.querySelectorAll = () => {
   if (ROW_CACHE.html !== ROWS_EL.html) { ROW_CACHE.html = ROWS_EL.html;
     ROW_CACHE.els = [...(ROWS_EL.html || '').matchAll(/<tr data-id="([^"]*)" data-src="([^"]*)"/g)].map(m => { var e = El('tr'), attrs = {};
-      e.dataset = { id: m[1], src: m[2] }; e.textContent = m[1]; e.getClientRects = () => e.hidden ? [] : [1];
+      e.dataset = { id: m[1], src: m[2] }; e.textContent = m[1]; e.getClientRects = () => e.hidden ? [] : [1]; e.closest = sel => sel === '[hidden]' && e.hidden ? e : null;
       e.setAttribute = (k, v) => { attrs[k] = String(v); }; e.getAttribute = k => k in attrs ? attrs[k] : null; return e; }); }
   return ROW_CACHE.els; };
 """
