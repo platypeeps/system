@@ -3,7 +3,7 @@
 `/api/tasks` gives a base row its `base`, `stage` and `score`; its Details give
 its stage moves, declared fields, body and mirror section. The item routes send
 a base row to `records.edit_row`, and Health shows the `records-mirror`
-heartbeat with Render mirror, `POST /api/records/render`.
+heartbeat, read-only: Render mirror and `POST /api/records/render` are gone (sd:5134).
 
 Every case names a temporary vault in `OBSIDIAN_VAULT` and a plugin list
 declaring `blog-idea` on the `db` driver, so no write reaches the operator's vault.
@@ -153,17 +153,13 @@ class TheRoutes(Bases, BrowserSession):
         status, _, out = self.post(f"/api/items/{task}/stage", {"stage": "published", "revision": self.revision(task)})
         self.assertEqual((status, out["error"]), (400, "Publication uses the reviewed publishing workflow."))
 
-    def test_render_mirror_writes_every_db_kind_and_a_failure_is_a_conflict_with_why(self):
+    def test_render_mirror_is_gone_and_writes_nothing(self):
+        """sd:5134: the dashboard writes no vault note; the route that rendered the mirror is gone."""
+        before = self.snapshot()
         status, _, out = self.post("/api/records/render", {})
-        self.assertEqual(status, 200, out)
-        self.assertEqual((out["ok"], out["kinds"]), (True, ["blog-idea"]))
-        self.assertIn("docs/dashboard/base-blog-idea.html", out["written"])
-        (self.vault / BASE).rename(self.vault / "moved")
-        status, _, out = self.post("/api/records/render", {})
-        self.assertEqual((status, out["ok"]), (409, False), out)
-        self.assertRegex(out["error"], r"^mirror not updated: .*Blog Ideas is not a directory")
-        status, _, out = self.post("/api/records/render", {"kinds": ["blog-idea"]})
-        self.assertEqual((status, out["error"]), (400, "Render mirror takes no values."))
+        self.assertEqual(status, 404, out)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.vault / "docs/dashboard/base-blog-idea.html").exists())
 
 
 class TheHeartbeat(Bases, ScreenCase):
