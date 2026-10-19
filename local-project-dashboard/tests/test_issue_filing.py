@@ -1,8 +1,9 @@
 """File issue (sd:5103): a tool-less claude drafts a sanitized GitHub or Jira issue; only Confirm files it, once.
 
-`claude` and `gh` are shell doubles named by `CLAUDE_BIN` and `GH_BIN`: each journals its argv and stdin, and the
-claude double prints the reply the test set. Jira is a transport double handed to `file_jira`, or `FILERS` patched,
-so nothing opens a socket. `HOME`, `XDG_STATE_HOME` and `SYSTEM_TOOLS_CONFIG` are disposable folders, the privacy
+`claude` is a shell double named by `CLAUDE_BIN`: it journals its argv and stdin and prints the reply the test set.
+`GH_BIN` names the pack harness's `gh` shim, answering from a `FixtureRemote` on loopback, so a test asserts on the
+issues and calls that remote holds. Jira is a transport double handed to `file_jira`, or `FILERS` patched, so nothing
+opens a socket. `HOME`, `XDG_STATE_HOME` and `SYSTEM_TOOLS_CONFIG` are disposable folders, the privacy
 patterns are synthetic, and the real `local-leak-guard/leak-guard.sh scan` reads them. No test reaches a model,
 GitHub, Jira or the live database.
 """
@@ -19,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sd_db import repos, workflow, writes
+from sd_db.testing import FixtureRemote, GitHubDouble, gh_environment, install_gh
 from sd_dashboard import issue_filing, management_screen, tasks_screen
 from sd_dashboard.issue_filing import REMOVED, findings, sanitize, scan
 
@@ -32,19 +34,6 @@ printf '%s\\n' "$@" > "$DOUBLE_DIR/claude.argv"
 cat > "$DOUBLE_DIR/claude.stdin"
 cat "$DOUBLE_DIR/reply"
 exit "$(cat "$DOUBLE_DIR/exit" 2>/dev/null || echo 0)"
-"""
-GH = """#!/bin/sh
-printf '%s\\n' "$@" >> "$DOUBLE_DIR/gh.argv"
-if [ "$1" = api ]; then
-  echo look >> "$DOUBLE_DIR/gh.looks"
-  if [ -f "$DOUBLE_DIR/gh.api" ]; then cat "$DOUBLE_DIR/gh.api"; else echo '[]'; fi
-  exit "$(cat "$DOUBLE_DIR/gh.api.exit" 2>/dev/null || echo 0)"
-fi
-cat > "$DOUBLE_DIR/gh.stdin"
-echo call >> "$DOUBLE_DIR/gh.calls"
-if [ -s "$DOUBLE_DIR/gh.fail" ]; then cat "$DOUBLE_DIR/gh.fail" >&2; exit "$(cat "$DOUBLE_DIR/gh.exit" 2>/dev/null || echo 1)"; fi
-if [ -f "$DOUBLE_DIR/gh.fail" ]; then echo 'GraphQL: Could not resolve to a Repository' >&2; exit 1; fi
-cat "$DOUBLE_DIR/gh.out"
 """
 REPLY = ("Title: Export fails for sd:12 on a long name\n\nExporting a report whose name is longer than 200 characters "
          "fails with a 500.\n\nSeen in /Users/someone/repos/tool on host build-box.tail0000.ts.net, see #5103 and "
@@ -62,13 +51,12 @@ class FilingCase(BrowserSession):
         self.config = root / "config"
         self.config.mkdir()
         (self.config / "privacy-patterns").write_text(PATTERNS)
-        for name, text in (("claude", CLAUDE), ("gh", GH)):
-            (root / name).write_text(text)
-            (root / name).chmod(0o755)
+        (root / "claude").write_text(CLAUDE)
+        (root / "claude").chmod(0o755)
         (self.double / "reply").write_text(REPLY)
-        (self.double / "gh.out").write_text("Creating issue in example/tool\n\nhttps://github.com/example/tool/issues/42\n")
+        self.remote, self.hub = self.serve("example/tool")
         environment = patch.dict(os.environ, {
-            "CLAUDE_BIN": str(root / "claude"), "GH_BIN": str(root / "gh"), "DOUBLE_DIR": str(self.double),
+            **self.reach(self.hub), "CLAUDE_BIN": str(root / "claude"), "DOUBLE_DIR": str(self.double),
             "HOME": str(self.home), "XDG_STATE_HOME": str(root / "state"), "SYSTEM_TOOLS_CONFIG": str(self.config)})
         environment.start()
         self.addCleanup(environment.stop)
@@ -79,6 +67,18 @@ class FilingCase(BrowserSession):
         repos.upsert_repo(self.connection, str(self.checkout), remote="git@github.com:example/tool.git")
         repos.upsert_repo(self.connection, str(root / "secret"), remote="git@github.com:example/secret-plans.git")
         self.runs = root / "state" / "system" / "issue-filing" / "runs"
+
+    def serve(self, slug):
+        remote = FixtureRemote(self.root / slug.replace("/", "-"), slug=slug)
+        hub = GitHubDouble(remote)
+        hub.__enter__()
+        self.addCleanup(hub.close)
+        return remote, hub
+
+    def reach(self, hub):
+        """`GH_BIN` names the shim, so no run can fall through to a real `gh`."""
+        shim = install_gh(hub, self.root / "bin")
+        return {**gh_environment(hub, shim.parent, {}), "PATH": os.environ["PATH"], "GH_BIN": str(shim)}
 
     def enable(self, github="on", jira="off"):
         repos.set_github_issues(self.connection, str(self.checkout), github)
@@ -117,18 +117,9 @@ class FilingCase(BrowserSession):
     def confirm(self, document, digest=None):
         return self.post(f"/api/issue-runs/{document['id']}/confirm", {"digest": digest or document["digest"]})
 
-    def gh_calls(self, name="gh.calls"):
-        calls = self.double / name
-        return len(calls.read_text().splitlines()) if calls.exists() else 0
-
-    def listed(self, run, *issues):
-        """The repository's newest issues, as `gh api` answers the check, each with the run's own title:
-        `(number, body, is a PR)`."""
-        (self.double / "gh.api").write_text(json.dumps([
-            {"number": number, "title": run["title"], "body": body,
-             "html_url": f"https://github.com/example/tool/{'pull' if pr else 'issues'}/{number}",
-             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **({"pull_request": {}} if pr else {})}
-            for number, body, pr in issues]))
+    def asked(self, method):
+        """How often the remote was asked to create (`POST`) or list (`GET`) the repository's issues."""
+        return sum(1 for call in self.remote.calls if (call.method, call.path) == (method, "/repos/example/tool/issues"))
 
     def item_row(self, item):
         return workflow.item_state(self.connection, item)
@@ -305,8 +296,8 @@ class TheDraft(FilingCase):
         run = self.drafted(self.task())
         for _ in range(5):
             self.assertEqual(self.read(run["id"])[1]["state"], "ready")
-        self.assertEqual(self.gh_calls(), 0)
-        self.assertFalse((self.double / "gh.argv").exists())
+        self.assertEqual(self.asked("POST"), 0)
+        self.assertEqual(self.remote.calls, [])
 
     def test_a_privacy_pattern_in_the_draft_blocks_it_by_line(self):
         self.enable()
@@ -316,7 +307,7 @@ class TheDraft(FilingCase):
         self.assertEqual(run["blocked"], ["a privacy pattern matches body line 2"])
         self.assertNotIn(CANARY, json.dumps(run))
         self.assertEqual(self.confirm({"id": run["id"], "digest": "0" * 64})[0], 409)
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_model_failure_drafts_and_files_nothing(self):
         self.enable()
@@ -324,7 +315,7 @@ class TheDraft(FilingCase):
         run = self.drafted(self.task())
         self.assertEqual(run["state"], "failed")
         self.assertIn("claude -p exited 3", run["reason"])
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_second_start_while_one_drafts_is_refused(self):
         self.enable()
@@ -352,7 +343,7 @@ class TheDraft(FilingCase):
             self.assertEqual(self.confirm({"id": run_id, "digest": "0" * 64})[0], 409)
             self.assertEqual(self.post(f"/api/issue-runs/{run_id}/discard", {})[0], 200)
         self.assertEqual(self.drafted(item)["state"], "ready")
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
 
 class TheConfirm(FilingCase):
@@ -362,20 +353,19 @@ class TheConfirm(FilingCase):
         run = self.drafted(item)
         status, _, done = self.confirm(run)
         self.assertEqual(status, 200, done)
-        self.assertEqual(self.gh_calls(), 1)
-        argv = (self.double / "gh.argv").read_text().split("\n")[:-1]
-        self.assertEqual(argv, ["issue", "create", "--repo", "example/tool", "--title", TITLE, "--body-file", "-"])
-        self.assertEqual((self.double / "gh.stdin").read_text(), run["body"])
+        self.assertEqual(self.asked("POST"), 1)
+        self.assertEqual([(issue.title, issue.body) for issue in self.remote.issues.values()], [(TITLE, run["body"])])
+        self.assertEqual([call.door for call in self.remote.calls], ["gh"])
         self.assertEqual((done["state"], done["url"], done["ref"]),
-                         ("linked", "https://github.com/example/tool/issues/42", "github:example/tool#42"))
+                         ("linked", "https://github.com/example/tool/issues/1", "github:example/tool#1"))
         state = self.item_row(item)
-        self.assertEqual((state["item"]["source"], state["item"]["external_id"]), ("task-ref", "github:example/tool#42"))
+        self.assertEqual((state["item"]["source"], state["item"]["external_id"]), ("task-ref", "github:example/tool#1"))
         self.assertEqual(state["notes"][-1]["body"],
-                         "Filed GitHub issue github:example/tool#42: https://github.com/example/tool/issues/42")
+                         "Filed GitHub issue github:example/tool#1: https://github.com/example/tool/issues/1")
         row = {r["id"]: r for r in tasks_screen.document(self.connection, now=self.now)["rows"]}[item]
-        self.assertEqual(row["issue_link"], "https://github.com/example/tool/issues/42")
+        self.assertEqual(row["issue_link"], "https://github.com/example/tool/issues/1")
         self.assertEqual(self.confirm(run)[0], 409, "a linked run files again")
-        self.assertEqual(self.gh_calls(), 1)
+        self.assertEqual(self.asked("POST"), 1)
 
     def test_a_digest_of_other_text_is_refused_and_files_nothing(self):
         """Evidence: Confirm is tied to the previewed text and target, not to the run id alone."""
@@ -385,7 +375,7 @@ class TheConfirm(FilingCase):
         status, _, answer = self.confirm(run, other)
         self.assertEqual(status, 409)
         self.assertIn("not the draft", answer["error"])
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_target_switched_off_or_moved_after_the_preview_refuses(self):
         self.enable(github="on")
@@ -395,7 +385,7 @@ class TheConfirm(FilingCase):
         repos.set_github_issues(self.connection, str(self.checkout), "on")
         repos.upsert_repo(self.connection, str(self.checkout), remote="git@github.com:example/elsewhere.git")
         self.assertEqual(self.confirm(run)[0], 409)
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_pattern_added_after_the_preview_blocks_the_confirm(self):
         self.enable()
@@ -404,20 +394,21 @@ class TheConfirm(FilingCase):
         status, _, answer = self.confirm(run)
         self.assertEqual(status, 409)
         self.assertIn("privacy pattern matches the title", answer["error"])
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_gh_refusal_files_nothing_and_a_second_confirm_files_once(self):
         """Steps: a refused call returns the run to ready; the next Confirm finishes it."""
         self.enable()
         run = self.drafted(self.task())
-        (self.double / "gh.fail").write_text("")
+        self.remote.fail_next("create issue", 404, "GraphQL: Could not resolve to a Repository")
         status, _, answer = self.confirm(run)
         self.assertEqual(status, 502)
         self.assertIn("filed nothing", answer["error"])
         self.assertEqual(self.read(run["id"])[1]["state"], "ready")
-        (self.double / "gh.fail").unlink()
+        self.assertEqual(self.remote.issues, {})
         self.assertEqual(self.confirm(run)[0], 200)
-        self.assertEqual(self.gh_calls(), 2)
+        self.assertEqual(list(self.remote.issues), [1])
+        self.assertEqual(self.asked("POST"), 2)
 
     def test_a_gh_failure_that_may_have_filed_links_the_issue_it_finds_and_files_once(self):
         """Failures: a 502 after the request left is no proof; the check finds the issue that carries the run's token
@@ -425,20 +416,23 @@ class TheConfirm(FilingCase):
         self.enable()
         item = self.task()
         run = self.drafted(item)
-        (self.double / "gh.fail").write_text("HTTP 502: Bad Gateway (https://api.github.com/graphql)\n")
-        self.listed(run, (50, run["body"], True), (45, "Someone else's report.", False), (43, run["body"], False))
+        # The 502 came back after the create landed: #1 is the run's issue, listed below newer ones that are not.
+        self.remote.add_issue(run["title"], run["body"])
+        self.remote.add_issue(run["title"], "Someone else's report.")
+        self.remote.open_pull_request("fix", title=run["title"], body=run["body"])
+        self.remote.fail_next("create issue", 502, "HTTP 502: Bad Gateway (https://api.github.com/graphql)")
         status, _, done = self.confirm(run)
         self.assertEqual(status, 200, done)
-        self.assertEqual((done["state"], done["url"]), ("linked", "https://github.com/example/tool/issues/43"))
-        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#43")
-        self.assertEqual((self.gh_calls(), self.gh_calls("gh.looks")), (1, 1))
+        self.assertEqual((done["state"], done["url"]), ("linked", "https://github.com/example/tool/issues/1"))
+        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#1")
+        self.assertEqual((self.asked("POST"), self.asked("GET")), (1, 1))
 
     def test_a_gh_failure_with_nothing_found_is_unknown_and_check_finds_it_later_without_filing(self):
         """Failures and retry: not found reads unknown, Confirm refuses it, Check looks again and links what it finds."""
         self.enable()
         item = self.task()
         run = self.drafted(item)
-        (self.double / "gh.fail").write_text("Post \"https://api.github.com/graphql\": read: connection reset by peer\n")
+        self.remote.fail_next("create issue", 502, 'Post "https://api.github.com/graphql": read: connection reset by peer')
         status, _, answer = self.confirm(run)
         self.assertEqual(status, 504)
         self.assertIn("is not known", answer["error"])
@@ -446,12 +440,12 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.confirm(run)[0], 409)
         check = f"/api/issue-runs/{run['id']}/check"
         self.assertEqual(self.post(check, {})[0], 409)
-        self.listed(run, (44, run["body"], False))
+        self.remote.add_issue(run["title"], run["body"])
         status, _, done = self.post(check, {})
-        self.assertEqual((status, done["state"], done["url"]), (200, "linked", "https://github.com/example/tool/issues/44"))
-        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#44")
+        self.assertEqual((status, done["state"], done["url"]), (200, "linked", "https://github.com/example/tool/issues/1"))
+        self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#1")
         self.assertEqual(self.post(check, {})[0], 409)
-        self.assertEqual(self.gh_calls(), 1)
+        self.assertEqual(self.asked("POST"), 1)
 
     def test_the_draft_ends_with_a_random_token_line_the_preview_shows_and_the_digest_covers(self):
         """Round 2: the body carries an opaque token of this run, hidden on GitHub, a plain line on Jira; it names nothing
@@ -474,14 +468,14 @@ class TheConfirm(FilingCase):
         self.enable()
         item = self.task()
         run = self.drafted(item)
-        (self.double / "gh.fail").write_text("HTTP 502: Bad Gateway\n")
-        self.listed(run, (45, run["body"].rsplit("\n\n", 1)[0], False))
+        self.remote.fail_next("create issue", 502, "HTTP 502: Bad Gateway")
+        self.remote.add_issue(run["title"], run["body"].rsplit("\n\n", 1)[0])
         self.assertEqual(self.confirm(run)[0], 504)
         self.assertEqual(self.read(run["id"])[1]["state"], "unknown")
         self.assertIsNone(self.item_row(item)["item"]["external_id"])
-        self.listed(run, (45, run["body"].rsplit("\n\n", 1)[0], False), (46, run["body"], False))
+        self.remote.add_issue(run["title"], run["body"])
         status, _, done = self.post(f"/api/issue-runs/{run['id']}/check", {})
-        self.assertEqual((status, done["ref"]), (200, "github:example/tool#46"))
+        self.assertEqual((status, done["ref"]), (200, "github:example/tool#2"))
 
     def test_a_run_file_from_before_tokens_is_never_matched_by_title(self):
         """Older state: a run written before tokens has none; a same-title issue does not resolve it."""
@@ -493,7 +487,7 @@ class TheConfirm(FilingCase):
         document.pop("token")
         document.update(state="filing", server=2 ** 22 + 12345, filing_at=document["finished"])
         record.write_text(json.dumps(document))
-        self.listed(run, (47, run["body"], False))
+        self.remote.add_issue(run["title"], run["body"])
         status, _, answer = self.post(f"/api/issue-runs/{run['id']}/check", {})
         self.assertEqual(status, 409)
         self.assertIn("carries no filing token", answer["error"])
@@ -502,8 +496,8 @@ class TheConfirm(FilingCase):
     def test_a_check_that_fails_reads_unknown_and_says_so(self):
         self.enable()
         run = self.drafted(self.task())
-        (self.double / "gh.fail").write_text("HTTP 503: Service Unavailable\n")
-        (self.double / "gh.api.exit").write_text("1")
+        self.remote.fail_next("create issue", 503, "HTTP 503: Service Unavailable")
+        self.remote.fail_next("list issues", 503, "HTTP 503: Service Unavailable")
         status, _, answer = self.confirm(run)
         self.assertEqual(status, 504)
         self.assertIn("the check failed", answer["error"])
@@ -512,20 +506,22 @@ class TheConfirm(FilingCase):
     def test_only_a_refusal_reads_not_filed(self):
         """Failures: gh's exit alone proves nothing; only a 4xx but 408, gh's own checks or no sign-in are refusals."""
         target = {"kind": "github", "repo": "example/tool"}
-        for said, code, outcome in (("HTTP 422: Validation Failed (https://api.github.com/graphql)", 1, issue_filing.NotFiled),
-                                    ("GraphQL: Could not resolve to a Repository with the name 'example/tool'.", 1,
-                                     issue_filing.NotFiled),
-                                    ("the 'example/tool' repository has disabled issues", 1, issue_filing.NotFiled),
-                                    ("To get started with GitHub CLI, please run:  gh auth login", 4, issue_filing.NotFiled),
-                                    ("HTTP 502: Bad Gateway", 1, issue_filing.Unknown),
-                                    ("HTTP 408: Request Timeout", 1, issue_filing.Unknown),
-                                    ("read: connection reset by peer", 1, issue_filing.Unknown),
-                                    ("", 1, issue_filing.Unknown)):
+        for said, status, outcome in (("HTTP 422: Validation Failed (https://api.github.com/graphql)", 422,
+                                       issue_filing.NotFiled),
+                                      ("GraphQL: Could not resolve to a Repository with the name 'example/tool'.", 404,
+                                       issue_filing.NotFiled),
+                                      ("the 'example/tool' repository has disabled issues", 410, issue_filing.NotFiled),
+                                      ("To get started with GitHub CLI, please run:  gh auth login", 401,
+                                       issue_filing.NotFiled),
+                                      ("HTTP 502: Bad Gateway", 502, issue_filing.Unknown),
+                                      ("HTTP 408: Request Timeout", 408, issue_filing.Unknown),
+                                      ("read: connection reset by peer", 502, issue_filing.Unknown),
+                                      ("", 500, issue_filing.Unknown)):
             with self.subTest(said=said):
-                (self.double / "gh.fail").write_text(said + "\n" if said else "\n")
-                (self.double / "gh.exit").write_text(str(code))
+                self.remote.fail_next("create issue", status, said)
                 with self.assertRaises(outcome):
                     issue_filing.file_github(target, "t", "b")
+        self.assertEqual(self.remote.issues, {})
 
     def test_a_server_gone_mid_filing_reads_unknown_and_confirm_refuses(self):
         """Steps: stop between `filing` and the answer; the next read finds it unknown, never files twice."""
@@ -540,16 +536,19 @@ class TheConfirm(FilingCase):
         self.assertIn("not known", read["reason"])
         self.assertEqual(self.confirm(run)[0], 409)
         self.assertEqual(self.post(f"/api/issue-runs/{run['id']}/check", {})[0], 409)
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
         self.assertEqual(self.post(f"/api/issue-runs/{run['id']}/discard", {})[0], 200)
 
     def test_an_answer_naming_another_repository_is_unknown_not_linked(self):
         self.enable()
         item = self.task()
         run = self.drafted(item)
-        (self.double / "gh.out").write_text("https://github.com/example/secret-plans/issues/7\n")
-        status, _, answer = self.confirm(run)
+        # The shim files on the remote it reaches, so a remote of another slug answers with another repo's URL.
+        other, hub = self.serve("example/secret-plans")
+        with patch.dict(os.environ, self.reach(hub)):
+            status, _, answer = self.confirm(run)
         self.assertEqual(status, 504)
+        self.assertEqual(list(other.issues), [1])
         self.assertIsNone(self.item_row(item)["item"]["external_id"])
 
     def test_a_link_back_that_fails_is_retried_by_confirm_without_filing_again(self):
@@ -563,7 +562,7 @@ class TheConfirm(FilingCase):
         self.assertIn("was filed", answer["error"])
         self.assertEqual(self.read(run["id"])[1]["state"], "filed")
         self.assertEqual(self.confirm(run)[0], 200)
-        self.assertEqual(self.gh_calls(), 1)
+        self.assertEqual(self.asked("POST"), 1)
         notes = [note["body"] for note in self.item_row(item)["notes"] if note["body"].startswith("Filed GitHub")]
         self.assertEqual(len(notes), 1)
 
@@ -575,7 +574,7 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.confirm(run)[0], 200)
         state = self.item_row(item)
         self.assertEqual(state["item"]["external_id"], "job:repo-sync:4")
-        self.assertIn("https://github.com/example/tool/issues/42", state["notes"][-1]["body"])
+        self.assertIn("https://github.com/example/tool/issues/1", state["notes"][-1]["body"])
 
     def test_jira_confirm_posts_once_with_the_sanitized_text_and_links_the_key(self):
         self.enable(github="off", jira="EXAMPLE")
@@ -607,7 +606,7 @@ class TheConfirm(FilingCase):
         self.assertEqual(text, run["body"])
         self.assertEqual((done["url"], done["ref"]), ("https://example.atlassian.test/browse/EXAMPLE-9", "jira:EXAMPLE-9"))
         self.assertEqual(self.item_row(item)["item"]["external_id"], "jira:EXAMPLE-9")
-        self.assertEqual(self.gh_calls(), 0)
+        self.assertEqual(self.asked("POST"), 0)
 
     def test_a_jira_5xx_is_checked_by_project_age_and_token_and_links_what_it_finds(self):
         """Failures: a 502 on create may have filed; JQL by project and age, then the run's token, finds it."""

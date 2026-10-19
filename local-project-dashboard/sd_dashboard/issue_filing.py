@@ -618,7 +618,7 @@ def file_github(target: dict, title: str, body: str) -> tuple[str, str]:
         said = [line for line in done.stderr.splitlines() if line.strip()]
         why = f"gh exited {done.returncode}: {said[-1] if said else 'no message'}"
         # A nonzero exit is no proof: GitHub can create the issue and the answer still fail on the way back.
-        if done.returncode == 4 or GH_REFUSED.search(done.stderr):
+        if GH_REFUSED.search(done.stderr):
             raise NotFiled(why)
         raise Unknown(why)
     found = re.search(r"https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/issues/([1-9][0-9]*)", done.stdout)
