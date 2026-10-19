@@ -9,6 +9,8 @@
  *   states: default · hover · focus · active · expanded/collapsed; filter box empty · typed · nothing matches (chips say 0 of N)
  * 2026-10-19 component: toolbar standard (sd:5281) row 1 views · filter · count right, row 2 labelled controls; .vseg pressed
  *   view group · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · active · pressed; filter typed · count "N of M"
+ * 2026-10-19 component: filter dropdowns (sd:5281) every filter select one pill, accent when narrowed, open list themed where
+ *   base-select exists · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · open · picked (accent) · disabled
  */
 
 html, body { overflow-x: clip; }
@@ -25,20 +27,38 @@ html, body { overflow-x: clip; }
   background-position: right calc(var(--space-xs) + 5px) center, right var(--space-xs) center;
   background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer;
 }
-/* A filter bar's select sits with chips, so it takes their height and pill; a form select keeps the inputs' radius. */
-:where(.filters select, .tgrid select) { min-height: 1.75rem; border-radius: 999px; }
+/* A filter's select sits with chips, so it takes their height and pill; a form select keeps the inputs' radius. Every filter
+ * dropdown (sd:5281): shell.list.pick's single select (.fsel) wherever a page puts it, a page's .filters bar, the column
+ * filter (.tgrid) and the toolbar row. A filter narrowed to a value wears the accent, as a picked .fpick does. */
+:where(.fsel, .filters select, .tgrid select, .toolbar select) { min-height: 1.75rem; border-radius: 999px; font-size: var(--text-xs); }
+:where(.fsel, .filters select, .toolbar select):where(:has(option:checked:not([value=""]))) { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
 :where(select:not(.tile-f):hover:not(:disabled)) { border-color: var(--color-ink-2); }
 :where(select:not(.tile-f):focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 :where(select:not(.tile-f):disabled) { color: var(--color-muted); background-color: var(--color-well); cursor: not-allowed; }
 :where(select[multiple], select[size]:not([size="1"])) { background-image: none; padding-right: var(--space-xs); }
 @media (pointer: coarse) { :where(select:not(.tile-f)) { min-height: var(--row-touch); } }
 @media (forced-colors: active) { :where(select:not(.tile-f)) { appearance: auto; background-image: none; } }
+/* The open list (sd:5281): where the browser has customizable select, a filter's list is the panel's box, not the OS
+ * menu; elsewhere the native popup follows :root's color-scheme. The OS chevron gives way to the shared one. */
+@supports (appearance: base-select) {
+  :where(.fsel, .filters select, .tgrid select, .toolbar select), :where(.fsel, .filters select, .tgrid select, .toolbar select)::picker(select) { appearance: base-select; }
+  :where(.fsel, .filters select, .tgrid select, .toolbar select)::picker-icon { display: none; }
+  :where(.fsel, .filters select, .tgrid select, .toolbar select)::picker(select) {
+    margin-block: var(--space-3xs); padding: var(--space-2xs); border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-md); background: var(--color-panel); color: var(--color-ink); box-shadow: var(--shadow-overlay);
+  }
+  :where(.fsel, .filters select, .tgrid select, .toolbar select) option {
+    min-height: var(--row); padding: 0 var(--space-xs); border-radius: var(--radius-sm); color: var(--color-ink-2); font: 400 var(--text-xs)/1.2 var(--font-data);
+  }
+  :where(.fsel, .filters select, .tgrid select, .toolbar select) option:is(:hover, :focus-visible) { background: var(--color-well); color: var(--color-ink); }
+  :where(.fsel, .filters select, .tgrid select, .toolbar select) option:checked { background: var(--color-accent-bg); color: var(--color-ink); }
+}
 
 /* 2026-10-19 component: filter dropdown (shell.list.pick, sd:5158) · a single filter is the select above (.fsel); a multi
  *   filter is a <details> menu of checkboxes whose summary wears the same pill and chevron, so the two read as one control.
  *   The menu floats under its summary; Esc, a press outside or focus leaving closes it (shell.js). · pre-emit critique: P4 H4 E4 S4 R5 V4
  *   states: default · hover · focus · open · picked (accent) · option off (aria-disabled, reason shown); no loading, error or success */
-.fsel { min-height: 1.75rem; max-width: 14rem; font-size: var(--text-xs); }
+.fsel { max-width: 14rem; }
 .fpick { position: relative; }
 .fpick > summary {
   display: flex; align-items: center; min-height: 1.75rem; max-width: 14rem; padding: 0 calc(var(--space-xs) + 1rem) 0 var(--space-sm);
@@ -657,7 +677,7 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .tgrid .tfind input::placeholder { color: var(--color-muted); }
 .tgrid .tfind:focus-within { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .tgrid .tfind input:focus-visible { outline: none; }
-.tgrid select { max-width: 14rem; font-size: var(--text-xs); }
+.tgrid select { max-width: 14rem; }
 /* A column filter that is on wears the picked pill, as a filter dropdown does (.fpick:has(:checked)). */
 .tgrid:has(.tchips [data-tunfilter^="f:"]) select { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
 /* The count: right-aligned on the table's title line, or at the end of the bar when the table has none (sd:5281). */

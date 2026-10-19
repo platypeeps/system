@@ -889,7 +889,7 @@ class TheSelect(unittest.TestCase):
         # select (Details, Settings, Management, dialogs) keeps the text inputs' radius, and its page sets their height.
         chip = re.search(r"^\.chip \{([^}]*)\}", SHELL_CSS, re.M).group(1)
         select = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M).group(1)
-        bar = re.search(r"^:where\(\.filters select, \.tgrid select\) \{([^}]*)\}", SHELL_CSS, re.M)
+        bar = re.search(r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}", SHELL_CSS, re.M)
         self.assertIsNotNone(bar, "shell.css has no filter-bar select rule")
         for prop in ("min-height", "border-radius"):
             want = re.search(rf"\b{prop}: ([^;]+);", chip).group(1)
@@ -904,14 +904,40 @@ class TheSelect(unittest.TestCase):
         reports = (STATIC / "reports.css").read_text(encoding="utf-8")
         self.assertNotRegex(reports, r"(?m)^\.filters select \{[^}]*min-height")
 
+    FILTERS = ".fsel, .filters select, .tgrid select, .toolbar select"
+
+    def test_every_filter_dropdown_is_one_shared_pill_enumerated_from_the_code(self):
+        """sd:5281: every filter dropdown on every page wears the chip's pill: shell.list.pick's single select (.fsel, on
+        Tasks, Briefs and Documents' facet, which sits outside a .filters bar) and its multi menu (.fpick), the column
+        filter (.tgrid), a page's .filters selects (Reports) and the toolbar row's."""
+        self.assertRegex(SHELL_CSS, r"(?m)" + r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}")
+        self.assertIn('<select id="f-${key}" class="fsel" data-pick="${key}">', SHELL_JS)
+        self.assertIn('put(bar, html`<label class="tfind">', SHELL_JS)
+        summary = re.search(r"^\.fpick > summary \{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        self.assertIn("border-radius: 999px", summary)
+
+    def test_a_filter_narrowed_to_a_value_wears_the_accent_pill(self):
+        # The picked .fpick and an active column filter wear the accent; a single select with a value does too.
+        self.assertIn(":where(.fsel, .filters select, .toolbar select):where(:has(option:checked:not([value=\"\"]))) "
+                      "{ border-color: var(--color-accent); background-color: var(--color-accent-bg); }", SHELL_CSS)
+
+    def test_the_open_list_follows_the_theme_where_the_browser_allows(self):
+        # Customizable select (appearance: base-select) draws the open list as the panel's box; elsewhere the native
+        # popup follows :root's color-scheme. The OS chevron gives way to the shared one.
+        block = re.search(r"@supports \(appearance: base-select\) \{(.*?)\n\}", SHELL_CSS, re.S)
+        self.assertIsNotNone(block, "shell.css does not theme the open list")
+        body = block.group(1)
+        self.assertIn(f":where({self.FILTERS})::picker(select)", body)
+        self.assertIn("::picker-icon { display: none; }", body)
+        for token in ("var(--color-panel)", "var(--color-rule)", "var(--shadow-overlay)", "var(--color-accent-bg)"):
+            self.assertIn(token, body)
+
     def test_no_page_redraws_the_select_box(self):
         # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box or chevron.
         # The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
         redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline)\s*:")
         found = []
         for path in sorted(STATIC.glob("*.css")):
-            if path.name == "research.css":
-                continue
             css = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
             for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
                 if selector.strip().startswith(":where("):
