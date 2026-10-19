@@ -60,7 +60,7 @@
       <button class="help" type="button" aria-label="Help: start next" data-help="<b>Start next</b> shows the next ready tasks first, then starts claude as a builder on each in herdr, as Fix does. At most 6 builders run on this machine, and none start while the five-minute load is above the gate's cap; a count or load that was not read starts nothing."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
     </div>
   </div>
-  <div class="filters toolbar-2" role="group" aria-label="Filters">
+  <div class="filters toolbar-2" id="filterbar" role="group" aria-label="Filters">
     <div class="ffind">
       <label class="label" for="find-in">Text</label>
       <input id="find-in" type="search" autocomplete="off" spellcheck="false" placeholder="title, #id, repo">

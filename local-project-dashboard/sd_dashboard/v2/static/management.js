@@ -274,7 +274,7 @@ function renderRepos() {
       <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
       ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
     </div>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
         <td class="what"><button type="button">${r.name}</button>${r.registered ? '' : html`<span class="unreg">not registered</span>`}</td>
@@ -819,7 +819,7 @@ function renderLane() {
       : html`<p class="empty">No item waits at ready_to_send.</p>`}
     <div class="sec-head"><h2 id="merged-h">Recent merges</h2><p class="tally">latest ${LANE.merges.length} merge assignments</p></div>
     ${shell.list.chips(textChip(), rows.length, LANE.merges.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h" data-tfilter="page"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
       <tbody>${rows.slice().sort((a, b) => (LS.sort === 'id' ? a.id - b.id : String(a.ended || '').localeCompare(String(b.ended || ''))) * LS.dir).map(m => { const st = m.status === 'done' ? 'ok' : m.status === 'blocked' ? 'caution' : 'queued'; return html`<tr data-id="merge:${m.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${st}</span></td>
         <td class="what"><button type="button">#${m.id} ${m.title || 'merge'}</button></td><td class="d mono" data-k="repo">${asgRepo(m)}</td><td class="d mono"><time class="rel" datetime="${m.ended || ''}" data-empty="never"></time></td>
         <td class="d mono">${m.status}</td>${ACT('merge:' + m.id)}</tr>`; })}</tbody></table>`
@@ -847,7 +847,7 @@ function renderClaude() {
   if (!CLAUDE) return unknown('Claude sessions were not read', why('claude'), 'claude agents --json');
   const rows = claudeRows();
   if (!rows.length) return html`<p class="empty">${CLAUDE.sessions.length ? `No Claude session matches “${text.q}”.` : 'No Claude session runs on this Mac.'}</p>`;
-  return html`<table class="ledger" aria-labelledby="claude-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Last action</th><th scope="col">Waits on you</th><th scope="col">Safe to exit</th>${ACTH}</tr></thead>
+  return html`<table class="ledger" aria-labelledby="claude-h" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Last action</th><th scope="col">Waits on you</th><th scope="col">Safe to exit</th>${ACTH}</tr></thead>
     <tbody>${rows.map(r => { const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state]; return html`<tr data-id="cs:${r.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${r.status}</span></td>
       <td class="what"><button type="button">${r.name || r.id.slice(0, 8)}</button></td><td class="d mono" data-k="task">${taskText(r)}</td>
       <td class="d mono"><time class="rel" datetime="${r.last_action}" data-empty="not read"></time></td>
@@ -893,7 +893,7 @@ function renderSessions() {
       ${hist.map(([k, n]) => html`<button class="bar" type="button" data-hist="${k}" aria-pressed="${String(histFilter === k)}"><span>${k}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="10"/><rect class="fill" x="0" y="0" width="${(n / max * 100).toFixed(1)}" height="10"/></svg><span class="n">${n}</span></button>`)}
     </div>
     <table class="sr"><caption>Assignment history</caption><tbody>${hist.map(([k, n]) => html`<tr><th scope="row">${k}</th><td>${n}</td></tr>`)}</tbody></table>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="runner-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Agent</th><th scope="col">Ended</th>${ACTH}</tr></thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="runner-h" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Agent</th><th scope="col">Ended</th>${ACTH}</tr></thead>
       <tbody>${rows.map(a => { const st = ASTATE[a.status] || 'unknown'; return html`<tr data-id="asg:${a.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono" data-k="agent">${a.provider || '—'}</td><td class="d mono"><time class="rel" datetime="${a.ended || ''}" data-empty="never"></time></td>${ACT('asg:' + a.id)}</tr>`; })}</tbody></table>`
       : html`<p class="empty">${histFilter ? `No ${histFilter} assignment among the latest ${latest.length}.` : text.q ? `No assignment matches “${text.q}”.` : 'No assignment has run.'}</p>`}`}
 
@@ -943,7 +943,7 @@ function renderDeploys() {
       : html`<div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
       <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
     ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
       <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${svcWhat(s)}</td><td class="d mono">${s.state}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>${shell.list.pager(rows.length, DS, 'services')}`
       : html`<p class="empty">${SERVICES.length ? html`No service matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No installed service was found.'}</p>`}`}`);
 }
@@ -979,7 +979,7 @@ function renderSchedules() {
     <div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
       <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
     ${shell.list.chips(textChip(), rows.length, CRON.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
+    ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
       <tbody>${shown.map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
         <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
         <td class="d num" data-k="exit">${c.last_signal != null ? `sig ${c.last_signal}` : c.last_exit === null || c.last_exit === undefined ? html`<span class="no">—</span>` : c.last_exit}</td>${ACT('cron:' + c.name)}</tr>`)}</tbody></table>${shell.list.pager(rows.length, SS, 'jobs')}`

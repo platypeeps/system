@@ -559,9 +559,12 @@ class TheTableGrammar(unittest.TestCase):
         self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
         self.assertIn("document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
         self.assertIn("document.getElementById(t.dataset.toolbar)", js)
+        # Health and Management redraw a table on each filter key: the replaced table's bar and count leave the shared row.
+        self.assertIn("document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });", js)
+        self.assertIn("`${bar._name}: filter by column…`", js)
         self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
         self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
-        self.assertIn(".toolbar > .tgrid { display: contents; }", SHELL_CSS)
+        self.assertIn(".toolbar > .tgrid, .filters > .tgrid { display: contents; }", SHELL_CSS)
         self.assertRegex(SHELL_CSS, r"\.toolbar \.tcount, \.toolbar > \.count \{[^}]*margin-left: auto;")
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
@@ -612,6 +615,37 @@ def tree(page):
     return t.tags
 
 
+#: Scripts every page loads that draw no table of a page's own.
+SHELL_SCRIPTS = {"shell", "markup", "sections", "read", "commands", "theme"}
+TABLE = re.compile(r'<table\b([^>]*)>\s*(?:<caption(?:[^>]*\bid="([^"]+)")?[^>]*>([^<$]*))?')
+
+
+def page_tables(page):
+    """Each table the page or a script it loads draws, as (key, attributes); the key is its label, id, class or caption."""
+    text = page.read_text(encoding="utf-8")
+    sources = [text] + [(STATIC / f"{name}.js").read_text(encoding="utf-8")
+                        for name in re.findall(r'<script src="/ui/([\w-]+)\.js"', text)
+                        if name not in SHELL_SCRIPTS and (STATIC / f"{name}.js").exists()]
+    for source in sources:
+        for found in TABLE.finditer(source):
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', found[1]))
+            if "sr" in attrs.get("class", "").split():
+                continue
+            yield (attrs.get("aria-labelledby") or attrs.get("id") or attrs.get("aria-label")
+                   or (attrs.get("class", "").split() or [None])[-1] or found[2] or (found[3] or "").strip()), attrs
+
+
+def page_finds(page):
+    """The ids of the rows (row 1 or a filter row) that hold the page's own text filter."""
+    rows = set()
+    for (tag, _c, _i, a), up in tree(page):
+        if tag == "input" and a.get("type", "text") in ("text", "search") and a.get("role") != "combobox":
+            row = next((i for _t, c, i, _x in reversed(up) if c & {"toolbar", "filters"}), None)
+            if row:
+                rows.add(row)
+    return rows
+
+
 class TheToolbarStandard(unittest.TestCase):
     """sd:5281: every page puts its controls on at most two rows from the shared standard, not in its head."""
 
@@ -646,17 +680,36 @@ class TheToolbarStandard(unittest.TestCase):
         for name in ("health.js", "management.js"):
             self.assertNotIn('<div class="filters"', (STATIC / name).read_text(encoding="utf-8"))
 
-    def test_a_page_filtered_table_puts_its_column_filter_in_row_one(self):
-        # Briefs, Documents and the other page-filtered ledgers: the page's text filter and the grammar's column filter
-        # share row 1; the count stays on the table's title line.
+    # The tables a page's toolbar text filter does not reach: each keeps the shell's own filter box (one text filter each).
+    UNREACHED = {
+        "activity.html": {"Events per hour by kind"},  # the chart's fallback table
+        "briefs.html": {"Briefs per source and day"},  # the cadence fallback table
+        "health.html": {"Snoozed rows", "pmx-cap"},  # snoozed rows; the protection matrix's table
+        "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h"},  # lane, processes, worktrees, satellites
+        "reports.html": {"cad"},  # the cadence table
+        "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
+        "today.html": {"active-h", "work-h", "problems-h", "briefs-h", "mail-h", "issues-h", "intake-h", "decisions-h",
+                       "Snoozed rows", "st-${key}-h"},  # Now's filter reaches the Now ledger alone
+    }
+
+    def test_no_table_gets_two_text_filters(self):
+        # The sd:5281 ruling: where a page's toolbar text filter covers a table, the table is data-tfilter="page" and the
+        # shell draws no box of its own; its column filter joins the row that holds the page's filter (data-toolbar).
+        # Briefs, Documents and the other page-filtered ledgers share row 1; the count stays on the table's title line.
         for page in self.PAGES:
-            tags = tree(page)
-            if not any(i == "toolbar" for (_t, _c, i, _a), _u in tags):
-                continue
-            for (tag, _c, _i, a), _u in tags:
-                if tag == "table" and a.get("data-tfilter") == "page":
-                    with self.subTest(page=page.name):
-                        self.assertEqual(a.get("data-toolbar"), "toolbar")
+            finds = page_finds(page)
+            seen = set()
+            for key, attrs in page_tables(page):
+                seen.add(key)
+                with self.subTest(page=page.name, table=key):
+                    if attrs.get("data-tfilter") == "page":
+                        self.assertTrue(finds, "a page-filtered table on a page with no text filter has none")
+                        self.assertIn(attrs.get("data-toolbar"), finds, "its column filter is not in the page filter's row")
+                    elif finds:
+                        self.assertIn(key, self.UNREACHED.get(page.name, set()),
+                                      "the page's text filter reaches it too: mark it data-tfilter=\"page\", or list it here")
+            with self.subTest(page=page.name, stale=True):
+                self.assertLessEqual(self.UNREACHED.get(page.name, set()), seen)
 
     def test_the_shell_draws_the_view_switch_at_the_start_of_row_one(self):
         self.assertIn("viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);",

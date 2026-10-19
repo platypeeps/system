@@ -118,7 +118,7 @@
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
       ${a.stale ? html`<p class="unread"><b>Not re-read:</b> ${a.stale}</p>` : ''}
       ${a.read && !a.error ? pre(a) : ''}
-      ${rows.length ? html`<table class="ledger" aria-labelledby="h-${a.id}">
+      ${rows.length ? html`<table class="ledger" aria-labelledby="h-${a.id}" data-tfilter="page" data-toolbar="toolbar">
         <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Fix</th></tr></thead>
         <tbody>${rows.map((r, i) => html`<tr data-id="${r.id}" aria-selected="${r.id === selected ? 'true' : 'false'}"${i > 0 && rows[i - 1].state !== r.state ? html` class="band-start"` : ''}>
           <td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>

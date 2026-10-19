@@ -703,8 +703,8 @@ th[aria-sort] > .sorter .i { opacity: 1; }
  * title line; only a table with no title puts its count at the right of row 1 (.count). */
 .toolbar, .toolbar-2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); margin: 0 0 var(--space-sm); min-width: 0; }
 .toolbar-2 { margin-top: calc(-1 * var(--space-2xs)); font-size: var(--text-xs); color: var(--color-muted); }
-.toolbar > .tgrid { display: contents; }
-.toolbar > .tgrid[hidden] { display: none; }
+.toolbar > .tgrid, .filters > .tgrid { display: contents; }
+.toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
 .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
 .toolbar .tcount, .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }

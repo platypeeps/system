@@ -1281,7 +1281,9 @@
     });
     // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
     // filter is on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
-    // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. The count sits right-aligned on the
+    // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. A table the page's text filter covers
+    // (data-tfilter="page") names the row that holds that filter, so the column filter sits beside it and no table gets two
+    // text filters (the sd:5281 ruling; test_v2_shell_shared walks every page). The count sits right-aligned on the
     // table's title line (the .sec-head or .panel-head of the heading its or its section's aria-labelledby names); a title
     // line with the page's own .tally shows it, before the tally, only while a filter hides rows. A table with no title line
     // keeps the count at the bar's end.
@@ -1292,8 +1294,9 @@
     const away = !!t.dataset.toolbar && !!t.closest('[hidden]');
     if (away || (!facetOn && !foldsOn)) { if (bar?.isConnected) bar.hidden = true; return; }
     if (!bar || !bar.isConnected) {
-      bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key;
-      bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${t.getAttribute('aria-labelledby') ? ': ' + tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : ''}`);
+      bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key; bar._t = t;
+      bar._name = t.getAttribute('aria-labelledby') ? tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : '';
+      bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${bar._name ? ': ' + bar._name : ''}`);
       put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><span class="tcount" aria-live="polite"></span><div class="tchips"></div>`);
       const row = t.dataset.toolbar && document.getElementById(t.dataset.toolbar);
       row ? row.append(bar) : twrap(t).before(bar);
@@ -1310,13 +1313,20 @@
     const said = quiet ? '' : tcount(shown, total);
     if (count.textContent !== said) count.textContent = said;
     if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
-    const opts = html`<option value="">Filter by column…</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
+    // A shared row that serves two shown tables or more (Health's areas) names each one's table in its column filter.
+    const many = !!t.dataset.toolbar && [...document.querySelectorAll(`main table[data-toolbar="${CSS.escape(t.dataset.toolbar)}"]`)].filter(x => !x.closest('[hidden]')).length > 1;
+    const opts = html`<option value="">${many && bar._name ? `${bar._name}: filter by column…` : 'Filter by column…'}</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
     if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }
     const chipsHtml = facetOn ? list.chips(tchips(use), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
     if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
   }
   let tq = 0;
-  const tscan = () => { tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } }); tobs.takeRecords(); };
+  // A bar whose table a redraw replaced goes, with its count: in a shared row (data-toolbar) nothing else removes it.
+  const tscan = () => {
+    tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } });
+    document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });
+    tobs.takeRecords();
+  };
   const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
   tobs.observe(body, { childList: true, subtree: true, characterData: false });
   document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });
