@@ -9,8 +9,8 @@ page (`v2/reports.html`, at `/reports`); the page holds no rows:
   followups; the scheduled jobs `operations.inventory` gives Management; each
   job's run cadence over the last seven local days, read from its
   `cron-jobs.sh` log, with its own last scheduled run before today and
-  whether the log holds it, whatever the job's cadence (`cadence`); and the job families the config folder's
-  `report-families.conf` names. Each source is guarded on its own: a failed
+  whether the log holds it, whatever the job's cadence (`cadence`); and the job families the
+  `dashboard.report_families` setting row names (sd:5109). Each source is guarded on its own: a failed
   one is `null` with its reason in `sources`, never an empty list.
 """
 
@@ -202,8 +202,9 @@ def report_controls(connection, row, revision):
 
 # ---------- The default UI's Reports page (sd:2121) ----------
 
-#: The family list: in this machine's config directory, never supplied by a request. Job names are the operator's, and
-#: this repository is public, so the checkout ships `report-families.conf.example` only.
+#: The family list's setting row (sd:5109): job names are the operator's, and this repository is public. The file it
+#: replaced is read only while the database has never held the row (`setting_rows.text`).
+FAMILIES_KEY = "dashboard.report_families"
 FAMILIES_CONFIG = _config_dir() / "report-families.conf"
 #: How much of a report's body the page shows: the end, where a failing run says why.
 BODY_CHARS = 1400
@@ -260,15 +261,15 @@ def parse_families(text: str) -> tuple[list[dict], list[str]]:
     return families, problems
 
 
-def families(config: Path | None = None) -> dict:
-    config = FAMILIES_CONFIG if config is None else config
-    source = f"<config>/project-dashboard/{config.name}"
-    try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
+def families(connection, config: Path | None = None) -> dict:
+    """The families, row first; `state` error when the row was not read, so they are unknown."""
+    from . import setting_rows
+
+    text, source, problem = setting_rows.text(connection, FAMILIES_KEY, FAMILIES_CONFIG if config is None else config)
+    if problem:
+        return {"state": "error", "source": source, "problems": [problem], "list": []}
+    if text is None:
         return {"state": "missing", "source": source, "problems": [], "list": []}
-    except (OSError, UnicodeDecodeError) as error:
-        return {"state": "error", "source": source, "problems": [f"not read: {error.__class__.__name__}"], "list": []}
     found, problems = parse_families(text)
     return {"state": "partial" if problems else "read", "source": source, "problems": problems, "list": found}
 
@@ -432,7 +433,7 @@ def document(connection, *, now: str, jobs=None, tz=None, config: Path | None = 
     """
     backend = jobs or operations.LaunchdBackend()
     days = local_days(now, tz=tz)
-    out: dict = {"read": now, "limit": 200, "days": days, "sources": {}, "families": families(config)}
+    out: dict = {"read": now, "limit": 200, "days": days, "sources": {}, "families": families(connection, config)}
     root = getattr(backend, "cron_root", None)
     logs = None if root is None else Path(root) / "logs"
     for source, collect in (("reports", lambda: _reports(connection)),

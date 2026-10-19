@@ -12,16 +12,16 @@ from readers that already exist, with no store of its own. HOA's Tasks is the ex
   pages' Tasks rows.
 - A brief is the area's when its repo is the area's checkout, or its series, lower-cased with spaces as hyphens, is a
   job of the area's report family (`series_job`): briefs always name a registered repo, so Home has only the second.
-- A report is the area's when its job is in the area's report family. The family is the `report-families.conf` line
+- A report is the area's when its job is in the area's report family. The family is the `dashboard.report_families` line
   whose key is the area's (`reports_screen.families`).
 
-**Which realm a row is in (sd:5064).** Tasks' Personal, Work and other realm views: `realms.conf` names each realm and the
-checkout path globs that are its (`realms`); `realm_of` gives a row the first realm whose glob matches its repo path. A
-row with no repo, or a repo no line claims, is Personal; a report is in no realm. Without a readable file a repo row's
+**Which realm a row is in (sd:5064).** Tasks' Personal, Work and other realm views: the `dashboard.realms` setting row
+(sd:5109; Settings edits it) names each realm and the checkout path globs that are its (`realms`); `realm_of` gives a row the first realm whose glob matches its repo path. A
+row with no repo, or a repo no line claims, is Personal; a report is in no realm. Without a readable row a repo row's
 realm is unknown (None), so Personal holds only the rows with no repo and the page says why.
 
-**What is not read.** A missing hoa checkout, family or file makes the view `unknown` with the reason and the line to
-add, never an empty list. Nothing here writes.
+**What is not read.** A missing hoa checkout, family or list makes the view `unknown` with the reason and the line to
+add, never an empty list; a family list that did not read makes it `error`. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -35,33 +35,40 @@ from sd_db import reads
 
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["AREAS", "area_of", "briefs", "realm_of", "realms", "reports", "series_job", "tasks"]
+__all__ = ["AREAS", "area_of", "briefs", "parse_realms", "realm_of", "realms", "reports", "series_job", "tasks"]
 
 #: The places, by family key, and their labels.
 AREAS = {"hoa": "HOA", "home": "Home"}
 
-#: The ids a realms.conf line may not take: Personal is every row no line claims, and the others are Tasks' place views.
+#: The ids a realm line may not take: Personal is every row no line claims, and the others are Tasks' place views.
 RESERVED = ("personal", "hoa", "home", "all")
 REALM_ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
-#: In this machine's config folder, never supplied by a request; the checkout ships `realms.conf.example`.
+#: The realms' setting row (sd:5109), and the file it replaced, read only while the database has never held the row.
+REALMS_KEY = "dashboard.realms"
 REALMS_CONFIG = _config_dir() / "realms.conf"
 
 
-def realms(config: Path | None = None) -> dict:
-    """`realms.conf`'s `realm|<id>|<label>|<glob>` lines, in file order; lines with one id add globs to it.
+def realms(connection, config: Path | None = None) -> dict:
+    """The `dashboard.realms` row's `realm|<id>|<label>|<glob>` lines, in order; lines with one id add globs to it.
 
-    `state` is read, partial (a line was skipped; `problems` names it), missing or error. A glob's `~` is the home folder.
+    `state` is read, partial (a line was skipped; `problems` names it), missing or error (the row was not read, so the
+    realms are unknown). Row wins (`setting_rows.text`). A glob's `~` is the home folder.
     """
-    config = REALMS_CONFIG if config is None else config
-    source = f"<config>/project-dashboard/{config.name}"
-    try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    from . import setting_rows
+
+    text, source, problem = setting_rows.text(connection, REALMS_KEY, REALMS_CONFIG if config is None else config)
+    if problem:
+        return {"state": "error", "source": source, "problems": [problem], "list": []}
+    if text is None:
         return {"state": "missing", "source": source, "problems": [], "list": []}
-    except (OSError, UnicodeDecodeError) as error:
-        return {"state": "error", "source": source, "problems": [f"not read: {error.__class__.__name__}"], "list": []}
+    found, problems = parse_realms(text)
+    return {"state": "partial" if problems else "read", "source": source, "problems": problems, "list": found}
+
+
+def parse_realms(text: str) -> tuple[list[dict], list[str]]:
+    """The realms in line order, and one problem per line that was not read."""
     found: dict[str, dict] = {}
     problems = []
     for number, line, fields in pipe_lines(text):
@@ -72,14 +79,14 @@ def realms(config: Path | None = None) -> dict:
         else:
             realm = found.setdefault(fields[1], {"id": fields[1], "label": fields[2], "globs": []})
             realm["globs"].append(os.path.expanduser(fields[3]))
-    return {"state": "partial" if problems else "read", "source": source, "problems": problems, "list": list(found.values())}
+    return list(found.values()), problems
 
 
 def realm_of(repo: str | None, kind: str, rules: list | None) -> str | None:
     """The realm of an item: the first `rules` realm a glob of which matches its repo path, else `personal`.
 
-    No repo is Personal. A report is in no realm: its family's Reports view lists it. `rules` None (realms.conf missing or
-    unreadable) leaves a repo row's realm unknown, None.
+    No repo is Personal. A report is in no realm: its family's Reports view lists it. `rules` None (no realm list, or one
+    not read) leaves a repo row's realm unknown, None.
     """
     if kind == "report":
         return None
@@ -118,20 +125,20 @@ def _hoa(connection) -> tuple[str | None, str]:
     return recorded, "" if recorded else "no repo named hoa is registered"
 
 
-def _family(area: str, config: Path | None) -> tuple[list[str] | None, str]:
-    """The jobs of the area's report family, and why there are none."""
-    from .reports_screen import families
+def _family(connection, area: str, config: Path | None) -> tuple[list[str] | None, str, bool]:
+    """The jobs of the area's report family, why there are none, and whether the family list did not read (unknown)."""
+    from .reports_screen import FAMILIES_KEY, families
 
-    found = families(config)
-    line = f"add family|{area}|{AREAS[area]}|<icon>|<job>,<job>,... to {found['source']}"
+    found = families(connection, config)
+    line = f"add family|{area}|{AREAS[area]}|<icon>|<job>,<job>,... to {FAMILIES_KEY} on Settings"
     if found["state"] == "missing":
-        return None, f"not configured: {found['source']} is missing; {line}"
+        return None, f"not configured: no report families are set; {line}", False
     if found["state"] == "error":
-        return None, f"not configured: {found['source']} was {found['problems'][0]}"
+        return None, f"report families {found['problems'][0]}", True
     family = next((f for f in found["list"] if f["key"] == area), None)
     if family is None:
-        return None, f"not configured: {found['source']} names no family {area}; {line}"
-    return family["jobs"], ""
+        return None, f"not configured: {found['source']} names no family {area}; {line}", False
+    return family["jobs"], "", False
 
 
 def _unknown(now: str, area: str, reason: str, **more) -> dict:
@@ -162,7 +169,10 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
     """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`)."""
     from . import briefs_screen
 
-    jobs, unconfigured = _family(area, config)
+    jobs, unconfigured, unread = _family(connection, area, config)
+    if unread:
+        # The checkout's briefs could still be listed, but which series are the area's is unknown, not "none".
+        return {**_unknown(now, area, unconfigured), "state": "error"}
     repo = _hoa(connection)[0] if area == "hoa" else None
     if jobs is None and repo is None:
         return _unknown(now, area, unconfigured)
@@ -184,9 +194,9 @@ def reports(connection, area: str, *, now: str, config: Path | None = None) -> d
     """The reports of the area's family jobs, from the newest `reporting.reports` the Reports page reads."""
     from .reports_screen import FAILURES, _reports
 
-    jobs, unconfigured = _family(area, config)
+    jobs, unconfigured, unread = _family(connection, area, config)
     if jobs is None:
-        return _unknown(now, area, unconfigured, jobs=[])
+        return {**_unknown(now, area, unconfigured, jobs=[]), **({"state": "error"} if unread else {})}
     try:
         found = _reports(connection)
     except FAILURES as failure:

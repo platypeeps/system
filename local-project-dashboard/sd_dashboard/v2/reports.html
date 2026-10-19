@@ -3,7 +3,7 @@
   Reports (sd:2121), at /reports. Built from the design source's products/system/designs/v2/reports.html, reports.js and
   reports.css at 7f50ad4, with design.md and commands.md.
   Data: /api/reports (reports_screen.document: the newest 200 database reports, the launchd jobs, each job's run cadence from
-  its cron-jobs.sh log over seven local days, and the job families <config>/project-dashboard/report-families.conf names),
+  its cron-jobs.sh log over seven local days, and the job families the dashboard.report_families setting row names),
   read through shell.read (read.js, sd:2487) when the page opens and after a write. Writes: report acknowledge and job
   retry, each through the route v1 posts, and Acknowledge's Undo through /api/reports/<n>/reopen (sd:2395). Nothing here
   is sample data.

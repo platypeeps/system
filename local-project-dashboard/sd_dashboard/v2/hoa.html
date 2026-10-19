@@ -72,7 +72,7 @@
         <button class="chip" type="button" data-range="1" aria-disabled="true" aria-pressed="false" title="Mission exports daily rows; 24h needs the hourly export">24h</button>
         <button class="chip" type="button" data-range="7" aria-pressed="true">7d</button>
         <button class="chip" type="button" data-range="30" aria-pressed="false">30d</button>
-        <button class="help" type="button" aria-label="Help: time range" data-help="<b>Daily data.</b> The Mission CSVs hold one row per day, so 24h would be a single point. Min and max are the window's lowest daily low and highest daily high; the median is of the daily values. The dashed line is the problem level in hoa-thresholds.conf; a day beyond it is marked as a warning."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
+        <button class="help" type="button" aria-label="Help: time range" data-help="<b>Daily data.</b> The Mission CSVs hold one row per day, so 24h would be a single point. Min and max are the window's lowest daily low and highest daily high; the median is of the daily values. The dashed line is the problem level the dashboard.hoa_thresholds setting holds (Settings); a day beyond it is marked as a warning."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button>
       </div>
     </div>
     <div class="trends" id="trend-list"></div>
@@ -103,7 +103,7 @@
     <div id="briefs-rows"></div>
   </section>
   <section class="place-view" id="view-reports" data-place-view="reports" data-label="Reports" data-api="/api/hoa/reports" aria-labelledby="reports-h" hidden>
-    <div class="sec-head"><div><h2 id="reports-h">Reports</h2><p>Reports of the jobs in the hoa report family (<code>report-families.conf</code>), from the newest 200.</p></div><p class="tally" id="reports-tally"></p></div>
+    <div class="sec-head"><div><h2 id="reports-h">Reports</h2><p>Reports of the jobs in the hoa report family (<code>dashboard.report_families</code> on Settings), from the newest 200.</p></div><p class="tally" id="reports-tally"></p></div>
     <div id="reports-rows"></div>
   </section>
 </main>

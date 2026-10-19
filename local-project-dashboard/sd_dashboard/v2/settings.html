@@ -3,7 +3,8 @@
   Settings (sd:3438), at /settings. No design source page: built on the v2 shell and ui-design foundation/.
   Data: /api/settings (settings_screen.document, sd:3989) for the Fleet section, the sd.* keys one value serves on every
   machine, from sd config list sd --json; a change posts /api/settings/fleet, which runs sd config set. Sweeps (sd:5109) holds
-  the sweep.<realm>.* settings the Tasks Run sweep reads, database rows; a change posts /api/settings/sweep. The rest live in this
+  the sweep.<realm>.* settings the Tasks Run sweep reads, and Dashboard (sd:5109) the dashboard lists and the adversarial
+  review's model and effort, database rows; a value posts /api/settings/row, a list /api/settings/list. The rest live in this
   browser's storage: the theme as "theme" (theme.js, which wires every data-theme-choice button) and the sections width as
   sd.rail.width (shell.railWidth, sd:3445). The theme moved here from the rail's foot.
 -->
@@ -26,7 +27,7 @@
   <div class="head">
     <div>
       <h1>Settings</h1>
-      <p>Fleet settings serve every machine. The rest stay in this browser.</p>
+      <p>Fleet, Sweeps and Dashboard settings serve every machine. The rest stay in this browser.</p>
     </div>
   </div>
   <div id="state" hidden></div>
@@ -39,6 +40,11 @@
     <h2 class="label" id="sweeps-h">Sweeps</h2>
     <p class="note" id="sweeps-note">Reading the workflow database…</p>
     <ul class="settings" id="sweeps"></ul>
+  </section>
+  <section class="group" aria-labelledby="dashboard-h">
+    <h2 class="label" id="dashboard-h">Dashboard</h2>
+    <p class="note" id="dashboard-note">Reading the workflow database…</p>
+    <ul class="settings" id="dashboard"></ul>
   </section>
   <section class="group" aria-labelledby="browser-h">
   <h2 class="label" id="browser-h">This browser</h2>
@@ -70,7 +76,7 @@
   </ul>
   </section>
 </main>
-<div class="details" id="details"><p class="note">Fleet settings are rows in the workflow database, set through sd config set. Theme and width stay in this browser's storage.</p></div>
+<div class="details" id="details"><p class="note">Fleet settings are rows in the workflow database, set through sd config set; Sweeps and Dashboard are rows set here. Theme and width stay in this browser's storage.</p></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/settings.js"></script>
