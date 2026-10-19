@@ -69,7 +69,7 @@ Views (`places.js`, `places.py`): Overview is the page above; Tasks, Briefs and
 Reports each read their own document, `GET /api/home/tasks`, `/briefs` and
 `/reports`, only when shown, and the address keeps the view as `#view=<id>`.
 Tasks are the open items with no repo: personal and home items have none; Tasks' Home view holds the same rows. A report is in no Tasks view. A brief is home's when its series, lower-cased with spaces as hyphens,
-names a job of the `home` family in `report-families.conf`; a report
+names a job of the `home` family in `dashboard.report_families`; a report
 is home's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
 The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws

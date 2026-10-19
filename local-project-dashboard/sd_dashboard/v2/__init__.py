@@ -91,7 +91,7 @@ ASSETS = _enumerate()
 
 def sections(badges: dict | None = None, realms: list | None = None) -> bytes:
     """`/ui/sections.js`: the rail's section map, as `SHELL_COUNTS` each page's badge from `Badges.read`, and as
-    `SHELL_REALMS` the realms realms.conf names (sd:5064), each `{id, label}`, which Tasks and Writing draw as views."""
+    `SHELL_REALMS` the realms the dashboard.realms row names (sd:5064), each `{id, label}`, which Tasks and Writing draw as views."""
     lines = ["// The rail's section map, written by sd_dashboard/v2/__init__.py from the page registry in sd_dashboard/v2/pages/ (sd:2418),",
              "// and each page's rail badge, written on this request (sd:3446)."]
     for key, value in (("SHELL_PAGES", SECTIONS), ("SHELL_CLASSIC", CLASSIC), ("SHELL_SCREENS", SCREENS),

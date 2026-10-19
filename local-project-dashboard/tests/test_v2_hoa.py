@@ -530,7 +530,7 @@ R.cli = c.cli(o); R.run = c.run(o); R.href = location.href;""")
 
 
 class TheTrendStatistics(Fixture):
-    """sd:4969: each trend's window min, median and max, and its problem level from hoa-thresholds.conf."""
+    """sd:4969: each trend's window min, median and max, and its problem level (dashboard.hoa_thresholds, sd:5109)."""
 
     run_page = TheScript.run_page
 
@@ -592,23 +592,44 @@ class TheTrendStatistics(Fixture):
         self.assertEqual([p.split(":")[0] for p in got["problems"]], ["line 1", "line 2", "line 3", "line 5", "line 6"])
         self.assertIn("'change-me' is not a number", got["problems"][0])
         self.assertIn("aquifer has a level already", got["problems"][3])
-        self.assertEqual(got["source"], str(self.levels))
+        self.assertEqual(got["source"], "<config>/project-dashboard/hoa-thresholds.conf")
 
     def test_no_levels_file_is_no_level_and_no_error(self):
-        self.assertEqual(self.doc()["thresholds"], {"source": str(self.levels), "levels": {}, "problems": [], "error": ""})
+        self.assertEqual(self.doc()["thresholds"], {"source": "<config>/project-dashboard/hoa-thresholds.conf", "levels": {},
+                                                    "problems": [], "error": ""})
 
     def test_an_unreadable_levels_file_is_unknown_on_every_trend(self):
         self.levels.mkdir()
         doc = self.doc()
-        self.assertIn("hoa-thresholds.conf did not read", doc["thresholds"]["error"])
+        self.assertEqual(doc["thresholds"]["error"], "IsADirectoryError")
         self.assertIn("problem level not read", self.figure(self.trends(doc), "tank"))
 
-    def test_the_committed_example_names_only_series_the_page_draws(self):
-        example = Path(hoa_screen.__file__).resolve().parents[1] / "hoa-thresholds.conf.example"
-        got = hoa_screen.thresholds(example)
-        self.assertEqual(got["levels"], {})
-        self.assertEqual(len(got["problems"]), 1)
-        self.assertIn("'change-me' is not a number", got["problems"][0])
+    def test_a_levels_row_wins_over_the_file_and_a_cleared_one_hides_it(self):
+        """sd:5109: the dashboard.hoa_thresholds row holds the levels; the old file answers only before any row."""
+        self.levels.write_text("tank|below|12\n", encoding="utf-8")
+        writes.set_setting(self.connection, "dashboard.hoa_thresholds", "aquifer|above|250\n")
+        got = self.doc()["thresholds"]
+        self.assertEqual((got["levels"], got["source"]), ({"aquifer": {"dir": "above", "value": 250.0}},
+                                                          "workflow database setting dashboard.hoa_thresholds"))
+        writes.set_setting(self.connection, "dashboard.hoa_thresholds", None)
+        self.assertEqual(self.doc()["thresholds"]["levels"], {})
+
+    def test_a_levels_row_that_does_not_read_is_unknown_on_every_trend(self):
+        self.levels.write_text("tank|below|12\n", encoding="utf-8")
+
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        with mock.patch.object(writes, "read_settings", refuse):
+            doc = self.doc()
+        self.assertEqual(doc["thresholds"]["levels"], {})
+        self.assertIn("database is locked", doc["thresholds"]["error"])
+        self.assertIn("problem level not read", self.figure(self.trends(doc), "tank"))
+
+    def test_the_levels_name_only_series_the_page_draws(self):
+        levels = {}
+        self.assertEqual(hoa_screen.parse_thresholds("tank|below|12\nruntime|above|9\naquifer|below|100\n", levels), [])
+        self.assertEqual(list(levels), ["tank", "runtime", "aquifer"])
         self.assertEqual(re.findall(r"key: '(\w+)'", HOA_JS.split("const SERIES = [")[1].split("];")[0]), list(hoa_screen.SERIES))
 
 

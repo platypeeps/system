@@ -1004,14 +1004,14 @@ class Dashboard(BaseHTTPRequestHandler):
 
         badges, realms = {}, []
         if self._session(context):
-            # The realm labels are the operator's own (realms.conf), so a request without a session gets none.
-            realms = places.realms()["list"]
             try:
                 connection = sd_db.connect(self.database, write=False)
             except (FileNotFoundError, SdDbError, sqlite3.Error):
                 # No live page can be read, so each says unknown; the kept ones still show.
                 connection = None
             try:
+                # The realm labels are the operator's own (dashboard.realms), so a request without a session gets none.
+                realms = places.realms(connection)["list"]
                 badges = self.badges.read(self._read(connection, "", {}), connected=connection is not None)
             finally:
                 if connection is not None:

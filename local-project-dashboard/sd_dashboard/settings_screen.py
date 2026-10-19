@@ -10,9 +10,17 @@ may have committed before it was stopped, so its outcome is unknown: it answers 
 the value again. There is no stale-write check: two concurrent manual writes are outside the threat model, and the
 answer carries the value the set replaced, so the page can say when it differs from the one it showed.
 
-The Sweeps section (sd:5109) holds the Work and Personal sweeps' settings, `realm_sweep.SETTINGS`: setting rows read and
-written on the page's own connection (`sd_db.writes`), as no `sd config` prefix declares them. A set names the value the
-page showed, and a row that changed since refuses with 409.
+The Sweeps section (sd:5109) holds the Work and Personal sweeps' settings, `realm_sweep.SETTINGS`, and the Dashboard
+section the adversarial review's model and effort (`adversarial.SETTINGS`) and the dashboard lists (`setting_rows.LISTS`):
+setting rows read and written on the page's own connection (`sd_db.writes`), as no `sd config` prefix declares them.
+
+- A single value posts `/api/settings/row {key, value, before}`: `before` is the row value the page showed, a row that
+  changed since refuses with 409, and an empty value unsets.
+- A list posts `/api/settings/list {key, text, before}`, as Home's tiles do (sd:3987): `before` is the digest of the
+  source and text the page showed (`setting_rows.digest`). The text must parse with the list's own grammar (400, each
+  problem named). The write reads the source and text again and refuses a digest that differs (409): a clear or an
+  edit of the old file since the read changes it. `set_setting` then checks the row in its own transaction. An empty
+  text writes a cleared row, so the old file is not read again.
 """
 
 from __future__ import annotations
@@ -22,7 +30,7 @@ import re
 import sqlite3
 import subprocess
 
-__all__ = ["FLEET", "document", "request", "request_sweep", "sweeps"]
+__all__ = ["FLEET", "document", "request", "request_list", "request_row", "rows"]
 
 #: An `sd config` run's ceiling: one pack start and one small read or write.
 SD_SECONDS = 5.0
@@ -108,33 +116,77 @@ def _set(key: str, value: str):
     return {"key": key, "value": match[3], "was": None if match[2] == "(unset)" else match[2], "database": bool(match[4])}
 
 
-def sweeps(connection) -> dict:
-    """The Sweeps section: each sweep setting's row, or None with the reason the database did not answer."""
+def _scalars() -> dict:
+    """Every single-value row the page edits, by key: `(description, pattern or None)`."""
+    from .adversarial import PATTERNS, SETTINGS as REVIEW
+    from .realm_sweep import SETTINGS as SWEEP
+
+    return {**{key: (text, None) for key, text in SWEEP.items()}, **{key: (text, PATTERNS[key]) for key, text in REVIEW.items()}}
+
+
+def _list(key: str):
+    """A list's old file (read at call time, so a test can point it elsewhere) and its parser: text to problems."""
+    from . import hoa_screen, places, reports_screen
+
+    return {"dashboard.realms": (places.REALMS_CONFIG, lambda text: places.parse_realms(text)[1]),
+            "dashboard.report_families": (reports_screen.FAMILIES_CONFIG, lambda text: reports_screen.parse_families(text)[1]),
+            "dashboard.hoa_thresholds": (hoa_screen.THRESHOLDS, hoa_screen.parse_thresholds)}[key]
+
+
+def rows(connection) -> dict:
+    """The Sweeps and Dashboard sections: each setting's row, or None with the reason the database did not answer."""
     from sd_db import writes
     from sd_db.errors import SdDbError
 
-    from .realm_sweep import SETTINGS
+    from . import setting_rows
+    from .adversarial import SETTINGS as REVIEW
+    from .realm_sweep import SETTINGS as SWEEP
 
+    def scalar(key, text, held):
+        value = held.get(key)
+        return {"key": key, "value": value, "row": value, "source": "database" if value else "unset", "description": text,
+                "choices": None}
+
+    out = {}
     try:
-        held = writes.read_settings(connection, list(SETTINGS))
+        held = writes.read_settings(connection, list(SWEEP))
     except (SdDbError, sqlite3.Error) as failed:
-        return {"sweeps": None, "sweeps_reason": f"the workflow database did not answer: {failed}"}
-    return {"sweeps": [{"key": key, "value": held.get(key), "source": "database" if held.get(key) else "unset",
-                        "description": text, "choices": None} for key, text in SETTINGS.items()], "sweeps_reason": ""}
+        out.update(sweeps=None, sweeps_reason=f"the workflow database did not answer: {failed}")
+    else:
+        out.update(sweeps=[scalar(key, text, held) for key, text in SWEEP.items()], sweeps_reason="")
+    try:
+        held = writes.read_settings(connection, list(REVIEW))
+        lists = []
+        for key, (_, text) in setting_rows.LISTS.items():
+            try:
+                origin, found = setting_rows.current(connection, key, _list(key)[0])
+            except (OSError, UnicodeDecodeError) as error:
+                origin, found = "unreadable", f"the old file did not read: {error.__class__.__name__}"
+            lists.append({"key": key, "value": found if origin != "unreadable" else None, "lines": True,
+                          "source": {"database": "database" if found is not None else "unset", "file": "file"}.get(origin, "unset"),
+                          "problem": found if origin == "unreadable" else "", "digest": setting_rows.digest(origin, found),
+                          "description": text, "choices": None})
+    except (SdDbError, sqlite3.Error, LookupError) as failed:
+        out.update(dashboard=None, dashboard_reason=f"the workflow database did not answer: {failed}")
+    else:
+        out.update(dashboard=lists + [scalar(key, text, held) for key, text in REVIEW.items()], dashboard_reason="")
+    return out
 
 
-def request_sweep(payload) -> object:
-    """`POST /api/settings/sweep {key, value, before}`: one setting row, `before` the value shown; an empty value unsets."""
-    from .realm_sweep import SETTINGS
-
+def request_row(payload) -> object:
+    """`POST /api/settings/row {key, value, before}`: one setting row, `before` the value shown; an empty value unsets."""
+    known = _scalars()
     key, value, before = payload.get("key"), payload.get("value"), payload.get("before")
-    if (set(payload) != {"key", "value", "before"} or key not in SETTINGS or not isinstance(value, str)
+    if (set(payload) != {"key", "value", "before"} or key not in known or not isinstance(value, str)
             or not (before is None or isinstance(before, str))):
-        raise ValueError(f"Expected {{key, value, before}}, the key one of {', '.join(SETTINGS)}.")
-    return lambda connection: _set_sweep(connection, key, value.strip() or None, before)
+        raise ValueError(f"Expected {{key, value, before}}, the key one of {', '.join(known)}.")
+    value, pattern = value.strip() or None, known[key][1]
+    if value is not None and pattern and not re.fullmatch(pattern, value):
+        raise ValueError(f"{key} does not take {value!r}: {known[key][0]}")
+    return lambda connection: _set_row(connection, key, value, before)
 
 
-def _set_sweep(connection, key: str, value: str | None, before: str | None):
+def _set_row(connection, key: str, value: str | None, before: str | None):
     from sd_db import writes
 
     try:
@@ -142,3 +194,39 @@ def _set_sweep(connection, key: str, value: str | None, before: str | None):
     except writes.SettingStale as stale:
         return 409, {"error": str(stale), "reload": True}
     return {"key": key, "value": value, "was": was}
+
+
+def request_list(payload) -> object:
+    """`POST /api/settings/list {key, text, before}`: one dashboard list's row, or `ValueError` (400)."""
+    from sd_db import writes
+
+    from . import setting_rows
+
+    if (set(payload) != {"key", "text", "before"} or payload["key"] not in setting_rows.LISTS
+            or not isinstance(payload["text"], str) or not isinstance(payload["before"], str)):
+        raise ValueError(f"Expected {{key, text, before}}, the key one of {', '.join(setting_rows.LISTS)}.")
+    key, text = payload["key"], payload["text"].strip()
+    legacy, parse = _list(key)
+    problems = parse(text) if text else []
+    if problems:
+        raise ValueError(f"{key} was not saved: {'; '.join(problems)}.")
+    if len(text) > writes.SETTING_VALUE_LENGTH:
+        raise ValueError(f"{key} was not saved: it is over {writes.SETTING_VALUE_LENGTH} characters.")
+
+    def write(connection):
+        try:
+            origin, shown = setting_rows.current(connection, key, legacy)
+        except LookupError as unread:
+            return 503, {"error": f"{key} not read: {unread}; nothing was saved"}
+        except (OSError, UnicodeDecodeError) as error:
+            # The page showed this file unreadable too; the save replaces it.
+            origin, shown = "unreadable", f"the old file did not read: {error.__class__.__name__}"
+        if setting_rows.digest(origin, shown) != payload["before"]:
+            return 409, {"error": f"{key} changed since this page read it; nothing was saved. Read it again.", "reload": True}
+        try:
+            was = writes.set_setting(connection, key, text or None, before=shown if origin == "database" else None)
+        except writes.SettingStale:
+            return 409, {"error": f"{key} changed since this page read it; nothing was saved. Read it again.", "reload": True}
+        return {"key": key, "value": text or None, "was": was, "digest": setting_rows.digest("database", text or None)}
+
+    return write
