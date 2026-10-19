@@ -16,7 +16,7 @@ const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
-let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, SERVICES = [], CRON = [];
+let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [];
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
@@ -44,7 +44,7 @@ function absorb(doc) {
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
     r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
-  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; SERVICES = doc.services || [];
+  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || [];
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
 // Age of the last fetch at the reading, as v1 words it (repos_screen._age).
@@ -172,7 +172,13 @@ function lamps() {
   const live = LANE ? LANE.live.length : 0;
   if (LANE) set('lane', 'ok', html`<b>${LANE.live.filter(a => a.status === 'queued').length}</b> queued · ${LANE.live.some(a => a.status === 'running') ? 'running' : live ? 'waiting' : 'idle'}`);
   else set('lane', 'unknown', html`▨ not read`);
-  if (SESS?.stale) set('sessions', 'unknown', html`▨ stale since ${hhmm(SESS.observed)} UTC`);
+  // build (sd:5106): a Claude session that waits on the operator lights the lamp first. Sessions not read, or one whose
+  // status was not read, are not "nobody waits": the lamp is unknown unless an abandoned worktree already lights it.
+  const waiting = CLAUDE ? CLAUDE.sessions.filter(r => r.waiting).length : 0;
+  const unheard = CLAUDE ? CLAUDE.sessions.filter(r => r.waiting === null).length : null;
+  if (waiting) set('sessions', 'caution', html`<b>${waiting}</b> ▲ ${waiting === 1 ? 'waits' : 'wait'} on you`);
+  else if (unheard !== 0 && !SESS?.abandoned) set('sessions', 'unknown', unheard === null ? html`▨ Claude sessions not read` : html`<b>${unheard}</b> ▨ not known to wait`);
+  else if (SESS?.stale) set('sessions', 'unknown', html`▨ stale since ${hhmm(SESS.observed)} UTC`);
   else if (SESS) set('sessions', SESS.abandoned ? 'caution' : 'ok', html`<b>${SESS.processes.length}</b> sd-* · ${SESS.abandoned ? `▲ ${SESS.abandoned} abandoned` : 'no abandoned'}`);
   else set('sessions', 'unknown', html`▨ not read`);
   set('deploys', 'unknown', html`▨ no deploy source`);
@@ -571,6 +577,7 @@ function objects() {
   const byRole = a => a.role === 'merge' ? 'merge' : 'asg';
   (LANE?.merges || []).forEach(asg(byRole)); (LANE?.live || []).forEach(asg(() => 'asg')); (ASG?.latest || []).forEach(asg(byRole));
   (LANE?.ready || []).forEach(t => out.push({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
+  (CLAUDE?.sessions || []).forEach(r => out.push({ id: `cs:${r.id}`, type: 'claude session', label: r.name || r.id }));
   if (SESS) out.push({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned },
     { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
     ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
@@ -747,6 +754,41 @@ document.getElementById('view-lane').addEventListener('click', e => {
 
 // ---------- Sessions and agents ----------
 let histFilter = null;
+// build (sd:5106): each Claude session on this Mac (claude_sessions.py), the ones waiting on you first. Safe to exit is the
+// server's: yes only when nothing runs under it and no checkout it answers for holds unpushed work; a fact not read is ▨.
+const CSTATE = r => r.status === 'waiting' ? 'caution' : r.status === 'unknown' ? 'unknown' : r.status === 'busy' ? 'queued' : 'ok';
+const SAFE = { yes: ['ok', 'yes'], no: ['queued', 'no'], unknown: ['unknown', 'unknown'] };
+const taskText = r => r.tasks.length ? `#${r.tasks[0].item}${r.tasks[0].title ? ` ${r.tasks[0].title}` : ''}${r.tasks.length > 1 ? ` +${r.tasks.length - 1}` : ''}` : '—';
+function claudeRows() {
+  const { free } = tokens();
+  return (CLAUDE?.sessions || []).filter(r => free.every(f => [r.name, r.cwd, r.id, ...r.tasks.map(t => `#${t.item} ${t.title}`)].join(' ').toLowerCase().includes(f)));
+}
+function renderClaude() {
+  if (!CLAUDE) return unknown('Claude sessions were not read', why('claude'), 'claude agents --json');
+  const rows = claudeRows();
+  if (!rows.length) return html`<p class="empty">${CLAUDE.sessions.length ? `No Claude session matches “${text.q}”.` : 'No Claude session runs on this Mac.'}</p>`;
+  return html`<table class="ledger" aria-labelledby="claude-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Last action</th><th scope="col">Waits on you</th><th scope="col">Safe to exit</th></tr></thead>
+    <tbody>${rows.map(r => { const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state]; return html`<tr data-id="cs:${r.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${r.status}</span></td>
+      <td class="what"><button type="button">${r.name || r.id.slice(0, 8)}</button></td><td class="d mono" data-k="task">${taskText(r)}</td>
+      <td class="d mono"><time class="rel" datetime="${r.last_action}" data-empty="not read"></time></td>
+      <td class="d">${r.waiting ? html`<span class="g-caution" aria-hidden="true">▲</span> ${r.waiting_for || 'yes'}` : r.waiting === null ? html`<span class="g-unknown" aria-hidden="true">▨</span> not read` : 'no'}</td>
+      <td class="d"><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}${r.safe.why.length ? html` · ${r.safe.why[0]}` : ''}</td></tr>`; })}</tbody></table>`;
+}
+function claudeDetails(r, act) {
+  const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state];
+  const list = (xs, f, none) => xs.length ? html`<ul>${xs.map(x => html`<li>${f(x)}</li>`)}</ul>` : html`<p class="why">${none}</p>`;
+  return html`<p class="kind"><span class="g-${st}" aria-hidden="true">${GLYPH[st]}</span> Claude session · ${r.status}</p><h2>${r.name || r.id}</h2>
+    <dl><dt>Session</dt><dd class="mono">${r.id}</dd><dt>Directory</dt><dd class="mono">${r.cwd || '—'}</dd><dt>PID</dt><dd class="mono">${r.pid ?? '—'}</dd>
+    <dt>Started</dt><dd><time class="rel" datetime="${r.started}" data-long data-empty="not read"></time></dd>
+    <dt>Last action</dt><dd><time class="rel" datetime="${r.last_action}" data-long data-empty="not read"></time></dd>
+    <dt>Waits on you</dt><dd>${r.waiting ? r.waiting_for || 'yes' : r.waiting === null ? 'not read' : 'no'}</dd>
+    <dt>Safe to exit</dt><dd><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}</dd></dl>
+    ${r.safe.why.length ? html`<h3>Why not</h3>${list(r.safe.why, w => w)}` : ''}
+    <h3>Tasks</h3>${list(r.tasks, t => html`<span class="mono">#${t.item}</span> ${t.title || '(not read)'} · via ${t.via}`, 'No item is tied to this session.')}
+    <h3>Agents</h3>${list(r.agents, a => html`${a.name} · ${a.state}${a.items.length ? html` · <span class="mono">${a.items.map(n => `#${n}`).join(' ')}</span>` : ''}`, 'No agent runs or stalled under it.')}
+    <h3>Checkouts</h3>${list(r.checkouts, c => html`<span class="mono">${c.path}</span> · ${c.error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${c.error}` : `${c.branch} · ${plural(c.dirty, 'uncommitted file')} · ${plural(c.unpushed, 'unpushed commit')}`}`, 'No git checkout.')}
+    <p class="why">Read from claude agents --json, the session's transcripts, ps and git. Sessions on other machines are not listed.</p>${act}`;
+}
 const ASTATE = { blocked: 'caution', queued: 'queued', running: 'queued', ending: 'queued', done: 'ok', cancelled: 'ok' };
 function renderSessions() {
   const el = document.getElementById('view-sessions');
@@ -756,7 +798,10 @@ function renderSessions() {
     && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
   const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
-    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Agent processes by name (claude, codex) are not read yet.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${seen(SESS)}</span>` : ''}</p></div>
+    <div class="sec-head"><h2 id="claude-h">Claude sessions <button class="help" type="button" aria-label="Help: Claude sessions" data-help="<b>This Mac's Claude sessions.</b> From claude agents --json, each session's transcripts, ps and git. Safe to exit means idle, no agent or lane watch under it, and no unpushed work in its checkouts. A stalled or unread agent counts as running until it gives a final answer.">${I('circle-help')}</button></h2><p class="tally">${CLAUDE ? html`<span>${plural(CLAUDE.sessions.length, 'session')}</span><span>${CLAUDE.builders.running == null ? html`<span class="g-unknown" aria-hidden="true">▨</span> builders not counted` : plural(CLAUDE.builders.running, 'builder') + ' running'}</span><span>claude agents · ${hhmm(CLAUDE.read)} UTC</span>` : ''}</p></div>
+    ${renderClaude()}
+
+    <div class="sec-head"><h2 id="agents-h">sd-* processes <button class="help" type="button" aria-label="Help: processes" data-help="<b>The fleet's process read.</b> The sd-* commands running on this Mac, as Operations › Sessions lists them. Claude sessions are listed above; codex processes are not read.">${I('circle-help')}</button></h2><p class="tally">${SESS ? html`<span>${SESS.processes.length} running</span><span>fleet · ${seen(SESS)}</span>` : ''}</p></div>
     ${!SESS ? unknown('Sessions were not read', why('sessions'), 'fleet sessions')
       : SESS.processes.length ? html`<table class="ledger" aria-labelledby="agents-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Command</th><th scope="col">Running for</th><th scope="col">PID</th></tr></thead>
       <tbody>${SESS.processes.map((p, i) => html`<tr data-id="proc:${i}"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${p.command}</button></td><td class="d mono" data-k="up">${p.elapsed}</td><td class="d num">${p.pid}</td></tr>`)}</tbody></table>`
@@ -943,6 +988,9 @@ function selectRow(id, open) {
       <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
       ${window.commands.reviewPane('repo', r.path)}`;
+  } else if (kind === 'cs') {
+    const r = (CLAUDE?.sessions || []).find(x => x.id === key); if (!r) return;
+    h = claudeDetails(r, act);
   } else if (kind === 'proc') {
     const p = SESS.processes[+key]; if (!p) return;
     h = html`<p class="kind"><span class="g-ok">●</span> sd-* process</p><h2>${p.command}</h2><dl><dt>PID</dt><dd>${p.pid}</dd><dt>Running for</dt><dd>${p.elapsed}</dd></dl>
@@ -1010,7 +1058,7 @@ function adopt(doc) {
   return { objects: objects(), state: failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null };
 }
 function clear(err) {
-  DOC = null; READ = ''; GIT = LANE = ASG = SESS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
+  DOC = null; READ = ''; GIT = LANE = ASG = SESS = CLAUDE = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
   FAILED = err.message;
 }
 function draw() {
