@@ -44,8 +44,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["CAP", "CLAIM_DIRS", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "parse_registry",
-           "project", "source_key", "sources"]
+__all__ = ["CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document",
+           "grade_legend", "parse_registry", "project", "source_key", "sources"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
 #: stops so its reason arrives before the page's kill does (`fleet.FLEET_MARGIN`).
@@ -66,6 +66,27 @@ CLAIM_DIRS = ("20-map", "30-brief", "40-docs")
 #: Ledger grades: A primary, B secondary, C summary only, U unverified, M measured here. A, B and M support a claim.
 GRADES = frozenset("ABCUM")
 SUPPORTING = frozenset("ABM")
+
+
+def _letters(grades) -> list[str]:
+    return sorted(grades, key="ABCUM".index)
+
+
+def _either(words: list[str]) -> str:
+    return ", ".join(words[:-1]) + f" or {words[-1]}"
+
+
+#: The claim map's types and how each is graded (sd:5297): the one copy the page's legend, filter and hover text read.
+#: `grades` names the ledger grades each type rests on, so the page can add what the ledger says each one means.
+CLAIM_TYPES = {
+    "supported": {"rule": f"cites an {_either(_letters(SUPPORTING))} source", "grades": "".join(_letters(SUPPORTING))},
+    "unverified": {"rule": f"cites only {_either([*_letters(GRADES - SUPPORTING), 'ungraded'])} sources",
+                   "grades": "".join(_letters(GRADES - SUPPORTING))},
+}
+#: A ledger's own grade legend, as each research checkout writes it above its tables: `**A** = primary source, …`, one
+#: grade per line or several on one line. A definition runs to the next one or the end of its line, so a note on the next
+#: line is not read into it; a bold letter inside a table row is a cell, not a definition.
+LEGEND = re.compile(r"(?<!\w)\*\*([ABCUM])\*\*[ \t]*=[ \t]*([^\n]+?)(?=\s*\*\*[ABCUM]\*\*[ \t]*=|[ \t]*$)", re.M)
 #: The claim reader's bounds: documents read, bytes per document (the collectors' bound for a research source), the
 #: longest sentence kept, the claims and skipped documents the document carries, and the seconds it keeps for printing
 #: when the deadline nears.
@@ -188,7 +209,9 @@ def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None
             "reviews_error": reviews_error,
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
             "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
-                       "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
+                       "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", []),
+                       # sd:5297: what each type means and how it is graded, and what the ledger says each grade means.
+                       "types": CLAIM_TYPES, "grades": found.get("grades") if isinstance(found.get("grades"), dict) else {}}
             if isinstance(found.get("claims"), list) else None}
 
 
@@ -338,6 +361,15 @@ def _row(line: str) -> list[str]:
     body = body[1:] if body.startswith("|") else body
     body = body[:-1] if body.endswith("|") else body
     return [cell.strip() for cell in re.split(r"(?<!\\)\|", body)]
+
+
+def grade_legend(text: str) -> dict:
+    """What a ledger says each grade means, by letter, as plain text; the first definition of a letter wins."""
+    found = {}
+    for match in LEGEND.finditer(text):
+        if not text[text.rfind("\n", 0, match.start()) + 1:match.start()].lstrip().startswith("|"):
+            found.setdefault(match.group(1), _cell(" ".join(match.group(2).split())))
+    return found
 
 
 def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
@@ -527,7 +559,7 @@ def claims(repo: Path, rows: list[dict], time_left=None) -> dict:
 
 
 def registry(repo: Path, time_left=None) -> dict:
-    files, rows = [], []
+    files, rows, grades = [], [], {}
     for name in REGISTRIES:
         path = repo / name
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(repo.resolve()):
@@ -537,7 +569,9 @@ def registry(repo: Path, time_left=None) -> dict:
         if stat.st_size > REGISTRY_BYTES:
             files.append({"file": name, "mtime": mtime, "prov": "", "error": "larger than the 2 MB the reader reads"})
             continue
-        head, found = parse_registry(path.read_text(encoding="utf-8", errors="replace"), name)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        head, found = parse_registry(text, name)
+        grades = {**grade_legend(text), **grades}  # an earlier ledger file's definition wins
         files.append({"file": name, "mtime": mtime, "prov": head["prov"], "error": ""})
         rows.extend(found)
     mapped = claims(repo, rows, time_left)
@@ -555,7 +589,7 @@ def registry(repo: Path, time_left=None) -> dict:
     keep = sorted(sorted(range(total), key=lambda i: not rows[i]["cited"])[:ROWS])
     rows = [rows[i] for i in keep]
     shown = mapped["claims"][:CLAIMS]
-    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown,
+    out = {"found": True, "files": files, "rows": rows, "total": total, "claims": shown, "grades": grades,
            "claims_total": len(mapped["claims"]), "tally": mapped["tally"], "graded": mapped["graded"], "docs_read": mapped["read"],
            "unread": mapped["unread"]}
     # Past PRINT_BYTES, drop from the end of whichever list prints more: claims or rows.

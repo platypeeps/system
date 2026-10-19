@@ -245,6 +245,19 @@ reader.addEventListener('click', e => {
 // build: the reference read claims by hand from one project's Status section, with inferred and corrected states; neither is read.
 const claimsEl = document.getElementById('claims');
 const VERDICT = { supported: ['●', 'ok'], unverified: ['▨', 'unknown'] };
+// sd:5297: a claim type's hover text says what it means and how it is graded (the document's types, research_screen.CLAIM_TYPES),
+// then what the ledger itself says each of those grades means (its grades). The page keeps no copy of either.
+// build: title and aria-describedby until the shared tooltip helper (sd:5287) lands; then the legend, filter and marks move to it.
+// A mark is not focusable, so its claim's button carries the description: a keyboard reaches the type there.
+const typeWord = v => v[0].toUpperCase() + v.slice(1);
+const ruleOf = (c, v) => c.types?.[v]?.rule || v;
+const both = gs => (gs.length > 1 ? `${gs.slice(0, -1).join(', ')} and ${gs[gs.length - 1]}` : gs[0]);
+function typeTip(c, v) {
+  const defined = c.grades || {};
+  const said = (c.types?.[v]?.grades || '').split('').filter(g => defined[g]).map(g => `${g} = ${defined[g]}`);
+  return `${typeWord(v)}: ${ruleOf(c, v)}.${Object.keys(defined).length ? said.map(x => ` ${x}`).join('') : ' This ledger does not define its grades.'}`;
+}
+const claimTip = (c, x) => `${typeWord(x.s)}: ${ruleOf(c, x.s)}. This claim cites ${x.grades ? both(x.grades.split('')) : 'only ungraded sources'}.`;
 let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
 async function renderClaims(key) {
@@ -274,12 +287,12 @@ function drawClaims(p, s) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
   }
-  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
-    <p class="vlegend"><span>● supported: cites an A, B or M source</span><span>▨ unverified: cites only C, U or ungraded sources</span>${
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}" title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
+    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
-      <span class="g g-${VERDICT[x.s][1]}" title="${x.s}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
-      <button type="button">${x.text}</button>
+      <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
+      <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
     c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
@@ -358,7 +371,7 @@ function citedBy(r) {
 }
 function showClaim(s, x) {
   put(details, html`<p class="kind"><span class="g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span> Claim · ${x.s}</p><h2>${x.text}</h2>
-    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? `cites an A, B or M source (grades ${x.grades})` : x.grades ? `cites only ${x.grades.split('').join(' and ')} sources` : 'cites only ungraded sources'}</dd></dl>
+    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? `${ruleOf(s.claims, 'supported')} (grades ${x.grades})` : x.grades ? `cites only ${x.grades.split('').join(' and ')} sources` : 'cites only ungraded sources'}</dd></dl>
     <h3>Sources</h3><ul class="claims">${x.keys.map(k => { const r = s.rows.find(y => y.key === k);
       return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
   shell.setContext(x.text.slice(0, 40)); swap();

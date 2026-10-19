@@ -126,6 +126,22 @@ not a citation. S120 is not an ID. The old pin S3-old stands. A sibling path fal
 """
 
 
+#: A ledger's own grade legend, as the research checkouts write it above their tables (sd:5297): one line per grade, or
+#: several on one line, a note on the line after, and a table cell in bold that is not a definition.
+LEGEND = """# Sources
+
+Grades: **A** = primary source, read directly (spec, source code).
+**B** = secondary, read directly ([blog](https://example.test/b)). **C** = search-result summary only, full page not read.
+**U** = unverified: fetch failed; lead only.
+**M** = measured in this repo, reproducible from a named tool.
+Graded 2026-10-18: a note on the next line, not part of M.
+
+| Grade | Source |
+|---|---|
+| **A** = not a definition | [Spec](https://example.test/other) |
+"""
+
+
 def claimed(root: Path, key: str = "research/claims") -> Path:
     repo = checkout(root, key)
     for name, text in (("10-sources/registry.md", GRADED), ("30-brief/BRIEF.md", BRIEF), ("20-map/MAP.md", MAP)):
@@ -236,6 +252,22 @@ class TheReader(unittest.TestCase):
         cited = {r["title"]: (r["key"], r["cited"]) for r in found["rows"]}
         self.assertEqual(cited, {"Spec release": (spec, 2), "Vendor note": (note, 3), "A summary": (summary, 1),
                                  "Rumour": (rumour, 2), "Ungraded": (ungraded, 1), "Unlinked primary": ("", 0)})
+
+    def test_a_ledger_names_its_own_grades_and_the_claim_types_say_how_each_is_graded(self):
+        # sd:5297: the claim map gave no reason for a type; its rule sat only in the legend's copy, and the grades in none.
+        repo = claimed(self.root)
+        (repo / "SOURCES.md").write_text(LEGEND, encoding="utf-8")
+        found = research_screen.registry(repo)
+        self.assertEqual(found["grades"], {
+            "A": "primary source, read directly (spec, source code).", "B": "secondary, read directly (blog).",
+            "C": "search-result summary only, full page not read.", "U": "unverified: fetch failed; lead only.",
+            "M": "measured in this repo, reproducible from a named tool."})
+        claims = research_screen.sources("research/claims", now=NOW, backend=lambda *_: found)["claims"]
+        self.assertEqual(claims["grades"], found["grades"])
+        self.assertEqual(claims["types"], {"supported": {"rule": "cites an A, B or M source", "grades": "ABM"},
+                                           "unverified": {"rule": "cites only C, U or ungraded sources", "grades": "CU"}})
+        # A ledger that defines no grades sends none, and a table cell in bold is never read as a definition.
+        self.assertEqual(research_screen.registry(claimed(self.root, "research/bare"))["grades"], {})
 
     def test_a_claim_cites_a_row_by_its_id_or_a_deeper_link_and_an_ungraded_ledger_leaves_it_unverified(self):
         # sd:5064 follow-up: real ledgers cite S12 or LOG-21 by ID, and link deeper paths than their rows; none matched.
@@ -951,6 +983,41 @@ R.views = OUT.views.slice();""")
             self.assertIn('No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.', out["R"][panel])
         self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
+
+    def test_each_claim_type_and_claim_carries_hover_text_from_the_document_and_the_ledgers_grades(self):
+        # sd:5297: the legend and the claims named a type with no hover text saying what it means or how it is graded.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = claimed(root, "research/beta")
+        (repo / "SOURCES.md").write_text(LEGEND, encoding="utf-8")
+        self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+        # The page reads the rule from the document, so a rule worded there differently shows that wording.
+        self.ledger["claims"]["types"]["supported"]["rule"] = "cites a strong source"
+        out = self.run_page("R.claims = ELS.claims.html;")
+        claims = out["R"]["claims"]
+        supported = ("Supported: cites a strong source. A = primary source, read directly (spec, source code). "
+                     "B = secondary, read directly (blog). M = measured in this repo, reproducible from a named tool.")
+        unverified = ("Unverified: cites only C, U or ungraded sources. C = search-result summary only, full page not read. "
+                      "U = unverified: fetch failed; lead only.")
+        self.assertIn(f'<span class="sr" id="claim-type-supported">{supported}</span>', claims)
+        self.assertIn(f'<span class="sr" id="claim-type-unverified">{unverified}</span>', claims)
+        self.assertIn(f'<span title="{supported}" aria-describedby="claim-type-supported">● supported: cites a strong source</span>', claims)
+        self.assertRegex(claims, r'<button type="button" class="v-unverified" data-verdict="unverified" aria-pressed="false"'
+                                 r' title="Unverified: [^"]+" aria-describedby="claim-type-unverified">')
+        # Each claim's mark says its type and the grades it cites; its button, which a keyboard reaches, points at the
+        # type's full text.
+        self.assertIn('<span class="g g-ok" title="Supported: cites a strong source. This claim cites B and U.">', claims)
+        self.assertIn('<span class="g g-unknown" title="Unverified: cites only C, U or ungraded sources. This claim cites only'
+                      ' ungraded sources.">', claims)
+        self.assertIn('<button type="button" aria-describedby="claim-type-supported">Both readings stand (note, rumour).</button>',
+                      claims)
+
+    def test_a_ledger_without_a_grade_legend_says_so_in_the_hover_text(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.ledger = research_screen.sources("research/beta", now=NOW,
+                                              backend=lambda *_: research_screen.registry(claimed(root, "research/beta")))
+        claims = self.run_page("R.claims = ELS.claims.html;")["R"]["claims"]
+        self.assertIn('<span class="sr" id="claim-type-supported">Supported: cites an A, B or M source. This ledger does not'
+                      ' define its grades.</span>', claims)
 
     def test_an_ungraded_ledger_says_why_every_claim_is_unverified(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
