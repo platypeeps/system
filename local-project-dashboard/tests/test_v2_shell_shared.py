@@ -258,6 +258,45 @@ class TheDefaultCapture(unittest.TestCase):
                         "Review's capture drops the priority and repo the operator picked")
 
 
+class TheChat(unittest.TestCase):
+    """sd:5294: the pane posts the question with the page's row and shows the answer, or a failure that says no answer."""
+
+    def run_chat(self, body):
+        block = re.search(r"^  // chat:start\n(.*?)^  // chat:end$", SHELL_JS, re.S | re.M)
+        self.assertIsNotNone(block, "shell.js has no chat:start block, so the pane posts nothing")
+        return run_js(block.group(1) + body)
+
+    def test_the_question_goes_with_the_row_and_the_answer_comes_back(self):
+        out = self.run_chat("""ANSWER = () => [200, { answer: 'Line one\\nLine two', where: '/r' }];
+  const row = chatRow({ id: 't12', type: 'item', label: '#12 Plan', item: 12, title: 'not sent' });
+  R.answer = await askChat({ scope: 'tasks', page: 'Tasks', selected: row, text: 'What is left?' });
+  R.posts = OUT.posts;
+  R.rows = [chatRow(null), chatRow({ id: 4, type: 'brief', label: 'x' }), chatRow({ id: 'a', item: 'n/a' })];""")
+        self.assertEqual(out["answer"], {"text": "Line one\nLine two", "failed": False})
+        self.assertEqual(out["posts"], [["/api/chat", {"scope": "tasks", "page": "Tasks", "text": "What is left?",
+                                         "selected": {"id": "t12", "type": "item", "label": "#12 Plan", "item": 12}}, 64]])
+        self.assertEqual(out["rows"], [None, {"id": "4", "type": "brief", "label": "x", "item": None},
+                                       {"id": "a", "type": "", "label": "", "item": None}])
+
+    def test_a_refusal_shows_the_servers_words_and_no_reply_says_so(self):
+        out = self.run_chat("""ANSWER = () => [409, { error: 'A chat answer is still running; ask again when it is shown.' }];
+  R.busy = await askChat({ text: 'x' });
+  ANSWER = () => [504, { error: 'No answer: claude -p gave no answer in 120 s.' }];
+  R.slow = await askChat({ text: 'x' });
+  ANSWER = () => { throw new TypeError('Load failed'); };
+  R.lost = await askChat({ text: 'x' });
+  ANSWER = () => [200, {}];
+  R.empty = await askChat({ text: 'x' });""")
+        self.assertEqual(out["busy"], {"text": "A chat answer is still running; ask again when it is shown.", "failed": True})
+        self.assertEqual(out["slow"], {"text": "No answer: claude -p gave no answer in 120 s.", "failed": True})
+        self.assertEqual(out["lost"], {"text": "No answer: the dashboard did not reply (Load failed).", "failed": True})
+        self.assertEqual(out["empty"], {"text": "No answer: the server sent none.", "failed": True})
+
+    def test_the_mockup_line_is_gone_from_the_built_dashboard(self):
+        self.assertNotIn("No chat backend is connected", SHELL_JS)
+        self.assertIn(".msg p.answer, .msg p.failed { white-space: pre-wrap;", SHELL_CSS)
+
+
 class TheActBar(unittest.TestCase):
     """sd:3464, sd:3444: the Details Act area holds the buttons; the CLI lines and the off and copy-only notes fold away."""
 

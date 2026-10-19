@@ -342,6 +342,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
         return adversarial.request(values)
+    if path == "/api/chat":
+        from . import chat
+
+        # sd:5294: the right pane's question, answered by one bounded, read-only claude -p; it writes nothing.
+        return chat.request(values)
     if path == "/api/research/intake":
         from . import source_intake
 

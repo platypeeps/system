@@ -282,7 +282,7 @@
           <span class="scope" title="Chat scope">${ICON('bot')}<span id="scope-name">${scope}</span></span>
           <span class="ctx" id="scope-ctx"></span>
           <button class="icon-btn" type="button" id="pin-scope" aria-pressed="false" aria-label="Pin this scope">${ICON('pin')}</button>
-          <button class="help" type="button" aria-label="Help: chat scope" data-help="<b>Scope follows the view.</b> The chat answers inside the scoped repo or area, with the selected row as context. Pin keeps this scope while you move. Every write becomes a proposal you approve.">${ICON('circle-help')}</button>
+          <button class="help" type="button" aria-label="Help: chat scope" data-help="<b>Scope follows the view.</b> The chat answers inside the scoped repo or area, with the selected row as context: the selected item's repo, else the scope's checkout. Pin keeps this scope while you move. It reads files and changes nothing.">${ICON('circle-help')}</button>
         </div>
         <div class="thread" id="thread"></div>
         <form class="composer" id="composer">
@@ -291,7 +291,7 @@
             <textarea id="chat-input" rows="1" placeholder="Ask about this view"></textarea>
             <button class="icon-btn" type="submit" aria-label="Send">${ICON('send')}</button>
           </div>
-          <div class="meta"><span>Reads freely · writes need your approval</span><span>claude -p · runner</span></div>
+          <div class="meta"><span>Reads files only · changes nothing</span><span>claude -p · 2 min</span></div>
         </form>
       </div>
     </div>`);
@@ -397,26 +397,50 @@
       <div class="suggest">${list.map(s => html`<button type="button">${ICON('message-square')}<span>${s}</span></button>`)}</div>`);
     thread.querySelectorAll('.suggest button').forEach(b => b.addEventListener('click', () => { send(b.textContent.trim()); }));
   }
+  // build (sd:5294): POST /api/chat runs one read-only claude -p (Read, Grep, Glob) and waits for its answer, up to 2
+  // minutes. The question, the page and the selected row go with it; the row is taken when it is sent, so an answer that
+  // comes back after j / k stays with the row it is about. One question at a time: Send is off while one runs.
+  // chat:start
+  // The row as the server takes it, and the post: it resolves to the text to show and whether it is a failure, never rejects.
+  const chatRow = o => o ? { id: String(o.id), type: String(o.type || ''), label: String(o.label || ''), item: +o.item > 0 ? +o.item : null } : null;
+  function askChat(body) {
+    return post('/api/chat', body).then(
+      out => out.answer ? { text: out.answer, failed: false } : { text: 'No answer: the server sent none.', failed: true },
+      // An error with no status got no answer from the server, so the run's outcome there is not known.
+      e => ({ text: e.status ? e.message : `No answer: the dashboard did not reply (${(e && e.message) || e}).`, failed: true }));
+  }
+  // chat:end
+  let asking = false;
+  const sendBtn = pane.querySelector('#composer [type="submit"]');
   function send(text) {
-    if (!text) return;
-    // build: no chat backend is connected yet; the answer says so instead of pretending.
-    const answer = window.SHELL_PAGES ? `No chat backend is connected to this dashboard yet, so nothing was sent. A later slice sends this to claude -p in the ${scope} scope.`
-      : `Mockup: no chat backend here. The build sends this to claude -p in the ${scope} scope and streams the answer.`;
+    if (!text || asking) return;
+    const about = selId;
     put(thread, html`<div class="msg"><span class="who label">${ICON('user')}You</span><p>${text}</p></div>
-      <div class="msg"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">${answer}</p></div>`, 'append');
-    thread.querySelectorAll('[role="status"]').forEach(m => m.removeAttribute('role'));
-    thread.lastElementChild.setAttribute('role', 'status'); suggested = '';
+      <div class="msg" aria-busy="true"><span class="who label">${ICON('bot')}Claude · ${scope}</span><p class="why">Asking claude -p in the ${scope} scope; an answer takes up to 2 minutes.</p></div>`, 'append');
+    const reply = thread.lastElementChild; suggested = '';
     thread.scrollTop = thread.scrollHeight;
-    remember(text, answer);
+    const show = (answer, failed) => {
+      const p = reply.querySelector('p'); put(p, html`${answer}`); p.className = failed ? 'failed' : 'answer';
+      reply.removeAttribute('aria-busy');
+      thread.querySelectorAll('[role="status"]').forEach(m => m.removeAttribute('role'));
+      reply.setAttribute('role', 'status'); thread.scrollTop = thread.scrollHeight;
+      if (!failed) remember(text, answer, about);
+    };
+    // The mockup has no server; it says so instead of pretending.
+    if (!window.SHELL_PAGES) return show(`Mockup: no chat backend here. The build sends this to claude -p in the ${scope} scope.`, false);
+    asking = true; sendBtn.disabled = true;
+    askChat({ scope, page: page || '', selected: chatRow(OBJ.get(about)), text })
+      .then(a => show(a.text, a.failed))
+      .finally(() => { asking = false; sendBtn.disabled = false; });
   }
   // Asked here: the last three answers given with a row selected stay with that row for the session; Details shows them under the bar.
   const askedKey = `sd.asked.${page}`;
   const askedAll = () => { try { return JSON.parse(sessionStorage.getItem(askedKey) || '{}'); } catch { return {}; } };
-  function remember(q, a) {
-    if (!selId) return;
-    const all = askedAll(); all[selId] = [{ q, a, at: new Date().toISOString() }, ...(all[selId] || [])].slice(0, 3);
+  function remember(q, a, id = selId) {
+    if (!id) return;
+    const all = askedAll(); all[id] = [{ q, a, at: new Date().toISOString() }, ...(all[id] || [])].slice(0, 3);
     try { sessionStorage.setItem(askedKey, JSON.stringify(all)); } catch { /* private window: the thread still shows it */ }
-    renderAsked();
+    if (id === selId) { details?.querySelector('.asked')?.remove(); renderAsked(); }
   }
   function renderAsked() {
     if (!details || details.querySelector('.asked')) return;
@@ -425,7 +449,7 @@
     put(details, html`<section class="asked"><h3>Asked here</h3>${list.map(x => html`<div class="qa"><p class="q">${ICON('user')}<span>${x.q}</span></p><p class="a why">${x.a}</p></div>`)}<p class="why">${o ? `About ${o.label} · ` : ''}this session, newest first.</p></section>`, 'append');
   }
   if (details) new MutationObserver(() => renderAsked()).observe(details, { childList: true });
-  pane.querySelector('#composer').addEventListener('submit', e => { e.preventDefault(); const i = document.getElementById('chat-input'); send(i.value.trim()); i.value = ''; });
+  pane.querySelector('#composer').addEventListener('submit', e => { e.preventDefault(); if (asking) return; const i = document.getElementById('chat-input'); send(i.value.trim()); i.value = ''; });
   document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pane.querySelector('#composer').requestSubmit(); } });
 
   // ---------- Help popovers ----------

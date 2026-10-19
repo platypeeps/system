@@ -217,6 +217,12 @@ It saves the reply through workspace-mcp's `draft_gmail_message`, as `EMAIL_FROM
 The model has 120 seconds and the draft call 30. Every run that reaches the model adds a note to the item: the subject, draft id and Drafts link, or the failure.
 A draft call with no answer is recorded as not known, never as no draft.
 
+Chat in every page's right pane (sd:5294, `chat.py`) runs Draft email's `claude -p` line with `--tools Read,Grep,Glob` in place of none.
+`POST /api/chat` waits for the answer: the page, the scope, the selected row and its item go on stdin with the question.
+The run's directory is the selected item's repo, else the pack checkout for scope `pack`, the hoa repo for `hoa`, else this checkout; an item whose repo is not on disk gets no answer.
+It has 120 seconds, plus its own `perl` alarm 10 seconds later, so a run a restarted server left still ends. One run at a time: a second question is a 409.
+It writes nothing: no write, shell or web tool, no settings files (`--restricted`) and no MCP servers.
+
 Adversarial review (sd:5064, `adversarial.py`) runs `local-adversarial-gate/adversarial-gate.sh run` from this checkout on a task, a brief, a repository or a change.
 `POST /api/adversarial` answers 202 with a run id at once; `GET /api/adversarial/<id>` reads `queued`, `running`, `done` or `failed` with the reason.
 The model and effort come from the `adversarial.model` and `adversarial.effort` settings (sd:5109), read before the run writes any state, else `gpt-6-astra` at `high`; codex runs read-only, bounded at 1800 seconds.
