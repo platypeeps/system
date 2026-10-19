@@ -56,6 +56,13 @@ addEventListener('DOMContentLoaded', () => {
   // build (places): the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule the HOA and Home pages'
   // Tasks views use, so the HOA and Home views hold their rows; its realm is places.realm_of (sd:5064).
   let PLACE = 'all', REALMS = null;
+  // sd:5096, sd:5097: the Personal and Work sweeps, as /api/tasks' `sweeps` reads them (sweep.status): running, the last run.
+  let SWEEPS = null, sweepTimer = 0;
+  const SWEEP_NAME = { personal: 'Personal', work: 'Work' }, SWEEP_POLL = 15000;
+  const sweepOf = o => SWEEPS?.[String(o.id).slice(6)] || null;
+  const sweepText = w => !w ? '' : w.error ? `sweep not read: ${w.error}` : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
+    : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}${w.last.gaps?.length ? ` · not read: ${w.last.gaps.join(', ')}` : ''}`
+    : `sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
   const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
   const placed = () => listed().filter(inPlace);
   const label = t => `#${t.id}`;
@@ -1020,7 +1027,9 @@ addEventListener('DOMContentLoaded', () => {
     // A realm view without a readable realms.conf holds only the rows with no repo; it says why (sd:5064).
     const why = REALMS && !['all', 'hoa', 'home'].includes(PLACE) && !['read', 'partial'].includes(REALMS.state)
       ? ` · repos in no realm: ${REALMS.source} ${REALMS.state === 'missing' ? 'is missing; copy realms.conf.example there' : REALMS.problems[0] || 'was not read'}` : '';
-    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}`);
+    // The Personal and Work views name their sweep's last run and carry Run sweep (sd:5096, sd:5097).
+    const w = SWEEP_NAME[PLACE] && SWEEPS?.[PLACE];
+    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
   }
   // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
   const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
@@ -1174,12 +1183,15 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null;
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null; SWEEPS = doc.sweeps || null;
+      // While a sweep runs, Tasks reads again every SWEEP_POLL ms, so its words follow the run to its end.
+      if (!sweepTimer && Object.values(SWEEPS || {}).some(w => w.running)) sweepTimer = setTimeout(() => { sweepTimer = 0; reread(); }, SWEEP_POLL);
       ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
-      return { objects: tasks.map(objectOf), state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
-    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; },
+      const sweeps = Object.keys(SWEEP_NAME).filter(r => SWEEPS?.[r]).map(r => ({ id: `sweep:${r}`, type: 'sweep', label: `${SWEEP_NAME[r]} sweep` }));
+      return { objects: [...tasks.map(objectOf), ...sweeps], state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
+    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; SWEEPS = null; },
     draw,
     // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
     current: () => selected,
@@ -1188,6 +1200,18 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => { selected = null; renderDetails(); },
   });
   function load() { return reading.load(); }
+  // ---------- Run sweep (sd:5096, sd:5097) ----------
+  // POST /api/tasks/sweep {realm} starts that realm's sweep in the background (sd_dashboard/sweep.py); a 409 names the run going. It asks
+  // first: the run files a brief and followups and saves drafts, and takes up to an hour.
+  C.register({ id: 'realm-sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs this realm\'s sweep headless: a brief, followups and drafts; sends nothing.',
+    risk: 'safe', askFirst: true, executes: true, primary: () => true,
+    when: o => { const w = sweepOf(o); return !w ? 'the sweep was not read' : w.error || (w.running ? 'a sweep is running now' : true); },
+    consequence: o => `Reads the ${o.id === 'sweep:work' ? 'work mail, Drive, Notion, Jira and GitHub' : 'personal mail and My Drive'} since the last run, files a dated brief and sd followups, and saves Gmail drafts. Nothing is sent or committed. Up to 60 min.`,
+    cli: o => sweepOf(o)?.command || `python3 -m sd_dashboard.realm_sweep run ${String(o.id).slice(6)}`,
+    sends: o => `POST /api/tasks/sweep {"realm": "${String(o.id).slice(6)}"}`,
+    run: o => window.shell.post('/api/tasks/sweep', { realm: String(o.id).slice(6) }).then(
+      out => reread().then(() => `${SWEEP_NAME[String(o.id).slice(6)]} sweep started ${String(out.started).slice(11, 16)} UTC · Tasks reads again until it ends`),
+      err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a sweep started is not known`); }) });
   function reread() { return reading.reread(); }
   load();
   document.addEventListener('adversarial:run', e => { if (e.detail.key === `task:${byKey(selected)?.id}`) renderDetails(); });

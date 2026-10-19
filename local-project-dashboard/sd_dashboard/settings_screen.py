@@ -9,15 +9,20 @@ A failed list is named and lists nothing. A refused set answers sd's reason (400
 may have committed before it was stopped, so its outcome is unknown: it answers 504 with `unknown`, and the page reads
 the value again. There is no stale-write check: two concurrent manual writes are outside the threat model, and the
 answer carries the value the set replaced, so the page can say when it differs from the one it showed.
+
+The Sweeps section (sd:5109) holds the Work and Personal sweeps' settings, `realm_sweep.SETTINGS`: setting rows read and
+written on the page's own connection (`sd_db.writes`), as no `sd config` prefix declares them. A set names the value the
+page showed, and a row that changed since refuses with 409.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 
-__all__ = ["FLEET", "document", "request"]
+__all__ = ["FLEET", "document", "request", "request_sweep", "sweeps"]
 
 #: An `sd config` run's ceiling: one pack start and one small read or write.
 SD_SECONDS = 5.0
@@ -101,3 +106,39 @@ def _set(key: str, value: str):
         return 502, {"error": f"sd config set printed {done.stdout.strip()[:200]!r}, so what it set is unknown; read it again",
                      "unknown": True}
     return {"key": key, "value": match[3], "was": None if match[2] == "(unset)" else match[2], "database": bool(match[4])}
+
+
+def sweeps(connection) -> dict:
+    """The Sweeps section: each sweep setting's row, or None with the reason the database did not answer."""
+    from sd_db import writes
+    from sd_db.errors import SdDbError
+
+    from .realm_sweep import SETTINGS
+
+    try:
+        held = writes.read_settings(connection, list(SETTINGS))
+    except (SdDbError, sqlite3.Error) as failed:
+        return {"sweeps": None, "sweeps_reason": f"the workflow database did not answer: {failed}"}
+    return {"sweeps": [{"key": key, "value": held.get(key), "source": "database" if held.get(key) else "unset",
+                        "description": text, "choices": None} for key, text in SETTINGS.items()], "sweeps_reason": ""}
+
+
+def request_sweep(payload) -> object:
+    """`POST /api/settings/sweep {key, value, before}`: one setting row, `before` the value shown; an empty value unsets."""
+    from .realm_sweep import SETTINGS
+
+    key, value, before = payload.get("key"), payload.get("value"), payload.get("before")
+    if (set(payload) != {"key", "value", "before"} or key not in SETTINGS or not isinstance(value, str)
+            or not (before is None or isinstance(before, str))):
+        raise ValueError(f"Expected {{key, value, before}}, the key one of {', '.join(SETTINGS)}.")
+    return lambda connection: _set_sweep(connection, key, value.strip() or None, before)
+
+
+def _set_sweep(connection, key: str, value: str | None, before: str | None):
+    from sd_db import writes
+
+    try:
+        was = writes.set_setting(connection, key, value, before=before)
+    except writes.SettingStale as stale:
+        return 409, {"error": str(stale), "reload": True}
+    return {"key": key, "value": value, "was": was}
