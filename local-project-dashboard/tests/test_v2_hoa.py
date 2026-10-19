@@ -385,6 +385,16 @@ class TheScript(Fixture):
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "HOA annunciator cells"})
         self.assertIsNone(out["states"][-1])
 
+    def test_an_unread_mission_lamp_opens_the_export_row_that_says_why(self):
+        # sd:5298: a lamp unknown for want of the Mission export opens its evidence, the export's source row and its job.
+        doc = self.doc()
+        doc["mission"].update(analog=[], pump=[], latest=None, error="cannot read analog-daily.csv")
+        lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+        for cell in ("tank", "pumps", "aquifer", "mission"):
+            self.assertRegex(lamps, rf'data-cell="{cell}" data-open="source:mission" data-state="unknown"', cell)
+        # No reader at all is no evidence: Water stays a lamp that says so.
+        self.assertRegex(lamps, r'data-cell="water" data-state="unknown"')
+
     def test_the_badge_rule_lights_what_the_lamps_light(self):
         # sd:3446: the rule is the server's, and every page's rail shows it; it must count the cells hoa.js lights.
         def lit(doc):
@@ -509,7 +519,7 @@ R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft'
         out = self.run_page("R.lamps = ELS.annunciator.html; R.trends = ELS['trend-list'].html;")
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertIn("Mission export: pump-daily.csv has no", out["states"][-1]["text"])
-        self.assertRegex(out["R"]["lamps"], r'data-cell="pumps" data-state="unknown".*?pump-daily.csv has no')
+        self.assertRegex(out["R"]["lamps"], r'data-cell="pumps" data-open="source:mission" data-state="unknown".*?pump-daily.csv has no')
         self.assertRegex(out["R"]["lamps"], r'data-cell="tank"[^>]*data-state="ok"')
         self.assertIn("<b>▨ Not read.</b> pump-daily.csv has no", out["R"]["trends"])
 

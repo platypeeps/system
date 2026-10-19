@@ -529,14 +529,17 @@ R.det = ELS.details.html;""", row=NO_COPY)
         self.assertIn("<dt>Vault copy</dt><dd>the last render is not newer than this brief", out["R"]["det"])
 
     def test_the_vault_copies_lamp_says_what_the_heartbeat_says(self):
+        # sd:5298: a failed or unknown lamp is a link to its evidence, the Health row that lists the refused copies.
         for found, state, text in ((beat("failed", reason="the vault is not a directory"), "caution", "failed"),
                                    (beat("off", folder={REPO: None}), "ok", "off"), (None, "unknown", "unknown")):
             with self.subTest(text):
                 doc = self.doc(found)
                 ann = self.run_page("R.ann = ELS.annunciator.html;", answer=f"() => [200, {json.dumps(doc)}]")["R"]["ann"]
                 lamps = cell_grammar(self, ann)
-                self.assertEqual(lamps[2], ("div", state))
+                self.assertEqual(lamps[2], ("div" if state == "ok" else "a", state))
                 self.assertIn(f"<b>{text}</b>", ann)
+                link = re.search(r'<a class="cell[^"]*" href="([^"]+)"[^>]*>(?:(?!</a>).)*Vault copies', ann, re.S)
+                self.assertEqual(link and link.group(1), None if state == "ok" else "/health?row=mir%3Abriefs#view=jobs")
 
     def test_the_range_and_the_address_choose_the_rows(self):
         out = self.run_page("R.rows = ELS.rows.html;", search="?range=30d&src=Intel%20Brief")
@@ -697,7 +700,8 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
             # The Briefs lamp; the copies lamp has its own read, and a failed answer leaves it unknown too.
             self.assertEqual(cell_grammar(self, ann)[0], ("div", "unknown"))
             self.assertIn("<b>not read</b>", ann)
-        self.assertEqual(cell_grammar(self, ann)[2], ("div", "unknown"))
+        # sd:5298: the unknown copies lamp still links to Health's row, which reads the heartbeat on its own.
+        self.assertEqual(cell_grammar(self, ann)[2], ("a", "unknown"))
         cut = self.subset({b["id"] for b in self.page_doc["briefs"][:4]})
         cut["reader"] = {**cut["reader"], "capped": True, "total": None}
         out = self.run_page("""R.ann = ELS.annunciator.html;

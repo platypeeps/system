@@ -48,13 +48,15 @@ let polling = 0;
   function readCells() {
     const m = DOC.mission, la = m.analog[m.analog.length - 1], lp = m.pump[m.pump.length - 1], f = DOC.items;
     const why = m.error || 'no rows in the export';
+    // sd:5298: a lamp unknown for want of the export opens its evidence, the export's source row (its job and last run).
+    const src = m.dir ? 'source:mission' : null;
     const out = [{ id: 'water', label: 'Water', state: 'unknown', val: html`<b>—</b> not read`, small: 'no live reader: the export holds daily rows, not the pump now' }];
     out.push(la && num(la.tank_ft_mean) ? { id: 'tank', label: 'Tank level', state: 'ok', open: `day:${la.date}`, val: html`<b>${(+la.tank_ft_mean).toFixed(1)}</b> ft mean`, small: `${la.tank_ft_min}–${la.tank_ft_max} · ${day(la.date)} (latest row)` }
-      : { id: 'tank', label: 'Tank level', state: 'unknown', val: html`<b>—</b> not read`, small: why });
+      : { id: 'tank', label: 'Tank level', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     out.push(lp && num(lp.a2_runtime_hours) ? { id: 'pumps', label: 'Pumps', state: 'ok', open: `day:${lp.date}`, val: html`<b>${(+lp.a2_runtime_hours).toFixed(1)}</b> h A2`, small: `${plural(+lp.a2_starts || 0, 'start')} · ${gal(lp.a2_gallons)} gal · ${day(lp.date)}` }
-      : { id: 'pumps', label: 'Pumps', state: 'unknown', val: html`<b>—</b> not read`, small: why });
+      : { id: 'pumps', label: 'Pumps', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     out.push(la && num(la.aquifer_ft_mean) ? { id: 'aquifer', label: 'Aquifer', state: 'ok', open: `day:${la.date}`, val: html`<b>${Math.round(+la.aquifer_ft_mean)}</b> ft mean`, small: `${la.aquifer_ft_min}–${la.aquifer_ft_max} · ${day(la.date)}` }
-      : { id: 'aquifer', label: 'Aquifer', state: 'unknown', val: html`<b>—</b> not read`, small: why });
+      : { id: 'aquifer', label: 'Aquifer', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     const at = m.alarms_today, real = AL.filter(a => a.st === 'warning').length, tests = AL.filter(a => a.kind === 'generator' && /Running/.test(a.event)).length;
     out.push(at.count == null ? { id: 'alarms', label: 'Alarms today', state: 'unknown', open: AL[0]?.id, val: html`<b>—</b> ${at.reason}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` }
       : { id: 'alarms', label: 'Alarms today', state: at.count ? 'warning' : 'ok', open: AL[0]?.id, val: html`<b>${at.count}</b> today${at.acked ? ` · ${at.acked} acknowledged` : ''}`, small: `${plural(real, 'alarm')} in 30 d · ${plural(tests, 'generator test')}` });
@@ -63,7 +65,7 @@ let polling = 0;
       : late ? { id: 'tasks', label: 'Tasks', state: 'warning', open: OB[0].id, val: html`<b>${late}</b> overdue`, small: `${OB.length} open · ${soon} due within a week` }
       : { id: 'tasks', label: 'Tasks', state: soon ? 'caution' : 'ok', open: OB[0]?.id, val: html`<b>${soon || OB.length}</b> ${soon ? 'due soon' : 'open'}`, small: soon ? `${OB.length} open · none overdue` : 'none overdue or due within a week' });
     out.push(m.latest ? { id: 'mission', label: 'Mission data', state: m.stale ? 'caution' : 'ok', open: 'source:mission', val: html`<b>${m.age_days} d</b> old`, small: `newest row ${m.latest}${m.error ? ' · a file did not read' : ''}` }
-      : { id: 'mission', label: 'Mission data', state: 'unknown', open: m.dir ? 'source:mission' : null, val: html`<b>—</b> not read`, small: why });
+      : { id: 'mission', label: 'Mission data', state: 'unknown', open: src, val: html`<b>—</b> not read`, small: why });
     return out;
   }
   // Each lamp's hover and focus text (sd:5287): what it measures, its source, and the line that reads it where one exists.

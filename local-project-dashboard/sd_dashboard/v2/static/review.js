@@ -39,7 +39,8 @@
     const ul = $('annunciator'), list = DOC ? DOC.batches : [];
     ul.hidden = !list.length;
     put(ul, cells(list.map(b => b.error
-      ? { label: b.title, mark: html`<span class="g g-unknown" aria-hidden="true">${G.unknown}</span>`, state: 'unknown',
+      // sd:5298: a batch that did not read links to its evidence, the sd item that files it.
+      ? { label: b.title, href: `/tasks?row=${encodeURIComponent(b.item)}`, mark: html`<span class="g g-unknown" aria-hidden="true">${G.unknown}</span>`, state: 'unknown',
           val: 'not read', small: b.error, attrs: html` data-batch="${b.item}" title="${`sd:${b.item}`}"` }
       : { label: b.title, button: true, pressed: batch === b.item, state: b.open ? 'caution' : 'ok',
           mark: html`<span class="g" aria-hidden="true">${b.open ? G.caution : G.ok}</span>`,
