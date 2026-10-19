@@ -61,6 +61,10 @@ STAMP = re.compile(r"\d{8}-\d{6}-\d{6}")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 PAGE = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{64}")
+#: A deck slide's objectId, `sdexp_<n>`: Slides takes 5 to 50 characters of this alphabet (`OBJECT_ID`), and the prefix
+#: tells the deck's own slides from the blank one `create_presentation` adds.
+SLIDE_PREFIX = "sdexp_"
+OBJECT_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_:-]{4,49}")
 
 NOTION = "mcp__notion__notion-{}".format
 DRIVE = "mcp__workspace-mcp__{}".format
@@ -78,7 +82,8 @@ MCP = {
 #: Denied beside `realm_sweep.DENIED`: Bash, and Drive's delete and trash.
 DENIED_TOO = ("Bash", DRIVE("delete_drive_file"), DRIVE("trash_drive_file"))
 TOLD = ("This unattended run has no person to answer. Write reaches only the run folder. Use only the MCP tools the "
-        "prompt names; never delete or move a page, block, slide, shape or file. An MCP server may still be connecting "
+        "prompt names; never delete or move a page, block, slide, shape or file, except the one deletion a step names. "
+        "An MCP server may still be connecting "
         "when the run starts: if ToolSearch reports it still connecting, wait and search again, up to five times.")
 REPLY = ("Reply with a short report. Its last line is `RESULT: ok`, or `RESULT: failed, <step>: <reason>` when a step "
          "could not finish.")
@@ -493,8 +498,18 @@ def pointer(asked: dict) -> str:
 
 
 def deck_title(asked: dict, spec: dict) -> str:
-    """The deck's exact title; it carries the draft's stamp, so a later apply can find it by name."""
-    return f"{spec.get('title', 'Experiment')} - draft {asked['draft']}"
+    """The deck's exact title; it carries the draft's stamp, so a later apply can find it by name. Quotes and
+    backslashes are dropped: the Drive search for it is a quoted `name = '...'` query."""
+    title = re.sub(r"['\"\\]", "", str(spec.get("title") or "")).strip()[:100] or "Experiment"
+    return f"{title} - draft {asked['draft']}"
+
+
+def slide_requests(spec: dict) -> list[dict]:
+    """Each spec slide's `createSlide` request, built here rather than by the model: a valid objectId, its place, and
+    a blank layout, so the first slide is made like the rest and nothing rests on what `create_presentation` adds."""
+    return [{"createSlide": {"objectId": slide["id"], "insertionIndex": n,
+                             "slideLayoutReference": {"predefinedLayout": "BLANK"}}}
+            for n, slide in enumerate(spec["slides"])]
 
 
 def prompt(asked: dict, folder: Path) -> str:
@@ -568,9 +583,10 @@ def prompt(asked: dict, folder: Path) -> str:
 1. Fetch the experiment page for its fields and status.
 2. Write {folder}/draft.json:
    {{"title": "<the deck title>", "style": {{<every colour, font, size and position the deck uses, from the kit>}},
-    "slides": [{{"id": "s1", "message": "<one line>", "visual": "<the visual: shapes, a timeline, a status band or a
-    stat tile, with its text and positions in points>", "notes": "<speaker notes>"}}, ...]}}
-   Six to eight slides, ids s1 to s8 in order: overview, approach, current status and next steps among them.
+    "slides": [{{"id": "{SLIDE_PREFIX}1", "message": "<one line>", "visual": "<the visual: shapes, a timeline, a status band
+    or a stat tile, with its text and positions in points>", "notes": "<speaker notes>"}}, ...]}}
+   Six to eight slides, ids {SLIDE_PREFIX}1 to {SLIDE_PREFIX}8 in order: overview, approach, current status and next
+   steps among them.
    Visuals over bullets; one call to action, on the last slide. Use the project's own figures only; invent none.
 
 {REPLY}
@@ -621,6 +637,9 @@ Never update, move or delete any page.
 {REPLY}
 """
     title = deck_title(asked, spec)
+    ids = [slide["id"] for slide in spec["slides"]]
+    creates = "\n".join(f"   {slide['id']}: {json.dumps(request)}"
+                        for slide, request in zip(spec["slides"], slide_requests(spec)))
     if asked["resume"]:
         first = f"An earlier apply created presentation {asked['resume']}: resume it, and go to step 3."
     elif asked["earlier"] and not asked["recreate"]:
@@ -640,13 +659,21 @@ Never update, move or delete any page.
 1. {first}
 2. Create the presentation with create_presentation, titled exactly as above, in My Drive's root. Right after, before
    any other call, write {out} as {{"outcome": "created", "presentation": "<its id>", "url": "<its url>"}}.
-3. Read the deck with get_presentation. Fill slide 1, the slide the presentation starts with, through its placeholders
-   from spec slide s1. For each later spec slide, skip it when a slide with its id exists; otherwise make it in one
-   batch_update_presentation call: createSlide with objectId set to its id, then its shapes and text. Every colour,
-   font, size and position comes from the spec's style.
-4. Speaker notes: for each slide, write its notes in one call, and only into a notes shape that is empty.
-5. Check each slide with get_page_thumbnail, then add "slides": <the count> to {out}.
-Never delete a slide, a shape or a file, and never share or move the deck.
+3. Read the deck with get_presentation and note each slide's objectId. For each spec slide in order, skip it when
+   a slide with its id exists. Otherwise make it in one batch_update_presentation call: first its createSlide request
+   below, exactly as given, then the createShape, insertText and style requests for its message and visual. Give
+   those no objectId: the API assigns one. One call per slide is all or nothing, so a slide exists whole or not at
+   all. Every colour, font, size and position comes from the spec's style.
+{creates}
+4. Read the deck again. Delete, in one batch_update_presentation call of deleteObject requests, each slide whose
+   objectId does not start with {SLIDE_PREFIX}: the blank slide create_presentation added. Then add "cleared": true
+   to {out}. This is the one deletion this run makes.
+5. Speaker notes: read the deck again. For each spec slide, its notes shape is the speakerNotesObjectId in
+   slideProperties.notesPage.notesProperties. Insert the slide's notes there with insertText in one call, only when
+   that shape holds no text.
+6. Check each spec slide with get_page_thumbnail, its pageObjectId the slide's id, then add "slides": <the ids
+   checked, in order> to {out}; the spec's ids are {json.dumps(ids)}.
+Never delete a shape or a file, nor a slide other than step 4's, and never share or move the deck.
 
 {REPLY}
 """
@@ -702,11 +729,13 @@ def _checked(asked: dict, folder: Path) -> tuple[str, dict]:
         return "done", {"reason": f"section {parts['section']}, Status {parts['status']}"}
     if not out.get("presentation") or not str(out.get("url", "")).startswith("https://"):
         raise ValueError("out.json names no presentation and URL")
-    drafted = len(json.loads((folder / "draft.json").read_text(encoding="utf-8"))["slides"])
+    drafted = [slide["id"] for slide in json.loads((folder / "draft.json").read_text(encoding="utf-8"))["slides"]]
     if out.get("slides") != drafted:
-        raise ValueError(f"the deck holds {out.get('slides')} checked slides, not the draft's {drafted}; apply again "
+        raise ValueError(f"the deck's checked slides are {out.get('slides')}, not the draft's {drafted}; apply again "
                          "to resume it")
-    return "done", {"deck": {"presentation": out["presentation"], "url": out["url"], "slides": out.get("slides")}}
+    if out.get("cleared") is not True:
+        raise ValueError("the blank slide create_presentation adds was not removed; apply again to resume it")
+    return "done", {"deck": {"presentation": out["presentation"], "url": out["url"], "slides": len(drafted)}}
 
 
 def _shape(action: str, draft) -> None:
@@ -739,10 +768,10 @@ def _shape(action: str, draft) -> None:
         if not isinstance(slides, list) or not 6 <= len(slides) <= 8:
             raise ValueError("draft.json: a deck has 6 to 8 slides")
         for n, slide in enumerate(slides, 1):
-            if not isinstance(slide, dict) or slide.get("id") != f"s{n}":
-                raise ValueError(f"draft.json: slide {n} is not an object with id s{n}")
+            if not isinstance(slide, dict) or slide.get("id") != f"{SLIDE_PREFIX}{n}":
+                raise ValueError(f"draft.json: slide {n} is not an object with id {SLIDE_PREFIX}{n}")
             for name in ("message", "visual", "notes"):
-                text(slide.get(name), f"s{n}.{name}")
+                text(slide.get(name), f"{SLIDE_PREFIX}{n}.{name}")
 
 
 def _lock(state: Path) -> int | None:

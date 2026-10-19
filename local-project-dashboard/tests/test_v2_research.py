@@ -1033,7 +1033,7 @@ R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o
     def test_the_apply_confirm_shows_the_whole_draft_and_apply_posts_only_the_draft_it_showed(self):
         # sd:5296: the confirm shows every field Apply writes, and Apply posts the draft that confirm showed, never a newer one.
         deck = {"title": "Span sampling", "style": {"accent": "#000000"},
-                "slides": [{"id": f"s{n}", "message": f"m{n}", "visual": f"band {n}", "notes": f"say {n}"} for n in range(1, 7)]}
+                "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "visual": f"band {n}", "notes": f"say {n}"} for n in range(1, 7)]}
         create = {"title": "Trace budgets", "problem": "Budgets drift.", "body": "## Hypothesis\nTail."}
         done = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log"}
         linked = {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}

@@ -55,7 +55,8 @@ STATUS = {"before": {"section": "## Status\n2026-10-01 started", "status": "Todo
           "after": {"section": "## Status\n### 2026-10-19\nRan.\n2026-10-01 started", "status": "In Progress"},
           "entry": "Ran."}
 DECK = {"title": "Span sampling", "style": {"accent": "#000000"},
-        "slides": [{"id": f"s{n}", "message": f"m{n}", "visual": "a band", "notes": "n"} for n in range(1, 8)]}
+        "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "visual": "a band", "notes": "n"} for n in range(1, 8)]}
+IDS = [f"sdexp_{n}" for n in range(1, 8)]
 
 
 def dead_pid() -> int:
@@ -92,8 +93,14 @@ class Case(ScreenCase):
         self.state = rx.state_dir()
 
     def knows(self):
-        """The pack change: `experiment` joins `DECLARATION_KINDS`."""
+        """The pack change (pack sd:5302): `experiment` is a `DECLARATION_KINDS` entry, also on a pack before it."""
         patch = mock.patch.object(repos, "DECLARATION_KINDS", (*repos.DECLARATION_KINDS, "experiment"))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def lacks(self):
+        """A pack from before the change: `experiment` is not a declaration kind."""
+        patch = mock.patch.object(repos, "DECLARATION_KINDS", tuple(k for k in repos.DECLARATION_KINDS if k != "experiment"))
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -141,6 +148,10 @@ class Case(ScreenCase):
 
     def apply(self, run, fingerprint, recreate=False):
         return self.post({"verb": "apply", "run": run, "fingerprint": fingerprint, "recreate": recreate})
+
+    def prompt(self, run):
+        asked = json.loads((self.state / "runs" / run / "request.json").read_text())
+        return rx.prompt(asked, self.state / "runs" / run)
 
     def held(self):
         return (repos.declarations(self.connection, self.alpha) or {}).get("experiment")
@@ -299,6 +310,7 @@ class TheAttach(Case):
         self.assertEqual(body["before"]["page"], PAGE2)
 
     def test_a_pack_without_the_kind_reads_not_linked_and_attach_says_to_update_it(self):
+        self.lacks()
         self.cache()
         doc = rx.document(self.connection, "research/alpha")
         self.assertEqual((doc["link"], doc["link_error"]), (None, ""))
@@ -421,10 +433,6 @@ class TheApply(Case):
         self.assertEqual(len(list((self.state / "runs").iterdir())), runs)
         self.assertEqual(self.held(), {"page": PAGE, "data_source": SOURCE, "url": "https://example.test/one", "title": "Span sampling"})
 
-    def prompt(self, run):
-        asked = json.loads((self.state / "runs" / run / "request.json").read_text())
-        return rx.prompt(asked, self.state / "runs" / run)
-
     def test_create_stopped_before_out_json_searches_and_a_miss_is_unknown_that_only_recreate_passes(self):
         self.knows()
         run, fingerprint = self.draft("create", CREATE, description="Tail sampling")
@@ -449,6 +457,7 @@ class TheApply(Case):
         self.assertEqual(self.held()["page"], PAGE)
 
     def test_a_create_link_refused_keeps_out_json_for_the_next_apply(self):
+        self.lacks()
         run, fingerprint = self.draft("create", CREATE, description="Tail sampling")
         status, started = self.apply(run, fingerprint)
         # The pack does not know the kind yet: the row exists, the link does not; the next apply links it.
@@ -503,15 +512,53 @@ class TheApply(Case):
         status, third = self.apply(run, fingerprint)
         text = self.prompt(third["run"])
         self.assertIn("created presentation p1: resume it", text)
-        self.assertIn("only into a notes shape that is empty", text)
+        self.assertIn("only when\n   that shape holds no text", text)
         # The model said ok with the deck only created: fewer checked slides than drafted is failed, and resumable.
-        record = self.model(third["run"], {"out.json": {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck"}})
-        self.assertEqual(record["state"], "failed")
-        self.assertIn("apply again to resume it", record["reason"])
-        status, fourth = self.apply(run, fingerprint)
-        self.assertIn("created presentation p1: resume it", self.prompt(fourth["run"]))
-        record = self.model(fourth["run"], {"out.json": {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck", "slides": 7}})
+        # The model said ok short of the end: slides not all checked, in another order, or the blank one left. Each is
+        # failed, and the next apply resumes the deck.
+        made = {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck"}
+        for left in ({}, {"slides": 7, "cleared": True}, {"slides": IDS[::-1], "cleared": True}, {"slides": IDS}):
+            record = self.model(third["run"], {"out.json": {**made, **left}})
+            with self.subTest(left=left):
+                self.assertEqual(record["state"], "failed")
+                self.assertIn("apply again to resume it", record["reason"])
+            status, third = self.apply(run, fingerprint)
+            self.assertIn("created presentation p1: resume it", self.prompt(third["run"]))
+        record = self.model(third["run"], {"out.json": {**made, "slides": IDS, "cleared": True}})
         self.assertEqual(record["deck"], {"presentation": "p1", "url": "https://example.test/deck", "slides": 7})
+
+
+class TheDeckContract(Case):
+    """Each Slides or Drive call the deck apply's prompt asks for, with the shape the API takes (the lane review's
+    class pass): the slide ids, the first slide, the blank slide, the title search, the notes shape and the check."""
+
+    def test_every_slide_id_a_draft_may_hold_is_a_slides_object_id_and_the_old_ids_are_refused(self):
+        for count in (6, 7, 8):
+            deck = {**DECK, "slides": [{**DECK["slides"][0], "id": f"sdexp_{n}"} for n in range(1, count + 1)]}
+            rx._shape("deck", deck)
+            for request in rx.slide_requests(deck):
+                with self.subTest(count=count, request=request):
+                    self.assertRegex(request["createSlide"]["objectId"], rx.OBJECT_ID)
+        with self.assertRaisesRegex(ValueError, "id sdexp_1"):
+            rx._shape("deck", {**DECK, "slides": [{**slide, "id": f"s{n}"} for n, slide in enumerate(DECK["slides"], 1)]})
+
+    def test_the_apply_makes_every_spec_slide_the_first_too_and_removes_only_the_blank_one(self):
+        self.link()
+        run, fingerprint = self.draft("deck", DECK)
+        status, started = self.apply(run, fingerprint)
+        text = self.prompt(started["run"])
+        for n, slide in enumerate(IDS):
+            self.assertIn(f"{slide}: " + json.dumps({"createSlide": {"objectId": slide, "insertionIndex": n,
+                                                                     "slideLayoutReference": {"predefinedLayout": "BLANK"}}}), text)
+        self.assertNotIn("placeholder", text)
+        self.assertIn("each slide whose\n   objectId does not start with sdexp_", text)
+        self.assertIn("speakerNotesObjectId in\n   slideProperties.notesPage.notesProperties", text)
+        self.assertIn(json.dumps(IDS), text)
+
+    def test_a_title_with_quotes_still_makes_a_drive_name_query(self):
+        title = rx.deck_title({"draft": "20261019-160000-000001"}, {"title": 'It\'s "fast" \\ cheap'})
+        self.assertEqual(title, "Its fast  cheap - draft 20261019-160000-000001")
+        self.assertEqual(rx.deck_title({"draft": "d"}, {"title": "'\""}), "Experiment - draft d")
 
 
 class TheOlderState(Case):

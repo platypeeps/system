@@ -124,8 +124,8 @@ The pack's side, built by its own builder, is one kind and its reader rule:
 - Its tests: `set_declaration` stores a good value and refuses a bad page id, a bad UUID and an unknown key;
   `declarations` returns it.
 
-Until it lands, the dashboard's tests add the kind to `DECLARATION_KINDS` where they need it, and check the
-"update the command pack" answer without it.
+It landed as pack sd:5302. The dashboard's tests set `DECLARATION_KINDS` with and without the kind, so they pass on
+a pack before or after it, and still check the "update the command pack" answer.
 
 ### The attach list
 
@@ -183,9 +183,12 @@ The spec carries every style value the deck uses: colors, fonts, sizes and posit
 Apply reads the spec only, never the kit, so the confirmed spec is the whole of what it writes.
 
 Apply builds the deck slide by slide. Each slide is one `batch_update_presentation` call, which the API applies
-whole or not at all: a `createSlide` with the spec's object id (`s2` to `s8`) and its shapes and text.
-Slide 1 is the slide `create_presentation` makes, filled through its placeholders; nothing is deleted.
-Speaker notes go in a second call per slide, written only into an empty notes shape.
+whole or not at all: the `createSlide` request the runner builds (`slide_requests`: the spec's object id `sdexp_<n>`,
+its insertion index and a blank layout), then its shapes and text, whose ids the API assigns.
+Slides takes object ids of 5 to 50 characters, so the draft's ids are `sdexp_1` to `sdexp_8`, and the first slide
+is made like the rest. The blank slide `create_presentation` adds is then deleted: the one deletion, of a slide
+without the `sdexp_` prefix, in the deck this apply made.
+Speaker notes go in a second call per slide, into the slide's `speakerNotesObjectId`, only when that shape is empty.
 A resumed apply reads the deck with `get_presentation` and skips each slide and note already there.
 It checks each slide with `get_page_thumbnail`, and leaves the deck in the account's My Drive root.
 The deck's URL is in the apply's record, which the page lists.
@@ -226,7 +229,7 @@ action awaiting apply, and the last run with its state and log path. The four ac
 | Apply status | page content, then `Status` | Stop between the two writes | the next apply finds the section equal to `after`, skips it and sets `Status` | the prompt carries `before`, `after` and the three cases; the earlier failed apply does not block it |
 | Apply status | none | A teammate edited the section or `Status` after the draft | refused as stale; nothing written; a new draft is needed | stub reports stale; the record is failed and names it |
 | Apply status | page content | `out.json` names another page | record failed, naming the page | stub writes another id |
-| Apply deck | presentation, `out.json`, slides, notes, the record's `deck` | Stop after `out.json`, between slides or before notes | the next apply resumes the deck in `out.json`: slides by object id, notes only where empty; deletes nothing | stub writes `out.json` only; the next prompt names that deck and the resume rules |
+| Apply deck | presentation, `out.json`, slides, notes, the record's `deck` | Stop after `out.json`, between slides or before notes | the next apply resumes the deck in `out.json`: slides by object id, notes only where empty; deletes only the blank slide, until `cleared` | stub writes `out.json` only; the next prompt names that deck and the resume rules |
 | Apply deck | presentation | Stop after the create, before `out.json` | the next apply searches the exact title; a match resumes, no match is `unknown` | the next prompt carries the title search |
 | Draft deck | `draft.json` | The kit changes after the draft | none needed: apply reads the spec only | the apply argv has no Read outside the run folder |
 | Any run | the record | The server restarts mid-run | the run continues in its own session; the page reads its record | `status` with a live pid and with a dead one |
@@ -234,6 +237,11 @@ action awaiting apply, and the last run with its state and log path. The four ac
 | Draft or apply start | `request.json` | The link names another data source than the setting | 409 `source:`; attach again | link with another source; move the link's source after the draft |
 | Apply deck | slides | The model ends `RESULT: ok` with fewer checked slides than drafted | record failed; the next apply resumes the deck | `out.json` without `slides`, then a resumed apply |
 | Apply start | the confirm | A newer draft finishes while the confirm is open | Apply posts the draft the confirm showed, with every field shown; a run without a confirm posts nothing | the page test runs Apply twice after one confirm |
+| Draft deck | `draft.json` | Slide ids Slides refuses (under 5 characters) | the validator takes only `sdexp_<n>`; `s1` fails the draft | `test_every_slide_id_a_draft_may_hold_is_a_slides_object_id_and_the_old_ids_are_refused` |
+| Apply deck | slides | `create_presentation` adds a blank slide; the first spec slide was assumed to be it | every spec slide, the first too, comes from the runner's `createSlide` request; the blank one is deleted, then `cleared` | `test_the_apply_makes_every_spec_slide_the_first_too_and_removes_only_the_blank_one` |
+| Apply deck | none | A title with a quote breaks the Drive name query | the title drops quotes and backslashes | `test_a_title_with_quotes_still_makes_a_drive_name_query` |
+| Apply deck | notes | The notes shape assumed at a guessed place | the prompt names `speakerNotesObjectId` under `notesPage.notesProperties` | `test_the_apply_makes_every_spec_slide_the_first_too_and_removes_only_the_blank_one` |
+| Apply deck | the record | `RESULT: ok` with other slide ids checked, another order, or the blank slide left | failed; the next apply resumes | `test_a_deck_resumes_the_presentation_in_out_json_or_searches_its_exact_title` |
 | Older state | none | No state folder, no cache, no setting row | page shows "never read" and "not linked" | empty state folder |
 
 ## Slices
