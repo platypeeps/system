@@ -55,7 +55,7 @@ the dashboard's Tasks page, where its stage moves:
   Market Watch     sdw.market         stage candidate
 
 The digest asks Jev to order it, so the decision most worth making is the
-first card in the brief rather than the highest-scored note of whichever queue
+first card in the brief rather than the highest-scored row of whichever queue
 is listed first. It runs unless JEV_OBSIDIAN_REVIEW is set to 0, off, false, no or disabled
 -- unset means on -- and unless `jev enabled` declines, it never changes which
 rows appear or where their links go, and every failure falls back to
@@ -182,10 +182,9 @@ def jev_ranked(queues):
     """Reorder the cards the digest already chose, or hand them back as-is.
 
     It is handed the shown lists *after* the twelve-card cap, so the set of
-    notes in the brief is fixed before Jev ever sees it: this can move a card
-    up, and cannot put one in or take one out. Only the note title, its
-    queue and its added date go out -- no description, no file path, no note
-    body, no vault name -- because every Jev call leaves this machine.
+    rows in the brief is fixed before Jev ever sees it: this can move a card
+    up, and cannot put one in or take one out. Only the row title, its
+    queue and its added date go out -- no description, no path, no body -- because every Jev call leaves this machine.
     """
     if not queues:
         return queues, False
@@ -223,8 +222,8 @@ def jev_ranked(queues):
         if not questions:
             return queues, False
         subject = jev_subject([it[0] for q in queues for it in q[3]])
-        # One request, every note a question in it: questions in one `ask`
-        # run in parallel, where one call per note would pay the round trip
+        # One request, every row a question in it: questions in one `ask`
+        # run in parallel, where one call per row would pay the round trip
         # once per card in the brief.
         with tempfile.TemporaryDirectory() as td:
             qf, sf = os.path.join(td, "q.json"), os.path.join(td, "s.json")
