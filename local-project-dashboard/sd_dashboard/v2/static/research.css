@@ -129,7 +129,7 @@
 .intake textarea:hover { border-color: var(--color-ink-2); }
 .intake textarea:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .intake-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); font: 400 var(--text-xs)/1.3 var(--font-ui); color: var(--color-ink-2); }
-.intake-bar select { min-width: 0; max-width: 16rem; min-height: 2rem; font: 400 var(--text-xs)/1 var(--font-data); }
+.intake-bar select { min-width: 0; max-width: 16rem; min-height: 2rem; font-size: var(--text-xs); }
 .intake-bar label.btn { cursor: pointer; white-space: nowrap; }
 .intake-bar label.btn:has(+ input:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .intake-bar .hint { flex: 1 1 12rem; color: var(--color-muted); }

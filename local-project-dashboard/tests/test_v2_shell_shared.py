@@ -994,6 +994,7 @@ class TheSelect(unittest.TestCase):
         self.assertNotRegex(reports, r"(?m)^\.filters select \{[^}]*min-height")
 
     FILTERS = ".fsel, .filters select, .tgrid select, .toolbar select"
+    EVERY = 'select:not(.tile-f, [multiple], [size]:not([size="1"]))'
 
     def test_every_filter_dropdown_is_one_shared_pill_enumerated_from_the_code(self):
         """sd:5281: every filter dropdown on every page wears the chip's pill: shell.list.pick's single select (.fsel, on
@@ -1002,7 +1003,7 @@ class TheSelect(unittest.TestCase):
         self.assertRegex(SHELL_CSS, r"(?m)" + r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}")
         self.assertIn('<select id="f-${key}" class="fsel" data-pick="${key}">', SHELL_JS)
         self.assertIn('put(bar, html`<label class="tfind">', SHELL_JS)
-        summary = re.search(r"^\.fpick > summary \{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        summary = re.search(r"^\.fpick > summary, [^{]*\{([^}]*)\}", SHELL_CSS, re.M).group(1)
         self.assertIn("border-radius: 999px", summary)
 
     def test_a_filter_narrowed_to_a_value_wears_the_accent_pill(self):
@@ -1016,15 +1017,31 @@ class TheSelect(unittest.TestCase):
         block = re.search(r"@supports \(appearance: base-select\) \{(.*?)\n\}", SHELL_CSS, re.S)
         self.assertIsNotNone(block, "shell.css does not theme the open list")
         body = block.group(1)
-        self.assertIn(f":where({self.FILTERS})::picker(select)", body)
+        # Decision #24588: every select's open list, not only a filter's; a list box (multiple, size) draws no popup.
+        self.assertIn(f":where({self.EVERY})::picker(select)", body)
+        self.assertIn(f":where({self.EVERY}) option:checked", body)
         self.assertIn("::picker-icon { display: none; }", body)
         for token in ("var(--color-panel)", "var(--color-rule)", "var(--shadow-overlay)", "var(--color-accent-bg)"):
             self.assertIn(token, body)
 
+    def test_a_page_listbox_button_wears_the_filter_pill(self):
+        # Decision #24588: a custom combobox (Activity's Repo button) reads as the shared dropdown, not its own box.
+        self.assertRegex(SHELL_CSS, r'(?m)^\.fpick > summary, button\[aria-haspopup="listbox"\] \{')
+        self.assertIn('.fpick:has(:checked) > summary, button[aria-haspopup="listbox"]:has(> .n) {', SHELL_CSS)
+        buttons = set()
+        for path in sorted(STATIC.glob("*.js")):
+            for cls in re.findall(r'<button[^>]*class="([\w-]+)"[^>]*aria-haspopup="listbox"', path.read_text(encoding="utf-8")):
+                buttons.add(cls)
+        self.assertEqual(buttons, {"pick"})
+        for name, css in PAGE_CSS.items():
+            for cls in buttons:
+                with self.subTest(page=name, cls=cls):
+                    self.assertNotRegex(css, rf"(?m)^\.{cls}(?::[^\s{{,]+)?\s*\{{[^}}]*\b(?:border|background|border-radius):")
+
     def test_no_page_redraws_the_select_box(self):
-        # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box or chevron.
-        # The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
-        redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline)\s*:")
+        # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box, chevron, ink or
+        # face (decision #24588). The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
+        redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline|font|font-family|color|box-shadow)\s*:")
         found = []
         for path in sorted(STATIC.glob("*.css")):
             css = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
