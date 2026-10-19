@@ -707,7 +707,9 @@ def pinned_router(pack: Path):
     `sd_route.py` and `sd-review`'s `DEFAULT_POLICY` at `PACK_SHA`, or None
     when the pack checkout cannot show them. A repository's own
     `.github/sd-review.json` at the head is laid over the default, as
-    `validate_policy` does; a draft is never assumed."""
+    `validate_policy` does; a draft is never assumed. The file at the head,
+    not today's repo-row declaration (sd:5159): every head here predates the
+    row, and the policy a head was routed under is the one it carried."""
     import ast
     import types
     source = git(str(pack), "show", f"{PACK_SHA}:bin/sd_route.py")

@@ -51,6 +51,9 @@ case "$1 $2" in
     printf ' "fleet_owners": {"description": "Comma-separated GitHub logins.", "pattern": "[A-Za-z0-9](-?[A-Za-z0-9])*(,[A-Za-z0-9](-?[A-Za-z0-9])*)*", "value": %s},\n' "$(value fleet_owners)"
     printf ' "hub_name": {"description": "The hub node name.", "pattern": "", "value": %s},\n' "$(value hub_name)"
     printf ' "status_companions": {"description": "Repositories sd-status lists beside its own.", "pattern": "[~/].*", "value": %s},\n' "$(value status_companions)"
+    for key in notion_private_folder notion_team_folder notion_experiments notion_experiment_tasks; do
+      printf ' "%s": {"description": "A Notion id.", "pattern": "", "value": %s},\n' "$key" "$(value $key)"
+    done
     printf ' "gate_slots": {"description": "Gates at once.", "pattern": "[0-9]+", "value": null, "source": "default"}}\n'
     exit 0 ;;
   "config set")
@@ -109,7 +112,9 @@ class TheFleetRead(unittest.TestCase):
         self.assertEqual(doc["reason"], "")
         self.assertEqual([(k["key"], k["value"], k["source"], k["choices"]) for k in doc["fleet"]],
                          [("fleet_owners", None, "default", None), ("copilot_review", "never", "database", ["deep", "never", "always"]),
-                          ("hub_name", None, "default", None), ("status_companions", None, "default", None)])
+                          ("hub_name", None, "default", None), ("status_companions", None, "default", None),
+                          ("notion_private_folder", None, "default", None), ("notion_team_folder", None, "default", None),
+                          ("notion_experiments", None, "default", None), ("notion_experiment_tasks", None, "default", None)])
         self.assertEqual(doc["fleet"][1]["description"], "When sd-ship requests a Copilot review.")
         self.assertEqual(self.sd.calls(), ["config list sd --json"])
 

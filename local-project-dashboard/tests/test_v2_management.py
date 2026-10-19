@@ -2,8 +2,8 @@
 
 What this slice promises: `/management` answers under the shared policy and
 loads its script before `shell.js`; `/api/management` is one document built
-from the reads v1 already makes (the sd-db repo table with each checkout's
-`.github/sd-review.json` and protection reading, the fleet's git state and
+from the reads v1 already makes (the sd-db repo table with each row's review
+declaration and protection reading, the fleet's git state and
 sessions, the assignment lane, services and jobs), where a source that fails is
 a reason and never an empty list; `/api/repos/<verb>` runs the two sd-db repo
 verbs and refuses a stale `before`.
@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sd_db import repos, upsert_repo, upsert_shadow, workflow, writes
+from sd_db.errors import SdDbError
 from sd_dashboard import management_screen, server, v2
 
 from support import NOW, ScreenCase
@@ -98,12 +99,12 @@ class NoServices:
 
 
 def seed(case):
-    """A registered checkout with an sd-review.json, a blocked author run and a finished merge."""
+    """A registered checkout with a review declaration, a blocked author run and a finished merge."""
     checkout = Path(case.tmp.name).resolve() / "checkout"
-    (checkout / ".github").mkdir(parents=True)
-    (checkout / ".github" / "sd-review.json").write_text(
-        '{\n  "severity_floor": "high",\n  "copilot_review": {"automatic_deep": false}\n}\n')
+    checkout.mkdir(parents=True)
     upsert_repo(case.connection, str(checkout), remote="git@example.invalid:example/checkout.git")
+    repos.set_declaration(case.connection, str(checkout), "review",
+                          {"severity_floor": "high", "copilot_review": {"automatic_deep": False}})
     case.repo()
     item = case.item("Port the page", repo="/repos/system")
     blocked = case.assignment(item, status="blocked")
@@ -263,15 +264,46 @@ class TheDocument(ScreenCase):
         self.assertEqual(management_screen._attention(None), {"state": "unknown", "n": 0, "what": "scheduled jobs not read"})
         self.assertEqual(self.document()["attention"], management_screen._attention(self.document()["jobs"]))
 
-    def test_a_repo_carries_its_row_its_review_file_and_its_protection_reading(self):
+    def test_a_repo_carries_its_row_its_review_declaration_and_its_protection_reading(self):
         rows = {row["path"]: row for row in self.document()["repos"]}
         checkout = rows[self.ids["checkout"]]
         self.assertEqual((checkout["runner_merge"], checkout["managed"]), ("manual", "no"))
         self.assertEqual((checkout["review"]["severity_floor"], checkout["review"]["automatic_deep"]), ("high", False))
-        self.assertIn('"severity_floor": "high"', checkout["review"]["file"])
+        self.assertIn('"severity_floor": "high"', checkout["review"]["declaration"])
         self.assertEqual(checkout["protection"]["status"], "unknown")
-        # A checkout not on disk has no review reading at all, not an absent file.
-        self.assertIsNone(rows["/repos/system"]["review"])
+        # sd:5159: a row that declares none reads as none, whether or not its checkout is on disk.
+        self.assertEqual(rows["/repos/system"]["review"], {"declaration": None})
+
+    def test_the_review_setting_is_the_rows_declaration_not_the_checkout_file(self):
+        """sd:5159: pack #1577 moved `.github/sd-review.json` into the repo row; a file left in a checkout is not read."""
+        checkout = Path(self.ids["checkout"])
+        (checkout / ".github").mkdir()
+        (checkout / ".github" / "sd-review.json").write_text('{"severity_floor": "low"}')
+        bare = Path(self.tmp.name).resolve() / "bare"
+        (bare / ".github").mkdir(parents=True)
+        (bare / ".github" / "sd-review.json").write_text('{"severity_floor": "medium"}')
+        upsert_repo(self.connection, str(bare))
+        rows = {row["path"]: row for row in self.document()["repos"]}
+        self.assertEqual(rows[str(checkout)]["review"]["severity_floor"], "high")
+        self.assertEqual(rows[str(bare)]["review"], {"declaration": None})
+
+    def test_an_unread_declarations_column_is_an_error_not_an_absent_declaration(self):
+        """sd:5159: a column that does not read is unknown; the page offers no Add for it."""
+        unread = SdDbError("repo.declarations does not read as a JSON object; set it again")
+        with patch.object(management_screen.repos, "declarations", side_effect=unread):
+            doc = self.document()
+        self.assertEqual(doc["sources"]["repos"], "")
+        review = {row["path"]: row for row in doc["repos"]}[self.ids["checkout"]]["review"]
+        self.assertIsNone(review["declaration"])
+        self.assertTrue(review["error"].startswith("not read: "), review["error"])
+
+    def test_an_sd_db_without_the_declarations_reader_is_an_error_not_an_absent_declaration(self):
+        """sd:5159: a pack before migration 37 has no `repos.declarations`; nothing says the row declares none."""
+        with patch.object(management_screen.repos, "declarations", None):
+            doc = self.document()
+        review = {row["path"]: row for row in doc["repos"]}[self.ids["checkout"]]["review"]
+        self.assertEqual(review["declaration"], None)
+        self.assertIn("update the command pack", review["error"])
 
     def test_a_checkout_borrowing_a_siblings_protection_row_names_the_lender(self):
         """sd:1607: the GitHub panel says which checkout's reading it shows."""
@@ -567,8 +599,8 @@ class TheDocument(ScreenCase):
         real = json.loads
 
         def deep(text, *args, **kwargs):
-            # The two checkout files only: package.json is "{}", and _review hands json.loads bytes.
-            if text == "{}" or isinstance(text, bytes):
+            # package.json is "{}"; the row's declarations column is the text naming "review".
+            if text == "{}" or (isinstance(text, str) and '"review"' in text):
                 raise RecursionError("maximum recursion depth exceeded")
             return real(text, *args, **kwargs)
 
@@ -582,8 +614,8 @@ class TheDocument(ScreenCase):
     def test_a_setting_of_the_wrong_type_is_that_repos_error_not_a_value(self):
         """sd:1629 round 2: one checkout's `{"toString": null}` reached the page, and String() of it stopped every view."""
         checkout = Path(self.ids["checkout"])
-        (checkout / ".github" / "sd-review.json").write_text(
-            '{"severity_floor": 7, "copilot_review": {"automatic_deep": {"toString": null}}}')
+        repos.set_declaration(self.connection, str(checkout), "review",
+                              {"severity_floor": 7, "copilot_review": {"automatic_deep": {"toString": None}}})
         body = {"gaps": [], "detail": {"required_contexts": ["ci", {"toString": None}], "strict": True}}
         self.connection.execute("INSERT INTO repo_protection (repo, observed_at, status, default_branch, body) "
                                 "VALUES (?, '2026-10-04T01:00:00Z', 'protected', 'main', ?)", (str(checkout), json.dumps(body)))
@@ -836,9 +868,9 @@ class TheScript(PageScript):
             ["repo.deep-settings", "repo", "safe", None, True, False],
             ["repo.land", "repo", "confirm", "n", True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
-            ["file.prepare", "file change", "safe", "p", False, False],
+            ["declaration.copy", "declaration change", "safe", "p", False, False],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
-            ["file.withdraw", "file change", "safe", None, False, False],
+            ["declaration.withdraw", "declaration change", "safe", None, False, False],
             ["asg.get", "assignment", "safe", "o", False, False],
             ["item.show", "item", "safe", "o", False, False],
             ["wt.prune", "worktrees", "confirm", "p", None, False],
@@ -950,7 +982,7 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         self.assertIn("3.14", cells["python"])
         self.assertIn("not pinned", cells["node"])
         self.assertNotIn("merge grant", repos)
-        self.assertIn("change through a pull request", repos)
+        self.assertIn("change through the row's review declaration", repos)
         self.assertNotIn("data-set=", repos)
         self.assertNotIn("<select", repos)
 
@@ -1485,7 +1517,7 @@ await flush(); R.group = OUT.toasts.map(t => t.msg); await lastUndo().undo(); aw
 
 
 class TheSecondRound(PageScript):
-    """Copilot's review of f06cbf5 on PR #50: the review-file proposal and the schedule's words."""
+    """Copilot's review of f06cbf5 on PR #50: the review-declaration proposal and the schedule's words."""
 
     LAST = '{\n  "copilot_review": {\n    "automatic_deep": false\n  },\n  "severity_floor": "high"\n}\n'
 
@@ -1493,8 +1525,8 @@ class TheSecondRound(PageScript):
         doc = json.loads(json.dumps(self.doc))
         row = next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])
         body = json.loads(text) if text.startswith("{") and text.rstrip().endswith("}") and "!" not in text else {}
-        row["review"] = {"file": text, "severity_floor": body.get("severity_floor"),
-                         "automatic_deep": (body.get("copilot_review") or {}).get("automatic_deep"), "schema": None}
+        row["review"] = {"declaration": text, "severity_floor": body.get("severity_floor"),
+                         "automatic_deep": (body.get("copilot_review") or {}).get("automatic_deep")}
         return self.run_page(calls + """
 R.texts = pending.map(p => p.diff.filter(d => d[0] !== 'del' && d[0] !== 'hd').map(d => d[1]).join('\\n'));
 R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return 'invalid: ' + e.message; } });""",
@@ -1518,10 +1550,35 @@ R.parsed = R.texts.map(t => { try { return JSON.parse(t); } catch (e) { return '
         self.assertEqual([d for d in out["R"]["diff"] if d[0] in ("add", "del")],
                          [["del", "  },"], ["del", '  "severity_floor": "high"'], ["add", "  }"]])
 
-    def test_a_review_file_that_is_not_json_is_not_proposed(self):
+    def test_a_review_declaration_that_is_not_json_is_not_proposed(self):
         out = self.proposal('{\n  "severity_floor": "high",\n}\n!', "propose('severity_floor', 'low');")
         self.assertEqual(out["R"]["parsed"], [])
-        self.assertEqual(out["toasts"][-1][0], "Not proposed: .github/sd-review.json is not valid JSON; fix it in the checkout first")
+        self.assertEqual(out["toasts"][-1][0], "Not proposed: the review declaration is not a JSON object")
+
+    def test_a_floor_change_gives_the_sd_db_declare_line_not_a_pull_request(self):
+        """sd:5159: the policy lives on the repo row; the page drafts `sd-db repo declare`, the pack's one writer."""
+        out = self.proposal(self.LAST, "propose('severity_floor', 'low'); R.p = [pending[0].type, cmd('declaration.copy').cli(pending[0])];")
+        path = self.ids["checkout"]
+        self.assertEqual(out["R"]["p"], ["declaration change", "~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo declare "
+                                         f"'{path}' review '{{\"copilot_review\":{{\"automatic_deep\":false}},\"severity_floor\":\"low\"}}'"])
+
+    def settings_page(self, review, body):
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == self.ids["checkout"])["review"] = review
+        return self.run_page(body, doc=doc, search=f"?repo={self.ids['checkout']}", hash="#view=repos")
+
+    def test_a_row_without_a_declaration_offers_the_starter_line(self):
+        click = "ELS['view-repos'].listeners.click.forEach(f => f({ target: { closest: s => s === '[data-create-review]' ? {} : null } }));"
+        out = self.settings_page({"declaration": None}, f"R.html = ELS['view-repos'].html; {click} R.cli = cmd('declaration.copy').cli(pending[0]);")
+        self.assertIn("Add declaration", out["R"]["html"])
+        self.assertNotIn("sd-review.json", out["R"]["html"])
+        self.assertTrue(out["R"]["cli"].endswith(f"repo declare '{self.ids['checkout']}' review '{{\"severity_floor\":\"high\"}}'"),
+                        out["R"]["cli"])
+
+    def test_an_unread_declaration_offers_no_add(self):
+        out = self.settings_page({"declaration": None, "error": "not read: the database is locked"}, "R.html = ELS['view-repos'].html;")
+        self.assertIn("not read: the database is locked", out["R"]["html"])
+        self.assertNotIn("Add declaration", out["R"]["html"])
 
     def test_a_date_pinned_calendar_names_its_date(self):
         out = self.run_page("""R.got = [human([{ Day: 15, Hour: 3, Minute: 0 }]), human([{ Month: 1, Day: 1, Hour: 0, Minute: 5 }]),

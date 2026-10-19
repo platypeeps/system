@@ -5,8 +5,8 @@ document, `/api/management`, built here from reads v1 already makes, each
 source guarded on its own so one that fails is a reason and not an empty list
 (`sources` holds the empty string for a source that was read):
 
-- `repos`: `repos.registered`, the sd-db repo table, with each checkout's
-  `.github/sd-review.json` read from disk and the protection reading
+- `repos`: `repos.registered`, the sd-db repo table, with each row's review
+  declaration (`repos.declarations`, sd:5159) and the protection reading
   `protection.rows` gives v1 /protection (the nightly collector's; nothing
   here calls GitHub).
 - `pulls`: each GitHub repository's open pull requests, by lower-cased
@@ -78,8 +78,6 @@ __all__ = ["document", "job_log", "last_run", "log_tail", "set_repo"]
 #: How many assignments and merges the page lists; the history counts every row.
 LATEST = 40
 MERGES = 12
-#: The largest sd-review.json the page shows in full.
-REVIEW_BYTES = 16384
 FAILURES = (OSError, ValueError, TypeError, KeyError, SdDbError, sqlite3.Error)
 #: The largest run stamp read; the wrapper writes three short lines.
 STAMP_BYTES = 512
@@ -89,36 +87,39 @@ PIN_BYTES = 65536
 LOG_BYTES = 4096
 
 
-def _review(path: str) -> dict | None:
-    """The checkout's `.github/sd-review.json`: None when the checkout is not on disk, `file: None` when absent."""
-    root = Path(path).expanduser()
-    if not root.is_dir():
-        return None
-    target = root / ".github" / "sd-review.json"
+def _review(connection, path: str) -> dict:
+    """The row's `review` declaration (sd:5159): `declaration: None` when the row declares none.
+
+    Pack #1577 moved `.github/sd-review.json` into the repo row, with no file
+    fallback, so a file left in a checkout is not read. A declaration that was
+    not read is an error, never an absent one: the page offers Add only for that.
+    """
+    reader = getattr(repos, "declarations", None)
+    if reader is None:
+        return {"declaration": None, "error": "not read: this dashboard's sd_db has no declarations reader; update the command pack"}
     try:
-        raw = target.read_bytes()[:REVIEW_BYTES + 1]
-    except FileNotFoundError:
-        return {"file": None}
-    except OSError as error:
-        return {"file": None, "error": f"unreadable: {error.strerror or error}"}
-    text = raw[:REVIEW_BYTES].decode("utf-8", "replace")
-    try:
-        body = json.loads(raw)
-    except ValueError:
-        return {"file": text, "error": "not valid JSON" if len(raw) <= REVIEW_BYTES else "too large to show"}
+        held = reader(connection, path)
+        body = None if held is None else held.get("review")
+        text = None if body is None else json.dumps(body, indent=2, sort_keys=True)
+    except FAILURES as error:
+        return {"declaration": None, "error": f"not read: {error}"}
     except RecursionError:
-        # A pure-Python JSON scanner recurses per nesting level (sd:2911); this repo's file, not the document, fails.
-        return {"file": text, "error": "nests too deeply to read"}
-    body = body if isinstance(body, dict) else {}
+        # A pure-Python JSON scanner recurses per nesting level (sd:2911); this repo's row, not the document, fails.
+        return {"declaration": None, "error": "nests too deeply to read"}
+    if held is None:
+        return {"declaration": None, "error": f"not read: no row holds {path}"}
+    if body is None:
+        return {"declaration": None}
+    if not isinstance(body, dict):
+        return {"declaration": text, "error": "not a JSON object"}
     copilot = body.get("copilot_review") if isinstance(body.get("copilot_review"), dict) else {}
-    schema = body.get("$schema") if isinstance(body.get("$schema"), str) else None
     floor, deep = body.get("severity_floor"), copilot.get("automatic_deep")
     # Only the types the page renders pass; any other value is this repo's error, never a value (sd:1629).
     wrong = [words for value, kind, words in ((floor, str, "severity_floor is not a string"),
                                               (deep, bool, "copilot_review.automatic_deep is not true or false"))
              if value is not None and not isinstance(value, kind)]
-    out = {"file": text, "severity_floor": floor if isinstance(floor, str) else None,
-           "automatic_deep": deep if isinstance(deep, bool) else None, "schema": schema}
+    out = {"declaration": text, "severity_floor": floor if isinstance(floor, str) else None,
+           "automatic_deep": deep if isinstance(deep, bool) else None}
     return out | {"error": "; ".join(wrong)} if wrong else out
 
 
@@ -267,7 +268,7 @@ def _repos(connection) -> list[dict]:
             # sd:5103: the Jira project File Jira issue files in, `off` for none; before migration 36, unknown.
             "jira_project": (row["jira_project"] or "off") if "jira_project" in row.keys() else None,
             "created_at": row["created_at"], "updated_at": row["updated_at"],
-            "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
+            "review": _review(connection, row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
     return out
 
