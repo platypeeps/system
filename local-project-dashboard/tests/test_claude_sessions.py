@@ -300,5 +300,67 @@ class Sessions(ScreenCase):
         self.assertEqual(doc["sessions"][0]["safe"]["state"], "unknown")
 
 
+class Ending(unittest.TestCase):
+    """sd:5126: End session signals only the pid that claude agents and ps still tie to the posted session."""
+
+    PS = [(100, 1, "claude -n system"), (200, 1, "claude -n hoa"), (300, 1, "/usr/bin/python3 server.py")]
+
+    def end(self, payload, *, agents=None, processes=None):
+        sent = []
+        write = claude_sessions.end(payload, agents=agents or (lambda: [agent(LEAD, pid=100), agent(OTHER, pid=200, name="hoa")]),
+                                    processes=processes or (lambda: self.PS), kill=lambda pid, sig: sent.append((pid, sig)))
+        return write(None), sent
+
+    def test_the_posted_session_and_pid_are_signalled_with_sigterm(self):
+        got, sent = self.end({"id": OTHER, "pid": 200})
+        self.assertEqual(sent, [(200, claude_sessions.signal.SIGTERM)])
+        self.assertEqual(got, {"id": OTHER, "pid": 200, "name": "hoa", "ended": "SIGTERM sent"})
+
+    def test_evidence_from_another_session_or_process_refuses_and_signals_nothing(self):
+        cases = {
+            "now runs as pid 100": ({"id": LEAD, "pid": 200}, None, None),  # the other session's pid
+            "no longer listed": ({"id": "33333333-3333-4333-8333-333333333333", "pid": 200}, None, None),
+            "runs /usr/bin/python3, not claude": ({"id": LEAD, "pid": 300}, lambda: [agent(LEAD, pid=300)], None),
+            "not in the process table": ({"id": LEAD, "pid": 100}, None, lambda: []),
+        }
+        for said, (payload, agents, processes) in cases.items():
+            with self.subTest(said):
+                sent = []
+                write = claude_sessions.end(payload, agents=agents or (lambda: [agent(LEAD, pid=100), agent(OTHER, pid=200)]),
+                                            processes=processes or (lambda: self.PS), kill=lambda pid, sig: sent.append(pid))
+                with self.assertRaisesRegex(ValueError, said):
+                    write(None)
+                self.assertEqual(sent, [])
+
+    def test_a_read_that_failed_refuses_and_is_never_a_match(self):
+        def broken():
+            raise claude_sessions.Unread("claude agents --json gave no answer in 10 s")
+        for agents, processes in ((broken, None), (None, broken)):
+            sent = []
+            write = claude_sessions.end({"id": LEAD, "pid": 100}, agents=agents or (lambda: [agent(LEAD, pid=100)]),
+                                        processes=processes or (lambda: self.PS), kill=lambda pid, sig: sent.append(pid))
+            with self.assertRaisesRegex(ValueError, "no answer"):
+                write(None)
+            self.assertEqual(sent, [])
+
+    def test_a_malformed_post_is_refused_before_any_read(self):
+        for payload in ({"id": LEAD}, {"id": "*", "pid": 100}, {"id": LEAD, "pid": "100"}, {"id": LEAD, "pid": 1},
+                        {"id": LEAD, "pid": True}, {"id": LEAD, "pid": 100, "signal": "KILL"}):
+            with self.subTest(payload), self.assertRaisesRegex(ValueError, "Name the session"):
+                claude_sessions.end(payload, agents=lambda: self.fail("read"), processes=lambda: self.fail("read"))
+
+    def test_a_process_gone_before_the_signal_answers_already_gone(self):
+        def gone(pid, sig):
+            raise ProcessLookupError(pid)
+        write = claude_sessions.end({"id": LEAD, "pid": 100}, agents=lambda: [agent(LEAD, pid=100)],
+                                    processes=lambda: self.PS, kill=gone)
+        self.assertEqual(write(None)["ended"], "already gone")
+
+    def test_a_node_launched_claude_counts_as_claude(self):
+        self.assertTrue(claude_sessions._runs_claude("node /opt/lib/node_modules/@anthropic-ai/claude-code/cli.js -c"))
+        self.assertTrue(claude_sessions._runs_claude("/Users/x/.local/bin/claude --resume"))
+        self.assertFalse(claude_sessions._runs_claude("bash -c claude"))
+
+
 if __name__ == "__main__":
     unittest.main()

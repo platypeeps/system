@@ -1307,7 +1307,7 @@
 
   // ---------- The page's list: j / k, Esc and ?row= ----------
   // A page declares its list once, window.PAGE_LIST = { rows, select, id, current, clear, when }, and binds none of these keys.
-  //   rows()          the row elements in reading order; j / k walk those with a box (getClientRects), so hidden rows are skipped.
+  //   rows()          the row elements in reading order; j / k walk the shown ones (shownRow), so a hidden view's rows are skipped.
   //   select(id, el)  the page's own selection; the shell then scrolls the row into view.
   //   id(el)          the row's id (default el.dataset.id). current() the selected id (default: the row with aria-selected="true").
   //   clear()         Esc when nothing is open to close: clear the page's filter (or cancel a drag); true when there was one.
@@ -1326,16 +1326,21 @@
     try { history.replaceState(history.state, '', `${s ? '?' + s : location.pathname.split('/').pop()}${location.hash}`); } catch (_) {}
   }
   const rowParam = () => new URLSearchParams(location.search).get('row');
+  // walk:start
+  // A row is shown when it has a box and no hidden ancestor: a view panel the switch hid (view-<id>) holds no row j / k may
+  // reach, whatever the page's stylesheet gives it (sd:5113).
+  const shownRow = el => el.getClientRects().length > 0 && !el.closest('[hidden]');
   function step(d) {
     const L = window.PAGE_LIST; if (!L || (L.when && !L.when())) return false;
     const idOf = L.id || (el => el.dataset.id);
-    const rows = [...L.rows()].filter(el => el.getClientRects().length); if (!rows.length) return false;
+    const rows = [...L.rows()].filter(shownRow); if (!rows.length) return false;
     const cur = L.current ? L.current() : (() => { const on = rows.find(el => el.getAttribute('aria-selected') === 'true'); return on ? idOf(on) : null; })();
     const i = rows.findIndex(el => idOf(el) === cur);
     const n = rows[i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + d))];
     L.select(idOf(n), n); n.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     return true;
   }
+  // walk:end
 
   // ---------- Keys ----------
   const CHORDS = Object.fromEntries(GROUPS.flatMap(([, items]) => items).map(([k2, , k]) => [k, k2]));
@@ -1501,7 +1506,7 @@
   // select(id) is the page's own; clear() only says why nothing is selected. Returns the selected id or null.
   // keep(id): true for a selection that is not a list row (Contributions' collector, Today's briefs); the filter leaves it alone.
   function reconcile({ rows, current, select, clear, keep, id = el => el.dataset.id }) {
-    const all = [...rows], vis = all.filter(el => el.getClientRects().length);
+    const all = [...rows], vis = all.filter(shownRow);
     if (current === undefined) { const on = all.find(el => el.getAttribute('aria-selected') === 'true'); current = on ? id(on) : null; }
     if (current != null && keep && keep(current)) return current;
     if (current != null && vis.some(el => id(el) === current)) return current;
