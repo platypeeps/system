@@ -26,7 +26,7 @@ HUB = "hub.example.test"
 
 def utc_today():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve", f"{PREFIX}.task-actions"]
+ROLE_AGENTS = [f"{PREFIX}.sd-dashboard", f"{PREFIX}.sd-serve"]
 ROLE_JOBS = ["sd-db-backup", "sd-db-backup-hourly", "offsite-verify", "shadow-sync-nightly"]
 
 # The pack's bin/sd-db: `fence` prints the state in $STUB_FENCE (a file, so
@@ -218,10 +218,6 @@ class PromoteCase(unittest.TestCase):
             if job == "sd-db-backup-hourly":
                 body = f'SD_DB_BACKUP_HOURLY_DESTINATION="{self.hourly}"\n' + body
             (jobs / f"{job}.job").write_text(body)
-        # task-actions from the config folder, so its own installer stays out of the run.
-        agents = self.config / "machine-setup" / "launchagents"
-        (agents / f"{PREFIX}.task-actions.plist").write_text(
-            (agents / f"{PREFIX}.sd-serve.plist").read_text())
         self.hub_json = f.home / ".config/sd/hub.json"
         self.hub_json.parent.mkdir(parents=True)
         self.port = self.closed_port()
@@ -1264,9 +1260,6 @@ class HubRole(unittest.TestCase):
         jobs.mkdir(parents=True)
         for job in ROLE_JOBS + ["mirror-sync-nightly"]:
             (jobs / f"{job}.job").write_text('JOB_SCHEDULE="50 * * * *"\nJOB_COMMAND="true"\n')
-        agents = self.config / "machine-setup" / "launchagents"
-        (agents / f"{PREFIX}.task-actions.plist").write_text(
-            (agents / f"{PREFIX}.sd-serve.plist").read_text())
 
     def update(self, stage, fence):
         self.fence.write_text(fence + "\n")
