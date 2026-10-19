@@ -680,6 +680,7 @@ class TheScript(ScreenCase):
             ["note.resolve", "note", "confirm", "v", None, True, False],
             ["asg.cancel", "assignment", "confirm", "x", None, True, False],
             ["asg.get", "assignment", "safe", "o", False, True, False],  # copy only: Details show it (sd:3524)
+            ["realm-sweep.run", "sweep", "safe", None, True, True, False],  # the Personal and Work views (sd:5096, sd:5097)
         ])
 
     # sd:5064: the List / Board / Matrix switch is one icon button whose menu lists the three views.
@@ -2244,7 +2245,7 @@ class TheLinksIntoTasks(unittest.TestCase):
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "tasks", "Tasks", "/tasks", ("/api/tasks", "/api/tasks/start-next", "/api/tasks/start-next/run",
-                                                           "/api/tasks/1")
+                                                           "/api/tasks/1", "/api/tasks/sweep", "/api/tasks/sweep/status")
 
 
 class TheDocumentLinks(ScreenCase):
