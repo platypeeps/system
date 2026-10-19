@@ -10,9 +10,6 @@ machine's own time zone, from records the library already keeps:
   same merge, recorded once, with no git walk.
 - **done** and **opened**: the `status_change` notes of the day
   (`reads.status_change_notes`): a move to `done`, and `opened as`.
-- **runs**: runner assignments that started or ended that day, as Activity
-  reads them (`activity_screen.runs`).
-
 - **daily**: each day's daily note text (sd:3426), from the Obsidian vault
   named by `OBSIDIAN_VAULT` when exported, else from `<config>/shared.env`, else its
   default `~/Documents/Obsidian Vault`. The note's name is the one Obsidian's
@@ -22,16 +19,11 @@ machine's own time zone, from records the library already keeps:
   note says where it looked, and a vault that is not set says so: neither is
   shown as text.
 
-Mail (sd:3425) is its own read, `mail`, behind `/api/notes/mail`, so a slow
-mail server never holds up the days: the newest `MAIL_ROWS` inbox messages of
-the last `MAIL_DAYS` days, sender, subject and time, from Gmail through
-workspace-mcp. It reaches the server with `local-mail-intake`'s client, at
-`WORKSPACE_MCP_URL` and as `EMAIL_FROM`, the account `local-notify` sends
-from: each exported, else from `<config>/notify/.env`. It asks for headers,
-never bodies, and closes its session. The whole read is bounded by
-`MAIL_SECONDS`; a server that is down or slower is `down`, an account not set
-is `unconfigured`, and a tool error such as a lapsed grant is `error`, each
-with the reason, never unknown.
+The page lists no mail and no runner runs (sd:5289). `workspace`, `_mail_intake`
+and `close_session` stay for Draft email (`email_draft`) and Today's mail read
+(`today_mail`): workspace-mcp at `WORKSPACE_MCP_URL`, as `EMAIL_FROM`, the
+account `local-notify` sends from, each exported, else from
+`<config>/notify/.env`.
 
 A source that raises is named in `sources` with its reason and adds no rows,
 so a failed read never looks like a quiet day. The document writes nothing.
@@ -56,7 +48,6 @@ import re
 import sqlite3
 import subprocess
 import sys
-import threading
 import unicodedata
 import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
@@ -67,17 +58,11 @@ from sd_db.errors import SdDbError
 
 from . import activity_screen
 
-__all__ = ["DAILY_MAX", "DAYS", "MAIL_DAYS", "MAIL_ROWS", "MAIL_SECONDS", "QUICK_KIND", "QUICK_MAX", "KindMissing", "daily_notes",
-           "document", "mail", "quick_add", "quick_notes", "quick_text"]
+__all__ = ["DAILY_MAX", "DAYS", "QUICK_KIND", "QUICK_MAX", "KindMissing", "daily_notes",
+           "document", "quick_add", "quick_notes", "quick_text", "workspace"]
 
 #: Days the document carries, today included.
 DAYS = 7
-
-#: The inbox the page lists: the newest `MAIL_ROWS` messages of the last `MAIL_DAYS` days.
-MAIL_ROWS = 15
-MAIL_DAYS = 2
-#: The whole mail read's ceiling, in seconds: session, search, header fetch and close.
-MAIL_SECONDS = 8
 #: workspace-mcp's address when neither the environment nor local-notify's config names one, as local-notify has it.
 MAIL_URL = "http://127.0.0.1:8083/mcp"
 
@@ -297,58 +282,6 @@ def workspace(environ=None) -> tuple[str, str, str]:
     return url, account, why
 
 
-def _inbox(mi, url: str, account: str, budget: float) -> dict:
-    """One bounded read: a session, the inbox search, the found messages' headers, then the session closed."""
-    client = mi.Mcp(url, timeout=budget)
-    try:
-        client.connect()
-        found = client.call("search_gmail_messages", {"query": f"in:inbox newer_than:{MAIL_DAYS}d",
-                                                       "user_google_email": account, "page_size": MAIL_ROWS})
-        ids = list(dict.fromkeys(mid for mid, _ in mi.parse_search(found)))[:MAIL_ROWS]
-        blocks = []
-        for start in range(0, len(ids), mi.BATCH):
-            blocks += mi.parse_metadata(client.call("get_gmail_messages_content_batch", {
-                "message_ids": ids[start:start + mi.BATCH], "user_google_email": account, "format": "metadata"}))
-    finally:
-        close_session(url, client)
-    rows = []
-    for fields in blocks:
-        sent = mi.when(fields.get("Date", ""))
-        rows.append({"id": fields["Message ID"], "from": mi.display_name(fields.get("From", "")),
-                     "subject": fields.get("Subject") or "(no subject)", "at": _iso(sent.astimezone(timezone.utc)) if sent else None})
-    rows.sort(key=lambda row: row["at"] or "", reverse=True)
-    return {"rows": rows, "missing": len(ids) - len(rows)}
-
-
-def mail(*, now: str, environ=None) -> dict:
-    """The newest inbox mail: `ok` with rows, or `unconfigured`, `down` or `error` with the reason; never raises."""
-    url, account, why = workspace(environ)
-    if not account:
-        return {"state": "unconfigured", "why": why}
-    seconds = MAIL_SECONDS
-    box = {}
-
-    def read():
-        try:
-            mi = _mail_intake()
-            try:
-                box["answer"] = {"state": "ok", **_inbox(mi, url, account, seconds)}
-            except mi.McpError as error:
-                down = str(error).startswith("cannot reach")
-                box["answer"] = {"state": "down" if down else "error",
-                                 "why": f"workspace-mcp at {url}: {error}" if down else f"workspace-mcp could not read the inbox: {error}"}
-        except (OSError, ValueError, RuntimeError) as error:  # a socket timeout mid-reply is an OSError, not a McpError
-            box["answer"] = {"state": "down", "why": f"workspace-mcp at {url} stopped answering: {error.__class__.__name__}: {error}"}
-        except Exception as error:  # noqa: BLE001 - the page names any failure rather than lose the read
-            box["answer"] = {"state": "error", "why": f"The mail read failed: {error.__class__.__name__}: {error}"}
-
-    worker = threading.Thread(target=read, name="notes-mail", daemon=True)
-    worker.start()
-    worker.join(seconds)
-    answer = box.get("answer") or {"state": "down", "why": f"workspace-mcp did not answer at {url} within {seconds} s."}
-    return {**answer, "read": now, "days": MAIL_DAYS}
-
-
 def _utc(stamp: str) -> datetime:
     return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc)
 
@@ -382,12 +315,12 @@ def _changes(connection, start, end):
 
 
 def document(connection: sqlite3.Connection, *, now: str) -> dict:
-    """The Notes page's document: the last `DAYS` local days, each with its daily note, merges, done items, opened count and runs."""
+    """The Notes page's document: the last `DAYS` local days, each with its daily note, merges, done items and opened count."""
     today = _utc(now).astimezone().date()
     first = today - timedelta(days=DAYS - 1)
     start, end = _midnight(first), _midnight(today + timedelta(days=1))
     notes = daily_notes([(first + timedelta(days=n)).isoformat() for n in range(DAYS)])
-    days = {day: {"merges": [], "done": [], "opened": 0, "runs": [], "daily": note} for day, note in notes.items()}
+    days = {day: {"merges": [], "done": [], "opened": 0, "daily": note} for day, note in notes.items()}
     sources = {}
 
     def read(name, fn):
@@ -407,9 +340,6 @@ def document(connection: sqlite3.Connection, *, now: str) -> dict:
         for day, count in changes[1].items():
             if day in days:
                 days[day]["opened"] = count
-    for row in read("runs", lambda: activity_screen.runs(connection, start, end)) or []:
-        days.get(_local_day(row["at"]), {}).setdefault("runs", []).append(
-            {k: row[k] for k in ("id", "at", "s", "repo", "what", "ref", "n", "item", "role", "provider", "status", "started", "ended")})
     return {
         "read": now,
         "today": today.isoformat(),
