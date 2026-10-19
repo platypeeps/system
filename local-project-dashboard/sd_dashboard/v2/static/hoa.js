@@ -11,8 +11,10 @@
   const reduce = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   let DOC = null, M = null, ASSETS = [], LOTS = [], OB = [], AL = [], CELLS = [];
   let selected = null, range = 7, selDay = null, zoom = 1, center = null, P = null;
-  // sd:4967: acknowledged alarm events hide unless Show acknowledged is on; ACKS is why Acknowledge is off, or ''.
-  let showAcked = false, ACKS = '';
+  // sd:4967, sd:5286: the Alarms view shows the open events, the acknowledged ones or all (alView); ACKS is why Acknowledge
+  // is off, or ''.
+  let alView = 'open', ACKS = '';
+  const AL_VIEWS = [['open', 'Open', a => !a.acked], ['acked', 'Acknowledged', a => a.acked], ['all', 'All', () => true]];
   // sd:4965: the age lamps, tools/source-ages.py's rows for the Mission export and Vantaca. A source past its end date
   // (Vantaca after 2026-10-31) is retired and not drawn.
   let SRC = [];
@@ -226,7 +228,7 @@ let polling = 0;
     if (id.startsWith('asset:')) selectAsset(id, open);
     else if (id.startsWith('item:')) selectOb(id, open);
     else if (id.startsWith('lot:')) selectLot(id.slice(4), open);
-    else if (id.startsWith('alarm:')) selectAlarm(id, open);
+    else if (id.startsWith('alarm:')) { if (window.shell.view?.current() !== 'alarms') window.shell.view?.show('alarms'); selectAlarm(id, open); }
     else if (id.startsWith('day:')) selectDay(id.slice(4), open);
     else if (id === 'source:mission') selectSource(open);
     else if (id.startsWith('source:')) selectSourceRow(id, open);
@@ -363,11 +365,12 @@ let polling = 0;
   // ---------- Alarm ledger ----------
   function drawLedgers() {
     const C = window.shell.commands, m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
-    const acked = AL.filter(a => a.acked).length, shown = AL.filter(a => showAcked || !a.acked);
-    put($('al-show'), DOC && !alErr ? html`<button class="chip" type="button" aria-pressed="${String(showAcked)}">Show acknowledged <span class="n">${String(acked)}</span></button>` : html``);
+    const shown = AL.filter(AL_VIEWS.find(v => v[0] === alView)[2]);
+    put($('al-show'), DOC && !alErr ? html`${AL_VIEWS.map(([id, label, test]) => html`<button type="button" data-alview="${id}" aria-pressed="${String(id === alView)}">${label} <span class="n">${String(AL.filter(test).length)}</span></button>`)}` : html``);
     put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
       : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
-      : AL.length ? html`<tr><td colspan="7" class="why">Every alarm event in the last 30 days is acknowledged. Show acknowledged lists them.</td></tr>`
+      : alView === 'acked' && AL.length ? html`<tr><td colspan="7" class="why">No alarm event in the last 30 days is acknowledged.</td></tr>`
+      : AL.length ? html`<tr><td colspan="7" class="why">Every alarm event in the last 30 days is acknowledged. The Acknowledged view lists them.</td></tr>`
       : html`<tr><td colspan="7" class="why">No alarm event in the last 30 days of the export.</td></tr>`);
   }
   const alarmState = a => a.kind === 'generator' ? ['queued', 'weekly generator test'] : /Normal/.test(a.event) ? ['ok', 'return to normal'] : ['warning', 'alarm'];
@@ -517,7 +520,7 @@ let polling = 0;
     C.register(
       { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event here only; the Mission portal is not told. Undo shows it.',
         key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
-        run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. Show acknowledged lists it.`), undo: o => ack(o, false) },
+        run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. The Acknowledged view lists it.`), undo: o => ack(o, false) },
       { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
@@ -550,8 +553,8 @@ let polling = 0;
         out => reader.reread().then(() => { poll(); return `Sweep started ${String(out.started).slice(11, 16)} UTC · HOA reads again until it ends`; }),
         err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a sweep started is not known`); }) });
     $('al-show').addEventListener('click', e => {
-      if (!e.target.closest('.chip')) return;
-      showAcked = !showAcked; drawLedgers();
+      const b = e.target.closest('[data-alview]'); if (!b || b.dataset.alview === alView) return;
+      alView = b.dataset.alview; drawLedgers();
     });
     document.addEventListener('shell:picked', e => $('al-body').querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
     ['ob-body', 'al-body', 'src-body'].forEach(b => $(b).addEventListener('click', e => {

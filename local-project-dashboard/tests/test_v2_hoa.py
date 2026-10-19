@@ -705,7 +705,7 @@ class TheAcknowledgement(Fixture):
 
 
 class TheAcknowledgeCommand(Fixture):
-    """hoa.js: acknowledged rows hide behind Show acknowledged; Acknowledge posts the key and Undo posts it back."""
+    """hoa.js: the Alarms view shows Open, Acknowledged or All events; Acknowledge posts the key and Undo posts it back."""
 
     run_page = TheScript.run_page
 
@@ -715,17 +715,30 @@ class TheAcknowledgeCommand(Fixture):
             row["acked"] = row["key"] == TANK_LOW
         return doc
 
-    def test_an_acknowledged_row_hides_until_show_acknowledged_is_on(self):
-        out = self.run_page("""R.before = ELS['al-body'].html; R.chip = ELS['al-show'].html;
-ELS['al-show'].listeners.click[0]({ target: { closest: s => s === '.chip' ? {} : null } });
-R.after = ELS['al-body'].html; R.chipOn = ELS['al-show'].html;""", self.acked_doc())
+    def test_the_alarm_views_show_open_acknowledged_or_all_events(self):
+        # sd:5286: Show acknowledged is three views on the left of the Alarms tab's row, not a checkbox chip.
+        out = self.run_page("""const press = v => ELS['al-show'].listeners.click[0]({ target: { closest: s => s === '[data-alview]' ? { dataset: { alview: v } } : null } });
+R.open = ELS['al-body'].html; R.seg = ELS['al-show'].html;
+press('acked'); R.acked = ELS['al-body'].html; R.segAcked = ELS['al-show'].html;
+press('all'); R.all = ELS['al-body'].html;""", self.acked_doc())
         rows = lambda html: re.findall(r'<button type="button">([^<]+)</button>', html)  # noqa: E731
-        self.assertEqual(rows(out["R"]["before"]), ["A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
-        self.assertIn('aria-pressed="false">Show acknowledged <span class="n">1</span>', out["R"]["chip"])
-        self.assertEqual(rows(out["R"]["after"]), ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
-        self.assertIn('data-acked', out["R"]["after"])
-        self.assertIn('<span class="tag">acknowledged</span>', out["R"]["after"])
-        self.assertIn('aria-pressed="true"', out["R"]["chipOn"])
+        self.assertEqual(rows(out["R"]["open"]), ["A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertEqual(rows(out["R"]["acked"]), ["Tank Low Alarm"])
+        self.assertEqual(rows(out["R"]["all"]), ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertIn('<span class="tag">acknowledged</span>', out["R"]["all"])
+        self.assertRegex(out["R"]["seg"], r'data-alview="open" aria-pressed="true">Open <span class="n">3</span>.*'
+                                          r'data-alview="acked" aria-pressed="false">Acknowledged <span class="n">1</span>.*'
+                                          r'data-alview="all" aria-pressed="false">All <span class="n">4</span>')
+        self.assertIn('data-alview="acked" aria-pressed="true"', out["R"]["segAcked"])
+        self.assertNotIn("Show acknowledged", out["R"]["seg"])
+
+    def test_the_alarm_ledger_is_its_own_view_after_tasks(self):
+        page = (V2 / "hoa.html").read_text(encoding="utf-8")
+        overview = re.search(r'<div id="view-overview".*?\n  </div>\n', page, re.S).group(0)
+        self.assertNotIn('id="al-table"', overview)
+        views = re.findall(r'data-place-view="([a-z]+)"', page)
+        self.assertEqual(views[:3], ["overview", "tasks", "alarms"])
+        self.assertRegex(page, r'<table class="ledger" id="al-table" aria-labelledby="al-h" data-toolbar="al-toolbar">')
 
     def test_every_event_acknowledged_says_so_instead_of_an_empty_table(self):
         doc = self.doc()
@@ -743,7 +756,7 @@ OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertEqual((out["R"]["when"], out["R"]["off"]), (True, "not acknowledged"))
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/alarm", {"key": TANK_LOW, "acked": True}],
                                                          ["/api/hoa/alarm", {"key": TANK_LOW, "acked": False}]])
-        self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. Show acknowledged lists it.", out["toasts"][0][0])
+        self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. The Acknowledged view lists it.", out["toasts"][0][0])
         self.assertTrue(out["toasts"][0][1])
         # Each landed write reads HOA again.
         self.assertEqual(out["gets"], ["/api/hoa"] * 3)
