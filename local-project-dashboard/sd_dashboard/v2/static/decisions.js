@@ -13,7 +13,8 @@
   // REVIEW counts the questions on review batches (sd:3709): Review asks them, so Today draws one line that links there.
   let LIST = [], REVIEW = 0, reads = 0, failed = '';
   const RULED = new Map(), REFUSED = new Map(), BUSY = new Set(), DRAFT = new Map();
-  const REC = /\s*\(recommended\)\s*$/i;
+  // The marker an option carries (sd:5306); the label drops it, the posted text keeps it.
+  const REC = /^\s*(?:\(recommended\)|recommended:)\s*|\s*\(recommended\)\s*$/gi, label = o => o.replace(REC, '');
   // Sort (sd:3455): the shell's sort header, in memory as Today's other tables. The read's order (priority, then the oldest)
   // stands until a header is pressed; a tie keeps it.
   const low = s => String(s || '').toLowerCase();
@@ -22,6 +23,7 @@
   const COLS = [['s', html`<span class="sr">State</span>`, 'g'], ['what', 'Item'], ['question', 'Question'], [null, 'Choose', 'act']];
   const sorted = list => !SORT.sort ? list : [...list].sort((a, b) => { const x = BY[SORT.sort](a), y = BY[SORT.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * SORT.dir; });
 
+  const advice = d => { const rec = d.options[d.recommended]; return rec != null ? html`<span class="advice">Recommended: ${label(rec)}</span>` : html`<span class="advice none">No recommendation</span>`; };
   const refused = d => REFUSED.has(d.note) ? html`<p class="refused" role="alert">Not recorded: ${REFUSED.get(d.note)}</p>` : '';
   function choices(d) {
     const ruled = RULED.get(d.note);
@@ -31,10 +33,9 @@
       const off = BUSY.has(d.note) ? html` disabled` : '';
       return html`<form class="answer" data-note="${d.note}"><label class="sr" for="${`answer-${d.note}`}">${`Answer note ${d.note}`}</label><input id="${`answer-${d.note}`}" name="answer" autocomplete="off" maxlength="4000" placeholder="${d.options[0] || 'Your answer'}" value="${DRAFT.get(d.note) || ''}"${off}><button type="submit" class="btn sm"${off}>Answer</button></form>${refused(d)}`;
     }
-    // sd:3451: an option that ends "(Recommended)" comes first as the filled button with a tag; its index and posted text stay.
-    const opts = d.options.map((o, i) => ({ o, i, rec: REC.test(o) }));
-    opts.sort((a, b) => b.rec - a.rec);
-    return html`<div class="choices" role="group" aria-label="${`Choose for note ${d.note}`}">${opts.map(({ o, i, rec }) => html`<button type="button" class="${rec ? 'btn sm rec' : 'btn quiet sm'}" data-note="${d.note}" data-option="${i}" title="${o}"${BUSY.has(d.note) ? html` disabled` : ''}><span>${rec ? o.replace(REC, '') : o}</span>${rec ? html`<span class="tag">Recommended</span>` : ''}</button>`)}</div>
+    // sd:5306: the server names the recommended option; a filled button picks it, the others stay quiet in written order.
+    const off = BUSY.has(d.note) ? html` disabled` : '', rec = d.options[d.recommended];
+    return html`<div class="choices" role="group" aria-label="${`Choose for note ${d.note}`}">${rec != null ? html`<button type="button" class="btn sm" data-note="${d.note}" data-option="${d.recommended}" title="${rec}"${off}><span>Choose recommended</span></button>` : ''}${d.options.map((o, i) => html`<button type="button" class="btn quiet sm" data-note="${d.note}" data-option="${i}" title="${o}"${off}><span>${label(o)}</span></button>`)}</div>
       ${refused(d)}`;
   }
 
@@ -54,7 +55,7 @@
     put(tb, LIST.length ? html`${sorted(LIST).map(d => { const ruled = RULED.has(d.note); return html`<tr data-item="${d.item}"${BUSY.has(d.note) ? html` aria-busy="true"` : ''}>
       <td class="g ${ruled ? 'g-ok' : 'g-caution'}" title="${ruled ? 'ruled' : 'waiting'}">${ruled ? '●' : '▲'}</td>
       <td class="what"><a href="${window.shell.itemHref(d.item)}"><span class="id">#${d.item}</span> ${d.title}</a><span class="repo">${repoName(d.repo)}</span></td>
-      <td class="question">${d.question}<span class="asked-at">note #${d.note} · asked <time class="rel" datetime="${d.asked}"></time></span></td>
+      <td class="question">${d.question}${advice(d)}<span class="asked-at">note #${d.note} · asked <time class="rel" datetime="${d.asked}"></time></span></td>
       <td class="act">${choices(d)}</td></tr>`; })}`
       : html`<tr class="empty"><td colspan="4">No decision waits on you. An open question note appears here; one with two Option: lines gets a button each.</td></tr>`);
     const waiting = LIST.filter(d => !RULED.has(d.note)).length;
