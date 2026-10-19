@@ -399,14 +399,17 @@ function experimentSection(p) {
     ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
       : last ? html`<p class="why">Last run: ${last.verb} ${last.action || 'experiments'} · ${last.state}${last.reason ? ` · ${last.reason}` : ''} · log ${last.log}</p>` : ''}`;
 }
-// What Apply writes, from the draft the server holds: the confirm shows it before anything leaves the machine.
+// What Apply writes, from the draft the server holds: the confirm shows all of it before anything leaves the machine,
+// and Apply posts the draft the confirm showed (`shownDraft`), never one a later read found.
+let shownDraft = null;
 function applyText(o) {
-  const d = pending(o.key); if (!d) return '';
+  const d = pending(o.key); shownDraft = d && { key: o.key, run: d.run, fingerprint: d.fingerprint, unknown: d.unknown };
+  if (!d) return '';
   const dup = d.unknown ? 'An earlier apply found no trace of its write, so this one may make a duplicate. ' : '';
   const x = d.draft, title = EXP.link?.title || 'the linked experiment';
-  if (d.action === 'create') return `${dup}Creates one row in the experiments database, “${x.title}”, Stage Idea, Problem “${x.problem}”, its body the draft's, and links ${o.label} to it. Nothing else is written.`;
+  if (d.action === 'create') return `${dup}Creates one row in the experiments database, “${x.title}”, Stage Idea, Problem “${x.problem}”, its body “${x.body}”, and links ${o.label} to it. Nothing else is written.`;
   if (d.action === 'status') return `Writes the status section of ${title}. Now: “${x.before.section}”. After: “${x.after.section}”. Status ${x.before.status || 'none'} becomes ${x.after.status}. If either changed since the draft, nothing is written.`;
-  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message}`).join(' ')} Speaker notes on each. Deletes nothing.`;
+  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account, styled ${JSON.stringify(x.style)}: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message} Visual: ${sl.visual} Notes: ${sl.notes}`).join(' ')} Deletes nothing.`;
 }
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
 const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
@@ -443,7 +446,9 @@ function experimentCommands() {
       risk: 'safe', askFirst: true, executes: true,
       when: o => { const w = expOff(o); return w !== true ? w : pending(o.key) ? true : 'no finished draft waits for Apply'; },
       consequence: applyText, sends: () => 'POST /api/research/experiments/act {"verb":"apply"}',
-      run: o => { const d = pending(o.key); return expPost({ verb: 'apply', run: d.run, fingerprint: d.fingerprint, recreate: d.unknown }, 'Apply', o.key); } },
+      run: o => { const d = shownDraft?.key === o.key ? shownDraft : null; shownDraft = null;
+        if (!d) return 'Apply writes only a draft its confirm showed: choose Apply draft again';
+        return expPost({ verb: 'apply', run: d.run, fingerprint: d.fingerprint, recreate: d.unknown }, 'Apply', o.key); } },
   ];
 }
 function showSource(i) {

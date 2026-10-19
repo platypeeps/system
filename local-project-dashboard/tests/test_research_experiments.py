@@ -13,6 +13,7 @@ spawned runner is a stub. The pack's `DECLARATION_KINDS` gains `experiment` wher
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
@@ -112,17 +113,21 @@ class Case(ScreenCase):
         self.knows()
         repos.set_declaration(self.connection, self.alpha, "experiment", {"page": page, "data_source": SOURCE})
 
-    def model(self, run, files=None, last="RESULT: ok", code=0):
-        """The run as the runner does it, with a fake model that leaves `files` in its folder."""
+    def model(self, run, files=None, last="RESULT: ok", code=0, locked=True):
+        """The run as the runner does it, holding the lock as `spawn` hands it over, with a fake model that leaves
+        `files` in its folder."""
         seen = {}
 
-        def ask(argv, cwd, timeout, out):
-            seen["argv"] = argv
+        def ask(argv, cwd, timeout, out, keep=()):
+            seen["argv"], seen["keep"] = argv, keep
             for name, value in (files or {}).items():
                 (Path(cwd) / name).write_text(value if isinstance(value, str) else json.dumps(value))
             return (realm_sweep.EXIT_OK if code == 0 and last == "RESULT: ok" else realm_sweep.EXIT_ERROR), last, []
 
-        with mock.patch.object(realm_sweep, "ask", ask):
+        with open(self.state / "lock", "a+", encoding="utf-8") as lock, mock.patch.object(realm_sweep, "ask", ask):
+            if locked:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.lock = lock.fileno()
             rx.run(self.state / "runs" / run, io.StringIO(), io.StringIO())
         self.seen = seen
         return json.loads((self.state / "runs" / run / "record.json").read_text())
@@ -195,6 +200,25 @@ class TheStart(Case):
         run = rx.document(self.connection)["runs"][0]
         self.assertEqual(run["state"], "failed")
         self.assertIn("start.log", run["reason"])
+
+    def test_the_model_run_inherits_the_lock_and_a_runner_without_it_refuses(self):
+        status, started = self.post({"verb": "list"})
+        self.model(started["run"], {"rows.json": ROWS})
+        self.assertEqual(self.seen["keep"], (self.lock,))
+        # A runner killed mid-run leaves its model run holding the lock: the run reads running, and nothing starts.
+        realm_sweep.write_record(self.state / "runs" / started["run"] / "record.json", {"state": "running", "pid": dead_pid()})
+        with open(self.state / "lock", "a+", encoding="utf-8") as writer:
+            fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            run = rx.document(self.connection)["runs"][0]
+            self.assertEqual((run["state"], "still holds the lock" in run["reason"]), ("running", True))
+            self.assertEqual(rx.request({"verb": "list"})(self.connection)[0], 409)
+        # Started by hand, outside the lock, the runner refuses before the model runs.
+        os.unlink(self.state / "lock")
+        status, started = self.post({"verb": "list"})
+        os.unlink(self.state / "lock")
+        record = self.model(started["run"], {"rows.json": ROWS}, locked=False)
+        self.assertNotIn("argv", self.seen)
+        self.assertIn("holds no experiments lock", record["reason"])
 
     def test_an_unset_data_source_refuses_every_run_naming_it_and_an_unread_one_is_unknown(self):
         writes.set_setting(self.connection, rx.SOURCE_KEY, None)
@@ -284,7 +308,10 @@ class TheAttach(Case):
 
     def test_a_declaration_that_does_not_read_refuses_attach_and_is_never_overwritten(self):
         self.knows()
-        repos.set_declaration(self.connection, self.alpha, "experiment", {"page": "x"})
+        # Written past the pack's own check, as an older or hand-edited row could hold it.
+        self.connection.execute("UPDATE repo SET declarations = ? WHERE path = ?",
+                                (json.dumps({"experiment": {"page": "x"}}), str(self.alpha)))
+        self.connection.commit()
         self.cache()
         doc = rx.document(self.connection, "research/alpha")
         self.assertIn("does not read", doc["link_error"])
@@ -364,6 +391,19 @@ class TheApply(Case):
         status, body = self.apply(run, fingerprint)
         self.assertEqual(status, 409)
         self.assertIn("applied", body["error"])
+
+    def test_a_link_to_another_data_source_refuses_the_draft_and_the_apply(self):
+        self.knows()
+        repos.set_declaration(self.connection, self.alpha, "experiment", {"page": PAGE, "data_source": OTHER})
+        status, body = self.post({"verb": "draft", "project": "research/alpha", "action": "status"})
+        self.assertEqual(status, 409)
+        self.assertTrue(body["error"].startswith("source:"), body)
+        repos.set_declaration(self.connection, self.alpha, "experiment", {"page": PAGE, "data_source": SOURCE})
+        run, fingerprint = self.draft("status", STATUS)
+        repos.set_declaration(self.connection, self.alpha, "experiment", {"page": PAGE, "data_source": OTHER})
+        status, body = self.apply(run, fingerprint)
+        self.assertEqual(status, 409)
+        self.assertTrue(body["error"].startswith("source:"), body)
 
     def test_create_stopped_after_out_json_links_from_it_without_a_run(self):
         self.knows()
@@ -464,7 +504,13 @@ class TheApply(Case):
         text = self.prompt(third["run"])
         self.assertIn("created presentation p1: resume it", text)
         self.assertIn("only into a notes shape that is empty", text)
-        record = self.model(third["run"], {"out.json": {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck", "slides": 7}})
+        # The model said ok with the deck only created: fewer checked slides than drafted is failed, and resumable.
+        record = self.model(third["run"], {"out.json": {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck"}})
+        self.assertEqual(record["state"], "failed")
+        self.assertIn("apply again to resume it", record["reason"])
+        status, fourth = self.apply(run, fingerprint)
+        self.assertIn("created presentation p1: resume it", self.prompt(fourth["run"]))
+        record = self.model(fourth["run"], {"out.json": {"outcome": "created", "presentation": "p1", "url": "https://example.test/deck", "slides": 7}})
         self.assertEqual(record["deck"], {"presentation": "p1", "url": "https://example.test/deck", "slides": 7})
 
 

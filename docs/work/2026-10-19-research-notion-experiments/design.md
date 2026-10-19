@@ -116,12 +116,13 @@ is not an item.
 
 The pack's side, built by its own builder, is one kind and its reader rule:
 
-- `lib/sd_db/repos.py`: `DECLARATION_KINDS` gains `"experiment"`.
-- `bin/sd_lib.py`: its copy of `DECLARATION_KINDS` gains it too, and `declaration_problems` gains an `experiment`
-  branch: an object with `page` (a Notion page id, 32 hex digits, dashes allowed) and `data_source` (a UUID), and
-  optional `url` (https) and `title`; it refuses other keys.
-- Its test, beside the sd:5109 one in `tests/sd_db/test_cli.py`: `repo declare <path> experiment '<json>'` stores a
-  good value and refuses a bad page id, a bad UUID and an unknown key; `declarations` returns it.
+- `lib/sd_db/repos.py`: `DECLARATION_KINDS` gains `"experiment"`, and `experiment_problems(value)` lists what is
+  wrong with a value, empty when it reads: `page` (a Notion page id, 32 hex digits, dashes allowed) and `data_source`
+  (a UUID) are required, `url` (https) and `title` optional, any other key refused. `set_declaration` runs it and
+  raises `RepoRefusal` on a problem, so `repo declare` and the dashboard's attach share one check.
+- `bin/sd_lib.py`: its copy of `DECLARATION_KINDS` gains it too.
+- Its tests: `set_declaration` stores a good value and refuses a bad page id, a bad UUID and an unknown key;
+  `declarations` returns it.
 
 Until it lands, the dashboard's tests add the kind to `DECLARATION_KINDS` where they need it, and check the
 "update the command pack" answer without it.
@@ -229,6 +230,10 @@ action awaiting apply, and the last run with its state and log path. The four ac
 | Apply deck | presentation | Stop after the create, before `out.json` | the next apply searches the exact title; a match resumes, no match is `unknown` | the next prompt carries the title search |
 | Draft deck | `draft.json` | The kit changes after the draft | none needed: apply reads the spec only | the apply argv has no Read outside the run folder |
 | Any run | the record | The server restarts mid-run | the run continues in its own session; the page reads its record | `status` with a live pid and with a dead one |
+| Any run | the lock | The runner is killed while its model run writes | the model run inherits the lock, so nothing starts beside it; the run reads running until it ends; a runner without the lock refuses | the fake model receives the lock; a dead runner with the lock held reads running |
+| Draft or apply start | `request.json` | The link names another data source than the setting | 409 `source:`; attach again | link with another source; move the link's source after the draft |
+| Apply deck | slides | The model ends `RESULT: ok` with fewer checked slides than drafted | record failed; the next apply resumes the deck | `out.json` without `slides`, then a resumed apply |
+| Apply start | the confirm | A newer draft finishes while the confirm is open | Apply posts the draft the confirm showed, with every field shown; a run without a confirm posts nothing | the page test runs Apply twice after one confirm |
 | Older state | none | No state folder, no cache, no setting row | page shows "never read" and "not linked" | empty state folder |
 
 ## Slices

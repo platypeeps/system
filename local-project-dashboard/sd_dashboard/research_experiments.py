@@ -218,8 +218,11 @@ def _run(folder: Path, running: str) -> dict:
         return out
     out.update({k: record.get(k) for k in ("state", "reason", "started", "finished", "fingerprint", "deck", "linked")})
     if out["state"] == "running" and not realm_sweep.alive(record.get("pid")):
-        out.update(state="failed", reason=f"the run (pid {record.get('pid')}) stopped without recording an outcome; "
-                                          f"see {out['log']}")
+        if running:
+            out["reason"] = "its runner stopped, and its model run still holds the lock; nothing starts until that ends"
+        else:
+            out.update(state="failed", reason=f"the run (pid {record.get('pid')}) stopped without recording an "
+                                              f"outcome; see {out['log']}")
     if asked.get("verb") == "draft" and out["state"] == "done":
         try:
             out["draft"] = _read_json(folder / "draft.json")
@@ -361,6 +364,9 @@ def _start(connection, asked: dict, draft: bytes | None = None):
         held, why = linked(connection, place)
         if why:
             return 409, {"error": f"the link {why}"}
+        if held and source_id(held.get("data_source")) != found["source"]:
+            return 409, {"error": f"source: the link names data source {held.get('data_source')}, not the configured "
+                                  f"{found['source']}; attach again from a fresh list", "stale": True}
         asked.update(checkout=str(place), label=asked["project"], page=page_id((held or {}).get("page")),
                      url=(held or {}).get("url") or "")
         if asked["action"] == "create" and asked["page"]:
@@ -409,6 +415,8 @@ def apply(connection, stamp: str, fingerprint: str, recreate: bool):
     if why:
         return 409, {"error": f"the link {why}"}
     now = {"source": found["source"], "page": page_id((held or {}).get("page")), "account": found["account"]}
+    if held and source_id(held.get("data_source")) != found["source"]:
+        now["source"] = f"{found['source']} (the link names {held.get('data_source')})"
     for field, value in now.items():
         if (field != "account" or drafted["action"] == "deck") and value != drafted.get(field):
             return 409, {"error": f"{field}: it changed since the draft ({drafted.get(field) or 'none'} then, "
@@ -694,6 +702,10 @@ def _checked(asked: dict, folder: Path) -> tuple[str, dict]:
         return "done", {"reason": f"section {parts['section']}, Status {parts['status']}"}
     if not out.get("presentation") or not str(out.get("url", "")).startswith("https://"):
         raise ValueError("out.json names no presentation and URL")
+    drafted = len(json.loads((folder / "draft.json").read_text(encoding="utf-8"))["slides"])
+    if out.get("slides") != drafted:
+        raise ValueError(f"the deck holds {out.get('slides')} checked slides, not the draft's {drafted}; apply again "
+                         "to resume it")
     return "done", {"deck": {"presentation": out["presentation"], "url": out["url"], "slides": out.get("slides")}}
 
 
@@ -733,6 +745,25 @@ def _shape(action: str, draft) -> None:
                 text(slide.get(name), f"s{n}.{name}")
 
 
+def _lock(state: Path) -> int | None:
+    """The descriptor of `<state>/lock` that `spawn` passed this runner, None when it holds none. The model run inherits
+    it, so a runner killed mid-run leaves its writer holding the lock, and no next apply starts beside that writer.
+    The file open but not locked is no lock: a runner started by hand holds none."""
+    if not _held(state):
+        return None
+    try:
+        want = os.stat(state / "lock")
+        names = os.listdir("/dev/fd")
+    except OSError:
+        return None
+    for name in names:
+        with contextlib.suppress(OSError, ValueError):
+            seen = os.fstat(int(name))
+            if (seen.st_dev, seen.st_ino) == (want.st_dev, want.st_ino):
+                return int(name)
+    return None
+
+
 def run(folder: Path, out, err) -> int:
     """One run, under the lock `spawn` holds for it: the record, the model, then what it left, judged."""
     folder = Path(folder).resolve()
@@ -750,13 +781,16 @@ def run(folder: Path, out, err) -> int:
         print(f"experiments: {state}: {reason}", file=out if state == "done" else err)
         return realm_sweep.EXIT_OK if state == "done" else realm_sweep.EXIT_ERROR
 
+    lock = _lock(state_dir())
+    if lock is None:
+        return end("failed", "this runner holds no experiments lock; start it from the dashboard")
     try:
         argv = claude_argv(asked, folder, prompt(asked, folder))
     except (KeyError, OSError, ValueError) as error:
         return end("failed", f"the run was not built: {error}")
     with (folder / "run.log").open("a", encoding="utf-8") as logged:
         code, reason, _ = realm_sweep.ask(argv, folder, int(os.environ.get("RESEARCH_EXPERIMENTS_TIMEOUT", TIMEOUT)),
-                                          logged)
+                                          logged, keep=(lock,))
     if code != realm_sweep.EXIT_OK:
         return end("failed", reason)
     try:

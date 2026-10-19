@@ -1030,6 +1030,26 @@ R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o
         self.assertEqual(out["posts"], [["/api/research/experiments/act", {"verb": "apply", "run": run["run"], "fingerprint": "f" * 64,
                                                                        "recreate": False}, 64]])
 
+    def test_the_apply_confirm_shows_the_whole_draft_and_apply_posts_only_the_draft_it_showed(self):
+        # sd:5296: the confirm shows every field Apply writes, and Apply posts the draft that confirm showed, never a newer one.
+        deck = {"title": "Span sampling", "style": {"accent": "#000000"},
+                "slides": [{"id": f"s{n}", "message": f"m{n}", "visual": f"band {n}", "notes": f"say {n}"} for n in range(1, 7)]}
+        create = {"title": "Trace budgets", "problem": "Budgets drift.", "body": "## Hypothesis\nTail."}
+        done = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log"}
+        linked = {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.deck = cmd('experiment.apply').consequence(o); shellRun(cmd('experiment.apply'), o); await flush();
+R.again = cmd('experiment.apply').run(o);""", answer=self.experiments({"link": linked, "runs": [
+            {**done, "run": "20261019-160000-000002", "action": "deck", "fingerprint": "d" * 64, "draft": deck}]}))
+        self.assertIn('styled {"accent":"#000000"}', out["R"]["deck"])
+        self.assertIn("6. m6 Visual: band 6 Notes: say 6", out["R"]["deck"])
+        self.assertEqual([p[1]["fingerprint"] for p in out["posts"]], ["d" * 64])
+        self.assertEqual(out["R"]["again"], "Apply writes only a draft its confirm showed: choose Apply draft again")
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({"runs": [
+            {**done, "run": "20261019-160000-000003", "action": "create", "fingerprint": "c" * 64, "draft": create}]}))
+        self.assertIn("its body “## Hypothesis\nTail.”", out["R"]["create"])
+
     def test_refresh_and_drafts_post_without_asking_and_attach_asks_naming_what_it_writes(self):
         answer = self.experiments({"cache": {"read": NOW, "source": "u", "current": True,
                                              "rows": [{"page": "2" * 32, "title": "Trace budgets", "stage": "Idea", "status": "Todo"}]}})
