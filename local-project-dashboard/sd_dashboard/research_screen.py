@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import posixpath
 import re
 import sys
 import time
@@ -159,18 +160,32 @@ def _attention(projects, error: str) -> dict:
                      {"caution": "render-stale projects"})
 
 
-def sources(key: str, *, now: str, backend=None) -> dict | None:
-    """One checkout's source registry, None when no research checkout has that key."""
+def sources(key: str, *, now: str, backend=None, connection=None) -> dict | None:
+    """One checkout's source registry, None when no research checkout has that key.
+
+    With `connection`, each row's adversarial reviews too (sd:5101): `reviews` maps a row key to its briefs, newest
+    first, as `adversarial.source_reviews` finds them; None with `reviews_error` when they were not read.
+    """
     if not KEY.fullmatch(key):
         return None
     try:
         found = (backend or collect)("sources", key)
     except (OSError, ValueError) as failure:
-        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None}
+        return {"read": now, "key": key, "error": str(failure), "files": [], "rows": [], "total": 0, "claims": None,
+                "checkout": None, "reviews": None, "reviews_error": "the ledger was not read"}
     if not found.get("found"):
         return None
+    reviews, reviews_error = None, "not read here"
+    if connection is not None:
+        from . import adversarial
+
+        try:
+            reviews, reviews_error = adversarial.source_reviews(connection, found.get("checkout")), ""
+        except (OSError, ValueError, LookupError) as failure:
+            reviews_error = str(failure)
     return {"read": now, "key": key, "error": "", "files": found.get("files", []), "rows": found.get("rows", []),
-            "total": found.get("total", 0),
+            "total": found.get("total", 0), "checkout": found.get("checkout"), "reviews": reviews,
+            "reviews_error": reviews_error,
             # The claim map; None when the child sent none, so the page says unknown rather than "no claims".
             "claims": {"rows": found["claims"], "total": found.get("claims_total", 0), "tally": found.get("tally", {}),
                        "graded": found.get("graded", 0), "dirs": list(CLAIM_DIRS), "read": found.get("docs_read", 0), "unread": found.get("unread", [])}
@@ -303,6 +318,21 @@ def _url(cells: list[str]) -> str:
     return ""
 
 
+#: A Markdown link to a file rather than a page, `[name](files/x.pdf)` or `[name](</abs/path x.pdf>)` (sd:5112).
+FILE_LINK = re.compile(r"\]\((?:<([^>\n]+)>|((?![a-z][a-z0-9+.-]*:|#)[^)\s]+))\)")
+
+
+def _file(cells: list[str], ledger: str) -> str:
+    """The first file a cell links, as a path under the checkout, or absolute when the link is; "" when none."""
+    for cell in cells:
+        match = FILE_LINK.search(cell)
+        if match:
+            target = match.group(1) or match.group(2)
+            path = target if target.startswith("/") else posixpath.normpath(posixpath.join(posixpath.dirname(ledger), target))
+            return path if len(path) <= 400 and not path.startswith("..") else ""
+    return ""
+
+
 def _row(line: str) -> list[str]:
     body = line.strip()
     body = body[1:] if body.startswith("|") else body
@@ -342,6 +372,8 @@ def parse_registry(text: str, name: str) -> tuple[dict, list[dict]]:
                              "c4": _cell(cells[-1]) if len(cells) > 3 else "",
                              "h": [heads[0] if heads else "", heads[1] if len(heads) > 1 else "",
                                    heads[2] if len(heads) > 2 else "", heads[-1] if len(heads) > 3 else ""]})
+                if linked := _file(cells[1:], name):
+                    rows[-1]["file"] = linked  # only on a row that links a file: every byte counts against PRINT_BYTES
         elif not started and stripped and stripped != "---":
             prov.append(stripped)
         elif not stripped:
@@ -366,10 +398,13 @@ def is_id(text: str) -> bool:
 
 
 def row_key(row: dict) -> str:
-    """A ledger row's key: its URL's, else its ID's (`id:S12`), else none."""
+    """A ledger row's key: its URL's, else its ID's (`id:S12`), else the file it links (`file:10-sources/files/x.pdf`),
+    else none."""
     if row.get("url"):
         return source_key(row["url"])
-    return f"id:{row['id']}" if is_id(row["id"]) else ""
+    if is_id(row["id"]):
+        return f"id:{row['id']}"
+    return f"file:{row['file']}" if row.get("file") else ""
 
 
 def ledger_key(key: str, index) -> str | None:
@@ -553,7 +588,8 @@ def main(argv):
                 found = board(collectors)
             else:
                 repo = checkout(Path(collectors.REPO_ROOT), argv[1])
-                found = registry(repo, collectors.time_left) if repo else {"found": False}
+                # The checkout's path, so the page side can find its adversarial reviews (sd:5101).
+                found = {**registry(repo, collectors.time_left), "checkout": str(repo)} if repo else {"found": False}
     except Exception as error:  # noqa: BLE001 - the page shows this reason
         print(f"research {area}: {error!r}"[:4096], file=sys.stderr)
         return 1

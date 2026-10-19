@@ -222,6 +222,10 @@ One run at a time: the runner holds `~/.local/state/system/adversarial-gate/lock
 Codex writes its result beside the run's state file, `runs/<id>.md`; nothing lands in the reviewed checkout.
 A done run files, in one transaction in the server's database, review batches in queue `adversarial` (one Approve-or-Reject question per recommendation, one batch per repository) and a brief, `<day> - Adversarial review · <kind> <label> · <time>Z`, that names them.
 An item's review adds a comment note naming the brief and the batches, or the failure; `codex` must be on the LaunchAgent's PATH.
+A change review with `pr` (sd:5100) reviews an open pull request of a registered repository: the shadow rows must hold it open, `git ls-remote origin` names its head, and a head the checkout lacks is refused with the fetch line, since nothing here fetches.
+A `deep` review (sd:5100) runs the gate's `deep`: headless `claude -p` on `lenses/deep.md` with only Read, Grep, Glob and Agent, at the `adversarial.deep.*` setting rows (sd:5109; `opus`, `max`, 90 minutes and 8 sub-agents by default), which the repo row's Deep review settings writes.
+Its lock is `deep-<checkout hash>.lock` beside the codex one, so one deep review runs per repository and a codex review may run beside it; the claude binary is `CLAUDE_BIN`, else `claude` on PATH, else `~/.local/bin/claude`.
+A `source` review (sd:5101) runs codex on one research ledger row; its runner fetches the row's link first, one GET bounded at 20 s and 2 MB, so a source review reaches the network from the server's process, and a failed fetch is written into the input as not known.
 Jev ordering is off for these runs unless the server starts with `JEV_ADVERSARIAL_GATE` set: it would send finding text to a third party.
 
 Run sweep on HOA (sd:5095, `sd_dashboard/sweep.py`) runs the hoa checkout's `tools/sweep.py run`, detached, from that checkout.
@@ -237,6 +241,10 @@ Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the
 Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
 It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
 The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.
+Add source (sd:5112, `source_intake.py`) on the Research page writes ledger rows without a model and never writes the operator's checkout.
+A dropped file is staged first, raw, through `POST /api/research/intake/file` (up to 200 MB, under `~/.local/state/system/source-intake/staged/`, a day at most); `POST /api/research/intake` then fetches origin, adds a worktree in `~/worktrees/` on `source-intake/<stamp>` at `origin/main`, appends one grade `U` row per source, commits as `Authored-with: script`, files an item with `--ref source-intake:<stamp>` and runs `sd-ship lane enqueue --deliver`.
+A file over 5 MB goes under `sd.bulk_storage_root` as `<root>/<checkout>/sources/`, and its row links it there; a URL's title comes from the source review's bounded fetch, so the server reaches the network here too.
+A failure before the item removes the worktree, its branch and any bulk copy; a failed enqueue keeps them and notes the item with the line that retries.
 
 File GitHub issue and File Jira issue on Tasks (sd:5103, `issue_filing.py`) draft with Draft email's `claude -p` line: no tools, no MCP servers, 180 seconds.
 `POST /api/items/<id>/file-issue` answers 202 with a run id; `GET /api/issue-runs/<id>` reads the draft; only `POST /api/issue-runs/<id>/confirm` with the previewed text's digest files.

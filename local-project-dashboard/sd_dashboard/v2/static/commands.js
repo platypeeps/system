@@ -102,6 +102,9 @@
   // /api/adversarial/<id> every 10 s while the page is open, until the run settles: failed with no item, or `filed` set.
   // Each answer fires 'adversarial:run' on document, so a Details pane that shows reviewPane(kind, target) draws again.
   // A refusal is its toast in the server's words: a 409 names the run already going. The run is one row's, so no bulk.
+  // sd:5100: a page may name its own `id`, `label`, `does`, `fields` (the shell's dialog fields, whose values reach
+  // payload(o, v)) and `consequence`; Adversarial review: PR and Deep review on a repo row are two more of these.
+  // sd:5101: a source review's payload adds `source`, its ledger row's key; its run key is `source:<checkout> <row key>`.
   const REVIEW_POLL = 10000, RUNS = new Map();
   const runKey = (kind, target) => `${kind}:${target}`;
   const settled = r => (r.state === 'failed' && r.item == null) || r.filed != null;
@@ -119,23 +122,27 @@
     setTimeout(() => still() && window.shell.getJSON(`/api/adversarial/${encodeURIComponent(run.id)}`).then(next => still() && follow(key, next),
       e => still() && follow(key, { ...run, unread: e.message })), REVIEW_POLL);
   }
-  function adversarialReview(on, { payload, when = () => true }) {
-    return { id: `${on}.adversarial-review`, on, label: 'Adversarial review', does: 'Starts a codex review in the background; its brief lists tasks to pick.', risk: 'safe', executes: true, icon: 'shield-alert', when,
+  function adversarialReview(on, { payload, when = () => true, id = `${on}.adversarial-review`, label = 'Adversarial review',
+    does = 'Starts a codex review in the background; its brief lists tasks to pick.', fields, consequence }) {
+    return { id, on, label, does, risk: 'safe', executes: true, icon: 'shield-alert', when, fields, consequence, askFirst: !!consequence,
       cli: () => 'no sd verb: the dashboard runs local-adversarial-gate in the background',
-      sends: o => `POST /api/adversarial ${JSON.stringify(payload(o))}`,
-      run: o => { const p = payload(o);
-        return window.shell.post('/api/adversarial', p).then(run => { follow(runKey(p.kind, p.target), run); return `Review started · run ${run.id}`; },
+      sends: (o, v) => `POST /api/adversarial ${JSON.stringify(payload(o, v || {}))}`,
+      run: (o, v) => { const p = payload(o, v || {});
+        return window.shell.post('/api/adversarial', p).then(run => { follow(runKey(p.kind, p.source ? `${p.target} ${p.source}` : p.target), run); return `Review started · run ${run.id}`; },
           err => { if ([400, 404, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether a review started is not known`); }); } };
   }
   // The Details section for the row's latest run on this page, or nothing: its state, then the brief and the item it filed.
-  function reviewPane(kind, target) {
+  // A running run says how long it has run of its bound (sd:5100: a deep review runs up to 90 min). `title` names the pane.
+  const minutes = s => Math.max(0, Math.round(s / 60));
+  function reviewPane(kind, target, title = 'Adversarial review') {
     const r = RUNS.get(runKey(kind, target)); if (!r) return '';
     const { html } = window.markup;
     const S = window.shell;
     const links = r.brief_item ? html` · <a href="${S.itemPage(r.brief_item)}">brief sd:${r.brief_item}</a>` : '';
     const item = r.item != null ? html` · <a href="${S.itemHref(r.item)}">#${r.item}</a>` : '';
-    const state = settled(r) ? settledText(r) : `Run ${r.id} is ${r.state}${r.unread ? `; its state was not read: ${r.unread}` : ''}. This page reads it every 10 s.`;
-    return html`<section class="adv-run" aria-live="polite"><h3>Adversarial review</h3><p class="why">${state}${links}${item}</p></section>`;
+    const ran = r.state === 'running' && r.started && r.timeout ? `, ${minutes((Date.now() - Date.parse(r.started)) / 1000)} of at most ${minutes(r.timeout)} min` : '';
+    const state = settled(r) ? settledText(r) : `Run ${r.id} is ${r.state}${ran}${r.unread ? `; its state was not read: ${r.unread}` : ''}. This page reads it every 10 s.`;
+    return html`<section class="adv-run" aria-live="polite"><h3>${title}</h3><p class="why">${state}${links}${item}</p></section>`;
   }
 
   // Published copies (sd:5102): one icon per destination holding a copy of the row's document or brief, from its `pub`

@@ -115,6 +115,67 @@ function loadSources(key) {
   return Promise.resolve(SOURCES.get(key));
 }
 
+// ---------- Add source (sd:5112) ----------
+// Pasted URLs and dropped files become grade U ledger rows on a fresh branch the lane lands (source_intake.py); nothing here
+// writes the checkout. A file is staged first, as bytes, since the JSON bound is 64 KiB. Paste works from the keyboard alone.
+const READING = 'research/reading', FILE_BYTES = 5 * 1024 * 1024, SUFFIX = /\.(pdf|md|markdown|htm[l]?|txt)$/i;
+const intakeEl = document.getElementById('intake'), urlsEl = document.getElementById('intake-urls'), toEl = document.getElementById('intake-to');
+let dropped = [], intakeBusy = false;
+const pasted = () => urlsEl.value.split(/\s+/).filter(Boolean);
+const goodUrl = u => /^https?:\/\/[^\s/|<>]+[^\s|<>]*$/.test(u) && u.length <= 400;
+const bytes = n => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+function drawIntake(said) {
+  const keys = [...new Set([READING, ...PROJECTS.map(p => p.key)])], want = toEl.value || READING;
+  put(toEl, html`${keys.map(k => html`<option value="${k}"${k === want ? html` selected` : ''}>${k === READING ? 'reading · no topic repo' : k}</option>`)}`);
+  toEl.value = want;
+  const urls = pasted(), bad = urls.filter(u => !goodUrl(u)), odd = dropped.filter(f => !SUFFIX.test(f.name));
+  put(document.getElementById('intake-list'), html`${urls.map(u => html`<li${goodUrl(u) ? '' : html` data-bad`}><span class="k">URL</span><span class="t">${u}</span><span class="w">${goodUrl(u) ? 'a U row; its title is read on Add' : 'not an http or https address'}</span></li>`)}${
+    dropped.map((f, i) => html`<li${SUFFIX.test(f.name) ? '' : html` data-bad`}><span class="k">File</span><span class="t">${f.name} · ${bytes(f.size)}</span><span class="w">${!SUFFIX.test(f.name) ? 'not added: PDF, Markdown, HTML or text only' : f.size > FILE_BYTES ? 'over 5 MB: kept under the bulk storage root, linked' : 'committed in 10-sources/files'}</span><button class="icon-btn" type="button" data-unfile="${i}" aria-label="Remove ${f.name}" title="Remove">${I('x')}</button></li>`)}`);
+  const n = urls.length + dropped.length;
+  document.getElementById('intake-add').disabled = intakeBusy || !n || bad.length > 0 || odd.length > 0;
+  document.getElementById('intake-add').textContent = intakeBusy ? 'Adding…' : n ? `Add ${plural(n, 'source')}` : 'Add';
+  if (said !== undefined) put(document.getElementById('intake-said'), html`${said}`);
+}
+function addFiles(list) { dropped = [...dropped, ...list]; drawIntake(''); }
+async function stage(f) {
+  try {
+    const out = await window.shell.post('/api/research/intake/file', f, { 'X-SD-File-Name': encodeURIComponent(f.name) });
+    return { name: out.name, sha256: out.sha256 };
+  } catch (err) { err.message = `${f.name}: ${err.message}`; throw err; }
+}
+intakeEl.addEventListener('submit', async e => {
+  e.preventDefault();
+  const target = toEl.value || READING, urls = pasted();
+  intakeBusy = true; drawIntake('');
+  try {
+    const files = [];
+    for (const f of dropped) files.push(await stage(f));
+    const out = await window.shell.post('/api/research/intake', { target, urls, files });
+    dropped = []; urlsEl.value = '';
+    intakeBusy = false;
+    drawIntake(html`${out.enqueued ? 'Queued' : 'Committed, not queued'}: ${plural(out.added.length, 'row')} on ${out.branch} as <a href="${shell.itemPage(out.item)}">sd:${out.item}</a>. ${
+      out.enqueued ? 'Each row shows here, with Adversarial review to grade it, once the lane merges it and the checkout syncs.' : out.error}`);
+  } catch (err) {
+    intakeBusy = false;
+    drawIntake(html`<span class="no">Not added: ${err.message.replace(/\.$/, '')}.</span>${err.status ? '' : ' Whether anything was written is not known; check the queue before you add again.'}`);
+  }
+});
+urlsEl.addEventListener('input', () => drawIntake());
+toEl.addEventListener('change', () => drawIntake());
+document.getElementById('intake-files').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+document.getElementById('intake-list').addEventListener('click', e => {
+  const b = e.target.closest('[data-unfile]'); if (b) { dropped.splice(+b.dataset.unfile, 1); drawIntake(); urlsEl.focus(); } });
+// The whole Sources panel takes a drop: files are listed, and a dragged link is pasted as a URL line.
+const sourcesPanel = document.getElementById('view-sources');
+sourcesPanel.addEventListener('dragover', e => { e.preventDefault(); sourcesPanel.toggleAttribute('data-drop', true); });
+sourcesPanel.addEventListener('dragleave', e => { if (!sourcesPanel.contains(e.relatedTarget)) sourcesPanel.removeAttribute('data-drop'); });
+sourcesPanel.addEventListener('drop', e => {
+  e.preventDefault(); sourcesPanel.removeAttribute('data-drop');
+  const link = e.dataTransfer.getData('text/uri-list');
+  if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  else if (link) { urlsEl.value = `${urlsEl.value.trim()}\n${link.split(/\r?\n/).filter(l => l && !l.startsWith('#')).join('\n')}`.trim(); drawIntake(''); }
+});
+
 // ---------- Source reader ----------
 const reader = document.getElementById('reader');
 let curSource = null;
@@ -147,7 +208,7 @@ function drawReader(p, s) {
       return html`${head}<li class="src" data-i="${i}" aria-current="${String(curSource === i)}"${r.cited ? html` data-cited` : ''}${r.key && litKeys.includes(r.key) ? html` data-lit` : ''}>
         <button type="button"><span class="id" data-grade="${r.grade || r.id}">${r.id}</span><span class="t">${r.title}<span class="u">${r.c3}</span></span></button>
         ${r.cited ? html`<button class="cites" type="button" data-cites="${i}" aria-label="Show the ${plural(r.cited, 'claim')} citing ${r.title}" title="Claims citing it">◆ ${r.cited}</button>` : html`<span></span>`}
-        ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}</li>`;
+        ${r.url ? html`<a class="icon-btn" href="${r.url}" target="_blank" rel="noopener" aria-label="Open source: ${r.title}" title="Open source">${I('arrow-up-right')}</a>` : html`<span></span>`}${latest(s, r)}</li>`;
     })}</ul>` : html`<p class="why">No table rows in the ledger: the reader reads Markdown tables.</p>`}${
     // build: the reader does not page; the document carries the first rows and the whole count.
     s.total > s.rows.length ? html`<p class="more">${s.rows.length} of ${s.total} rows shown. Open the ledger in the checkout for the rest.</p>` : ''}`);
@@ -155,6 +216,21 @@ function drawReader(p, s) {
   put(document.getElementById('reader-tally'), html`${['A', 'B', 'C', 'U', 'M'].filter(g => grades[g]).map(g => html`<span>${g} ${grades[g]}</span>`)}<span>${plural(s.total, 'row')}</span>`);
   shell.view.count('sources', s.total);
 }
+// sd:5101: a source's adversarial reviews are briefs filed with its key (adversarial.source_reviews), newest first.
+const reviewsOf = (s, r) => (r.key && s.reviews?.[r.key]) || [];
+const day = b => b.filed.slice(0, 10);
+const briefLink = b => html`<a href="${shell.itemPage(b.item)}">brief sd:${b.item}</a>`;
+function latest(s, r) {
+  const [b, ...older] = reviewsOf(s, r); if (!b) return '';
+  return html`<p class="rev">Reviewed ${day(b)} · ${b.verdict || 'no verdict line'} · ${briefLink(b)}${older.length ? ` · ${older.length} older in Details` : ''}</p>`;
+}
+function reviewsSection(s, r) {
+  const list = reviewsOf(s, r);
+  const none = !s.reviews ? `Not known: the reviews were not read (${s.reviews_error || 'no reason given'}).` : 'None yet. Adversarial review files one; a re-run adds a brief and keeps the last.';
+  return html`<h3>Adversarial reviews</h3>${list.length ? html`<ul class="claims">${list.map(b => html`<li class="claim"><span class="g" aria-hidden="true">◇</span><span>${day(b)} · ${b.verdict || 'no verdict line'} · ${briefLink(b)}</span></li>`)}</ul>`
+    : html`<p class="why">${none}</p>`}${window.commands.reviewPane('source', `${selected} ${r.key}`)}`;
+}
+const sourceId = (key, r) => `source:${key} ${r.key || r.id}`;
 reader.addEventListener('click', e => {
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const cites = e.target.closest('[data-cites]'); if (cites) { claimsOf(+cites.dataset.cites); return; }
@@ -262,10 +338,13 @@ function showProject(key) {
 }
 function showSource(i) {
   const s = SOURCES.get(selected)?.rows?.[i]; if (!s) return;
+  shell.commands.put({ id: sourceId(selected, s), type: 'research source', label: s.title, project: selected, key: s.key });
   put(details, html`<p class="kind">${I('book-open')} Source · ${s.h[0] || 'grade'} ${s.id}</p><h2>${s.title}</h2>
     <dl><dt>Ledger</dt><dd>${s.f}</dd><dt>Section</dt><dd>${s.sec || 'none'}</dd><dt>${s.h[2] || 'Used for'}</dt><dd>${s.c3 || '—'}</dd>${s.c4 ? html`<dt>${s.h[3] || 'Note'}</dt><dd>${s.c4}</dd>` : ''}
       ${s.url ? html`<dt>Link</dt><dd><a class="ext" href="${s.url}" target="_blank" rel="noopener">${s.url.replace(/^https?:\/\//, '').slice(0, 60)} ${I('arrow-up-right')}</a></dd>` : ''}</dl>
-    <h3>Cited by</h3>${citedBy(s)}`);
+    <h3>Cited by</h3>${citedBy(s)}${reviewsSection(SOURCES.get(selected), s)}
+    <h3>Act</h3>${shell.commands.bar(sourceId(selected, s))}`);
+  shell.commands.select(sourceId(selected, s));
   shell.setContext(s.title.slice(0, 40)); swap();
 }
 function citedBy(r) {
@@ -290,7 +369,8 @@ function select(key, open) {
   tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();
-  if (open) shell.openPane('tab-details');
+  // Only a project the viewer opens becomes the Add source target: the board selects its first row by itself (sd:5112).
+  if (open) { toEl.value = key; drawIntake(); shell.openPane('tab-details'); }
 }
 function selectSource(i, open) {
   curSource = i;
@@ -317,9 +397,19 @@ function registerCommands() {
     { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
+    // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
+    window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
+      does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
+      payload: o => ({ kind: 'source', target: o.project, source: o.key }),
+      when: o => { const s = SOURCES.get(o.project);
+        return !o.key ? 'no link or ID in this ledger row, so no claim can cite it' : s?.reviews ? true : `briefs not read: ${s?.reviews_error || 'the ledger was not read'}`; } }),
   );
 }
 document.addEventListener('shell:open', e => select(e.detail, true));
+// A review's progress redraws the shown source's Details; a filed one reads the ledger again, so its brief lists.
+document.addEventListener('adversarial:run', e => { const r = SOURCES.get(selected)?.rows?.[curSource];
+  if (!r || e.detail.key !== `source:${selected} ${r.key}`) return;
+  if (e.detail.run.filed === 'written') { SOURCES.delete(selected); loadSources(selected).then(() => { redraw(); showSource(curSource); }); } else showSource(curSource); });
 document.addEventListener('shell:picked', e => { picked = e.detail; tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', picked.includes(tr.dataset.id))); });
 
 // ---------- Shapeshift: filter projects, or start research ----------
@@ -425,6 +515,7 @@ function adopt(doc) {
   ROUNDS = doc.rounds?.reason || 'not read';
   if (READ) document.body.dataset.observed = READ; // shell time cells count from the reading, not from now
   PROJECTS = (doc.projects || []).map(p => ({ ...p, id: p.key, type: 'research project', s: p.render.s === 'caution' ? 'caution' : p.render.s === 'ok' && !p.conf ? 'ok' : 'unknown' }));
+  drawIntake(); // the Add source targets are the board's checkouts, reading first
   if (!linked) {
     // The address's filters are read before the first draw, so the board and the first selection follow them.
     linked = true;

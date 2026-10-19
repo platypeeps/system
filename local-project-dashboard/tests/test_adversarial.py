@@ -11,17 +11,20 @@ asserts which `codex` the server's PATH resolves.
 from __future__ import annotations
 
 import datetime
+import http.server
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
-from sd_db import review, routine_briefs, workflow, writes
+from sd_db import review, routine_briefs, upsert_shadow, workflow, writes
 
 from sd_dashboard import adversarial
 
@@ -320,6 +323,26 @@ class TheOutcome(AdversarialCase):
         task = workflow.item_state(self.connection, ruled["filed"]["item"])["item"]
         self.assertEqual((task["title"], task["repo"]), ("Split the dashboard change into its own item", other_key))
 
+    def test_hypotheses_sharing_a_long_heading_each_get_a_subject_within_the_store_s_bound(self):
+        # Round 1 class: a batch's subjects were made unique by adding a mark each, past the store's 200 characters.
+        # A 60-character label and a 120-character heading make a subject of about 186 characters before any mark, so 20 repeats pass 200.
+        checkout = self.root / ("a-checkout-whose-name-runs-to-the-label-bound-" + "x" * 14)
+        checkout.mkdir()
+        git(checkout, "init", "-q", "-b", "main")
+        key = self.repo(str(checkout))
+        heading = ("The same long heading " * 12).strip()
+        self.result_fixture.write_text("# Adversarial review\n\n" + "".join(
+            f"## {n}. {heading}\n\nConfidence: **LIKELY**\n\n- **Recommendation:** Fix part {n}\n\n" for n in range(1, 21))
+            + "Does the central conclusion survive hostile reading? NO.\n")
+        status, _, run = self.review("repo", key)
+        self.assertEqual(status, 202, run)
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        subjects = [q["subject"] for q in review.read(self.connection, done["batches"][0])["questions"]]
+        self.assertEqual((len(subjects), len(set(subjects))), (20, 20))
+        self.assertLessEqual(max(map(len, subjects)), review.SUBJECT_CHARS)
+        self.assertEqual([subject[-5:] for subject in subjects[17:]], [" (18)", " (19)", " (20)"])
+
     def test_a_result_with_no_titled_hypothesis_files_a_brief_and_no_batch(self):
         self.result_fixture.write_text("Nothing survives.\n")
         item, done = self.filed()
@@ -605,7 +628,7 @@ class OtherKinds(AdversarialCase):
 class TheRequestShape(AdversarialCase):
     def test_bad_requests_are_refused_before_anything_runs(self):
         item = self.task()
-        for payload, said in (({"kind": "essay", "target": item}, "kind is one of task, brief, repo, change"),
+        for payload, said in (({"kind": "essay", "target": item}, "kind is one of task, brief, repo, change, deep"),
                               ({"kind": "task"}, "takes a kind and a target"),
                               ({"kind": "task", "target": item, "extra": 1}, "takes a kind and a target"),
                               ({"kind": "task", "target": item, "base": "main"}, "Only a change review"),
@@ -624,3 +647,387 @@ class TheRequestShape(AdversarialCase):
     def test_a_missing_item_is_a_404(self):
         status, _, answer = self.review("task", 999999)
         self.assertEqual(status, 404, answer)
+
+
+class ThePullRequest(AdversarialCase):
+    """sd:5100: a repo row's open pull request, from the shadow rows `sd shadow sync` keeps, reviewed as a change."""
+
+    def setUp(self):
+        super().setUp()
+        # A bare origin that holds the pull request's head the way GitHub does, at refs/pull/<n>/head; the checkout's
+        # GitHub remote is rewritten to it, so `git ls-remote origin` reads it with no network.
+        self.origin = self.root / "origin.git"
+        git(self.root, "init", "-q", "--bare", str(self.origin))
+        self.remote = "https://github.com/example/checkout"
+        git(self.work, "remote", "add", "origin", self.remote)
+        git(self.work, "config", f"url.{self.origin}.insteadOf", self.remote)
+        git(self.work, "push", "-q", "origin", "main")
+        git(self.work, "update-ref", "refs/remotes/origin/main", "main")
+        writes.upsert_repo(self.connection, self.key, remote=self.remote)
+        self.main = git(self.work, "rev-parse", "main")
+        git(self.work, "switch", "-q", "-c", "feature")
+        (self.work / "x.txt").write_text("x\n")
+        git(self.work, "add", "x.txt")
+        git(self.work, "commit", "-q", "-m", "add x")
+        self.head = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "push", "-q", "origin", "feature:refs/pull/7/head")
+        git(self.work, "switch", "-q", "main")
+
+    def pull(self, number, *, repo="example/checkout", state="open"):
+        upsert_shadow(self.connection, tracker="github", url=f"https://github.com/{repo}/pull/{number}", repo=repo,
+                      number=number, kind="pull", title=f"Pull {number}", state=state, author="someone")
+
+    def test_an_open_pull_request_is_reviewed_with_the_change_lens_at_its_head(self):
+        self.pull(7)
+        item = self.task()
+        status, _, run = self.review("change", self.key, pr=7, item=item)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^change-checkout-pr-7-[0-9]{8}T[0-9]{6}Z$")
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        self.assertEqual(self.codex_argv()[7:9], ["-C", str(self.work)])
+        prompt = self.stdin.read_text()
+        self.assertIn("The document is a proposed change", prompt)
+        self.assertIn(f"git diff {self.main}...{self.head}", prompt)
+        given = Path(run["input"]).read_text()
+        for text in ("- pull request: https://github.com/example/checkout/pull/7", "- title: Pull 7",
+                     f"- head: {self.head}", f"merge base {self.main}", f"- item: sd:{item}"):
+            self.assertIn(text, given)
+        self.assertEqual(review.read(self.connection, done["batches"][0])["item"]["repo"], self.key)
+        # The checkout is where it was: still on main, nothing fetched into it beyond what it held.
+        self.assertEqual(git(self.work, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
+    def test_a_pull_request_the_shadow_rows_do_not_hold_open_here_is_refused(self):
+        self.pull(7, repo="example/other")
+        self.pull(9, state="closed")
+        for number in (7, 9, 11):
+            with self.subTest(pr=number):
+                status, _, answer = self.review("change", self.key, pr=number)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(f"pull request #{number} is not open in example/checkout", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_a_head_the_checkout_does_not_hold_is_refused_naming_the_fetch(self):
+        # Pushed from another clone, so origin has it and the checkout does not.
+        other = self.root / "elsewhere"
+        git(self.root, "clone", "-q", str(self.origin), str(other))
+        (other / "y.txt").write_text("y\n")
+        git(other, "add", "y.txt")
+        git(other, "commit", "-q", "-m", "add y")
+        git(other, "push", "-q", "origin", "HEAD:refs/pull/8/head")
+        self.pull(8)
+        status, _, answer = self.review("change", self.key, pr=8)
+        self.assertEqual(status, 400, answer)
+        self.assertIn(f"Run git -C {self.work} fetch origin pull/8/head", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_a_pull_request_review_takes_a_number_and_no_body(self):
+        self.pull(7)
+        for extra, said in (({"pr": "7"}, "A pull request is its number."),
+                            ({"pr": 7, "body": "/x"}, "reads no body file")):
+            with self.subTest(extra=extra):
+                status, _, answer = self.review("change", self.key, **extra)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(said, answer["error"])
+
+
+DEEP_CLAUDE = r"""#!/bin/sh
+printf '%s\n' "$@" > "$CODEX_ARGV"
+pwd > "$CODEX_ARGV.cwd"
+cat > "$CODEX_STDIN"
+mode=$(cat "$CODEX_MODE" 2>/dev/null || echo ok)
+if [ "$mode" = hold ]; then
+  n=0
+  while [ ! -f "$CODEX_RELEASE" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+fi
+cat "$CODEX_RESULT"
+"""
+
+
+class TheDeepReview(AdversarialCase):
+    """sd:5100: a registered repository reviewed by headless claude with read-only sub-agents, filed like the others."""
+
+    def setUp(self):
+        super().setUp()
+        self.claude = self.bin / "claude-double"
+        self.claude.write_text(DEEP_CLAUDE)
+        self.claude.chmod(0o755)
+        # The stand-in, reached by the gate's seam, and a fixture HOME, so the operator's shell env file is never read.
+        home = self.root / "home"
+        home.mkdir()
+        environment = patch.dict(os.environ, {"CLAUDE_BIN": str(self.claude), "HOME": str(home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_a_deep_review_runs_claude_read_only_in_the_checkout_and_files_a_brief(self):
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^deep-checkout-[0-9]{8}T[0-9]{6}Z$")
+        self.assertEqual((run["model"], run["effort"], run["timeout"]), ("opus", "max", 90 * 60))
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["item"], done["filed"]), ("done", None, "written"), done)
+        argv = self.codex_argv()
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob,Agent")
+        self.assertEqual((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]), ("opus", "max"))
+        self.assertEqual(Path(Path(f"{self.argv}.cwd").read_text().strip()).resolve(), self.work)
+        self.assertIn("**Use at most 8 areas.**", self.stdin.read_text())
+        self.assertIn("The document is a whole repository, `checkout`", self.stdin.read_text())
+        _, text, _ = self.brief(done["brief"])
+        self.assertIn(f"- Result as claude wrote it: {done['result']}", text)
+        self.assertIn("### 1. Add a test that fails before the fix", text.splitlines())
+        self.assertEqual(len(done["batches"]), 1)
+        self.assertEqual(git(self.work, "status", "--porcelain", "--ignored"), "")
+
+    def test_the_setting_rows_name_the_deep_model_effort_bound_and_agents(self):
+        # sd:5109: the settings are workflow-database rows; a `.env` key of the old name is not read.
+        (self.config / "adversarial-gate").mkdir(parents=True)
+        (self.config / "adversarial-gate" / ".env").write_text("DEEP_MODEL=from-the-file\nDEEP_TIMEOUT_MINUTES=1\n")
+        for key, value in (("model", "fixture-model"), ("effort", "high"), ("bound_minutes", "5"), ("agents", "3")):
+            writes.set_setting(self.connection, f"adversarial.deep.{key}", value)
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        self.assertEqual((run["model"], run["effort"], run["timeout"]), ("fixture-model", "high", 300))
+        self.settled(run["id"])
+        argv = self.codex_argv()
+        self.assertEqual(argv[argv.index("--model") + 1], "fixture-model")
+        self.assertIn("**Use at most 3 areas.**", self.stdin.read_text())
+
+    def test_a_setting_row_that_fails_its_pattern_is_refused_and_runs_nothing(self):
+        writes.set_setting(self.connection, "adversarial.deep.bound_minutes", "soon")
+        status, _, answer = self.review("deep", self.key)
+        self.assertEqual(status, 400, answer)
+        self.assertIn("adversarial.deep.bound_minutes wants whole minutes, such as 90, not 'soon'", answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_saving_the_settings_writes_setting_rows_and_an_empty_value_clears_one(self):
+        status, _, answer = self.post("/api/adversarial/settings", {"adversarial.deep.model": "fable",
+                                                                    "adversarial.deep.agents": "4"})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["was"], {"adversarial.deep.model": None, "adversarial.deep.agents": None})
+        self.assertEqual(writes.read_settings(self.connection, ["adversarial.deep.model", "adversarial.deep.agents"]),
+                         {"adversarial.deep.model": "fable", "adversarial.deep.agents": "4"})
+        status, _, answer = self.post("/api/adversarial/settings", {"adversarial.deep.model": ""})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(answer["settings"]["adversarial.deep.model"], {"value": "opus", "from": "default"})
+        self.assertEqual(answer["settings"]["adversarial.deep.agents"], {"value": "4", "from": "database"})
+
+    def test_saving_a_bad_setting_or_another_key_is_refused_and_writes_nothing(self):
+        for payload, said in (({"adversarial.deep.agents": "40"}, "adversarial.deep.agents wants a number of sub-agents"),
+                              ({"adversarial.deep.model": "--dangerously-skip-permissions"}, "wants a claude model id"),
+                              ({"adversarial.model": "x"}, "The deep review's settings are")):
+            with self.subTest(payload=payload):
+                status, _, answer = self.post("/api/adversarial/settings", payload)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(said, answer["error"])
+        self.assertEqual(writes.read_settings(self.connection, list(adversarial.DEEP)), {})
+
+    def test_a_second_deep_review_of_the_repository_is_refused_while_one_runs(self):
+        self.mode.write_text("hold")
+        status, _, first = self.review("deep", self.key)
+        self.assertEqual(status, 202, first)
+        self.wait_for_codex()
+        self.assertEqual(self.read(first["id"])[1]["state"], "running")
+        status, _, refused = self.review("deep", self.key)
+        self.assertEqual(status, 409, refused)
+        self.assertIn(f"A deep review of checkout is already running (run {first['id']})", refused["error"])
+        self.assertIn("one runs at a time per repository", refused["error"])
+        self.release.write_text("")
+        self.assertEqual(self.settled(first["id"])["state"], "done")
+        time.sleep(1.1)  # The next run's id carries the next second.
+        status, _, after = self.review("deep", self.key)
+        self.assertEqual(status, 202, after)
+        self.settled(after["id"])
+
+    def test_a_claude_that_answers_nothing_reads_failed_and_files_no_brief(self):
+        self.result_fixture.write_text("\n")
+        status, _, run = self.review("deep", self.key)
+        self.assertEqual(status, 202, run)
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["brief"]), ("failed", None), done)
+        self.assertEqual(done["reason"], "claude exited 0 but wrote no result")
+        self.assertEqual(self.batches(), [])
+
+    def test_an_unregistered_repository_is_refused(self):
+        status, _, answer = self.review("deep", str(self.root / "elsewhere"))
+        self.assertEqual(status, 400)
+        self.assertIn("is not a registered repository", answer["error"])
+
+
+LEDGER = """# Sources
+
+| Grade | Source | Used for |
+|---|---|---|
+| A | [Spec](http://127.0.0.1:{port}/spec) | the limit |
+| B | [Gone](http://127.0.0.1:{port}/gone) | an old page |
+| C | [Closed](http://127.0.0.1:{closed}/closed) | nothing answers |
+| U | Notes kept by hand | a date |
+"""
+CLAIMS = "The limit is 10 requests ([spec](http://127.0.0.1:{port}/spec)). It always holds ([s](http://127.0.0.1:{port}/spec)).\n"
+PAGE = b"<html><head><title>The spec</title><script>ignore()</script></head><body><p>The limit is 10 requests per minute.</p></body></html>"
+
+
+class _Pages(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802 - the handler's name
+        if self.path == "/spec":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(PAGE)
+        elif self.path == "/odd":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=x-not-a-charset")
+            self.end_headers()
+            self.wfile.write(PAGE)
+        elif self.path in ("/drip-body", "/drip-head"):
+            # Round 2: a byte every 50 ms never trips a 1 s socket timeout; 200 of them take 10 s.
+            try:
+                if self.path == "/drip-body":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", "200")
+                    self.end_headers()
+                else:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                for _ in range(200):
+                    self.wfile.write(b"x")
+                    time.sleep(0.05)
+                if self.path == "/drip-head":
+                    self.wfile.write(b"\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass  # the fetch gave up and closed the connection
+        else:
+            self.send_error(404, "Not Found")
+
+    def log_message(self, *args):
+        pass
+
+
+class TheSourceReview(AdversarialCase):
+    """sd:5101: one ledger row of a research checkout, checked by codex against the source as the runner fetched it.
+
+    The source is a page on a loopback server this case runs, so the fetch leaves no machine; `no_proxy` keeps it off
+    any proxy the environment names.
+    """
+
+    def setUp(self):
+        super().setUp()
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Pages)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        self.closed = closed.getsockname()[1]
+        closed.close()  # nothing listens there now, so its fetch is refused
+        self.port = server.server_address[1]
+        self.repos = self.root / "repos"
+        self.notes = self.repos / "research" / "notes"
+        (self.notes / "30-brief").mkdir(parents=True)
+        (self.notes / "research.conf.py").write_text("DOCS=[]\n")
+        self.write_ledger()
+        (self.notes / "30-brief" / "BRIEF.md").write_text(CLAIMS.format(port=self.port))
+        self.repo(str(self.notes))
+        environment = patch.dict(os.environ, {"REPO_ROOT": str(self.repos), "no_proxy": "*", "NO_PROXY": "*"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.spec = f"http://127.0.0.1:{self.port}/spec"
+
+    def write_ledger(self, text=LEDGER):
+        (self.notes / "SOURCES.md").write_text(text.format(port=getattr(self, "port", 0), closed=getattr(self, "closed", 0)))
+
+    def source(self, key):
+        return self.review("source", "research/notes", source=key)
+
+    def test_a_source_is_checked_against_its_fetched_text_and_the_claims_citing_it(self):
+        status, _, run = self.source(self.spec)
+        self.assertEqual(status, 202, run)
+        self.assertRegex(run["id"], r"^source-notes-127\.0\.0\.1-[0-9]+-spec-[0-9]{8}T[0-9]{6}Z$")
+        done = self.settled(run["id"])
+        self.assertEqual((done["state"], done["filed"]), ("done", "written"), done)
+        text = Path(done["input"]).read_text()
+        self.assertIn(f"- source key: {self.spec}", text)
+        self.assertIn("- grade: A", text)
+        self.assertIn("2 claims cite it in 20-map, 30-brief, 40-docs; 2 are listed.", text)
+        self.assertIn("- 30-brief/BRIEF.md:1 (supported): The limit is 10 requests (spec).", text)
+        self.assertIn(f"Fetched {self.spec}: HTTP 200, text/html", text)
+        self.assertIn("Its title: The spec.", text)
+        self.assertIn("The limit is 10 requests per minute.", text)
+        self.assertNotIn("ignore()", text)
+        self.assertIn("A fetch that failed is not evidence", self.stdin.read_text())
+        _, brief, repo = self.brief(done["brief"])
+        self.assertEqual(repo, str(self.notes))
+        self.assertIn(f"source: {self.spec}\n", brief.split("\n---\n")[0])
+
+    def test_a_re_run_adds_a_brief_and_the_reviews_survive_a_ledger_edit_that_keeps_the_key(self):
+        first = self.settled(self.source(self.spec)[2]["id"])
+        time.sleep(1.1)  # The next run's id carries the next second.
+        self.write_ledger(LEDGER.replace("| A | [Spec]", "| B | [The spec, renamed]"))
+        second = self.settled(self.source(self.spec)[2]["id"])
+        reviews = adversarial.source_reviews(self.connection, str(self.notes))
+        self.assertEqual([b["item"] for b in reviews[self.spec]], [second["brief_item"], first["brief_item"]])
+        self.assertEqual(reviews[self.spec][0]["verdict"], "Does the central conclusion survive hostile reading? NO.")
+        self.assertEqual(reviews[self.spec][0]["stem"], second["brief"])
+        self.assertNotEqual(first["brief"], second["brief"])
+        self.assertIsNotNone(self.brief(first["brief"]), "a re-run replaced the first brief")
+
+    def test_a_page_that_answers_an_error_or_nothing_is_written_as_such(self):
+        for key, said in ((f"http://127.0.0.1:{self.port}/gone", f"Fetched http://127.0.0.1:{self.port}/gone: HTTP 404"),
+                          (f"http://127.0.0.1:{self.closed}/closed", "Whether the page is still there is not known."),
+                          ("id:U", None)):
+            with self.subTest(key=key):
+                status, _, run = self.source(key)
+                if said is None:
+                    # A row with no link and no ID has no key a claim or a review could name.
+                    self.assertEqual(status, 400, run)
+                    continue
+                self.assertEqual(status, 202, run)
+                done = self.settled(run["id"])
+                self.assertIn(said, Path(done["input"]).read_text())
+                time.sleep(1.1)
+
+    def test_a_page_in_a_charset_python_does_not_know_is_read_as_utf8(self):
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/odd")
+        self.assertIn("HTTP 200, text/html", fetched)
+        self.assertIn("The limit is 10 requests per minute.", fetched)
+
+    def test_a_body_that_drips_is_cut_at_the_fetch_s_whole_bound(self):
+        # Round 2 class: a per-wait socket timeout is not a bound on the whole read.
+        started = time.monotonic()
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/drip-body", seconds=1)
+        self.assertLess(time.monotonic() - started, 3, fetched)  # the 1 s bound and its 2 s grace
+        self.assertIn("the read stopped at its 1 s bound", fetched)
+
+    def test_headers_that_drip_are_not_fetched_within_the_bound(self):
+        started = time.monotonic()
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/drip-head", seconds=1)
+        self.assertLess(time.monotonic() - started, 3.5, fetched)
+        self.assertIn("gave no whole answer within 1 s", fetched)
+
+    def test_a_source_review_is_refused_for_an_unregistered_checkout_an_unknown_row_or_another_shape(self):
+        self.connection.execute("DELETE FROM repo WHERE path = ?", (str(self.notes),))
+        status, _, answer = self.source(self.spec)
+        self.assertEqual(status, 400, answer)
+        self.assertIn("research/notes is not a registered repository", answer["error"])
+        self.repo(str(self.notes))
+        for payload, said in (({"kind": "source", "target": "research/notes", "source": "https://example.test/none"},
+                               "is not a row of research/notes's ledger"),
+                              ({"kind": "source", "target": "research/missing", "source": self.spec},
+                               "research/missing is not a research checkout"),
+                              ({"kind": "source", "target": "research/notes"}, "A source review takes"),
+                              ({"kind": "repo", "target": self.key, "source": self.spec}, "Only a change review takes"),
+                              ({"kind": "change", "target": str(self.work), "source": self.spec}, "Only a source review")):
+            with self.subTest(payload=payload):
+                status, _, answer = self.post("/api/adversarial", payload)
+                self.assertEqual(status, 400, answer)
+                self.assertIn(said, answer["error"])
+        self.assertFalse(self.argv.exists())
+
+    def test_the_ledger_document_carries_each_row_s_reviews(self):
+        done = self.settled(self.source(self.spec)[2]["id"])
+        status, _, body = self.request("/api/research/research/notes", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200, body)
+        found = json.loads(body)
+        self.assertEqual(found["reviews_error"], "")
+        self.assertEqual(found["reviews"][self.spec], [{"item": done["brief_item"], "stem": done["brief"],
+                                                       "filed": found["reviews"][self.spec][0]["filed"],
+                                                       "verdict": "Does the central conclusion survive hostile reading? NO."}])
