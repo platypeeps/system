@@ -409,8 +409,11 @@ function applyText(o) {
   const x = d.draft, title = EXP.link?.title || 'the linked experiment';
   if (d.action === 'create') return `${dup}Creates one row in the experiments database, “${x.title}”, Stage Idea, Problem “${x.problem}”, its body “${x.body}”, and links ${o.label} to it. Nothing else is written.`;
   if (d.action === 'status') return `Writes the status section of ${title}. Now: “${x.before.section}”. After: “${x.after.section}”. Status ${x.before.status || 'none'} becomes ${x.after.status}. If either changed since the draft, nothing is written.`;
-  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account, styled ${JSON.stringify(x.style)}: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message} Visual: ${sl.visual} Notes: ${sl.notes}`).join(' ')} Removes only the blank slide a new deck starts with; deletes nothing else.`;
+  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message} Shapes: ${sl.elements.map(shapeText).join('; ')}.`).join(' ')} Removes only the blank slide a new deck starts with; deletes nothing else.`;
 }
+// One drawn element as the runner builds it, in points: the shape, its box, then each optional field it sets.
+const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
+  e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
 const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
 const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };

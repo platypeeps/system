@@ -81,7 +81,7 @@ A job is a fixed config file and takes no per-request arguments (project, action
 | draft deck | `notion-fetch` | Read the checkout and the brand kit's `design.md`; Write to the run folder |
 | apply create | `notion-search`, `notion-fetch`, `notion-create-pages` | Read and Write the run folder |
 | apply status | `notion-fetch`, `notion-update-page` | Read and Write the run folder |
-| apply deck | `search_drive_files`, `create_presentation`, `batch_update_presentation`, `get_presentation`, `get_page_thumbnail` | Read and Write the run folder |
+| apply deck | `search_drive_files`, `create_presentation`, `batch_update_presentation`, `get_presentation`, `get_page` | Read and Write the run folder |
 
 Every run denies by name what `realm_sweep.DENIED` denies, less the writers its own row allows:
 `DENIED` names `notion-create-pages` and `notion-update-page`, and a deny wins over an allow.
@@ -176,22 +176,26 @@ A stale refusal writes nothing and asks for a new draft. `out.json` records whic
 
 ### The deck
 
-The draft run reads the brand kit's `design.md` in full, then writes the spec: one line of message per slide,
-the visual (a diagram of shapes, a timeline, a status band, a stat tile), and the speaker notes.
+The draft run reads the brand kit's `design.md` in full, then writes the spec: per slide, one line of message
+and up to 12 drawn elements (a text box, rectangle, rounded rectangle or ellipse, with its box in points on the
+720 by 405 page, and its optional text, fill, text colour, size, font and bold), from which the visuals are built.
 Visuals over bullets; one call to action on the last slide, as the kit asks. The project's own figures only.
-The spec carries every style value the deck uses: colors, fonts, sizes and positions, copied from the kit.
 Apply reads the spec only, never the kit, so the confirmed spec is the whole of what it writes.
 
-Apply builds the deck slide by slide. Each slide is one `batch_update_presentation` call, which the API applies
-whole or not at all: the `createSlide` request the runner builds (`slide_requests`: the spec's object id `sdexp_<n>`,
-its insertion index and a blank layout), then its shapes and text, whose ids the API assigns.
-Slides takes object ids of 5 to 50 characters, so the draft's ids are `sdexp_1` to `sdexp_8`, and the first slide
-is made like the rest. The blank slide `create_presentation` adds is then deleted: the one deletion, of a slide
-without the `sdexp_` prefix, in the deck this apply made.
-Speaker notes go in a second call per slide, into the slide's `speakerNotesObjectId`, only when that shape is empty.
-A resumed apply reads the deck with `get_presentation` and skips each slide and note already there.
-It checks each slide with `get_page_thumbnail`, and leaves the deck in the account's My Drive root.
-The deck's URL is in the apply's record, which the page lists.
+The runner builds every Slides request; the model only copies them to `batch_update_presentation` and reports what
+the API answered. Each slide's id is `sdexp_<n>`, each element's `sdexp_<n>_<k>`, so each id is valid (5 to 50
+characters) and every later request names an id made before it.
+Apply runs in rounds. A round sends `batches.json` as written, records each answer in `sent.json`, and stops at the
+first refusal; it then reads the deck back with `get_presentation` and `get_page` into `deck.json`.
+From that read the runner plans the next round (`plan`): a missing slide is one batch, its `createSlide` after the
+spec slide before it, plus its elements; a slide missing elements gets those elements' requests only, by id.
+A slide is complete only when every element id it should hold is there.
+The first round of a new deck creates it and reads it before any batch; the runner records the one slide it then
+holds as `blank` in `out.json`. Once every spec slide is complete, that id alone is deleted, if it is still there.
+Nothing else is ever deleted: a slide or shape the operator added between runs stays, and one they removed returns.
+No blank recorded (the run stopped before its first read, or the new deck held more than one slide) deletes nothing.
+Speaker notes are not written: `workspace-mcp` exposes no `speakerNotesObjectId`, so a notes request could only be
+guessed, which this round removes. The deck stays in My Drive's root, and its URL is in the apply's record.
 
 ### The page
 
@@ -229,19 +233,21 @@ action awaiting apply, and the last run with its state and log path. The four ac
 | Apply status | page content, then `Status` | Stop between the two writes | the next apply finds the section equal to `after`, skips it and sets `Status` | the prompt carries `before`, `after` and the three cases; the earlier failed apply does not block it |
 | Apply status | none | A teammate edited the section or `Status` after the draft | refused as stale; nothing written; a new draft is needed | stub reports stale; the record is failed and names it |
 | Apply status | page content | `out.json` names another page | record failed, naming the page | stub writes another id |
-| Apply deck | presentation, `out.json`, slides, notes, the record's `deck` | Stop after `out.json`, between slides or before notes | the next apply resumes the deck in `out.json`: slides by object id, notes only where empty; deletes only the blank slide, until `cleared` | stub writes `out.json` only; the next prompt names that deck and the resume rules |
+| Apply deck | presentation, `out.json`, slides, the record's `deck` | Stop after `out.json`, between rounds or between batches | the next apply resumes the deck in `out.json` and plans from its read | `test_a_resume_after_operator_edits_restores_only_what_is_missing_and_deletes_nothing_else` |
+| Draft deck | `draft.json` | An id or field the runner cannot build (short id, off-page box, bad colour, unknown key) | the draft fails naming it; an older draft's apply fails before any call | `test_a_draft_the_runner_cannot_build_is_refused_naming_the_field` |
+| Apply deck | slides, shapes | A request names an id Slides refuses or one not made yet | the runner makes every id, `sdexp_<n>_<k>`, and each reference follows its create | `test_every_request_names_a_valid_id_made_before_it_or_already_there` |
+| Apply deck | one slide | `create_presentation` adds a blank slide | its id is recorded at creation and deleted alone, once every spec slide is whole; none recorded or gone deletes nothing | `test_the_blank_slide_goes_only_when_recorded_at_creation_and_still_there` |
+| Apply deck | one slide's elements | A slide exists with elements missing | complete only when every element id is there; the missing ones are sent, by id | `test_a_slide_missing_shapes_gets_only_their_requests_by_id` |
+| Apply deck | slides | The operator adds, removes or moves slides and shapes between runs | added ones stay, removed spec ones return in place; only the recorded blank goes | `test_a_resume_after_operator_edits_restores_only_what_is_missing_and_deletes_nothing_else` |
+| Apply deck | one batch | Slides refuses a batch | the round stops there; failed naming the API error; the next apply resumes | `test_a_refused_batch_fails_naming_the_api_error_and_the_next_apply_finishes` |
+| Apply deck | none | Speaker notes need an id `workspace-mcp` does not report | notes dropped from the spec; nothing guessed | the draft validator refuses `notes` |
 | Apply deck | presentation | Stop after the create, before `out.json` | the next apply searches the exact title; a match resumes, no match is `unknown` | the next prompt carries the title search |
 | Draft deck | `draft.json` | The kit changes after the draft | none needed: apply reads the spec only | the apply argv has no Read outside the run folder |
 | Any run | the record | The server restarts mid-run | the run continues in its own session; the page reads its record | `status` with a live pid and with a dead one |
 | Any run | the lock | The runner is killed while its model run writes | the model run inherits the lock, so nothing starts beside it; the run reads running until it ends; a runner without the lock refuses | the fake model receives the lock; a dead runner with the lock held reads running |
 | Draft or apply start | `request.json` | The link names another data source than the setting | 409 `source:`; attach again | link with another source; move the link's source after the draft |
-| Apply deck | slides | The model ends `RESULT: ok` with fewer checked slides than drafted | record failed; the next apply resumes the deck | `out.json` without `slides`, then a resumed apply |
 | Apply start | the confirm | A newer draft finishes while the confirm is open | Apply posts the draft the confirm showed, with every field shown; a run without a confirm posts nothing | the page test runs Apply twice after one confirm |
-| Draft deck | `draft.json` | Slide ids Slides refuses (under 5 characters) | the validator takes only `sdexp_<n>`; `s1` fails the draft | `test_every_slide_id_a_draft_may_hold_is_a_slides_object_id_and_the_old_ids_are_refused` |
-| Apply deck | slides | `create_presentation` adds a blank slide; the first spec slide was assumed to be it | every spec slide, the first too, comes from the runner's `createSlide` request; the blank one is deleted, then `cleared` | `test_the_apply_makes_every_spec_slide_the_first_too_and_removes_only_the_blank_one` |
 | Apply deck | none | A title with a quote breaks the Drive name query | the title drops quotes and backslashes | `test_a_title_with_quotes_still_makes_a_drive_name_query` |
-| Apply deck | notes | The notes shape assumed at a guessed place | the prompt names `speakerNotesObjectId` under `notesPage.notesProperties` | `test_the_apply_makes_every_spec_slide_the_first_too_and_removes_only_the_blank_one` |
-| Apply deck | the record | `RESULT: ok` with other slide ids checked, another order, or the blank slide left | failed; the next apply resumes | `test_a_deck_resumes_the_presentation_in_out_json_or_searches_its_exact_title` |
 | Older state | none | No state folder, no cache, no setting row | page shows "never read" and "not linked" | empty state folder |
 
 ## Slices
@@ -263,5 +269,5 @@ The `sweep.spawn` split lands in the same PR, since both callers change with it.
 - `notion-search` may not return every row of a large database. The list names its count and how it was read.
 - Status condensing rewrites earlier entries. The confirm shows the old and new section side by side.
 - If an sd item also projects this row, the projection treats our `Status` write as a person's edit and yields it.
-- The deck's look depends on what the Slides API can draw. The thumbnails let the run check its own slides.
+- The deck's look depends on the four shapes the runner builds. The confirm lists every element before apply.
 - Evidence for an apply is the draft's hash and the project, action, page, data source and account it was made for.

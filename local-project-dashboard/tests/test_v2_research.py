@@ -1032,8 +1032,10 @@ R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o
 
     def test_the_apply_confirm_shows_the_whole_draft_and_apply_posts_only_the_draft_it_showed(self):
         # sd:5296: the confirm shows every field Apply writes, and Apply posts the draft that confirm showed, never a newer one.
-        deck = {"title": "Span sampling", "style": {"accent": "#000000"},
-                "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "visual": f"band {n}", "notes": f"say {n}"} for n in range(1, 7)]}
+        deck = {"title": "Span sampling", "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "elements": [
+            {"shape": "RECTANGLE", "x": 0, "y": 300, "w": 720, "h": 40, "fill": "#000000"},
+            {"shape": "TEXT_BOX", "x": 40, "y": 40, "w": 640, "h": 60, "text": f"say {n}", "color": "#FFFFFF", "size": 28,
+             "font": "Inter", "bold": True}]} for n in range(1, 7)]}
         create = {"title": "Trace budgets", "problem": "Budgets drift.", "body": "## Hypothesis\nTail."}
         done = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log"}
         linked = {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}
@@ -1041,8 +1043,8 @@ R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o
 R.deck = cmd('experiment.apply').consequence(o); shellRun(cmd('experiment.apply'), o); await flush();
 R.again = cmd('experiment.apply').run(o);""", answer=self.experiments({"link": linked, "runs": [
             {**done, "run": "20261019-160000-000002", "action": "deck", "fingerprint": "d" * 64, "draft": deck}]}))
-        self.assertIn('styled {"accent":"#000000"}', out["R"]["deck"])
-        self.assertIn("6. m6 Visual: band 6 Notes: say 6", out["R"]["deck"])
+        self.assertIn("6. m6 Shapes: RECTANGLE at 0,300 720x40 fill #000000; TEXT_BOX at 40,40 640x60 “say 6” text #FFFFFF 28pt Inter bold.",
+                      out["R"]["deck"])
         self.assertEqual([p[1]["fingerprint"] for p in out["posts"]], ["d" * 64])
         self.assertEqual(out["R"]["again"], "Apply writes only a draft its confirm showed: choose Apply draft again")
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
