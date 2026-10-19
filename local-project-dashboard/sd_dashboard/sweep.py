@@ -33,8 +33,8 @@ import sys
 import threading
 from pathlib import Path
 
-__all__ = ["COMMAND", "REALMS", "REALM_RUNNER", "SCRIPT", "SECONDS", "request", "request_realm", "start", "state_dir",
-           "status"]
+__all__ = ["COMMAND", "REALMS", "REALM_RUNNER", "SCRIPT", "SECONDS", "request", "request_realm", "spawn", "start",
+           "state_dir", "status"]
 
 SCRIPT = "tools/sweep.py"
 COMMAND = f"python3 {SCRIPT} run"
@@ -90,7 +90,13 @@ def _runner(connection, realm: str) -> tuple[Path, list[str], str]:
 def start(connection, realm: str = "hoa"):
     """Steps 1 to 3 above: `(202, {"started", "repo", "command"})`, or `(409, {"error"})` while a run holds the lock."""
     place, argv, command = _runner(connection, realm)
-    state = state_dir(realm)
+    return spawn(state_dir(realm), place, argv, command, f"A {realm} sweep")
+
+
+def spawn(state: Path, place: Path, argv: list[str], command: str, what: str, prepare=None):
+    """Steps 2 and 3, for any headless run: `state`'s lock without waiting, then `argv` in `place`, in its own session,
+    holding the lock. `prepare()` runs under the lock before the start, so a refused start writes nothing of its own.
+    `what` names the run in the 409 (`A work sweep`); `research_experiments` starts its runs here too (sd:5296)."""
     state.mkdir(parents=True, exist_ok=True)
     handle = open(state / "lock", "a+", encoding="utf-8")
     try:
@@ -98,13 +104,15 @@ def start(connection, realm: str = "hoa"):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             handle.seek(0)
-            return 409, {"error": f"A {realm} sweep is already running (started {handle.read().strip() or 'at an unknown time'}); "
+            return 409, {"error": f"{what} is already running (started {handle.read().strip() or 'at an unknown time'}); "
                                   f"one runs at a time. Wait for it to end, then start the next."}
         started = _now()
         handle.seek(0)
         handle.truncate()
         handle.write(started)
         handle.flush()
+        if prepare is not None:
+            prepare()
         with open(state / "start.log", "w", encoding="utf-8") as log:
             log.write(f"{started} {command} in {place}\n")
             log.flush()
@@ -112,7 +120,7 @@ def start(connection, realm: str = "hoa"):
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                       pass_fds=(handle.fileno(),), start_new_session=True, env=_environment())
         # Reaped here when it ends, so a long-lived server keeps no zombie; a restart hands it to launchd instead.
-        threading.Thread(target=runner.wait, name=f"{realm} sweep", daemon=True).start()
+        threading.Thread(target=runner.wait, name=what, daemon=True).start()
         return 202, {"started": started, "repo": str(place), "command": command}
     finally:
         handle.close()
