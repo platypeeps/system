@@ -308,19 +308,20 @@ def claude_binary() -> str:
     return os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
 
 
-def ask(argv: list[str], cwd: Path, timeout: int, out) -> tuple[int, str, list[str]]:
+def ask(argv: list[str], cwd: Path, timeout: int, out, keep: tuple[int, ...] = ()) -> tuple[int, str, list[str]]:
     """Run claude headless, its reply to `out`, and judge the reply's last `RESULT:` line: ok is 0, anything else 1.
 
     The third value is what the reply's last `READ:` line names, and empty without one: an unnamed source was not read.
 
     `claude -p` exits 0 whatever the prompt concluded. The run gets its own process group, so a timeout stops its MCP
     children too. SD_HANDOFF_RESTORE=0: an unattended run must not consume a handoff written for a person's session.
+    `keep` are descriptors the run inherits, such as the lock its caller holds.
     """
     env = {**RUN_ENV_DEFAULTS, **os.environ, "SD_HANDOFF_RESTORE": "0"}
     try:
         proc = subprocess.Popen(["sh", "-c", WITH_TOKEN, "claude-run", *argv], cwd=cwd, env=env, text=True,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True)
+                                start_new_session=True, pass_fds=keep)
     except OSError as error:
         return EXIT_ERROR, f"cannot start {argv[0]}: {error}", []
     try:

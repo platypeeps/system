@@ -89,7 +89,7 @@ function reconcile() {
 }
 // With no project selected, the reader and the claims must not keep the last project's rows: they would open its sources.
 function clearSelection() {
-  selected = null; curSource = null; resetClaims(); shell.commands.select(null);
+  selected = null; curSource = null; shownProject = null; resetClaims(); shell.commands.select(null);
   ['reader-for', 'reader-tally', 'claims-for'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
   put(reader, PICK()); put(claimsEl, PICK());
   shell.view.count('sources', null); shell.view.count('claims', null);
@@ -245,6 +245,19 @@ reader.addEventListener('click', e => {
 // build: the reference read claims by hand from one project's Status section, with inferred and corrected states; neither is read.
 const claimsEl = document.getElementById('claims');
 const VERDICT = { supported: ['●', 'ok'], unverified: ['▨', 'unknown'] };
+// sd:5297: a claim type's hover text says what it means and how it is graded (the document's types, research_screen.CLAIM_TYPES),
+// then what the ledger itself says each of those grades means (its grades). The page keeps no copy of either.
+// build: title and aria-describedby until the shared tooltip helper (sd:5287) lands; then the legend, filter and marks move to it.
+// A mark is not focusable, so its claim's button carries the description: a keyboard reaches the type there.
+const typeWord = v => v[0].toUpperCase() + v.slice(1);
+const ruleOf = (c, v) => c.types?.[v]?.rule || v;
+const both = gs => (gs.length > 1 ? `${gs.slice(0, -1).join(', ')} and ${gs[gs.length - 1]}` : gs[0]);
+function typeTip(c, v) {
+  const defined = c.grades || {};
+  const said = (c.types?.[v]?.grades || '').split('').filter(g => defined[g]).map(g => `${g} = ${defined[g]}`);
+  return `${typeWord(v)}: ${ruleOf(c, v)}.${Object.keys(defined).length ? said.map(x => ` ${x}`).join('') : ' This ledger does not define its grades.'}`;
+}
+const claimTip = (c, x) => `${typeWord(x.s)}: ${ruleOf(c, x.s)}. This claim cites ${x.grades ? both(x.grades.split('')) : 'only ungraded sources'}.`;
 let verdict = null, curClaim = null, litKeys = [], litClaims = [];
 function resetClaims() { verdict = null; curClaim = null; litKeys = []; litClaims = []; }
 async function renderClaims(key) {
@@ -274,12 +287,12 @@ function drawClaims(p, s) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
   }
-  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
-    <p class="vlegend"><span>● supported: cites an A, B or M source</span><span>▨ unverified: cites only C, U or ungraded sources</span>${
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}" title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
+    <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
-      <span class="g g-${VERDICT[x.s][1]}" title="${x.s}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
-      <button type="button">${x.text}</button>
+      <span class="g g-${VERDICT[x.s][1]}" title="${claimTip(c, x)}"><span aria-hidden="true">${VERDICT[x.s][0]}</span><span class="sr">${x.s}</span></span>
+      <button type="button" aria-describedby="claim-type-${x.s}">${x.text}</button>
       <span class="meta"><span>${x.doc}:${x.line}</span>${x.keys.map(k => chip(s, k))}</span></li>`)}</ul>${
     c.total > c.rows.length ? html`<p class="more">${c.rows.length} of ${c.total} claims shown: the reading passed its print bound.</p>` : ''}${unread}`);
   document.getElementById('claims-for').textContent = `· ${p.label} · ${plural(c.total, 'claim')}`;
@@ -316,8 +329,10 @@ function claimsOf(i) {
 const details = document.getElementById('details');
 function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
 const kindWord = s => (s === 'unknown' ? 'config or render unread' : s === 'caution' ? 'render-stale' : 'current');
-function showProject(key) {
+// read: false redraws from the experiment read already held, so the Act bar follows it without a second read.
+function showProject(key, read = true) {
   const p = PROJECTS.find(x => x.key === key); if (!p) return;
+  shownProject = key;
   const notFresh = p.docs.filter(d => d.state !== 'fresh');
   put(details, html`<p class="kind"><span class="g-${p.s}" aria-hidden="true">${GLYPH[p.s]}</span> Research project · ${kindWord(p.s)}</p>
     <h2>${p.label}</h2>
@@ -330,14 +345,118 @@ function showProject(key) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
-    <p class="why">Render and the mechanical review run in the checkout; neither writes outside it. The dashboard runs neither: copy the line.</p>`);
+    <p class="why">Render and the mechanical review run in the checkout; neither writes outside it. The dashboard runs neither: copy the line.</p>
+    <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
+  if (read) loadExperiment(p.key);
   // build: the reference's suggestions named one project's open questions; these name the selected project only.
   shell.suggest([`What is ${p.label} waiting on?`, 'Which sources are graded C or U?', 'Summarise the START HERE document']);
   swap();
 }
+// ---------- Experiment (sd:5296) ----------
+// The project's row in the team's experiments database (research_experiments.py), read for the selected project. Every Notion
+// or Drive write is two runs: a draft that reads only, then Apply, which asks first and shows that draft; the POST carries the
+// draft's SHA-256, so the server refuses an apply of anything but what was shown. Refresh and the drafts write nothing outward.
+let EXP = null, expPolling = 0, shownProject = null;
+const EXP_POLL = 5000;
+const expPath = key => `/api/research/experiments?project=${encodeURIComponent(key)}`;
+function loadExperiment(key) {
+  return window.shell.getJSON(expPath(key)).catch(err => ({ error: err.message })).then(d => {
+    if (selected !== key) return; // a newer selection owns the section
+    EXP = { ...d, key };
+    if (shownProject === key) showProject(key, false); // a source's or claim's Details keep the pane
+    if (EXP.running && !expPolling) expPolling = setTimeout(() => { expPolling = 0; loadExperiment(selected); }, EXP_POLL);
+  });
+}
+const mine = key => (EXP?.runs || []).filter(r => r.project === key);
+// The newest finished draft of this project with no apply running or done; `unknown` when its last apply found no trace.
+function pending(key) {
+  const runs = EXP?.runs || [];
+  for (const r of mine(key)) {
+    if (r.verb !== 'draft' || r.state !== 'done' || !r.draft) continue;
+    const applies = runs.filter(a => a.verb === 'apply' && a.draft === r.run);
+    if (applies.some(a => a.state === 'running' || a.state === 'done')) continue;
+    return { ...r, unknown: applies[0]?.state === 'unknown' };
+  }
+  return null;
+}
+const ACTION_WORD = { create: 'new experiment', status: 'status update', deck: 'deck' };
+const stampTime = s => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11)}:${s.slice(11, 13)} UTC`;
+const listed = page => (EXP?.cache?.rows || []).find(r => r.page === page);
+function experimentSection(p) {
+  if (!EXP || EXP.key !== p.key) return html`<h3>Experiment</h3><p class="why">Reading the experiment link…</p>`;
+  if (EXP.error) return html`<h3>Experiment</h3><p class="unknown"><span class="g-unknown">▨</span>Not read: ${EXP.error.replace(/\.$/, '')}. Reselect the project to retry.</p>`;
+  const link = EXP.link, row = link && listed(link.page), c = EXP.cache, last = (EXP.runs || []).find(r => r.project === p.key || r.verb === 'list');
+  const draft = pending(p.key);
+  const problems = Object.entries(EXP.problems || {}).filter(([, why]) => why);
+  return html`<h3>Experiment</h3>${EXP.link_error ? html`<p class="unknown"><span class="g-unknown">▨</span>The link was not read: ${EXP.link_error.replace(/\.$/, '')}.</p>`
+    : link ? html`<dl><dt>Linked</dt><dd>${link.url ? html`<a class="ext" href="${link.url}" target="_blank" rel="noopener">${link.title || link.page} ${I('arrow-up-right')}</a>` : link.title || link.page}</dd>${
+      row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
+    : html`<p class="why">Not linked. Attach one from the list, or draft a new one.</p>`}
+    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
+    ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
+    ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
+    ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
+      : last ? html`<p class="why">Last run: ${last.verb} ${last.action || 'experiments'} · ${last.state}${last.reason ? ` · ${last.reason}` : ''} · log ${last.log}</p>` : ''}`;
+}
+// What Apply writes, from the draft the server holds: the confirm shows all of it before anything leaves the machine,
+// and Apply posts the draft the confirm showed (`shownDraft`), never one a later read found.
+let shownDraft = null;
+function applyText(o) {
+  const d = pending(o.key); shownDraft = d && { key: o.key, run: d.run, fingerprint: d.fingerprint, unknown: d.unknown };
+  if (!d) return '';
+  const dup = d.unknown ? 'An earlier apply found no trace of its write, so this one may make a duplicate. ' : '';
+  const x = d.draft, title = EXP.link?.title || 'the linked experiment';
+  if (d.action === 'create') return `${dup}Creates one row in the experiments database, “${x.title}”, Stage Idea, Problem “${x.problem}”, its body “${x.body}”, and links ${o.label} to it. Nothing else is written.`;
+  if (d.action === 'status') return `Writes the status section of ${title}. Now: “${x.before.section}”. After: “${x.after.section}”. Status ${x.before.status || 'none'} becomes ${x.after.status}. If either changed since the draft, nothing is written.`;
+  return `${dup}Creates the Google Slides deck “${x.title} - draft ${d.run}” in My Drive's root, in the work account: ${x.slides.map((sl, i) => `${i + 1}. ${sl.message} Shapes: ${sl.elements.map(shapeText).join('; ')}.`).join(' ')} Removes only the blank slide a new deck starts with; deletes nothing else.`;
+}
+// One drawn element as the runner builds it, in points: the shape, its box, then each optional field it sets.
+const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
+  e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
+// The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
+const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
+const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
+const expPost = (body, what, key) => window.shell.post('/api/research/experiments/act', body).then(started(what, key), refused);
+const expOff = o => (EXP?.key !== o.key ? 'the experiment link is not read yet' : EXP.error ? `not read: ${EXP.error}` : EXP.running ? 'a run is going now' : EXP.problems?.source || true);
+function experimentCommands() {
+  const on = 'research project', post = (o, body, what) => expPost({ ...body, project: o.key }, what, o.key);
+  const linkedOff = o => { const w = expOff(o); return w !== true ? w : EXP.link_error ? `the link was not read: ${EXP.link_error}` : true; };
+  return [
+    { id: 'experiment.refresh', on, label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
+      when: expOff, sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
+      run: o => expPost({ verb: 'list' }, 'Refresh', o.key) },
+    { id: 'experiment.attach', on, label: 'Attach experiment', does: 'Links this project to a listed experiment, in the workflow database only.', risk: 'safe', executes: true,
+      when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.cache?.current ? 'refresh the experiments list first' : !EXP.cache.rows.length ? 'the list holds no experiments' : true; },
+      fields: () => [{ name: 'page', label: 'Experiment', options: (EXP?.cache?.rows || []).map(r => ({ value: r.page, label: `${r.title} · ${r.stage || 'no stage'}` })) }],
+      consequence: o => `Links ${o.label} to the chosen experiment in the workflow database${EXP?.link ? `, in place of ${EXP.link.title || EXP.link.page}` : ''}. Notion is not written.`,
+      sends: () => 'POST /api/research/experiments/act {"verb":"attach"}',
+      run: (o, v) => post(o, { verb: 'attach', page: v.page, replaces: EXP?.link?.page ?? null }, 'Attach') },
+    { id: 'experiment.create', on, label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
+      when: o => { const w = linkedOff(o); return w !== true ? w : EXP.link ? 'linked already: Attach replaces the link' : true; },
+      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
+    { id: 'experiment.status', on, label: 'Draft status update', does: 'Drafts a dated status entry; Apply writes it after you read it.', risk: 'safe', executes: true,
+      when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : true; },
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"status"}',
+      run: o => post(o, { verb: 'draft', action: 'status' }, 'Draft') },
+    { id: 'experiment.deck', on, label: 'Draft deck', does: 'Drafts a branded 6-8 slide deck; Apply builds it after you read it.', risk: 'safe', executes: true,
+      when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : EXP.problems?.kit || EXP.problems?.account || true; },
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"deck"}',
+      run: o => post(o, { verb: 'draft', action: 'deck' }, 'Draft') },
+    { id: 'experiment.apply', on, label: 'Apply draft', does: o => { const d = EXP?.key === o.key && pending(o.key); return d ? `Writes the ${ACTION_WORD[d.action]} drafted ${stampTime(d.run)}, after you read it.` : 'Writes a finished draft, after you read it.'; },
+      risk: 'safe', askFirst: true, executes: true,
+      when: o => { const w = expOff(o); return w !== true ? w : pending(o.key) ? true : 'no finished draft waits for Apply'; },
+      consequence: applyText, sends: () => 'POST /api/research/experiments/act {"verb":"apply"}',
+      run: o => { const d = shownDraft?.key === o.key ? shownDraft : null; shownDraft = null;
+        if (!d) return 'Apply writes only a draft its confirm showed: choose Apply draft again';
+        return expPost({ verb: 'apply', run: d.run, fingerprint: d.fingerprint, recreate: d.unknown }, 'Apply', o.key); } },
+  ];
+}
 function showSource(i) {
   const s = SOURCES.get(selected)?.rows?.[i]; if (!s) return;
+  shownProject = null;
   shell.commands.put({ id: sourceId(selected, s), type: 'research source', label: s.title, project: selected, key: s.key });
   put(details, html`<p class="kind">${I('book-open')} Source · ${s.h[0] || 'grade'} ${s.id}</p><h2>${s.title}</h2>
     <dl><dt>Ledger</dt><dd>${s.f}</dd><dt>Section</dt><dd>${s.sec || 'none'}</dd><dt>${s.h[2] || 'Used for'}</dt><dd>${s.c3 || '—'}</dd>${s.c4 ? html`<dt>${s.h[3] || 'Note'}</dt><dd>${s.c4}</dd>` : ''}
@@ -357,8 +476,9 @@ function citedBy(r) {
     r.cited > by.length ? html`<p class="more">${by.length} of ${plural(r.cited, 'claim')} listed: the reading passed its print bound.</p>` : ''}`;
 }
 function showClaim(s, x) {
+  shownProject = null;
   put(details, html`<p class="kind"><span class="g-${VERDICT[x.s][1]}" aria-hidden="true">${VERDICT[x.s][0]}</span> Claim · ${x.s}</p><h2>${x.text}</h2>
-    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? `cites an A, B or M source (grades ${x.grades})` : x.grades ? `cites only ${x.grades.split('').join(' and ')} sources` : 'cites only ungraded sources'}</dd></dl>
+    <dl><dt>Document</dt><dd>${x.doc}, line ${x.line}</dd><dt>Verdict</dt><dd>${x.s === 'supported' ? `${ruleOf(s.claims, 'supported')} (grades ${x.grades})` : x.grades ? `cites only ${x.grades.split('').join(' and ')} sources` : 'cites only ungraded sources'}</dd></dl>
     <h3>Sources</h3><ul class="claims">${x.keys.map(k => { const r = s.rows.find(y => y.key === k);
       return html`<li class="claim"><span class="g" aria-hidden="true">${r ? r.id : '?'}</span><span>${r ? r.title : `${k}: past the rows shown`}</span></li>`; })}</ul>`);
   shell.setContext(x.text.slice(0, 40)); swap();
@@ -397,6 +517,7 @@ function registerCommands() {
     { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
+    ...experimentCommands(),
     // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
     window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
       does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
