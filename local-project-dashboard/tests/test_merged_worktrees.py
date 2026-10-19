@@ -119,6 +119,20 @@ class TheReading(Merged):
         self.assertEqual((row["removable"], row["state"]), ([], "queued"))
         self.assertEqual(self.kept(), {"wt-one": "not known whether a process works in it: lsof gave no answer"})
 
+    def test_a_repository_whose_worktree_list_failed_is_named_not_read_as_having_none(self):
+        """sd:5120: `git worktree list` failing is an unknown answer, not an empty list."""
+        one = self.tree("one")
+        broken = self.root / "repos" / "broken"
+        broken.mkdir()
+        self.repo(str(broken))
+        scan = health_collectors.branch_scan(
+            self.connection, repo_paths=[str(self.alpha), str(broken)], heads=health_collectors.merged_heads(self.connection))
+        rows = {row["id"]: row for row in health_screen._branch_rows(scan)}
+        self.assertEqual(rows["wt:merged"]["removable"], [str(one)])
+        self.assertEqual((rows["wt:unread"]["state"], rows["wt:unread"]["list"]), ("unknown", [str(broken)]))
+        self.assertIn("merged worktrees were not listed", rows["wt:unread"]["detail"])
+        self.assertEqual(scan["worktrees"]["revision"], health_collectors.worktrees_revision(scan["worktrees"]["trees"]))
+
 
 class TheWrite(Merged):
     def test_remove_takes_the_tree_its_branch_origins_branch_and_its_build_output(self):
