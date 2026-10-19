@@ -120,3 +120,49 @@ section[aria-labelledby="decisions-h"] { margin-top: var(--space-xl); }
   .decisions .act { width: auto; }
   .decisions .choices, .decisions form.answer { width: auto; }
 }
+
+/* Status (sd:5099): the sections `sd today` prints, under one flow strip (design.md § Per-page allowances: one evidence strip).
+ * Hallmark · component: status view · genre: modern-minimal · theme: design.md instrument panel
+ * Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4
+ * states: default · hover (links) · focus · active · empty (one shared line) · error (could not be read) -- rows are not
+ * selectable; each title opens its item. A segment's colour follows its legend glyph and label, never colour alone. */
+.flow { margin: var(--space-sm) 0 var(--space-md); }
+.flow-bar { display: block; width: 100%; height: var(--space-sm); }
+.seg-delivered { fill: var(--color-ok); background: var(--color-ok); }
+.seg-landing { fill: var(--color-accent); background: var(--color-accent); }
+.seg-planned { fill: var(--color-series-1); background: var(--color-series-1); }
+.seg-unscheduled { fill: var(--color-series-2); background: var(--color-series-2); }
+.seg-blocked { fill: var(--color-caution); background: var(--color-caution); }
+.flow-key { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-md); margin: var(--space-xs) 0 0; padding: 0; list-style: none; }
+.flow-key a, .flow-key li > span { display: inline-flex; align-items: center; gap: var(--space-2xs); white-space: nowrap; color: var(--color-ink-2); text-decoration: none; font: 400 var(--text-xs)/1.3 var(--font-ui); }
+.flow-key a b { font: 600 var(--text-xs)/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink); }
+.flow-key a:hover { text-decoration: underline; }
+.flow-key a:focus-visible, #status-tally a:focus-visible, .st-line a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.flow-key .sw { width: var(--space-xs); height: var(--space-xs); border-radius: var(--radius-sm); }
+#status-tally a { display: inline-flex; align-items: center; color: var(--color-ink-2); text-decoration: none; white-space: nowrap; }
+#status-tally a.g-caution { color: var(--color-caution); }
+#status-tally a:hover { text-decoration: underline; }
+.st-sec { margin-top: var(--space-lg); scroll-margin-top: var(--space-md); }
+.st-sec h3 { margin: 0; font: 600 var(--text-sm)/1.2 var(--font-ui); }
+.st-sec h3 .n { margin-left: var(--space-3xs); font: 400 var(--text-xs)/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-muted); }
+.st-line { margin: 0 0 var(--space-xs); font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); }
+.st-line a { color: var(--color-ink-2); }
+.st-empty { margin-top: var(--space-lg); color: var(--color-muted); }
+.st tbody tr { cursor: default; }
+.st tbody tr:hover td { background: transparent; }
+.st td { vertical-align: top; height: auto; padding-block: var(--space-xs); }
+.st .what { width: 46%; min-width: 0; overflow-wrap: anywhere; }
+.st .what a { color: var(--color-ink); text-decoration: none; }
+.st .what a:hover { text-decoration: underline; }
+.st .what a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.st .id { font: 400 var(--text-xs)/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-muted); }
+.st .repo, .st .sub { display: block; margin-top: var(--space-3xs); font: 400 var(--text-xs)/1.3 var(--font-data); color: var(--color-muted); }
+.st .detail { min-width: 0; overflow-wrap: anywhere; }
+.st .when { white-space: nowrap; font: 400 var(--text-xs)/1.35 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink-2); }
+.st-sec .more { margin-top: var(--space-xs); font-size: var(--text-xs); }
+@media (pointer: coarse) { .flow-key a, .st-sec .more, #status-tally a { min-height: var(--row-touch); } }
+@media (forced-colors: active) { .flow-bar rect, .flow-key .sw { forced-color-adjust: none; } }
+@media (max-width: 899px) {
+  .st tbody tr { grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what when" ". detail detail"; }
+  .st .what { grid-area: what; width: auto; } .st .detail { grid-area: detail; } .st .when { grid-area: when; }
+}
