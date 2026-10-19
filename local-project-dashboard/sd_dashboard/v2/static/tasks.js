@@ -13,10 +13,11 @@ window.PAGE_COMMANDS = [
 ];
 // build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
 // #viewswitch. sd:5064: Personal, then the realms the dashboard.realms row names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
-// and All. Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
+// and All. A realm named list, board or matrix is dropped: the shell would hide that layout panel (view-<id>, sd:5114).
+// Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
 // other view, and not the list, board and matrix keys (v l, v b, v m), holds.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
-  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all', 'list', 'board', 'matrix'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
   { id: 'hoa', label: 'HOA', key: 'h' }, { id: 'home', label: 'Home', key: 'o' }, { id: 'all', label: 'All', key: 'a' }];
 {
   const used = new Set(['l', 'b', 'm', ...window.PAGE_VIEWS.map(v => v.key).filter(Boolean)]);

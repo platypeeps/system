@@ -417,6 +417,14 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
         self.assertEqual([t in r["home"] for t in titles], [False, True, False])
         self.assertEqual([t in r["all"] for t in titles], [True, True, True])
 
+    def test_a_realm_named_after_a_layout_panel_is_kept_out_of_the_views(self):
+        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>)."""
+        self.doc, self.details = self.realm_doc(), {}
+        prelude = ("globalThis.SHELL_REALMS = [{ id: 'list', label: 'List' }, { id: 'board', label: 'Board' },"
+                   " { id: 'matrix', label: 'Matrix' }, { id: 'work', label: 'Work' }];\n")
+        out = test_v2_tasks.TheScript.run_page(self, "R.views = window.PAGE_VIEWS.map(v => v.id);", prelude=prelude)
+        self.assertEqual(out["R"]["views"], ["personal", "work", "hoa", "home", "all"])
+
     def test_without_realms_conf_a_realm_view_holds_the_no_repo_rows_and_says_why(self):
         with mock.patch.object(places, "REALMS_CONFIG", self.dir / "realms.conf"):
             self.doc, self.details = tasks_screen.document(self.connection, now=NOW), {}
