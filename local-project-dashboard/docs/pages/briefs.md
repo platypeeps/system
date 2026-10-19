@@ -20,3 +20,8 @@ The design reads brief mail; no mail or watchdog reader exists, so the page
 shows no unread state, follow-up flag or failure, and the Missed lamp is
 unknown with that reason. Make task opens the capture form, which files
 through `POST /api/items`.
+
+Each row shows one icon per destination holding a copy (sd:5102): Drive,
+Notion, Obsidian, from the item's `fields.published` and the vault copy. Details'
+Publish to writes `fields.publish.<channel>` on the item and queues the brief;
+Publish now drains its requests, as on Documents.

@@ -138,5 +138,83 @@
     return html`<section class="adv-run" aria-live="polite"><h3>Adversarial review</h3><p class="why">${state}${links}${item}</p></section>`;
   }
 
-  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane };
+  // Published copies (sd:5102): one icon per destination holding a copy of the row's document or brief, from its `pub`
+  // (publishing.py), in the order Drive, Notion, Obsidian. A copy with a URL is a link that opens it in a new tab; a queued
+  // one is dimmed and its title says queued, a link to the last delivered copy if there is one. A read that failed is a ▨
+  // naming why: unknown is not "no copy". Briefs and Documents both draw it, so shell.css styles it once.
+  const PUB_ICON = { drive: 'triangle', notion: 'box', obsidian: 'gem' };
+  function published(pub) {
+    const { html } = window.markup;
+    const copies = (pub && pub.copies) || [];
+    // Only a link the server vouched for opens: http(s) for Notion and Drive, obsidian://open for the vault.
+    const marks = copies.filter(c => PUB_ICON[c.channel]).map(c => {
+      const glyph = html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[c.channel]}"/></svg>`;
+      const cls = `pub-${c.channel}${c.state === 'queued' ? ' queued' : ''}`;
+      return c.url && /^(https?:|obsidian:\/\/open\?)/.test(c.url) ? html`<a class="${cls}" href="${c.url}" target="_blank" rel="noopener noreferrer" aria-label="Open in ${c.title}" title="${c.title}">${glyph}</a>`
+        : html`<span class="${cls}" role="img" aria-label="${c.title}" title="${c.title}">${glyph}</span>`;
+    });
+    const unread = pub && pub.unread ? html`<span class="pub-unknown" role="img" aria-label="${pub.unread}" title="${pub.unread}">▨</span>` : '';
+    return marks.length || unread ? html`<span class="pub">${marks}${unread}</span>` : '';
+  }
+
+  // Publish to and Publish now (sd:5102), for a research document on Documents and a routine brief on Briefs. `on` is the
+  // row's noun; `base` the page's API (`/api/documents`, `/api/briefs`); `payload(o)` what names the row; `cli(o, channel)`
+  // the line by hand; `reread()` the page's reread. Publish to ticks one destination: POST <base>/publish adds its designation
+  // (research.conf.py for a document, the item's fields.publish for a brief) and queues it through the pack. Unticking is
+  // refused: the designation may hold the id a drain wrote. Obsidian is the repo's channels setting (Management > Publishing).
+  // Publish now posts <base>/publish-now, which starts one headless drain of the row's queued requests (publish_drain.py); the
+  // page reads <base>/publish-now/<id> every 10 s until it settles, fires 'publish:run' so Details draws again, then rereads.
+  const PUB_NAME = { drive: 'Google Drive', notion: 'Notion', obsidian: 'Obsidian' };
+  const DRAINS = new Map(), DRAIN_POLL = 10000;
+  const refusal = (err, what) => { if ([400, 404, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether ${what} is not known`); };
+  function followDrain(base, key, run, reread) {
+    DRAINS.set(key, run);
+    document.dispatchEvent(new CustomEvent('publish:run', { detail: { key, run } }));
+    if (run.state === 'done' || run.state === 'failed') {
+      window.shell.toast(run.state === 'done' ? `Published · run ${run.id}` : `Publish now failed · run ${run.id}: ${run.reason || 'no reason recorded'}`);
+      reread(); return;
+    }
+    // A failed read is not known, not settled: Details says so and the next poll tries again.
+    setTimeout(() => window.shell.getJSON(`${base}/publish-now/${encodeURIComponent(run.id)}`).then(next => followDrain(base, key, next, reread),
+      e => followDrain(base, key, { ...run, unread: e.message }, reread)), DRAIN_POLL);
+  }
+  function publishCommands(on, { base, payload, cli, reread }) {
+    return [
+      { id: `${on}.publish`, on: `${on} destination`, label: 'Publish to', does: 'Designates the destination and queues the copy; Publish now drains it.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+        when: o => o.channel === 'obsidian' ? 'Obsidian is the repo\'s channels setting: change it under Management > Publishing'
+          : o.set ? `already designated for ${o.name}; remove the designation by hand` : o.why || true,
+        cli: o => cli(o.row, o.channel),
+        sends: o => `POST ${base}/publish ${JSON.stringify({ ...payload(o.row), channel: o.channel })}`,
+        consequence: o => `Designates ${o.row.label} for ${o.name} and queues it. Nothing leaves the machine until Publish now or a drain by hand.`,
+        run: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(
+          r => reread().then(() => r.queued ? `Queued for ${o.name} · ${o.row.label}` : `${o.name} designated; not queued: ${(r.lines || []).slice(-1)[0] || 'publish said nothing'}`),
+          err => refusal(err, 'it was designated')) },
+      { id: `${on}.publish-now`, on, label: 'Publish now', does: 'Starts a drain that mirrors the queued copies to Notion or Drive.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+        when: o => !o.pub ? `not a ${on} the dashboard publishes` : (o.pub.copies || []).some(c => c.state === 'queued') || 'nothing is queued: tick Drive or Notion under Publish to first',
+        cli: () => 'no sd verb: drain the queue in a Claude session by the publication contract',
+        sends: o => `POST ${base}/publish-now ${JSON.stringify(payload(o))}`,
+        consequence: o => `Starts claude in the background to mirror ${o.label} to each destination it is queued for, by the publication contract. It creates or updates pages and files in the configured folders only.`,
+        run: o => window.shell.post(`${base}/publish-now`, payload(o)).then(run => { followDrain(base, o.id, run, reread); return `Drain started · run ${run.id}`; },
+          err => refusal(err, 'a drain started')) },
+    ];
+  }
+  // The Details section: one checkbox per destination, each a registered `<on> destination` object, and the last drain's state.
+  function publishPane(on, o) {
+    const p = o && o.pub; if (!p || !p.choice) return '';
+    const { html } = window.markup;
+    const c = p.choice;
+    const box = ch => {
+      const id = `pub:${o.id}:${ch}`, set = c[ch];
+      window.shell.commands.put({ id, type: `${on} destination`, label: `${PUB_NAME[ch]} for ${o.label}`, row: o, channel: ch, name: PUB_NAME[ch], set, why: c.why });
+      return html`<button class="pubbox" type="button" role="checkbox" aria-checked="${set == null ? 'mixed' : String(!!set)}" data-cmd="${on}.publish" data-obj="${id}"><svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg><span>${PUB_NAME[ch]}</span></button>`;
+    };
+    const run = DRAINS.get(o.id);
+    const state = !run ? '' : run.state === 'done' || run.state === 'failed' ? `Last drain ${run.state}${run.reason ? `: ${run.reason}` : ''}.`
+      : `Drain ${run.id} is ${run.state}${run.unread ? `; its state was not read: ${run.unread}` : ''}. This page reads it every 10 s.`;
+    return html`<section class="pubpane" aria-live="polite"><h3>Publish to</h3><div class="pubboxes">${['drive', 'notion', 'obsidian'].map(box)}</div>
+      ${c.why ? html`<p class="why">${c.why}</p>` : ''}${c.obsidian == null ? html`<p class="why">Obsidian not known: ${p.unread || 'the channels setting was not read'}.</p>` : ''}
+      ${state ? html`<p class="why">${state}</p>` : ''}</section>`;
+  }
+
+  window.commands = { answered, fix, retry, showLog, logLine, printJob, showAssignment, openPullRequest, syncCollector, adversarialReview, reviewPane, published, publishCommands, publishPane };
 })();
