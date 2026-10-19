@@ -9,6 +9,7 @@ window.PAGE_COMMANDS = [
   { label: 'Show the list', icon: 'list-todo', key: 'v l', run: tasksView('list') },
   { label: 'Show the board', icon: 'kanban', key: 'v b', run: tasksView('board') },
   { label: 'Show the matrix', icon: 'grid-2x2', key: 'v m', run: tasksView('matrix') },
+  { label: 'Start next ready tasks', icon: 'play', run: () => document.dispatchEvent(new CustomEvent('tasks:start-next')) },
 ];
 // build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
 // #viewswitch. sd:5064: Personal, then the realms the dashboard.realms row names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
@@ -935,6 +936,51 @@ addEventListener('DOMContentLoaded', () => {
     dateDlg.returnValue = '';
     dateDlg.showModal(); (f.querySelector('[data-move]:not(:disabled)') || f.querySelector('[value="cancel"]')).focus();
   }
+  // Start next (sd:5107): the server's plan first (start_next.plan), then Start posts the first N it listed, each with the
+  // revision it read; the server plans again and starts nothing when the plan moved. A refusal leaves no Start button.
+  const startDlg = document.createElement('dialog');
+  startDlg.className = 'palette date-dlg start-dlg'; startDlg.setAttribute('aria-labelledby', 'start-h');
+  document.body.append(startDlg);
+  const unread = v => v === null || v === undefined ? '▨' : v;
+  const startedText = out => [
+    out.started.length ? `Started ${out.started.map(s => `#${s.id}`).join(', ')} · builder sessions in herdr` : 'Nothing started',
+    out.failed ? `#${out.failed.id} did not start: ${out.failed.error}` : '',
+    out.not_started.length ? `not tried: ${out.not_started.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean).join(' · ');
+  async function askStart() {
+    let P;
+    try { P = await window.shell.getJSON('/api/tasks/start-next'); } catch (err) { toast(`Start next not read: ${err.message}`); return; }
+    put(startDlg, html`<form method="dialog" class="date-form">
+      <h2 id="start-h">Start next ready tasks</h2>
+      <p class="why">${unread(P.running)} of ${P.cap} builders run · five-minute load ${unread(P.load)} of ${unread(P.load_max)}</p>
+      ${P.refusal ? html`<p class="why">▲ Nothing can start: ${P.refusal}.</p>
+        ${P.holders?.length ? html`<p><a class="btn quiet" href="/management?view=sessions">Open Management › Sessions</a></p>` : ''}` : html`
+        <label class="label" for="start-n">Builders to start (1–${P.room})</label>
+        <input id="start-n" type="number" min="1" max="${P.room}" value="${P.room}" required>
+        <ol class="start-list">${P.start.map((r, i) => html`<li data-i="${i}"><code>#${r.id}</code> ${r.title}</li>`)}</ol>`}
+      ${P.skipped.length ? html`<details><summary>${plural(P.skipped.length, 'ready task')} left out</summary>
+        <ul class="start-list">${P.skipped.map(r => html`<li><code>#${r.id}</code> ${r.title}: ${r.why}</li>`)}</ul></details>` : ''}
+      <div class="actions">
+        ${P.refusal ? '' : html`<button class="btn" value="start" type="submit">Start</button>`}
+        <button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+      </div></form>`);
+    const n = () => Math.max(1, Math.min(P.room, parseInt(startDlg.querySelector('#start-n')?.value, 10) || 0));
+    // The list marks what Start would start now, so the count and the items never disagree.
+    const mark = () => startDlg.querySelectorAll('.start-list li[data-i]').forEach(li => li.classList.toggle('off', +li.dataset.i >= n()));
+    startDlg.querySelector('form')?.addEventListener('input', mark);
+    startDlg.onclose = () => {
+      if (startDlg.returnValue !== 'start' || P.refusal) return;
+      const items = P.start.slice(0, n()).map(r => ({ id: r.id, revision: r.revision }));
+      window.shell.post('/api/tasks/start-next/run', { items }).then(out => { toast(startedText(out)); reread(); }, err => {
+        // No status: no answer, so whether a builder started is not known; the next plan says, so it asks for that.
+        toast(err.status ? err.message : `Start next got no answer, so what started is not known: open Start next again (${err.message})`);
+        reread();
+      });
+    };
+    startDlg.returnValue = '';
+    startDlg.showModal(); (startDlg.querySelector('#start-n') || startDlg.querySelector('[value="cancel"]'))?.focus();
+  }
+  document.addEventListener('tasks:start-next', askStart);
+  document.getElementById('start-next')?.addEventListener('click', askStart);
   // ---------- Pointer drag (mouse and pen; touch uses Move to) ----------
   let drag = null, suppressClick = false;
   const verdict = (t, target) => {

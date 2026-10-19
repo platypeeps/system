@@ -17,6 +17,9 @@ source guarded on its own so one that fails is a reason and not an empty list
 - `assignments`: the latest assignments and the history counted by status.
 - `sessions`: `fleet.collect("sessions")`, v1 Operations > Sessions:
   worktree counts and the sd-* processes it lists.
+- `claude`: `claude_sessions.document`, each Claude session on this Mac: its
+  current task, the age of its last action, whether it waits on the operator
+  and whether it is safe to exit (sd:5106).
 - `services` and `jobs`: `services.inventory` and `operations.inventory`,
   v1 Operations > Services and > Jobs, with the revision each write sends.
   Each job carries `last_run`, read from `<cron_root>/logs/.<job>.stamp`, the
@@ -25,6 +28,9 @@ source guarded on its own so one that fails is a reason and not an empty list
   also carries `log`, the end of `<cron_root>/logs/<job>.log` (`job_log`),
   and `last_request`, the last retry or cancel the page or the CLI sent and
   what launchctl answered, as v1 Operations > Jobs showed it.
+- `satellites`: `local-repo-sync/satellite_refresh.py`'s `document`, the
+  last Refresh satellites request and each satellite's result for it; the
+  satellites are the hosts whose `repo-sync-follow` job reported a run (sd:5108).
 
 Each repo also carries the overview's columns (sd:1629): its required checks
 and `strict` from the protection reading, and `runtimes`, the Python and Node
@@ -37,7 +43,8 @@ Every write the page makes goes through a route `server.action_route`
 answers: job retry and cancel, service start, stop
 and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
 `repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`, `repos.set_github_issues`), which refuse a stale `before`
-and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075).
+and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075), and
+Refresh satellites (`refresh_satellites`), which writes a new request row.
 """
 
 from __future__ import annotations
@@ -56,7 +63,7 @@ from pathlib import Path
 from sd_db import channels, database, operations, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
-from . import fix_session
+from . import claude_sessions, fix_session
 from . import fleet as fleet_module
 from .repos_screen import primary
 
@@ -282,6 +289,23 @@ def _holds():
     return module
 
 
+@functools.cache
+def _satellite_refresh():
+    """`local-repo-sync/satellite_refresh.py`, loaded by path: the satellites read and answer the same rows (sd:5108)."""
+    spec = importlib.util.spec_from_file_location("sd_dashboard_satellite_refresh",
+                                                  fix_session.CHECKOUT / "local-repo-sync" / "satellite_refresh.py")
+    if spec is None or spec.loader is None:
+        raise ValueError("local-repo-sync/satellite_refresh.py could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def refresh_satellites(connection: sqlite3.Connection) -> dict:
+    """Write a new Refresh satellites request; each satellite's next `repo-sync.sh follow` answers it (sd:5108)."""
+    return _satellite_refresh().request(connection)
+
+
 def _dependabot_gate(remote: str | None) -> str | None:
     """`denied` or `owner` when the sweep's owner gate decides before the row's flag (sd:3984), else None."""
     found = repos.parse_remote(remote)
@@ -472,12 +496,19 @@ def _jobs(connection, backend) -> list[dict]:
             for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None) -> dict:
+def _claude(read, connection, now: str, claude) -> dict:
+    out = (claude or claude_sessions.document)(connection, now=now, fleet=read)
+    if out["sessions"] is None:
+        raise ValueError(out["sources"]["agents"] or "no Claude session could be listed")
+    return out
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, claude=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default.
+    by default; `claude` is `claude_sessions.document`.
     """
     read = fleet or fleet_module.collect
     out: dict = {"read": now, "sources": {}}
@@ -486,8 +517,10 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("lane", lambda: _lane(connection)),
                             ("assignments", lambda: _assignments(connection)),
                             ("sessions", lambda: _sessions(read)),
+                            ("claude", lambda: _claude(read, connection, now, claude)),
                             ("services", lambda: _services(connection, services)),
-                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend()))):
+                            ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend())),
+                            ("satellites", lambda: _satellite_refresh().document(connection))):
         try:
             out[source] = collect()
         except FAILURES as failure:

@@ -238,7 +238,7 @@ pack. Then, with the lanes still held, it runs the system checkout's
 `update satellite --apply`, each bounded at 450 s (sd:3168). The satellite
 stage writes the hub's `hub.json` and `providers.yaml` and the bin stage
 relinks commands, so neither may run under a lane run. It runs no other
-stage: the cron and agents stages can reinstall the follow job's own
+stage unless a Refresh satellites request is pending (below): the cron and agents stages can reinstall the follow job's own
 LaunchAgent, and launchd would boot out the running follow. Neither stage's
 exit says its install worked, so after each `--apply` follow runs the stage's
 dry run, within the same bound, and counts the drift words `status` counts.
@@ -291,10 +291,38 @@ cp local-cron-jobs/examples/repo-sync-follow.job \
 ```
 
 The job runs `follow` every five minutes. Its timeout is above the
-45-minute drain bound plus the two 450 s stage bounds and the 120 s prompt
-refresh. A job that chains a
+45-minute drain bound plus the two 450 s stage bounds, the 120 s prompt
+refresh and the 1200 s refresh update (below). A copy installed before
+sd:5108 keeps 65 minutes; a refresh it stops runs again as attempt 2. A job that chains a
 full `machine-setup.sh update --apply` after `follow` (sd:3154) finds the bin
 and satellite stages already done.
+
+### Refresh satellites from the dashboard
+
+Management > Deploys has a Refresh satellites control (sd:5108). It writes one
+setting row in the hub's workflow database, `refresh.request`, with a new id.
+Every satellite answers it on its next `follow` run; nothing runs SSH. The
+rows and the verbs that read and write them are `satellite_refresh.py`.
+
+1. `follow` asks `satellite_refresh.py check` whether the request is
+   answered. A request this host's `refresh.result.<host>` row does not name
+   as done is pending. The dashboard lists each host whose
+   `repo-sync-follow` job reported a run to the workflow database.
+2. A pending request drains the lanes even at the hub's pin. With the lanes
+   held, `follow` runs as above, then this checkout's
+   `machine-setup.sh update --apply`, bounded at 1200 s.
+3. `start` writes the row as running before machine-setup; `finish` writes
+   the exit, the step (`follow` or `machine-setup`) and the step's last line.
+   A failed follow is the result, and machine-setup does not run.
+
+A run stopped between `start` and `finish` leaves the row running. The next
+run tries once more as attempt 2; a second stop is written as failed with the
+commands to run by hand. A new request runs again. A hub that does not answer
+skips the request, as the satellite stage does, and follow exits with its own
+status; any other failed
+read or write exits 1 and is named, never read as "nothing pending". The
+full update's cron stage cannot boot the running job out: cron-jobs refuses
+to reinstall a job while its run holds the lock (sd:3317).
 
 ## Hygiene
 
@@ -465,6 +493,9 @@ offline.
 real lock files, held from another process, and an `sd` stub.
 `tests/test_follow.py` covers the `hub-pin` tag push and `follow` with the same
 bare-origin fixtures, one origin shared by a hub and a satellite checkout.
+`tests/test_satellite_refresh.py` covers Refresh satellites on those fixtures,
+with the real `satellite_refresh.py` against a real database at the pinned
+pack's schema, opened through `REPO_SYNC_SD_DB`; the hub is never reached.
 `tests/test_refresh_migrate.py` covers the backup, migrate and recovery
 against a real database and the pinned pack's real `bin/sd-db` and `lib/sd_db`
 (`SD_ACCEPTANCE_PACK`, else `.ci/pack`), with fixture migrations after its last.
