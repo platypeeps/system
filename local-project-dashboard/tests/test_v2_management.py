@@ -60,6 +60,31 @@ def dark_fleet(area):
     raise ValueError("fleet collection was stopped at its budget")
 
 
+def claude_row(session, name, *, status="idle", safe="yes", why=(), waiting_for="", tasks=()):
+    return {"id": session, "name": name, "kind": "interactive", "pid": 100, "cwd": f"/repos/{name}", "started": "2026-09-06T11:00:00Z",
+            "status": status, "waiting": status == "waiting", "waiting_for": waiting_for, "last_action": "2026-09-06T11:58:00Z",
+            "age": 120, "age_text": "2m", "builder": False, "tasks": list(tasks), "agents": [], "watches": [], "checkouts": [],
+            "safe": {"state": safe, "why": list(why)}}
+
+
+#: What `claude_sessions.document` answers for every test here: the real one runs claude, ps and git (sd:5106).
+CLAUDE = {"read": NOW, "sources": {"agents": "", "processes": "", "worktrees": ""}, "builders": {"running": 1, "why": ""},
+          "sessions": [claude_row("s-wait", "hoa", status="waiting", safe="no", why=["it waits on you: permission: Bash"],
+                                  waiting_for="permission: Bash",
+                                  tasks=[{"item": 7, "via": "branch sd7-x", "title": "Port the page", "status": "ready"}]),
+                       claude_row("s-idle", "system")]}
+
+
+def claude_stub(connection, *, now, fleet=None):
+    return json.loads(json.dumps(CLAUDE))
+
+
+def setUpModule():
+    patcher = patch("sd_dashboard.claude_sessions.document", claude_stub)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def stamp(backend, name, text):
     """The cron-jobs wrapper's `logs/.<job>.stamp` for `name` (sd:2210)."""
     (backend.cron_root / "logs" / f".{name}.stamp").write_text(text)
@@ -97,8 +122,8 @@ class TheDocument(ScreenCase):
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
-        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "services",
-                                                          "jobs", "satellites")})
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "git", "lane", "assignments", "sessions", "claude",
+                                                          "services", "jobs", "satellites")})
         self.assertEqual(doc["read"], NOW)
         # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
         self.assertNotIn("archive", doc)
@@ -266,6 +291,22 @@ class TheDocument(ScreenCase):
         self.assertEqual(doc["sources"]["git"], "fleet collection was stopped at its budget")
         self.assertEqual(doc["sources"]["repos"], "")
         self.assertTrue(doc["repos"])
+
+    def test_claude_sessions_ride_along_and_an_unlisted_claude_is_a_reason_not_an_empty_list(self):
+        """sd:5106: the Sessions view's Claude sessions; claude that did not answer is unknown, not no session."""
+        doc = self.document()
+        self.assertEqual([row["id"] for row in doc["claude"]["sessions"]], ["s-wait", "s-idle"])
+        seen = []
+
+        def dark(connection, *, now, fleet=None):
+            seen.append(fleet)
+            return {"read": now, "sessions": None, "sources": {"agents": "claude agents --json gave no answer in 10 s"},
+                    "builders": {"running": None, "why": "x"}}
+
+        doc = management_screen.document(self.connection, now=NOW, fleet=fleet, jobs=self.jobs, services=NoServices(), claude=dark)
+        self.assertIsNone(doc["claude"])
+        self.assertEqual(doc["sources"]["claude"], "claude agents --json gave no answer in 10 s")
+        self.assertEqual(seen, [fleet], "the Claude read joins the same fleet read the page makes")
 
     def test_a_snapshot_section_carries_when_it_was_observed_and_why_it_is_stale(self):
         def kept(area):
@@ -913,11 +954,54 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         self.assertIn("git state not read: stopped at its budget", out["R"]["repos"])
         self.assertIn("Sessions were not read", out["R"]["sess"])
 
+    def test_claude_sessions_list_waiting_first_light_the_lamp_and_open_their_facts(self):
+        """sd:5106: task, last action, waits on you and safe to exit per session; Details say why it is not safe."""
+        out = self.run_page("""R.sess = ELS['view-sessions'].html; const cell = ELS.annunciator.html.split('data-view="sessions"')[1].split('data-view=')[0];
+R.lamp = [/data-state="([a-z]+)"/.exec(cell)[1], cell];
+selectRow('cs:s-wait', false); R.details = ELS.details.html;""", search="?view=sessions")
+        sess = out["R"]["sess"]
+        self.assertLess(sess.index('data-id="cs:s-wait"'), sess.index('data-id="cs:s-idle"'))
+        self.assertIn("#7 Port the page", sess)
+        self.assertIn('datetime="2026-09-06T11:58:00Z"', sess)
+        self.assertIn("▲</span> permission: Bash", sess)
+        self.assertIn("◌</span> no · it waits on you: permission: Bash", sess)
+        self.assertIn("●</span> yes", sess)
+        self.assertIn("1 builder running", sess)
+        self.assertEqual(out["R"]["lamp"][0], "caution")
+        self.assertIn("wait", out["R"]["lamp"][1])
+        self.assertIn("<h2>hoa</h2>", out["R"]["details"])
+        self.assertIn("Why not", out["R"]["details"])
+        self.assertIn("via branch sd7-x", out["R"]["details"])
+
+    def test_claude_sessions_not_read_render_unknown_with_the_reason(self):
+        doc = dict(self.doc, claude=None, sources=dict(self.doc["sources"], claude="claude is not on PATH"))
+        out = self.run_page("""R.sess = ELS['view-sessions'].html;
+R.lamp = ELS.annunciator.html.split('data-view="sessions"')[1].split('data-view=')[0];""", doc=doc, search="?view=sessions")
+        self.assertIn("Claude sessions were not read", out["R"]["sess"])
+        self.assertIn("claude is not on PATH", out["R"]["sess"])
+        self.assertNotIn("on you", out["R"]["lamp"])
+
+    def test_sessions_or_a_status_not_read_leave_the_lamp_unknown_not_ok(self):
+        """Review class (sd:5106 round 1): a wait that was not read is not "nobody waits"."""
+        quiet = dict(self.doc["sessions"], abandoned=0)
+        cell = """R.lamp = ELS.annunciator.html.split('data-view="sessions"')[1].split('data-view=')[0]; R.sess = ELS['view-sessions'].html;"""
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=None), search="?view=sessions")
+        self.assertIn('data-state="unknown"', out["R"]["lamp"])
+        self.assertIn("Claude sessions not read", out["R"]["lamp"])
+        unheard = dict(CLAUDE, sessions=[dict(claude_row("s-mute", "mute", status="unknown", safe="unknown"), waiting=None)])
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=unheard), search="?view=sessions")
+        self.assertIn('data-state="unknown"', out["R"]["lamp"])
+        self.assertIn("not known to wait", out["R"]["lamp"])
+        self.assertIn("▨</span> not read</td>", out["R"]["sess"])
+        out = self.run_page(cell, doc=dict(self.doc, sessions=quiet, claude=dict(CLAUDE, sessions=[claude_row("s-idle", "system")])),
+                            search="?view=sessions")
+        self.assertIn('data-state="ok"', out["R"]["lamp"])
+
     def test_a_snapshot_section_says_when_it_was_observed_and_a_stale_one_is_not_green(self):
         git = dict(self.doc["git"], observed="2026-09-06T11:52:00Z", stale=None)
         sess = dict(self.doc["sessions"], observed="2026-09-06T11:31:00Z", stale="git did not answer")
         out = self.run_page("""R.repos = ELS['view-repos'].html; R.sess = ELS['view-sessions'].html;
-R.lamp = /data-view="sessions" data-state="(\w+)"/.exec(ELS.annunciator.html)[1];""", doc=dict(self.doc, git=git, sessions=sess))
+R.lamp = /data-view="sessions" data-state="(\w+)"/.exec(ELS.annunciator.html)[1];""", doc=dict(self.doc, git=git, sessions=sess, claude=dict(self.doc["claude"], sessions=[])))
         self.assertIn("git read 11:52 UTC", out["R"]["repos"])
         self.assertNotIn("stale", out["R"]["repos"])
         self.assertIn("fleet · 11:31 UTC · <span class=\"g-unknown\">▨</span> stale: git did not answer", out["R"]["sess"])
