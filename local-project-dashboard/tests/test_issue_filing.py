@@ -121,13 +121,14 @@ class FilingCase(BrowserSession):
         calls = self.double / name
         return len(calls.read_text().splitlines()) if calls.exists() else 0
 
-    def listed(self, *issues):
-        """The repository's newest issues, as `gh api` answers the check: `(title, number, age in seconds, is a PR)`."""
-        now = time.time()
+    def listed(self, run, *issues):
+        """The repository's newest issues, as `gh api` answers the check, each with the run's own title:
+        `(number, body, is a PR)`."""
         (self.double / "gh.api").write_text(json.dumps([
-            {"number": number, "title": title, "html_url": f"https://github.com/example/tool/{'pull' if pr else 'issues'}/{number}",
-             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age)), **({"pull_request": {}} if pr else {})}
-            for title, number, age, pr in issues]))
+            {"number": number, "title": run["title"], "body": body,
+             "html_url": f"https://github.com/example/tool/{'pull' if pr else 'issues'}/{number}",
+             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **({"pull_request": {}} if pr else {})}
+            for number, body, pr in issues]))
 
     def item_row(self, item):
         return workflow.item_state(self.connection, item)
@@ -419,13 +420,13 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.gh_calls(), 2)
 
     def test_a_gh_failure_that_may_have_filed_links_the_issue_it_finds_and_files_once(self):
-        """Failures: a 502 after the request left is no proof; the check finds the issue (not the PR or the older issue
-        with the same title) and links it, and gh created once."""
+        """Failures: a 502 after the request left is no proof; the check finds the issue that carries the run's token
+        (not a PR with it, not a fresh issue with the same title) and links it, and gh created once."""
         self.enable()
         item = self.task()
         run = self.drafted(item)
         (self.double / "gh.fail").write_text("HTTP 502: Bad Gateway (https://api.github.com/graphql)\n")
-        self.listed((run["title"], 50, 0, True), (run["title"], 43, 0, False), (run["title"], 3, 86400, False))
+        self.listed(run, (50, run["body"], True), (45, "Someone else's report.", False), (43, run["body"], False))
         status, _, done = self.confirm(run)
         self.assertEqual(status, 200, done)
         self.assertEqual((done["state"], done["url"]), ("linked", "https://github.com/example/tool/issues/43"))
@@ -445,12 +446,58 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.confirm(run)[0], 409)
         check = f"/api/issue-runs/{run['id']}/check"
         self.assertEqual(self.post(check, {})[0], 409)
-        self.listed((run["title"], 44, 0, False))
+        self.listed(run, (44, run["body"], False))
         status, _, done = self.post(check, {})
         self.assertEqual((status, done["state"], done["url"]), (200, "linked", "https://github.com/example/tool/issues/44"))
         self.assertEqual(self.item_row(item)["item"]["external_id"], "github:example/tool#44")
         self.assertEqual(self.post(check, {})[0], 409)
         self.assertEqual(self.gh_calls(), 1)
+
+    def test_the_draft_ends_with_a_random_token_line_the_preview_shows_and_the_digest_covers(self):
+        """Round 2: the body carries an opaque token of this run, hidden on GitHub, a plain line on Jira; it names nothing
+        internal and the scan and the digest read it."""
+        self.enable(github="on", jira="EXAMPLE")
+        item = self.task()
+        github = self.drafted(item)
+        self.assertRegex(github["token"], r"^[0-9a-f]{16}$")
+        self.assertTrue(github["body"].endswith(f"\n\n<!-- filing-token: {github['token']} -->"), github["body"])
+        self.assertEqual(github["digest"], issue_filing.digest(github["target"], github["title"], github["body"]))
+        self.assertEqual(findings(github["title"], github["body"], TheSanitizer.CONTEXT), [])
+        self.assertEqual(self.post(f"/api/issue-runs/{github['id']}/discard", {})[0], 200)
+        jira = self.drafted(item, "jira")
+        self.assertTrue(jira["body"].endswith(f"\n\nFiling token: {jira['token']}"), jira["body"])
+        self.assertNotEqual(jira["token"], github["token"])
+
+    def test_a_same_title_issue_without_the_runs_token_is_never_taken_for_it(self):
+        """Round 2: a failed create with someone else's issue of the same title, created since, stays unknown; the
+        issue that carries the token is linked once it is listed."""
+        self.enable()
+        item = self.task()
+        run = self.drafted(item)
+        (self.double / "gh.fail").write_text("HTTP 502: Bad Gateway\n")
+        self.listed(run, (45, run["body"].rsplit("\n\n", 1)[0], False))
+        self.assertEqual(self.confirm(run)[0], 504)
+        self.assertEqual(self.read(run["id"])[1]["state"], "unknown")
+        self.assertIsNone(self.item_row(item)["item"]["external_id"])
+        self.listed(run, (45, run["body"].rsplit("\n\n", 1)[0], False), (46, run["body"], False))
+        status, _, done = self.post(f"/api/issue-runs/{run['id']}/check", {})
+        self.assertEqual((status, done["ref"]), (200, "github:example/tool#46"))
+
+    def test_a_run_file_from_before_tokens_is_never_matched_by_title(self):
+        """Older state: a run written before tokens has none; a same-title issue does not resolve it."""
+        self.enable()
+        item = self.task()
+        run = self.drafted(item)
+        record = self.runs / f"{run['id']}.json"
+        document = json.loads(record.read_text())
+        document.pop("token")
+        document.update(state="filing", server=2 ** 22 + 12345, filing_at=document["finished"])
+        record.write_text(json.dumps(document))
+        self.listed(run, (47, run["body"], False))
+        status, _, answer = self.post(f"/api/issue-runs/{run['id']}/check", {})
+        self.assertEqual(status, 409)
+        self.assertIn("carries no filing token", answer["error"])
+        self.assertIsNone(self.item_row(item)["item"]["external_id"])
 
     def test_a_check_that_fails_reads_unknown_and_says_so(self):
         self.enable()
@@ -562,8 +609,8 @@ class TheConfirm(FilingCase):
         self.assertEqual(self.item_row(item)["item"]["external_id"], "jira:EXAMPLE-9")
         self.assertEqual(self.gh_calls(), 0)
 
-    def test_a_jira_5xx_is_checked_by_project_age_and_exact_summary_and_links_what_it_finds(self):
-        """Failures: a 502 on create may have filed; JQL by project and age, then the exact summary, finds it."""
+    def test_a_jira_5xx_is_checked_by_project_age_and_token_and_links_what_it_finds(self):
+        """Failures: a 502 on create may have filed; JQL by project and age, then the run's token, finds it."""
         self.enable(github="off", jira="EXAMPLE")
         item = self.task()
         run = self.drafted(item, "jira")
@@ -574,9 +621,10 @@ class TheConfirm(FilingCase):
             calls.append((url, body))
             if url.endswith("/rest/api/3/issue"):
                 return None, "Jira returned 502 Bad Gateway"
-            return {"issues": [{"key": "EXAMPLE-5", "fields": {"summary": run["title"] + " too"}},
-                               {"key": "OTHER-6", "fields": {"summary": run["title"]}},
-                               {"key": "EXAMPLE-6", "fields": {"summary": run["title"]}}], "isLast": True}, ""
+            mine = issue_filing._adf(run["body"])
+            return {"issues": [{"key": "EXAMPLE-5", "fields": {"description": issue_filing._adf("Same title, not ours.")}},
+                               {"key": "OTHER-6", "fields": {"description": mine}},
+                               {"key": "EXAMPLE-6", "fields": {"description": mine}}], "isLast": True}, ""
 
         with patch.dict(issue_filing.FILERS, {"jira": lambda t, ti, b: issue_filing.file_jira(t, ti, b, transport, env)}), \
                 patch.dict(issue_filing.FINDERS, {"jira": lambda t, ti, s: issue_filing.find_jira(t, ti, s, transport, env)}):
@@ -585,7 +633,7 @@ class TheConfirm(FilingCase):
         self.assertEqual((done["state"], done["ref"]), ("linked", "jira:EXAMPLE-6"))
         self.assertEqual([url.rsplit("/rest/", 1)[1] for url, _ in calls], ["api/3/issue", "api/3/search/jql"])
         self.assertRegex(calls[1][1]["jql"], r'^project = "EXAMPLE" AND created >= -[0-9]+m ORDER BY created DESC$')
-        self.assertEqual(calls[1][1]["fields"], ["summary"])
+        self.assertEqual(calls[1][1]["fields"], ["description"])
 
     def test_jira_without_its_variables_files_nothing_and_names_them(self):
         target = {"kind": "jira", "project": "EXAMPLE"}

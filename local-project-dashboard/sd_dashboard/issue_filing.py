@@ -15,8 +15,9 @@ Steps, each one state of the run file `<state>/runs/<id>.json`:
    file) reads `PROMPT` and the item on stdin, bounded by `MODEL_TIMEOUT`; its stderr goes to `<id>.log`. The reply is
    a `Title:` line, a blank line and a body. The drafting run holds no filing tool and no credential use.
 3. `sanitize`, deterministic, after the draft: NFKC, format characters dropped, then every match of the run's own names
-   and of `RULES`, in that order, replaced by `REMOVED` until nothing changes; then `findings` must be empty and
-   `leak-guard.sh scan` must pass over the exact title and body. A leftover hit, a privacy-pattern line, a missing
+   and of `RULES`, in that order, replaced by `REMOVED` until nothing changes; the body gains `TOKEN_LINE`, a random
+   token of this run; then `findings` must be empty and `leak-guard.sh scan` must pass over the exact title and
+   body. A leftover hit, a privacy-pattern line, a missing
    pattern file or an over-long text marks the run `blocked`, naming the category or the line, never the value.
    Otherwise `ready`, with `digest`.
 4. Preview: `GET /api/issue-runs/<id>` answers the state file: the exact title, body and target. A read never files.
@@ -28,8 +29,8 @@ Steps, each one state of the run file `<state>/runs/<id>.json`:
    transport and settings (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, from the server's environment). Only an
    answer that proves a refusal (a 4xx but 408, gh's checks before it creates, no sign-in) returns the run to
    `ready` for another Confirm. Any other outcome is not known: the run looks for its issue (`find_github` lists the
-   repository's newest issues, `find_jira` runs JQL by project and age; both match the exact title, created since
-   `filing_at`), links it if found, and reads `unknown` if not. Check (`/api/issue-runs/<id>/check`) looks again for
+   repository's newest issues, `find_jira` runs JQL by project and age; both match only the run's token, never a
+   title), links it if found, and reads `unknown` if not. Check (`/api/issue-runs/<id>/check`) looks again for
    an `unknown` run's issue and never files.
 6. Link-back, in the same POST: the item gains `--ref github:<owner>/<repo>#N` or `jira:<KEY-N>` when it carries no
    source of its own (`sd task add --ref`'s `task-ref`), and one comment note naming the URL; the run is `linked`. A
@@ -47,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import sqlite3
@@ -91,6 +93,9 @@ PROMPT = ("Write a short public bug report or feature request about the work ite
           "anything about how the work is tracked or run here. Invent nothing the item does not state. Reply with "
           "exactly this and nothing else: one line `Title: <title>`, one blank line, then the body in plain Markdown.")
 NOTE = "Filed {tracker} issue {ref}: {url}"
+#: The last line of every filed body: a random token, unique to the run, that recovery matches and nothing else does.
+#: Opaque, so it names nothing internal; a comment on GitHub, which Markdown hides, and a plain line on Jira.
+TOKEN_LINE = {"github": "<!-- filing-token: {token} -->", "jira": "Filing token: {token}"}
 
 # -- the sanitizer ---------------------------------------------------------------------------------------------------
 #
@@ -491,12 +496,15 @@ def draft(document: dict, log: Path) -> dict:
     except (TimeoutError, RuntimeError, ValueError, OSError) as error:
         return {"state": "failed", "reason": f"{error}; nothing was drafted or filed"}
     clean = sanitize(title, body, document["context"])
-    blocked = clean["blocked"] or scan(clean["title"], clean["body"], document["guard"])
+    # The token goes in before the scan and the digest, so the preview, the scan and the filing read one text.
+    token = secrets.token_hex(8)
+    body = clean["body"] + "\n\n" + TOKEN_LINE[document["kind"]].format(token=token)
+    blocked = clean["blocked"] or scan(clean["title"], body, document["guard"])
     if blocked:
         # A blocked text is neither kept nor shown: the reason names the category or the line, never the value.
         return {"removed": clean["removed"], "blocked": blocked, "state": "blocked", "reason": "; ".join(blocked)}
-    return {"title": clean["title"], "body": clean["body"], "removed": clean["removed"], "blocked": blocked,
-            "state": "ready", "digest": digest(document["target"], clean["title"], clean["body"])}
+    return {"title": clean["title"], "body": body, "token": token, "removed": clean["removed"], "blocked": blocked,
+            "state": "ready", "digest": digest(document["target"], clean["title"], body)}
 
 
 def run(record: Path, lock: int | None = None) -> int:
@@ -581,8 +589,6 @@ GH = ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; 
 #: repository lookup gh makes before it creates, issues switched off, and no sign-in. Anything else may have filed.
 GH_REFUSED = re.compile(r"\bHTTP 4(?!08)[0-9]{2}\b|GraphQL: Could not resolve to a |has disabled issues"
                         r"|gh auth login")
-#: How far before `filing_at` a found issue may have been created, for a clock that differs from the tracker's.
-LOOK_SKEW = 120
 
 
 class NotFiled(Exception):
@@ -669,16 +675,12 @@ def file_jira(target: dict, title: str, body: str, transport=None, environ=None)
 FILERS = {"github": file_github, "jira": file_jira}
 
 
-def _since(document: dict) -> datetime.datetime:
-    return datetime.datetime.fromisoformat(document["filing_at"].replace("Z", "+00:00")) - datetime.timedelta(
-        seconds=LOOK_SKEW)
-
-
-def find_github(target: dict, title: str, since: datetime.datetime) -> tuple[str, str] | None:
-    """`(url, ref)` of an issue titled `title` created since `since`, or None; `Unknown` when the check fails.
+def find_github(target: dict, token: str, since: datetime.datetime) -> tuple[str, str] | None:
+    """`(url, ref)` of the issue whose body carries this run's `token`, or None; `Unknown` when the check fails.
 
     The repository's newest issues, not search: GitHub's search index lags, and a check that missed a fresh issue would
-    read as not filed.
+    read as not filed. Only the token identifies the filing: a title, or a title and a time, can be someone else's.
+    `since` is unused here; Jira's query needs it.
     """
     repo = target["repo"]
     try:
@@ -697,27 +699,22 @@ def find_github(target: dict, title: str, since: datetime.datetime) -> tuple[str
     if not isinstance(issues, list):
         said = [line for line in done.stderr.splitlines() if line.strip()]
         raise Unknown(f"the check failed: gh exited {done.returncode}: {said[-1] if said else 'no list'}")
+    line = TOKEN_LINE["github"].format(token=token)
     for issue in issues:
-        if not isinstance(issue, dict) or "pull_request" in issue:
-            continue
-        if str(issue.get("title", "")).strip() != title.strip():
-            continue
-        try:
-            created = datetime.datetime.fromisoformat(str(issue.get("created_at")).replace("Z", "+00:00"))
-        except ValueError:
+        if not isinstance(issue, dict) or "pull_request" in issue or line not in str(issue.get("body") or ""):
             continue
         found = re.fullmatch(r"https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/issues/([1-9][0-9]*)",
                              str(issue.get("html_url", "")))
-        if created >= since and found and found[1].lower() == repo.lower():
+        if found and found[1].lower() == repo.lower():
             return found[0], f"github:{repo}#{found[2]}"
     return None
 
 
-def find_jira(target: dict, title: str, since: datetime.datetime, transport=None,
+def find_jira(target: dict, token: str, since: datetime.datetime, transport=None,
               environ=None) -> tuple[str, str] | None:
-    """`(url, ref)` of an issue in the project with the summary `title`, created since `since`, or None; `Unknown`
-    when the check fails. JQL selects by project and age; the exact summary is compared here, since `summary ~` is a
-    word search."""
+    """`(url, ref)` of the issue in the project, created since `since`, whose description carries this run's `token`,
+    or None; `Unknown` when the check fails. JQL selects by project and age; the token is compared here, since `text ~`
+    is a word search, and only the token identifies the filing."""
     from sd_db import shadow_jira
 
     config = shadow_jira.settings(environ)
@@ -728,26 +725,35 @@ def find_jira(target: dict, title: str, since: datetime.datetime, transport=None
     # escaping inside the quotes.
     jql = f'project = "{target["project"]}" AND created >= -{minutes}m ORDER BY created DESC'
     payload, error = shadow_jira._request(config["base"] + "/rest/api/3/search/jql", config,
-                                          {"jql": jql, "maxResults": 50, "fields": ["summary"]}, transport)
+                                          {"jql": jql, "maxResults": 50, "fields": ["description"]}, transport)
     if error or not isinstance((payload or {}).get("issues"), list):
         raise Unknown(f"the check failed: {error or 'Jira answered without an issue list'}")
+    line = TOKEN_LINE["jira"].format(token=token)
     for issue in payload["issues"]:
         key = str((issue or {}).get("key", ""))
-        summary = str(((issue or {}).get("fields") or {}).get("summary", ""))
-        if summary.strip() == title.strip() and re.fullmatch(re.escape(target["project"]) + r"-[1-9][0-9]*", key):
+        # The description is an Atlassian document; the token line is one text node in it.
+        description = json.dumps(((issue or {}).get("fields") or {}).get("description"))
+        if line in description and re.fullmatch(re.escape(target["project"]) + r"-[1-9][0-9]*", key):
             return f"{config['base']}/browse/{key}", f"jira:{key}"
     return None
 
 
 FINDERS = {"github": find_github, "jira": find_jira}
+#: How far before `filing_at` Jira's query reaches, for a clock that differs from the tracker's.
+LOOK_SKEW = 120
 
 
 def _look(record: Path, document: dict, why: str, finders=None):
     """After an outcome that is not known: link the run's issue if the tracker lists it, else record `unknown`."""
     finders = finders or FINDERS
     tracker = TRACKER[document["kind"]]
+    since = datetime.datetime.fromisoformat(document["filing_at"].replace("Z", "+00:00")) - datetime.timedelta(
+        seconds=LOOK_SKEW)
     try:
-        found = finders[document["kind"]](document["target"], document["title"], _since(document))
+        if not document.get("token"):
+            # A run file from before tokens: a title match alone could be another issue, so it stays not known.
+            raise Unknown("this run carries no filing token, so no issue can be told apart as its own")
+        found = finders[document["kind"]](document["target"], document["token"], since)
     except Unknown as failed:
         found, why = None, f"{why}; {failed}"
     if found is None:
