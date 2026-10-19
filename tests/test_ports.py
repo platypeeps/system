@@ -46,7 +46,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 #: (folder, port) -> why this folder names the port without binding it.
 ALLOWED = {
-    ("local-machine-setup", 8766): "checks the Tailscale funnel to local-task-actions' port",
     ("local-machine-setup", 8767): "checks the Tailscale route to the dashboard's port",
     ("mezmo-aura", 4337): "points Aura's exporter at the local-genai-traces collector",
 }
@@ -253,7 +252,7 @@ class TheScan(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             (root / "local-machine-setup").mkdir()
-            (root / "local-machine-setup/m.sh").write_text('P="${TASK_ACTIONS_PORT:-8766}"\n', encoding="utf-8")
+            (root / "local-machine-setup/m.sh").write_text('P="${SD_DASHBOARD_PORT:-8767}"\n', encoding="utf-8")
             (root / "README.md").write_text(README.format(rows=""), encoding="utf-8")
             paths = ["local-machine-setup/m.sh"]
             self.assertEqual([], problems(root, paths))

@@ -23,8 +23,8 @@ from unittest import mock
 
 from sd_db import writes
 
-from sd_dashboard import (adversarial, hoa_screen, pack_library, places, realm_sweep, reports_screen, setting_rows,
-                          settings_screen, v2)
+from sd_dashboard import (adversarial, health_collectors, hoa_screen, pack_library, places, realm_sweep, reports_screen,
+                          setting_rows, settings_screen, v2)
 
 from test_v2_registry import GROUPS, Registers
 from test_v2_tasks import FETCH_JS, STAND_IN
@@ -236,6 +236,7 @@ class TheDashboardSettings(BrowserSession):
         self.enterContext(mock.patch.object(places, "REALMS_CONFIG", self.realms))
         self.enterContext(mock.patch.object(reports_screen, "FAMILIES_CONFIG", self.dir / "report-families.conf"))
         self.enterContext(mock.patch.object(hoa_screen, "THRESHOLDS", self.dir / "hoa-thresholds.conf"))
+        self.enterContext(mock.patch.object(health_collectors, "_storage_config", lambda: self.dir / "disk.conf"))
 
     def read(self):
         status, _, body = self.request("/api/settings", headers={"Cookie": self.cookie})
@@ -310,6 +311,16 @@ class TheDashboardSettings(BrowserSession):
             status, _, answer = self.save("dashboard.realms", "realm|work|Work|/repos/a", shown["digest"])
         self.assertEqual(status, 503, answer)
         self.assertEqual(writes.read_settings(self.connection, ["dashboard.realms"]), {})
+
+    def test_the_storage_folders_save_as_a_row_and_a_line_that_is_not_one_is_refused(self):
+        # sd:5109: Health's storage folders are a list row too, in disk.conf's storage|<path> grammar.
+        shown = self.read()["dashboard.disk_storage"]
+        status, _, answer = self.save("dashboard.disk_storage", "volume|/nowhere", shown["digest"])
+        self.assertEqual(status, 400, answer)
+        self.assertIn("line 1", answer["error"])
+        status, _, answer = self.save("dashboard.disk_storage", "storage|~/store", shown["digest"])
+        self.assertEqual((status, answer["value"]), (200, "storage|~/store"), answer)
+        self.assertEqual(writes.read_settings(self.connection, ["dashboard.disk_storage"]), {"dashboard.disk_storage": "storage|~/store"})
 
     def test_another_key_or_shape_is_refused(self):
         for payload in ({"key": "dashboard.home_tiles", "text": "x", "before": "d"},

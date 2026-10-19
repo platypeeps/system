@@ -22,7 +22,7 @@
   const STATES = ['warning', 'caution', 'unknown', 'queued', 'ok'];
   // The design's icon and help per area; the help is page markup the shell renders with <b> and <code> only.
   const LOOK = {
-    disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: the storage folders <code>disk.conf</code> names and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25). A volume lights caution at 80% and warning at 90%. Build output is found, not sized.'],
+    disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: the storage folders Settings names (<code>dashboard.disk_storage</code>) and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25). A volume lights caution at 80% and warning at 90%. Build output is found, not sized.'],
     cred: ['key-round', '<b>Presence and expiry only.</b> Token values are never read into this page. GitHub reports a classic PAT expiry in a response header; Home Assistant tokens carry none the dashboard can read.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
     br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work. Merged worktrees are those at the head a lane entry merged: Remove takes the tree, its branch and origin’s, and keeps a tree with files, a process in it or a branch that moved.'],

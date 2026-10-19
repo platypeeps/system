@@ -1786,17 +1786,6 @@ stage_agents() {
       echo "  SKIP    $label — hub only, and this machine is a satellite ($PROFILE.satellite or $SD_HUB_CONFIG)"
       continue
     fi
-    # task-actions has an installer of its own, which writes its plist from
-    # its template; the hub role runs it rather than a second copy.
-    if [ "$label" = "$LABEL_PREFIX.task-actions" ] && hub_role && [ ! -f "$AGENT_DIR/$label.plist" ]; then
-      if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-        echo "  ok      $label (hub role, task-actions.sh)"
-      else
-        echo "  MISSING $label — the hub role runs task-actions; its installer writes the plist"
-        run "$ROOT/local-task-actions/task-actions.sh" start
-      fi
-      continue
-    fi
     src=$(agent_source "$label")
     [ -n "$src" ] || src="$AGENT_DIR/$label.plist"
     dst="$HOME/Library/LaunchAgents/$label.plist"
@@ -2128,31 +2117,6 @@ stage_tooling() {
       echo "  DIFFERS opencode.json does not parse; read denies not checked"
     fi
   fi
-  # task-actions' digest email buttons need a public URL; the tailscale
-  # funnel provides it and --bg persists across reboots. Only on a machine
-  # whose profile installs the task-actions agent — funnel on a machine with
-  # nothing listening would publish a dead endpoint. Needs a logged-in
-  # tailscale, `tailscale status` also fails when the root daemon is not
-  # running, and `tailscale up` is an interactive browser login, so such a
-  # machine skips with a pointer to the checklist rather than failing.
-  if manifest agent | grep -qxF "$LABEL_PREFIX.task-actions"; then
-    if ! command -v tailscale >/dev/null 2>&1; then
-      echo "  SKIP    tailscale not installed (brew stage provides it)"
-    elif ! tailscale status >/dev/null 2>&1; then
-      echo "  SKIP    tailscale not running or not logged in — nothing starts the daemon, see \`$(basename "$SELF") checklist\`, then: $(basename "$SELF") update tooling --apply"
-    else
-      ta_port="${TASK_ACTIONS_PORT:-8766}"
-      if tailscale funnel status 2>/dev/null | grep -q "127.0.0.1:$ta_port"; then
-        echo "  ok      tailscale funnel -> 127.0.0.1:$ta_port"
-      else
-        # Same reason as stage_agents: name the gap so --fail-on-drift sees
-        # it. An absent funnel means the digest email buttons have no public
-        # URL, which is worth a nightly failure.
-        echo "  MISSING tailscale funnel -> 127.0.0.1:$ta_port"
-        run tailscale funnel --bg "$ta_port"
-      fi
-    fi
-  fi
   if command -v duti >/dev/null 2>&1; then
     # duti -x only answers for file extensions; URL-scheme handlers have to
     # be read back from the LaunchServices store.
@@ -2202,7 +2166,7 @@ SD_HUB_CONFIG="$HOME/.config/sd/hub.json"
 # database; the cron stage installs them under `<prefix>.cron.`.
 # The satellite stage reports each one present as EXTRA; the agents and cron
 # stages skip each one on a satellite.
-SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve task-actions cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
+SD_HUB_ONLY_AGENTS="sd-dashboard sd-serve cron.sd-db-backup cron.sd-db-backup-hourly cron.offsite-verify cron.mirror-sync-nightly cron.shadow-sync-nightly"
 sd_hub_only() { # label
   for sho in $SD_HUB_ONLY_AGENTS; do [ "$1" = "$LABEL_PREFIX.$sho" ] && return 0; done
   return 1
@@ -4742,9 +4706,9 @@ EOF
         # state the runtime's own preflight refuses to install (sd:1413). The
         # remedy removes the mount with the flags the runtime disables it
         # with, then restores the tailnet-only route; `tailscale funnel reset`
-        # would also drop task-actions' public 443.
+        # would also drop every other serve and Funnel mount.
         if printf '%s\n' "$serve" | grep -F "$origin" | grep -q 'Funnel on'; then
-          doctor_fail "dashboard origin $origin is PUBLIC under Funnel — the front door is tailnet-only; run: tailscale serve --bg --https=$SD_DASHBOARD_HTTPS_PORT --set-path=/ off, then: $(basename "$SELF") update sd --apply (not tailscale funnel reset, which drops task-actions too); see local-project-dashboard/RUNTIME.md"
+          doctor_fail "dashboard origin $origin is PUBLIC under Funnel — the front door is tailnet-only; run: tailscale serve --bg --https=$SD_DASHBOARD_HTTPS_PORT --set-path=/ off, then: $(basename "$SELF") update sd --apply (not tailscale funnel reset, which drops every other mount too); see local-project-dashboard/RUNTIME.md"
         fi
         body=$(mktemp)
         code=$(curl -sS -m 10 -o "$body" -w '%{http_code}' "$origin/health" 2>"$body.err") || code=000
@@ -5757,9 +5721,7 @@ secret on the public server, so it is never committed)
 
 tooling  (fnm node versions and rtk init are the `tooling` stage)
   - grant python3 Documents access when the vault TCC prompt appears
-    (task-actions install/start is the `agents` stage; its tailscale
-    funnel is the `tooling` stage once tailscale is logged in; the
-    iTerm2 prefs pointer is the `iterm2` stage once the drive has synced)
+    (the iTerm2 prefs pointer is the `iterm2` stage once the drive has synced)
   - restore ~/.ssh from your password manager
   - tailscale: the brew stage installs the formula but nothing starts it
     (.service is docker-only, and the daemon must run as root):
@@ -6411,7 +6373,6 @@ print("no-ntfy" if unset("NTFY_TOPIC") else "ntfy", *(k for k in ("NOTIFY_EMAIL_
     fi
   done
   for hr_label in $(hub_role_labels agent); do
-    [ "$hr_label" != "$LABEL_PREFIX.task-actions" ] || continue
     # As agent_source will once the role is held.
     hr_src="$AGENT_DIR/$hr_label.plist"
     [ -f "$hr_src" ] || hr_src="$DIR/examples/launchagents/local.system-tools.${hr_label#"$LABEL_PREFIX".}.plist"

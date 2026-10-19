@@ -413,7 +413,7 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("1 hard failure(s)", out)
 
     def test_funnel_on_another_authority_is_not_the_dashboards(self):
-        # task-actions' public 443 sits under Funnel in every fixture; only
+        # Another backend's public 443 sits under Funnel in every fixture; only
         # the dashboard's own :8443 authority counts.
         self.fixture.make_database()
         code, out = self.doctor()

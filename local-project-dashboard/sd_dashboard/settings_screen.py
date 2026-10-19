@@ -126,11 +126,12 @@ def _scalars() -> dict:
 
 def _list(key: str):
     """A list's old file (read at call time, so a test can point it elsewhere) and its parser: text to problems."""
-    from . import hoa_screen, places, reports_screen
+    from . import health_collectors, hoa_screen, places, reports_screen
 
     return {"dashboard.realms": (places.REALMS_CONFIG, lambda text: places.parse_realms(text)[1]),
             "dashboard.report_families": (reports_screen.FAMILIES_CONFIG, lambda text: reports_screen.parse_families(text)[1]),
-            "dashboard.hoa_thresholds": (hoa_screen.THRESHOLDS, hoa_screen.parse_thresholds)}[key]
+            "dashboard.hoa_thresholds": (hoa_screen.THRESHOLDS, hoa_screen.parse_thresholds),
+            "dashboard.disk_storage": (health_collectors._storage_config(), lambda text: health_collectors.parse_storage(text)[1])}[key]
 
 
 def rows(connection) -> dict:

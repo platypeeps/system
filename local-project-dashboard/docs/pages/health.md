@@ -83,10 +83,10 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
 - Disk draws a bar per volume from `df -kPl` (the data volume and each volume
   under `/Volumes`; local file systems only), with a row for each volume past
   80% (caution) or 90% (warning). It lists the three biggest subfolders of
-  each folder a `storage|<path>` line of `<config>/project-dashboard/disk.conf`
-  names (`disk.conf.example`), one `du -k -d 1` per folder in what is left of
+  each folder a `storage|<path>` line of the `dashboard.disk_storage` row
+  names (Settings, Dashboard), one `du -k -d 1` per folder in what is left of
   the budget; a folder `du` cannot finish, or that is not mounted, is an
-  unknown row, and no `disk.conf` is one too. It finds registered worktrees
+  unknown row, and so are no folder and a row that was not read. It finds registered worktrees
   whose `HEAD` is in `origin/HEAD` and that still hold `target/`,
   `node_modules/` or `.venv/`, the rule of 2026-09-25; it reads their
   presence, not their size, and `git status --porcelain` in each: a worktree
