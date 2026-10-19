@@ -407,13 +407,19 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .btn.danger:disabled { background: transparent; border-color: var(--color-rule); color: var(--color-muted); filter: none; cursor: not-allowed; }
 .btn.risky:not(:hover) { border-style: dashed; }
 .rowact { display: inline-flex; align-items: center; gap: var(--space-2xs); white-space: nowrap; }
-/* Published copies (sd:5102, commands.published): one icon per destination; a queued one is dimmed, its title says queued. */
+/* Published copies (sd:5102, sd:5300, commands.published): one icon per configured destination, its state a fill and an edge
+ * as well as a colour: a copy is filled, a queued one a dashed accent edge, a designated one with no copy a caution outline,
+ * and one not read a dashed unknown edge. */
 .pub { display: inline-flex; align-items: center; gap: var(--space-3xs); margin-right: var(--space-2xs); vertical-align: middle; }
-.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border-radius: var(--radius-sm); }
+.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
+.pub .has { color: var(--color-ink); background: var(--color-accent-bg); border-color: var(--color-accent); }
 .pub a:hover { color: var(--color-accent); background: var(--color-well); }
 .pub a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-.pub .queued { color: var(--color-muted); opacity: 0.55; }
+.pub .queued { color: var(--color-muted); border-style: dashed; border-color: var(--color-accent); }
+.pub .missing { color: var(--color-caution); background: transparent; border-color: var(--color-caution); }
+.pub .unread { color: var(--color-unknown); background: transparent; border-style: dashed; border-color: var(--color-unknown); }
 .pub .pub-unknown { color: var(--color-muted); font-size: var(--text-xs); }
+@media (forced-colors: active) { .pub .has { border-width: 2px; } }
 /* Publish to (sd:5102, commands.publishPane): each destination a checkbox button; checked is the accent, mixed (not known) is dashed. */
 .pubboxes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
 .pubbox { display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: var(--row-touch); padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); font: inherit; cursor: pointer; }

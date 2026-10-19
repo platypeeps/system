@@ -145,23 +145,39 @@
     return html`<section class="adv-run" aria-live="polite"><h3>${title}</h3><p class="why">${state}${links}${item}</p></section>`;
   }
 
-  // Published copies (sd:5102): one icon per destination holding a copy of the row's document or brief, from its `pub`
-  // (publishing.py), in the order Drive, Notion, Obsidian. A copy with a URL is a link that opens it in a new tab; a queued
-  // one is dimmed and its title says queued, a link to the last delivered copy if there is one. A read that failed is a ▨
-  // naming why: unknown is not "no copy". Briefs and Documents both draw it, so shell.css styles it once.
+  // Published copies (sd:5102): one icon per destination of the row's document or brief, from its `pub` (publishing.py), in
+  // the order Drive, Notion, Obsidian. sd:5300: every destination the row is configured for shows (pub.choice: designated,
+  // or Obsidian in the repo's channels), with a copy or not, so the state is a fill and an edge, not colour alone: a copy
+  // that exists is filled, one queued is a dashed edge, a designated one with no copy an outline, and one whose read failed
+  // a dashed unknown edge naming why: unknown is not "no copy". The hover names the destination and its link or vault path.
+  // A copy with a URL is a link that opens it in a new tab. Briefs and Documents both draw it, so shell.css styles it once.
   const PUB_ICON = { drive: 'triangle', notion: 'box', obsidian: 'gem' };
+  const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
-    const copies = (pub && pub.copies) || [];
-    // Only a link the server vouched for opens: http(s) for Notion and Drive, obsidian://open for the vault.
-    const marks = copies.filter(c => PUB_ICON[c.channel]).map(c => {
-      const glyph = html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[c.channel]}"/></svg>`;
-      const cls = `pub-${c.channel}${c.state === 'queued' ? ' queued' : ''}`;
-      return c.url && /^(https?:|obsidian:\/\/open\?)/.test(c.url) ? html`<a class="${cls}" href="${c.url}" target="_blank" rel="noopener noreferrer" aria-label="Open in ${c.title}" title="${c.title}">${glyph}</a>`
-        : html`<span class="${cls}" role="img" aria-label="${c.title}" title="${c.title}">${glyph}</span>`;
-    });
-    const unread = pub && pub.unread ? html`<span class="pub-unknown" role="img" aria-label="${pub.unread}" title="${pub.unread}">▨</span>` : '';
-    return marks.length || unread ? html`<span class="pub">${marks}${unread}</span>` : '';
+    const copies = (pub && pub.copies) || [], choice = pub && pub.choice, unread = (pub && pub.unread) || '';
+    const glyph = ch => html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
+    const mark = (cls, tip) => html`<span class="${cls}" role="img" aria-label="${tip}" title="${tip}">`;
+    let said = false;
+    const marks = Object.keys(PUB_ICON).map(ch => {
+      const c = copies.find(x => x.channel === ch);
+      if (c) {
+        // Only a link the server vouched for opens: http(s) for Notion and Drive, obsidian://open for the vault.
+        const url = c.url && /^(https?:|obsidian:\/\/open\?)/.test(c.url) ? c.url : null;
+        const cls = `pub-${ch} ${c.state === 'queued' ? 'queued' : 'has'}`, tip = url ? `${c.title}: ${PUB_WHERE(ch, url)}` : c.title;
+        return url ? html`<a class="${cls}" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Open in ${c.title}" title="${tip}">${glyph(ch)}</a>`
+          : html`${mark(cls, tip)}${glyph(ch)}</span>`;
+      }
+      const on = choice ? choice[ch] : false;
+      if (on === false || on === undefined) return '';
+      // A designated destination with no copy is missing only when every read behind it answered.
+      const why = on === true ? unread : unread || choice.why || 'the channels setting was not read';
+      if (why) said = true;
+      return why ? html`${mark(`pub-${ch} unread`, `${PUB_NAME[ch]}: not read · ${why}`)}${glyph(ch)}</span>`
+        : html`${mark(`pub-${ch} missing`, `${PUB_NAME[ch]}: designated, no copy yet`)}${glyph(ch)}</span>`;
+    }).filter(Boolean);
+    const lone = unread && !said ? html`<span class="pub-unknown" role="img" aria-label="${unread}" title="${unread}">▨</span>` : '';
+    return marks.length || lone ? html`<span class="pub">${marks}${lone}</span>` : '';
   }
 
   // Publish to and Publish now (sd:5102), for a research document on Documents and a routine brief on Briefs. `on` is the
