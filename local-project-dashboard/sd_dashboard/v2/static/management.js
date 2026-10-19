@@ -603,7 +603,7 @@ function objects() {
   const byRole = a => a.role === 'merge' ? 'merge' : 'asg';
   (LANE?.merges || []).forEach(asg(byRole)); (LANE?.live || []).forEach(asg(() => 'asg')); (ASG?.latest || []).forEach(asg(byRole));
   (LANE?.ready || []).forEach(t => out.push({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
-  (CLAUDE?.sessions || []).forEach(r => out.push({ id: `cs:${r.id}`, type: 'claude session', label: r.name || r.id }));
+  (CLAUDE?.sessions || []).forEach(r => out.push({ id: `cs:${r.id}`, type: 'claude session', label: r.name || r.id, sid: r.id, pid: r.pid, row: r }));
   if (SESS) out.push({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned },
     { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
     ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
@@ -716,8 +716,22 @@ function registerCommands() {
       run: cancelJob },
     window.commands.showLog({ job: o => ({ name: o.job }), run: o => { selectRow(o.id, true); return `${o.job}'s log is in Details`; } }),
     window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
+    // sd:5126: End session sends SIGTERM to a Claude session on this Mac, so a full builder cap can be cleared. A subagent
+    // runs inside its session's process, so a stalled agent ends with its session; the confirm names each agent that does.
+    { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', risk: 'confirm',
+      primary: o => o.row.agents.some(a => a.state === 'stalled'), when: o => o.pid != null || 'claude agents gave no pid, so there is nothing to signal',
+      cli: o => `kill -TERM ${o.pid}`, executes: true, sends: o => `POST /api/claude-sessions/end {"id":"${o.sid}","pid":${o.pid}}`,
+      consequence: endWhat, run: o => landing(endSession(o), v => `${v.ended === 'already gone' ? 'Already gone' : 'End requested'} · ${o.label}`) },
   );
 }
+// What End session stops, from the row the page read; the server checks the pid again before it signals.
+function endWhat(o) {
+  const r = o.row, agents = r.agents.map(a => `${a.name} (${a.state})`);
+  return `Sends SIGTERM to ${o.label} (PID ${o.pid}). ${agents.length ? `${plural(agents.length, 'agent')} under it stop${agents.length === 1 ? 's' : ''} with it: ${agents.join(', ')}.` : 'No agent runs under it.'}`
+    + `${r.safe.state === 'yes' ? '' : ` Safe to exit: ${r.safe.state}${r.safe.why.length ? ` · ${r.safe.why.join('; ')}` : ''}.`}`
+    + ` Commits and files in its checkouts stay${r.watches.length ? `; ${plural(r.watches.length, 'lane watch', 'lane watches')} it started ${r.watches.length === 1 ? 'is' : 'are'} not signalled` : ''}.`;
+}
+async function endSession(o) { const got = await window.shell.post('/api/claude-sessions/end', { id: o.sid, pid: o.pid }); await reread(); return got; }
 async function refreshSatellites() { const got = await window.shell.post('/api/satellites/refresh', {}); await reread(); return got; }
 // Land (sd:5104): no git state, an unread tree or nothing new is the off reason; the server reads the tree again anyway.
 const landWhy = o => { const g = o.row.git;
@@ -833,12 +847,12 @@ function renderClaude() {
   if (!CLAUDE) return unknown('Claude sessions were not read', why('claude'), 'claude agents --json');
   const rows = claudeRows();
   if (!rows.length) return html`<p class="empty">${CLAUDE.sessions.length ? `No Claude session matches “${text.q}”.` : 'No Claude session runs on this Mac.'}</p>`;
-  return html`<table class="ledger" aria-labelledby="claude-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Last action</th><th scope="col">Waits on you</th><th scope="col">Safe to exit</th></tr></thead>
+  return html`<table class="ledger" aria-labelledby="claude-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Last action</th><th scope="col">Waits on you</th><th scope="col">Safe to exit</th>${ACTH}</tr></thead>
     <tbody>${rows.map(r => { const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state]; return html`<tr data-id="cs:${r.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${r.status}</span></td>
       <td class="what"><button type="button">${r.name || r.id.slice(0, 8)}</button></td><td class="d mono" data-k="task">${taskText(r)}</td>
       <td class="d mono"><time class="rel" datetime="${r.last_action}" data-empty="not read"></time></td>
       <td class="d">${r.waiting ? html`<span class="g-caution" aria-hidden="true">▲</span> ${r.waiting_for || 'yes'}` : r.waiting === null ? html`<span class="g-unknown" aria-hidden="true">▨</span> not read` : 'no'}</td>
-      <td class="d"><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}${r.safe.why.length ? html` · ${r.safe.why[0]}` : ''}</td></tr>`; })}</tbody></table>`;
+      <td class="d"><span class="g-${sg}" aria-hidden="true">${GLYPH[sg]}</span> ${sw}${r.safe.why.length ? html` · ${r.safe.why[0]}` : ''}</td>${ACT('cs:' + r.id)}</tr>`; })}</tbody></table>`;
 }
 function claudeDetails(r, act) {
   const st = CSTATE(r), [sg, sw] = SAFE[r.safe.state];

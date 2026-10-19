@@ -50,7 +50,8 @@ answers: job retry and cancel, service start, stop
 and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
 `repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`, `repos.set_github_issues`, `repos.set_jira_project`), which refuse a stale `before`
 and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075), and
-Refresh satellites (`refresh_satellites`), which writes a new request row.
+Refresh satellites (`refresh_satellites`), which writes a new request row, and
+End session (`claude_sessions.end`), which sends SIGTERM to a Claude session on this Mac (sd:5126).
 """
 
 from __future__ import annotations

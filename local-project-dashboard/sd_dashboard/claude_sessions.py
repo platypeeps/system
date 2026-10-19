@@ -25,6 +25,10 @@ the reason, never `yes`. Sessions on other machines are not listed: `claude agen
 `builders` counts the builders running on this Mac, for Tasks' Start next (sd:5107): every builder subagent that is
 not idle (running, stalled or unknown) and every Fix session that `claude agents` does not call idle. A source that
 could not be read makes it None with the reason.
+
+`end` is Management's End session (sd:5126): it reads `claude agents --json` and `ps` again and sends SIGTERM only
+when the posted session id still holds the posted pid and that process runs claude. A subagent runs inside its
+session's process and no verb stops one alone, so a stalled agent ends with its session.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
@@ -44,7 +49,7 @@ from sd_db.errors import SdDbError
 from . import fix_session
 from .active_sessions import BRANCH_ITEM, Unread, _item_id, _reason, elapsed
 
-__all__ = ["builders", "document", "list_agents", "list_processes", "read_work"]
+__all__ = ["builders", "document", "end", "list_agents", "list_processes", "read_work"]
 
 #: One `claude agents --json`, `ps` or git call's bound; no answer within it is unknown, not empty.
 CLAUDE_SECONDS = 10
@@ -465,3 +470,45 @@ def document(connection, *, now: str, fleet=None, agents=None, processes=None, w
     rank = {"waiting": 0, "unknown": 1, "busy": 2, "idle": 3}
     sessions.sort(key=lambda row: (rank[row["status"]], row["age"] if row["age"] is not None else 1 << 62, row["id"]))
     return {"read": now, "sessions": sessions, "sources": sources, "builders": builders(sessions, "")}
+
+
+def _runs_claude(command: str) -> bool:
+    """True when the command's program, or the script `node` runs, is claude."""
+    words = command.split()[:2]
+    return any(Path(word).name == "claude" or "claude-code" in word for word in words)
+
+
+def end(payload: dict, *, agents=None, processes=None, kill=os.kill):
+    """`POST /api/claude-sessions/end`: the page's checks; the write as `action_route` takes it (sd:5126).
+
+    The page sends the session's id and the pid it showed. Each is evidence for the other: the write reads
+    `claude agents --json` again and ends nothing unless that id still holds that pid, and `ps` says the pid runs
+    claude. A read that fails refuses; it never counts as a match.
+    """
+    values = dict(payload)
+    if (set(values) != {"id", "pid"} or not isinstance(values["id"], str) or not SESSION_ID.fullmatch(values["id"])
+            or type(values["pid"]) is not int or values["pid"] <= 1):
+        raise ValueError("Name the session's id and the pid the page showed.")
+    session, pid = values["id"], values["pid"]
+
+    def write(_connection):
+        listed = (agents or list_agents)()
+        if not isinstance(listed, list):
+            raise Unread("claude agents --json answered no session list")
+        row = next((raw for raw in listed if isinstance(raw, dict) and raw.get("sessionId") == session), None)
+        if row is None:
+            raise ValueError(f"Session {session} is no longer listed by claude agents, so nothing was ended.")
+        if row.get("pid") != pid:
+            raise ValueError(f"Session {session} now runs as pid {row.get('pid')}, not {pid}; reload the page.")
+        command = next((command for child, _, command in (processes or list_processes)() if child == pid), None)
+        if command is None:
+            raise ValueError(f"Pid {pid} is not in the process table, so nothing was ended.")
+        if not _runs_claude(command):
+            raise ValueError(f"Pid {pid} runs {command.split()[0]}, not claude, so nothing was ended.")
+        try:
+            kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return {"id": session, "pid": pid, "name": str(row.get("name") or ""), "ended": "already gone"}
+        return {"id": session, "pid": pid, "name": str(row.get("name") or ""), "ended": "SIGTERM sent"}
+
+    return write

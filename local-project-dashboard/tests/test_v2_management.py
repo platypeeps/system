@@ -772,6 +772,13 @@ class ThePage(BrowserSession):
         status, _, got = self.post("/api/repos/channels", {**body, "value": None, "before": '{"notion":{"folder":"Example"}}'})
         self.assertEqual((status, got["value"]), (200, "none"))
 
+    def test_end_session_is_a_route_that_refuses_a_post_without_its_evidence(self):
+        """sd:5126: the page-registered write answers; a post that does not name a session id and pid ends nothing."""
+        for body in ({}, {"id": "s-wait"}, {"id": "s-wait", "pid": "100"}):
+            status, _, got = self.post("/api/claude-sessions/end", body)
+            self.assertEqual(status, 400)
+            self.assertIn("Name the session's id and the pid the page showed.", got["error"])
+
     def test_refresh_satellites_writes_a_new_request_and_takes_no_values(self):
         """sd:5108: each post is a new request id; a post that carries values is refused and writes nothing."""
         status, _, first = self.post("/api/satellites/refresh", {})
@@ -882,6 +889,7 @@ class TheScript(PageScript):
             ["jobs.cancel", "job", "confirm", "x", None, False],
             ["jobs.log", "job", "safe", "l", False, False],
             ["jobs.print", "job", "safe", "p", False, False],
+            ["cs.end", "claude session", "confirm", "e", True, False],
         ])
 
     def test_land_asks_with_the_preview_previews_again_for_new_items_and_posts_its_revision(self):
@@ -1034,6 +1042,36 @@ selectRow('cs:s-wait', false); R.details = ELS.details.html;""", search="?view=s
         self.assertIn("<h2>hoa</h2>", out["R"]["details"])
         self.assertIn("Why not", out["R"]["details"])
         self.assertIn("via branch sd7-x", out["R"]["details"])
+
+    def test_end_session_confirms_with_what_stops_then_posts_the_id_and_pid_it_showed(self):
+        """sd:5126: the row's End session names the agents that stop with it, posts the session and pid, then rereads."""
+        doc = json.loads(json.dumps(self.doc))
+        wait = doc["claude"]["sessions"][0]
+        wait["agents"] = [{"name": "b5126", "builder": True, "state": "stalled", "items": [5126], "description": "",
+                           "last": "2026-09-06T11:00:00Z", "age": 3600}]
+        wait["watches"] = [{"pid": 900, "command": "sd-ship lane watch"}]
+        out = self.run_page("""R.sess = ELS['view-sessions'].html; const o = C.get('cs:s-wait');
+R.why = cmd('cs.end').consequence(o); R.cli = cmd('cs.end').cli(o); R.primary = [cmd('cs.end').primary(o), cmd('cs.end').primary(C.get('cs:s-idle'))];
+C.run(cmd('cs.end'), o); await flush();""", doc=doc, search="?view=sessions",
+                            answer="(p, b) => [200, {id: 's-wait', pid: 100, name: 'hoa', ended: 'SIGTERM sent'}]")
+        claude = out["R"]["sess"].split('id="agents-h"')[0]
+        self.assertIn('<th scope="col">Safe to exit</th><th scope="col" class="act">', claude)
+        self.assertEqual(claude.count('<td class="act end">'), 2)
+        self.assertEqual(out["confirms"], ["cs.end"])
+        self.assertIn("Sends SIGTERM to hoa (PID 100). 1 agent under it stops with it: b5126 (stalled).", out["R"]["why"])
+        self.assertIn("Safe to exit: no · it waits on you: permission: Bash.", out["R"]["why"])
+        self.assertIn("stay; 1 lane watch it started is not signalled.", out["R"]["why"])
+        self.assertEqual(out["R"]["cli"], "kill -TERM 100")
+        self.assertEqual(out["R"]["primary"], [True, False])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]], [("/api/claude-sessions/end", {"id": "s-wait", "pid": 100})])
+        self.assertEqual(out["toasts"][0], ["End requested · hoa", False])
+        self.assertEqual(out["gets"], ["/api/management", "/api/management"])
+
+    def test_end_session_is_off_without_a_pid(self):
+        doc = json.loads(json.dumps(self.doc))
+        doc["claude"]["sessions"][1]["pid"] = None
+        out = self.run_page("R.when = cmd('cs.end').when(C.get('cs:s-idle'));", doc=doc, search="?view=sessions")
+        self.assertEqual(out["R"]["when"], "claude agents gave no pid, so there is nothing to signal")
 
     def test_claude_sessions_not_read_render_unknown_with_the_reason(self):
         doc = dict(self.doc, claude=None, sources=dict(self.doc["sources"], claude="claude is not on PATH"))
@@ -1942,4 +1980,5 @@ class TheSatellites(PageScript):
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = ("management", "Management", "/management",
-                                 ("/api/management", "/api/repos/land/preview", "/api/repos/land"))
+                                 ("/api/management", "/api/repos/land/preview", "/api/repos/land",
+                                  "/api/claude-sessions/end"))
