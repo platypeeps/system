@@ -20,7 +20,7 @@ Nothing under launchd can click a prompt, so an ungranted read waits instead of 
   - Non-Apple binaries (Homebrew `Python.app`, the `claude-code@latest` cask's `/opt/homebrew/bin/claude`) hold their grants.
     - The cask links to a versioned Caskroom binary; moving from the native `~/.local/bin/claude` to it, or a cask upgrade, needs a fresh grant for the new binary.
 - **The vault interpreter is Homebrew python by elimination**, and each binary needs its own grant:
-  - `DASHBOARD_PYTHON` in `<config>/project-dashboard/.env`, for `dashboard.sh tile` and `queue-open` from a shell;
+  - `DASHBOARD_PYTHON` in `<config>/project-dashboard/.env`, for `dashboard.sh tile` from a shell;
   - `SD_DASHBOARD_PYTHON` in the LaunchAgent, for the server and the tiles it runs as children;
   - PATH `python3` for any other vault reader.
 - Do not re-pin to `/usr/bin/python3` for upgrade-proofness; it cannot be granted.
