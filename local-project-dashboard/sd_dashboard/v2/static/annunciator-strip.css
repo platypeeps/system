@@ -30,7 +30,7 @@ annunciator-strip .sr { position: absolute; width: 1px; height: 1px; overflow: h
   font: inherit; text-align: left; text-decoration: none;
 }
 .annunciator .lbl {
-  display: flex; align-items: center; gap: var(--space-2xs);
+  display: flex; align-items: center; gap: var(--space-xs);
   font: 600 var(--text-2xs)/1.2 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase;
 }
 .annunciator .lbl .i { flex: none; width: var(--icon-sm); height: var(--icon-sm); fill: none; stroke: currentColor; stroke-width: var(--icon-stroke); }
