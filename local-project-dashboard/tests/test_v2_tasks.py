@@ -1464,6 +1464,63 @@ shellRun(cmd('item.fix'), C.get('{plan}')); await flush();""", answer)
         self.assertIn("run herdr.sh start first", out["toasts"][-1][0])
         self.assertFalse(out["toasts"][-1][1])
 
+    START_PLAN = {"read": NOW, "cap": 6, "running": 2, "load": 4.5, "load_max": 40.0, "room": 2, "refusal": "",
+                  "start": [{"id": 11, "title": "First <ready>", "repo": "/r", "revision": "a" * 64},
+                            {"id": 12, "title": "Second", "repo": "/r", "revision": "b" * 64}],
+                  "skipped": [{"id": 13, "title": "Taken", "repo": "/r", "why": "a live Claude session works on it"}]}
+    # The palette's Start next opens the dialog; the count field is a stand-in the test types into.
+    START = """const D = MADE.find(e => /start-dlg/.test(e.className || '')); const N = El('start-n'); N.value = COUNT;
+D.querySelector = s => s === '#start-n' ? N : null;
+window.PAGE_COMMANDS.find(c => c.label === 'Start next ready tasks').run(); await flush();
+R.shown = D.html; R.before = OUT.posts.length; D.returnValue = 'start'; D.onclose(); await flush();"""
+
+    def start_next(self, plan, run, count="1"):
+        answer = (f"(path, body) => path === '/api/tasks/start-next' ? [200, {json.dumps(plan)}] : "
+                  f"path === '/api/tasks/start-next/run' ? ({run}) : [404, {{ error: 'no answer' }}]")
+        return self.run_page(self.START.replace("COUNT", json.dumps(count)), answer)
+
+    def test_start_next_shows_the_plan_first_then_posts_the_first_n_with_the_revisions_it_read(self):
+        """sd:5107. Nothing posts until Start; Start sends the first N of the plan, each with its revision."""
+        run = "[200, { started: [{ id: 11, session: 'builder', pane: 'w1:p1', checkout: '/r' }], failed: null, not_started: [] }]"
+        out = self.start_next(self.START_PLAN, run)
+        shown = out["R"]["shown"]
+        self.assertIn("2 of 6 builders run · five-minute load 4.5 of 40", shown)
+        self.assertIn("<code>#11</code> First &lt;ready&gt;", shown)
+        self.assertIn("<code>#12</code> Second", shown)
+        self.assertIn("<code>#13</code> Taken: a live Claude session works on it", shown)
+        self.assertIn('max="2" value="2"', shown)
+        self.assertIn('value="start"', shown)
+        self.assertEqual(out["R"]["before"], 0)
+        self.assertEqual(out["posts"], [["/api/tasks/start-next/run", {"items": [{"id": 11, "revision": "a" * 64}]}, 64]])
+        self.assertEqual(out["toasts"][-1], ["Started #11 · builder sessions in herdr", False])
+        self.assertEqual(out["gets"][-2:], ["/api/tasks/start-next", "/api/tasks"])
+
+    def test_start_next_refused_offers_no_start_and_a_partial_run_names_each_item(self):
+        refused = dict(self.START_PLAN, running=None, room=0, start=[], refusal="the running builders were not counted: ps failed")
+        out = self.start_next(refused, "[500, { error: 'not called' }]")
+        self.assertIn("▨ of 6 builders run", out["R"]["shown"])
+        self.assertIn("▲ Nothing can start: the running builders were not counted: ps failed.", out["R"]["shown"])
+        self.assertNotIn('value="start"', out["R"]["shown"])
+        self.assertNotIn("view=sessions", out["R"]["shown"])
+        self.assertEqual(out["posts"], [])
+        full = dict(self.START_PLAN, running=6, room=0, start=[], refusal="6 builders run already; the cap is 6. Stalled: "
+                    "research b4211 (3h 0m). End a session in Management > Sessions to free its slots",
+                    holders=[{"session": "research", "repo": "research", "agent": "b4211", "state": "stalled", "age": 10800}])
+        out = self.start_next(full, "[500, { error: 'not called' }]")
+        self.assertIn("Stalled: research b4211 (3h 0m).", out["R"]["shown"])
+        self.assertIn('<a class="btn quiet" href="/management?view=sessions">Open Management › Sessions</a>', out["R"]["shown"])
+        self.assertEqual(out["posts"], [])
+        partial = ("[200, { started: [{ id: 11 }], failed: { id: 12, status: 504, error: 'herdr.sh launch gave no answer in 90 s' },"
+                   " not_started: [13] }]")
+        out = self.start_next(dict(self.START_PLAN, room=3), partial, count="3")
+        self.assertEqual(len(out["posts"][0][1]["items"]), 2)  # the plan listed two; a count past them sends no more
+        self.assertEqual(out["toasts"][-1][0], "Started #11 · builder sessions in herdr · #12 did not start: herdr.sh launch "
+                                               "gave no answer in 90 s · not tried: #13")
+        out = self.start_next(self.START_PLAN, "[400, { error: 'Nothing started: #12 is not ready; read the plan again.' }]")
+        self.assertEqual(out["toasts"][-1][0], "Nothing started: #12 is not ready; read the plan again.")
+        out = self.start_next(self.START_PLAN, "Promise.reject(new Error('Load failed'))")
+        self.assertIn("got no answer, so what started is not known", out["toasts"][-1][0])
+
     def test_draft_email_asks_first_posts_the_row_revision_and_names_the_draft(self):
         """sd:3463. Draft email asks first, naming a Gmail draft that is not sent; the post carries only the row's revision."""
         plan = self.ids["plan"]
@@ -2292,7 +2349,8 @@ class TheLinksIntoTasks(unittest.TestCase):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "tasks", "Tasks", "/tasks", ("/api/tasks", "/api/tasks/1", "/api/tasks/sweep", "/api/tasks/sweep/status")
+    page, section, route, api = "tasks", "Tasks", "/tasks", ("/api/tasks", "/api/tasks/start-next", "/api/tasks/start-next/run",
+                                                           "/api/tasks/1", "/api/tasks/sweep", "/api/tasks/sweep/status")
 
 
 class TheDocumentLinks(ScreenCase):
