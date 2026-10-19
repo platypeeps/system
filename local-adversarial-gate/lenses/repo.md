@@ -31,6 +31,8 @@ Give each hypothesis a `###` heading of its own: its rank and a short title, suc
 
 The dashboard files each hypothesis as a recommendation, and the operator picks which become tasks.
 
+After the hypotheses, add three short sections with no `###` heading and no confidence tag: `## Patterns`, one line per mistake repeated in several places, with its hypothesis numbers; `## Missing`, one line per thing a project like this needs and this one lacks; `## Fix first`, up to 10 hypothesis numbers, most impact for least effort first, with one reason each.
+
 ## Ending
 
 End with one line: can the next maintainer trust this repository's documents and tests, YES or NO. If NO, name the single hypothesis that breaks that trust.

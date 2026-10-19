@@ -28,12 +28,15 @@ Each sub-agent reviews its area on these axes:
 5. **Documents and rules.** A README, `CLAUDE.md` or rule claim the code contradicts, and a rule the area's code breaks.
 
 The sub-agent returns a list of candidate findings, each with: a title; the axis; the file and line, as `path:line`, with the quoted line; what is wrong; what would have to be true for it to hold; the fix in one or two sentences; its size, `S` (under an hour), `M` (a day) or `L` (more); and its confidence, CERTAIN, LIKELY or SPECULATIVE. A candidate without a `path:line` it read is not returned. An axis with nothing to report gets one line saying so.
+After the candidates, it lists the same mistake it saw in several places, with each `path:line`, and what its area lacks that code like it normally has: a test suite, input validation, error handling, a timeout, a lock, a README section.
 
 ## Step 3: verify, deduplicate, rank
 
 - Merge candidates that name the same defect, keeping the strongest evidence.
 - Verify each one yourself: open the cited file at the cited line and read enough around it to judge. Refute what does not hold — the line says something else, a caller handles the case, a test covers it, a rule allows it. Lower the confidence of what holds only in part.
 - Rank what survives by severity: a correctness or security defect before a test gap, a test gap before a simplification.
+- Group the survivors by cause: findings that are one mistake made in several places are one pattern, whose fix is the rule or helper that stops the next one.
+- Check each claimed absence yourself with Glob and Grep. Keep only what a project of this kind and size needs and this one lacks.
 
 ## Writing the brief
 
@@ -47,7 +50,13 @@ Give each surviving finding a `###` heading of its own: its rank and a short tit
 
 The dashboard files each finding as one question to approve or reject; an approved one becomes a task titled with its `Recommendation:` line, so keep each finding to one change.
 
-After the findings, add a section `## Refuted` that lists, one line each, the candidates you refuted and why. Give them no `###` heading and no confidence tag, so they are not read as findings. Then a section `## Areas` that lists each area, its paths, and how many candidates its sub-agent returned and how many survived.
+After the findings, add three sections. Give them no `###` heading and no confidence tag, so they are not read as findings.
+
+- `## Patterns`: each pattern from step 3 in one line: the mistake, the finding numbers it covers, and the fix that removes the cause.
+- `## Missing`: one line each for what is conspicuously absent, why a project like this needs it, and where you looked.
+- `## Fix first`: the findings to fix first, weighing impact against effort, as a numbered list of finding numbers with one reason each. Then up to 10 low-hanging fixes: size `S` with a clear payoff, each by its finding number. A low-hanging fix that is not yet a finding first gets its own `###` finding among those above, so it can be approved.
+
+Then add a section `## Refuted` that lists, one line each, the candidates you refuted and why. Give them no `###` heading and no confidence tag, so they are not read as findings. Then a section `## Areas` that lists each area, its paths, and how many candidates its sub-agent returned and how many survived.
 
 ## Ending
 

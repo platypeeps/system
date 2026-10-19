@@ -80,7 +80,9 @@ read-only list. `CLAUDE_BIN` names the binary, else `claude` on PATH, else `~/.l
 `lenses/deep.md` has the lead read the rules, split the tree into at most `{AGENTS}` areas, start
 one sub-agent per area on correctness, secrets, simplification, test gaps and document drift, and
 then verify each `path:line` itself, refuting what does not hold. Each surviving finding carries
-`Recommendation:`, `Fix:`, `Size:` and `Evidence:` lines. The repo row's Deep review runs it one
+`Recommendation:`, `Fix:`, `Size:` and `Evidence:` lines. After the findings come `## Patterns` (one mistake
+in several places), `## Missing` (what such a project needs and lacks) and `## Fix first` (impact against
+effort, and up to 10 low-hanging fixes); `lenses/repo.md` asks for the same three. The repo row's Deep review runs it one
 run per repository, and files it like the codex reviews: a brief and one question per finding.
 Its settings are workflow-database setting rows, not `.env` keys (sd:5109): `adversarial.deep.model`
 (`opus`), `adversarial.deep.effort` (`max`), `adversarial.deep.bound_minutes` (90) and
