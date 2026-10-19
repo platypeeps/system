@@ -38,12 +38,13 @@ function rowsOf(doc) {
       kind: 'brief only', state: 'queued', why: 'a brief and no page yet', changed: '', shots: [], dirty: false })),
   ];
 }
+// tip (sd:5287): the lamp's hover and focus text, what it counts and from where.
 const FILTERS = {
-  recent:  { lbl: 'Changed 7 d', icon: 'git-branch', test: r => r.changed && READ - Date.parse(r.changed) < 7 * DAY },
-  stale:   { lbl: 'Shot stale', icon: 'eye', test: r => r.type === 'page' && !!shotStale(r), warn: true },
-  noshot:  { lbl: 'No screenshot', icon: 'eye-off', test: r => r.type === 'page' && !r.shots.length, warn: true },
-  dirty:   { lbl: 'Uncommitted', icon: 'pen-line', test: r => r.dirty, warn: true },
-  brief:   { lbl: 'Brief only', icon: 'file-text', test: r => r.type === 'brief' },
+  recent:  { lbl: 'Changed 7 d', icon: 'git-branch', test: r => r.changed && READ - Date.parse(r.changed) < 7 * DAY, tip: 'Pages whose last commit is under 7 days old. Source: git log of the ui-design checkout.' },
+  stale:   { lbl: 'Shot stale', icon: 'eye', test: r => r.type === 'page' && !!shotStale(r), warn: true, tip: 'Pages whose page or a file it loads changed after the screenshot. Source: the screenshots\' recorded inputs.' },
+  noshot:  { lbl: 'No screenshot', icon: 'eye-off', test: r => r.type === 'page' && !r.shots.length, warn: true, tip: 'Pages with no screenshot in the checkout. Source: the ui-design checkout.' },
+  dirty:   { lbl: 'Uncommitted', icon: 'pen-line', test: r => r.dirty, warn: true, tip: 'Pages with a change not yet committed. Source: git status of the ui-design checkout.' },
+  brief:   { lbl: 'Brief only', icon: 'file-text', test: r => r.type === 'brief', tip: 'Products with a design brief and no drawn page. Source: the ui-design checkout\'s products folder.' },
 };
 const shown = r => F.hidden === r.hidden;
 const tbody = document.getElementById('rows'), details = document.getElementById('details');
@@ -68,7 +69,7 @@ const T = iso => iso ? html`<time class="rel" datetime="${iso}" data-long></time
 function renderAnnunciator() {
   // No "all pages" lamp: the head counts the pages and a pressed lamp, pressed again, clears its filter.
   const n = k => ROWS.filter(r => shown(r) && FILTERS[k].test(r)).length;
-  const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl,
+  const cell = (k, state, val) => ({ button: true, state, pressed: F.f === k, attrs: html` data-filter="${k}"`, label: FILTERS[k].lbl, tip: FILTERS[k].tip,
     mark: state === 'caution' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : I(FILTERS[k].icon), val });
   const [hh, day] = [D.read.slice(11, 16), `${+D.read.slice(8, 10)} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[+D.read.slice(5, 7) - 1]}`];
   // build: Observed rereads /api/designs instead of reloading the page.

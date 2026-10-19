@@ -168,12 +168,16 @@ class EveryCommandSaysWhatItDoes(unittest.TestCase):
                     for said in texts:
                         self.assertLessEqual(len(re.sub(r"\$\{[^}]*\}", "X", said).split()), WORDS, said)
 
-    def test_the_act_bar_shows_does_under_each_button(self):
+    def test_the_act_bar_puts_does_in_the_buttons_tip_and_draws_no_line_under_it(self):
+        # sd:5287: the explanation is the hover and focus tip (tipOf leads with does), not a line under each button.
         bar = block("bar")
-        self.assertIn("const d = doesOf(c, o);", bar)
-        self.assertIn('<span class="act-row">${button(c, d)}<small class="does" id="does-${doesSeq}">${d}</small></span>', bar)
-        self.assertIn('aria-describedby="does-${doesSeq}"', bar)
+        self.assertNotIn("class=\"does\"", bar)
+        self.assertNotIn("act-row", bar)
+        self.assertIn('data-tip="${tipOf(c, o)}"', bar)
+        self.assertIn("return html`<div class=\"actions\">${on.map(button)}</div>", bar)
         self.assertIn("const doesOf = (c, o) => (typeof c.does === 'function' ? c.does(o) : c.does) || '';", SHELL)
+        self.assertIn("const s = shownCli(c, o), d = doesOf(c, o)", SHELL)
+        self.assertIn("document.addEventListener('focusin', e => { const b = e.target.closest?.('.help, [data-tip]');", SHELL)
 
     def test_the_row_menu_shows_does_as_the_items_second_line(self):
         menu = block("openMenu")

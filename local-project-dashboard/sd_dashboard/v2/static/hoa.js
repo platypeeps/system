@@ -66,11 +66,22 @@ let polling = 0;
       : { id: 'mission', label: 'Mission data', state: 'unknown', open: m.dir ? 'source:mission' : null, val: html`<b>—</b> not read`, small: why });
     return out;
   }
+  // Each lamp's hover and focus text (sd:5287): what it measures, its source, and the line that reads it where one exists.
+  const TIPS = {
+    water: 'What the water system is doing now. No live reader yet: the Mission export holds daily rows only.',
+    tank: 'Mean tank level on the newest daily row, with that day\'s low and high. Source: analog-daily.csv in the Mission export.',
+    pumps: 'A2 pump runtime, starts and gallons on the newest daily row. Source: pump-daily.csv in the Mission export.',
+    aquifer: 'Mean aquifer level on the newest daily row, with that day\'s low and high. Source: analog-daily.csv in the Mission export.',
+    alarms: 'Alarm events today; returns to normal and generator tests do not count. Source: alarm-events.csv in the Mission export.',
+    tasks: 'Open items of the hoa checkout: overdue, then due within a week. Source: the workflow database.',
+    mission: 'Age of the newest row in the Mission export. Source: the hoa checkout\'s tools/source-ages.py. CLI: python3 tools/source-ages.py',
+  };
   function lamps() {
     const clock = { button: true, cls: 'clock', attrs: html` id="refresh"`, label: html`<span><span class="live" aria-hidden="true"></span> Observed</span>`, mark: html`<kbd>r</kbd>`,
-      val: html`<span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: 'refresh' };
+      val: html`<span class="ph"><b>${DOC ? DOC.read.slice(11, 16) : '—'}</b>${DOC ? ' UTC' : ''}</span>`, small: 'refresh',
+      tip: 'When this page read /api/hoa. Press it, or r, to read again.' };
     put($('annunciator'), cells([...CELLS.map(c => ({ button: true, state: c.state, attrs: html` data-cell="${c.id}"${c.open ? html` data-open="${c.open}"` : ''}`,
-      label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${GLYPH[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small })), clock]));
+      label: c.label, mark: html`<span class="${c.state === 'ok' ? 'g' : ''}" aria-hidden="true">${GLYPH[c.state]}</span>`, val: html`<span class="ph">${c.val}</span>`, small: c.small, tip: TIPS[c.id] })), clock]));
   }
   // The badge is the read's own (sd:3446, hoa_screen._attention), the cells above that can light.
   function attention() {

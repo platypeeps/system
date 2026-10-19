@@ -360,6 +360,15 @@ class TheScript(Fixture):
             ["sweep.run", "sweep", "safe", "w"],
         ])
 
+    def test_every_lamp_says_what_it_measures_and_its_source_on_hover_and_focus(self):
+        # sd:5287: the shell's tip (data-tip) on each lamp: what it measures, then its source.
+        out = self.run_page("R.lamps = ELS.annunciator.html;")
+        tips = dict(re.findall(r'data-cell="(\w+)"[^>]*data-tip="([^"]+)"', out["R"]["lamps"]))
+        self.assertEqual(sorted(tips), ["alarms", "aquifer", "mission", "pumps", "tank", "tasks", "water"])
+        self.assertIn("Source: alarm-events.csv", tips["alarms"])
+        self.assertIn("CLI: python3 tools/source-ages.py", tips["mission"])
+        self.assertRegex(out["R"]["lamps"], r'id="refresh"[^>]*data-tip="When this page read /api/hoa')
+
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/hoa"])

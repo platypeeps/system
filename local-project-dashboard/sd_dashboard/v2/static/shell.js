@@ -454,12 +454,15 @@
     while (open.length) out.push(HELP_TAGS[open.pop()][1]);
     return html`${out}`; };
   // help:end
+  // A tip's control names the popover only while it shows; a help icon keeps its own aria-expanded.
+  const untip = () => document.querySelectorAll('[data-tip][aria-describedby="help-pop"]').forEach(b => b.removeAttribute('aria-describedby'));
   function showHelp(btn) {
+    untip();
     put(pop, btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');
   }
   function hideHelp() {
-    pop.hidden = true;
+    pop.hidden = true; untip();
     document.querySelectorAll('.help[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     pinned = null;
   }
@@ -479,8 +482,9 @@
     }
     if (pinned && !pop.contains(e.target)) hideHelp();
   }, true);
-  // A command button's tip (data-tip) shows on a mouse hover only: the same words sit under "Same thing from the CLI", and a
-  // press runs the command, so it neither pins nor shows on focus. A move onto the button's own icon keeps it.
+  // A tip (data-tip: a command button, a lamp) shows on a mouse hover after the delay and at once on focus (sd:5287), and the
+  // focused control names it through aria-describedby while it shows. A press runs the command, so a tip never pins. A move
+  // onto the button's own icon keeps it.
   document.addEventListener('pointerover', e => {
     const b = e.target.closest?.('.help, [data-tip]');
     if (!b || pinned || e.pointerType !== 'mouse' || b.contains(e.relatedTarget)) return;
@@ -488,10 +492,10 @@
   });
   document.addEventListener('pointerout', e => {
     const b = e.target.closest?.('.help, [data-tip]');
-    if (b && !pinned && !b.contains(e.relatedTarget)) { clearTimeout(hoverTimer); pop.hidden = true; }
+    if (b && !pinned && !b.contains(e.relatedTarget) && b !== document.activeElement) { clearTimeout(hoverTimer); pop.hidden = true; untip(); }
   });
-  document.addEventListener('focusin', e => { const b = e.target.closest?.('.help'); if (b && !pinned) showHelp(b); });
-  document.addEventListener('focusout', e => { if (e.target.closest?.('.help') && !pinned) pop.hidden = true; });
+  document.addEventListener('focusin', e => { const b = e.target.closest?.('.help, [data-tip]'); if (b && !pinned) { clearTimeout(hoverTimer); showHelp(b); } });
+  document.addEventListener('focusout', e => { if (e.target.closest?.('.help, [data-tip]') && !pinned) { pop.hidden = true; untip(); } });
   document.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
   new MutationObserver(() => document.querySelectorAll('.help:not([aria-expanded])').forEach(b => b.setAttribute('aria-expanded', 'false'))).observe(body, { childList: true, subtree: true });
 
@@ -580,16 +584,17 @@
   // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
   // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
   const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
-  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. The button carries
-  // it as data-tip; the help popover shows it after --delay-help, so a pass over the buttons shows nothing.
+  // Hover help on a command button (sd:3457, sd:5287), the one helper for every command button: what the command does, then
+  // the line it runs (or that it has none) and whether it asks first or offers Undo. The button carries it as data-tip; the
+  // help popover shows it after --delay-help on a hover, so a pass over the buttons shows nothing, and at once on focus.
   const tipOf = (c, o) => {
-    const s = shownCli(c, o), r = c.previews ? ' Asks first, with a preview.' : c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
-    return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
+    const s = shownCli(c, o), d = doesOf(c, o), r = c.previews ? ' Asks first, with a preview.' : c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
+    const line = !s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`;
+    return d ? `${/[.!?]$/.test(d) ? d : `${d}.`} ${line[0].toUpperCase()}${line.slice(1)}.${r}` : `${c.label}: ${line}.${r}`;
   };
-  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The Act bar
-  // shows it under the button and the ⋯ menu under the label, in view: the foundation has no hover-only affordances.
+  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The button's tip
+  // leads with it (sd:5287) and the ⋯ menu shows it under the label.
   const doesOf = (c, o) => (typeof c.does === 'function' ? c.does(o) : c.does) || '';
-  let doesSeq = 0;
   // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
   const { plural } = window.markup;
@@ -711,15 +716,14 @@
     if (!L.length) return html`<span class="rowact"></span>`;
     return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command as a button, with what it does under it (sd:4963); its CLI line, and the reason an off one is
-  // off, fold under "Same thing from the CLI", closed until opened (sd:3464).
+  // Details: every command as a button; what it does and its line are the button's tip (sd:5287), its CLI line and the
+  // reason an off one is off fold under "Same thing from the CLI", closed until opened (sd:3464).
   function bar(id) {
     const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    const button = (c, d) => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}"${d ? html` aria-describedby="does-${doesSeq}"` : ''}>${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
-    return html`<div class="actions">${on.map(c => { const d = doesOf(c, o); if (!d) return button(c, d); doesSeq += 1;
-      return html`<span class="act-row">${button(c, d)}<small class="does" id="does-${doesSeq}">${d}</small></span>`; })}</div>
+    const button = c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
+    return html`<div class="actions">${on.map(button)}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.

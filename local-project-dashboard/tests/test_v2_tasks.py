@@ -504,13 +504,18 @@ OUT.toasts[0].undo(); await flush();""")
   tipOf({ label: 'Remove', cli: () => 'git worktree remove /tmp/x', risk: 'confirm' }, obj(7)),
   tipOf({ label: 'Retry', cli: () => 'sd jobs run x', askFirst: true }, obj(7)),
   tipOf({ label: 'Ask in chat' }, obj(7)),
-  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7))];""")
+  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7)),
+  tipOf({ label: 'Retry', does: 'Runs the job again now', cli: o => `sd jobs run job-${o.id}`, risk: 'undo', undo() {} }, obj(7)),
+  tipOf({ label: 'Hide', does: o => `Hides ${o.id} here only.` }, obj(7))];""")
         self.assertEqual(out["got"], [
             "Ready: runs sd task status 7 ready. Undo offered.",
             "Remove: copy only, the dashboard does not run git worktree remove /tmp/x. Asks first.",
             "Retry: runs sd jobs run x. Asks first.",
             "Ask in chat: dashboard only, no CLI line.",
             "Pin: dashboard only, no CLI line.",
+            # sd:5287: what the command does leads, then the line.
+            "Runs the job again now. Runs sd jobs run job-7. Undo offered.",
+            "Hides 7 here only. Dashboard only, no CLI line.",
         ])
         # The foundation's help popover shows it after --delay-help, in the theme's tokens; a native title would not.
         for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\"",

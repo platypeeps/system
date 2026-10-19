@@ -300,12 +300,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .details h3 { margin: var(--space-lg) 0 var(--space-xs); }
 .details .note { font-size: var(--text-sm); color: var(--color-ink-2); max-width: 60ch; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
-/* Hallmark · component: Act bar explanations (sd:4963) · genre: modern-minimal · theme: design.md instrument panel · states: the
- * button's own; the line under it is text. Each button says what it does in view, not in a hover tip (foundation: no
- * hover-only affordances): one command a row, the button, then one muted line. A bar with no explanations stays a wrapped row. */
-.actions:has(> .act-row) { display: grid; justify-items: start; gap: var(--space-sm); }
-.act-row { display: grid; justify-items: start; gap: var(--space-3xs); }
-.does { font-size: var(--text-xs); line-height: 1.35; color: var(--color-muted); max-inline-size: 52ch; }
+/* sd:5287: what a command does is its button's tip (shell.js tipOf), shown on hover and on focus; the ⋯ menu shows it too. */
 .why { font-size: var(--text-xs); color: var(--color-muted); margin: var(--space-xs) 0 0; }
 .cli {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs);
