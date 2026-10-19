@@ -113,6 +113,8 @@ FETCH_GRACE = 2
 FETCH_CHARS = 150_000
 #: How many of a checkout's source-review briefs `source_reviews` reads, newest first.
 SOURCE_BRIEFS = 500
+#: How many of the newest briefs, from every repository, `source_reviews` looks through for them.
+BRIEF_SCAN = 5000
 #: Hypotheses whose titles the note names.
 TOP = 3
 #: The longest pull-request body read into the input file, in bytes.
@@ -805,17 +807,20 @@ def source_reviews(connection, checkout) -> dict:
     re-run files a brief of its own beside the last. Each is `{item, stem, filed, verdict}`. An unregistered checkout
     raises `LookupError`: its briefs have nowhere to be filed.
     """
-    from sd_db import repos
+    from sd_db import reads, repos, routine_briefs
 
     owner = repos.row_for(connection, checkout) if checkout else None
     if owner is None:
         raise LookupError(f"{checkout or 'the checkout'} is not a registered repository, so it holds no review briefs")
     out: dict = {}
-    for row in connection.execute(
-            "SELECT id, title, created_at, body FROM item WHERE source = 'brief' AND kind = 'report' AND repo = ? "
-            "AND title LIKE '% - Adversarial review · source %' ORDER BY created_at DESC, id DESC LIMIT ?",
-            (owner["path"], SOURCE_BRIEFS)):
-        text = _text(row["body"])
+    # The library's brief list, newest first, filtered here: the dashboard issues no SQL of its own (criterion 12).
+    # ponytail: reads the newest BRIEF_SCAN briefs of every repository; give routine_briefs.rows a repo filter if a
+    # source review's brief starts to fall past it.
+    mine = [row for row in routine_briefs.rows(connection, limit=BRIEF_SCAN)
+            if row["repo"] == owner["path"] and " - Adversarial review · source " in (row["title"] or "")]
+    for row in mine[:SOURCE_BRIEFS]:
+        found = reads.item_by_id(connection, row["id"])
+        text = _text(found["body"]) if found is not None else ""
         front = text.split("\n---\n", 1)[0] if text.startswith("---\n") else ""
         key = next((line[len("source: "):] for line in front.splitlines() if line.startswith("source: ")), None)
         if key is None:
