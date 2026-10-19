@@ -7,10 +7,12 @@ world -- GitHub, launchd, a home directory -- comes from `sd_db.testing`.
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from sd_db import (
     add_note,
@@ -39,6 +41,10 @@ class ScreenCase(unittest.TestCase):
         self.connection = connect(self.path)
         self.addCleanup(self.connection.close)
         self.now = NOW
+        # The Tasks read carries the sweeps' records (sd:5096): a run on this machine must not reach a fixture's page.
+        state = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        state.start()
+        self.addCleanup(state.stop)
 
     # -- seeds -------------------------------------------------------------
 

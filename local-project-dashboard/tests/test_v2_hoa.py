@@ -357,6 +357,7 @@ class TheScript(Fixture):
             ["alarm.unack", "alarm", "undo", "a"],
             ["jobs.retry", "job", "safe", "t"],
             ["jobs.log", "job", "safe", "l"],
+            ["sweep.run", "sweep", "safe", "w"],
         ])
 
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
@@ -747,6 +748,41 @@ await flush();""")
         self.assertEqual(out["R"]["when"], "Acknowledge is off: the view store was not read: database is locked")
 
 
+#: Timers recorded, not run: a running sweep reads HOA again every 15 s.
+TIMERS = "var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };"
+
+
+class TheSweepRow(Fixture):
+    """sd:5095: the sweep is one more Data sources row; Run sweep asks first, posts /api/hoa/sweep and reads HOA again."""
+
+    run_page = TheScript.run_page
+
+    def sweep_doc(self, **sweep):
+        doc = self.doc()
+        doc["sweep"] = {"running": False, "error": "", "command": "python3 tools/sweep.py run", "repo": str(self.hoa),
+                        "start_log": "/state/start.log", "last": {"state": "failed", "exit": 1, "started": "2026-09-06T07:00:00+00:00",
+                                                                 "reason": "RESULT: failed, step 3: Gmail unreachable"}} | sweep
+        return doc
+
+    def test_the_row_shows_the_last_run_and_run_sweep_posts_it(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [202, { started: '2026-09-06T08:00:00+00:00' }];
+R.row = ELS['src-body'].html; R.when = cmd('sweep.run').when(OBJ.get('sweep')); R.ask = cmd('sweep.run').askFirst;
+C.run(cmd('sweep.run'), OBJ.get('sweep')); await flush(); R.timers = TIMERS;""", self.sweep_doc(), pre=TIMERS)
+        self.assertIn('data-id="sweep"', out["R"]["row"])
+        self.assertIn("last sweep failed, exit 1: RESULT: failed, step 3: Gmail unreachable", out["R"]["row"])
+        self.assertIn('class="g g-warning"', out["R"]["row"].split('data-id="sweep"')[1])
+        self.assertEqual((out["R"]["when"], out["R"]["ask"]), (True, True))
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/sweep", {}]])
+        self.assertIn("Sweep started 08:00 UTC", out["toasts"][-1][0])
+        # A started run reads HOA again until it ends, so the row follows the run.
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    def test_run_sweep_is_off_while_a_run_holds_the_lock_and_a_409_is_its_toast(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [409, { error: 'A sweep is already running (started x); one runs at a time.' }];
+R.when = cmd('sweep.run').when(OBJ.get('sweep'));""", self.sweep_doc(running=True), pre=TIMERS)
+        self.assertEqual(out["R"]["when"], "a sweep is running now")
+
+
 class TheAcknowledgeRoute(BrowserSession):
     def test_the_route_writes_a_listed_event_and_answers_409_naming_one_it_does_not_list(self):
         tmp = tempfile.TemporaryDirectory()
@@ -933,7 +969,9 @@ R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/briefs", "/api/hoa/reports")
+    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/sweep",
+                                              "/api/hoa/sweep/status", "/api/hoa/briefs",
+                                              "/api/hoa/reports")
 
 
 if __name__ == "__main__":

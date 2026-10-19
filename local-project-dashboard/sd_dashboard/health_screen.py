@@ -82,9 +82,9 @@ AREAS = (
     ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
      ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
     ("cred", "Credentials", "sd-db credentials (nightly) → state heartbeat credentials:nightly", ()),
-    ("wt", "Worktrees", "the fleet's .git/worktrees registrations",
-     ("merged worktrees still on disk (merge-base --is-ancestor)",)),
-    ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo", ()),
+    ("wt", "Worktrees", "the fleet's .git/worktrees registrations", ()),
+    ("br", "Branches", "git for-each-ref --merged=origin/HEAD refs/heads per registered repo · "
+     "git worktree list against the lane entries that merged", ()),
     ("dep", "Dependencies", "sd shadow sync → repo_protection alerts · dependabot/alerts?state=open per managed repo", ()),
     ("sec", "Security", "sd shadow sync → repo_protection alerts · security_and_analysis · secret-scanning/alerts per public managed repo", ()),
     ("ports", "Ports", "collect_ports · lsof -nP -iTCP -sTCP:LISTEN · docker ps", ()),
@@ -330,6 +330,7 @@ def _branch_rows(scan: dict) -> list[dict]:
                      "detail": f"checked the local branches of {repos} {_plural(repos, 'repo', 'repos')} against origin/HEAD",
                      "kind": "Branches", "facts": {"Repos": str(repos)},
                      "cli": "git -C <repo> branch --merged origin/HEAD  # per registered repo"})
+    rows.extend(_merged_worktree_rows(scan.get("worktrees")))
     if scan["no_default"]:
         rows.append(_unread_repos(scan["no_default"], "br", "no origin/HEAD, so nothing says which branch is the default",
                                   "git -C <repo> remote set-head origin --auto", "no_default"))
@@ -343,6 +344,32 @@ def _branch_rows(scan: dict) -> list[dict]:
                      "detail": "register one with sd-db repo add PATH", "kind": "Branches",
                      "facts": {"Registered": "0"}, "cli": "sd-db repo add PATH"})
     return rows
+
+
+def _merged_worktree_rows(found: dict | None) -> list[dict]:
+    """The worktrees the lane merged that are still on disk (sd:5105); `found` is None from a seam that predates them."""
+    trees = (found or {}).get("trees") or []
+    if not trees:
+        return []
+    go = [tree for tree in trees if not tree["kept"]]
+
+    def remove(tree: dict) -> str:
+        repo, path, branch = shlex.quote(tree["repo_path"]), shlex.quote(tree["path"]), tree["lane_branch"]
+        return (f"git -C {repo} worktree remove {path}"
+                + (f" && git -C {repo} update-ref -d {shlex.quote('refs/heads/' + branch)} {tree['head']}" if branch else ""))
+    return [{
+        "id": "wt:merged", "state": "caution" if go else "queued", "type": "merged worktrees",
+        "what": f"{len(trees)} merged {_plural(len(trees), 'worktree is', 'worktrees are')} still on disk",
+        "detail": " · ".join(tree["path"] for tree in trees[:4]) + (f" · +{len(trees) - 4}" if len(trees) > 4 else ""),
+        "kind": "Branches · merged worktrees",
+        "facts": {"Found": str(len(trees)), "Removable": str(len(go)), "Kept": str(len(trees) - len(go))},
+        "list": [f"{tree['path']} · sd:{tree['item']} · {tree['lane_branch'] or 'detached'}"
+                 + (f" · kept: {tree['kept']}" if tree["kept"] else "") for tree in trees],
+        "cli": "\n".join(remove(tree) for tree in go) or "no merged worktree can go: each says why it stays",
+        "removable": [tree["path"] for tree in go],
+        "kept": [{"name": tree["path"], "why": tree["kept"]} for tree in trees if tree["kept"]],
+        "revision": found.get("revision"),
+    }]
 
 
 #: The design's volume thresholds, in percent used.
@@ -959,18 +986,29 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         known: list[str] | Exception = [row["path"] for row in repos.registered(connection)]
     except (SdDbError, sqlite3.Error) as failure:
         known = failure
+    try:
+        # The lane entries the merged worktrees are read against, on this thread for the same reason (sd:5105).
+        heads: dict | Exception = health_collectors.merged_heads(connection) if branches is None else {}
+    except (SdDbError, sqlite3.Error) as failure:
+        heads = failure
 
     def registered() -> list[str]:
         if isinstance(known, Exception):
             raise known
         return known
 
+    def merged() -> dict:
+        if isinstance(heads, Exception):
+            raise heads
+        return heads
+
     read_fleet = fleet or fleet_module.collect
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
     read_creds = credentials or read_credentials
     scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
-    scan_branches = branches or (lambda connection: health_collectors.branch_scan(connection, repo_paths=registered()))
+    scan_branches = branches or (lambda connection: health_collectors.branch_scan(
+        connection, repo_paths=registered(), heads=merged()))
     read_doctor = doctor or (lambda: health_collectors.doctor_scan())
     return {
         "disk": lambda: _disk_rows(scan_disk(connection)),
