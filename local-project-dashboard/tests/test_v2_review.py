@@ -293,6 +293,12 @@ class TheScript(unittest.TestCase):
         self.assertNotIn("<b>", out["R"]["rows"])
         self.assertRegex(out["R"]["sub"], r"^0 labelled · 3 open · 0 skipped · read ")
 
+    def test_a_batch_that_did_not_read_links_its_lamp_to_the_item(self):
+        # sd:5298: an unknown lamp links to its evidence; for a batch that is its sd item, where the batch is filed.
+        out = self.run_page("R.lamps = ELS.annunciator.html;", "(path, body) => [200, DOC]",
+                            doc=doc_with(error="item 11 is not a review batch"))
+        self.assertRegex(out["R"]["lamps"], r'<a class="cell[^"]*" href="/tasks\?row=11"[^>]*data-state="unknown"')
+
     def test_each_row_carries_its_question_context_and_one_button_per_option(self):
         # sd:5123: no Details pane; the row holds the question, its subject and evidence, and the options as buttons.
         doc = doc_with(2)

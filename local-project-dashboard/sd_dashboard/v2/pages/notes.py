@@ -1,7 +1,6 @@
-"""Notes (sd:2120): the last week, a day at a time: merges, items done and opened, and runner runs, from the records
-Activity reads, and each day's daily note from the Obsidian vault (sd:3426). Mail is the newest inbox mail through
-workspace-mcp, its own route so a slow server never holds up the days (sd:3425). Quick notes (sd:2549) are
-`sdw.quick-note` store items, listed and kept through `sd store` (notes_screen)."""
+"""Notes (sd:2120): the last week, a day at a time: merges and items done and opened, from the records Activity reads,
+and each day's daily note from the Obsidian vault (sd:3426). The inbox mail and the runner runs left the page (sd:5289).
+Quick notes (sd:2549) are `sdw.quick-note` store items, listed and kept through `sd store` (notes_screen)."""
 
 from __future__ import annotations
 
@@ -25,12 +24,6 @@ def _quick(read):
         return 503, {"error": str(problem)}
 
 
-def _mail(read):
-    from ... import notes_screen
-
-    return notes_screen.mail(now=read.now)
-
-
 def _keep(payload, principal):
     from ... import notes_screen
 
@@ -46,6 +39,5 @@ PAGE = Page(
     routes=("/notes",),
     html="notes.html",
     item="sd:2120",
-    api=(Api("/api/notes", _read), Api("/api/notes/quick", _quick), Api("/api/notes/mail", _mail),
-         Api("/api/notes/quick/add", write=_keep)),
+    api=(Api("/api/notes", _read), Api("/api/notes/quick", _quick), Api("/api/notes/quick/add", write=_keep)),
 )

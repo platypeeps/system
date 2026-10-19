@@ -343,7 +343,8 @@ class TheScript(Fixture):
         # registered commands here, a per-row text once for each source.
         from test_v2_commands import WORDS
         out = self.run_page("""R.d = REG.filter(c => c.does).flatMap(c => typeof c.does === 'function'
-  ? ['vantaca', 'mission'].map(source => [c.id, c.does({ source })]) : [[c.id, c.does]]);""")
+  ? [['vantaca', 'Vantaca invoices'], ['mission', 'Mission export']].map(([source, label]) => [c.id, c.does({ source, label })])
+  : [[c.id, c.does]]);""")
         long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
         self.assertEqual(long, [], f"a does line over {WORDS} words")
 
@@ -360,6 +361,15 @@ class TheScript(Fixture):
             ["sweep.run", "sweep", "safe", "w"],
         ])
 
+    def test_every_lamp_says_what_it_measures_and_its_source_on_hover_and_focus(self):
+        # sd:5287: the shell's tip (data-tip) on each lamp: what it measures, then its source.
+        out = self.run_page("R.lamps = ELS.annunciator.html;")
+        tips = dict(re.findall(r'data-cell="(\w+)"[^>]*data-tip="([^"]+)"', out["R"]["lamps"]))
+        self.assertEqual(sorted(tips), ["alarms", "aquifer", "mission", "pumps", "tank", "tasks", "water"])
+        self.assertIn("Source: alarm-events.csv", tips["alarms"])
+        self.assertIn("CLI: python3 tools/source-ages.py", tips["mission"])
+        self.assertRegex(out["R"]["lamps"], r'id="refresh"[^>]*data-tip="When this page read /api/hoa')
+
     def test_each_cell_is_a_reading_or_unknown_with_its_reason(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.sub = ELS.subhead.html;")
         self.assertEqual(out["gets"], ["/api/hoa"])
@@ -374,6 +384,16 @@ class TheScript(Fixture):
         self.assertIn("3 mapped assets, 4 lot and tract outlines; Mission export through 2026-09-05", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "HOA annunciator cells"})
         self.assertIsNone(out["states"][-1])
+
+    def test_an_unread_mission_lamp_opens_the_export_row_that_says_why(self):
+        # sd:5298: a lamp unknown for want of the Mission export opens its evidence, the export's source row and its job.
+        doc = self.doc()
+        doc["mission"].update(analog=[], pump=[], latest=None, error="cannot read analog-daily.csv")
+        lamps = self.run_page("R.lamps = ELS.annunciator.html;", doc)["R"]["lamps"]
+        for cell in ("tank", "pumps", "aquifer", "mission"):
+            self.assertRegex(lamps, rf'data-cell="{cell}" data-open="source:mission" data-state="unknown"', cell)
+        # No reader at all is no evidence: Water stays a lamp that says so.
+        self.assertRegex(lamps, r'data-cell="water" data-state="unknown"')
 
     def test_the_badge_rule_lights_what_the_lamps_light(self):
         # sd:3446: the rule is the server's, and every page's rail shows it; it must count the cells hoa.js lights.
@@ -499,7 +519,7 @@ R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft'
         out = self.run_page("R.lamps = ELS.annunciator.html; R.trends = ELS['trend-list'].html;")
         self.assertEqual(out["states"][-1]["kind"], "partial")
         self.assertIn("Mission export: pump-daily.csv has no", out["states"][-1]["text"])
-        self.assertRegex(out["R"]["lamps"], r'data-cell="pumps" data-state="unknown".*?pump-daily.csv has no')
+        self.assertRegex(out["R"]["lamps"], r'data-cell="pumps" data-open="source:mission" data-state="unknown".*?pump-daily.csv has no')
         self.assertRegex(out["R"]["lamps"], r'data-cell="tank"[^>]*data-state="ok"')
         self.assertIn("<b>▨ Not read.</b> pump-daily.csv has no", out["R"]["trends"])
 
@@ -705,7 +725,7 @@ class TheAcknowledgement(Fixture):
 
 
 class TheAcknowledgeCommand(Fixture):
-    """hoa.js: acknowledged rows hide behind Show acknowledged; Acknowledge posts the key and Undo posts it back."""
+    """hoa.js: the Alarms view shows Open, Acknowledged or All events; Acknowledge posts the key and Undo posts it back."""
 
     run_page = TheScript.run_page
 
@@ -715,17 +735,30 @@ class TheAcknowledgeCommand(Fixture):
             row["acked"] = row["key"] == TANK_LOW
         return doc
 
-    def test_an_acknowledged_row_hides_until_show_acknowledged_is_on(self):
-        out = self.run_page("""R.before = ELS['al-body'].html; R.chip = ELS['al-show'].html;
-ELS['al-show'].listeners.click[0]({ target: { closest: s => s === '.chip' ? {} : null } });
-R.after = ELS['al-body'].html; R.chipOn = ELS['al-show'].html;""", self.acked_doc())
+    def test_the_alarm_views_show_open_acknowledged_or_all_events(self):
+        # sd:5286: Show acknowledged is three views on the left of the Alarms tab's row, not a checkbox chip.
+        out = self.run_page("""const press = v => ELS['al-show'].listeners.click[0]({ target: { closest: s => s === '[data-alview]' ? { dataset: { alview: v } } : null } });
+R.open = ELS['al-body'].html; R.seg = ELS['al-show'].html;
+press('acked'); R.acked = ELS['al-body'].html; R.segAcked = ELS['al-show'].html;
+press('all'); R.all = ELS['al-body'].html;""", self.acked_doc())
         rows = lambda html: re.findall(r'<button type="button">([^<]+)</button>', html)  # noqa: E731
-        self.assertEqual(rows(out["R"]["before"]), ["A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
-        self.assertIn('aria-pressed="false">Show acknowledged <span class="n">1</span>', out["R"]["chip"])
-        self.assertEqual(rows(out["R"]["after"]), ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
-        self.assertIn('data-acked', out["R"]["after"])
-        self.assertIn('<span class="tag">acknowledged</span>', out["R"]["after"])
-        self.assertIn('aria-pressed="true"', out["R"]["chipOn"])
+        self.assertEqual(rows(out["R"]["open"]), ["A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertEqual(rows(out["R"]["acked"]), ["Tank Low Alarm"])
+        self.assertEqual(rows(out["R"]["all"]), ["Tank Low Alarm", "A2 VSD Normal", "A2 VSD Alarm", "Generator Running"])
+        self.assertIn('<span class="tag">acknowledged</span>', out["R"]["all"])
+        self.assertRegex(out["R"]["seg"], r'data-alview="open" aria-pressed="true">Open <span class="n">3</span>.*'
+                                          r'data-alview="acked" aria-pressed="false">Acknowledged <span class="n">1</span>.*'
+                                          r'data-alview="all" aria-pressed="false">All <span class="n">4</span>')
+        self.assertIn('data-alview="acked" aria-pressed="true"', out["R"]["segAcked"])
+        self.assertNotIn("Show acknowledged", out["R"]["seg"])
+
+    def test_the_alarm_ledger_is_its_own_view_after_tasks(self):
+        page = (V2 / "hoa.html").read_text(encoding="utf-8")
+        overview = re.search(r'<div id="view-overview".*?\n  </div>\n', page, re.S).group(0)
+        self.assertNotIn('id="al-table"', overview)
+        views = re.findall(r'data-place-view="([a-z]+)"', page)
+        self.assertEqual(views[:3], ["overview", "tasks", "alarms"])
+        self.assertRegex(page, r'<table class="ledger" id="al-table" aria-labelledby="al-h" data-toolbar="al-toolbar">')
 
     def test_every_event_acknowledged_says_so_instead_of_an_empty_table(self):
         doc = self.doc()
@@ -743,7 +776,7 @@ OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
         self.assertEqual((out["R"]["when"], out["R"]["off"]), (True, "not acknowledged"))
         self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/alarm", {"key": TANK_LOW, "acked": True}],
                                                          ["/api/hoa/alarm", {"key": TANK_LOW, "acked": False}]])
-        self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. Show acknowledged lists it.", out["toasts"][0][0])
+        self.assertIn("Acknowledged: 09-05 06:00 Tank Low Alarm. The Acknowledged view lists it.", out["toasts"][0][0])
         self.assertTrue(out["toasts"][0][1])
         # Each landed write reads HOA again.
         self.assertEqual(out["gets"], ["/api/hoa"] * 3)
@@ -820,10 +853,10 @@ class TheAcknowledgeRoute(BrowserSession):
         self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
 
 
-def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None):
-    """One row as hoa's tools/source-ages.py --json prints it."""
+def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None, **job):
+    """One row as hoa's tools/source-ages.py --json prints it; without `job=`, as a checkout before hoa sd:5279 printed it."""
     return {"source": source, "label": label, "latest": latest, "age_days": age, "allowed_days": allowed, "state": state,
-            "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error}
+            "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error, **job}
 
 
 #: NOW is 2026-09-06: the Mission export is current, Vantaca stale; CORE and TMT have no refresh command.
@@ -864,6 +897,22 @@ class TheSourceAges(Fixture):
         self.assertEqual([(r["source"], r["state"], r["error"]) for r in got["rows"]],
                          [("mission", "unknown", "cannot read analog-daily.csv"), ("vantaca", "stale", None)])
         self.assertEqual([r["job"]["name"] for r in got["rows"]], ["hoa-mission-export", "hoa-vantaca-pull"])
+
+    def test_each_row_names_its_refresh_job_so_a_new_company_needs_no_dashboard_change(self):
+        """sd:5280: the row's `job` wins, a null meaning none; a row without one (an older checkout) falls back to REFRESH_JOBS."""
+        rows = [source_row("mission", "Mission export", "2026-09-05", 1, 14, "ok", refresh="sh tools/mission/mission.sh export"),
+                source_row("acme", "Acme invoices", "2026-08-20", 17, 14, "stale", refresh="python3 tools/acme-pull.py",
+                           job="hoa-acme-pull"),
+                source_row("vantaca", "Vantaca invoices", "2026-08-20", 17, 14, "stale", job=None)]
+        self.script(rows)
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-acme-pull": ("idle", 0)})
+        doc = self.doc()
+        self.assertEqual([r.get("job", {}).get("name") for r in doc["sources"]["rows"]], ["hoa-mission-export", "hoa-acme-pull", None])
+        out = self.run_page("""const c = cmd('jobs.retry'), a = OBJ.get('source:acme');
+R.type = a.type; R.cli = c.cli(a); R.does = c.does(a); R.vantaca = OBJ.get('source:vantaca').type;""", doc)
+        self.assertEqual((out["R"]["type"], out["R"]["cli"], out["R"]["vantaca"]), ("job", "sd jobs retry hoa-acme-pull", "source"))
+        self.assertIn("Acme invoices", out["R"]["does"])
+        self.assertNotIn("Vantaca", out["R"]["does"])
 
     def test_a_checkout_without_the_script_names_it(self):
         self.assertEqual(self.doc()["sources"]["error"], "tools/source-ages.py is not in the checkout")

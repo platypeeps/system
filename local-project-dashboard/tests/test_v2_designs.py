@@ -343,5 +343,24 @@ class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "designs", "Designs", "/designs", ("/api/designs", "/api/designs/view")
 
 
+class TheToolbar(unittest.TestCase):
+    """sd:5281: the Designs page's top controls are one toolbar row: the views, the filter, then the count at the right."""
+
+    HTML = (V2 / "designs.html").read_text(encoding="utf-8")
+
+    def test_the_views_then_the_filter_share_one_row_and_the_count_sits_on_the_title_line(self):
+        row = re.search(r'<div class="toolbar" id="toolbar">(.*?)\n    </div>', self.HTML, re.S)
+        self.assertIsNotNone(row, "designs.html has no toolbar row")
+        self.assertLess(row.group(1).index('id="viewswitch"'), row.group(1).index('id="shift"'))
+        self.assertNotIn('id="tally"', row.group(1))
+        title = re.search(r'<div class="sec-head">(.*?)\n      </div>', self.HTML, re.S).group(1)
+        self.assertIn('<p class="tally" id="tally"', title)
+
+    def test_the_head_keeps_no_control_of_its_own(self):
+        head = re.search(r'<header class="head">(.*?)</header>', self.HTML, re.S).group(1)
+        self.assertNotIn('class="shift"', head)
+        self.assertNotIn("<input", head)
+
+
 if __name__ == "__main__":
     unittest.main()

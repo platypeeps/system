@@ -15,6 +15,9 @@ place of buttons. An old prose "Decision needed" comment stays a comment: it lis
 - `document` is `/api/decisions`: every unresolved decision on an open item Tasks lists (`reads.backlog_items`,
   `reads.brief_notes`), the item's priority first, then the oldest, each with the revision `workflow.item_state` gives,
   read for every item in one `reads.revisions`.
+  `recommended` is the index of the option the note recommends, or null (sd:5306): one option that ends
+  "(Recommended)" or starts "(Recommended)" or "Recommended:", else a line "Recommendation: <text>" that names an
+  option. A conditional "(Recommended only if …)" and two marked options recommend nothing.
   A question on a review batch (sd:3709, a task under a `review:` ref) is Review's: it is counted in `review`, and
   Today draws one line that links there in place of its rows.
 - `answer` is `/api/decisions/answer`, posted with the item, the note, the option and that revision: the CLI's two
@@ -33,9 +36,11 @@ import re
 
 from sd_db import reads, workflow
 
-__all__ = ["answer", "document", "parse", "request"]
+__all__ = ["answer", "document", "parse", "recommended", "request"]
 
 OPTION = re.compile(r"^[ \t]*Option:[ \t]*(.*?)[ \t]*$")
+MARKED = re.compile(r"\(recommended\)$|^(?:\(recommended\)|recommended:)", re.IGNORECASE)
+ADVICE = re.compile(r"^[ \t]*Recommendation:[ \t]*(.*?)[ \t.]*$", re.IGNORECASE)
 #: A review batch's ref, as `sd_db.review` files it (`REF_SOURCE`, `review:<queue>:<batch>`); named here so Today reads
 #: without that module, and a test holds the two equal.
 BATCH_SOURCE, BATCH_PREFIX = "task-ref", "review:"
@@ -55,6 +60,24 @@ def parse(body: str) -> tuple[str, list[str]]:
     return "\n".join(question).strip(), options
 
 
+def recommended(body: str, options: list[str]) -> int | None:
+    """The index of the recommended option, or None; the posted text stays the option as written."""
+    if len(options) < 2:
+        return None
+    marked = [i for i, option in enumerate(options) if MARKED.search(option)]
+    if marked:
+        return marked[0] if len(marked) == 1 else None
+    for line in body.splitlines():
+        found = ADVICE.match(line)
+        if found:
+            said = found[1].casefold() + " "
+            # The longest option the line starts with, whole words, so "Rows" does not take "Rows and a cache".
+            named = [i for i, option in enumerate(map(str.casefold, options))
+                     if said.startswith(option) and not said[len(option)].isalnum()]
+            return max(named, key=lambda i: len(options[i])) if named else None
+    return None
+
+
 def document(connection, *, now: str | None = None) -> dict:
     open_items = {row["id"]: row for row in reads.backlog_items(connection, include_done_days=0, now=now)
                   if row["status"] != "done"}
@@ -69,7 +92,7 @@ def document(connection, *, now: str | None = None) -> dict:
             continue
         found.append({"note": row["id"], "item": row["item"], "title": item["title"], "repo": item["repo"],
                       "priority": item["priority"], "asked": row["timestamp"], "question": question,
-                      "options": options})
+                      "options": options, "recommended": recommended(row["body"], options)})
     # One batched revision read for every item asking, not an `item_state` per item (sd:3531).
     revisions = reads.revisions(connection, [decision["item"] for decision in found])
     for decision in found:

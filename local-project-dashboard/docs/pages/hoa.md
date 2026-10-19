@@ -46,8 +46,9 @@ Data sources (sd:4965) shows one age lamp per source the checkout's
 TMT), run with a 10-second bound (`SOURCE_SECONDS`). A script that is missing,
 times out, exits past 1 or prints no source list makes the panel unknown with
 that reason. A row hides after its `ends` date. Refresh now starts the source's
-manual cron job (`hoa_screen.REFRESH_JOBS`: `hoa-mission-export`,
-`hoa-vantaca-pull`, each `JOB_SCHEDULE="manual"`) through `/api/jobs/<name>/retry`
+manual cron job, the row's `job` (each `JOB_SCHEDULE="manual"`; sd:5280), so a
+new management company's pull needs no dashboard change. A row from an older
+checkout names none, and `hoa_screen.REFRESH_JOBS` stands in. It starts through `/api/jobs/<name>/retry`
 with the job's revision, the route Management's Retry posts. The jobs
 inventory gives the job's state, its off reason (not installed, running, or a
 start launchd refuses) and the last line of its log; while it runs, the page

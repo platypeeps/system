@@ -50,7 +50,7 @@ addEventListener('DOMContentLoaded', () => {
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
+    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
     base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
@@ -362,7 +362,7 @@ addEventListener('DOMContentLoaded', () => {
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
-    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
+    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, s)),
@@ -377,7 +377,7 @@ addEventListener('DOMContentLoaded', () => {
   // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
   // row is skipped with its reason (keys below).
   const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
-  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check',
+  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, 'done')),
@@ -406,15 +406,17 @@ addEventListener('DOMContentLoaded', () => {
     const sent = r => { const b = before(r); was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : b[k] ?? null])); };
     return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
+  // sd:5295: the Details' Status, Priority and Due fields do what Status →, Done → next occurrence, Edit → P1-4, Edit and Move
+  // to do, so those stay off its Act bar (`bar: false`); 1-5, e, m, the ⋯ menu, the palette and the bulk bar still run them.
   C.register(
     ...Object.values(STATUS_CMD), COMPLETE,
     // Edit sets priority and due date in one dialog. Its save carries the Undo, so the shell's own feedback stays safe.
-    { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line',
+    { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line', bar: false,
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
       cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${t.p || 'N'} ${t.due ? '--due ' + t.due : '--due YYYY-MM-DD'}`),
       run: o => { askEdit(T(o)); return `Editing ${label(T(o))}`; } },
     // Move to: the status moves without drag (touch, or anyone). One form lists every column; a refused one is off with its reason.
-    { id: 'item.move', on: 'item', label: 'Move to', key: 'm', risk: 'safe', icon: 'kanban',
+    { id: 'item.move', on: 'item', label: 'Move to', key: 'm', risk: 'safe', icon: 'kanban', bar: false,
       primary: () => view === 'board' && coarse.matches,
       when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; const L = STATUSES.map(([s]) => legal(t, s)); return L.some(x => x.ok) || L.find(x => x.reason !== 'Already here.').reason; },
       cli: o => rowOr(o, t => `sd task status ${t.id} <status>`),
@@ -422,7 +424,7 @@ addEventListener('DOMContentLoaded', () => {
     // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk). A row
     // already at the priority is refused as its write leaves, not by `when`: the bar offers only what every picked row is
     // on for, so a pick that mixes priorities would otherwise offer none.
-    ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right',
+    ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right', bar: false,
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
       cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${n}`),
       run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`, { check: r => r.p !== n || `it is already P${n}` }); },
@@ -609,15 +611,19 @@ addEventListener('DOMContentLoaded', () => {
       <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
     </article>`;
   }
+  // sd:5305: the board's Done column holds only what was done in the 7 days before the read; the list keeps every done item.
+  // A done item with no known time stays: unknown is not old.
+  const DONE_DAYS = 7, DONE_TIP = `done in the last ${DONE_DAYS} days`;
+  const recent = t => t.status !== 'done' || !t.since || !READ || Date.parse(READ) - Date.parse(t.since) <= DONE_DAYS * 864e5;
   function renderBoard() {
-    const v = visible();
+    const v = visible().filter(recent);
     // build: backlog_items also returns statuses with no column (a message's ready_to_send); they get one lane, which
     // takes no drop and no key, so every row the page counts is on the board (review, PR #46).
     const other = v.filter(t => !SLABEL[t.status]);
     put(document.getElementById('view-board'), html`<div class="board" id="board" role="group" aria-label="Tasks by status"${other.length ? html` data-other` : ''}>${STATUSES.map(([s, name], i) => {
       const rows = v.filter(t => t.status === s);
       return html`<div class="col" data-drop="status:${s}" role="group" aria-label="${name}">
-        <header><span class="label">${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
+        <header><span class="label"${s === 'done' ? html` title="${DONE_TIP}"` : ''}>${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
         <div><p class="refusal" role="note"></p><div class="drop">${(rows.length ? rows.map(t => card(t)) : html`<p class="empty">${on() ? 'None match the filters.' : 'Nothing ' + name.toLowerCase() + '.'}</p>`)}</div></div>
       </div>`;
     })}${other.length ? html`<div class="col" role="group" aria-label="Other statuses">
@@ -668,7 +674,7 @@ addEventListener('DOMContentLoaded', () => {
     const v = list.pageOf(all, L);
     // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
     const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
-    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list" data-tfilter="page"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
+    put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list" data-tfilter="page" data-toolbar="filterbar"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
       ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button>${issueLink(t)}<span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }

@@ -1,8 +1,7 @@
 // Notes (sd:2120): the design source's products/system/designs/pages/notes.js, ported. Each change from the reference is
 // marked "build:". The days are /api/notes (notes_screen.py), read through the shared reader; none is sample data.
 // build: days are this machine's (the document's tz), times show in the viewer's own zone. The daily note is the day's text
-// from the vault (sd:3426), or a named state: no note, no vault. Mail is /api/notes/mail (sd:3425), read beside the week so a
-// slow server never holds the days: the newest inbox mail on every day, or a named state when it cannot be read.
+// from the vault (sd:3426), or a named state: no note, no vault. The inbox mail and the runner runs left the page (sd:5289).
 (() => {
   const { html, put, plural } = window.markup;
   const $ = id => document.getElementById(id);
@@ -15,7 +14,7 @@
   const HM = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const local = s => HM.format(new Date(s));
   const stamp = s => s ? `${local(s)} · ${s.replace('T', ' ').replace('Z', ' UTC')}` : 'not recorded';
-  let DOC = null, DAYS = [], TODAY = null, day = null, selected = null, OBJS = [], MAIL = null;
+  let DOC = null, DAYS = [], TODAY = null, day = null, selected = null, OBJS = [];
   const expanded = new Set(), openRepos = new Set();
 
   // Objects for selection, the ⋯ menu and the palette. Activity rows are records: no write commands.
@@ -27,9 +26,6 @@
     A.done.forEach(x => out.push({ id: x.id, type: 'done task', label: `#${x.item} ${x.title}`, at: x.at, g: G.ok, s: x.title, small: `#${x.item}`, item: x.item,
       facts: [['Item', `#${x.item}`], ['Kind', x.kind], ['Repository', x.repo || 'none'], ['From', x.from], ['Done at', stamp(x.at)], ['By', x.by || 'not recorded']],
       src: 'sd.db note.kind = status_change, "-> done"', open: [window.shell.itemHref(x.item), 'Open in Tasks'] }));
-    A.runs.forEach(r => out.push({ id: r.id, type: 'run', label: `assignment ${r.n}`, at: r.at, g: G[r.s] || G.unknown, s: r.what, small: `${r.status} · ${r.provider || 'no provider'}`, item: r.item,
-      facts: [['Assignment', r.n], ['Item', r.item ? `sd:${r.item}` : '—'], ['Repository', r.repo || '—'], ['Role', r.role], ['Provider', r.provider || '—'], ['Status', r.status], ['Started', stamp(r.started)], ['Ended', stamp(r.ended)]],
-      src: 'runner assignments (operations.assignment_state)', open: null }));
     return out;
   }
   const rowHtml = o => html`<li class="row" data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}"><span class="t" title="${o.at.replace('T', ' ').replace('Z', ' UTC')}">${local(o.at)}</span><span class="g g-${o.g[0]}" aria-hidden="true">${o.g[1]}</span><button class="s" type="button" data-open="${o.id}"><span class="sr">${o.g[0]} · ${o.type} · </span>${o.s}${o.small ? html`<small>${o.small}</small>` : ''}</button>${window.shell.commands.rowActions(o.id)}</li>`;
@@ -49,23 +45,6 @@
     return html`<div class="prose${kind ? ` ${kind}` : ''}" role="note"><p><b>${title}</b> ${n?.why || 'The document carries no daily note for this day.'}</p><p>The activity below is that day's record, read from its sources.</p></div>`;
   }
 
-  // Mail rows are read-only records with no Details: sender, subject and age; the subject is text, never a link.
-  const MAIL_DOWN = { unconfigured: '▨ Mail not configured.', down: '▨ workspace-mcp is down.', error: '▨ Mail not read.' };
-  const mailOk = () => MAIL?.state === 'ok';
-  function mailSect() {
-    if (!MAIL) return sect('mail', 'Mail', '…', 'Gmail inbox via workspace-mcp', html`<p class="why">Reading the inbox…</p>`);
-    if (!mailOk()) return sect('mail', 'Mail', '▨', 'not read', html`<div class="unknown"><b>${MAIL_DOWN[MAIL.state] || MAIL_DOWN.error}</b> ${MAIL.why || 'No reason given.'}</div>`);
-    const rows = MAIL.rows || [], gap = MAIL.missing ? html`<p class="why">${plural(MAIL.missing, 'message')} found but not read: Gmail throttled the fetch.</p>` : '';
-    // The inbox is the newest of the last MAIL.days days whatever day is shown (sd:3525): the heading names that window.
-    return sect('mail', `Mail, last ${plural(MAIL.days, 'day')}`, rows.length, 'Gmail inbox via workspace-mcp · the newest, not per day', rows.length
-      ? html`<ul class="rows" aria-label="inbox mail">${rows.map(m => html`<li class="row mail"><span class="t">${m.at ? html`<time class="rel" datetime="${m.at}"></time>` : 'no date'}</span><span class="g" aria-hidden="true"></span><span class="s"><span class="sr">mail · </span>${m.subject}<small>${m.from}</small></span></li>`)}</ul>${gap}`
-      : html`<p class="why">No inbox mail in the last ${plural(MAIL.days, 'day')}.</p>${gap}`);
-  }
-  const mailTally = () => !MAIL ? html`<a href="#mail"><b>…</b><span>reading mail</span></a>`
-    : mailOk() ? html`<a href="#mail"><b>${MAIL.rows.length}</b><span>inbox mail · ${plural(MAIL.days, 'day')}</span></a>`
-    : html`<a href="#mail" class="unk"><b>▨</b><span>mail not read</span></a>`;
-  const readMail = () => window.shell.getJSON('/api/notes/mail').then(doc => { MAIL = doc; }, e => { MAIL = { state: 'error', why: e.message }; }).then(() => { if (DOC) render(); });
-
   function render() {
     const el = $('daily');
     $('day-name').textContent = day ? long(day) : 'Notes not read';
@@ -76,26 +55,22 @@
     const A = DOC.days[day];
     if (!A) { put(el, notRead(`The read covers ${long(DAYS[0])} to ${long(TODAY)} only.`)); return; }
     const prose = noteHtml(A.daily);
-    const merges = OBJS.filter(o => o.type === 'merge'), done = OBJS.filter(o => o.type === 'done task'), runs = OBJS.filter(o => o.type === 'run');
+    const merges = OBJS.filter(o => o.type === 'merge'), done = OBJS.filter(o => o.type === 'done task');
     const by = {}; merges.forEach(o => (by[o.repo] ||= []).push(o));
     const repos = Object.keys(by).sort((a, b) => by[b].length - by[a].length || a.localeCompare(b));
-    const blocked = runs.filter(o => o.g[0] === 'caution').length;
     const read = DOC.read.slice(11, 16);
     put(el, html`${prose}<nav class="tally" aria-label="The day in numbers">
         <a href="#merges"${failed('merges') ? html` class="unk"` : ''}><b>${failed('merges') ? '▨' : merges.length}</b><span>${failed('merges') ? 'merges not read' : `merges in ${plural(repos.length, 'repo')}`}</span></a>
         <a href="#done"${failed('changes') ? html` class="unk"` : ''}><b>${failed('changes') ? '▨' : done.length}</b><span>${failed('changes') ? 'status changes not read' : `tasks done · ${A.opened} opened`}</span></a>
-        <a href="#runs"${failed('runs') ? html` class="unk"` : ''}><b>${failed('runs') ? '▨' : runs.length}</b><span>${failed('runs') ? 'runs not read' : `runs${blocked ? ` · ${blocked} blocked` : ''}`}</span></a>
-        ${mailTally()}
       </nav>${sect('merges', 'Merges', failed('merges') ? '▨' : merges.length, `sd-ship delivery notes · read ${read} UTC`,
         failed('merges') ? notRead(failed('merges')) : repos.length ? html`${repos.map((r, i) => html`<details class="repo" data-repo="${r}"${i === 0 || openRepos.has(r) ? html` open` : ''}><summary><b>${r}</b><span class="n">${by[r].length}</span></summary>${list(by[r], 'merges ' + r)}</details>`)}` : html`<p class="why">No merges this day.</p>`)
       }${sect('done', 'Tasks done', failed('changes') ? '▨' : done.length, `sd.db status changes · read ${read} UTC`, failed('changes') ? notRead(failed('changes')) : done.length ? list(done, 'tasks done') : html`<p class="why">No task reached done this day.</p>`)
-      }${sect('runs', 'Runs', failed('runs') ? '▨' : runs.length, `runner assignments by start or end · read ${read} UTC`, failed('runs') ? notRead(failed('runs')) : runs.length ? list(runs, 'runs') : html`<p class="why">No runner run started or ended this day.</p>`)
-      }${mailSect()}`);
+      }`);
   }
   function renderDetails() {
     const el = $('details'), o = selected && window.shell.commands.get(selected);
     if (!o || !o.facts) {
-      put(el, DOC ? html`<div class="kind"><span class="label">Daily note</span></div><h2>${long(day)}</h2><p class="note">Select a merge, task or run row to see where it came from.</p>`
+      put(el, DOC ? html`<div class="kind"><span class="label">Daily note</span></div><h2>${long(day)}</h2><p class="note">Select a merge or task row to see where it came from.</p>`
         : html`<p class="note">Nothing is selected: the last week could not be read.</p>`);
       return;
     }
@@ -141,7 +116,7 @@
     current: () => selected,
     first: () => null,
     select: (id, opened) => {
-      const d = DAYS.find(k => DOC.days[k].merges.concat(DOC.days[k].done, DOC.days[k].runs).some(r => r.id === id));
+      const d = DAYS.find(k => DOC.days[k].merges.concat(DOC.days[k].done).some(r => r.id === id));
       if (d && d !== day) { day = d; OBJS = rows(day); render(); }
       select(id, opened);
     },
@@ -165,7 +140,7 @@
     $('prev').addEventListener('click', () => window.notesDay(-1));
     $('next').addEventListener('click', () => window.notesDay(1));
     $('today').addEventListener('click', () => { if (TODAY) go(TODAY); });
-    $('reload').addEventListener('click', () => { reader.load(); readMail(); });
+    $('reload').addEventListener('click', () => reader.load());
     $('daily').addEventListener('click', e => {
       const m = e.target.closest('[data-more]');
       if (m) { const k = m.dataset.more; expanded.has(k) ? expanded.delete(k) : expanded.add(k); document.querySelectorAll('details.repo[open]').forEach(d => openRepos.add(d.dataset.repo)); render(); return; }
@@ -209,9 +184,8 @@
     qKeep.addEventListener('click', keep);
     qIn.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); keep(); } });
     paintQ(); readQ();
-    S.suggest(['What did I merge today in system?', 'Which runs were blocked this week?', 'Draft this day\'s summary from its activity']);
+    S.suggest(['What did I merge today in system?', 'Which items reached done this week?', 'Draft this day\'s summary from its activity']);
     reader.load();
-    readMail();
   });
 })();
 // Top level, not inside DOMContentLoaded: shell.js builds the ? sheet from PAGE_KEYS when it loads.

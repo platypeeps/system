@@ -33,28 +33,29 @@
         <h1>Designs</h1>
         <p><span id="sub">Reading the ui-design checkout…</span> · <span id="src">ui-design</span> · served as drawn, each page sandboxed</p>
       </div>
-      <div class="shift">
-        <label class="field">
-          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="sr">Filter</span>
-          <input id="shift" placeholder="Filter pages" autocomplete="off">
-          <kbd>/</kbd>
-        </label>
-      </div>
     </header>
 
     <h2 class="sr">Attention</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
 
-    <div id="viewswitch"></div>
+    <!-- The toolbar standard (sd:5281): one control row, the views then the filter; the count sits on the table's title line. -->
+    <div class="toolbar" id="toolbar">
+      <div id="viewswitch"></div>
+      <label class="tfind">
+        <svg class="i" aria-hidden="true"><use href="#i-filter"/></svg>
+        <span class="sr">Filter pages</span>
+        <input id="shift" type="search" placeholder="Filter pages" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </label>
+    </div>
 
     <section aria-labelledby="list-h">
       <div class="sec-head">
         <h2 id="list-h">Pages <button class="help" type="button" aria-label="Help: Pages" data-help="<b>One row per drawn page,</b> grouped by product; a product with a brief and no page has one row. <b>▲</b> means the page is uncommitted, has no screenshot, or has a stale one: the page or a file it loads changed after the capture. The time is that commit. Enter opens Details, where the page is one link away.">
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-        <p class="tally" id="tally"></p>
+        <p class="tally" id="tally" aria-live="polite"></p>
       </div>
-      <table class="ledger" aria-labelledby="list-h" data-tfilter="page">
+      <table class="ledger" aria-labelledby="list-h" data-tfilter="page" data-toolbar="toolbar">
         <thead id="rows-head"></thead>
         <tbody id="rows"></tbody>
       </table>

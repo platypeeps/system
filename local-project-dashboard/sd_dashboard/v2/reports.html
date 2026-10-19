@@ -33,6 +33,12 @@
         <h1>Reports</h1>
         <p><span id="sub">Reading reports, jobs and job logs…</span></p>
       </div>
+    </header>
+
+    <h2 class="sr">Job families</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+    <div class="toolbar" id="toolbar">
       <div class="shift">
         <label class="field">
           <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
@@ -51,10 +57,7 @@
           <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
         </div>
       </div>
-    </header>
-
-    <h2 class="sr">Job families</h2>
-    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    </div>
 
     <section id="view-reports" aria-labelledby="led-h">
       <div class="sec-head">
@@ -62,13 +65,13 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="tally"></p>
       </div>
-      <div class="filters" id="filters">
+      <div class="filters toolbar-2" id="filters">
         <label class="sel">Job<select id="f-job"><option value="">All jobs</option></select></label>
         <label class="sel">Status<select id="f-status"><option value="">Any status</option><option value="act">Needs action</option><option value="open">Open</option><option value="done">Acknowledged</option></select></label>
         <label class="sel">Day<select id="f-day"><option value="">Any day</option></select></label>
       </div>
       <div id="chips"></div>
-      <table class="ledger" aria-labelledby="led-h" data-tfilter="page">
+      <table class="ledger" aria-labelledby="led-h" data-tfilter="page" data-toolbar="toolbar">
         <thead id="rows-head"><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>

@@ -504,13 +504,18 @@ OUT.toasts[0].undo(); await flush();""")
   tipOf({ label: 'Remove', cli: () => 'git worktree remove /tmp/x', risk: 'confirm' }, obj(7)),
   tipOf({ label: 'Retry', cli: () => 'sd jobs run x', askFirst: true }, obj(7)),
   tipOf({ label: 'Ask in chat' }, obj(7)),
-  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7))];""")
+  tipOf({ label: 'Pin', cli: () => 'no sd verb: the pin lives in the database', risk: 'undo' }, obj(7)),
+  tipOf({ label: 'Retry', does: 'Runs the job again now', cli: o => `sd jobs run job-${o.id}`, risk: 'undo', undo() {} }, obj(7)),
+  tipOf({ label: 'Hide', does: o => `Hides ${o.id} here only.` }, obj(7))];""")
         self.assertEqual(out["got"], [
             "Ready: runs sd task status 7 ready. Undo offered.",
             "Remove: copy only, the dashboard does not run git worktree remove /tmp/x. Asks first.",
             "Retry: runs sd jobs run x. Asks first.",
             "Ask in chat: dashboard only, no CLI line.",
             "Pin: dashboard only, no CLI line.",
+            # sd:5287: what the command does leads, then the line.
+            "Runs the job again now. Runs sd jobs run job-7. Undo offered.",
+            "Hides 7 here only. Dashboard only, no CLI line.",
         ])
         # The foundation's help popover shows it after --delay-help, in the theme's tokens; a native title would not.
         for where in ("data-cmd=\"${c.id}\" data-obj=\"${id}\" data-tip=\"${tipOf(c, o)}\"",
@@ -773,6 +778,27 @@ box('no repo', true); R.two = ELS['view-board'].html; R.after = ELS.filters.html
         self.assertRegex(after, r'<details class="fpick" data-pick="repo" open><summary[^>]*><span id="f-repo-v">2 picked</span>')
         self.assertIn("repo=system%2Cno%20repo", out["R"]["url"])
 
+    def test_the_board_done_column_shows_only_the_last_seven_days(self):
+        """sd:5305: the board's Done column holds items done in the 7 days before the read; the list keeps every one."""
+        import copy
+        import datetime as dt
+        read = dt.datetime.fromisoformat(self.doc["read"].replace("Z", "+00:00"))
+        doc = copy.deepcopy(self.doc)
+        old, new = doc["rows"][0], doc["rows"][1]
+        for row, days, title in ((old, 8, "Done long ago"), (new, 6, "Done this week")):
+            row.update(status="done", title=title,
+                       status_since=(read - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z"))
+        saved, self.doc = self.doc, doc
+        try:
+            out = self.run_page("R.board = ELS['view-board'].html;")
+        finally:
+            self.doc = saved
+        board = out["R"]["board"]
+        done = re.search(r'aria-label="Done">.*?</div>\s*</div>\s*</div>', board, re.S).group(0)
+        self.assertIn("Done this week", done)
+        self.assertNotIn("Done long ago", board)
+        self.assertIn('title="done in the last 7 days"', done)
+
     def test_the_kind_filter_narrows_the_rows(self):
         out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'work' } });
 R.board = ELS['view-board'].html;""")
@@ -817,6 +843,13 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertIn('<p class="why" id="det-off">The fields are off: message items use their own editing workflow.</p>', out["R"]["port"])
         self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
         self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
+
+    def test_status_priority_and_edit_leave_the_act_bar_to_the_details_fields(self):
+        """sd:5295: Status, Priority and Due are Details fields, so their commands are `bar: false`: off the Act bar, while
+        1-5, e and m, the ⋯ menu, the palette and the bulk bar still run them (test_v2_commands checks the bar honours it)."""
+        out = self.run_page("R.off = REG.filter(c => c.bar === false).map(c => c.id);")
+        self.assertEqual(sorted(out["R"]["off"]), sorted([f"item.status.{s}" for s in ("planning", "ready", "in_progress", "blocked", "done")]
+                                                        + ["item.complete", "item.p1", "item.p2", "item.p3", "item.p4", "item.edit", "item.move"]))
 
     def test_a_field_change_writes_once_with_its_cli_line_and_undo(self):
         plan = self.ids["plan"]

@@ -42,6 +42,18 @@
         <h1>Today</h1>
         <p id="subhead">Reading the fleet…</p>
       </div>
+    </header>
+
+    <h2 class="sr">Subsystems</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator">
+      <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
+      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
+    </ul></annunciator-strip>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+    <div class="toolbar" id="toolbar">
       <div class="shift">
         <label class="field">
           <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
@@ -60,16 +72,7 @@
           <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
         </div>
       </div>
-    </header>
-
-    <h2 class="sr">Subsystems</h2>
-    <annunciator-strip><ul class="annunciator" id="annunciator">
-      <li><button class="cell" type="button" data-src="jobs" data-state="unknown" aria-pressed="false"><span class="lbl">Jobs<svg class="i" aria-hidden="true"><use href="#i-siren"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" data-src="prs" data-state="unknown" aria-pressed="false"><span class="lbl">Pull requests<svg class="i" aria-hidden="true"><use href="#i-git-pull-request"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" data-src="sessions" data-state="unknown" aria-pressed="false"><span class="lbl">Sessions<svg class="i" aria-hidden="true"><use href="#i-bot"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" data-src="repos" data-state="unknown" aria-pressed="false"><span class="lbl">Repos<svg class="i" aria-hidden="true"><use href="#i-hard-drive-download"/></svg></span><span class="val">reading…</span></button></li>
-      <li><button class="cell" type="button" id="refresh"><span class="lbl">Observed<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg></span><span class="val"><span class="ph" id="observed">not yet</span> · <span class="ph">refresh</span></span></button></li>
-    </ul></annunciator-strip>
+    </div>
 
     <div id="view-now" aria-label="Now">
       <section aria-labelledby="now-h">
@@ -78,7 +81,7 @@
             <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
           <p class="tally" id="tally"></p>
         </div>
-        <table class="ledger" aria-labelledby="now-h" data-tfilter="page">
+        <table class="ledger" aria-labelledby="now-h" data-tfilter="page" data-toolbar="toolbar">
           <thead id="rows-head"></thead>
           <tbody id="rows"><tr class="empty"><td colspan="5">Reading the fleet…</td></tr></tbody>
         </table>

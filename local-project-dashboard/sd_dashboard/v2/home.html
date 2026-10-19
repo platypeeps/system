@@ -37,7 +37,10 @@
       <button class="btn quiet exit" type="button" id="kiosk-off"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg>Exit wall display</button>
     </div>
   </header>
-  <div class="place-switch" id="viewswitch" data-label="Home views"></div>
+  <!-- The toolbar standard (sd:5281): row 1, the views; the count sits on each table's title line. -->
+  <div class="toolbar" id="toolbar">
+    <div class="place-switch" id="viewswitch" data-label="Home views"></div>
+  </div>
   <div id="view-overview" data-place-view="overview" data-label="Overview">
   <div id="state" hidden></div>
   <form class="tiles-edit" id="editor" hidden aria-labelledby="editor-h">

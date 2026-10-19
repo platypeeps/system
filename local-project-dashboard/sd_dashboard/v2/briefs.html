@@ -30,6 +30,13 @@
         <h1>Briefs</h1>
         <p><span id="sub">Reading the briefs…</span> · what the scheduled routines file in the workflow database</p>
       </div>
+    </header>
+    <div id="state" hidden></div>
+
+    <h2 class="sr">Brief sources</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+    <div class="toolbar" id="toolbar">
       <div class="shift">
         <label class="field">
           <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
@@ -48,11 +55,7 @@
           <p class="hint" id="shift-hint">→ changes mode · Enter runs · Esc clears</p>
         </div>
       </div>
-    </header>
-    <div id="state" hidden></div>
-
-    <h2 class="sr">Brief sources</h2>
-    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    </div>
 
     <section id="view-list" aria-labelledby="list-h">
       <div class="sec-head">
@@ -60,8 +63,8 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <div class="tally"><p class="tally" id="tally"></p><div class="chips" role="group" aria-label="Range" id="range"></div></div>
       </div>
-      <div class="filters" id="filters" aria-label="Filters"></div>
-      <table class="ledger" aria-labelledby="list-h" data-tfilter="page">
+      <div class="filters toolbar-2" id="filters" aria-label="Filters"></div>
+      <table class="ledger" aria-labelledby="list-h" data-tfilter="page" data-toolbar="toolbar">
         <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Brief</th><th scope="col">Source</th><th scope="col" class="r">Written (UTC)</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>

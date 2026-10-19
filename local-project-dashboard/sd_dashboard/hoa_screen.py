@@ -201,7 +201,7 @@ def parse_thresholds(text: str, levels: dict | None = None) -> list[str]:
 
 
 def sources(place: Path | None) -> dict:
-    """The Mission export's and Vantaca's age, from `SOURCE_AGES --json` (sd:4965), within `SOURCE_SECONDS`.
+    """Each source's age and refresh job, from `SOURCE_AGES --json` (sd:4965), within `SOURCE_SECONDS`.
 
     The script exits 1 when a source did not read and still prints every row, so its rows are kept and the failed one is
     `unknown` with its `error`; any other failure, a timeout or a script the checkout lacks, is this part's `error`.
@@ -234,13 +234,20 @@ def sources(place: Path | None) -> dict:
     if rows is None:
         out["error"] = f"{SOURCE_AGES} exited {done.returncode}" + (f": {said}" if said else "")
         return out
-    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} for row in rows]
+    out["rows"] = [{key: row.get(key) for key in SOURCE_KEYS} | _job_name(row) for row in rows]
     return out
 
 
-#: The manual cron job (`JOB_SCHEDULE="manual"`) that refreshes each source; Refresh now starts it through the route
-#: Management's Retry posts, `/api/jobs/<name>/retry` (sd:4965). The job files are private config, installed with
-#: `cron-jobs.sh install <name>`.
+def _job_name(row: dict) -> dict:
+    """`{"job": <name>}` for a row with a refresh job, else `{}`. The row names it (hoa sd:5279), a null meaning none; a
+    row from an older checkout carries no `job`, and `REFRESH_JOBS` stands in."""
+    name = row["job"] if "job" in row else REFRESH_JOBS.get(row.get("source"))
+    return {"job": name} if isinstance(name, str) and name else {}
+
+
+#: The manual cron job (`JOB_SCHEDULE="manual"`) that refreshes each source, for a checkout whose source-ages rows do
+#: not name it yet (sd:5280); Refresh now starts it through the route Management's Retry posts,
+#: `/api/jobs/<name>/retry` (sd:4965). The job files are private config, installed with `cron-jobs.sh install <name>`.
 REFRESH_JOBS = {"mission": "hoa-mission-export", "vantaca": "hoa-vantaca-pull"}
 
 #: The fields of `operations.job_state` the page reads.
@@ -260,7 +267,7 @@ def _refresh_jobs(connection, rows: list[dict], backend) -> None:
 
     root = getattr(backend, "cron_root", None)
     for row in rows:
-        name = REFRESH_JOBS.get(row["source"])
+        name = row.get("job")
         if not name:
             continue
         try:
