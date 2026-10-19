@@ -1,4 +1,4 @@
-// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports) and Tasks' place views.
+// Places: the HOA and Home pages' views (Overview | Tasks | Briefs | Reports; HOA adds Alarms) and Tasks' place views.
 // Data: a place view with data-api reads its own document when it is shown, /api/<place>/<view> (sd_dashboard/places.py).
 // Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
 // read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each

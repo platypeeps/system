@@ -187,7 +187,8 @@ usage: dashboard.sh tile <tab> | serve | preflight | install | health | grants |
   health           check the configured front door and backend /health
                    once; --wait SECONDS retries until it answers healthy.
                    Prints the commit it serves, and exits 1 when that is not
-                   the checkout's HEAD, naming the kickstart line
+                   the checkout's HEAD, naming the kickstart line, or when
+                   the installed LaunchAgent's PATH no longer finds sd
   grants           probe the vault under DASHBOARD_PYTHON and under
                    SD_DASHBOARD_PYTHON, one line per path, naming the one
                    that lacks Full Disk Access. Takes no arguments. Exits 1

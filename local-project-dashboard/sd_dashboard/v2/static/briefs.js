@@ -69,6 +69,8 @@ addEventListener('DOMContentLoaded', () => {
   const capped = () => !!READER && !!READER.capped;
   const oldest = () => BRIEFS.reduce((m, b) => b.day < m ? b.day : m, '9999-12-31');
   const LAMP = { ok: 'ok', off: 'ok', failed: 'caution', unknown: 'unknown' };
+  // sd:5298: a failed or unknown copies lamp links to its evidence, Health's Brief copies row (the refused stems, the reason).
+  const COPIES_ROW = '/health?row=mir%3Abriefs#view=jobs';
   function renderAnnunciator() {
     const c = COPIES || { state: 'unknown', reason: 'not read', at: null };
     const n = ranged().length, srcs = new Set(ranged().map(b => b.src)).size;
@@ -80,7 +82,7 @@ addEventListener('DOMContentLoaded', () => {
       { state: got ? 'ok' : 'unknown', label: 'Briefs', mark: I('inbox'), val: count },
       { state: 'unknown', attrs: html` title="${WATCH}"`, label: 'Missed', mark: I('siren'), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">no watchdog reader</span>` },
       // build (sd:3459): the brief-copies heartbeat. Off is quiet; failed is caution, since Read never needs a copy.
-      { state: LAMP[c.state] || 'unknown', attrs: html` title="${c.reason || `rendered ${c.at}`}"`, label: 'Vault copies', mark: I('hard-drive-download'),
+      { state: LAMP[c.state] || 'unknown', href: LAMP[c.state] === 'ok' ? undefined : COPIES_ROW, attrs: html` title="${c.reason || `rendered ${c.at}`}"`, label: 'Vault copies', mark: I('hard-drive-download'),
         val: html`<span class="ph"><b>${c.state}</b></span>${c.at ? html` · <span class="ph">${c.at.slice(5, 16).replace('T', ' ')} UTC</span>` : ''}` },
       { button: true, attrs: html` id="refresh"`, label: 'Observed', mark: I('rotate-ccw'), val: read },
     ]));

@@ -19,6 +19,7 @@ import json
 import re
 import subprocess
 import unittest
+from html.parser import HTMLParser
 
 from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SHELL_JS, STAND_IN, V2
 from test_v2_today import OSASCRIPT
@@ -575,6 +576,36 @@ class TheTableGrammar(unittest.TestCase):
         self.assertEqual(out["facets"], [{"label": "Kind", "values": ["job", "mail"]}])
         self.assertEqual(out["skipped"], [])
 
+    def test_every_table_with_a_row_gets_the_filters_and_its_count_on_one_row(self):
+        # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own text filter
+        # wins, and its table still gets the column filter.
+        out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
+  R.own = tbar({ total: 40, ownFilter: true, bands: 3 });
+  R.counts = [tcount(1, 1), tcount(7, 7), tcount(2, 7)];""")
+        self.assertEqual(out["one"], {"find": True, "facet": True, "folds": False})
+        self.assertEqual(out["none"], {"find": False, "facet": False, "folds": False})
+        self.assertEqual(out["on"], {"find": True, "facet": True, "folds": False})
+        self.assertEqual(out["own"], {"find": False, "facet": True, "folds": True})
+        self.assertEqual(out["counts"], ["1 row", "7 rows", "2 of 7 rows"])
+
+    def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
+        # sd:5281: a table names its toolbar row (data-toolbar); the bar's parts join that row, the count last.
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertIn("const { find: findOn, facet: facetOn, folds: foldsOn } = tbar(", js)
+        # A page's own filter keeps its text; the column filter narrows its rows all the same.
+        self.assertIn("const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;", js)
+        # A table in a hidden view keeps its parts out of the shared row, and a view change rescans.
+        self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
+        self.assertIn("document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
+        self.assertIn("document.getElementById(t.dataset.toolbar)", js)
+        # Health and Management redraw a table on each filter key: the replaced table's bar and count leave the shared row.
+        self.assertIn("document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });", js)
+        self.assertIn("`${bar._name}: filter by column…`", js)
+        self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
+        self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
+        self.assertIn(".toolbar > .tgrid, .filters > .tgrid { display: contents; }", SHELL_CSS)
+        self.assertRegex(SHELL_CSS, r"\.toolbar \.tcount, \.toolbar > \.count \{[^}]*margin-left: auto;")
+
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
         out = run_tables("""R.bad = tstate({ sort: 3, dir: 7, q: null, f: ['x'], closed: 'Mon' });
   R.good = tstate({ sort: 'Kind', dir: -1, q: 'a', f: { Kind: 'job', n: 2 }, closed: ['Mon', 4] });
@@ -587,9 +618,156 @@ class TheTableGrammar(unittest.TestCase):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
         self.assertIn("try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch", js)
-        self.assertIn("list.chips(tchips(st), shown, total, 'tunfilter')", js)
+        self.assertIn("list.chips(tchips(use), shown, total, 'tunfilter')", js)
         self.assertIn("tr[data-tout] { display: none; }", SHELL_CSS)
         self.assertIn('td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }', SHELL_CSS)
+
+
+class _Tree(HTMLParser):
+    """Each start tag with the classes and ids of its ancestors, enough to place a control on its row."""
+    VOID = {"input", "br", "img", "meta", "link", "hr", "source", "use", "path"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack, self.tags = [], []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        me = (tag, set((a.get("class") or "").split()), a.get("id"), a)
+        self.tags.append((me, list(self.stack)))
+        if tag not in self.VOID:
+            self.stack.append(me)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        while self.stack and self.stack.pop()[0] != tag:
+            pass
+
+
+def tree(page):
+    t = _Tree()
+    t.feed(page.read_text(encoding="utf-8"))
+    return t.tags
+
+
+#: Scripts every page loads that draw no table of a page's own.
+SHELL_SCRIPTS = {"shell", "markup", "sections", "read", "commands", "theme"}
+TABLE = re.compile(r'<table\b([^>]*)>\s*(?:<caption(?:[^>]*\bid="([^"]+)")?[^>]*>([^<$]*))?')
+
+
+def page_tables(page):
+    """Each table the page or a script it loads draws, as (key, attributes); the key is its label, id, class or caption."""
+    text = page.read_text(encoding="utf-8")
+    sources = [text] + [(STATIC / f"{name}.js").read_text(encoding="utf-8")
+                        for name in re.findall(r'<script src="/ui/([\w-]+)\.js"', text)
+                        if name not in SHELL_SCRIPTS and (STATIC / f"{name}.js").exists()]
+    for source in sources:
+        for found in TABLE.finditer(source):
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', found[1]))
+            if "sr" in attrs.get("class", "").split():
+                continue
+            yield (attrs.get("aria-labelledby") or attrs.get("id") or attrs.get("aria-label")
+                   or (attrs.get("class", "").split() or [None])[-1] or found[2] or (found[3] or "").strip()), attrs
+
+
+def page_finds(page):
+    """The ids of the rows (row 1 or a filter row) that hold the page's own text filter."""
+    rows = set()
+    for (tag, _c, _i, a), up in tree(page):
+        if tag == "input" and a.get("type", "text") in ("text", "search") and a.get("role") != "combobox":
+            row = next((i for _t, c, i, _x in reversed(up) if c & {"toolbar", "filters"}), None)
+            if row:
+                rows.add(row)
+    return rows
+
+
+class TheToolbarStandard(unittest.TestCase):
+    """sd:5281: every page puts its controls on at most two rows from the shared standard, not in its head."""
+
+    PAGES = sorted(V2.glob("*.html"))
+    HEAD = {"head", "home-head"}
+    # The controls the standard moved out of the head: Shapeshift, a page's view group, its range and its filter box.
+    MOVED = {"shift", "views", "range", "filter", "repo-scope", "place-switch"}
+
+    def test_no_page_head_holds_a_control(self):
+        for page in self.PAGES:
+            for (tag, cls, _id, _a), up in tree(page):
+                in_head = any(c & self.HEAD for _t, c, _i, _x in up)
+                with self.subTest(page=page.name, tag=tag, cls=sorted(cls)):
+                    self.assertFalse(in_head and (tag in ("input", "select", "textarea") or cls & self.MOVED))
+
+    def test_the_view_switch_and_the_moved_controls_sit_in_row_one(self):
+        for page in self.PAGES:
+            for (tag, cls, id_, _a), up in tree(page):
+                # A panel's own range (HOA's Trends) belongs to its panel head, not to the page's rows.
+                if id_ == "viewswitch" or (cls & self.MOVED and not any("panel-head" in c for _t, c, _i, _x in up)):
+                    with self.subTest(page=page.name, el=id_ or sorted(cls)):
+                        self.assertTrue(any("toolbar" in c for _t, c, _i, _x in up))
+
+    def test_a_page_has_one_row_one_and_its_filter_rows_are_row_two(self):
+        for page in self.PAGES:
+            tags = tree(page)
+            with self.subTest(page=page.name):
+                self.assertLessEqual(sum(1 for (_t, _c, i, _a), _u in tags if i == "toolbar"), 1)
+                for (tag, cls, _i, _a), _u in tags:
+                    if cls & {"filters", "facets"}:
+                        self.assertIn("toolbar-2", cls)
+        for name in ("health.js", "management.js"):
+            self.assertNotIn('<div class="filters"', (STATIC / name).read_text(encoding="utf-8"))
+
+    # The tables a page's toolbar text filter does not reach: each keeps the shell's own filter box (one text filter each).
+    UNREACHED = {
+        "activity.html": {"Events per hour by kind"},  # the chart's fallback table
+        "briefs.html": {"Briefs per source and day"},  # the cadence fallback table
+        "health.html": {"Snoozed rows", "pmx-cap"},  # snoozed rows; the protection matrix's table
+        "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h"},  # lane, processes, worktrees, satellites
+        "reports.html": {"cad"},  # the cadence table
+        "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
+        "today.html": {"active-h", "work-h", "problems-h", "briefs-h", "mail-h", "issues-h", "intake-h", "decisions-h",
+                       "Snoozed rows", "st-${key}-h"},  # Now's filter reaches the Now ledger alone
+    }
+
+    def test_no_table_gets_two_text_filters(self):
+        # The sd:5281 ruling: where a page's toolbar text filter covers a table, the table is data-tfilter="page" and the
+        # shell draws no box of its own; its column filter joins the row that holds the page's filter (data-toolbar).
+        # Briefs, Documents and the other page-filtered ledgers share row 1; the count stays on the table's title line.
+        for page in self.PAGES:
+            finds = page_finds(page)
+            seen = set()
+            for key, attrs in page_tables(page):
+                seen.add(key)
+                with self.subTest(page=page.name, table=key):
+                    if attrs.get("data-tfilter") == "page":
+                        self.assertTrue(finds, "a page-filtered table on a page with no text filter has none")
+                        self.assertIn(attrs.get("data-toolbar"), finds, "its column filter is not in the page filter's row")
+                    elif finds:
+                        self.assertIn(key, self.UNREACHED.get(page.name, set()),
+                                      "the page's text filter reaches it too: mark it data-tfilter=\"page\", or list it here")
+            with self.subTest(page=page.name, stale=True):
+                self.assertLessEqual(self.UNREACHED.get(page.name, set()), seen)
+
+    def test_each_view_keeps_the_view_switch_and_row_one_visible(self):
+        # Review round 1: HOA's row 1 sat inside view-overview, so picking Tasks hid the tabs. Select each view as
+        # shell.viewApply (view-<id>) and places.place ([data-place-view]) do: every other panel turns hidden.
+        panel = lambda a: a.get("data-place-view") or ((a.get("id") or "").startswith("view-") and a["id"])
+        for page in self.PAGES:
+            tags = tree(page)
+            views = [panel(a) for (_t, _c, _i, a), _u in tags if panel(a)]
+            for (tag, cls, id_, _a), up in tags:
+                if id_ not in ("toolbar", "viewswitch") and not cls & {"viewswitch", "place-switch"}:
+                    continue
+                inside = {panel(a) for _t, _c, _i, a in up if panel(a)}
+                for shown in views:
+                    with self.subTest(page=page.name, el=id_ or sorted(cls), view=shown):
+                        self.assertEqual(inside - {shown}, set(), "selecting this view hides the switch")
+
+    def test_the_shell_draws_the_view_switch_at_the_start_of_row_one(self):
+        self.assertIn("viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);",
+                      (STATIC / "shell.js").read_text(encoding="utf-8"))
 
 
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
@@ -907,7 +1085,7 @@ class TheSelect(unittest.TestCase):
         # select (Details, Settings, Management, dialogs) keeps the text inputs' radius, and its page sets their height.
         chip = re.search(r"^\.chip \{([^}]*)\}", SHELL_CSS, re.M).group(1)
         select = re.search(r"^:where\(select:not\(\.tile-f\)\) \{([^}]*)\}", SHELL_CSS, re.M).group(1)
-        bar = re.search(r"^:where\(\.filters select, \.tgrid select\) \{([^}]*)\}", SHELL_CSS, re.M)
+        bar = re.search(r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}", SHELL_CSS, re.M)
         self.assertIsNotNone(bar, "shell.css has no filter-bar select rule")
         for prop in ("min-height", "border-radius"):
             want = re.search(rf"\b{prop}: ([^;]+);", chip).group(1)
@@ -922,14 +1100,57 @@ class TheSelect(unittest.TestCase):
         reports = (STATIC / "reports.css").read_text(encoding="utf-8")
         self.assertNotRegex(reports, r"(?m)^\.filters select \{[^}]*min-height")
 
+    FILTERS = ".fsel, .filters select, .tgrid select, .toolbar select"
+    EVERY = 'select:not(.tile-f, [multiple], [size]:not([size="1"]))'
+
+    def test_every_filter_dropdown_is_one_shared_pill_enumerated_from_the_code(self):
+        """sd:5281: every filter dropdown on every page wears the chip's pill: shell.list.pick's single select (.fsel, on
+        Tasks, Briefs and Documents' facet, which sits outside a .filters bar) and its multi menu (.fpick), the column
+        filter (.tgrid), a page's .filters selects (Reports) and the toolbar row's."""
+        self.assertRegex(SHELL_CSS, r"(?m)" + r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}")
+        self.assertIn('<select id="f-${key}" class="fsel" data-pick="${key}">', SHELL_JS)
+        self.assertIn('put(bar, html`<label class="tfind">', SHELL_JS)
+        summary = re.search(r"^\.fpick > summary, [^{]*\{([^}]*)\}", SHELL_CSS, re.M).group(1)
+        self.assertIn("border-radius: 999px", summary)
+
+    def test_a_filter_narrowed_to_a_value_wears_the_accent_pill(self):
+        # The picked .fpick and an active column filter wear the accent; a single select with a value does too.
+        self.assertIn(":where(.fsel, .filters select, .toolbar select):where(:has(option:checked:not([value=\"\"]))) "
+                      "{ border-color: var(--color-accent); background-color: var(--color-accent-bg); }", SHELL_CSS)
+
+    def test_the_open_list_follows_the_theme_where_the_browser_allows(self):
+        # Customizable select (appearance: base-select) draws the open list as the panel's box; elsewhere the native
+        # popup follows :root's color-scheme. The OS chevron gives way to the shared one.
+        block = re.search(r"@supports \(appearance: base-select\) \{(.*?)\n\}", SHELL_CSS, re.S)
+        self.assertIsNotNone(block, "shell.css does not theme the open list")
+        body = block.group(1)
+        # Decision #24588: every select's open list, not only a filter's; a list box (multiple, size) draws no popup.
+        self.assertIn(f":where({self.EVERY})::picker(select)", body)
+        self.assertIn(f":where({self.EVERY}) option:checked", body)
+        self.assertIn("::picker-icon { display: none; }", body)
+        for token in ("var(--color-panel)", "var(--color-rule)", "var(--shadow-overlay)", "var(--color-accent-bg)"):
+            self.assertIn(token, body)
+
+    def test_a_page_listbox_button_wears_the_filter_pill(self):
+        # Decision #24588: a custom combobox (Activity's Repo button) reads as the shared dropdown, not its own box.
+        self.assertRegex(SHELL_CSS, r'(?m)^\.fpick > summary, button\[aria-haspopup="listbox"\] \{')
+        self.assertIn('.fpick:has(:checked) > summary, button[aria-haspopup="listbox"]:has(> .n) {', SHELL_CSS)
+        buttons = set()
+        for path in sorted(STATIC.glob("*.js")):
+            for cls in re.findall(r'<button[^>]*class="([\w-]+)"[^>]*aria-haspopup="listbox"', path.read_text(encoding="utf-8")):
+                buttons.add(cls)
+        self.assertEqual(buttons, {"pick"})
+        for name, css in PAGE_CSS.items():
+            for cls in buttons:
+                with self.subTest(page=name, cls=cls):
+                    self.assertNotRegex(css, rf"(?m)^\.{cls}(?::[^\s{{,]+)?\s*\{{[^}}]*\b(?:border|background|border-radius):")
+
     def test_no_page_redraws_the_select_box(self):
-        # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box or chevron.
-        # The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
-        redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline)\s*:")
+        # Enumerated from every stylesheet: a rule that names a select may size it, never redraw its box, chevron, ink or
+        # face (decision #24588). The card tiles' borderless pickers (.tile-f) are the one exception, outside the shared rule.
+        redraw = re.compile(r"(?:^|;)\s*(?:background|border|appearance|border-radius|padding|outline|font|font-family|color|box-shadow)\s*:")
         found = []
         for path in sorted(STATIC.glob("*.css")):
-            if path.name == "research.css":
-                continue
             css = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
             for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
                 if selector.strip().startswith(":where("):

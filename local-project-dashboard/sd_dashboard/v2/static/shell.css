@@ -7,6 +7,10 @@
  *   states: default · hover · focus · active · selected; a tab has no disabled, loading, error or success state
  * 2026-10-18 component: table grammar (sd:5064) sort header, filter bar, chips, band folds · pre-emit critique: P4 H4 E4 S4 R5 V4
  *   states: default · hover · focus · active · expanded/collapsed; filter box empty · typed · nothing matches (chips say 0 of N)
+ * 2026-10-19 component: toolbar standard (sd:5281) row 1 views · filter · count right, row 2 labelled controls; .vseg pressed
+ *   view group · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · active · pressed; filter typed · count "N of M"
+ * 2026-10-19 component: filter dropdowns (sd:5281) every filter select one pill, accent when narrowed; every select's open
+ *   list themed where base-select exists (decision #24588) · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · open · picked (accent) · disabled
  */
 
 html, body { overflow-x: clip; }
@@ -23,22 +27,41 @@ html, body { overflow-x: clip; }
   background-position: right calc(var(--space-xs) + 5px) center, right var(--space-xs) center;
   background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer;
 }
-/* A filter bar's select sits with chips, so it takes their height and pill; a form select keeps the inputs' radius. */
-:where(.filters select, .tgrid select) { min-height: 1.75rem; border-radius: 999px; }
+/* A filter's select sits with chips, so it takes their height and pill; a form select keeps the inputs' radius. Every filter
+ * dropdown (sd:5281): shell.list.pick's single select (.fsel) wherever a page puts it, a page's .filters bar, the column
+ * filter (.tgrid) and the toolbar row. A filter narrowed to a value wears the accent, as a picked .fpick does. */
+:where(.fsel, .filters select, .tgrid select, .toolbar select) { min-height: 1.75rem; border-radius: 999px; font-size: var(--text-xs); }
+:where(.fsel, .filters select, .toolbar select):where(:has(option:checked:not([value=""]))) { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
 :where(select:not(.tile-f):hover:not(:disabled)) { border-color: var(--color-ink-2); }
 :where(select:not(.tile-f):focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 :where(select:not(.tile-f):disabled) { color: var(--color-muted); background-color: var(--color-well); cursor: not-allowed; }
 :where(select[multiple], select[size]:not([size="1"])) { background-image: none; padding-right: var(--space-xs); }
 @media (pointer: coarse) { :where(select:not(.tile-f)) { min-height: var(--row-touch); } }
+/* The open list (sd:5281, decision #24588): where the browser has customizable select, every select's list is the panel's
+ * box, not the OS menu; elsewhere the native popup follows :root's color-scheme. A list box (multiple, size) has no popup.
+ * The OS chevron gives way to the shared one; an option takes its select's face, so a filter's list stays small. */
+@supports (appearance: base-select) {
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))), :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) { appearance: base-select; }
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker-icon { display: none; }
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) {
+    margin-block: var(--space-3xs); padding: var(--space-2xs); border: var(--rule-hair) solid var(--color-rule);
+    border-radius: var(--radius-md); background: var(--color-panel); color: var(--color-ink); box-shadow: var(--shadow-overlay);
+  }
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))) option { min-height: var(--row); padding: 0 var(--space-xs); border-radius: var(--radius-sm); color: var(--color-ink-2); }
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))) option:is(:hover, :focus-visible) { background: var(--color-well); color: var(--color-ink); }
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))) option:checked { background: var(--color-accent-bg); color: var(--color-ink); }
+}
+/* Forced colours: the system draws the box and its list. */
 @media (forced-colors: active) { :where(select:not(.tile-f)) { appearance: auto; background-image: none; } }
 
 /* 2026-10-19 component: filter dropdown (shell.list.pick, sd:5158) · a single filter is the select above (.fsel); a multi
  *   filter is a <details> menu of checkboxes whose summary wears the same pill and chevron, so the two read as one control.
+ *   A page's own listbox button (button[aria-haspopup="listbox"], Activity's Repo; a count in it means picked) wears it too.
  *   The menu floats under its summary; Esc, a press outside or focus leaving closes it (shell.js). · pre-emit critique: P4 H4 E4 S4 R5 V4
  *   states: default · hover · focus · open · picked (accent) · option off (aria-disabled, reason shown); no loading, error or success */
-.fsel { min-height: 1.75rem; max-width: 14rem; font-size: var(--text-xs); }
+.fsel { max-width: 14rem; }
 .fpick { position: relative; }
-.fpick > summary {
+.fpick > summary, button[aria-haspopup="listbox"] {
   display: flex; align-items: center; min-height: 1.75rem; max-width: 14rem; padding: 0 calc(var(--space-xs) + 1rem) 0 var(--space-sm);
   list-style: none; border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background-color: var(--color-panel); color: var(--color-ink);
   font: 400 var(--text-xs)/1.2 var(--font-data); white-space: nowrap; cursor: pointer;
@@ -47,9 +70,9 @@ html, body { overflow-x: clip; }
 }
 .fpick > summary::-webkit-details-marker { display: none; }
 .fpick > summary > span { overflow: hidden; text-overflow: ellipsis; }
-.fpick > summary:hover, .fpick[open] > summary { border-color: var(--color-ink-2); }
-.fpick:has(:checked) > summary { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
-.fpick > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.fpick > summary:hover, .fpick[open] > summary, button[aria-haspopup="listbox"]:hover, button[aria-haspopup="listbox"][aria-expanded="true"] { border-color: var(--color-ink-2); }
+.fpick:has(:checked) > summary, button[aria-haspopup="listbox"]:has(> .n) { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
+.fpick > summary:focus-visible, button[aria-haspopup="listbox"]:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .fpick-menu {
   position: absolute; z-index: 30; top: calc(100% + var(--space-3xs)); left: 0; display: grid; min-width: 12rem; max-width: min(20rem, calc(100vw - 2 * var(--space-md)));
   max-height: 18rem; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-2xs);
@@ -298,12 +321,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .details h3 { margin: var(--space-lg) 0 var(--space-xs); }
 .details .note { font-size: var(--text-sm); color: var(--color-ink-2); max-width: 60ch; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
-/* Hallmark · component: Act bar explanations (sd:4963) · genre: modern-minimal · theme: design.md instrument panel · states: the
- * button's own; the line under it is text. Each button says what it does in view, not in a hover tip (foundation: no
- * hover-only affordances): one command a row, the button, then one muted line. A bar with no explanations stays a wrapped row. */
-.actions:has(> .act-row) { display: grid; justify-items: start; gap: var(--space-sm); }
-.act-row { display: grid; justify-items: start; gap: var(--space-3xs); }
-.does { font-size: var(--text-xs); line-height: 1.35; color: var(--color-muted); max-inline-size: 52ch; }
+/* sd:5287: what a command does is its button's tip (shell.js tipOf), shown on hover and on focus; the ⋯ menu shows it too. */
 .why { font-size: var(--text-xs); color: var(--color-muted); margin: var(--space-xs) 0 0; }
 .cli {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs);
@@ -392,13 +410,19 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .btn.danger:disabled { background: transparent; border-color: var(--color-rule); color: var(--color-muted); filter: none; cursor: not-allowed; }
 .btn.risky:not(:hover) { border-style: dashed; }
 .rowact { display: inline-flex; align-items: center; gap: var(--space-2xs); white-space: nowrap; }
-/* Published copies (sd:5102, commands.published): one icon per destination; a queued one is dimmed, its title says queued. */
+/* Published copies (sd:5102, sd:5300, commands.published): one icon per configured destination, its state a fill and an edge
+ * as well as a colour: a copy is filled, a queued one a dashed accent edge, a designated one with no copy a caution outline,
+ * and one not read a dashed unknown edge. */
 .pub { display: inline-flex; align-items: center; gap: var(--space-3xs); margin-right: var(--space-2xs); vertical-align: middle; }
-.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border-radius: var(--radius-sm); }
+.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
+.pub .has { color: var(--color-ink); background: var(--color-accent-bg); border-color: var(--color-accent); }
 .pub a:hover { color: var(--color-accent); background: var(--color-well); }
 .pub a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-.pub .queued { color: var(--color-muted); opacity: 0.55; }
+.pub .queued { color: var(--color-muted); border-style: dashed; border-color: var(--color-accent); }
+.pub .missing { color: var(--color-caution); background: transparent; border-color: var(--color-caution); }
+.pub .unread { color: var(--color-unknown); background: transparent; border-style: dashed; border-color: var(--color-unknown); }
 .pub .pub-unknown { color: var(--color-muted); font-size: var(--text-xs); }
+@media (forced-colors: active) { .pub .has { border-width: 2px; } }
 /* Publish to (sd:5102, commands.publishPane): each destination a checkbox button; checked is the accent, mixed (not known) is dashed. */
 .pubboxes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
 .pubbox { display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: var(--row-touch); padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); font: inherit; cursor: pointer; }
@@ -657,17 +681,55 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 /* ---------- Table grammar: every table sorts, filters and folds (shell.tables; sd:5064) ---------- */
 /* The bar sits above its table: a filter box, a column filter, Expand all / Collapse all, then the chips on their own line. */
 .tgrid { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); margin: 0 0 var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
-.tgrid .tfind { display: flex; align-items: center; gap: var(--space-2xs); flex: 0 1 16rem; min-width: 0; min-height: 2rem; padding: 0 var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.tgrid .tfind { display: flex; align-items: center; gap: var(--space-xs); flex: 0 1 16rem; min-width: 0; min-height: 1.75rem; padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-panel); color: var(--color-muted); }
+.tgrid .tfind:hover { border-color: var(--color-ink-2); }
 .tgrid .tfind input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--color-ink); font: inherit; }
 .tgrid .tfind input::placeholder { color: var(--color-muted); }
 .tgrid .tfind:focus-within { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .tgrid .tfind input:focus-visible { outline: none; }
-.tgrid select { max-width: 14rem; font-size: var(--text-xs); }
+.tgrid select { max-width: 14rem; }
+/* A column filter that is on wears the picked pill, as a filter dropdown does (.fpick:has(:checked)). */
+.tgrid:has(.tchips [data-tunfilter^="f:"]) select { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
+/* The count: right-aligned on the table's title line, or at the end of the bar when the table has none (sd:5281). */
+.tcount { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
+.tcount[hidden] { display: none; }
 .tgrid .tfolds { display: inline-flex; gap: var(--space-sm); }
 .tgrid .tchips { flex: 1 0 100%; }
 .tgrid .tchips:empty { display: none; }
 .tgrid .list-chips { margin: 0; }
 .tgrid[hidden], .tgrid .tfind[hidden], .tgrid .tfacet[hidden], .tgrid .tfolds[hidden] { display: none; }
+
+/* ---------- The toolbar standard (sd:5281): at most two control rows on every page ---------- */
+/* Row 1, .toolbar: the views on the left (the shell's .viewswitch or a page's .vseg), then the text and column filters;
+ * filter chips wrap under it at full width. Row 2, .toolbar-2: every other control, each with its visible label. A table
+ * joins row 1 by naming it: <table data-toolbar="<row id>">. The count and the table's other facts sit right-aligned on its
+ * title line; only a table with no title puts its count at the right of row 1 (.count). */
+.toolbar, .toolbar-2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); margin: 0 0 var(--space-sm); min-width: 0; }
+.toolbar-2 { margin-top: calc(-1 * var(--space-2xs)); font-size: var(--text-xs); color: var(--color-muted); }
+.toolbar > .tgrid, .filters > .tgrid { display: contents; }
+.toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
+.toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+.toolbar .tcount, .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
+.toolbar > .count:empty { display: none; }
+/* A page's own text filter on row 1 wears the table filter's pill (.tgrid .tfind). */
+.toolbar > .tfind { display: flex; align-items: center; gap: var(--space-xs); flex: 0 1 16rem; min-width: 0; min-height: 1.75rem; padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-panel); color: var(--color-muted); font-size: var(--text-xs); }
+.toolbar > .tfind:hover { border-color: var(--color-ink-2); }
+.toolbar > .tfind input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--color-ink); font: inherit; }
+.toolbar > .tfind input::placeholder { color: var(--color-muted); }
+.toolbar > .tfind:focus-within { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.toolbar > .tfind input:focus-visible { outline: none; }
+.toolbar > .tfind kbd { font-size: var(--text-2xs); color: var(--color-muted); }
+/* A view group that filters one list (HOA's alarm events: Open | Acknowledged | All): the view switch's segments, pressed
+ * buttons rather than tabs, since every choice shows the same table. */
+.vseg { display: flex; gap: var(--space-3xs); width: max-content; max-width: 100%; overflow-x: auto; padding: var(--space-3xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }
+.vseg > button { display: inline-flex; align-items: center; gap: var(--space-xs); flex: none; min-height: 2rem; padding: 0 var(--space-md); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-ink-2); font: 500 var(--text-sm)/1 var(--font-ui); cursor: pointer; }
+.vseg > button:hover { color: var(--color-ink); background: var(--color-well); }
+.vseg > button:active { box-shadow: inset 0 0 0 var(--rule-hair) var(--color-rule); }
+.vseg > button[aria-pressed="true"] { color: var(--color-ink); background: var(--color-accent-bg); box-shadow: inset 0 0 0 var(--rule-hair) var(--color-accent); }
+.vseg > button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: calc(-1 * var(--rule-focus)); }
+.vseg .n { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
+@media (pointer: coarse) { .vseg > button, .toolbar > .tfind { min-height: var(--row-touch); } }
+@media (forced-colors: active) { .vseg > button[aria-pressed="true"] { outline: var(--rule-focus) solid CanvasText; } }
 tr[data-tout] { display: none; }
 /* A band row's fold: the band keeps its look; the chevron turns down while the rows under it show. */
 td > .tfold { all: unset; display: inline-flex; align-items: center; gap: var(--space-2xs); width: 100%; min-height: 1.75rem; cursor: pointer; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; }

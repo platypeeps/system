@@ -157,6 +157,7 @@
   //   the lamps. The rail lists the views under the current page, each linking <page>#view=<id>.
   //   A page whose views filter one surface instead (Tasks: All, HOA, Home) puts an empty <div id="viewswitch"> where the
   //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
+  //   With no #viewswitch, a page's row-1 toolbar (id="toolbar", sd:5281) takes the switch at its start, else the first panel.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
   //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
@@ -236,7 +237,8 @@
       const to = viewTabs.indexOf(open[k]);
       e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
     });
-    viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
+    const toolbar = document.getElementById('toolbar');
+    viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);
     rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
     viewApply(viewOf(location.hash) || viewKept() || VIEW_LIST[0].id);
     const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };
@@ -478,12 +480,15 @@
     while (open.length) out.push(HELP_TAGS[open.pop()][1]);
     return html`${out}`; };
   // help:end
+  // A tip's control names the popover only while it shows; a help icon keeps its own aria-expanded.
+  const untip = () => document.querySelectorAll('[data-tip][aria-describedby="help-pop"]').forEach(b => b.removeAttribute('aria-describedby'));
   function showHelp(btn) {
+    untip();
     put(pop, btn.dataset.help != null ? helpText(btn.dataset.help) : html`${btn.dataset.tip}`); pop.hidden = false; place(btn);
     btn.setAttribute('aria-describedby', 'help-pop');
   }
   function hideHelp() {
-    pop.hidden = true;
+    pop.hidden = true; untip();
     document.querySelectorAll('.help[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     pinned = null;
   }
@@ -503,8 +508,9 @@
     }
     if (pinned && !pop.contains(e.target)) hideHelp();
   }, true);
-  // A command button's tip (data-tip) shows on a mouse hover only: the same words sit under "Same thing from the CLI", and a
-  // press runs the command, so it neither pins nor shows on focus. A move onto the button's own icon keeps it.
+  // A tip (data-tip: a command button, a lamp) shows on a mouse hover after the delay and at once on focus (sd:5287), and the
+  // focused control names it through aria-describedby while it shows. A press runs the command, so a tip never pins. A move
+  // onto the button's own icon keeps it.
   document.addEventListener('pointerover', e => {
     const b = e.target.closest?.('.help, [data-tip]');
     if (!b || pinned || e.pointerType !== 'mouse' || b.contains(e.relatedTarget)) return;
@@ -512,10 +518,10 @@
   });
   document.addEventListener('pointerout', e => {
     const b = e.target.closest?.('.help, [data-tip]');
-    if (b && !pinned && !b.contains(e.relatedTarget)) { clearTimeout(hoverTimer); pop.hidden = true; }
+    if (b && !pinned && !b.contains(e.relatedTarget) && b !== document.activeElement) { clearTimeout(hoverTimer); pop.hidden = true; untip(); }
   });
-  document.addEventListener('focusin', e => { const b = e.target.closest?.('.help'); if (b && !pinned) showHelp(b); });
-  document.addEventListener('focusout', e => { if (e.target.closest?.('.help') && !pinned) pop.hidden = true; });
+  document.addEventListener('focusin', e => { const b = e.target.closest?.('.help, [data-tip]'); if (b && !pinned) { clearTimeout(hoverTimer); showHelp(b); } });
+  document.addEventListener('focusout', e => { if (e.target.closest?.('.help, [data-tip]') && !pinned) { pop.hidden = true; untip(); } });
   document.querySelectorAll('.help').forEach(b => b.setAttribute('aria-expanded', 'false'));
   new MutationObserver(() => document.querySelectorAll('.help:not([aria-expanded])').forEach(b => b.setAttribute('aria-expanded', 'false'))).observe(body, { childList: true, subtree: true });
 
@@ -604,16 +610,17 @@
   // executes: true when the dashboard runs the CLI line itself; false when the line is shown for Copy only. A declaration may
   // say so; otherwise an `sd` verb runs and anything else (git, rm, uv, gh, sd-review, a pipe) is copy-only (commands.md).
   const executes = (c, o) => typeof c.executes === 'boolean' ? c.executes : /^sd\s/.test(shownCli(c, o));
-  // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. The button carries
-  // it as data-tip; the help popover shows it after --delay-help, so a pass over the buttons shows nothing.
+  // Hover help on a command button (sd:3457, sd:5287), the one helper for every command button: what the command does, then
+  // the line it runs (or that it has none) and whether it asks first or offers Undo. The button carries it as data-tip; the
+  // help popover shows it after --delay-help on a hover, so a pass over the buttons shows nothing, and at once on focus.
   const tipOf = (c, o) => {
-    const s = shownCli(c, o), r = c.previews ? ' Asks first, with a preview.' : c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
-    return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
+    const s = shownCli(c, o), d = doesOf(c, o), r = c.previews ? ' Asks first, with a preview.' : c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
+    const line = !s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`;
+    return d ? `${/[.!?]$/.test(d) ? d : `${d}.`} ${line[0].toUpperCase()}${line.slice(1)}.${r}` : `${c.label}: ${line}.${r}`;
   };
-  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The Act bar
-  // shows it under the button and the ⋯ menu under the label, in view: the foundation has no hover-only affordances.
+  // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The button's tip
+  // leads with it (sd:5287) and the ⋯ menu shows it under the label.
   const doesOf = (c, o) => (typeof c.does === 'function' ? c.does(o) : c.does) || '';
-  let doesSeq = 0;
   // bulk:end
   // plural(n, one, many) from markup.js: "1 session", "2 sessions" (review 2026-09-29, 18).
   const { plural } = window.markup;
@@ -735,15 +742,15 @@
     if (!L.length) return html`<span class="rowact"></span>`;
     return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
-  // Details: every command as a button, with what it does under it (sd:4963); its CLI line, and the reason an off one is
-  // off, fold under "Same thing from the CLI", closed until opened (sd:3464).
+  // Details: every command as a button; what it does and its line are the button's tip (sd:5287), its CLI line and the
+  // reason an off one is off fold under "Same thing from the CLI", closed until opened (sd:3464).
   function bar(id) {
-    const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
+    // sd:5295: `bar: false` is a command an on-page field or dropdown already does; its key, the ⋯ menu and bulk keep it.
+    const o = OBJ.get(id); const list = cmdsFor(o).filter(c => c.bar !== false); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
-    const button = (c, d) => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}"${d ? html` aria-describedby="does-${doesSeq}"` : ''}>${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
-    return html`<div class="actions">${on.map(c => { const d = doesOf(c, o); if (!d) return button(c, d); doesSeq += 1;
-      return html`<span class="act-row">${button(c, d)}<small class="does" id="does-${doesSeq}">${d}</small></span>`; })}</div>
+    const button = c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
+    return html`<div class="actions">${on.map(button)}</div>
       <details class="cli-all"><summary>Same thing from the CLI</summary>${off.map(c => html`<p class="why off"><b>${c.label}</b> is off: ${offWhy(c, o)}</p>`)}${on.filter(c => noCli(cliOf(c, o))).map(c => html`<p class="why"><b>${c.label}</b> has no CLI${c.cli ? `: ${cliOf(c, o).replace(/^no (CLI|sd verb):?\s*/, '')}` : '; it is dashboard only'}.</p>`)}${on.filter(c => !noCli(cliOf(c, o))).map(c => html`<div class="cli fold"><button class="cli-line" type="button" aria-expanded="false" title="Show the full command"><code>${cliOf(c, o)}</code></button><button class="icon-btn" type="button" data-copy="${cliOf(c, o)}" aria-label="Copy: ${cliOf(c, o)}">${ICON('copy')}</button></div>${executes(c, o) ? (c.sends ? html`<p class="why"><b>${c.label}</b> runs here and sends <code>${c.sends(o)}</code>.</p>` : '') : html`<p class="why"><b>${c.label}</b> is copy only: the dashboard does not run this line.</p>`}`)}</details>`;
   }
   // Action menu: opens from ⋯ or the "." key; letters run commands.
@@ -1189,7 +1196,16 @@
       f: Object.fromEntries(Object.entries(f).filter(([, x]) => typeof x === 'string')),
       closed: Array.isArray(o.closed) ? o.closed.filter(x => typeof x === 'string') : [] };
   }
-  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate };
+  // The toolbar standard (sd:5281): every table with a data row gets the text filter and the column filter, and its count
+  // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own text filter and gets the
+  // column filter alone. Folds come with 2 bands.
+  function tbar({ total = 0, filterOn = false, ownFilter = false, bands = 0 } = {}) {
+    const facet = total > 0 || filterOn;
+    return { find: !ownFilter && facet, facet, folds: bands >= 2 };
+  }
+  // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
+  const tcount = (shown, total) => shown === total ? plural(total, 'row') : `${shown} of ${plural(total, 'row')}`;
+  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate, tbar, tcount };
   // tables:end
 
   // The page side of the table grammar. State is kept per page and table in localStorage, a convenience: a blocked store
@@ -1279,37 +1295,65 @@
       if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
       if (!open) s.body.forEach(r => hid.add(r.tr));
     });
-    const filterOn = !ownFilter && tchips(st).length > 0;
+    // A page's own text filter stands; the column filter still narrows its rows.
+    const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;
     let shown = 0, total = 0;
     rows.forEach(r => {
-      const out = hid.has(r.tr) || (!ownFilter && !tshows(r, st, cols));
-      if (r.kind === 'row') { total++; if (ownFilter || tshows(r, st, cols)) shown++; }
+      const out = hid.has(r.tr) || !tshows(r, use, cols);
+      if (r.kind === 'row') { total++; if (tshows(r, use, cols)) shown++; }
       if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
     });
-    // The bar above the table: filter box and column filter once there are 6 rows (or a filter is on), folds for 2 bands or more.
-    const findOn = !ownFilter && (total >= 6 || filterOn), facets = findOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
-    const foldsOn = groups.length >= 2;
+    // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
+    // filter is on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
+    // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. A table the page's text filter covers
+    // (data-tfilter="page") names the row that holds that filter, so the column filter sits beside it and no table gets two
+    // text filters (the sd:5281 ruling; test_v2_shell_shared walks every page). The count sits right-aligned on the
+    // table's title line (the .sec-head or .panel-head of the heading its or its section's aria-labelledby names); a title
+    // line with the page's own .tally shows it, before the tally, only while a filter hides rows. A table with no title line
+    // keeps the count at the bar's end.
+    const { find: findOn, facet: facetOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
+    const facets = facetOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
     let bar = t._tbar;
-    if (!findOn && !foldsOn) { if (bar?.isConnected) bar.hidden = true; return; }
+    // A table in a hidden view keeps its parts out of the shared row; the view change rescans.
+    const away = !!t.dataset.toolbar && !!t.closest('[hidden]');
+    if (away || (!facetOn && !foldsOn)) { if (bar?.isConnected) bar.hidden = true; return; }
     if (!bar || !bar.isConnected) {
-      bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key;
-      bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${t.getAttribute('aria-labelledby') ? ': ' + tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : ''}`);
-      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
-      twrap(t).before(bar);
+      bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key; bar._t = t;
+      bar._name = t.getAttribute('aria-labelledby') ? tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : '';
+      bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${bar._name ? ': ' + bar._name : ''}`);
+      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><span class="tcount" aria-live="polite"></span><div class="tchips"></div>`);
+      const row = t.dataset.toolbar && document.getElementById(t.dataset.toolbar);
+      row ? row.append(bar) : twrap(t).before(bar);
+      bar._count = bar.querySelector('.tcount');
+      const named = t.getAttribute('aria-labelledby') || t.closest('[aria-labelledby]')?.getAttribute('aria-labelledby') || '';
+      const line = document.getElementById(named)?.closest('.sec-head, .panel-head'), tally = line?.querySelector(':scope > .tally');
+      if (tally) tally.before(bar._count); else if (line) line.append(bar._count);
     }
     bar.hidden = false;
-    const input = bar.querySelector('input'), sel = bar.querySelector('select');
+    const input = bar.querySelector('input'), sel = bar.querySelector('select'), count = bar._count;
     bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
+    const quiet = !facetOn || (shown === total && !!count.parentElement?.querySelector(':scope > .tally'));
+    if (count.hidden !== quiet) count.hidden = quiet;
+    const said = quiet ? '' : tcount(shown, total);
+    if (count.textContent !== said) count.textContent = said;
     if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
-    const opts = html`<option value="">Filter by column…</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
+    // A shared row that serves two shown tables or more (Health's areas) names each one's table in its column filter.
+    const many = !!t.dataset.toolbar && [...document.querySelectorAll(`main table[data-toolbar="${CSS.escape(t.dataset.toolbar)}"]`)].filter(x => !x.closest('[hidden]')).length > 1;
+    const opts = html`<option value="">${many && bar._name ? `${bar._name}: filter by column…` : 'Filter by column…'}</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
     if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }
-    const chipsHtml = findOn ? list.chips(tchips(st), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
+    const chipsHtml = facetOn ? list.chips(tchips(use), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
     if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
   }
   let tq = 0;
-  const tscan = () => { tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } }); tobs.takeRecords(); };
+  // A bar whose table a redraw replaced goes, with its count: in a shared row (data-toolbar) nothing else removes it.
+  const tscan = () => {
+    tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } });
+    document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });
+    tobs.takeRecords();
+  };
   const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
   tobs.observe(body, { childList: true, subtree: true, characterData: false });
+  document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });
   const tfor = el => { const t = el.closest('table'); if (t) return t; const bar = el.closest('.tgrid'); return bar && document.querySelector(`table[data-tgrid="${CSS.escape(bar.dataset.tfor)}"]`); };
   const tdo = (el, f) => { const t = tfor(el); if (!t) return; const key = tkeyOf(t); f(tst(key)); tkeep(key); tapply(t); tobs.takeRecords(); };
   document.addEventListener('click', e => {

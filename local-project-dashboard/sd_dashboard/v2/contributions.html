@@ -34,6 +34,13 @@
       <p id="sub">Reading the contributions…</p>
     </div>
     <a class="to-trackers" href="/operations?area=trackers"><span>Trackers</span><svg class="i" aria-hidden="true"><use href="#i-arrow-up-right"/></svg></a>
+  </header>
+  <div id="state" hidden></div>
+
+  <h2 class="sr">Lanes</h2>
+  <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+  <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+  <div class="toolbar" id="toolbar">
     <label class="filter">
       <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
       <span class="sr">Filter contributions</span>
@@ -46,11 +53,7 @@
       <label><input type="radio" name="scope" value="internal"><span>Internal <b></b></span></label>
       <label><input type="radio" name="scope" value="external"><span>External <b></b></span></label>
     </fieldset>
-  </header>
-  <div id="state" hidden></div>
-
-  <h2 class="sr">Lanes</h2>
-  <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+  </div>
   <p class="source" id="source"></p>
 
   <section id="view-open" aria-labelledby="open-h">
@@ -59,7 +62,7 @@
         <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       <p class="tally" id="tally"></p>
     </div>
-    <table class="ledger" aria-labelledby="open-h" data-tfilter="page">
+    <table class="ledger" aria-labelledby="open-h" data-tfilter="page" data-toolbar="toolbar">
       <thead id="rows-head"></thead>
       <tbody id="rows"></tbody>
     </table>

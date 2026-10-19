@@ -14,7 +14,8 @@ Read is every row's first action: it opens the brief's item page,
 for the brief's repository, is newer than the row's last change and does not
 list the brief as refused; otherwise Details says why there is no copy. The
 Vault copies lamp shows that heartbeat: ok, failed with its reason, off, or
-unknown. Health shows the same heartbeat as a Vault mirror row.
+unknown. Health shows the same heartbeat as its Brief copies row; a failed or
+unknown lamp links there, where the refused stems and the reason are.
 
 The design reads brief mail; no mail or watchdog reader exists, so the page
 shows no unread state, follow-up flag or failure, and the Missed lamp is

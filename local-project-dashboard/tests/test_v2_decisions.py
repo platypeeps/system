@@ -66,6 +66,36 @@ class TheFormat(unittest.TestCase):
         self.assertEqual(decisions.parse("Decision needed: (a) one, or (b) the other?")[1], [])
 
 
+class TheRecommendation(ScreenCase):
+    """sd:5306: `recommended` is the index of the option a note recommends, in the three forms live notes use."""
+
+    def recommended(self, body):
+        item = self.item("Recommends", repo=self.repo())
+        self.note(item, body, kind="question")
+        return decisions.document(self.connection)["decisions"][0]["recommended"]
+
+    def test_an_option_that_ends_recommended(self):
+        self.assertEqual(self.recommended("Which?\nOption: Leave it\nOption: Map it to its report (Recommended)"), 1)
+
+    def test_an_option_that_starts_recommended(self):
+        self.assertEqual(self.recommended("Which?\nOption: Leave it\nOption: Recommended: map it\nOption: Drop it"), 1)
+        self.assertEqual(decisions.recommended("", ["(Recommended) Keep it", "Drop it"]), 0)
+
+    def test_a_recommendation_line_that_names_an_option(self):
+        self.assertEqual(self.recommended("Which?\nRecommendation: Rows and a cache, as the read is hot.\n"
+                                          "Option: Rows\nOption: Rows and a cache"), 1)
+        self.assertIsNone(decisions.recommended("Recommendation: something else", ["Rows", "Cache"]))
+
+    def test_a_conditional_two_marks_or_none_recommend_nothing(self):
+        for body, options in (("", ["Key on the seed (Recommended only if seed variation is wanted)", "Keep it"]),
+                              ("", ["A (Recommended)", "B (Recommended)"]),
+                              ("", ["A", "B"]),
+                              ("Recommendation: Notes", [])):
+            with self.subTest(options=options):
+                self.assertIsNone(decisions.recommended(body, options))
+        self.assertIsNone(self.recommended("Which?\nOption: A (Recommended only if it is cheap)\nOption: B"))
+
+
 class TheDocument(ScreenCase):
     def test_every_unresolved_question_on_an_open_item_is_listed_free_text_ones_too(self):
         ids = seed(self)
@@ -205,20 +235,28 @@ class TheScript(unittest.TestCase):
         self.assertIn('href="/tasks?row=3012"', rows)
         self.assertIn("1 waiting", out["R"]["tally"])
 
-    def test_the_recommended_option_comes_first_as_the_filled_button_with_a_tag_and_posts_its_text(self):
-        # sd:3451: a question note marks its recommendation "(Recommended)"; the marker was plain text in the button.
-        doc = json.dumps({"decisions": [decision_row(options=["Leave as is", "Map it to its report (Recommended)"])]})
+    def test_the_recommendation_is_a_line_and_a_filled_button_that_posts_the_option_as_written(self):
+        # sd:5306: the server names the recommended option; the page says it under the question and picks it in one press.
+        doc = json.dumps({"decisions": [decision_row(options=["Leave as is", "Map it to its report (Recommended)"],
+                                                     recommended=1)]})
         out = self.run_page("R.rows = ELS.decisions.html; click(7, 1); await flush();",
                             f"""(path, body) => path === '/api/decisions' ? [200, {doc}]
                                 : [200, {{ revision: '{"b" * 64}', ruling: {{ id: 99, kind: 'decision', body: 'x' }} }}]""")
         rows = out["R"]["rows"]
-        first, second = rows.index('data-option="1"'), rows.index('data-option="0"')
-        self.assertLess(first, second)
-        self.assertIn('class="btn sm rec" data-note="7" data-option="1"', rows)
-        self.assertIn('class="btn quiet sm" data-note="7" data-option="0"', rows)
-        self.assertIn('<span>Map it to its report</span><span class="tag">Recommended</span>', rows)
+        self.assertIn('<span class="advice">Recommended: Map it to its report</span>', rows)
+        self.assertIn('class="btn sm" data-note="7" data-option="1" title="Map it to its report (Recommended)"><span>Choose recommended</span>', rows)
+        self.assertLess(rows.index("Choose recommended"), rows.index('class="btn quiet sm" data-note="7" data-option="0"'))
+        self.assertIn('class="btn quiet sm" data-note="7" data-option="1"', rows)
+        self.assertNotIn('class="tag"', rows)
         self.assertNotIn("(Recommended)</span>", rows)
         self.assertEqual(out["posts"][0][1]["option"], "Map it to its report (Recommended)")
+
+    def test_no_recommendation_says_so_and_draws_no_button(self):
+        doc = json.dumps({"decisions": [decision_row(recommended=None)]})
+        rows = self.run_page("R.rows = ELS.decisions.html;", f"(path, body) => [200, {doc}]")["R"]["rows"]
+        self.assertIn('<span class="advice none">No recommendation</span>', rows)
+        self.assertNotIn("Choose recommended", rows)
+        self.assertEqual(rows.count('data-option="'), 2)
 
     def test_review_batch_questions_are_one_line_that_links_to_review(self):
         # sd:3709: a review batch's questions are counted, not listed; a failed read draws no count.

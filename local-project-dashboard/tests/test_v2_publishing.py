@@ -11,6 +11,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -36,6 +37,7 @@ CONF = '''DOCS = [
 '''
 NOTION_URL = "https://www.notion.so/example-page-0123"
 DRIVE_URL = "https://docs.google.com/document/d/example-doc/edit"
+STATIC = Path(documents_screen.__file__).resolve().parent / "v2" / "static"
 
 
 def git_checkout(path: Path, conf: str = CONF) -> Path:
@@ -315,8 +317,8 @@ class BriefRows(brief_tests.BriefCase):
         rows = self.run_page("R.rows = ELS.rows.html;")["R"]["rows"]
         self.assertIn('<span class="pub-drive queued" role="img" aria-label="Google Drive: queued, not yet drained" '
                       'title="Google Drive: queued, not yet drained"><svg class="i" aria-hidden="true"><use href="#i-triangle"/></svg></span>', rows)
-        self.assertIn(f'<a class="pub-notion" href="{NOTION_URL}" target="_blank" rel="noopener noreferrer" aria-label="Open in Notion" '
-                      'title="Notion"><svg class="i" aria-hidden="true"><use href="#i-box"/></svg></a>', rows)
+        self.assertIn(f'<a class="pub-notion has" href="{NOTION_URL}" target="_blank" rel="noopener noreferrer" aria-label="Open in Notion" '
+                      f'title="Notion: {NOTION_URL}"><svg class="i" aria-hidden="true"><use href="#i-box"/></svg></a>', rows)
 
 
 class BriefDesignation(brief_tests.BriefCase):
@@ -436,10 +438,35 @@ class DocumentRows(ScreenCase):
             {"channel": "obsidian", "url": "obsidian://open?vault=V&file=Briefs%2Flab%2Fplan", "state": "published", "title": "Obsidian"}]})
         rows = self.run_page("R.rows = ELS.rows.html;")["R"]["rows"]
         self.assertIn(f'<a class="pub-notion queued" href="{NOTION_URL}" target="_blank" rel="noopener noreferrer" '
-                      'aria-label="Open in Notion: queued, not yet drained" title="Notion: queued, not yet drained">', rows)
-        self.assertIn('<a class="pub-obsidian" href="obsidian://open?vault=V&amp;file=Briefs%2Flab%2Fplan" target="_blank"', rows)
+                      f'aria-label="Open in Notion: queued, not yet drained" title="Notion: queued, not yet drained: {NOTION_URL}">', rows)
+        self.assertIn('<a class="pub-obsidian has" href="obsidian://open?vault=V&amp;file=Briefs%2Flab%2Fplan" target="_blank"', rows)
         self.assertNotIn("javascript:", rows)
-        self.assertIn('<span class="pub-drive" role="img" aria-label="Google Drive"', rows)
+        self.assertIn('<span class="pub-drive has" role="img" aria-label="Google Drive"', rows)
+
+    def test_every_configured_destination_shows_filled_outlined_or_unknown(self):
+        """sd:5300: each row shows every destination it is configured for: a copy filled, a designated one with no copy an
+        outline, one whose read failed unknown with why; the hover names the destination and its link or vault path."""
+        def marks(pub):
+            self.plan(pub)
+            rows = self.run_page("R.rows = ELS.rows.html;")["R"]["rows"]
+            row = re.search(r'<tr data-id="lab/plan.html".*?</tr>', rows, re.S).group(0)
+            return {m[1]: (m[0], m[2], m[3]) for m in re.findall(
+                r'<(a|span) class="pub-(\w+) (\w+)"[^>]*?title="([^"]*)"', row)}
+
+        got = marks({"unread": "", "choice": {"notion": True, "drive": True, "obsidian": True, "why": ""}, "copies": [
+            {"channel": "obsidian", "url": "obsidian://open?vault=V&file=Briefs%2Flab%2Fplan", "state": "published", "title": "Obsidian"}]})
+        self.assertEqual(got, {"obsidian": ("a", "has", "Obsidian: Briefs/lab/plan"),
+                               "drive": ("span", "missing", "Google Drive: designated, no copy yet"),
+                               "notion": ("span", "missing", "Notion: designated, no copy yet")})
+        # A destination not configured shows nothing; a failed read is not "no copy".
+        got = marks({"unread": "the pack's mirror queue was not read: x", "copies": [],
+                     "choice": {"notion": True, "drive": False, "obsidian": None, "why": ""}})
+        self.assertEqual(got, {"notion": ("span", "unread", "Notion: not read · the pack&#39;s mirror queue was not read: x"),
+                               "obsidian": ("span", "unread", "Obsidian: not read · the pack&#39;s mirror queue was not read: x")})
+        css = (STATIC / "shell.css").read_text(encoding="utf-8")
+        for cls, want in ((".has", "background: var(--color-accent-bg)"), (".missing", "background: transparent"),
+                          (".unread", "border-style: dashed"), (".queued", "border-style: dashed")):
+            self.assertRegex(css, rf"(?m)^\.pub \{cls} \{{[^}}]*{re.escape(want)}", cls)
 
     def test_details_shows_publish_to_with_obsidian_from_the_repo_setting(self):
         self.plan({"unread": "", "copies": [], "choice": {"notion": True, "drive": False, "obsidian": False, "why": ""}})

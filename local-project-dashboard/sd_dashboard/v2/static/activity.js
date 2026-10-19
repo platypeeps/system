@@ -179,7 +179,7 @@ addEventListener('DOMContentLoaded', () => {
     put($('filters'), html`<div class="fbar" role="group" aria-label="Filters">
       <div class="fseg" role="group" aria-label="State">${STATES.map(([s, g, w]) => html`<button type="button" data-f="state" data-v="${s}" aria-pressed="${String(F.state === s)}" title="${w}: ${count(s)}"><span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span></button>`)}</div>
       <div class="fseg" role="group" aria-label="Range">${range('1h', '1h', F.hour)}${range('24h', '24h', !F.hour && !F.all)}${range('all', html`All <span class="n">+${String(older)}</span>`, F.all, `All read: the 24 hours and ${plural(older, 'older journal record')}`)}${unread('7d')}${unread('30d')}</div>
-      ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}<span class="caret" aria-hidden="true">▾</span></button>` : ''}
+      ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}</button>` : ''}
       ${[...F.kind].map(k => token('kind', k, kindOf(k).name))}${[...F.repo].map(r => token('repo', r, r))}${F.q ? token('q', '', `“${F.q}”`) : ''}
       <div class="fsum"><span>${String(shown)} of ${String(EVENTS.length)}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>
     </div>`);

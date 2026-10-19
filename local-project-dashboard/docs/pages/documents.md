@@ -28,9 +28,11 @@ shell's reader, `read.js` (sd:2490): only the newest read draws, a document
 the read no longer lists runs no command, and a failed read clears the rows.
 `?page=` takes a whole page number only (sd:2427).
 
-A research document's row shows one icon per destination holding a copy
-(sd:5102): Drive, Notion, Obsidian. Each opens the copy in a new tab; a queued
-copy is dimmed. Details' Publish to ticks Drive or Notion: it adds the key to
+A research document's row shows one icon per destination it is configured
+for (sd:5102, sd:5300): Drive, Notion, Obsidian. A copy is filled and opens in
+a new tab; a queued one has a dashed edge; a designated one with no copy is an
+outline; one whose read failed is unknown and says why. The hover names the
+destination and its link or vault path. Details' Publish to ticks Drive or Notion: it adds the key to
 `research.conf.py` and queues through `sd-research-kit publish`. Obsidian
 follows the repo's channels setting. Publish now drains that row's requests;
 RUNTIME.md names the run.
