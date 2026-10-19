@@ -778,6 +778,27 @@ box('no repo', true); R.two = ELS['view-board'].html; R.after = ELS.filters.html
         self.assertRegex(after, r'<details class="fpick" data-pick="repo" open><summary[^>]*><span id="f-repo-v">2 picked</span>')
         self.assertIn("repo=system%2Cno%20repo", out["R"]["url"])
 
+    def test_the_board_done_column_shows_only_the_last_seven_days(self):
+        """sd:5305: the board's Done column holds items done in the 7 days before the read; the list keeps every one."""
+        import copy
+        import datetime as dt
+        read = dt.datetime.fromisoformat(self.doc["read"].replace("Z", "+00:00"))
+        doc = copy.deepcopy(self.doc)
+        old, new = doc["rows"][0], doc["rows"][1]
+        for row, days, title in ((old, 8, "Done long ago"), (new, 6, "Done this week")):
+            row.update(status="done", title=title,
+                       status_since=(read - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z"))
+        saved, self.doc = self.doc, doc
+        try:
+            out = self.run_page("R.board = ELS['view-board'].html;")
+        finally:
+            self.doc = saved
+        board = out["R"]["board"]
+        done = re.search(r'aria-label="Done">.*?</div>\s*</div>\s*</div>', board, re.S).group(0)
+        self.assertIn("Done this week", done)
+        self.assertNotIn("Done long ago", board)
+        self.assertIn('title="done in the last 7 days"', done)
+
     def test_the_kind_filter_narrows_the_rows(self):
         out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'work' } });
 R.board = ELS['view-board'].html;""")

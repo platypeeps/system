@@ -50,7 +50,7 @@ addEventListener('DOMContentLoaded', () => {
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
+    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
     base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
@@ -611,15 +611,19 @@ addEventListener('DOMContentLoaded', () => {
       <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
     </article>`;
   }
+  // sd:5305: the board's Done column holds only what was done in the 7 days before the read; the list keeps every done item.
+  // A done item with no known time stays: unknown is not old.
+  const DONE_DAYS = 7, DONE_TIP = `done in the last ${DONE_DAYS} days`;
+  const recent = t => t.status !== 'done' || !t.since || !READ || Date.parse(READ) - Date.parse(t.since) <= DONE_DAYS * 864e5;
   function renderBoard() {
-    const v = visible();
+    const v = visible().filter(recent);
     // build: backlog_items also returns statuses with no column (a message's ready_to_send); they get one lane, which
     // takes no drop and no key, so every row the page counts is on the board (review, PR #46).
     const other = v.filter(t => !SLABEL[t.status]);
     put(document.getElementById('view-board'), html`<div class="board" id="board" role="group" aria-label="Tasks by status"${other.length ? html` data-other` : ''}>${STATUSES.map(([s, name], i) => {
       const rows = v.filter(t => t.status === s);
       return html`<div class="col" data-drop="status:${s}" role="group" aria-label="${name}">
-        <header><span class="label">${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
+        <header><span class="label"${s === 'done' ? html` title="${DONE_TIP}"` : ''}>${name}</span><kbd>${i + 1}</kbd><span class="n">${rows.length}</span></header>
         <div><p class="refusal" role="note"></p><div class="drop">${(rows.length ? rows.map(t => card(t)) : html`<p class="empty">${on() ? 'None match the filters.' : 'Nothing ' + name.toLowerCase() + '.'}</p>`)}</div></div>
       </div>`;
     })}${other.length ? html`<div class="col" role="group" aria-label="Other statuses">
