@@ -994,6 +994,8 @@ class ExtraPolicyCase(unittest.TestCase):
             ("ssm:StartSession", "arn:aws:ssm:eu-west-1::document/AWS-StartPortForwardingSession", {}),
             ("iam:PassRole", role, {"iam:PassedToService": "ec2.amazonaws.com"}),
             ("ec2:DeleteSecurityGroup", prefix + "security-group/probe", resource),
+            # The deployment's hourly cost estimate reads the Pricing API: read-only, no spend (sd:5356).
+            ("pricing:GetProducts", "*", {}),
         ]:
             with self.subTest(action=action, arn=arn):
                 self.assertEqual(decision(self, policy, action, arn, context), "allowed")

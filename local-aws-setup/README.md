@@ -126,6 +126,7 @@ Replace every `{{...}}` placeholder in the template before rendering or applying
 | `LEGACY_KEY_PREFIX` | Existing approved key-name prefix; remove its two statements when no legacy grant is needed |
 
 The template covers security groups, key import, Elastic IPs, SSM commands and port-forwarding sessions.
+It also grants `pricing:GetProducts`, a read with no spend, so the deployment can show its hourly cost.
 The base policy supplies instance launch, rule tagging, teardown, and the optional exact-role grant.
 Set `LEVEL=sandbox`, configure `EXTRA_POLICIES`, and audit the instance role before setting `PASS_ROLE_ARNS`.
 Create the VPC, role, and instance profile with an administrator first; this tool grants no IAM provisioning permission.
