@@ -634,6 +634,41 @@ class TheRailWidth(unittest.TestCase):
 
 
 
+
+WALK = re.search(r"^  // walk:start\n(.*?)^  // walk:end$", SHELL_JS, re.S | re.M)
+
+
+class TheRowWalk(unittest.TestCase):
+    """sd:5113: j / k walk only the rows of the shown view; a row in a panel the view switch hid is never selected."""
+
+    def walk(self, body):
+        self.assertIsNotNone(WALK, "shell.js has no walk block")
+        # Every row has a box, as a stylesheet that shows a hidden panel would give it; only `hidden` tells them apart.
+        script = ("var OUT = { picked: [] };\n"
+                  "function panel(hidden) { return { hidden }; }\n"
+                  "function row(id, p) { return { dataset: { id }, getClientRects: () => [1], scrollIntoView() {}, getAttribute: () => null,\n"
+                  "  closest: sel => sel === '[hidden]' && p.hidden ? p : null }; }\n"
+                  "var shown = panel(false), gone = panel(true);\n"
+                  "var ROWS = [row('a1', gone), row('a2', gone), row('b1', shown), row('b2', shown)];\n"
+                  "var SEL = null; window = { PAGE_LIST: { rows: () => ROWS, current: () => SEL, select: id => { SEL = id; OUT.picked.push(id); } } };\n"
+                  + WALK.group(1) + "\nvar R = {};\n" + body
+                  + "\nfunction run() { return JSON.stringify({ R, OUT }); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_j_and_k_walk_only_the_shown_views_rows(self):
+        out = self.walk("step(1); step(1); step(1); step(-1); step(-1); step(-1);")
+        self.assertEqual(out["OUT"]["picked"], ["b1", "b2", "b2", "b1", "b1", "b1"])
+
+    def test_a_selection_left_in_a_hidden_view_moves_to_the_shown_views_first_row(self):
+        out = self.walk("SEL = 'a2'; step(1);")
+        self.assertEqual(out["OUT"]["picked"], ["b1"])
+
+    def test_reconcile_reads_the_same_rule(self):
+        self.assertIn("const all = [...rows], vis = all.filter(shownRow);", SHELL_JS)
+
 # The view switch's stand-in: elements that keep their attributes, a rail with one current page, and an address whose
 # pushState writes the hash. Events on window (hashchange, popstate) and document (DOMContentLoaded, keydown, shell:view)
 # are recorded, so a test fires them as the browser would.
