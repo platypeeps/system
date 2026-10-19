@@ -38,6 +38,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sd_db import reads
 from sd_db.errors import SdDbError
 
 from . import fix_session
@@ -398,6 +399,15 @@ def builders(sessions: list[dict] | None, why: str) -> dict:
     return {"running": len(holders), "why": "", "holders": holders}
 
 
+def _items(connection, numbers: list[int]) -> dict[int, tuple[str, str]] | None:
+    """Each number an item holds, as (title, status), through `reads.item_by_id`; None when the database was not read."""
+    try:
+        return {item: (row["title"], row["status"]) for item in numbers
+                if (row := reads.item_by_id(connection, item)) is not None}
+    except (sqlite3.Error, SdDbError, KeyError, IndexError):
+        return None
+
+
 def document(connection, *, now: str, fleet=None, agents=None, processes=None, work=None, root=None) -> dict:
     """`sessions`, one per live Claude session, the ones waiting on the operator first; `sources`; `builders`.
 
@@ -434,24 +444,12 @@ def document(connection, *, now: str, fleet=None, agents=None, processes=None, w
     sessions = [_session(raw, root=root, clock=clock, procs=procs, procs_error=sources["processes"], trees=trees,
                          trees_error=sources["worktrees"], work=work or read_work) for raw in listed]
     numbers = sorted({task["item"] for row in sessions for task in row["tasks"]})
-    titles = None
-    if numbers and connection is not None:
-        marks = ", ".join("?" * len(numbers))
-        try:
-            titles = {row[0]: (row[1], row[2]) for row in connection.execute(
-                f"SELECT id, title, status FROM item WHERE id IN ({marks})", numbers)}
-        except (sqlite3.Error, SdDbError):
-            titles = None
     # A builder whose item names no live worktree: done (its work landed) releases it; anything else is unread.
     pending = {row["id"]: row.pop("unmatched") for row in sessions}
     asked = sorted({item for items in pending.values() for item in items})
-    done = set()
-    if asked and connection is not None:
-        try:
-            done = {row[0] for row in connection.execute(
-                f"SELECT id FROM item WHERE status = 'done' AND id IN ({', '.join('?' * len(asked))})", asked)}
-        except (sqlite3.Error, SdDbError):
-            done = set()
+    found = _items(connection, sorted(set(numbers) | set(asked))) if connection is not None else None
+    titles = {item: found[item] for item in numbers if item in found} if found is not None else None
+    done = {item for item in asked if found and found.get(item, ("", ""))[1] == "done"}
     for row in sessions:
         open_items = [item for item in pending[row["id"]] if item not in done]
         if open_items:
