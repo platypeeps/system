@@ -124,21 +124,25 @@ addEventListener('DOMContentLoaded', () => {
   });
 
   // ---------- Filters ----------
+  // build (sd:5158): Source is a dropdown of checkboxes, so any sources at once, and Day a select of the days with a brief;
+  // both are shell.list.pick. The picked values show as removable chips (shell.list.chips) with the count and Clear all.
+  const activeFilters = () => [...[...F.src].map(s => ({ key: `src:${s}`, label: `Source: ${s}` })),
+    ...(F.day ? [{ key: 'day', label: `Day: ${dayLabel(F.day)}` }] : []), ...(F.q ? [{ key: 'q', label: `Text: ${F.q}` }] : [])];
   function renderFilters() {
-    const chip = (f, v, label, pressed, n) => html`<button type="button" class="chip" data-f="${f}" data-v="${v}" aria-pressed="${String(pressed)}">${label}${n != null ? html` <span class="n">${n}</span>` : ''}</button>`;
-    const all = ranged(), shown = all.filter(match).length;
+    const L = shell.list, all = ranged(), shown = all.filter(match).length;
     const busy = DAYS.slice().reverse().filter(d => all.some(b => b.day === d));
-    put(document.getElementById('filters'), html`
-      <div class="fgroup"><span class="label">Source</span><div class="chips">${SOURCES.map(s => chip('src', s.id, s.id, F.src.has(s.id), all.filter(b => b.src === s.id).length))}</div></div>
-      <div class="fgroup"><span class="label">Day</span><div class="chips">${chip('day', '', 'all', !F.day)}${busy.map(d => chip('day', d, d.slice(8) + ' ' + dayLabel(d).split(' ')[0], F.day === d))}</div></div>
-      <div class="fsum"><span>${shown} of ${all.length}${F.q ? ` · “${F.q}”` : ''}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>`);
+    put(document.getElementById('filters'), html`${L.pick('src', 'Source', SOURCES.map(s => [s.id, s.id, all.filter(b => b.src === s.id).length]), F.src, { multi: true })}${
+      L.pick('day', 'Day', busy.map(d => [d, dayLabel(d), all.filter(b => b.day === d).length]), F.day, { all: 'Any day' })}${
+      active() ? L.chips(activeFilters(), shown, all.length) : html`<div class="fsum"><span>${shown} of ${all.length}</span></div>`}`);
   }
+  document.getElementById('filters').addEventListener('change', e => shell.list.pickChange(e, F, () => { page = 1; update(); }));
   document.getElementById('filters').addEventListener('click', e => {
-    if (e.target.closest('#clear')) return clearAll();
-    const c = e.target.closest('.chip'); if (!c) return;
-    const { f, v } = c.dataset;
-    if (f === 'src') { F.src.has(v) ? F.src.delete(v) : F.src.add(v); }
-    if (f === 'day') F.day = F.day === v ? '' : v;
+    if (e.target.closest('[data-unfilter-all]')) return clearAll();
+    const u = e.target.closest('[data-unfilter]'); if (!u) return;
+    const [k, v] = u.dataset.unfilter.split(/:(.*)/);
+    if (k === 'src') F.src.delete(v);
+    if (k === 'day') F.day = '';
+    if (k === 'q') { F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; }
     page = 1; update();
   });
   function clearAll() { F.src.clear(); F.day = ''; F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }

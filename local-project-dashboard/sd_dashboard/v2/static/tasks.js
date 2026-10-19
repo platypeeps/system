@@ -234,14 +234,14 @@ addEventListener('DOMContentLoaded', () => {
     const bases = [...new Set(tasks.map(t => t.base).filter(Boolean))].sort();
     // The board's statuses, then any other a row or the address names (ready_to_send has no column), so a chip shows it.
     const statuses = [...STATUSES.map(([st]) => st), ...new Set([...tasks.map(t => t.status), ...F.status].filter(st => !SLABEL[st]))];
-    // build (sd:3441, sd:5064): every filter is a dropdown, one value or All; the active-filter chips under them are the only
-    // chips. Values the address names that no row has are options too, and more than one (?p=1,2) shows as a count until one
-    // is picked. Each option is [value, label]; `all` names the empty choice.
-    const combo = (key, name, opts, help, all = 'All') => { const vals = [...new Map([...opts, ...[...F[key]].map(v => [v, fvalue(key, v)])])], n = F[key].size;
-      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-fsel="${key}"><option value=""${n ? '' : html` selected`}>${all}</option>${
-        vals.map(([v, l]) => html`<option value="${v}"${n === 1 && F[key].has(v) ? html` selected` : ''}>${l}</option>`)}${n > 1 ? html`<option value="" disabled selected>${n} picked</option>` : ''}</select>${help || ''}</div>`; };
+    // build (sd:3441, sd:5064, sd:5158): every filter is a dropdown (shell.list.pick), one value or All, and Repo a menu of
+    // checkboxes, any repos at once; the active-filter chips under them are the only chips. Values the address names that no
+    // row has are options too, and more than one (?p=1,2) shows as a count until one is picked. Each option is [value, label];
+    // `all` names the empty choice.
+    const combo = (key, name, opts, help, all = 'All', multi = false) => window.shell.list.pick(key, name,
+      [...new Map([...opts, ...[...F[key]].map(v => [v, fvalue(key, v)])])], F[key], { all, help, multi });
     const same = vs => vs.map(v => [v, v]);
-    put(document.getElementById('filters'), html`${combo('kind', 'Kind', same(kinds))}${bases.length || F.base.size ? combo('base', 'Base', same(bases)) : ''}${combo('repo', 'Repo', same(repos))}${
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', same(kinds))}${bases.length || F.base.size ? combo('base', 'Base', same(bases)) : ''}${combo('repo', 'Repo', same(repos), '', 'All', true)}${
       combo('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']].map(([v, l]) => [v || 'unset', l]))}${
       combo('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. An old link may name two buckets; they widen the view, and filters narrow it.">${ICON('circle-help')}</button>`)}${
       combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
@@ -262,10 +262,7 @@ addEventListener('DOMContentLoaded', () => {
     if (k === 'q') { Q = ''; find.value = ''; } else F[k].delete(v);
     L.page = 1; render();
   });
-  document.getElementById('filters').addEventListener('change', e => {
-    const k = e.target.dataset.fsel; if (!k) return;
-    F[k].clear(); if (e.target.value) F[k].add(e.target.value); L.page = 1; render();
-  });
+  document.getElementById('filters').addEventListener('change', e => window.shell.list.pickChange(e, F, () => { L.page = 1; render(); }));
   function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; L.page = 1; render(); }
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });

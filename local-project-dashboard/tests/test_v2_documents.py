@@ -559,7 +559,7 @@ R.chips = ELS.facets.html;""", answer="(path, body) => path === '/api/documents/
                             % json.dumps(self.doc))
         self.assertEqual(out["toasts"], [["Lab not changed: a label is 1 to 60 characters", False]])
         self.assertEqual(out["gets"], ["/api/documents"])
-        self.assertIn(">Lab <span", out["R"]["chips"])
+        self.assertIn('<span class="nm">Lab</span>', out["R"]["chips"])
 
     def test_a_hidden_root_leaves_the_repo_chips_for_the_hidden_roots_fold(self):
         """sd:3986: a hidden root's chip goes; the fold under Repo names it with Unhide. A label| line still in the file is named."""
@@ -570,8 +570,8 @@ R.chips = ELS.facets.html;""", answer="(path, body) => path === '/api/documents/
 R.when = [cmd('root.hide').when(C.get('root:civic')), cmd('root.unhide').when(C.get('root:lab')), cmd('root.unhide').primary(C.get('root:civic'))];
 shellRun(cmd('root.unhide'), C.get('root:civic')); await flush();""", answer=self.VIEW % json.dumps(self.doc), row="'lab/plan.html'")
         facets = out["R"]["facets"]
-        self.assertNotIn('data-v="civic"', facets)
-        self.assertIn('data-v="lab"', facets)
+        self.assertNotIn('value="civic"', facets)
+        self.assertIn('value="lab"', facets)
         self.assertRegex(facets, r'<details class="rootfold"[^>]*><summary>Hidden roots <span class="n">1</span></summary>')
         self.assertIn("Civic", facets.split('class="rootfold"')[1])
         self.assertEqual(out["R"]["when"], ["already hidden", "not hidden", True])
@@ -718,26 +718,42 @@ R.cli = cmd('document.request').cli(C.get('draft:request'));""")
         self.assertEqual(failed["kind"], "error")
         self.assertIn("boom", failed["text"])
 
+    def test_repo_is_a_multiselect_dropdown_and_two_repos_show_their_union(self):
+        """sd:5158: Repo is a menu of checkboxes; two picks list the documents of both."""
+        box = ("const box = (v, on, off) => ELS.facets.listeners.change[0]({ currentTarget: ELS.facets, target: { dataset: { pick: 'repo' },"
+               " type: 'checkbox', value: v, checked: on, getAttribute: a => a === 'aria-disabled' && off ? 'true' : null } });\n")
+        out = self.run_page(box + """R.before = ELS.facets.html; box('civic', true); await flush(); R.one = ELS.rows.html;
+box('lab', true); await flush(); R.two = ELS.rows.html; R.after = ELS.facets.html; R.picked = [...F.repo];""")
+        before = out["R"]["before"]
+        self.assertEqual(re.findall(r'<input type="checkbox" data-pick="repo" value="([^"]+)"', before), ["civic", "lab", "quiet"])
+        self.assertNotIn('data-f="repo"', before)
+        ids = lambda rows: re.findall(r'data-id="([^"]+)"', rows)
+        self.assertEqual(ids(out["R"]["one"]), ["civic/brief.html"])
+        self.assertEqual(sorted(ids(out["R"]["two"])), ["civic/brief.html", "lab/orphan.html", "lab/overview.html", "lab/plan.html"])
+        self.assertRegex(out["R"]["after"], r'<details class="fpick" data-pick="repo" open><summary[^>]*><span id="f-repo-v">2 picked</span>')
+        self.assertEqual(out["R"]["picked"], ["civic", "lab"])
+
     def test_an_unavailable_chip_stays_focusable_says_why_and_does_nothing(self):
+        box = ("ELS.facets.listeners.change[0]({ currentTarget: ELS.facets, target: { dataset: { pick: 'repo' }, type: 'checkbox',"
+               " value: 'quiet', checked: true, getAttribute: a => a === 'aria-disabled' ? 'true' : null } });\n")
         out = self.run_page("""R.facets = ELS.facets.html;
 const chip = (f, v) => ({ id: '', dataset: { f: f, v: v }, getAttribute: a => a === 'aria-disabled' ? 'true' : null });
-['kind:design', 'repo:quiet'].forEach(fv => { const [f, v] = fv.split(':'), c = chip(f, v);
-  ELS.facets.listeners.click.forEach(h => h({ target: { closest: () => c } })); });
-R.picked = [...F.kind, ...F.repo];""")
+ELS.facets.listeners.click.forEach(h => h({ target: { closest: () => chip('kind', 'design') } }));
+""" + box + "R.picked = [...F.kind, ...F.repo];")
         facets = out["R"]["facets"]
         # A native disabled button leaves the tab order, and its title with it; the reason must stay reachable.
-        self.assertNotRegex(facets, r"<button[^>]*\sdisabled[\s>]")
+        self.assertNotRegex(facets, r"<(button|input)[^>]*\sdisabled[\s>]")
         design = re.search(r'<button[^>]*data-v="design"[^>]*>', facets).group(0)
-        quiet = re.search(r'<button[^>]*data-v="quiet"[^>]*>', facets).group(0)
+        quiet = re.search(r'<input[^>]*value="quiet"[^>]*>', facets).group(0)
         for tag in (design, quiet):
             self.assertIn('aria-disabled="true"', tag)
         # A title is a hover tooltip only; the reason is an element the chip names, so focus and a screen reader reach it.
         for tag, reason in ((design, "No design documents"), (quiet, "Nothing generated yet in ~/repos/quiet/docs/dashboard")):
             ref = re.search(r'aria-describedby="([^"]+)"', tag)
             self.assertIsNotNone(ref, tag)
-            said = re.search(rf'<span[^>]*id="{re.escape(ref.group(1))}"[^>]*>([^<]*)</span>', facets)
+            said = re.search(rf'<(span|small)[^>]*id="{re.escape(ref.group(1))}"[^>]*>([^<]*)</(span|small)>', facets)
             self.assertIsNotNone(said, ref.group(1))
-            self.assertIn(reason, said.group(1))
+            self.assertIn(reason, said.group(2))
         self.assertNotIn("aria-disabled", re.search(r'<button[^>]*data-v="research"[^>]*>', facets).group(0))
         self.assertEqual(out["R"]["picked"], [])
 

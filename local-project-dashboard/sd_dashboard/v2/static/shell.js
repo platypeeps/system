@@ -1055,8 +1055,47 @@
     if (st.sort && (st.sort !== sort || st.dir !== dir)) { p.set('sort', st.sort); p.set('dir', st.dir > 0 ? 'asc' : 'desc'); }
     return p;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery };
+  // Filter dropdowns (sd:5158): one control for a filter with many values, in place of a row of chips. A multi filter is a
+  // <details> menu of checkboxes whose summary names the pick (All, the one value, or a count); a single filter is a native
+  // <select> with an All option; help is html`…` drawn after it. opts: [[value, label, n, off]], n the count beside it, off why it cannot be picked: its box
+  // keeps aria-disabled and the tab order, and describes itself by the reason. on is the page's Set (multi) or string
+  // (single); a value in on that no option has is still an option, so an address from another day can be unpicked.
+  // Every control carries data-pick="key"; pickChange applies a change event to the page's F, redraws, and keeps the menu
+  // open (PICKS) and focus on the same control.
+  const PICKS = new Set();
+  function pick(key, name, opts, on, { multi = false, all = 'All', help = '' } = {}) {
+    const set = on instanceof Set ? on : new Set(on ? [on] : []);
+    const vals = [...opts, ...[...set].filter(v => !opts.some(o => o[0] === v)).map(v => [v, v])];
+    if (!multi) {
+      return html`<div class="fgroup"><label class="label" for="f-${key}">${name}</label><select id="f-${key}" class="fsel" data-pick="${key}"><option value=""${set.size ? '' : html` selected`}>${all}</option>${
+        vals.map(([v, l, n]) => html`<option value="${v}"${set.size === 1 && set.has(v) ? html` selected` : ''}>${l}${n != null ? ` · ${n}` : ''}</option>`)}${set.size > 1 ? html`<option value="" disabled selected>${set.size} picked</option>` : ''}</select>${help}</div>`;
+    }
+    const one = set.size === 1 && vals.find(o => set.has(o[0]));
+    return html`<div class="fgroup"><span class="label" id="f-${key}-l">${name}</span><details class="fpick" data-pick="${key}"${PICKS.has(key) ? html` open` : ''}><summary aria-labelledby="f-${key}-l f-${key}-v"><span id="f-${key}-v">${!set.size ? all : one ? one[1] : `${set.size} picked`}</span></summary><div class="fpick-menu" role="group" aria-labelledby="f-${key}-l">${
+      vals.map(([v, l, n, off], i) => { const why = `f-${key}-off-${i}`;
+        return html`<label class="fpick-opt"><input type="checkbox" data-pick="${key}" value="${v}"${set.has(v) ? html` checked` : ''}${off ? html` aria-disabled="true" aria-describedby="${why}"` : ''}><span class="nm">${l}</span>${n != null ? html`<span class="n">${n}</span>` : ''}${off ? html`<small class="why" id="${why}">${off}</small>` : ''}</label>`; })}</div></details>${help}</div>`;
+  }
+  // A change on a pick control: true when it was one. A box that is off goes back as it was and changes nothing.
+  function pickChange(e, F, draw) {
+    const t = e.target, key = t?.dataset?.pick;
+    if (!key || !(key in F)) return false;
+    const box = t.type === 'checkbox';
+    if (box && t.getAttribute('aria-disabled') === 'true') { t.checked = !t.checked; return true; }
+    if (box) { if (t.checked) F[key].add(t.value); else F[key].delete(t.value); PICKS.add(key); }
+    else if (F[key] instanceof Set) { F[key].clear(); if (t.value) F[key].add(t.value); }
+    else F[key] = t.value;
+    draw();
+    [...(e.currentTarget?.querySelectorAll?.('input[data-pick], select[data-pick]') || [])]
+      .find(x => x.dataset.pick === key && (!box || x.value === t.value))?.focus();
+    return true;
+  }
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange };
   // list:end
+  // A filter dropdown in use stays open across a redraw; a press outside it or focus leaving it closes it, and so does Esc
+  // (Keys, below). toggle does not bubble, so it is heard on the way down.
+  document.addEventListener('toggle', e => { const d = e.target; if (d.matches?.('details.fpick')) { if (d.open) PICKS.add(d.dataset.pick); else PICKS.delete(d.dataset.pick); } }, true);
+  document.addEventListener('pointerdown', e => document.querySelectorAll('details.fpick[open]').forEach(d => { if (!d.contains(e.target)) d.open = false; }));
+  document.addEventListener('focusout', e => { const d = e.target.closest?.('details.fpick[open]'); if (d && e.relatedTarget && !d.contains(e.relatedTarget)) d.open = false; });
 
   // ---------- Table grammar: every table sorts, filters and folds (sd:5064) ----------
   // tables:start
@@ -1318,6 +1357,7 @@
     if (e.key === 'Escape') {
       if (document.querySelector('dialog[open]')) return; // the dialog closes itself; the pane behind it stays
       if (pinned || !pop.hidden) { hideHelp(); return; } if (!menuEl.hidden) { closeMenu(); return; }
+      const fp = document.querySelector('details.fpick[open]'); if (fp) { fp.open = false; fp.querySelector('summary').focus(); return; }
       const sheet = !wide() && pane.hasAttribute('data-open'), menuOpen = rail.hasAttribute('data-menu');
       closePane(); setMenu(false);
       if (sheet || menuOpen) return;

@@ -54,9 +54,7 @@ function renderFacets() {
   let offs = 0;
   const chip = (field, v, label, extra = '') => {
     const on = F[field].has(v), n = facetCount(field, v);
-    const root = field === 'repo' ? ROOTS.find(r => r.key === v) : null;
-    const why = field === 'kind' ? KIND_OFF(v) : '';
-    const off = why || (root && root.n === 0 ? `Nothing generated yet in ${root.path}` : '');
+    const off = field === 'kind' ? KIND_OFF(v) : '';
     // build: aria-disabled, not disabled: a disabled button leaves the tab order, and its reason with it. The reason is
     // an element the chip describes itself by, shown on focus; a title alone is a hover tooltip.
     const id = off ? `facet-off-${++offs}` : '';
@@ -65,7 +63,7 @@ function renderFacets() {
     return off ? html`${chipEl}<span class="offwhy" id="${id}">${off}</span>` : chipEl;
   };
   put(facets, html`
-    <div class="facet"><span class="label">Repo</span><div class="chips">${shownRoots().map(r => chip('repo', r.key, LABEL[r.key] || r.key))}</div>${hiddenRoots()}</div>
+    <div class="facet">${window.shell.list.pick('repo', 'Repo', shownRoots().map(r => [r.key, LABEL[r.key] || r.key, facetCount('repo', r.key), r.n === 0 ? `Nothing generated yet in ${r.path}` : '']), F.repo, { multi: true, help: hiddenRoots() })}</div>
     <div class="facet"><span class="label">Kind <button class="help" type="button" aria-label="Help: Kind" data-help="<b>Derived until the index exists.</b> A checkout with research.conf.py makes research; the rest are reports. The document index (backend work) stores kind per file.">${I('circle-help')}</button></span><div class="chips">${KINDS.map(k => chip('kind', k, k))}</div></div>
     <div class="facet"><span class="label">Freshness</span><div class="chips">${Object.entries(FRESH).map(([k, l]) => chip('fresh', k, l, k === 'stale' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : ''))}</div></div>
     <div class="facet"><span class="label">Show</span><div class="chips">
@@ -77,6 +75,9 @@ function hiddenRoots() {
   const hid = ROOTS.filter(r => r.hidden); if (!hid.length) return '';
   return html`<details class="rootfold"${FOLD ? ' open' : ''}><summary>Hidden roots <span class="n">${hid.length}</span></summary><ul>${hid.map(r => html`<li><span>${r.label}</span>${shell.commands.rowActions(`root:${r.key}`)}</li>`)}</ul></details>`;
 }
+// build (sd:5158): Repo is a dropdown of checkboxes (shell.list.pick), one per shown root; a root with nothing generated
+// stays in it, off with its reason.
+facets.addEventListener('change', e => window.shell.list.pickChange(e, F, () => { L.page = 1; render(); }));
 facets.addEventListener('click', e => {
   const c = e.target.closest('.chip');
   if (!c && e.target.closest('.rootfold summary')) { FOLD = !FOLD; return; }

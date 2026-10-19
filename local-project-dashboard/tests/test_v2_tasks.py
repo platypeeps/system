@@ -735,13 +735,13 @@ R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         filters = out["R"]["filters"]
-        # sd:3441: Kind and Repo are comboboxes; sd:5064: so is every other group, and the active-filter chips are the only chips.
-        self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-fsel="kind"><option value="" selected>All</option>'
+        # sd:3441: Kind is a combobox; sd:5064: so is every other group, and the active-filter chips are the only chips; sd:5158: Repo is a menu.
+        self.assertIn('<label class="label" for="f-kind">Kind</label><select id="f-kind" class="fsel" data-pick="kind"><option value="" selected>All</option>'
                       '<option value="followup">followup</option><option value="task">task</option><option value="work">work</option></select>', filters)
-        self.assertIn('<select id="f-repo" class="fsel" data-fsel="repo"><option value="" selected>All</option><option value="no repo">no repo</option><option value="system">system</option></select>', filters)
+        self.assertIn('<details class="fpick" data-pick="repo">', filters)
         self.assertNotIn('data-f="kind"', filters)
         self.assertNotIn('data-f=', filters)
-        self.assertIn('<select id="f-p" class="fsel" data-fsel="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
+        self.assertIn('<select id="f-p" class="fsel" data-pick="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
         self.assertIn('<option value="unset">unset</option></select>', filters)
         self.assertIn("Port the page", out["R"]["board"])
         self.assertIn("3 tasks", out["R"]["sub"])
@@ -750,17 +750,31 @@ R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
         self.assertEqual(out["attention"][-1], self.doc["attention"])
 
     def test_a_combobox_picks_one_value_and_all_clears_it(self):
-        out = self.run_page("""const pick = (fsel, value) => ELS.filters.listeners.change[0]({ target: { dataset: { fsel }, value } });
-pick('repo', 'system'); R.one = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];
-pick('repo', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,work")
-        self.assertIn('<option value="system" selected>system</option>', out["R"]["one"])
+        out = self.run_page("""const pick = (key, value) => ELS.filters.listeners.change[0]({ target: { dataset: { pick: key }, value } });
+pick('p', '1'); R.one = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];
+pick('p', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,work")
+        self.assertIn('<option value="1" selected>P1</option>', out["R"]["one"])
         # Two kinds from the address show as a count until one is picked.
         self.assertIn('<option value="" disabled selected>2 picked</option>', out["R"]["one"])
-        self.assertIn("repo=system", out["R"]["url"])
-        self.assertNotIn("repo=", out["R"]["url2"])
+        self.assertIn("p=1", out["R"]["url"])
+        self.assertNotIn("p=", out["R"]["url2"])
+
+    def test_repo_is_a_multiselect_dropdown_and_two_repos_show_their_union(self):
+        """sd:5158: Repo is a menu of checkboxes; two picks show the tasks of both, and the address names both."""
+        box = "const box = (v, on) => ELS.filters.listeners.change[0]({ currentTarget: ELS.filters, target: { dataset: { pick: 'repo' }, type: 'checkbox', value: v, checked: on, getAttribute: () => null } });\n"
+        out = self.run_page(box + """R.before = ELS.filters.html; box('system', true); R.one = ELS['view-board'].html;
+box('no repo', true); R.two = ELS['view-board'].html; R.after = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];""")
+        before, after = out["R"]["before"], out["R"]["after"]
+        self.assertEqual(re.findall(r'<input type="checkbox" data-pick="repo" value="([^"]+)"', before), ["no repo", "system"])
+        self.assertNotIn('<select id="f-repo"', before)
+        self.assertIn("Port the page", out["R"]["one"])
+        self.assertNotIn("Answer the question", out["R"]["one"])
+        self.assertIn("Answer the question", out["R"]["two"])
+        self.assertRegex(after, r'<details class="fpick" data-pick="repo" open><summary[^>]*><span id="f-repo-v">2 picked</span>')
+        self.assertIn("repo=system%2Cno%20repo", out["R"]["url"])
 
     def test_the_kind_filter_narrows_the_rows(self):
-        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } });
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'work' } });
 R.board = ELS['view-board'].html;""")
         self.assertIn("Port the page", out["R"]["board"])
         self.assertNotIn("Plan the review", out["R"]["board"])
@@ -1358,12 +1372,12 @@ C.runBulk(cmd('item.p1'), [C.get('{plan}'), C.get('{ask}')]); await flush();""",
     def test_a_parked_row_shows_only_under_the_parked_chip(self):
         self.park()
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
-ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'parked' }, value: '1' } });
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'parked' }, value: '1' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
-        self.assertIn('<select id="f-parked" class="fsel" data-fsel="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
+        self.assertIn('<select id="f-parked" class="fsel" data-pick="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
         self.assertIn("parked=1", out["R"]["url"])
@@ -1743,7 +1757,7 @@ document.dispatchEvent(new CustomEvent('tasks:view', {{ detail: 'matrix' }})); a
         dues = ["2026-09-06", "2026-09-07", "2026-09-13", "2026-09-14", "2026-09-15", "2026-10-01"]
         self.doc["rows"] = [{**base, "id": 900 + n, "title": f"due {due}", "due": due, "urgent": False} for n, due in enumerate(dues)]
         out = self.run_page("""document.dispatchEvent(new CustomEvent('tasks:view', { detail: 'list' })); await flush();
-ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'due' }, value: 'week' } }); await flush();
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'due' }, value: 'week' } }); await flush();
 R.list = ELS['view-list'].html;""", prelude=self.SEP6, env={"TZ": "America/Denver"})
         kept = {due for due in dues if f"due {due}" in out["R"]["list"]}
         self.assertEqual(kept, {due for due in dues if reads.is_urgent({"due": due, "status": "planning", "kind": "task"}, now=read)})
@@ -2000,7 +2014,7 @@ R.reads = OUT.gets.filter(g => g === '/api/tasks/{port}').length;""", answer)
         # Selection stays on a visible task: a new task the filters hide is added and named, not selected (review, PR #46).
         new = {**self.row("ask"), "id": 99, "title": "Call the bank", "kind": "task", "repo": None, "repo_path": None}
         answer = f"(path) => path === '/api/items' ? (DOC.rows.push({json.dumps(new)}), [201, {{ item: {{ id: 99, title: 'Call the bank' }} }}]) : [404, {{}}]"
-        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'kind' }, value: 'work' } }); await flush();
+        out = self.run_page("""ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 'work' } }); await flush();
 var box = document.getElementById('shift-in'); box.value = 'Call the bank';
 box.listeners.keydown.forEach(f => f({ key: 'Enter', preventDefault() {}, stopPropagation() {} })); await flush();""", answer)
         self.assertIn(["Added #99 to Planning · the filters hide it; Clear all shows it", False], out["toasts"])
@@ -2242,7 +2256,7 @@ class TheFilterAddress(ScreenCase):
         self.assertIn('data-page="2" aria-label="Page 2" aria-current="page"', out["R"]["list"])
         self.assertEqual(re.findall(r'data-size="(\d+)"', out["R"]["list"]), ["25", "50", "100", "200"])
         # A filter change starts the list at its first page again.
-        chip = "ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'status' }, value: 'planning' } }); await flush();"
+        chip = "ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'status' }, value: 'planning' } }); await flush();"
         _, out = self.listed("?view=list&page=2", chip)
         self.assertEqual(out["urls"][-1], "view=list&status=planning")
         # A short list draws its range and no page numbers; the board shows every filtered card, whatever the page.

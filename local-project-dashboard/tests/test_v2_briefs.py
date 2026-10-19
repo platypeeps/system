@@ -555,6 +555,29 @@ R.det = ELS.details.html;""", row=NO_COPY)
                          ["2026-09-06 - Fun Events", "2026-09-05 - Daily, Special"])
         self.assertEqual(out["urls"][-1], [["src", "Daily, Special"], ["src", "Fun Events"]])
 
+    def test_source_is_one_multiselect_dropdown_and_day_one_select(self):
+        """sd:5158: Source is a menu of checkboxes, two picks show their union; Day is a select of the busy days."""
+        box = "const box = (v, on) => ELS.filters.listeners.change[0]({ currentTarget: ELS.filters, target: { dataset: { pick: 'src' }, type: 'checkbox', value: v, checked: on, getAttribute: () => null } });\n"
+        out = self.run_page(box + """R.before = ELS.filters.html;
+box('Intel Brief', true); box('Fun Events', true); await flush();
+R.two = ELS.rows.html; R.after = ELS.filters.html; R.url = OUT.urls[OUT.urls.length - 1];
+ELS.filters.listeners.change[0]({ currentTarget: ELS.filters, target: { dataset: { pick: 'day' }, value: '2026-09-04' } }); await flush();
+R.day = ELS.rows.html;""")
+        before, after = out["R"]["before"], out["R"]["after"]
+        self.assertNotIn('data-f="src"', before)
+        self.assertEqual(re.findall(r'<input type="checkbox" data-pick="src" value="([^"]+)"', before),
+                         ["Fun Events", "Intel Brief", "Weekly Digest"])
+        self.assertRegex(before, r'<details class="fpick" data-pick="src"><summary[^>]*><span id="f-src-v">All</span>')
+        self.assertEqual(re.findall(r'<option value="([^"]*)"', re.search(r'<select id="f-day".*?</select>', before).group(0)),
+                         ["", "2026-09-06", "2026-09-04", "2026-09-03"])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["two"]),
+                         ["2026-09-06 - Fun Events", "2026-09-06 - Intel Brief", "2026-09-04 - Intel Brief"])
+        # The menu in use stays open across the redraw, names the count and keeps both boxes ticked.
+        self.assertRegex(after, r'<details class="fpick" data-pick="src" open><summary[^>]*><span id="f-src-v">2 picked</span>')
+        self.assertEqual(len(re.findall(r'data-pick="src" value="[^"]+" checked', after)), 2)
+        self.assertEqual(out["R"]["url"], [["src", "Intel Brief"], ["src", "Fun Events"]])
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["day"]), ["2026-09-04 - Intel Brief"])
+
     def test_a_search_from_the_address_matches_as_typing_it_does(self):
         # Review 27bec38c4a96: the address keeps the case the reader typed; the match ignores case either way.
         out = self.run_page("R.rows = ELS.rows.html;", search="?q=Intel")

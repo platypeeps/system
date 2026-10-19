@@ -109,3 +109,36 @@ class TheDashboardLenses(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepReportsPatternsAbsencesAndAFixFirstList(unittest.TestCase):
+    """sd:5153: the deep and repo lenses ask for the patterns behind findings, what is missing, and what to fix first."""
+
+    def setUp(self):
+        self.prompt = render("--lens", "deep", "--set", "REPO_NAME=fixture", "--set", "AGENTS=8")
+
+    def test_the_lens_asks_for_the_three_sections_and_ten_easy_wins(self):
+        for section in ("`## Patterns`", "`## Missing`", "`## Fix first`"):
+            self.assertIn(section, self.prompt)
+        self.assertIn("up to 10 low-hanging fixes", self.prompt)
+        self.assertIn("impact against effort", self.prompt)
+
+    def test_a_report_with_those_sections_still_reads_as_its_findings_only(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rank", SCRIPT.parent / "rank.py")
+        rank = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rank)
+        report = ["### 1. The done check cannot fail", "Confidence: LIKELY", "Recommendation: Make it fail.", "",
+                  "### 2. A read failure is a pass", "Confidence: CERTAIN", "",
+                  "## Patterns", "- A failed read counts as a pass: 1, 2. Fix: one checked read helper.",
+                  "## Missing", "- No timeout on the network calls; looked in lib/.",
+                  "## Fix first", "1. Finding 2: unsafe, size S.", "Low-hanging: 1, 2.",
+                  "## Refuted", "- Candidate 3: a caller handles it.", "## Areas", "- lib: 3 candidates, 2 survived.",
+                  "Trust: NO, finding 2."]
+        self.assertEqual([report[start] for start, _ in rank.finding_blocks(report)],
+                         ["### 1. The done check cannot fail", "### 2. A read failure is a pass"])
+
+    def test_the_repo_lens_asks_for_the_same_three_sections(self):
+        prompt = render("--lens", "repo", "--set", "REPO_NAME=fixture")
+        for section in ("`## Patterns`", "`## Missing`", "`## Fix first`"):
+            self.assertIn(section, prompt)

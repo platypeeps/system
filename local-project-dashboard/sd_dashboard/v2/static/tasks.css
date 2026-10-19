@@ -34,7 +34,6 @@
 .fgroup > .label { margin-right: var(--space-2xs); }
 .fgroup .chips { margin: 0; }
 /* Kind and Repo comboboxes (sd:3441): the chip's height and rule, so the strip reads as one row. */
-.fsel { min-height: 1.75rem; max-width: 14rem; font-size: var(--text-xs); }
 .fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-xs); font-size: var(--text-xs); color: var(--color-muted); }
 /* Build (sd:2589): the text filter sits first in the strip; the chip groups after it stay in the strip's flex flow. */
 .fset { display: contents; }
@@ -186,7 +185,6 @@
   .pick { width: var(--row-touch); height: var(--row-touch); }
   .viewpick-btn, .viewmenu [role="menuitemradio"] { min-height: var(--row-touch); }
   .fgroup .chip { min-width: var(--row-touch); }
-  .fsel { min-height: var(--row-touch); }
   .ffind input { min-height: var(--row-touch); }
   .linkbtn { min-height: var(--row-touch); min-width: var(--row-touch); }
   .details .actions .btn, .details .icon-btn { min-height: var(--row-touch); min-width: var(--row-touch); }
