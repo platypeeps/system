@@ -94,7 +94,7 @@ class TheDocument(ScreenCase):
         row = self.doc(given=[contribution(1, evidence=[{"argv": ["/home/example/x/secret.sh"], "cwd": "/home/example/x"}],
                                            local_clone="/home/example/x", blocked_on="waiting on a private note")])["rows"][0]
         self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {
-            "repo", "has_draft", "freshness", "internal", "why_internal", "evidence", "dependencies", "delivery"})
+            "repo", "has_draft", "freshness", "internal", "why_internal", "evidence", "dependencies", "delivery", "linked"})
         # sd:3394: evidence is shown now, but no local path: the script reads `…/secret.sh`, the directory `local: x`.
         self.assertNotIn("/home/example", json.dumps(row))
         # Review 4 of PR #72 (34daa6618266): blocked_on is free-form metadata the page never reads.
@@ -234,6 +234,22 @@ class TheDocument(ScreenCase):
         self.assertEqual({(r["merged_at"], r["closed_at"]) for r in doc["rows"]}, {(None, None)})
         self.assertEqual(doc["settled_recent"], [])
         self.assertEqual(doc["counts"]["internal"]["github"], 0)
+
+    def test_a_row_carries_the_issues_it_links_and_only_links_it_can_open(self):
+        # sd:5308: the pack gives each row `linked`, the GitHub issues it closes and the Jira keys its title or branch name.
+        linked = [{"url": ISSUE, "kind": "github", "key": "example/project#2"},
+                  {"url": "https://jira.example.test/browse/ABC-12", "kind": "jira", "key": "ABC-12"},
+                  {"url": "http://jira.example.test/browse/ABC-13", "kind": "jira", "key": "ABC-13"},
+                  {"url": "javascript:alert(1)", "kind": "jira", "key": "ABC-14"},
+                  {"url": "https://user:pw@jira.example.test/browse/ABC-15", "kind": "jira", "key": "ABC-15"},
+                  {"url": EXTERNAL, "kind": "github", "key": "other/lib#3"},
+                  {"url": "https://jira.example.test/browse/ABC-16", "kind": "linear", "key": "ABC-16"},
+                  {"url": "https://jira.example.test/browse/ABC-17", "kind": "jira", "key": ""},
+                  "ABC-18", None]
+        row = self.doc(given=[contribution(1, linked=linked)])["rows"][0]
+        self.assertEqual(row["linked"], linked[:2])
+        # Older state: a pack before sd:5315 sends no `linked`, and a shape that does not read links nothing; neither fails.
+        self.assertEqual([r["linked"] for r in self.doc(given=[contribution(1), contribution(2, linked="ABC-1")])["rows"]], [[], []])
 
     def test_the_collector_is_the_github_tracker_freshness(self):
         self.assertEqual(self.doc()["collector"], {"state": "never", "last_success_at": None, "reason": ""})
@@ -604,6 +620,28 @@ R.off = [w('contribution.ack', 'issue:""" + ISSUE + """'), w('contribution.nudge
         self.assertIn("not recorded", out["R"]["lamps"])
         self.assertEqual(out["R"]["tp"], "")
         self.assertIn("This sd records no merge or close dates", out["R"]["note"])
+
+    def test_each_row_links_its_issues_in_a_new_tab_and_a_row_without_shows_none(self):
+        # sd:5308: GitHub as owner/repo#N, Jira as its key; a link opens its page and leaves the row unselected.
+        self.doc["rows"][2]["linked"] = [{"url": ISSUE, "kind": "github", "key": "example/project#2"},
+                                         {"url": "https://jira.example.test/browse/ABC-12", "kind": "jira", "key": "ABC-12"}]
+        out = self.run_page(f"""R.rows = ELS.rows.html; open('github:{EXTERNAL}'); R.d = ELS.details.html; open('{ONE}');
+ELS.rows.listeners.click[0]({{ target: {{ closest: s => s === 'a' ? {{}} : s === 'tr[data-id]' ? {{ dataset: {{ id: 'github:{EXTERNAL}' }} }} : null }} }});
+R.after = ELS.details.html;""")
+        github = f'<a class="ext" href="{ISSUE}" target="_blank" rel="noopener noreferrer">example/project#2</a>'
+        jira = '<a class="ext" href="https://jira.example.test/browse/ABC-12" target="_blank" rel="noopener noreferrer">ABC-12</a>'
+        self.assertIn(f'<span class="links">{github} {jira}</span>', out["R"]["rows"])
+        self.assertEqual(out["R"]["rows"].count('class="links"'), 1)
+        self.assertIn(f"<dt>Linked</dt><dd>{github} {jira}</dd>", out["R"]["d"])
+        self.assertNotIn("Contribution 3", out["R"]["after"])
+
+    def test_a_link_the_page_cannot_open_safely_is_not_drawn(self):
+        # The server filters too; the page draws only an https link it can name.
+        self.doc["rows"][0]["linked"] = [{"url": "javascript:alert(1)", "kind": "jira", "key": "ABC-1"}, "ABC-2"]
+        self.doc["rows"][1].pop("linked", None)
+        out = self.run_page("R.rows = ELS.rows.html;")
+        self.assertNotIn('class="links"', out["R"]["rows"])
+        self.assertNotIn("javascript:", out["R"]["rows"])
 
     def test_the_scope_and_lane_filter_the_ledger(self):
         out = self.run_page("""R.all = ELS.rows.html; document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'external' }));

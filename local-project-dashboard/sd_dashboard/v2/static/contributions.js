@@ -187,10 +187,14 @@ addEventListener('DOMContentLoaded', () => {
       <td class="g g-${r.s}"><span aria-hidden="true">${GLYPH[r.s]}</span><span class="sr">${r.s}</span></td>
       <td class="what"><button type="button">${r.title}</button>
         <span class="meta">${r.repo || 'local'} ${num(r)} · ${filed(r)}${settledMeta(r)}</span>
+        ${links(r).length ? html`<span class="links">${links(r)}</span>` : ''}
         ${r.reasons.length ? html`<span class="reason">${String(r.reasons[r.reasons.length - 1]).slice(0, 180)}</span>` : ''}</td>
       <td class="obs">${f.status === 'current' ? html`<span class="g-ok" aria-hidden="true">●</span>` : html`<span class="g-unknown" title="${f.reason}">▨</span>`}<time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time><span class="sr"> · ${f.status}</span></td>
       <td class="act"><span class="row-acts">${C.rowActions(r.key)}</span></td></tr>`;
   }
+  // sd:5308: the issues a row links, GitHub as owner/repo#N and Jira as its key, each in a new tab; none draws nothing.
+  const links = r => (Array.isArray(r.linked) ? r.linked : []).filter(l => l && /^https:\/\/[^/@\s]+\//.test(String(l.url || '')) && l.key)
+    .map((l, i) => html`${i ? ' ' : ''}<a class="ext" href="${l.url}" target="_blank" rel="noopener noreferrer">${l.key}</a>`);
   const settledMeta = r => { const s = settle(r); return s ? html` · GitHub ${s[0]} <time class="rel" datetime="${s[1]}"></time>` : ''; };
   // No carried row in the scope: a cut document may still count open rows there, which the limit left out (review 4, PR #72).
   function empty() {
@@ -320,7 +324,7 @@ addEventListener('DOMContentLoaded', () => {
     putKeep(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${GLYPH[r.s]}</span> Contribution · ${LABEL[r.lane]}</p>
       <h2>${r.title}</h2>
       ${github(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${String(r.url).replace('https://github.com/', '')}${I('arrow-up-right')}</a></p>` : ''}
-      <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>On GitHub</dt><dd>${onGitHub(r)}</dd><dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
+      <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>On GitHub</dt><dd>${onGitHub(r)}</dd>${links(r).length ? html`<dt>Linked</dt><dd>${links(r)}</dd>` : ''}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
       ${r.reasons.length ? html`<h3>Why it is here</h3><ul class="reasons">${r.reasons.map(x => html`<li>${x}</li>`)}</ul>` : ''}
       <h3>Act</h3>${C.bar(r.key)}
       <p class="why">Acknowledge clears attention only. It does not complete a task or send a notification.</p>
@@ -357,7 +361,7 @@ addEventListener('DOMContentLoaded', () => {
   put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   document.addEventListener('contributions:scope', e => setScope(e.detail));
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
-  tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+  tbody.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
   document.addEventListener('shell:open', e => select(e.detail, true));
   q.addEventListener('input', () => DOC && applyFilter());
   q.addEventListener('keydown', e => { if (e.key === 'Escape' && q.value) { e.stopPropagation(); q.value = ''; DOC && applyFilter(); } });

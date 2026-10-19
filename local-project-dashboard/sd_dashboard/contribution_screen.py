@@ -271,6 +271,25 @@ def _row_delivery(row):
     return {"state": "read", "entries": entries}
 
 
+def _row_links(row):
+    """The issues the row links (sd:5308): a GitHub issue it closes, or a Jira key its title or branch names, each an https
+    link with no credentials. A pack before sd:5315 sends none, and a link that does not read is left out: neither fails."""
+    found = row.get("linked")
+    links = []
+    for link in found if isinstance(found, list) else []:
+        if not isinstance(link, dict) or link.get("kind") not in ("github", "jira"):
+            continue
+        url, key = link.get("url"), link.get("key")
+        address = urlsplit(url if isinstance(url, str) else "")
+        if (address.scheme != "https" or not address.hostname or address.username or address.password
+                or not isinstance(key, str) or not key.strip() or len(key) > 200):
+            continue
+        if link["kind"] == "github" and not contributions.ISSUE.fullmatch(url):
+            continue
+        links.append({"url": url, "kind": link["kind"], "key": key})
+    return links
+
+
 def _freshness(connection, now):
     from datetime import datetime
 
@@ -341,7 +360,8 @@ def document(connection, *, now):
                 "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
                 "internal": why is not None, "why_internal": why,
-                "evidence": _row_evidence(row), "dependencies": _row_dependencies(row), "delivery": _row_delivery(row)})
+                "evidence": _row_evidence(row), "dependencies": _row_dependencies(row), "delivery": _row_delivery(row),
+                "linked": _row_links(row)})
         else:
             # Keyed on the repository as stored, shown by its label: two checkouts named alike stay two entries.
             entry = settled.setdefault(str(row.get("repo") or ""), {

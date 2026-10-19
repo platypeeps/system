@@ -34,6 +34,11 @@
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; overflow-wrap: anywhere; }
 .ledger .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .ledger .meta { display: block; margin-top: var(--space-3xs); font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-ink-2); overflow-wrap: anywhere; }
+.ledger .links { display: flex; flex-wrap: wrap; gap: var(--space-3xs) var(--space-sm); margin-top: var(--space-3xs); font: 400 var(--text-xs)/1.4 var(--font-data); }
+.ledger .links a { color: var(--color-ink-2); text-underline-offset: 3px; overflow-wrap: anywhere; }
+.ledger .links a:hover { color: var(--color-ink); }
+.ledger .links a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+@media (pointer: coarse) { .ledger .links a { display: inline-flex; align-items: center; min-height: var(--row-touch); } }
 .ledger .reason { display: block; margin-top: var(--space-3xs); font-size: var(--text-xs); color: var(--color-ink-2); }
 .ledger .obs { font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-muted); }
 .ledger .act { text-align: right; }
