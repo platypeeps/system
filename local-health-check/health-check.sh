@@ -245,6 +245,13 @@ recent_report() { # <file> <cutoff or empty> <mtime days>
     [ -n "$(find "$1" -maxdepth 0 -mtime -"$3" 2>/dev/null)" ]
   fi
 }
+# An .ips report's first line names its bug_type (sd:5323): 309 is a crash,
+# 109 the legacy one; 58, a weekly usage-analytics batch, is not. A header
+# with no readable bug_type is unknown, so it still counts, as before.
+crash_report() { # <file>
+  _t=$(head -n 1 "$1" 2>/dev/null | sed -En 's/.*"bug_type"[[:space:]]*:[[:space:]]*"?([0-9]+).*/\1/p')
+  [ -z "$_t" ] || [ "$_t" = 309 ] || [ "$_t" = 109 ]
+}
 for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth 1 -name '*.panic' 2>/dev/null | while read -r p; do
@@ -254,7 +261,7 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   # not a crash, and an ExcUserFault_ report names the process it faulted.
   # A pid before the extension (.claude-mem-<pid>.tmp) is no part of the name (sd:5253).
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
-    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/crashes"
+    ! recent_report "$p" "$CUT_DAY" 1 || ! crash_report "$p" || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/crashes"
   done
 done
 if [ -s "$TMPD/panics" ]; then
