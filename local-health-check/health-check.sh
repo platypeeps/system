@@ -252,8 +252,9 @@ for d in "$HOME/Library/Logs/DiagnosticReports" "$SYSTEM_REPORTS"; do
   done
   # One name per process (sd:5064): a JetsamEvent report is memory pressure,
   # not a crash, and an ExcUserFault_ report names the process it faulted.
+  # A pid before the extension (.claude-mem-<pid>.tmp) is no part of the name (sd:5253).
   find "$d" -maxdepth 1 -name '*.ips' ! -name 'JetsamEvent*' 2>/dev/null | while read -r p; do
-    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//' >> "$TMPD/crashes"
+    ! recent_report "$p" "$CUT_DAY" 1 || basename "$p" | sed 's/[-_][0-9]\{4\}-.*//; s/^ExcUserFault_//; s/-[0-9][0-9]*\(\.[A-Za-z0-9_]*\)$/\1/' >> "$TMPD/crashes"
   done
 done
 if [ -s "$TMPD/panics" ]; then

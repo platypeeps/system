@@ -26,7 +26,8 @@ nothing is mailed (sd:3454). A clean run prints no such line.
 ## Checks
 
 - app crash reports (`.ips`, last day) and kernel panics (last week) from
-  both DiagnosticReports folders; crashes count once per process name, an
+  both DiagnosticReports folders; crashes count once per process name (a
+  pid before the extension, as in `.claude-mem-<pid>.tmp`, is dropped), an
   `ExcUserFault_` report under its process, and `JetsamEvent` reports
   (memory pressure, not a crash) are left out
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
