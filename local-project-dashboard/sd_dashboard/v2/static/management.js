@@ -40,6 +40,8 @@ function absorb(doc) {
   const unreg = (GIT?.repos || []).filter(g => !REPOS.some(r => r.path === tilde(g.path)))
     .map(g => ({ path: tilde(g.path), remote: '', managed: '—', merge: '—', lane: '—', mode: '—', owner: '—', slug: '', name: nameOf(tilde(g.path)), registered: false, git: g }));
   ALL = [...REPOS, ...unreg];
+  // A new reading of a declaration redrafts each pending line on it (restateDeclaration), so no line writes back an old one.
+  [...new Set(pending.filter(x => x.edit).map(x => x.repo?.path))].forEach(restateDeclaration);
   ALL.forEach(r => { const g = r.git; r.branch = g ? g.branch : '—'; r.lag = g && g.behind_default !== null ? g.behind_default : -1; r.fetched = g ? g.fetched_iso || '' : ''; });
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
@@ -230,12 +232,12 @@ function gitCells(r) {
   return html`<td class="d mono" data-k="branch">${g.branch || '?'}${g.dirty === null ? html` <span class="unk">· dirty ?</span>` : g.dirty ? html` <span class="dirty">· ${g.dirty} dirty</span>` : ''}</td>
     <td class="d mono" data-k="±">${lag}</td><td class="d mono" data-k="fetched">${age(g.fetched_iso)}</td>`;
 }
-// build (sd:1629): the settings cells. Floor and Copilot are read here and change through a pull request; a reading that
+// build (sd:1629): the settings cells. Floor and Copilot are read from the row's review declaration (sd:5159); a reading that
 // failed or was not taken is unknown with its reason, and nothing pinned is a dash that says so.
 const unk = words => html`<span class="unk"><span class="g-unknown" aria-hidden="true">▨</span> ${words}</span>`;
 function reviewCell(rv, key) {
-  if (!rv) return unk('no checkout here');
-  if (!rv.file) return rv.error ? unk(rv.error) : html`<span class="no">no file</span>`;
+  if (!rv) return unk('not in the reading');
+  if (rv.declaration == null) return rv.error ? unk(rv.error) : html`<span class="no">none declared</span>`;
   if (rv.error) return unk(rv.error);
   const v = key === 'floor' ? rv.severity_floor : rv.automatic_deep;
   return v == null ? html`<span class="no">unset</span>` : String(v);
@@ -263,7 +265,7 @@ function renderRepos() {
   const rows = repoRows(), shown = pageOf(rows, RS);
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
-  put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, <code>.github/sd-review.json</code> and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
+  put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
       <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
     <div class="filters" aria-label="Filters">
@@ -282,7 +284,7 @@ function renderRepos() {
         ${RS.cols === 'settings' ? settingCells(r) : gitCells(r)}
         <td class="act end">${shell.commands.rowActions('repo:' + r.path)}</td></tr>`)}</tbody></table>${shell.list.pager(rows.length, RS, 'repos')}`
       : html`<p class="empty">No repo matches ${text.q ? `“${text.q}”` : 'these filters'}. <button class="linkbtn" type="button" data-clear>Clear filters</button></p>`}
-    ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through a pull request to the repo's <code>.github/sd-review.json</code>, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>`
+    ${RS.cols === 'settings' ? html`<p class="note">Managed and Merge switch from a row's actions, each one sd-db repo verb on the hub. Floor and Copilot are read-only here: they change through the row's review declaration, drafted from its ${I('settings')} settings page. Required checks are the nightly protection reading; Python and Node are the versions the checkout pins.</p>`
       : html`<p class="note">${I('settings')} opens a registered repo's settings. Owner and status source sit in Details. Git state is as read at ${hhmm(GIT?.observed || READ)} UTC; nothing here fetches.</p>`}`);
 }
 document.getElementById('view-repos').addEventListener('click', e => {
@@ -374,12 +376,12 @@ function renderRepoPage(el) {
   const r = REPOS.find(x => x.path === repoParam);
   if (!r) { put(el, html`<p class="empty">No registered repo at <code>${repoParam}</code>. <a href="?#view=repos">All repos</a></p>`); return; }
   const url = r.slug ? `https://github.com/${r.slug}` : null;
-  const rv = r.review, pr = r.protection;
+  const rv = r.review || { declaration: null, error: 'not in the reading' }, pr = r.protection;
   put(el, html`
     <div class="crumb"><a class="btn quiet sm" href="?#view=repos">${I('chevron-left')}All repos</a><h2>${r.name}</h2>${url ? html`<a class="ext" href="${url}" target="_blank" rel="noopener">${r.slug}${I('arrow-up-right')}</a>` : ''}</div>
     <ul class="routes" aria-label="How edits land">
       <li><span class="route">${I('terminal')}sd-db · local</span> runs one sd-db verb here</li>
-      <li><span class="route">${I('git-pull-request')}file · PR</span> ships through sd-ship and review</li>
+      <li><span class="route">${I('terminal')}sd-db declare · copy</span> gives the sd-db line that writes the row's declaration</li>
       <li><span class="route">${I('shield-check')}GitHub · API</span> read here; edits stay on the classic Protection screen</li>
     </ul>
 
@@ -405,14 +407,14 @@ function renderRepoPage(el) {
       ${setRow('registered', html`<time class="rel" datetime="${r.created}"></time> <span class="no">· updated</span> <time class="rel" datetime="${r.updated}"></time>`)}
     </section>
 
-    <section class="set" aria-labelledby="set-review"><header><h3 id="set-review"><code>.github/sd-review.json</code> <button class="help" type="button" aria-label="Help: sd-review.json" data-help="<b>The review lane's policy for this repo.</b> Tiers, categories, severity floor and the Copilot override. A change here is itself reviewed: it ships as a pull request through sd-ship.">${I('circle-help')}</button></h3><span class="route">${I('git-pull-request')}file · PR</span>
-      <p class="src">${rv ? `read from the checkout · ${hhmm(READ)} UTC` : 'not read'}</p></header>
-      ${!rv ? unknown('Checkout not on disk', `The build reads the file from ${r.path}; no directory is there on this machine.`)
-        : !rv.file ? setRow('file', html`<span class="no">${rv.error || 'absent'}</span><p class="why">The repo inherits the machine's review settings.</p>`, html`<button class="btn quiet sm" type="button" data-create-review>${I('plus')}Add file</button>`)
-        : rv.error ? html`${setRow('file', html`<span class="no">${rv.error}</span>`)}<details class="srcfile"><summary>Show the file</summary><pre class="code">${rv.file}</pre></details>`
+    <section class="set" aria-labelledby="set-review"><header><h3 id="set-review">Review declaration <button class="help" type="button" aria-label="Help: review declaration" data-help="<b>The review lane's policy for this repo,</b> held on its sd-db row (sd:5159): tiers, categories, severity floor and the Copilot override. sd-db repo declare writes it, and refuses a value sd-review would refuse.">${I('circle-help')}</button></h3><span class="route">${I('terminal')}sd-db declare · copy</span>
+      <p class="src">${rv.error && rv.declaration == null ? 'not read' : `the sd-db row · ${hhmm(READ)} UTC`}</p></header>
+      ${rv.declaration == null && rv.error ? unknown('Not read', rv.error)
+        : rv.declaration == null ? setRow('declaration', html`<span class="no">none</span><p class="why">The repo inherits the machine's review settings.</p>`, html`<button class="btn quiet sm" type="button" data-create-review>${I('plus')}Add declaration</button>`)
+        : rv.error ? html`${setRow('declaration', html`<span class="no">${rv.error}</span>`)}<details class="srcfile"><summary>Show the declaration</summary><pre class="code">${rv.declaration}</pre></details>`
         : html`${setRow(html`<code>severity_floor</code> <button class="help" type="button" aria-label="Help: severity_floor" data-help="The severity at which a finding is blocking and sd-review exits 1. Schema values: high, medium, low, unspecified.">${I('circle-help')}</button>`, rv.severity_floor || html`<span class="no">unset</span>`, html`<select class="fld" data-set="severity_floor" aria-label="severity_floor">${['', 'high', 'medium', 'low', 'unspecified'].map(v => html`<option value="${v}"${(rv.severity_floor || '') === v ? html` selected` : ''}>${v || 'unset'}</option>`)}</select>`, html` data-key="severity_floor"`)}
            ${rv.automatic_deep == null ? setRow(html`<code>copilot_review.automatic_deep</code>`, html`<span class="no">unset</span>`) : setRow(html`<code>copilot_review.automatic_deep</code>`, String(rv.automatic_deep), seg('automatic_deep', ['true', 'false'], String(rv.automatic_deep)), html` data-key="automatic_deep"`)}
-           <details class="srcfile"><summary>Show the file</summary><pre class="code">${rv.file}</pre></details>`}
+           <details class="srcfile"><summary>Show the declaration</summary><pre class="code">${rv.declaration}</pre></details>`}
     </section>
 
     <section class="set" aria-labelledby="set-local"><header><h3 id="set-local">CLAUDE.local.md overrides</h3><span class="route">${I('terminal')}local file</span>
@@ -470,20 +472,21 @@ function propose(key, value) {
       note: want === 'off' ? "This repo's tasks offer no File Jira issue." : `File Jira issue files this repo's tasks in Jira project ${want}, after a preview you confirm.` };
   } else if (key === 'severity_floor' || key === 'automatic_deep') {
     if (value === String(key === 'severity_floor' ? rv.severity_floor || '' : rv.automatic_deep)) return withdraw(key);
-    const diff = reviewDiff(rv.file || '', body => {
+    const edit = body => {
       if (key === 'severity_floor') { if (value) body.severity_floor = value; else delete body.severity_floor; return; }
       const copilot = body.copilot_review && typeof body.copilot_review === 'object' && !Array.isArray(body.copilot_review) ? body.copilot_review : {};
       body.copilot_review = { ...copilot, automatic_deep: value === 'true' };
-    });
-    if (!diff) { shell.toast('Not proposed: .github/sd-review.json is not valid JSON; fix it in the checkout first'); return; }
-    p = { key, value, route: 'file', icon: 'git-pull-request', title: `.github/sd-review.json · ${key} → ${value || 'unset'}`, diff, branch: `settings/sd-review-${key.replace('_', '-')}`,
-      note: 'Ships as a pull request through sd-ship prepare, then the review lane. Nothing changes until it merges.' };
+    };
+    if (!reviewDiff(rv.declaration || '', edit)) { shell.toast('Not proposed: the review declaration is not a JSON object'); return; }
+    // The diff and the line are set by restateDeclaration, with every other pending edit for this repo.
+    p = { key, value, route: 'declare', icon: 'terminal', title: `review declaration · ${key} → ${value || 'unset'}`, edit,
+      note: 'Replaces the review declaration on the row with every pending review edit; the next review reads it. Nothing changes until the line runs.' };
   }
   if (p) addProposal(p);
 }
-// build (review, PR #50): a review-file change is made on the parsed file, checked to parse again, and shown as a line
-// diff of the two texts, so a proposal is always valid JSON. The new text is JSON.stringify's two-space layout, the
-// layout these files use. null when the file is not a JSON object.
+// build (review, PR #50): a declaration change is made on the parsed object, checked to parse again, and shown as a line
+// diff of the two texts, so a proposal is always valid JSON. The shown text is JSON.stringify's two-space layout, the
+// layout the server sends; `after` is the compact text the sd-db line writes (sd:5159). null when it is not a JSON object.
 function reviewDiff(text, change) {
   let body;
   try { body = JSON.parse(text); } catch { return null; }
@@ -491,9 +494,9 @@ function reviewDiff(text, change) {
   change(body);
   const after = JSON.stringify(body, null, 2);
   JSON.parse(after);
-  return lineDiff(text.replace(/\n$/, '').split('\n'), after.split('\n'));
+  return { diff: lineDiff(text.replace(/\n$/, '').split('\n'), after.split('\n')), after: JSON.stringify(body) };
 }
-// The longest common run of lines is kept; the rest is a del or an add (files are at most 16 KiB, REVIEW_BYTES).
+// The longest common run of lines is kept; the rest is a del or an add (the declarations are at most 16 KiB, DECLARATION_BYTES).
 function lineDiff(a, b) {
   const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
@@ -506,21 +509,29 @@ function lineDiff(a, b) {
   while (j < m) out.push(['add', b[j++]]);
   return out;
 }
-// build: the starter file names the schema another checkout's file names, read by the server, rather than a URL typed here.
-const SCHEMA = () => REPOS.map(r => r.review?.schema).find(Boolean) || '';
-const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], file: ['file change', 'file · PR'] };
+const ROUTE = { 'sd-db': ['sd-db change', 'sd-db · local'], declare: ['declaration change', 'sd-db declare · copy'] };
+// sd:5159 review: the row holds one review declaration, so each pending line for a repo carries every pending edit for it,
+// made on the reading in the order they were proposed. Running any one line, or all of them, leaves the same row.
+function restateDeclaration(path) {
+  const r = REPOS.find(x => x.path === path), edits = pending.filter(x => x.edit && x.repo?.path === path).reverse();
+  const change = r && edits.length ? reviewDiff(r.review?.declaration || '', body => edits.forEach(x => x.edit(body))) : null;
+  if (change) edits.forEach(x => { x.diff = change.diff; x.cmd = `${SDDB} repo declare ${shq(path)} review ${shq(change.after)}`; });
+}
 function addProposal(p) {
   const r = REPOS.find(x => x.path === repoParam);
   p.id = `prop:${p.key}`; p.type = ROUTE[p.route][0]; p.label = p.title; p.repo = r;
   const i = pending.findIndex(x => x.key === p.key);
   if (i >= 0 && pending[i].title === p.title) return;
   if (i >= 0) pending.splice(i, 1);
-  shell.commands.put(p); pending.unshift(p);
+  pending.unshift(p);
+  if (p.edit) restateDeclaration(r.path);
+  shell.commands.put(p);
   markPending(p.key);
   showProposals(true);
 }
 function dropProposal(p) {
   const i = pending.indexOf(p); if (i >= 0) pending.splice(i, 1);
+  if (p.edit) restateDeclaration(p.repo.path);
   renderRepos(); pending.length ? showProposals() : defaultDetails();
 }
 function diffHTML(d) { return html`<pre class="diff">${d.map(([k, l]) => html`<span class="${k}">${k === 'add' ? '+ ' : k === 'del' ? '− ' : k === 'hd' ? '' : '  '}${l}</span>`)}</pre>`; }
@@ -542,9 +553,12 @@ document.getElementById('view-repos').addEventListener('click', e => {
   if (b) propose(b.dataset.set, b.dataset.v);
   if (e.target.closest('[data-ch-clear]')) propose('channels', null);
   if (e.target.closest('[data-create-review]')) {
-    addProposal({ key: 'review-file', route: 'file', icon: 'git-pull-request', title: '.github/sd-review.json · new file', branch: 'settings/sd-review-json',
-      diff: [['hd', '@@ new file .github/sd-review.json @@'], ['add', '{'], ...(SCHEMA() ? [['add', `  "$schema": "${SCHEMA()}",`]] : []), ['add', '  "severity_floor": "high"'], ['add', '}']],
-      note: 'A starting file with the floor the managed repos use. Review it in the PR; nothing else changes until it merges.' });
+    const r = REPOS.find(x => x.path === repoParam);
+    // `edit` lets restateDeclaration fold the starter into a declaration a later reading finds, rather than replace it.
+    addProposal({ key: 'review-declaration', route: 'declare', icon: 'terminal', title: 'review declaration · new', edit: body => { body.severity_floor = 'high'; },
+      cmd: `${SDDB} repo declare ${shq(r.path)} review ${shq('{"severity_floor":"high"}')}`,
+      diff: [['hd', '@@ new review declaration @@'], ['add', '{'], ['add', '  "severity_floor": "high"'], ['add', '}']],
+      note: 'A starting declaration with the floor the managed repos use. Nothing changes until the line runs.' });
   }
 });
 
@@ -667,10 +681,9 @@ function registerCommands() {
         const undo = o.verb !== 'channels' ? () => setRepo(o.verb, o.repo, o.before, o.value) : o.back !== undefined ? v => setRepo(o.verb, o.repo, o.back, v?.value) : null;
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
-    // build: copy only. sd-ship prepare opens a branch and a pull request, which the dashboard does not start.
-    { id: 'file.prepare', on: 'file change', label: 'Prepare', does: 'Gives the sd-ship line that opens a pull request for this change.', key: 'p', risk: 'safe', primary: () => true, executes: false,
-      cli: o => `sd-ship prepare --no-item --review-id ${o.branch.replace('/', '-')} --path .github/sd-review.json --title ${shq(o.title)}`,
-      run: () => 'Copy it into a terminal in the checkout: the dashboard does not open pull requests' },
+    // sd:5159: copy only. `sd-db repo declare` checks the value with sd-review's own validator before it writes the row.
+    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', risk: 'safe', primary: () => true, executes: false,
+      cli: o => o.cmd, run: () => 'Copy it into a terminal: the dashboard does not write declarations' },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
@@ -983,13 +996,13 @@ function defaultDetails() {
     put(details, html`<p class="kind">${I('settings')} ${r ? 'Repo settings' : 'Repos'}</p><h2>${r ? r.name : 'How an edit lands'}</h2>
       <ul class="legend">
         <li><span class="route">${I('terminal')}sd-db · local</span>runner_merge, managed, dependabot and github_issues. The proposal shows the sd-db command; Run applies it here, with Undo.</li>
-        <li><span class="route">${I('git-pull-request')}file · PR</span><code>.github/sd-review.json</code>. The proposal shows the diff and the sd-ship line to copy.</li>
+        <li><span class="route">${I('terminal')}sd-db declare · copy</span>The review declaration on the row. The proposal shows the diff and the sd-db line to copy.</li>
         <li><span class="route">${I('shield-check')}GitHub · API</span>Protection as the nightly collector read it. The dashboard does not change it.</li>
       </ul>
       ${r ? html`<h3>Act</h3>${shell.commands.bar('repo:' + r.path)}` : ''}`);
     if (r) shell.commands.select('repo:' + r.path);
     shell.setContext(r ? `${r.name} settings` : '');
-    shell.suggest(r ? [`What would change if ${r.name} went runner_merge manual?`, `Compare ${r.name}'s protection with system's`, 'Which settings here drift from the managed repos?'] : ['Which managed repos lack an sd-review.json?', 'Which repos are auto-merge but unprotected on GitHub?', 'List repos registered but never managed']);
+    shell.suggest(r ? [`What would change if ${r.name} went runner_merge manual?`, `Compare ${r.name}'s protection with system's`, 'Which settings here drift from the managed repos?'] : ['Which managed repos declare no review policy?', 'Which repos are auto-merge but unprotected on GitHub?', 'List repos registered but never managed']);
     return swap();
   }
   const first = document.querySelector(`#view-${view} tr[data-id]`);
@@ -1047,7 +1060,7 @@ function selectRow(id, open) {
     h = html`<p class="kind">${I(r.registered ? 'settings' : 'folder-code')} Repo${r.registered ? '' : ' · not registered'}</p><h2>${r.name}</h2>
       <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?repo=${encodeURIComponent(r.path)}#view=repos">${I('settings')} Open settings</a></p>
-      <p class="why">The settings page shows the sd-db row, sd-review.json and GitHub protection, each with the route an edit takes.</p>`
+      <p class="why">The settings page shows the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
       ${window.commands.reviewPane('repo', r.path)}${window.commands.reviewPane('change', r.path, 'Adversarial review: PR')}${window.commands.reviewPane('deep', r.path, 'Deep review')}${r.registered ? deepLine() : ''}`;
   } else if (kind === 'cs') {

@@ -97,7 +97,8 @@ These needs showed up during the rollout:
 
 ## Gate reuse by tree
 
-On 2026-10-03 this repository declared `.github/sd-gate-reuse.json` (sd:2594).
+On 2026-10-03 this repository declared gate reuse by tree (sd:2594).
+The declaration now lives on its sd-db repo row: `sd-db repo declare <path> gate_reuse` prints it (sd:5218).
 The command pack's gate then keys a passing receipt by tree and merge base instead of head (sd:1912, pack #1327).
 A new head with the same tree, such as an `sd attribute` commit, reuses the pass for 6 hours.
 An audit at `eaaac2f` found that `make check` reads no commit message, trailer or range of this checkout.

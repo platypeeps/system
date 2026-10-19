@@ -174,12 +174,14 @@ class TheHeartbeat(Bases, ScreenCase):
     def test_a_failed_render_is_a_warning_with_its_reason_and_a_clean_one_is_ok(self):
         from sd_db import records
 
-        (self.vault / BASE).rename(self.vault / "moved")
+        # Pack #1575 renders only the HTML pages, which need the vault root and no base folder.
+        moved = self.vault.with_name("moved")
+        self.vault.rename(moved)
         records.render(self.connection, home=Path(self.tmp.name))
         (row,) = self.rows()
         self.assertEqual((row["state"], row["what"]), ("warning", "Vault mirror not updated"))
-        self.assertIn("Blog Ideas is not a directory", row["detail"])
-        (self.vault / "moved").rename(self.vault / BASE)
+        self.assertIn("not a directory", row["detail"])
+        moved.rename(self.vault)
         records.render(self.connection, home=Path(self.tmp.name))
         (row,) = self.rows()
         self.assertEqual((row["state"], row["facts"]["Kinds"]), ("ok", "blog-idea"))
