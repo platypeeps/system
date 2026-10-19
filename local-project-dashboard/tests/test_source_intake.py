@@ -7,9 +7,13 @@ checkout is left as it was: its HEAD, its working tree and its ledger.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import socket
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -286,6 +290,48 @@ class SourceIntake(BrowserSession):
         self.assertEqual(status, 200, answer)
         self.assertTrue(self.added(answer)[1][-1].startswith("| S8 | [The Spec - v2](https://example.test/a) |"),
                         self.added(answer)[1][-1])
+
+    def test_an_upload_that_drips_is_stopped_at_its_whole_bound(self):
+        # Round 2 class: each wait on the socket is bounded, so a drip never trips it; the upload as a whole is bounded.
+        host, port = urllib.parse.urlsplit(self.base).hostname, urllib.parse.urlsplit(self.base).port
+        with patch("sd_dashboard.source_intake.STAGE_SECONDS", 1, create=True), socket.create_connection((host, port), 10) as raw:
+            raw.sendall((f"POST /api/research/intake/file HTTP/1.1\r\nHost: {host}:{port}\r\nOrigin: {self.base}\r\n"
+                         f"Cookie: {self.cookie}\r\nX-SD-CSRF: {self.csrf}\r\nSec-Fetch-Site: same-origin\r\n"
+                         f"Content-Type: application/octet-stream\r\nX-SD-File-Name: slow.txt\r\n"
+                         f"Content-Length: 200\r\n\r\n").encode())
+            started = time.monotonic()
+
+            def drip():
+                try:
+                    for _ in range(200):
+                        raw.sendall(b"x")
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+            threading.Thread(target=drip, daemon=True).start()
+            response = http.client.HTTPResponse(raw)
+            response.begin()
+            status, answer = response.status, response.read().decode()
+            self.assertLess(time.monotonic() - started, 4, answer)
+        self.assertEqual(status, 503, answer)
+        self.assertIn("took longer than 1 s", answer)
+        self.assertFalse(list((self.root / "state" / "system" / "source-intake" / "staged").glob("*")))
+
+    def test_the_title_fetches_of_one_request_share_one_bound(self):
+        asked = []
+
+        def slow(url, seconds):
+            asked.append(seconds)
+            time.sleep(0.6)
+            return TITLED
+
+        self.fetch.side_effect = slow
+        with patch("sd_dashboard.source_intake.TITLES_SECONDS", 1.5, create=True):
+            status, _, answer = self.intake(urls=["https://example.test/a", "https://example.test/b/c"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(len(asked), 1, asked)
+        self.assertLessEqual(asked[0], 1.5)
+        self.assertEqual([one["title"] for one in answer["added"]], ["The Spec - v2", "example.test/b/c"])
 
     def test_a_failed_enqueue_keeps_the_commit_and_notes_the_line_that_retries(self):
         os.environ["FIXTURE_SHIP_FAIL"] = "1"

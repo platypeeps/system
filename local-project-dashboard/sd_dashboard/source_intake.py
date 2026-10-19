@@ -46,9 +46,14 @@ FILE_BYTES = 5 * 1024 * 1024
 #: The largest file the stage takes, and how long a staged file no request used is kept.
 STAGE_BYTES = 200 * 1024 * 1024
 STAGE_DAYS = 1
-#: Sources one request may add, and the title fetch's bound (the source review's fetch, cut shorter).
+#: An upload's bounds: one wait on the socket, and the whole upload; a client that drips bytes trips the second.
+STAGE_READ_SECONDS = 30
+STAGE_SECONDS = 900
+#: Sources one request may add, one title fetch's bound (the source review's fetch, cut shorter), and all of a
+#: request's title fetches together: past it, a URL is named by its host and path without a fetch.
 SOURCES = 20
 TITLE_SECONDS = 8
+TITLES_SECONDS = 30
 TITLE_CHARS = 120
 #: The files a drop may hold: what a ledger row can cite and the source review can read.
 SUFFIXES = (".pdf", ".md", ".markdown", ".html", ".htm", ".txt")
@@ -86,11 +91,14 @@ def stage(name: str, length: str, stream) -> tuple[int, dict]:
     for old in folder.iterdir():
         if old.stat().st_mtime < cutoff:
             old.unlink(missing_ok=True)
-    digest, left = hashlib.sha256(), int(length)
+    digest, left, deadline = hashlib.sha256(), int(length), time.monotonic() + STAGE_SECONDS
     with tempfile.NamedTemporaryFile(dir=folder, prefix=".part-", delete=False) as sink:
         try:
             while left:
-                chunk = stream.read(min(left, 1 << 20))
+                if time.monotonic() > deadline:
+                    raise OSError(f"the upload took longer than {STAGE_SECONDS} s")
+                # read1: whatever has arrived, so the deadline is checked between drips (the server bounds each wait).
+                chunk = stream.read1(min(left, 1 << 20))
                 if not chunk:
                     raise OSError("the upload ended before its length")
                 digest.update(chunk)
@@ -133,11 +141,13 @@ def _git(directory: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
-def _title(url: str) -> str:
-    """The page's `<title>` through the source review's bounded fetch, else the URL's host and path."""
+def _title(url: str, deadline: float) -> str:
+    """The page's `<title>` through the source review's bounded fetch, else the URL's host and path; no fetch starts
+    with under a second left before `deadline`, the request's title budget."""
     from . import adversarial
 
-    found = re.search(r"^Its title: (.+)\.$", adversarial._fetch(url, seconds=TITLE_SECONDS), re.MULTILINE)
+    left = min(TITLE_SECONDS, deadline - time.monotonic())
+    found = re.search(r"^Its title: (.+)\.$", adversarial._fetch(url, seconds=left), re.MULTILINE) if left >= 1 else None
     parts = urlsplit(url)
     title = found.group(1) if found else (parts.netloc + parts.path.rstrip("/"))
     return re.sub(r"\s+", " ", title).replace("|", "-").replace("[", "(").replace("]", ")")[:TITLE_CHARS].strip()
@@ -284,9 +294,9 @@ def add(connection, *, target: str, urls: list, files: list, who: str) -> dict:
                    if (m := re.match(r"\|\s*S(\d+)\b", line.strip()))]
         next_id = max(numbers, default=0) + 1
         day = stamp[:4] + "-" + stamp[4:6] + "-" + stamp[6:8]
-        added, new = [], []
+        added, new, titles = [], [], time.monotonic() + TITLES_SECONDS
         for url in urls:
-            title = _title(url)
+            title = _title(url, titles)
             new.append(_cells(heads, sid=f"S{next_id}", title=title, link=url, day=day))
             added.append({"kind": "url", "title": title, "key": research_screen.source_key(url), "id": f"S{next_id}"})
             next_id += 1

@@ -1058,6 +1058,7 @@ class Dashboard(BaseHTTPRequestHandler):
             if self.headers.get_content_type() != "application/octet-stream" or self.headers.get("Transfer-Encoding"):
                 return self._json(415, {"error": "Expected the file's bytes as application/octet-stream."})
             try:
+                self.connection.settimeout(source_intake.STAGE_READ_SECONDS)  # one wait; stage bounds the whole upload
                 return self._json(*source_intake.stage(self.headers.get("X-SD-File-Name", ""),
                                                         self.headers.get("Content-Length", ""), self.rfile))
             except OSError as problem:
