@@ -204,6 +204,13 @@ SERVICES = {"services": [
 CLEAN_DOCTOR = health_collectors.parse_doctor("== doctor\n  ok      profile recorded: hub\n\n  no hard failures\n", 0)
 CLEAN_DISK = {**DISK, "volumes": [DISK["volumes"][1]], "build": {"checked": 4, "merged": [], "unread": []}}
 CLEAN_BRANCHES = {"repos": 2, "merged": [], "no_default": [], "unread": []}
+#: `merged_worktrees`' answer (sd:5105): one tree the lane merged that can go, and one a process works in.
+WORKTREES = {"trees": [
+    {"path": "/work/wt-merged", "head": "d" * 40, "branch": "feat/merged", "repo": "/checkouts/alpha",
+     "repo_path": "/checkouts/alpha", "item": 5105, "lane_branch": "feat/merged", "kept": ""},
+    {"path": "/work/wt-busy", "head": "f" * 40, "branch": "feat/busy", "repo": "/checkouts/alpha",
+     "repo_path": "/checkouts/alpha", "item": 5104, "lane_branch": "feat/busy", "kept": "a process works in /work/wt-busy"},
+], "revision": "e" * 64}
 REAL_DISK_SCAN, REAL_BRANCH_SCAN, REAL_DOCTOR_SCAN = (health_collectors.disk_scan, health_collectors.branch_scan,
                                                      health_collectors.doctor_scan)
 
@@ -287,7 +294,7 @@ class TheDocument(Collectors, ScreenCase):
                           ("br", True), ("dep", True), ("sec", True), ("ports", True), ("prot", True), ("svc", True),
                           ("mir", True), ("doc", True)])
         for area in areas:
-            if area["id"] not in ("br", "ports", "prot", "svc", "cred", "dep", "sec", "mir", "doc"):
+            if area["id"] not in ("wt", "br", "ports", "prot", "svc", "cred", "dep", "sec", "mir", "doc"):
                 self.assertTrue(area["missing"], f"{area['id']} names nothing it does not read")
             if not area["read"]:
                 self.assertEqual((area["rows"], area["error"], area["source"]), ([], "", None))
@@ -1343,7 +1350,7 @@ window.shell.state = (s, at) => { OUT.states.push(s); (OUT.slots = OUT.slots || 
 
 
 SNOOZED_TYPES = ("check", "storage folder", "build output", "volume", "worktree registrations", "unread registrations",
-                 "merged branches", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
+                 "merged branches", "merged worktrees", "port", "branch protection", "dependabot alerts", "secret scanning", "credential", "service",
                  "dashboard service", "vault mirror")
 
 
@@ -1425,6 +1432,8 @@ class TheScript(Collectors, ScreenCase):
             ["volume.df", "volume", "safe", "b", False, False],
             ["worktree registrations.prune", "worktree registrations", "confirm", "p", True, False],
             ["merged branches.delete", "merged branches", "confirm", "d", True, False],
+            ["merged worktrees.remove", "merged worktrees", "confirm", "r", True, False],
+            ["safe cleanups.clean", "safe cleanups", "confirm", "a", True, False],
             ["service.restart", "service", "confirm", "r", True, False],
             ["service.start", "service", "confirm", "s", True, False],
             ["dashboard service.kickstart", "dashboard service", "safe", "l", False, False],
@@ -1456,7 +1465,7 @@ class TheScript(Collectors, ScreenCase):
         areas = out["R"]["areas"]
         # The Checkouts view draws its own areas only.
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', areas), ["wt", "br"])
-        self.assertIn("<b>Not read here:</b> merged worktrees still on disk", areas)
+        self.assertNotIn("<b>Not read here:</b>", areas)
         self.assertIn('data-id="gone:group/alpha"', areas)
         self.assertIn("4 views · 1 warning row wants you · read", out["R"]["sub"])
         self.assertEqual(out["attention"][-1], {"state": "warning", "n": 1, "what": "findings want you"})
@@ -1861,6 +1870,67 @@ shellRun(cmd('merged branches.delete'), o); await flush();""")
         self.assertEqual([post[:2] for post in out["posts"]],
                          [["/api/health/cleanup", {"row": "br:/checkouts/alpha", "revision": "a" * 64}]])
         self.assertEqual(out["toasts"][-1][0], "alpha: 3 merged branches not deleted: 1 done")
+
+    def merged_page(self, body, answer):
+        """The Checkouts view with two merged worktrees, one that can go, and cleanup posts answered by `answer` (JS)."""
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                     protection=protection_of(PROTECTION), branches=scan_of({**BRANCHES, "worktrees": WORKTREES}))
+        return self.run_page("ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : path === '/api/health/cleanup' ? ("
+                             + answer + ")(body) : [404, { error: 'no answer' }];\nOUT.gets = [];\n" + body, doc=doc)
+
+    def test_remove_merged_names_the_trees_it_takes_and_those_it_keeps_then_posts_its_revision(self):
+        out = self.merged_page("""var o = C.get('wt:merged'), c = cmd('merged worktrees.remove');
+R.on = c.when(o); R.why = c.consequence(o); R.cli = c.cli(o); R.none = c.when({ ...o, removable: [] });
+shellRun(c, o); await flush();""", "body => [200, { ok: true, row: body.row, done: ['/work/wt-merged'], refused: [] }]")
+        self.assertIs(out["R"]["on"], True)
+        self.assertEqual(out["R"]["why"], "Removes 1 worktrees the lane merged, with their build output, their local branch and "
+                                          "origin's: /work/wt-merged. Keeps 1: /work/wt-busy (a process works in /work/wt-busy). "
+                                          "Each is checked again first. This cannot be undone.")
+        self.assertEqual(out["R"]["cli"], "git -C /checkouts/alpha worktree remove /work/wt-merged && git -C /checkouts/alpha "
+                                          f"update-ref -d refs/heads/feat/merged {'d' * 40}")
+        self.assertEqual(out["R"]["none"], "every merged worktree has a reason to stay: Details lists each")
+        self.assertEqual(out["confirms"], ["merged worktrees.remove"])
+        self.assertEqual([post[:2] for post in out["posts"]], [["/api/health/cleanup", {"row": "wt:merged", "revision": "e" * 64}]])
+
+    def test_clean_all_safe_lists_every_ready_cleanup_before_it_runs_them_in_turn(self):
+        out = self.merged_page("""var o = C.get('cleanup:safe'), c = cmd('safe cleanups.clean');
+R.areas = BODY().html; R.why = c.consequence(o); R.cli = c.cli(o);
+shellRun(c, o); await flush();""", "body => body.row.startsWith('br:') ? [409, { error: 'The merged branches changed.', reload: true }]"
+                                    " : [200, { ok: true, row: body.row, done: ['x'], refused: [] }]")
+        self.assertIn('<p class="counts">3 cleanups ready in Checkouts · ', out["R"]["areas"])
+        why = out["R"]["why"]
+        self.assertTrue(why.startswith("Runs 3 cleanups in turn, each checked again first: "), why)
+        for what in ("group/alpha: 2 worktrees registered, directory gone (prunes /work/wt-a (feat/a), /work/wt-b (fix/b))",
+                     "alpha: 3 merged branches not deleted (deletes feat/one, feat/two, fix/three)",
+                     "2 merged worktrees are still on disk (removes /work/wt-merged with their branches)"):
+            self.assertIn(what, why)
+        self.assertEqual(out["confirms"], ["safe cleanups.clean"])
+        self.assertEqual([post[1]["row"] for post in out["posts"]], ["gone:group/alpha", "br:/checkouts/alpha", "wt:merged"])
+        self.assertEqual(out["posts"][2][1]["revision"], "e" * 64)
+        # The refused row wrote nothing and the run went on; the page reads Health again once at the end.
+        self.assertRegex(out["toasts"][-1][0], r"^Clean all safe · group/alpha: .*: 1 done · alpha: 3 merged branches not "
+                                               r"deleted: not changed \(The merged branches changed\.\) · 2 merged worktrees .*: 1 done$")
+        self.assertEqual(out["gets"], ["/api/health/checkouts", "/api/health/summary"])
+
+    def test_clean_all_safe_runs_only_the_rows_its_confirm_listed(self):
+        # A read between the confirm and the run brings a fourth ready row; the run posts only the three it listed.
+        out = self.merged_page("""var o = C.get('cleanup:safe'), c = cmd('safe cleanups.clean');
+R.why = c.consequence(o);
+var br = DOC.areas.find(a => a.id === 'br');
+br.rows.push({ ...br.rows.find(r => r.id === 'br:/checkouts/alpha'), id: 'br:/checkouts/gamma', what: 'gamma: 1 merged branch not deleted' });
+window.PAGE_COMMANDS.find(x => x.label === 'Read Health again').run(); await flush();
+R.now = c.cli(o).split('\\n').length;
+await c.run(o); await flush();""", "body => [200, { ok: true, row: body.row, done: ['x'], refused: [] }]")
+        self.assertEqual(out["R"]["now"], 4)
+        self.assertEqual([post[1]["row"] for post in out["posts"]], ["gone:group/alpha", "br:/checkouts/alpha", "wt:merged"])
+
+    def test_clean_all_safe_stops_at_an_unknown_outcome(self):
+        out = self.merged_page("shellRun(cmd('safe cleanups.clean'), C.get('cleanup:safe')); await flush();",
+                               "body => body.row.startsWith('br:') ? [502, { error: 'bad gateway', outcome: 'unknown' }]"
+                               " : [200, { ok: true, row: body.row, done: ['x'], refused: [] }]")
+        self.assertEqual([post[1]["row"] for post in out["posts"]], ["gone:group/alpha", "br:/checkouts/alpha"])
+        self.assertRegex(out["toasts"][-1][0], r"^Clean all safe stopped · not known what changed · alpha: 3 merged branches "
+                                               r"not deleted: .* Before it: group/alpha: .*: 1 done\. Health was read again")
 
     def test_details_show_the_facts_and_the_registrations_behind_a_row(self):
         out = self.run_page("document.dispatchEvent(new CustomEvent('shell:open', { detail: 'gone:group/alpha' })); R.d = ELS.details.html;")

@@ -1,4 +1,5 @@
-"""Health's three cleanup writes (sd:3393): prune registrations, delete merged branches, remove build output.
+"""Health's cleanup writes (sd:3393, sd:5105): prune registrations, delete merged branches, remove build output and
+remove merged worktrees.
 
 The page posts `/api/health/cleanup` with the row it showed and that row's `revision`. The row names the action:
 
@@ -8,6 +9,15 @@ The page posts `/api/health/cleanup` with the row it showed and that row's `revi
                     Its subject is each deletable branch by name and tip.
   build:merged      removes `target/`, `node_modules/` and `.venv/` from registered worktrees that are merged into
                     origin/HEAD and clean. Its subject is each such worktree's path, head, status and folders.
+  wt:merged         removes the registered worktrees at a head the lane merged (sd:5105), with their branch here
+                    and on origin. Its subject is each such worktree's path, head, branches and whether it can go.
+
+A merged worktree goes in four steps, each checked again just before it, in an order that leaves the tree on disk
+until the last one, so a stop between any two leaves it in the next read, which finishes the rest:
+`push --force-with-lease=refs/heads/<b>:<head> origin --delete <b>` when origin's branch is at the merged head,
+`checkout --detach` in the tree, `update-ref -d refs/heads/<b> <head>`, and `git worktree remove <path>` without
+`--force`, which refuses uncommitted or untracked files on its own. A branch that moved here or on origin, a process
+working in the tree, or files that are not build output keep the tree, and the answer says why.
 
 Each write reads its subject again first and refuses a digest that differs from the page's (409): evidence from
 another row, or a subject that changed since the read, writes nothing. Then each step keeps git's own guard:
@@ -199,6 +209,100 @@ def remove_build_output(connection, expected: str):
     return _done("build:merged", done, refused, "removed")
 
 
+def _ref(walk: Walk, path: Path, *args: str) -> str:
+    """The object a `rev-parse -q --verify` or `ls-remote` names, '' for none; no answer is `_Unread`."""
+    found = walk.git(path, *args)
+    if found is None or found.returncode not in ((0,) if args[0] == "ls-remote" else (0, 1)):
+        raise _Unread(f"git {' '.join(args)} gave no answer")
+    return found.stdout.split()[0] if found.returncode == 0 and found.stdout.split() else ""
+
+
+def _remove_tree(walk: Walk, tree: dict, done: list) -> str:
+    """Remove one merged worktree, its branch and origin's: '' when it went, or why it stays.
+
+    Each step that lands goes on `done` as it lands (`origin/<branch>`, then the tree), so a refusal or a stop after
+    the remote delete still names it, and the write is never a 400 that says nothing was written.
+    """
+    where, repo, branch, head = Path(tree["path"]), Path(tree["repo_path"]), tree["lane_branch"], tree["head"]
+    if branch.startswith("-"):
+        return "a branch name that starts with - is not passed to git"
+    if _ref(walk, where, "rev-parse", "-q", "--verify", "HEAD") != head:
+        return "its head moved since the read"
+    current = walk.git(where, "symbolic-ref", "-q", "--short", "HEAD")
+    if current is None or current.returncode not in (0, 1):
+        raise _Unread("its branch was not read")
+    kept = health_collectors.merged_tree_kept(walk, {**tree, "branch": current.stdout.strip()},
+                                              health_collectors._cwds(walk))
+    if kept:
+        return kept
+    local = remote = ""
+    if branch:
+        local = _ref(walk, repo, "rev-parse", "-q", "--verify", f"refs/heads/{branch}")
+        if local and local != head:
+            return f"{branch} moved to {local[:12]} since the merge"
+        holder = walk.git(repo, "for-each-ref", "--format=%(worktreepath)", f"refs/heads/{branch}")
+        if holder is None or holder.returncode != 0:
+            raise _Unread(f"where {branch} is checked out was not read")
+        held = holder.stdout.strip()
+        if held and Path(held).resolve() != where.resolve():
+            return f"{branch} is checked out in {held}"
+        remote = _ref(walk, repo, "ls-remote", "origin", f"refs/heads/{branch}")
+        if remote and remote != head:
+            return f"origin/{branch} is at {remote[:12]}, not the merged head"
+    if remote:
+        pushed = walk.git(repo, "push", "-q", f"--force-with-lease=refs/heads/{branch}:{head}", "origin", "--delete", branch)
+        # origin's ref, not the exit, says what happened: a push that timed out may have landed.
+        if _ref(walk, repo, "ls-remote", "origin", f"refs/heads/{branch}"):
+            said = (pushed.stderr.strip().splitlines() or ["git refused it"])[-1] if pushed is not None else "no answer"
+            return f"origin/{branch} was not deleted: {said}"
+        done.append(f"origin/{branch}")
+    if branch and current.stdout.strip() == branch:
+        walk.git(where, "checkout", "-q", "--detach")
+        detached = walk.git(where, "symbolic-ref", "-q", "HEAD")
+        if detached is None or detached.returncode != 1:
+            raise _Unread("its checkout of the merged head was not confirmed detached")
+    if local:
+        deleted = walk.git(repo, "update-ref", "-d", f"refs/heads/{branch}", head)
+        if _ref(walk, repo, "rev-parse", "-q", "--verify", f"refs/heads/{branch}"):
+            if deleted is None:
+                raise _Unread("git update-ref -d gave no answer")
+            return f"{branch} moved since the read, so update-ref kept it"
+    removed = walk.git(repo, "worktree", "remove", str(where))
+    if where.exists():
+        said = removed.stderr.strip().splitlines() if removed is not None else []
+        if removed is None:
+            raise _Unread("git worktree remove gave no answer")
+        return next((line for line in said if line.startswith("fatal:")), said[-1] if said else "git kept it")
+    done.append(str(where))
+    return ""
+
+
+def remove_merged_worktrees(connection, expected: str):
+    from sd_db import repos
+
+    keys = [row["path"] for row in repos.registered(connection)]
+    try:
+        found = health_collectors.merged_worktrees(Walk(WRITE_SECONDS, "the merged worktree read"), keys,
+                                                   health_collectors.merged_heads(connection))
+    except reads.OverBudget as error:
+        raise ValueError(f"The merged worktrees were not read: {error}. Nothing was removed.") from None
+    if found["revision"] != expected:
+        raise _stale("The merged worktrees")
+    done, refused = [], []
+    for tree in found["trees"]:
+        if tree["kept"]:
+            refused.append({"name": tree["path"], "why": tree["kept"]})
+            continue
+        try:
+            kept = _remove_tree(Walk(WRITE_SECONDS, f"the removal of {tree['path']}"), tree, done)
+        except (reads.OverBudget, _Unread) as error:
+            return _unknown(f"{tree['path']}: {error}; it and the worktrees after it were left where that step stopped. "
+                            "Read Health again: a tree still on disk is offered again", done=done, refused=refused)
+        if kept:
+            refused.append({"name": tree["path"], "why": kept})
+    return _done("wt:merged", done, refused, "removed")
+
+
 def request(payload: dict):
     """Check the page's request, then return the write: `action_route`'s contract."""
     values = dict(payload)
@@ -212,4 +316,6 @@ def request(payload: dict):
         return lambda connection: delete_branches(connection, row[3:], expected)
     if row == "build:merged":
         return lambda connection: remove_build_output(connection, expected)
-    raise ValueError("Only a registrations, merged branches or build output row has a cleanup.")
+    if row == "wt:merged":
+        return lambda connection: remove_merged_worktrees(connection, expected)
+    raise ValueError("Only a registrations, merged branches, build output or merged worktrees row has a cleanup.")
