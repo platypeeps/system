@@ -23,6 +23,9 @@ source guarded on its own so one that fails is a reason and not an empty list
 - `assignments`: the latest assignments and the history counted by status.
 - `sessions`: `fleet.collect("sessions")`, v1 Operations > Sessions:
   worktree counts and the sd-* processes it lists.
+- `claude`: `claude_sessions.document`, each Claude session on this Mac: its
+  current task, the age of its last action, whether it waits on the operator
+  and whether it is safe to exit (sd:5106).
 - `services` and `jobs`: `services.inventory` and `operations.inventory`,
   v1 Operations > Services and > Jobs, with the revision each write sends.
   Each job carries `last_run`, read from `<cron_root>/logs/.<job>.stamp`, the
@@ -62,7 +65,7 @@ from pathlib import Path
 from sd_db import channels, database, operations, progress, protection, reads, repos, workflow
 from sd_db.errors import SdDbError
 
-from . import adversarial, fix_session
+from . import adversarial, claude_sessions, fix_session
 from . import fleet as fleet_module
 from .repos_screen import primary
 
@@ -491,12 +494,19 @@ def _jobs(connection, backend) -> list[dict]:
             for job in operations.inventory(connection, backend=backend)["jobs"]]
 
 
-def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None) -> dict:
+def _claude(read, connection, now: str, claude) -> dict:
+    out = (claude or claude_sessions.document)(connection, now=now, fleet=read)
+    if out["sessions"] is None:
+        raise ValueError(out["sources"]["agents"] or "no Claude session could be listed")
+    return out
+
+
+def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None, services=None, claude=None) -> dict:
     """Every source the page reads, and the reason for each one that could not be read.
 
     `fleet` is `fleet.collect`'s shape, the seam a test fills; `jobs` and
     `services` are the operations and services backends, the launchd ones
-    by default.
+    by default; `claude` is `claude_sessions.document`.
     """
     read = fleet or fleet_module.collect
     out: dict = {"read": now, "sources": {}}
@@ -507,6 +517,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, jobs=None,
                             ("lane", lambda: _lane(connection)),
                             ("assignments", lambda: _assignments(connection)),
                             ("sessions", lambda: _sessions(read)),
+                            ("claude", lambda: _claude(read, connection, now, claude)),
                             ("services", lambda: _services(connection, services)),
                             ("jobs", lambda: _jobs(connection, jobs or operations.LaunchdBackend()))):
         try:
