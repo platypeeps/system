@@ -750,6 +750,21 @@ class TheToolbarStandard(unittest.TestCase):
             with self.subTest(page=page.name, stale=True):
                 self.assertLessEqual(self.UNREACHED.get(page.name, set()), seen)
 
+    def test_each_view_keeps_the_view_switch_and_row_one_visible(self):
+        # Review round 1: HOA's row 1 sat inside view-overview, so picking Tasks hid the tabs. Select each view as
+        # shell.viewApply (view-<id>) and places.place ([data-place-view]) do: every other panel turns hidden.
+        panel = lambda a: a.get("data-place-view") or ((a.get("id") or "").startswith("view-") and a["id"])
+        for page in self.PAGES:
+            tags = tree(page)
+            views = [panel(a) for (_t, _c, _i, a), _u in tags if panel(a)]
+            for (tag, cls, id_, _a), up in tags:
+                if id_ not in ("toolbar", "viewswitch") and not cls & {"viewswitch", "place-switch"}:
+                    continue
+                inside = {panel(a) for _t, _c, _i, a in up if panel(a)}
+                for shown in views:
+                    with self.subTest(page=page.name, el=id_ or sorted(cls), view=shown):
+                        self.assertEqual(inside - {shown}, set(), "selecting this view hides the switch")
+
     def test_the_shell_draws_the_view_switch_at_the_start_of_row_one(self):
         self.assertIn("viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);",
                       (STATIC / "shell.js").read_text(encoding="utf-8"))
