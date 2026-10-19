@@ -1,8 +1,8 @@
-# Daily review digest: vault decision-queue notes (Blog Ideas, Skill
-# Proposals, Tips and Tricks, Topics, Market Watch) filed as a brief on Today, with signed
-# accept/decline/track/adopt buttons. Runs after the nightly generators
-# that fill those queues, so the queues are fresh.
-# Nothing pending = no brief. Exits 1 only when the brief could not be
-# filed.
+# Daily review digest: the decision queues' base rows (Blog Ideas, Skill
+# Proposals, Tips and Tricks, Topics, Market Watch) from the workflow database,
+# filed as a brief on Today; each card opens its row on Tasks. Runs after the
+# nightly generators that fill those queues, so the queues are fresh.
+# Nothing pending = no brief. Exits 1 when the rows cannot be read or the
+# brief could not be filed.
 JOB_SCHEDULE="30 7 * * *"
 JOB_COMMAND="sh \"$ROOT/../local-obsidian-review/obsidian-review.sh\" run"
