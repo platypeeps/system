@@ -1,9 +1,9 @@
 /* Hallmark · component: confirm page · genre: modern-minimal · theme: ui-design foundation, tokens unchanged
- * states: default · hover · focus · active · disabled (n/a: a link or button is always live) · loading (n/a) · error · success
- * contrast: pass (ink on paper, paper on ink, warning-ink on warning-lamp, muted on panel)
+ * states: default · hover · focus (the theme control) · error (warning, unknown)
+ * contrast: pass (ink on paper, ink-2 on panel, muted on well)
  * pre-emit critique: P4 H4 E4 S4 R5 V3
  *
- * The page task-actions.sh sends: one panel, one button, nothing decorative.
+ * The page task-actions.sh sends: one panel, nothing decorative.
  * It names foundation tokens and never a colour value. */
 * { box-sizing: border-box; }
 html, body { overflow-x: clip; }
@@ -20,31 +20,15 @@ body {
   background: var(--color-panel); border: var(--rule-hair) solid var(--color-rule);
   border-radius: var(--radius-md);
 }
-.panel:not([data-state="confirm"]) { border-left-width: var(--rule-lamp); }
-.panel[data-state="ok"]      { border-left-color: var(--color-ok); }
+.panel[data-state] { border-left-width: var(--rule-lamp); }
 .panel[data-state="warning"] { border-left-color: var(--color-warning-lamp); }
 .panel[data-state="unknown"] { border-left-color: var(--color-unknown); }
 .panel h1 { margin: 0 0 var(--space-xs); font-size: var(--text-lg); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
 .panel p { margin: 0 0 var(--space-md); color: var(--color-ink-2); overflow-wrap: anywhere; }
-.panel p.hint { margin: var(--space-sm) 0 0; font-size: var(--text-sm); color: var(--color-muted); }
-.panel form { margin: 0; }
 
 .g { display: inline-block; margin-right: var(--space-2xs); font-weight: 600; }
-.panel[data-state="ok"] .g      { color: var(--color-ok); }
 .panel[data-state="warning"] .g { color: var(--color-warning); }
 .panel[data-state="unknown"] .g { color: var(--color-unknown); }
-
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; width: 100%;
-  min-height: var(--row-touch); padding: 0 var(--space-md);
-  border: var(--rule-hair) solid var(--color-ink); border-radius: var(--radius-md);
-  background: var(--color-ink); color: var(--color-paper);
-  font: 500 var(--text-sm)/1 var(--font-ui); white-space: nowrap; cursor: pointer;
-}
-.btn:hover { background: var(--color-ink-2); border-color: var(--color-ink-2); }
-.btn:active { transform: translateY(1px); }
-.btn.danger { background: var(--color-warning-lamp); border-color: var(--color-warning-lamp); color: var(--color-warning-ink); }
-.btn.danger:hover { filter: brightness(1.08); }
 
 .theme {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 2px;
@@ -63,7 +47,6 @@ body {
 :root:not([data-theme]) .theme { display: none; }
 
 @media (forced-colors: active) {
-  .panel, .btn, .theme { border: 1px solid CanvasText; }
+  .panel, .theme { border: 1px solid CanvasText; }
   .theme button[aria-pressed="true"] { outline: 2px solid Highlight; }
 }
-@media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
