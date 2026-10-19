@@ -10,7 +10,7 @@ window.PAGE_COMMANDS = [
   { label: 'Show or hide parked pieces', icon: 'archive', run: () => document.getElementById('show-parked').click() },
 ];
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'pieces not read' };
-// Realm views (sd:5064): Personal, the realms.conf realms (SHELL_REALMS, from /ui/sections.js), then All. A piece's realm is
+// Realm views (sd:5064): Personal, the dashboard.realms realms (SHELL_REALMS, from /ui/sections.js), then All. A piece's realm is
 // places.realm_of of its repo, as on Tasks; a view no piece is in hides once the pieces are read. Board and editor are this
 // page's panels and b and e its v keys, so a realm takes neither.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },

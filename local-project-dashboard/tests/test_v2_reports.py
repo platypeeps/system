@@ -4,9 +4,9 @@ What this slice promises: `/reports` answers under the shared policy and loads
 its script before `shell.js`; `/api/reports` gives the newest reports v1
 lists, each with its provenance, the revision the acknowledge route checks
 and the followups that hold it, the launchd jobs, each job's runs per local
-day from its `cron-jobs.sh` log, and the job families the config folder's
-`report-families.conf` names (job names are the operator's, so the public
-checkout carries only `report-families.conf.example`). A source that fails is
+day from its `cron-jobs.sh` log, and the job families the
+`dashboard.report_families` setting row names (sd:5109; job names are the
+operator's, so the public checkout carries none). A source that fails is
 `null` with its reason. The page registers the design's Reports commands with the
 design's ids, labels, keys and risks; Acknowledge posts v1's route, and its
 Undo posts `/api/reports/<n>/reopen` with the revision the acknowledge answered
@@ -44,7 +44,12 @@ V2 = Path(v2.__file__).resolve().parent
 REPORTS_JS = (V2 / "static" / "reports.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
-EXAMPLE = Path(reports_screen.__file__).resolve().parents[1] / "report-families.conf.example"
+#: A family list, as the `dashboard.report_families` row or its old file holds it (sd:5109); the job names are examples.
+FAMILIES = """family|backups|Backups|hard-drive-download|db-backup-nightly,offsite-verify
+family|repos|Repos & setup|git-compare|repo-sync-nightly,brew-doctor-nightly
+family|host|Host health|heart-pulse|health-check-nightly,watchdog-daily
+family|agents|Agent routines|bot|morning-brief,weekly-digest
+"""
 #: The machine's offset in the fixtures: the logs write -0600, so local days are those dates.
 TZ = timezone(timedelta(hours=-6))
 #: Two days after the newest fixture report.
@@ -121,9 +126,11 @@ class TheDocument(ScreenCase):
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.ids = seed(self)
         self.enterContext(mock.patch.object(reports_screen, "_html_folders", lambda: 3))
+        self.families = self.dir / "families.conf"
+        self.families.write_text(FAMILIES, encoding="utf-8")
 
     def doc(self, **kw):
-        kw.setdefault("config", EXAMPLE)
+        kw.setdefault("config", self.families)
         return reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, **kw)
 
     def test_each_report_carries_its_provenance_revision_and_the_followup_that_holds_it(self):
@@ -453,13 +460,15 @@ class TheScript(ScreenCase):
         super().setUp()
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.ids = seed(self)
+        self.families = self.dir / "families.conf"
+        self.families.write_text(FAMILIES, encoding="utf-8")
         with mock.patch.object(reports_screen, "_html_folders", lambda: 2):
-            self.doc = reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=EXAMPLE)
+            self.doc = reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=self.families)
 
     def served(self, tail=None):
         with mock.patch.object(reports_screen, "_html_folders", lambda: 2), \
              mock.patch.object(reports_screen, "TAIL_BYTES", tail or reports_screen.TAIL_BYTES):
-            return reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=EXAMPLE)
+            return reports_screen.document(self.connection, now=LATER, jobs=self.jobs, tz=TZ, config=self.families)
 
     def run_page(self, body, answer=None, doc=None, prelude=""):
         doc = doc or self.doc
@@ -738,7 +747,7 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         last = out["states"][-1]
         self.assertEqual(last["kind"], "partial")
         self.assertIn("cadence (no log root)", last["text"])
-        self.assertIn("project-dashboard/report-families.conf.example", last["text"])
+        self.assertIn("No family list: set dashboard.report_families on Settings", last["text"])
         self.assertIn("no family list", out["R"]["lamps"])
         self.assertIn("The run cadence was not read: no log root.", out["R"]["cad"])
         out = self.run_page("", answer="() => [500, { error: 'boom' }]")

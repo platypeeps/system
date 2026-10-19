@@ -29,7 +29,7 @@ def _draft(document: str | None) -> tuple[list[str], int]:
 def document(connection, *, now):
     """What the v2 Writing page reads: every piece, parked ones too, with its gates, moves and files."""
     pieces = []
-    found = realms()
+    found = realms(connection)
     rules = found["list"] if found["state"] in ("read", "partial") else None
     for row in writing.list_pieces(connection, include_parked=True):
         full = writing.piece_state(connection, row["id"])

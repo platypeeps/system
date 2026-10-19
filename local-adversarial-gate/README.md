@@ -58,8 +58,8 @@ them codex uses its own configuration. `--effort` takes one lowercase word (`low
 `high`): the value lands in a TOML override, where a quote or an `=` would be another one.
 `run` reads no config of its own. The dashboard's Adversarial review action (sd:5064,
 `local-project-dashboard/sd_dashboard/adversarial.py`) reads its model and effort from
-`<config>/adversarial-gate/.env`, `ADVERSARIAL_MODEL` and `ADVERSARIAL_EFFORT`, and falls back
-to `gpt-6-astra` and `high`; copy `.env.example` there to change them.
+the workflow database settings `adversarial.model` and `adversarial.effort`, edited on the
+dashboard's Settings page (sd:5109), and falls back to `gpt-6-astra` and `high`.
 The four dashboard lenses ask for `Recommendation:`, `Evidence:` and `Repo:` lines under each
 hypothesis: the action lists them in a brief and asks each as a review question, which the
 operator approves into a task or rejects.
@@ -75,7 +75,6 @@ operator approves into a task or rejects.
 | `lenses/brief.md` | A routine brief a reader acts on: the action it drives, dates, attribution, omissions. Takes `{INPUT_PATH}`. |
 | `lenses/repo.md` | A whole checkout: documents the code contradicts, rules it breaks, failure handling, tests. Takes `{REPO_NAME}`. |
 | `lenses/change.md` | A branch against its base plus its pull-request body: claims, failure paths, steps, older state, guards, tests. Takes `{INPUT_PATH}`, `{BASE}` and `{HEAD}`. |
-| `.env.example` | The dashboard action's model and effort, both commented out: the defaults apply without a copy. |
 | `adversarial-gate.sh` | Entrypoint — `render`, `run`, `rank`, `lenses`, `test`. |
 | `rank.py` | The optional Jev ordering: parse the findings, ask one question each, reorder and label. Never removes one. |
 | `tests/test_run.py` | The `run` regression suite (sd:790): the bound fires, an empty or missing `--out` is refused. |

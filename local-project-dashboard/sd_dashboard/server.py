@@ -449,6 +449,13 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
                     "restart": services.restart_service}[action]
         return lambda connection: mutation(connection, label, backend=services_backend,
             expected_revision=values["revision"], who="dashboard")
+    if path == "/api/satellites/refresh":
+        from .management_screen import refresh_satellites
+
+        # sd:5108: one request row every satellite answers on its next follow run; the post carries nothing.
+        if values:
+            raise ValueError("Refresh satellites takes no values.")
+        return lambda connection: refresh_satellites(connection)
     match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot|github-issues|jira-project)", path)
     if match:
         from .management_screen import set_repo
@@ -1028,14 +1035,14 @@ class Dashboard(BaseHTTPRequestHandler):
 
         badges, realms = {}, []
         if self._session(context):
-            # The realm labels are the operator's own (realms.conf), so a request without a session gets none.
-            realms = places.realms()["list"]
             try:
                 connection = sd_db.connect(self.database, write=False)
             except (FileNotFoundError, SdDbError, sqlite3.Error):
                 # No live page can be read, so each says unknown; the kept ones still show.
                 connection = None
             try:
+                # The realm labels are the operator's own (dashboard.realms), so a request without a session gets none.
+                realms = places.realms(connection)["list"]
                 badges = self.badges.read(self._read(connection, "", {}), connected=connection is not None)
             finally:
                 if connection is not None:

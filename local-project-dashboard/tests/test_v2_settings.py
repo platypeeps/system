@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -22,7 +23,8 @@ from unittest import mock
 
 from sd_db import writes
 
-from sd_dashboard import pack_library, realm_sweep, settings_screen, v2
+from sd_dashboard import (adversarial, hoa_screen, pack_library, places, realm_sweep, reports_screen, setting_rows,
+                          settings_screen, v2)
 
 from test_v2_registry import GROUPS, Registers
 from test_v2_tasks import FETCH_JS, STAND_IN
@@ -87,7 +89,7 @@ class StubSd:
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "settings", "Settings", "/settings", ("/api/settings", "/api/settings/fleet", "/api/settings/sweep")
+    page, section, route, api = "settings", "Settings", "/settings", ("/api/settings", "/api/settings/fleet", "/api/settings/row", "/api/settings/list")
 
 
 class TheFleetRead(unittest.TestCase):
@@ -194,19 +196,19 @@ class TheSweepSettings(BrowserSession):
         self.assertEqual(held["sweep.personal.mail_query"], (None, "unset"))
 
     def test_a_set_writes_the_row_and_the_runner_reads_it(self):
-        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.work.mail_query", "value": " in:inbox ", "before": None})
+        status, _, answer = self.post("/api/settings/row", {"key": "sweep.work.mail_query", "value": " in:inbox ", "before": None})
         self.assertEqual((status, answer), (200, {"key": "sweep.work.mail_query", "value": "in:inbox", "was": None}))
         rows = writes.read_settings(self.connection, ["sweep.work.mail_query"])
         self.assertEqual(rows, {"sweep.work.mail_query": "in:inbox"})
         self.assertEqual(realm_sweep.filters("work", {**rows, "sweep.work.followups_repo": "/r"})[0]["mail_query"], "in:inbox")
-        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.work.mail_query", "value": "", "before": "in:inbox"})
+        status, _, answer = self.post("/api/settings/row", {"key": "sweep.work.mail_query", "value": "", "before": "in:inbox"})
         self.assertEqual((status, answer["value"], answer["was"]), (200, None, "in:inbox"))
         self.assertEqual(writes.read_settings(self.connection, ["sweep.work.mail_query"]), {"sweep.work.mail_query": None})
         self.assertEqual(self.sd.calls(), [], "a sweep setting ran sd config")
 
     def test_a_row_changed_since_the_read_refuses_with_409_and_keeps_its_value(self):
         writes.set_setting(self.connection, "sweep.personal.drive_exclude", "Example Drive")
-        status, _, answer = self.post("/api/settings/sweep", {"key": "sweep.personal.drive_exclude", "value": "Other", "before": None})
+        status, _, answer = self.post("/api/settings/row", {"key": "sweep.personal.drive_exclude", "value": "Other", "before": None})
         self.assertEqual(status, 409, answer)
         self.assertIn("changed since it was read", answer["error"])
         self.assertEqual(writes.read_settings(self.connection, ["sweep.personal.drive_exclude"]),
@@ -217,9 +219,111 @@ class TheSweepSettings(BrowserSession):
                         {"key": "sweep.work.mail_query", "value": "x"},
                         {"key": "sweep.work.mail_query", "value": 3, "before": None},
                         {"key": "sweep.work.mail_query", "value": "x", "before": 3}):
-            status, _, answer = self.post("/api/settings/sweep", payload)
+            status, _, answer = self.post("/api/settings/row", payload)
             self.assertEqual(status, 400, (payload, answer))
         self.assertEqual(writes.read_settings(self.connection, list(realm_sweep.SETTINGS)), {})
+
+
+class TheDashboardSettings(BrowserSession):
+    """sd:5109: the Dashboard section lists the dashboard lists and the adversarial review's model and effort as rows.
+    A list saves with the digest of the source and text shown, parsed first; the first Save imports the old file."""
+
+    def setUp(self):
+        super().setUp()
+        self.sd = StubSd(self)
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.realms = self.dir / "realms.conf"
+        self.enterContext(mock.patch.object(places, "REALMS_CONFIG", self.realms))
+        self.enterContext(mock.patch.object(reports_screen, "FAMILIES_CONFIG", self.dir / "report-families.conf"))
+        self.enterContext(mock.patch.object(hoa_screen, "THRESHOLDS", self.dir / "hoa-thresholds.conf"))
+
+    def read(self):
+        status, _, body = self.request("/api/settings", headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        doc = json.loads(body)
+        self.assertEqual(doc["dashboard_reason"], "")
+        return {k["key"]: k for k in doc["dashboard"]}
+
+    def save(self, key, text, before):
+        return self.post("/api/settings/list", {"key": key, "text": text, "before": before})
+
+    def test_the_read_lists_each_list_with_its_source_and_the_review_keys(self):
+        self.realms.write_text("realm|work|Work|/repos/example-work/*\n", encoding="utf-8")
+        writes.set_setting(self.connection, "dashboard.hoa_thresholds", "tank|below|12")
+        writes.set_setting(self.connection, "adversarial.model", "gpt-fixture")
+        held = self.read()
+        self.assertEqual(list(held), list(setting_rows.LISTS) + list(adversarial.SETTINGS))
+        self.assertEqual((held["dashboard.realms"]["value"], held["dashboard.realms"]["source"]),
+                         ("realm|work|Work|/repos/example-work/*\n", "file"))
+        self.assertEqual((held["dashboard.hoa_thresholds"]["source"], held["dashboard.report_families"]["source"]), ("database", "unset"))
+        self.assertTrue(all(held[key]["lines"] for key in setting_rows.LISTS))
+        self.assertEqual((held["adversarial.model"]["value"], held["adversarial.effort"]["value"]), ("gpt-fixture", None))
+
+    def test_the_first_save_imports_the_file_and_the_reader_reads_the_row(self):
+        self.realms.write_text("realm|work|Work|/repos/example-work/*\n", encoding="utf-8")
+        shown = self.read()["dashboard.realms"]
+        status, _, answer = self.save("dashboard.realms", shown["value"], shown["digest"])
+        self.assertEqual((status, answer["was"]), (200, None), answer)
+        self.realms.unlink()
+        self.assertEqual([r["id"] for r in places.realms(self.connection)["list"]], ["work"])
+        self.assertEqual(self.read()["dashboard.realms"]["source"], "database")
+
+    def test_a_text_with_a_problem_is_refused_and_writes_nothing(self):
+        shown = self.read()["dashboard.report_families"]
+        status, _, answer = self.save("dashboard.report_families", "family|x\n", shown["digest"])
+        self.assertEqual(status, 400, answer)
+        self.assertIn("line 1", answer["error"])
+        self.assertEqual(writes.read_settings(self.connection, ["dashboard.report_families"]), {})
+
+    def test_a_stale_digest_refuses_with_409(self):
+        shown = self.read()["dashboard.hoa_thresholds"]
+        writes.set_setting(self.connection, "dashboard.hoa_thresholds", "tank|below|10")
+        status, _, answer = self.save("dashboard.hoa_thresholds", "tank|below|12", shown["digest"])
+        self.assertEqual(status, 409, answer)
+        self.assertEqual(writes.read_settings(self.connection, ["dashboard.hoa_thresholds"]), {"dashboard.hoa_thresholds": "tank|below|10"})
+
+    def test_a_clear_or_a_file_edit_since_the_read_refuses_with_409(self):
+        # A cleared row holds None, as no row does: the digest tells the two apart, so an old tab cannot bring a value back.
+        self.realms.write_text("realm|work|Work|/repos/a\n", encoding="utf-8")
+        shown = self.read()["dashboard.realms"]
+        writes.set_setting(self.connection, "dashboard.realms", None)
+        self.assertEqual(self.save("dashboard.realms", shown["value"], shown["digest"])[0], 409)
+        self.assertEqual(writes.read_settings(self.connection, ["dashboard.realms"]), {"dashboard.realms": None})
+        shown = self.read()["dashboard.report_families"]
+        (self.dir / "report-families.conf").write_text("family|home|Home|house|weekly-scan\n", encoding="utf-8")
+        self.assertEqual(self.save("dashboard.report_families", "family|hoa|HOA|house|a-job", shown["digest"])[0], 409)
+
+    def test_an_empty_save_clears_the_row_and_the_file_is_not_read_again(self):
+        self.realms.write_text("realm|work|Work|/repos/a\n", encoding="utf-8")
+        shown = self.read()["dashboard.realms"]
+        status, _, answer = self.save("dashboard.realms", "  ", shown["digest"])
+        self.assertEqual((status, answer["value"]), (200, None), answer)
+        self.assertEqual(places.realms(self.connection)["state"], "missing")
+
+    def test_a_failed_read_writes_nothing(self):
+        shown = self.read()["dashboard.realms"]
+
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        with mock.patch.object(writes, "read_settings", refuse):
+            status, _, answer = self.save("dashboard.realms", "realm|work|Work|/repos/a", shown["digest"])
+        self.assertEqual(status, 503, answer)
+        self.assertEqual(writes.read_settings(self.connection, ["dashboard.realms"]), {})
+
+    def test_another_key_or_shape_is_refused(self):
+        for payload in ({"key": "dashboard.home_tiles", "text": "x", "before": "d"},
+                        {"key": "dashboard.realms", "text": "x"},
+                        {"key": "dashboard.realms", "text": 3, "before": "d"}):
+            self.assertEqual(self.post("/api/settings/list", payload)[0], 400, payload)
+
+    def test_the_review_keys_set_through_the_row_post_and_refuse_a_value_that_is_not_one_word(self):
+        status, _, answer = self.post("/api/settings/row", {"key": "adversarial.model", "value": "gpt-fixture", "before": None})
+        self.assertEqual((status, answer), (200, {"key": "adversarial.model", "value": "gpt-fixture", "was": None}))
+        self.assertEqual(adversarial.settings(self.connection), ("gpt-fixture", adversarial.EFFORT))
+        status, _, answer = self.post("/api/settings/row", {"key": "adversarial.effort", "value": "very high", "before": None})
+        self.assertEqual(status, 400, answer)
+        self.assertEqual(writes.read_settings(self.connection, ["adversarial.effort"]), {})
 
 
 class TheThemeMoved(unittest.TestCase):
@@ -343,15 +447,40 @@ class TheFleetSection(unittest.TestCase):
 
     def test_a_sweep_change_posts_the_value_shown_and_a_409_reads_again(self):
         """sd:5109: the Sweeps rows draw from the same read; a set names the value shown, and a stale row reads again."""
-        doc = {**FLEET_DOC, "sweeps": [{"key": "sweep.work.mail_query", "value": "in:inbox", "source": "database",
+        doc = {**FLEET_DOC, "sweeps": [{"key": "sweep.work.mail_query", "value": "in:inbox", "row": "in:inbox", "source": "database",
                                         "description": "The Work sweep's Gmail search.", "choices": None}], "sweeps_reason": ""}
         change = ("await ELS.sweeps.listeners.change[0]({ target: { dataset: { key: 'sweep.work.mail_query' }, value: 'is:unread' } });"
                   " await flush(); R.out = ELS['f-sweep.work.mail_query-out'].textContent; R.sweeps = ELS.sweeps.html;")
         out = self.run_page(change, self.answer("[409, { error: 'sweep.work.mail_query changed since it was read; read it again', reload: true }]", doc))
         self.assertIn('<h3 id="f-sweep.work.mail_query-h">sweep.work.mail_query</h3>', out["R"]["sweeps"])
-        self.assertEqual(out["posts"], [["/api/settings/sweep", {"key": "sweep.work.mail_query", "value": "is:unread", "before": "in:inbox"}, 64]])
+        self.assertEqual(out["posts"], [["/api/settings/row", {"key": "sweep.work.mail_query", "value": "is:unread", "before": "in:inbox"}, 64]])
         self.assertEqual(out["gets"], ["/api/settings"] * 2)
         self.assertEqual(out["R"]["out"], "Not saved: sweep.work.mail_query changed since it was read; read it again. The value shown is the one read now.")
+
+    LIST = {"key": "dashboard.realms", "value": "realm|work|Work|/repos/example-work/*\n", "lines": True, "source": "file",
+            "problem": "", "digest": "d" * 64, "description": "Tasks' realm views.", "choices": None}
+
+    def test_a_list_draws_a_text_area_and_save_posts_its_text_with_the_digest_shown(self):
+        """sd:5109: a dashboard list saves on Save, not on change, with the digest of the source and text the page read."""
+        doc = {**FLEET_DOC, "dashboard": [self.LIST], "dashboard_reason": ""}
+        save = ("R.list = ELS.dashboard.html; document.getElementById('f-dashboard.realms').value = 'realm|lab|Lab|/repos/lab';"
+                " await ELS.dashboard.listeners.change[0]({ target: { dataset: {} } }); await flush(); R.after_change = OUT.posts.length;"
+                " await ELS.dashboard.listeners.click[0]({ target: { closest: () => ({ dataset: { save: 'dashboard.realms' } }) } });"
+                " await flush(); R.out = ELS['f-dashboard.realms-out'].textContent;")
+        out = self.run_page(save, self.answer("[200, { key: 'dashboard.realms', value: 'realm|lab|Lab|/repos/lab', was: null, digest: 'e' }]", doc))
+        self.assertIn('<textarea class="fld" id="f-dashboard.realms" data-list="dashboard.realms"', out["R"]["list"])
+        self.assertIn("old file in the config folder · Save moves it to the database", out["R"]["list"])
+        self.assertEqual(out["R"]["after_change"], 0, "a list saved on change")
+        self.assertEqual(out["posts"], [["/api/settings/list", {"key": "dashboard.realms", "text": "realm|lab|Lab|/repos/lab", "before": "d" * 64}, 64]])
+        self.assertEqual(out["R"]["out"], "Saved")
+
+    def test_a_list_save_refused_keeps_the_text_and_names_the_problem(self):
+        doc = {**FLEET_DOC, "dashboard": [self.LIST], "dashboard_reason": ""}
+        save = ("await ELS.dashboard.listeners.click[0]({ target: { closest: () => ({ dataset: { save: 'dashboard.realms' } }) } });"
+                " await flush(); R.out = ELS['f-dashboard.realms-out'].textContent;")
+        out = self.run_page(save, self.answer("[400, { error: 'dashboard.realms was not saved: line 1: not realm|<id>|<label>|<glob>: x.' }]", doc))
+        self.assertEqual(out["R"]["out"], "Not saved: dashboard.realms was not saved: line 1: not realm|<id>|<label>|<glob>: x.")
+        self.assertEqual(out["gets"], ["/api/settings"])
 
     def test_a_failed_read_names_its_reason_and_draws_no_row(self):
         out = self.run_page("", self.answer("[500, {}]", {"read": "x", "fleet": None, "reason": "sd config list sd exited 1: hub refused"}))

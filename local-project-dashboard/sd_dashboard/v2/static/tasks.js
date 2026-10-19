@@ -12,7 +12,7 @@ window.PAGE_COMMANDS = [
   { label: 'Start next ready tasks', icon: 'play', run: () => document.dispatchEvent(new CustomEvent('tasks:start-next')) },
 ];
 // build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
-// #viewswitch. sd:5064: Personal, then the realms realms.conf names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
+// #viewswitch. sd:5064: Personal, then the realms the dashboard.realms row names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
 // and All. Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
 // other view, and not the list, board and matrix keys (v l, v b, v m), holds.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
@@ -1148,9 +1148,9 @@ addEventListener('DOMContentLoaded', () => {
   };
   function subhead() {
     const parked = tasks.length - listed().length;
-    // A realm view without a readable realms.conf holds only the rows with no repo; it says why (sd:5064).
+    // A realm view without a readable realm list (dashboard.realms) holds only the rows with no repo; it says why (sd:5064).
     const why = REALMS && !['all', 'hoa', 'home'].includes(PLACE) && !['read', 'partial'].includes(REALMS.state)
-      ? ` · repos in no realm: ${REALMS.source} ${REALMS.state === 'missing' ? 'is missing; copy realms.conf.example there' : REALMS.problems[0] || 'was not read'}` : '';
+      ? ` · repos in no realm: ${REALMS.state === 'missing' ? 'no realm list; set dashboard.realms on Settings' : `${REALMS.source} ${REALMS.problems[0] || 'was not read'}`}` : '';
     // The Personal and Work views name their sweep's last run and carry Run sweep (sd:5096, sd:5097).
     const w = SWEEP_NAME[PLACE] && SWEEPS?.[PLACE];
     put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);

@@ -18,7 +18,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import reporting, routine_briefs
+import sqlite3
+
+from sd_db import reporting, routine_briefs, writes
 
 from sd_dashboard import hoa_screen, places, reports_screen, tasks_screen, v2
 
@@ -105,7 +107,7 @@ class Tasks(Fixture):
 
 
 class Realms(Fixture):
-    """sd:5064: `places.realm_of` puts a Tasks row in Personal or a realms.conf realm."""
+    """sd:5064: `places.realm_of` puts a Tasks row in Personal or a realm of the dashboard.realms list."""
 
     RULES = [{"id": "work", "label": "Work", "globs": ["/repos/example-work/*", "/repos/system"]}]
 
@@ -122,7 +124,7 @@ class Realms(Fixture):
 
     def test_a_repo_stored_with_a_tilde_matches_a_tilde_glob(self):
         # The database keeps a repo as ~/repos/...; realms() expands a glob's ~, so the repo's ~ must expand too.
-        rules = places.realms(self.conf("realm|work|Work|~/repos/example-work/*\n"))["list"]
+        rules = places.realms(self.connection, self.conf("realm|work|Work|~/repos/example-work/*\n"))["list"]
         self.assertEqual(places.realm_of("~/repos/example-work/api", "task", rules), "work")
         self.assertEqual(places.realm_of(str(Path.home() / "repos/example-work/api"), "task", rules), "work")
 
@@ -134,12 +136,12 @@ class Realms(Fixture):
 
     def test_without_realms_conf_a_repo_row_is_unknown_not_personal(self):
         self.assertIsNone(places.realm_of("/repos/hoa", "task", None))
-        doc = places.realms(self.dir / "realms.conf")
+        doc = places.realms(self.connection, self.dir / "realms.conf")
         self.assertEqual((doc["state"], doc["list"], doc["source"]),
                          ("missing", [], "<config>/project-dashboard/realms.conf"))
 
     def test_the_file_reads_in_order_and_one_id_on_two_lines_gets_both_globs(self):
-        doc = places.realms(self.conf("# comment\nrealm|work|Work|/repos/example-work/*\nrealm|brand|Brand|~/brand\n"
+        doc = places.realms(self.connection, self.conf("# comment\nrealm|work|Work|/repos/example-work/*\nrealm|brand|Brand|~/brand\n"
                                       "realm|work|Work|/repos/system\n"))
         self.assertEqual(doc["state"], "read")
         self.assertEqual([(r["id"], r["label"]) for r in doc["list"]], [("work", "Work"), ("brand", "Brand")])
@@ -147,7 +149,7 @@ class Realms(Fixture):
         self.assertEqual(doc["list"][1]["globs"], [str(Path.home() / "brand")])
 
     def test_a_bad_line_or_a_reserved_id_is_skipped_and_named(self):
-        doc = places.realms(self.conf("realm|work|Work\nrealm|all|Everything|/repos/*\nrealm|Work|W|/x\n"
+        doc = places.realms(self.connection, self.conf("realm|work|Work\nrealm|all|Everything|/repos/*\nrealm|Work|W|/x\n"
                                       "realm|lab|Lab|/repos/lab\n"))
         self.assertEqual(doc["state"], "partial")
         self.assertEqual([r["id"] for r in doc["list"]], ["lab"])
@@ -156,7 +158,7 @@ class Realms(Fixture):
     def test_an_unreadable_file_is_an_error_not_missing(self):
         path = self.conf("")
         path.write_bytes(b"\xff\xfe")
-        self.assertEqual(places.realms(path)["state"], "error")
+        self.assertEqual(places.realms(self.connection, path)["state"], "error")
 
     def test_each_tasks_row_carries_its_realm_and_the_document_the_files_state(self):
         with mock.patch.object(places, "REALMS_CONFIG", self.conf("realm|work|Work|/repos/sys*\n")):
@@ -202,16 +204,70 @@ class Reports(Fixture):
         doc = places.reports(self.connection, "home", now=NOW, config=self.config)
         self.assertEqual((doc["state"], self.ids(doc)), ("read", [self.fun]))
 
-    def test_a_missing_family_file_is_unknown_with_its_path_never_an_empty_list(self):
+    def test_a_missing_family_list_is_unknown_naming_the_setting_never_an_empty_list(self):
         doc = places.reports(self.connection, "home", now=NOW, config=self.dir / "absent.conf")
         self.assertEqual((doc["state"], doc["rows"]), ("unknown", []))
-        self.assertIn("<config>/project-dashboard/absent.conf", doc["reason"])
+        self.assertIn("dashboard.report_families on Settings", doc["reason"])
 
     def test_a_file_without_the_family_is_unknown_naming_the_line_to_add(self):
         self.config.write_text(FAMILIES.splitlines()[0] + "\n", encoding="utf-8")
         doc = places.reports(self.connection, "home", now=NOW, config=self.config)
         self.assertEqual(doc["state"], "unknown")
         self.assertIn("names no family home", doc["reason"])
+
+
+class TheRowWins(Fixture):
+    """sd:5109: the realm and family lists are setting rows. A row wins over the old file, a cleared row hides it, and a
+    row that does not read is unknown: no page reads the file in its place."""
+
+    def setUp(self):
+        super().setUp()
+        realms = self.dir / "realms.conf"
+        realms.write_text("realm|work|Work|/repos/sys*\n", encoding="utf-8")
+        self.enterContext(mock.patch.object(places, "REALMS_CONFIG", realms))
+
+    def refuse(self):
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        return mock.patch.object(writes, "read_settings", refuse)
+
+    def realm(self, doc):
+        return {r["id"]: r["realm"] for r in doc["rows"]}[self.other_item]
+
+    def test_no_row_reads_the_old_file(self):
+        self.assertEqual(self.realm(tasks_screen.document(self.connection, now=NOW)), "work")
+
+    def test_a_realms_row_wins_over_the_file(self):
+        writes.set_setting(self.connection, "dashboard.realms", "realm|lab|Lab|/repos/system\n")
+        doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual(self.realm(doc), "lab")
+        self.assertEqual(doc["realms"]["source"], "workflow database setting dashboard.realms")
+
+    def test_a_cleared_realms_row_hides_the_file(self):
+        writes.set_setting(self.connection, "dashboard.realms", "realm|lab|Lab|/repos/system\n")
+        writes.set_setting(self.connection, "dashboard.realms", None)
+        doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual((doc["realms"]["state"], self.realm(doc)), ("missing", None))
+
+    def test_a_realms_row_that_does_not_read_is_unknown_and_reads_no_file(self):
+        with self.refuse():
+            doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertEqual((doc["realms"]["state"], self.realm(doc)), ("error", None))
+        self.assertIn("database is locked", doc["realms"]["problems"][0])
+
+    def test_a_families_row_wins_over_the_file(self):
+        writes.set_setting(self.connection, "dashboard.report_families", "family|home|Home|house|weekly-scan\n")
+        doc = places.reports(self.connection, "home", now=NOW, config=self.config)
+        self.assertEqual((doc["state"], doc["jobs"], self.ids(doc)), ("read", ["weekly-scan"], [self.stray]))
+
+    def test_a_families_row_that_does_not_read_leaves_reports_and_briefs_unknown(self):
+        with self.refuse():
+            reports = places.reports(self.connection, "hoa", now=NOW, config=self.config)
+            briefs = places.briefs(self.connection, "hoa", now=NOW, config=self.config)
+        # The hoa checkout's own briefs could be listed, but which series are HOA's is unknown, not "none".
+        self.assertEqual((reports["state"], reports["rows"], briefs["state"], briefs["rows"]), ("error", [], "error", []))
+        self.assertIn("database is locked", briefs["reason"])
 
 
 class TheRoutes(BrowserSession):
@@ -327,7 +383,7 @@ R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup
         docs["/api/hoa/reports"] = [500, {"error": "the server failed"}]
         out = self.run_page("""await go('#view=briefs'); R.briefs = ELS['briefs-rows'].html;
 await go('#view=reports'); R.reports = ELS['reports-rows'].html;""", docs)
-        self.assertIn("▨ Not read.</b> not configured: <config>/project-dashboard/absent.conf is missing", out["R"]["briefs"].replace("&lt;", "<").replace("&gt;", ">"))
+        self.assertIn("▨ Not read.</b> not configured: no report families are set", out["R"]["briefs"].replace("&lt;", "<").replace("&gt;", ">"))
         self.assertNotIn("<table", out["R"]["briefs"])
         self.assertIn("▨ Not read.</b> /api/hoa/reports did not answer: the server failed", out["R"]["reports"])
 
@@ -368,7 +424,7 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
                 + """(DOC_LISTENERS['shell:ready'] || []).forEach(f => f()); await flush(); R.board = ELS['view-board'].html; R.sub = ELS.subhead.html;""")
         r = test_v2_tasks.TheScript.run_page(self, body, prelude=self.REALMS)["R"]
         self.assertEqual([t in r["board"] for t in ("Fix the valve log", "Clean the gutters", "Tune the gate")], [False, True, False])
-        self.assertIn("repos in no realm: &lt;config&gt;/project-dashboard/realms.conf is missing; copy realms.conf.example there", r["sub"])
+        self.assertIn("repos in no realm: no realm list; set dashboard.realms on Settings", r["sub"])
 
     def test_the_personal_and_work_views_carry_their_sweep_and_run_sweep_posts_the_realm(self):
         """sd:5096, sd:5097: the subhead names the realm's last sweep on Personal and Work only; Run sweep posts the
