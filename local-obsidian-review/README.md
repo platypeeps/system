@@ -1,54 +1,48 @@
 # local-obsidian-review
 
-Daily digest of the vault's decision queues, filed as the day's `Review Queue`
-brief on the dashboard's Today, with signed one-tap decision links. It covers the five `System/Databases/*` folders whose
-notes wait on a status call from the operator; the nightly accept routines (blog-idea-accept,
-tips-accept) then act on whatever the buttons set. Skill Proposals keeps its
-Accept/Decline buttons and no routine behind them: since 2026-08-31 the
-decision is the whole record, and adoption happens through `sd-skill-adopt`.
+Daily digest of the decision queues, filed as the day's `Review Queue`
+brief on the dashboard's Today. It reads the base rows of five `sdw` kinds from
+the workflow database (`sd_db.records`), their source since pack sd:4627; it
+reads no vault note (sd:5134). Each card's Open link is the row on the
+dashboard's Tasks page (`/tasks?row=<id>`), where its stage moves; the nightly
+accept routines (blog-idea-accept, tips-accept) then act on that stage.
 
-## Queues and buttons
+## Queues
 
-| Database | digest picks up | buttons (status written) |
+| Queue | kind | digest picks up |
 |---|---|---|
-| Blog Ideas | `status: inbox` | Accept (`accepted`) / Decline (`declined`) |
-| Skill Proposals | `status: proposed` | Accept / Decline |
-| Tips and Tricks | `status: inbox` | Accept / Decline |
-| Topics | `status: candidate` | Adopt (`active`) / Park (`parked`) |
-| Market Watch | `status: candidate` | Track (`active`) / Pause (`paused`) / Decline |
+| Blog Ideas | `sdw.blog-idea` | stage `inbox` |
+| Skill Proposals | `sdw.skill-proposal` | stage `proposed` |
+| Tips and Tricks | `sdw.tip` | stage `inbox` |
+| Topics | `sdw.topic` | stage `candidate` |
+| Market Watch | `sdw.market` | stage `candidate` |
 
-Every card also gets an Open button (https `/open` redirect to the
-`obsidian://` deep link — the dashboard opens only http and https links). Tips already in
-`ready` are only counted in the footer; that final call happens in Obsidian.
+Tips already in `ready` are only counted in the footer.
 
 ## Usage
 
 ```
-./obsidian-review.sh list   # print pending decisions per database, files nothing
+./obsidian-review.sh list   # print pending decisions per queue, files nothing
 ./obsidian-review.sh run    # list + file the digest as a brief (obsidian-review-daily cron job)
 ```
 
-No pending decisions = no brief; `run` exits 1 only when `sd reports brief add`
-failed, so the run's report on Today covers a lost digest, not findings.
+No pending decisions = no brief; `run` exits 1 when the base rows cannot be
+read or `sd reports brief add` failed, so the run's report on Today covers a
+lost digest, not findings. A failed read is never an empty queue.
 
 ## How it works
 
-- Buttons are HMAC-signed URLs from `local-task-actions` (`url -b <db>`),
-  served through its Tailscale Funnel, expiring after 7 days; GET shows a
-  confirmation page, POST flips the one `status:` field. See that folder's
-  README for the security model.
-- Scanning and the Markdown brief are built by an embedded python3 heredoc
-  (python has the TCC grant for `~/Documents`; plain shell does not), filed
+- The rows come from `sd_db.records.list_rows` over a read-only connection,
+  imported from the command pack's `lib/` (`SD_PACK_ROOT`, default
+  `~/repos/platypeeps/sd-ai-command-pack`).
+- The Markdown brief is built by an embedded python3 heredoc and filed
   with `sd reports brief add --replace`, so a rerun the same day replaces it.
 - Cron: `<config>/cron-jobs/jobs/obsidian-review-daily.job` (examples in `local-cron-jobs/examples/`), 07:30 daily —
   after market-watch (03:00) and vault-cleanup (06:52) refresh the queues.
-- Environment: `OBSIDIAN_VAULT` (default `~/Documents/Obsidian Vault`; exported, or set once in `<config>/shared.env` outside the checkout (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`), see `local-config-check/shared.env.example`),
+- Environment: `SD_PACK_ROOT`,
   `JEV_OBSIDIAN_REVIEW` (on unless switched off, below),
-  `OBSIDIAN_REVIEW_TODAY` (the `YYYY-MM-DD` note ages count from;
-  default today, and the suite pins it),
-  `OBSIDIAN_REVIEW_SIGN_TIMEOUT` (seconds one signed link may take, default
-  15; a link that runs out is tried once more, then the digest keeps
-  Open-only links and writes why to stderr, with the load averages).
+  `OBSIDIAN_REVIEW_TODAY` (the `YYYY-MM-DD` row ages count from;
+  default today, and the suite pins it).
 
 ## Ordering, and the optional Jev ranking
 
@@ -78,8 +72,7 @@ the text body and one sentence in the brief's footer.
 **The twelve-card cap runs first, and Jev never sees past it.** Each queue
 picks its twelve by `score:` exactly as before, and only those cards are
 ranked, so this can move a card up the brief and can never put one in it or
-take one out. It never touches the buttons, their URLs or their signatures,
-and never writes to the vault. `jev.sh` is called by path from this folder
+take one out. It never touches the links, and never writes a row. `jev.sh` is called by path from this folder
 (`../local-jev/jev.sh`), not through `PATH`, because cron and launchd have
 neither this repo nor `~/bin/common` on theirs.
 
@@ -92,15 +85,15 @@ card in the brief.
 Every Jev call leaves this machine, so the request carries the smallest span
 that can answer "which of these decisions is worth making today":
 
-- each note's **title** (its file stem, which is what the card shows)
+- each row's **title** (what the card shows)
 - the **queue** it sits in, by its display name (`Blog Ideas`, `Topics`, …)
 - its **`dateCreated`** date, and today's date
 
-Nothing else: no `description`, no `score`, no note body, no file path, no
-vault name, no `obsidian://` link, no action URL. `tests/` asserts that on
+Nothing else: no `description`, no `score`, no body, no path, no item id,
+no link. `tests/` asserts that on
 the exact payload the tool hands to `jev.sh`.
 
-**Ledger subject and run (sd:2953).** The `ask` and its baseline row pass `--subject obsidian-review:<16 hex>`: the first 16 hex of the sha256 of the shown notes' file stems, sorted, one per line. An outcome recomputes it with `printf '%s\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`. The script exports `JEV_RUN=obsidian-review-<UTC yyyymmddThhmmss>-<4 hex>` once per run, unless it inherited one.
+**Ledger subject and run (sd:2953).** The `ask` and its baseline row pass `--subject obsidian-review:<16 hex>`: the first 16 hex of the sha256 of the shown rows' titles, sorted, one per line. An outcome recomputes it with `printf '%s\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`. The script exports `JEV_RUN=obsidian-review-<UTC yyyymmddThhmmss>-<4 hex>` once per run, unless it inherited one.
 
 ## Tests
 
@@ -108,11 +101,11 @@ the exact payload the tool hands to `jev.sh`.
 ./obsidian-review.sh test
 ```
 
-Runs offline against a fake repo root: a copy of the entrypoint with stubbed
-`local-jev` and `local-task-actions` siblings, a stub `sd` on PATH, and a fixture
-vault whose Blog Ideas queue is deliberately over the twelve-card cap.
-Nothing reaches the network or `~/Documents`. The golden files in
-`tests/fixtures/` are the digest this tool produced before Jev existed, with
+Runs offline against a fake repo root: a copy of the entrypoint with a stubbed
+`local-jev` sibling, a stub `sd` on PATH, and a fixture workflow database under a
+temporary HOME, built with the pack's `sd_db`, whose Blog Ideas queue is
+deliberately over the twelve-card cap. Nothing reaches the network or a real
+store. The golden files in `tests/fixtures/` are the digest with Jev off, with
 the dates templated so they do not go stale; three of the tests assert the
 brief is still byte-for-byte that.
 The harness passes its own date to the script in

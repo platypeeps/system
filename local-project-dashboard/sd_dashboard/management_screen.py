@@ -48,7 +48,7 @@ rule when it decides first (`denied`, `owner`), read from
 Every write the page makes goes through a route `server.action_route`
 answers: job retry and cancel, service start, stop
 and restart, and the sd-db repo verbs (`repos.set_runner_merge`,
-`repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`, `repos.set_github_issues`), which refuse a stale `before`
+`repos.set_managed`, `repos.set_lane_host`, `repos.set_dependabot`, `repos.set_github_issues`, `repos.set_jira_project`), which refuse a stale `before`
 and, on a satellite, refuse with `HubOnly` (sd:1629, sd:3075), and
 Refresh satellites (`refresh_satellites`), which writes a new request row.
 """
@@ -264,6 +264,8 @@ def _repos(connection) -> list[dict]:
             "dependabot_gate": _dependabot_gate(row["remote"]),
             # sd:4840: a store before migration 35 has no column; an unread setting is unknown, not off.
             "github_issues": ("on" if row["github_issues"] else "off") if "github_issues" in row.keys() else None,
+            # sd:5103: the Jira project File Jira issue files in, `off` for none; before migration 36, unknown.
+            "jira_project": (row["jira_project"] or "off") if "jira_project" in row.keys() else None,
             "created_at": row["created_at"], "updated_at": row["updated_at"],
             "review": _review(row["path"]), "protection": guarded.get(row["path"]), "runtimes": _runtimes(row["path"]),
         })
@@ -564,7 +566,9 @@ def _attention(jobs) -> dict:
 #: The sd-db repo verbs the page runs: the field, the library call, and how the row reads the value back.
 SETTERS = {"runner-merge": (repos.set_runner_merge, "runner_merge"), "managed": (repos.set_managed, "managed"),
            "lane-host": (repos.set_lane_host, "lane_host"), "channels": (repos.set_channels, "channels"),
-           "dependabot": (repos.set_dependabot, "dependabot"), "github-issues": (repos.set_github_issues, "github_issues")}
+           "dependabot": (repos.set_dependabot, "dependabot"), "github-issues": (repos.set_github_issues, "github_issues"),
+           # sd:5103: a pack before migration 36 has no setter; `set_repo` then refuses the write by name.
+           "jira-project": (getattr(repos, "set_jira_project", None), "jira_project")}
 
 
 class StaleSetting(workflow.StaleItem):
@@ -579,6 +583,8 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value, befor
     not both write.
     """
     setter, column = SETTERS[field]
+    if setter is None:
+        raise repos.RepoRefusal(f"this dashboard's sd_db has no repo {field} verb; update the command pack first")
     # The runner that reads these columns runs on the hub; a satellite's page reads them and changes nothing (sd:1629).
     database.refuse_hub_only(connection, f"repo {field}")
     if field == "lane-host":
@@ -602,7 +608,8 @@ def set_repo(connection: sqlite3.Connection, field: str, path: str, value, befor
         if row is None:
             raise repos.RepoRefusal(f"{path} is not a registered repository")
         current = (("yes" if row[column] else "no") if column in ("managed", "dependabot")
-                   else ("on" if row[column] else "off") if column == "github_issues" else row[column])
+                   else ("on" if row[column] else "off") if column == "github_issues"
+                   else (row[column] or "off") if column == "jira_project" else row[column])
         if current != before:
             raise StaleSetting(f"{column} for {path} is {current} now, not {before}; read the page again")
         _, was = setter(connection, row["path"], value)

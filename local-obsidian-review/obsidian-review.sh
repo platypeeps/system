@@ -1,14 +1,16 @@
 #!/bin/sh
-# Daily digest of vault decision queues (Blog Ideas, Skill Proposals,
+# Daily digest of the decision queues (Blog Ideas, Skill Proposals,
 # Tips and Tricks, Topics, Market Watch), filed as a brief on the dashboard's
-# Today with per-note links: Open plus the decision actions (Accept/Decline,
-# Track/Pause, Adopt/Park) served as signed links by local-task-actions. Flipping a
-# status here is the input the nightly accept routines act on.
+# Today. It reads the base rows in the workflow database, their source since
+# pack sd:4627, never the vault notes (sd:5134). Each card opens the row on the
+# dashboard's Tasks page, where its stage moves; the nightly accept routines
+# act on that stage.
 # Usage: obsidian-review.sh run|list|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
-ACTIONS="$DIR/../local-task-actions/task-actions.sh"
+# The command pack's lib/ holds sd_db, as for `sd-db` (sd:3279).
+PACK_LIB="${SD_PACK_ROOT:-$HOME/repos/platypeeps/sd-ai-command-pack}/lib"
 JEV="$DIR/../local-jev/jev.sh"
 # One id for every jev call this run makes, so the ledger groups them
 # (sd:2953). A run that started this one keeps its own: it is the same run.
@@ -17,10 +19,8 @@ JEV="$DIR/../local-jev/jev.sh"
 export JEV_RUN
 
 # <config>/obsidian-review/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
-# default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT wins. The vault is kept once, in <config>/shared.env.
+# default ~/.config/system) provides defaults only; an exported value wins.
 st_source_env obsidian-review
-VAULT="$(st_obsidian_vault)"
 
 case "${1:-}" in
   run|list)
@@ -34,45 +34,41 @@ case "${1:-}" in
     cat <<'HELPEOF'
 usage: obsidian-review.sh run|list|test
 
-  list  print every note waiting on a decision, per database; prints
+  list  print every row waiting on a decision, per queue; prints
         nothing when all queues are empty
   run   list, and when anything is waiting file the digest as the day's
         `Review Queue` brief (`sd reports brief add`), shown on the
         dashboard's Today (what the obsidian-review-daily cron job runs);
-        exits 1 only when that brief could not be filed.
+        exits 1 when the base rows cannot be read or the brief could not
+        be filed.
   test  run the unittest suite in tests/, offline
 
-queues and their buttons (each button is one signed status flip served
-by local-task-actions; the nightly accept routines do the heavy work):
+queues, read from the workflow database's base rows (`sd_db.records`), and
+the stage that waits on a decision; each card's Open link is the row on
+the dashboard's Tasks page, where its stage moves:
 
-  Blog Ideas       status inbox      -> Accept / Decline
-  Skill Proposals  status proposed   -> Accept / Decline
-  Tips and Tricks  status inbox      -> Accept / Decline
-                   (tips already `ready` are counted in the footer —
-                   the final call on those happens in Obsidian)
-  Topics           status candidate  -> Adopt / Park
-  Market Watch     status candidate  -> Track / Pause / Decline
+  Blog Ideas       sdw.blog-idea      stage inbox
+  Skill Proposals  sdw.skill-proposal stage proposed
+  Tips and Tricks  sdw.tip            stage inbox
+                   (tips already `ready` are counted in the footer)
+  Topics           sdw.topic          stage candidate
+  Market Watch     sdw.market         stage candidate
 
 The digest asks Jev to order it, so the decision most worth making is the
-first card in the brief rather than the highest-scored note of whichever queue
+first card in the brief rather than the highest-scored row of whichever queue
 is listed first. It runs unless JEV_OBSIDIAN_REVIEW is set to 0, off, false, no or disabled
 -- unset means on -- and unless `jev enabled` declines, it never changes which
-notes appear or what their buttons do, and every failure falls back to
-today's order with the reason on stderr. Only each note's title, its queue and its
+rows appear or where their links go, and every failure falls back to
+today's order with the reason on stderr. Only each row's title, its queue and its
 added date leave this machine.
 
 environment:
-  OBSIDIAN_VAULT       vault path (default: ~/Documents/Obsidian Vault;
-                       also read from <config>/obsidian-review/.env,
-                          see .env.example)
+  SD_PACK_ROOT         the command pack checkout whose lib/ holds sd_db
+                       (default: ~/repos/platypeeps/sd-ai-command-pack)
   JEV_OBSIDIAN_REVIEW  0, off, false, no or disabled switches the digest's Jev ordering off;
                        unset means on
-  OBSIDIAN_REVIEW_TODAY  YYYY-MM-DD the digest counts note ages from
+  OBSIDIAN_REVIEW_TODAY  YYYY-MM-DD the digest counts row ages from
                        (default: today); the test suite pins it
-  OBSIDIAN_REVIEW_SIGN_TIMEOUT
-                       seconds one signed link may take (default: 15); a
-                       link that runs out is tried once more, then the
-                       digest keeps Open-only links and says why on stderr
 HELPEOF
     exit 0
     ;;
@@ -85,11 +81,9 @@ esac
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 
-body=$(VAULT="$VAULT" ACTIONS="$ACTIONS" JEV="$JEV" BRIEF_DIR="$TMPD" python3 <<'PYEOF'
-import datetime, hashlib, json, os, pathlib, re, subprocess, sys, tempfile, urllib.parse
+body=$(PACK_LIB="$PACK_LIB" JEV="$JEV" BRIEF_DIR="$TMPD" python3 <<'PYEOF'
+import datetime, hashlib, json, os, pathlib, subprocess, sys, tempfile
 
-vault = pathlib.Path(os.environ["VAULT"])
-actions = os.environ["ACTIONS"]
 # OBSIDIAN_REVIEW_TODAY pins the day ages are counted from. Unset is the
 # real date. The suite pins it because the fixture's added dates and this
 # script's "today" come from two processes: a run that crosses midnight saw
@@ -98,147 +92,40 @@ _pinned = os.environ.get("OBSIDIAN_REVIEW_TODAY", "")
 today = (datetime.date.fromisoformat(_pinned) if _pinned
          else datetime.date.today())
 
-# db key -> (section title, folder, decide-status, [(action, label, state)])
+# base kind -> (section title, the stage that waits on a decision). The kind
+# is the `sdw` plugin's; its rows are `sd_db.records` rows (pack sd:3973).
 QUEUES = [
-    ("blog", "Blog Ideas", "System/Databases/Blog Ideas", "inbox",
-     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
-    ("skill", "Skill Proposals", "System/Databases/Skill Proposals", "proposed",
-     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
-    ("tip", "Tips and Tricks", "System/Databases/Tips and Tricks", "inbox",
-     [("accept", "✓ Accept", "ok"), ("decline", "✗ Decline", "warning")]),
-    ("topic", "Topics", "System/Databases/Topics", "candidate",
-     [("adopt", "✓ Adopt", "ok"), ("park", "⏸ Park", "muted")]),
-    ("watch", "Market Watch", "System/Databases/Market Watch", "candidate",
-     [("track", "▶ Track", "ok"), ("pause", "⏸ Pause", "caution"),
-      ("decline", "✗ Decline", "warning")]),
+    ("blog-idea", "Blog Ideas", "inbox"),
+    ("skill-proposal", "Skill Proposals", "proposed"),
+    ("tip", "Tips and Tricks", "inbox"),
+    ("topic", "Topics", "candidate"),
+    ("market", "Market Watch", "candidate"),
 ]
 
-def field(fm, name):
-    m = re.search(rf"^{name}:\s*[\"']?(.*?)[\"']?\s*$", fm, re.M)
-    return m.group(1) if m else ""
 
-# `task-actions.sh url` signs a URL locally; it never speaks to the service on
-# port 8766, so the service being up says nothing about this call. What it does
-# do is shell out to `tailscale funnel status` to learn the public base URL, and
-# a stalled tailscaled makes that call unbounded. Until this was bounded, the
-# timeout raised `subprocess.TimeoutExpired`, which `except OSError` does not
-# catch, and the whole digest died instead of degrading.
-#
-# Bounding the inner call alone was not enough, and that is what review round 1
-# caught. A bounded probe that fails still returns a localhost base URL and
-# exit 0, so nothing outside could tell a stalled daemon from a machine with no
-# funnel: each of the three or four buttons on each of sixty cards paid the
-# timeout again -- around ten minutes -- and every link it produced pointed at
-# 127.0.0.1, which works on this machine and nowhere the digest gets read.
-#
-# So the base URL is discovered exactly once, through `task-actions.sh
-# base-url`, and its failure is a failure the caller can see. One answer, one
-# probe, and the rest of the run signs against a URL already in hand.
-# A signature costs a `sh` and a `python3` start: 0.1 s on an idle machine.
-# The nightly slots share the machine with agent jobs, and there it took over
-# 5 s: load1 was 131 at 07:28 on 2026-10-03 and the 07:30 review went
-# unsigned; the 03:00 task digest went unsigned on 10-01 and 10-03 (sd:2536).
-# Nothing in the call waits on a daemon, a keychain or the network once the
-# base is known, so the wait is most likely CPU. The bound is 15 s, a call that runs out
-# is tried once more, and the fallback says why, with the load averages.
-# OBSIDIAN_REVIEW_SIGN_TIMEOUT sets the bound in seconds.
-try:
-    ACTION_URL_TIMEOUT = int(os.environ.get("OBSIDIAN_REVIEW_SIGN_TIMEOUT") or 15)
-except ValueError:
-    ACTION_URL_TIMEOUT = 15
-ACTION_URL_TRIES = 2
-BASE_URL_TIMEOUT = 10
+def base_rows():
+    """{kind: rows} for every queue, from the workflow database.
 
-#: Empty until `signer_base()` runs. ``[""]`` means discovery failed and the
-#: digest builds Open-only links for the rest of this run; ``["https://..."]``
-#: is the base every later signature is built on, passed back down through
-#: TASK_ACTIONS_BASE_URL so the daemon is never probed again.
-_base = []
-
-#: Set by the first signing failure. Caching discovery answers the daemon
-#: stall; it does not answer a signer that is slow for some other reason --
-#: each call still starts a Python interpreter and reads the secret file, and
-#: a machine under load or a secret on a stalled mount makes that slow too.
-#: Without this, 192 buttons times a signing timeout is many minutes of
-#: waiting for an answer the first call already gave.
-_signer_down = []
-
-
-def signer_base():
-    """The base URL for signed links, resolved once per run.
-
-    Returns "" when discovery could not answer, which is the signal to keep
-    Open-only links. A machine with no funnel is not a failure: `base-url`
-    answers `http://127.0.0.1:8766` and exits 0, the same as it always did.
+    A database or library that cannot answer stops the run: an empty read
+    would file "all decision queues empty", a negative the run never saw.
     """
-    if _base:
-        return _base[0]
-    why = ""
+    sys.path.insert(0, os.environ["PACK_LIB"])
     try:
-        r = subprocess.run(["sh", actions, "base-url"],
-                           capture_output=True, text=True,
-                           timeout=BASE_URL_TIMEOUT)
-        base = r.stdout.strip() if r.returncode == 0 else ""
-        if not base:
-            why = "base-url exited %d" % r.returncode
-    except subprocess.TimeoutExpired:
-        base = ""
-        why = "base-url did not answer within %ds" % BASE_URL_TIMEOUT
-        sys.stderr.write(
-            "obsidian-review.sh: %s base-url did not answer within %ds\n"
-            % (actions, BASE_URL_TIMEOUT))
-    except OSError as exc:
-        base = ""
-        why = "%s could not run: %s" % (actions, exc.strerror or exc)
-    if not base:
-        sys.stderr.write(
-            "obsidian-review.sh: action links unsigned -- no base URL could be "
-            "discovered (%s, %s); the digest keeps Open-only links for this "
-            "run\n" % (why, load_text()))
-    _base.append(base)
-    return base
-
-
-def action_url(db, stem, action):
-    # Signed by local-task-actions; empty string when that tool is absent or
-    # unreachable, so the digest degrades to Open-only links instead of failing.
-    if _signer_down:
-        return ""
-    base = signer_base()
-    if not base:
-        return ""
-    env = dict(os.environ, TASK_ACTIONS_BASE_URL=base)
-    for _ in range(ACTION_URL_TRIES):
+        from sd_db import records
+        from sd_db.database import connect
+        connection = connect(write=False)
         try:
-            r = subprocess.run(["sh", actions, "url", "-b", db, stem, action],
-                               capture_output=True, text=True, env=env,
-                               timeout=ACTION_URL_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            continue
-        except OSError as exc:
-            return unsigned("%s could not run: %s" % (actions, exc.strerror or exc))
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
-        # The exit code only: the signer's stderr is not copied into a log.
-        return unsigned("%s url exited %d" % (actions, r.returncode))
-    return unsigned("%s did not sign within %ds, %d times"
-                    % (actions, ACTION_URL_TIMEOUT, ACTION_URL_TRIES))
+            return {kind: records.list_rows(connection, kind) for kind, _, _ in QUEUES}
+        finally:
+            connection.close()
+    except Exception as error:
+        sys.exit("obsidian-review.sh: the base rows could not be read, so nothing "
+                 "is known about the queues: %s" % error)
 
 
-def load_text():
-    try:
-        return "load averages %.1f %.1f %.1f" % os.getloadavg()
-    except OSError:
-        return "load averages unknown"
+def text(value):
+    return "" if value is None else str(value)
 
-
-def unsigned(why):
-    """Retire the signer for this run, say why once, and give an empty link."""
-    _signer_down.append(True)
-    sys.stderr.write(
-        "obsidian-review.sh: action links unsigned -- %s (%s); the digest keeps "
-        "Open-only links for this run\n" % (why, load_text()))
-    return ""
 
 # Jev orders the digest; it never decides what is in it. It runs unless
 # `jev enabled JEV_OBSIDIAN_REVIEW` declines -- unkeyed, the fleet switch off,
@@ -253,7 +140,7 @@ def jev_subject(stems):
     """The ledger's name for one ordering: `obsidian-review:<16 hex>` (sd:2953).
 
     No title leaves in it. The key is the first 16 hex of the sha256 of the
-    ordered notes' file stems, sorted, each followed by a newline. An outcome
+    ordered rows' titles, sorted, each followed by a newline. An outcome
     recomputes it from the stems the digest showed, as
     `printf '%s\\n' STEM... | LC_ALL=C sort | shasum -a 256 | cut -c1-16`.
     """
@@ -295,10 +182,9 @@ def jev_ranked(queues):
     """Reorder the cards the digest already chose, or hand them back as-is.
 
     It is handed the shown lists *after* the twelve-card cap, so the set of
-    notes in the brief is fixed before Jev ever sees it: this can move a card
-    up, and cannot put one in or take one out. Only the note title, its
-    queue and its added date go out -- no description, no file path, no note
-    body, no vault name -- because every Jev call leaves this machine.
+    rows in the brief is fixed before Jev ever sees it: this can move a card
+    up, and cannot put one in or take one out. Only the row title, its
+    queue and its added date go out -- no description, no path, no body -- because every Jev call leaves this machine.
     """
     if not queues:
         return queues, False
@@ -321,7 +207,7 @@ def jev_ranked(queues):
             raise RuntimeError("jev cannot answer on this machine")
         items, questions = [], {}
         for qi, q in enumerate(queues):
-            for i, (stem, desc, score, created, age) in enumerate(q[5]):
+            for i, (stem, desc, score, created, age, _) in enumerate(q[3]):
                 qid = "n%d_%d" % (qi, i)
                 items.append({"id": qid, "queue": q[1], "title": stem,
                               "added": created})
@@ -335,9 +221,9 @@ def jev_ranked(queues):
                 }
         if not questions:
             return queues, False
-        subject = jev_subject([it[0] for q in queues for it in q[5]])
-        # One request, every note a question in it: questions in one `ask`
-        # run in parallel, where one call per note would pay the round trip
+        subject = jev_subject([it[0] for q in queues for it in q[3]])
+        # One request, every row a question in it: questions in one `ask`
+        # run in parallel, where one call per row would pay the round trip
         # once per card in the brief.
         with tempfile.TemporaryDirectory() as td:
             qf, sf = os.path.join(td, "q.json"), os.path.join(td, "s.json")
@@ -371,11 +257,11 @@ def jev_ranked(queues):
         return queues, False
     out = []
     for qi, q in enumerate(queues):
-        picked = [scores["n%d_%d" % (qi, i)] for i in range(len(q[5]))]
-        cards = sorted(((-picked[i], i, it) for i, it in enumerate(q[5])),
+        picked = [scores["n%d_%d" % (qi, i)] for i in range(len(q[3]))]
+        cards = sorted(((-picked[i], i, it) for i, it in enumerate(q[3])),
                        key=lambda t: t[:2])
         q = list(q)
-        q[5] = [it for _, _, it in cards]
+        q[3] = [it for _, _, it in cards]
         # The queue itself rides on its best card, so the first section of
         # the brief is the one holding the decision worth making first.
         out.append((-max(picked), qi, q))
@@ -386,27 +272,22 @@ def jev_ranked(queues):
 lines, sections, total = [], [], 0
 ready_tips = 0
 queues = []
-for db, title, sub, decide, acts in QUEUES:
-    folder = vault / sub
+rows = base_rows()
+for kind, title, decide in QUEUES:
     items = []
-    for f in sorted(folder.glob("*.md")):
-        m = re.match(r"(?s)^---\n(.*?)\n---", f.read_text(errors="replace"))
-        if not m:
-            continue
-        fm = m.group(1)
-        status = field(fm, "status")
-        if db == "tip" and status == "ready":
+    for row in rows[kind]:
+        if kind == "tip" and row["stage"] == "ready":
             ready_tips += 1
-        if status != decide:
+        if row["stage"] != decide:
             continue
-        desc = field(fm, "description")
-        score = field(fm, "score")
-        created = field(fm, "dateCreated")[:10]
+        fields = row["fields"]
+        created = text(fields.get("dateCreated"))[:10]
         try:
             age = (today - datetime.date.fromisoformat(created)).days
         except ValueError:
             age = None
-        items.append((f.stem, desc, score, created, age))
+        items.append((row["title"], text(fields.get("description")), text(fields.get("score")),
+                      created, age, row["id"]))
     if not items:
         continue
     total += len(items)
@@ -422,31 +303,24 @@ for db, title, sub, decide, acts in QUEUES:
             return 0.0
     items.sort(key=rank)
     shown, rest = items[:12], len(items) - 12
-    queues.append((db, title, sub, acts, len(items), shown, rest))
+    queues.append((kind, title, len(items), shown, rest))
 
 queues, by_jev = jev_ranked(queues)
 
-for db, title, sub, acts, count, shown, rest in queues:
+for kind, title, count, shown, rest in queues:
     lines.append(f"{title}: {count} awaiting a decision")
     cards = []
-    for stem, desc, score, created, age in shown:
+    for stem, desc, score, created, age, item in shown:
         lines.append(f"- {stem}" + (f" (score {score})" if score else ""))
-        link = "obsidian://open?vault=%s&file=%s" % (
-            urllib.parse.quote(vault.name), urllib.parse.quote(f"{sub}/{stem}"))
-        open_url = action_url(db, stem, "open") or link
-        buttons = [f"[\u2197 Open]({open_url})"]
-        for a, label, _state in acts:
-            u = action_url(db, stem, a)
-            if u:
-                buttons.append(f"[{label}]({u})")
         meta = " · ".join(x for x in (
             f"score {score}" if score else "",
             (f"added {created}" + (f" ({age}d ago)" if age else ""))
             if created else "") if x)
+        # The dashboard opens an item at /tasks?row=<id> (sd:3526); its stage moves there.
         cards.append(f"- **{stem}**" + (f" · {desc}" if desc else "")
-                     + (f" · {meta}" if meta else "") + " · " + " · ".join(buttons))
+                     + (f" · {meta}" if meta else "") + f" · [\u2197 Open](/tasks?row={item})")
     if rest > 0:
-        cards.append(f"- … and {rest} more in Obsidian")
+        cards.append(f"- … and {rest} more on Tasks")
     sections.append(f"## {title} ({count})\n\n" + "\n".join(cards))
 
 if total == 0:
@@ -455,14 +329,13 @@ if total == 0:
 if by_jev:
     lines.append("(ordered by Jev, most worth deciding first)")
 
-footer = ("Each decision link asks for one confirming tap; links work from any device and expire after "
-          "7 days. The nightly routines act on what you accept."
-          + (f" {ready_tips} tip(s) are `ready` and wait for your final call in Obsidian." if ready_tips else "")
+footer = ("Open a card to move its stage on Tasks. The nightly routines act on what you accept."
+          + (f" {ready_tips} tip(s) are `ready` and wait for your final call." if ready_tips else "")
           + (" Ordered by Jev, most worth deciding first." if by_jev else ""))
 # The brief's stem is `<day> - <Series>`, the name `sd reports brief add` files it under (sd:3459).
 brief = pathlib.Path(os.environ["BRIEF_DIR"]) / f"{today.isoformat()} - Review Queue.md"
 brief.write_text("---\njob: obsidian-review-daily\n---\n\n"
-                 f"**{total}** note(s) across {len(sections)} queue(s) wait for a decision.\n\n"
+                 f"**{total}** item(s) across {len(sections)} queue(s) wait for a decision.\n\n"
                  + "\n\n".join(sections) + "\n\n" + footer + "\n")
 print(f"{total} awaiting decisions")
 print("\n".join(lines))

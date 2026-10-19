@@ -253,3 +253,7 @@
 .details ol.rec li > span { overflow-wrap: anywhere; min-width: 0; color: var(--color-ink-2); }
 .details ol.rec small { color: var(--color-muted); font-size: var(--text-xs); }
 .details ol.rec time, .details ol.rec .mono { font: var(--text-xs) var(--font-data); color: var(--color-muted); white-space: nowrap; }
+/* sd:5103: the filed issue's link on a card and a list row; the focus ring shows at once, as every control's does. */
+.issue-link { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; min-height: 1.5rem; margin-left: var(--space-2xs); color: var(--color-ink-2); border-radius: var(--radius-sm); }
+.issue-link:hover { color: var(--color-ink); }
+.issue-link:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }

@@ -246,6 +246,13 @@ A dropped file is staged first, raw, through `POST /api/research/intake/file` (u
 A file over 5 MB goes under `sd.bulk_storage_root` as `<root>/<checkout>/sources/`, and its row links it there; a URL's title comes from the source review's bounded fetch, so the server reaches the network here too.
 A failure before the item removes the worktree, its branch and any bulk copy; a failed enqueue keeps them and notes the item with the line that retries.
 
+File GitHub issue and File Jira issue on Tasks (sd:5103, `issue_filing.py`) draft with Draft email's `claude -p` line: no tools, no MCP servers, 180 seconds.
+`POST /api/items/<id>/file-issue` answers 202 with a run id; `GET /api/issue-runs/<id>` reads the draft; only `POST /api/issue-runs/<id>/confirm` with the previewed text's digest files.
+One draft or filing at a time: the runner holds `~/.local/state/system/issue-filing/lock`. A draft that `local-leak-guard/leak-guard.sh scan` refuses, or that finds no `<config>/privacy-patterns`, is blocked.
+GitHub files through `gh issue create`, on the LaunchAgent's PATH or at `/opt/homebrew/bin/gh`, signed in as the operator; Jira through `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`, read from the server's environment (`<config>/project-dashboard/.env` or exported), as the Re-run collector reads them.
+Only an answer that proves a refusal is recorded as not filed. After any other failure the run looks for its issue: `gh api` lists the repository's newest issues, or JQL by project and age. It links the issue if found, or records the run as not known.
+`POST /api/issue-runs/<id>/check` looks again for a not-known run's issue and never files.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists

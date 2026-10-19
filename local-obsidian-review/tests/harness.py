@@ -1,11 +1,14 @@
-"""A whole fake repo root in a temp dir, so the suite never touches the vault.
+"""A whole fake repo root in a temp dir, so the suite never touches a real store.
 
 The tool resolves its siblings from its own directory (`$DIR/../local-jev`),
-so the cheapest way to stub `local-jev` and `local-task-actions` is to copy
-the entrypoint next to stubs of them; a stub `sd` first on PATH takes the brief. That
-keeps the shipped script free of test-only seams: nothing in it knows a test
-exists, and nothing here reaches the network. The one input the harness hands
-it is the date, in OBSIDIAN_REVIEW_TODAY, and that is an ordinary setting.
+so the cheapest way to stub `local-jev` is to copy the entrypoint next to a
+stub of it; a stub `sd` first on PATH takes the brief. The base rows live in
+a fixture workflow database under a temporary HOME, the default path
+`sd_db.database.connect` opens, built with the pack's own `sd_db` from
+SD_PACK_ROOT. That keeps the shipped script free of test-only seams: nothing
+in it knows a test exists, and nothing here reaches the network. The one
+input the harness hands it is the date, in OBSIDIAN_REVIEW_TODAY, and that is
+an ordinary setting.
 """
 
 from __future__ import annotations
@@ -15,11 +18,17 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 TOOL_DIR = HERE.parent
 TOOL = TOOL_DIR / "obsidian-review.sh"
 FIXTURES = HERE / "fixtures"
+#: The command pack checkout whose lib/ holds sd_db: the gate's pin when it
+#: sets SD_PACK_ROOT, else the home clone. Read before any run moves HOME.
+PACK_ROOT = pathlib.Path(os.environ.get("SD_PACK_ROOT")
+                         or pathlib.Path.home() / "repos/platypeeps/sd-ai-command-pack")
+sys.path.insert(0, str(PACK_ROOT / "lib"))
 
 #: The one date a run uses. `build_root` writes the notes' added dates from
 #: it, `run` hands it to the script, and `templated` reads it back, so a run
@@ -28,8 +37,10 @@ FIXTURES = HERE / "fixtures"
 #: 00:00: every "(Nd ago)" came out one day older than the golden.
 TODAY = datetime.date.today()
 
-# folder -> notes as (stem, status, score, days since it was added). Only the
-# statuses the tool calls "awaiting a decision" may ever reach a card.
+# queue -> (base kind, rows as (title, stage, score, days since it was added)).
+# Only the stages the tool calls "awaiting a decision" may ever reach a card.
+KINDS = {"Blog Ideas": "blog-idea", "Skill Proposals": "skill-proposal",
+         "Tips and Tricks": "tip", "Topics": "topic", "Market Watch": "market"}
 QUEUE_NOTES = {
     "Blog Ideas": [("blog-%02d" % i, "inbox", float(i), i) for i in range(1, 15)]
                   + [("blog-accepted", "accepted", 9.0, 4)],
@@ -64,45 +75,6 @@ printf '%s\\n' "$*" > "$SD_RECORD"
 for a in "$@"; do last=$a; done
 cp "$last" "$SD_RECORD.brief"
 exit "${SD_EXIT:-0}"
-"""
-
-# Exits non-zero, which is exactly how the real tool behaves when it is not
-# installed: the digest degrades to Open-only links made from obsidian://.
-#
-# `ACTIONS_STUB_HANG` makes it block instead, which is how the real tool behaves
-# when `tailscale funnel status` waits on a daemon that never answers. The
-# digest has to bound that and say what it could not reach, not sit there until
-# the signer's own timeout kills the run.
-#
-# `ACTIONS_STUB_RECORD` names a file this stub appends one line to per call:
-# the verb, then the base URL it was handed. That is what proves the daemon is
-# asked once a run rather than once a button -- the failure review round 1
-# found, where every call paid the timeout again and signed a 127.0.0.1 link.
-# `ACTIONS_STUB_SIGNS` makes it answer instead of refusing, so the recording
-# covers the path a working signer takes, and `ACTIONS_STUB_SIGN_HANG` blocks
-# only the `url` verb: discovery answers, signing does not. That is the second
-# stall, the one caching the base URL does nothing about.
-STUB_ACTIONS = """#!/bin/sh
-if [ -n "${ACTIONS_STUB_RECORD:-}" ]; then
-  printf '%s %s\\n' "$1" "${TASK_ACTIONS_BASE_URL:-<unset>}" >> "$ACTIONS_STUB_RECORD"
-fi
-if [ -n "${ACTIONS_STUB_HANG:-}" ]; then sleep "$ACTIONS_STUB_HANG"; fi
-if [ "$1" = url ] && [ -n "${ACTIONS_STUB_SIGN_HANG:-}" ]; then
-  sleep "$ACTIONS_STUB_SIGN_HANG"
-fi
-# Only the first `url` call is slow: mkdir succeeds once (sd:2536).
-if [ "$1" = url ] && [ -n "${ACTIONS_STUB_FIRST_SIGN_HANG:-}" ] &&
-   mkdir "${ACTIONS_STUB_STATE:?}/first-sign" 2>/dev/null; then
-  sleep "$ACTIONS_STUB_FIRST_SIGN_HANG"
-fi
-if [ "$1" = url ] && [ -n "${ACTIONS_STUB_SIGN_EXIT:-}" ]; then exit "$ACTIONS_STUB_SIGN_EXIT"; fi
-if [ -n "${ACTIONS_STUB_SIGNS:-}" ]; then
-  case "$1" in
-    base-url) printf '%s\\n' "$ACTIONS_STUB_SIGNS"; exit 0 ;;
-    url)      printf '%s/task?stub=1\\n' "${TASK_ACTIONS_BASE_URL:?url called with no base}"; exit 0 ;;
-  esac
-fi
-exit 1
 """
 
 STUB_JEV = """#!/bin/sh
@@ -156,7 +128,11 @@ json.dump({"answers": answers}, sys.stdout)
 
 
 def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
-    """A fake repo root holding the tool, its stubbed siblings and a vault."""
+    """A fake repo root holding the tool, its stubbed siblings and a database of base rows."""
+    from sd_db import create_item
+    from sd_db.database import connect, local_path
+    from sd_db.migrate import initialise
+
     root = pathlib.Path(tmp)
     (root / "local-obsidian-review").mkdir()
     shutil.copy(TOOL, root / "local-obsidian-review" / TOOL.name)
@@ -164,7 +140,6 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
     shutil.copy(TOOL.parents[1] / "lib" / "config.sh", root / "lib" / "config.sh")
     for folder, name, text in (
         ("bin", "sd", STUB_SD),
-        ("local-task-actions", "task-actions.sh", STUB_ACTIONS),
         ("local-jev", "jev.sh", STUB_JEV),
     ):
         (root / folder).mkdir()
@@ -173,43 +148,54 @@ def build_root(tmp: str, today: datetime.date = TODAY) -> pathlib.Path:
         path.chmod(0o755)
     (root / "local-jev" / "answer.py").write_text(STUB_ANSWER)
 
-    for queue, notes in QUEUE_NOTES.items():
-        folder = root / "vault" / "System" / "Databases" / queue
-        folder.mkdir(parents=True)
-        for stem, status, score, age in notes:
-            created = today - datetime.timedelta(days=age)
-            (folder / f"{stem}.md").write_text(
-                "---\n"
-                f"status: {status}\n"
-                f"description: what {stem} is about\n"
-                f"score: {score}\n"
-                f"dateCreated: {created.isoformat()}\n"
-                "---\n\n"
-                "A body nobody outside this machine may ever see.\n"
-            )
-        (folder / "not-a-note.md").write_text("no frontmatter here\n")
+    (root / "home").mkdir()
+    database = local_path(root / "home")
+    initialise(database)
+    connection = connect(database)
+    try:
+        for queue, notes in QUEUE_NOTES.items():
+            kind = KINDS[queue]
+            for stem, status, score, age in notes:
+                created = today - datetime.timedelta(days=age)
+                path = f"Base/{queue}/{stem}.md"
+                create_item(connection, kind="idea", title=stem, status="planning", source="vault",
+                            external_id=f"{kind}:{path}", path=path, stage=status,
+                            fields={"kind": kind, "description": f"what {stem} is about",
+                                    "score": str(score), "dateCreated": created.isoformat()},
+                            body={"markdown": "A body nobody outside this machine may ever see.\n"})
+    finally:
+        connection.close()
     return root
 
 
+def item_ids(root: pathlib.Path) -> dict:
+    """{title: item id} of the fixture's base rows."""
+    from sd_db import records
+    from sd_db.database import connect, local_path
+
+    connection = connect(local_path(root / "home"), write=False)
+    try:
+        return {row["title"]: row["id"] for row in records.list_rows(connection)}
+    finally:
+        connection.close()
+
+
 def sd_stub(root: pathlib.Path) -> dict:
-    """The environment that puts the stub `sd` first on PATH."""
-    return {"PATH": f"{root / 'bin'}:{os.environ['PATH']}", "SD_RECORD": str(root / "sd.args")}
+    """The environment that puts the stub `sd` first on PATH and the fixture database under HOME."""
+    return {"PATH": f"{root / 'bin'}:{os.environ['PATH']}", "SD_RECORD": str(root / "sd.args"),
+            "HOME": str(root / "home"), "SD_PACK_ROOT": str(PACK_ROOT)}
 
 
 def run_proc(root: pathlib.Path, env_extra=None, today: datetime.date = TODAY):
     """Run `obsidian-review.sh run`; return (the finished process, the brief filed)."""
     env = dict(os.environ)
     env.update({
-        "OBSIDIAN_VAULT": str(root / "vault"),
         "SYSTEM_TOOLS_CONFIG": str(root / "config"),
         **sd_stub(root),
         "OBSIDIAN_REVIEW_TODAY": today.isoformat(),
     })
-    env.pop("OBSIDIAN_REVIEW_SIGN_TIMEOUT", None)
     for key in ("JEV_OBSIDIAN_REVIEW", "JEV_STUB_ENABLED_EXIT",
-                "JEV_STUB_ASK_FAIL", "JEV_STUB_RECORD", "JEV_STUB_CALLS", "JEV_RUN",
-                "ACTIONS_STUB_HANG", "ACTIONS_STUB_RECORD",
-                "ACTIONS_STUB_SIGNS", "ACTIONS_STUB_SIGN_HANG"):
+                "JEV_STUB_ASK_FAIL", "JEV_STUB_RECORD", "JEV_STUB_CALLS", "JEV_RUN"):
         env.pop(key, None)
     env.update({k: v for k, v in (env_extra or {}).items() if v is not None})
     for key, value in (env_extra or {}).items():
