@@ -823,6 +823,13 @@ open({port}); await flush(); R.port = ELS.details.html;""")
         self.assertRegex(out["R"]["port"], r'<select id="det-repo" class="fld" disabled')
         self.assertNotRegex(html, r'<select id="det-[a-z]+" class="fld" disabled')
 
+    def test_status_priority_and_edit_leave_the_act_bar_to_the_details_fields(self):
+        """sd:5295: Status, Priority and Due are Details fields, so their commands are `bar: false`: off the Act bar, while
+        1-5, e and m, the ⋯ menu, the palette and the bulk bar still run them (test_v2_commands checks the bar honours it)."""
+        out = self.run_page("R.off = REG.filter(c => c.bar === false).map(c => c.id);")
+        self.assertEqual(sorted(out["R"]["off"]), sorted([f"item.status.{s}" for s in ("planning", "ready", "in_progress", "blocked", "done")]
+                                                        + ["item.complete", "item.p1", "item.p2", "item.p3", "item.p4", "item.edit", "item.move"]))
+
     def test_a_field_change_writes_once_with_its_cli_line_and_undo(self):
         plan = self.ids["plan"]
         row = self.row("plan")

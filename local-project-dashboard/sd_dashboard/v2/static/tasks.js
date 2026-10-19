@@ -362,7 +362,7 @@ addEventListener('DOMContentLoaded', () => {
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
-    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban',
+    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, s)),
@@ -377,7 +377,7 @@ addEventListener('DOMContentLoaded', () => {
   // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
   // row is skipped with its reason (keys below).
   const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
-  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check',
+  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, 'done')),
@@ -406,15 +406,17 @@ addEventListener('DOMContentLoaded', () => {
     const sent = r => { const b = before(r); was = Object.fromEntries(keep.map(k => [FIELD[k] || k, k in r ? r[k] ?? null : b[k] ?? null])); };
     return landing(edit(t.key, ch, { sent, check }).then(v => { landed(t.key); return v; }), msg, v => edit(t.key, was, { rev: v.revision }));
   }
+  // sd:5295: the Details' Status, Priority and Due fields do what Status →, Done → next occurrence, Edit → P1-4, Edit and Move
+  // to do, so those stay off its Act bar (`bar: false`); 1-5, e, m, the ⋯ menu, the palette and the bulk bar still run them.
   C.register(
     ...Object.values(STATUS_CMD), COMPLETE,
     // Edit sets priority and due date in one dialog. Its save carries the Undo, so the shell's own feedback stays safe.
-    { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line',
+    { id: 'item.edit', on: 'item', label: 'Edit', key: 'e', risk: 'safe', icon: 'pen-line', bar: false,
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
       cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${t.p || 'N'} ${t.due ? '--due ' + t.due : '--due YYYY-MM-DD'}`),
       run: o => { askEdit(T(o)); return `Editing ${label(T(o))}`; } },
     // Move to: the status moves without drag (touch, or anyone). One form lists every column; a refused one is off with its reason.
-    { id: 'item.move', on: 'item', label: 'Move to', key: 'm', risk: 'safe', icon: 'kanban',
+    { id: 'item.move', on: 'item', label: 'Move to', key: 'm', risk: 'safe', icon: 'kanban', bar: false,
       primary: () => view === 'board' && coarse.matches,
       when: o => { const t = T(o); if (!t) return 'the task is no longer listed'; const L = STATUSES.map(([s]) => legal(t, s)); return L.some(x => x.ok) || L.find(x => x.reason !== 'Already here.').reason; },
       cli: o => rowOr(o, t => `sd task status ${t.id} <status>`),
@@ -422,7 +424,7 @@ addEventListener('DOMContentLoaded', () => {
     // Priorities 1–4, workflow.edit_item's range, each a bulk edit with Undo (sd:3012 triage re-prioritizes in bulk). A row
     // already at the priority is refused as its write leaves, not by `when`: the bar offers only what every picked row is
     // on for, so a pick that mixes priorities would otherwise offer none.
-    ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right',
+    ...[1, 2, 3, 4].map(n => ({ id: `item.p${n}`, on: 'item', label: `Edit → P${n}`, risk: 'undo', bulk: true, icon: 'flag-triangle-right', bar: false,
       when: o => { const t = T(o); return !t ? 'the task is no longer listed' : EDITABLE(t) || noEdit(t); },
       cli: o => rowOr(o, t => `sd task edit ${t.id} --priority ${n}`),
       run: o => { const t = must(o), was = t.p; return editRun(t, { p: n }, () => `${label(t)} P${was || '–'} → P${n}`, { check: r => r.p !== n || `it is already P${n}` }); },

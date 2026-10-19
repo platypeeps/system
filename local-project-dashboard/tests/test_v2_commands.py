@@ -179,6 +179,11 @@ class EveryCommandSaysWhatItDoes(unittest.TestCase):
         self.assertIn("const s = shownCli(c, o), d = doesOf(c, o)", SHELL)
         self.assertIn("document.addEventListener('focusin', e => { const b = e.target.closest?.('.help, [data-tip]');", SHELL)
 
+    def test_a_command_a_field_covers_stays_off_the_act_bar_but_not_off_the_menu(self):
+        # sd:5295: `bar: false` marks a command an on-page field or dropdown does; the bar skips it, the ⋯ menu keeps it.
+        self.assertIn("const list = cmdsFor(o).filter(c => c.bar !== false);", block("bar"))
+        self.assertNotIn("c.bar", block("openMenu"))
+
     def test_the_row_menu_shows_does_as_the_items_second_line(self):
         menu = block("openMenu")
         self.assertRegex(menu, r'<span>\$\{c\.label\}[^<]*</span><small>\$\{doesOf\(c, o\)\}</small>')

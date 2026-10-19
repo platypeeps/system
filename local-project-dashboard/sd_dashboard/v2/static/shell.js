@@ -719,7 +719,8 @@
   // Details: every command as a button; what it does and its line are the button's tip (sd:5287), its CLI line and the
   // reason an off one is off fold under "Same thing from the CLI", closed until opened (sd:3464).
   function bar(id) {
-    const o = OBJ.get(id); const list = cmdsFor(o); if (!list.length) return html``;
+    // sd:5295: `bar: false` is a command an on-page field or dropdown already does; its key, the ⋯ menu and bulk keep it.
+    const o = OBJ.get(id); const list = cmdsFor(o).filter(c => c.bar !== false); if (!list.length) return html``;
     const on = list.filter(c => !offWhy(c, o)), off = list.filter(c => offWhy(c, o));
     const first = on.find(c => c.primary?.(o)) || on[0];
     const button = c => html`<button class="btn${c === first ? '' : ' quiet'}${c.risk === 'confirm' ? ' risky' : ''}" type="button" data-cmd="${c.id}" data-obj="${id}" data-tip="${tipOf(c, o)}" aria-keyshortcuts="${c.key ? '. ' + c.key : ''}">${c.label}${c.key ? html`<kbd>${c.key}</kbd>` : ''}</button>`;
