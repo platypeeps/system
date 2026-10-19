@@ -108,6 +108,8 @@ REMOTE_SECONDS = 20
 #: text the input keeps. A source past them is cut and says so.
 FETCH_SECONDS = 20
 FETCH_BYTES = 2_000_000
+#: How long past its own bound `_fetch` waits for its worker to stop at that bound and answer.
+FETCH_GRACE = 2
 FETCH_CHARS = 150_000
 #: How many of a checkout's source-review briefs `source_reviews` reads, newest first.
 SOURCE_BRIEFS = 500
@@ -940,17 +942,70 @@ def _fetch(url: str, *, seconds: float = FETCH_SECONDS) -> str:
     One GET, read-only, bounded as a whole by `seconds` and by `FETCH_BYTES`. A failure is written as not fetched,
     with its reason: whether the page is still there is then not known, and the lens reads it so. An HTTP error and
     a redirect are written as the answer they are, since a page that moved or is gone says so that way.
+
+    A socket timeout bounds one wait, not the fetch: a server that drips a byte at a time never trips it. So the read
+    runs in a thread the caller waits on for `seconds` plus `FETCH_GRACE` at most, and the read loop stops itself at
+    `seconds`. A worker still waiting then has its connection shut down, and the fetch is written as not fetched.
     """
-    import urllib.error
-    import urllib.request
+    import socket
 
     if not re.match(r"https?://[^\s/]", url):
         return f"Not fetched: {url} is not an http or https address, so it is not a public page the dashboard reads.\n"
+    done, opened = [], []
+
+    def work():
+        try:
+            done.append(_read(url, seconds, opened))
+        except BaseException as error:  # the caller writes any failure as not fetched, never as a dead thread
+            done.append(f"Not fetched: {type(error).__name__}: {error}. Whether the page is still there is not known.\n")
+
+    worker = threading.Thread(target=work, name="source fetch", daemon=True)
+    worker.start()
+    worker.join(seconds + FETCH_GRACE)
+    if done:
+        return done[0]
+    for connection in list(opened):  # wakes a worker blocked on the connection or the headers
+        try:
+            if connection.sock is not None:
+                connection.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    return (f"Not fetched: {url} gave no whole answer within {seconds:g} s. Whether the page is still there is not "
+            f"known.\n")
+
+
+def _opener(opened: list):
+    """A urllib opener that keeps each connection it makes in `opened`, so `_fetch` can shut a stalled one down."""
+    import urllib.request
+
+    def kept(cls):
+        def make(host, **options):
+            connection = cls(host, **options)
+            opened.append(connection)
+            return connection
+        return make
+
+    class Http(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(kept(http.client.HTTPConnection), req)
+
+    class Https(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(kept(http.client.HTTPSConnection), req, context=self._context)
+
+    return urllib.request.build_opener(Http, Https)
+
+
+def _read(url: str, seconds: float, opened: list) -> str:
+    """`_fetch`'s worker: the GET, its read loop stopped at `seconds` and `FETCH_BYTES`, and the text it yields."""
+    import urllib.error
+    import urllib.request
+
     deadline = time.monotonic() + seconds
     request = urllib.request.Request(url, headers={"User-Agent": "sd-dashboard-adversarial-review/1 (read-only)",
                                                    "Accept": "text/html, text/plain;q=0.9, */*;q=0.5"})
     try:
-        with urllib.request.urlopen(request, timeout=seconds) as response:
+        with _opener(opened).open(request, timeout=seconds) as response:
             status, final = response.status, response.geturl()
             kind, charset = response.headers.get_content_type(), response.headers.get_content_charset() or "utf-8"
             chunks, size, cut = [], 0, ""
@@ -958,7 +1013,7 @@ def _fetch(url: str, *, seconds: float = FETCH_SECONDS) -> str:
                 if time.monotonic() > deadline:
                     cut = f"the read stopped at its {seconds:g} s bound"
                     break
-                chunk = response.read(65536)
+                chunk = response.read1(65536)  # whatever has arrived, so the deadline is checked between drips
                 if not chunk:
                     break
                 chunks.append(chunk)

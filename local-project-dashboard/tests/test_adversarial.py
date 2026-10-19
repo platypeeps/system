@@ -859,6 +859,23 @@ class _Pages(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=x-not-a-charset")
             self.end_headers()
             self.wfile.write(PAGE)
+        elif self.path in ("/drip-body", "/drip-head"):
+            # Round 2: a byte every 50 ms never trips a 1 s socket timeout; 200 of them take 10 s.
+            try:
+                if self.path == "/drip-body":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", "200")
+                    self.end_headers()
+                else:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                for _ in range(200):
+                    self.wfile.write(b"x")
+                    time.sleep(0.05)
+                if self.path == "/drip-head":
+                    self.wfile.write(b"\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass  # the fetch gave up and closed the connection
         else:
             self.send_error(404, "Not Found")
 
@@ -953,6 +970,19 @@ class TheSourceReview(AdversarialCase):
         fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/odd")
         self.assertIn("HTTP 200, text/html", fetched)
         self.assertIn("The limit is 10 requests per minute.", fetched)
+
+    def test_a_body_that_drips_is_cut_at_the_fetch_s_whole_bound(self):
+        # Round 2 class: a per-wait socket timeout is not a bound on the whole read.
+        started = time.monotonic()
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/drip-body", seconds=1)
+        self.assertLess(time.monotonic() - started, 3, fetched)  # the 1 s bound and its 2 s grace
+        self.assertIn("the read stopped at its 1 s bound", fetched)
+
+    def test_headers_that_drip_are_not_fetched_within_the_bound(self):
+        started = time.monotonic()
+        fetched = adversarial._fetch(f"http://127.0.0.1:{self.port}/drip-head", seconds=1)
+        self.assertLess(time.monotonic() - started, 3.5, fetched)
+        self.assertIn("gave no whole answer within 1 s", fetched)
 
     def test_a_source_review_is_refused_for_an_unregistered_checkout_an_unknown_row_or_another_shape(self):
         self.connection.execute("DELETE FROM repo WHERE path = ?", (str(self.notes),))
