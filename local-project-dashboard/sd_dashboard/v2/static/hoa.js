@@ -22,7 +22,7 @@
   const srcOf = key => SRC.find(r => r.source === key);
   // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
-// A source's refresh job (hoa_screen.REFRESH_JOBS) as the jobs inventory reads it: its last run, in words.
+// A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
   : j.state === 'idle' ? (j.last_exit === 0 ? 'last refresh finished' : 'refresh not run yet') : `refresh job ${j.state}`;
@@ -537,7 +537,7 @@ let polling = 0;
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
     );
     // ---------- Refresh a source (sd:4965) ----------
-    // Each refreshable source has a manual cron job (hoa_screen.REFRESH_JOBS). Its row registers Management's shared Retry
+    // Each refreshable source has a manual cron job, named by its source-ages row (sd:5280). Its row registers Management's shared Retry
     // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off
     // reason. The run's state and its last output line come back with the next read.
     const facts = o => { const j = srcOf(o.source)?.job || {};
@@ -548,8 +548,8 @@ let polling = 0;
         .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
     C.register(
       { ...window.commands.retry({ job: facts, run: refresh }),
-        does: o => o.source === 'vantaca' ? 'Pulls Vantaca invoices once in signed-in Chrome, up to 2 h. Nothing to undo.'
-          : 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.' },
+        does: o => o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
+          : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
       window.commands.showLog({ job: facts }),
     );
     // ---------- Run sweep (sd:5095) ----------

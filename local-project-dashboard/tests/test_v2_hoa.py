@@ -343,7 +343,8 @@ class TheScript(Fixture):
         # registered commands here, a per-row text once for each source.
         from test_v2_commands import WORDS
         out = self.run_page("""R.d = REG.filter(c => c.does).flatMap(c => typeof c.does === 'function'
-  ? ['vantaca', 'mission'].map(source => [c.id, c.does({ source })]) : [[c.id, c.does]]);""")
+  ? [['vantaca', 'Vantaca invoices'], ['mission', 'Mission export']].map(([source, label]) => [c.id, c.does({ source, label })])
+  : [[c.id, c.does]]);""")
         long = [f"{command}: {does}" for command, does in out["R"]["d"] if len(does.split()) > WORDS]
         self.assertEqual(long, [], f"a does line over {WORDS} words")
 
@@ -842,10 +843,10 @@ class TheAcknowledgeRoute(BrowserSession):
         self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
 
 
-def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None):
-    """One row as hoa's tools/source-ages.py --json prints it."""
+def source_row(source, label, latest, age, allowed, state, ends=None, refresh=None, error=None, **job):
+    """One row as hoa's tools/source-ages.py --json prints it; without `job=`, as a checkout before hoa sd:5279 printed it."""
     return {"source": source, "label": label, "latest": latest, "age_days": age, "allowed_days": allowed, "state": state,
-            "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error}
+            "ends": ends, "refresh": refresh, "todo": f"refresh {source}", "error": error, **job}
 
 
 #: NOW is 2026-09-06: the Mission export is current, Vantaca stale; CORE and TMT have no refresh command.
@@ -886,6 +887,22 @@ class TheSourceAges(Fixture):
         self.assertEqual([(r["source"], r["state"], r["error"]) for r in got["rows"]],
                          [("mission", "unknown", "cannot read analog-daily.csv"), ("vantaca", "stale", None)])
         self.assertEqual([r["job"]["name"] for r in got["rows"]], ["hoa-mission-export", "hoa-vantaca-pull"])
+
+    def test_each_row_names_its_refresh_job_so_a_new_company_needs_no_dashboard_change(self):
+        """sd:5280: the row's `job` wins, a null meaning none; a row without one (an older checkout) falls back to REFRESH_JOBS."""
+        rows = [source_row("mission", "Mission export", "2026-09-05", 1, 14, "ok", refresh="sh tools/mission/mission.sh export"),
+                source_row("acme", "Acme invoices", "2026-08-20", 17, 14, "stale", refresh="python3 tools/acme-pull.py",
+                           job="hoa-acme-pull"),
+                source_row("vantaca", "Vantaca invoices", "2026-08-20", 17, 14, "stale", job=None)]
+        self.script(rows)
+        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-acme-pull": ("idle", 0)})
+        doc = self.doc()
+        self.assertEqual([r.get("job", {}).get("name") for r in doc["sources"]["rows"]], ["hoa-mission-export", "hoa-acme-pull", None])
+        out = self.run_page("""const c = cmd('jobs.retry'), a = OBJ.get('source:acme');
+R.type = a.type; R.cli = c.cli(a); R.does = c.does(a); R.vantaca = OBJ.get('source:vantaca').type;""", doc)
+        self.assertEqual((out["R"]["type"], out["R"]["cli"], out["R"]["vantaca"]), ("job", "sd jobs retry hoa-acme-pull", "source"))
+        self.assertIn("Acme invoices", out["R"]["does"])
+        self.assertNotIn("Vantaca", out["R"]["does"])
 
     def test_a_checkout_without_the_script_names_it(self):
         self.assertEqual(self.doc()["sources"]["error"], "tools/source-ages.py is not in the checkout")
