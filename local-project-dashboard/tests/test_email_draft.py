@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import sqlite3
 import threading
 import time
@@ -26,6 +27,8 @@ DOUBLE = """#!/bin/sh
 printf '%s\\n' "$@" > "$DOUBLE_DIR/argv"
 cat > "$DOUBLE_DIR/stdin"
 printf '%s' "${DOUBLE_TOKEN-unset}" > "$DOUBLE_DIR/token"
+pwd -P > "$DOUBLE_DIR/cwd"
+if [ -f "$DOUBLE_DIR/escape" ]; then perl -e 'use POSIX; setsid(); sleep 8' & echo $! > "$DOUBLE_DIR/escaped"; fi
 if [ -f "$DOUBLE_DIR/hang" ]; then sleep 30 & echo $! > "$DOUBLE_DIR/pid"; wait; fi
 cat "$DOUBLE_DIR/reply"
 exit "$(cat "$DOUBLE_DIR/exit" 2>/dev/null || echo 0)"
@@ -157,6 +160,17 @@ class TheFailures(DraftCase):
             time.sleep(0.05)
         else:
             self.fail(f"the model's child {pid} outlived the timeout")
+
+    def test_a_descendant_that_left_the_group_does_not_hold_the_timeout(self):
+        # It keeps the run's stdout and stderr open past the group kill; the runner stops reading them.
+        (self.double / "hang").write_text("")
+        (self.double / "escape").write_text("")
+        began = time.monotonic()
+        with patch.object(email_draft, "MODEL_TIMEOUT", 1), patch.object(email_draft, "REAP_TIMEOUT", 1, create=True):
+            with self.assertRaisesRegex(TimeoutError, "gave no answer in 1 s"):
+                email_draft._model("a question")
+        self.assertLess(time.monotonic() - began, 5)
+        os.kill(int((self.double / "escaped").read_text()), signal.SIGKILL)
 
     def test_a_reply_without_a_subject_line_saves_nothing(self):
         (self.double / "reply").write_text("Sure! Here is an email you could send.\n")

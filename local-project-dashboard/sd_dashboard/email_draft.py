@@ -24,6 +24,7 @@ the first one's note in the revision and is refused.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -40,7 +41,7 @@ from sd_db.progress import CANCELLABLE_TASK_KINDS
 
 from . import notes_screen
 
-__all__ = ["KINDS", "MODEL_TIMEOUT", "GMAIL_TIMEOUT", "TOOL", "prompt", "reply", "request", "start"]
+__all__ = ["KINDS", "MODEL_TIMEOUT", "GMAIL_TIMEOUT", "TOOL", "command", "prompt", "reply", "request", "start"]
 
 #: The kinds a task's email fits: `sd task` items, as Close's `progress.task_guard` admits them; Tasks' `CLOSES` too.
 KINDS = CANCELLABLE_TASK_KINDS
@@ -55,12 +56,25 @@ DRAFTING = threading.Lock()
 PROMPT = ("Write a short plain-text email about the work item below, in the first person, from the person who owns "
           "it. Name no recipient and invent no fact, name, address or date the item does not state. Reply with "
           "exactly this and nothing else: one line `Subject: <subject>`, one blank line, then the body.")
-#: launchd gives the dashboard 256 open files, and claude aborts below that need (local-cron-jobs raises it too);
-#: the LaunchAgent's PATH lacks ~/.local/bin, where the native installer puts claude.
-CLAUDE = ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
-          'ulimit -S -n 65536 2>/dev/null; '
-          'exec "${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}" -p --model sonnet '
-          '--restricted --strict-mcp-config --tools "" --no-session-persistence')
+#: After a kill, how long the run's pipes are read before they are closed unread.
+REAP_TIMEOUT = 5
+
+
+def command(tools: str, *, bound: int | None = None) -> str:
+    """The `sh -c` line of one `claude -p` whose only built-in tools are `tools` (`'""'` for none).
+
+    launchd gives the dashboard 256 open files, and claude aborts below that need (local-cron-jobs raises it too);
+    the LaunchAgent's PATH lacks ~/.local/bin, where the native installer puts claude. With `bound`, the run carries
+    its own alarm, which survives the exec: it ends after `bound` seconds even when no dashboard is waiting for it.
+    """
+    alarm = f"perl -e 'alarm shift; exec @ARGV' {int(bound)} " if bound else ""
+    return ('f="$HOME/.config/shell/env.sh"; [ ! -f "$f" ] || . "$f" >/dev/null 2>&1; '
+            'ulimit -S -n 65536 2>/dev/null; '
+            f'exec {alarm}"${{CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}}" -p --model sonnet '
+            f'--restricted --strict-mcp-config --tools {tools} --no-session-persistence')
+
+
+CLAUDE = command('""')
 NOTE = 'Draft email: saved Gmail draft "{subject}" (draft {draft}); it is not sent. Open it in Drafts: {link}'
 FAILED = "Draft email failed: {why}"
 
@@ -97,15 +111,23 @@ def reply(text: str) -> tuple[str, str]:
     return found[1].strip(), body
 
 
-def _model(text: str) -> str:
-    """The reply of one bounded `claude -p` run; `TimeoutError` or `RuntimeError` saying why there is none."""
-    child = subprocess.Popen(["sh", "-c", CLAUDE], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, start_new_session=True)
+def _model(text: str, line: str | None = None, *, cwd=None) -> str:
+    """The reply of one bounded `claude -p` run of `line` (`CLAUDE` by default) in `cwd`; `TimeoutError` or
+    `RuntimeError` saying why there is none."""
+    child = subprocess.Popen(["sh", "-c", line or CLAUDE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True, cwd=cwd)
     try:
         out, err = child.communicate(text, timeout=MODEL_TIMEOUT)
     except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        child.communicate()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        try:
+            child.communicate(timeout=REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # A descendant that left the group still holds the pipes; the run is dead, so stop reading them.
+            child.stdout.close()
+            child.stderr.close()
+            child.wait()
         raise TimeoutError(f"claude -p gave no answer in {MODEL_TIMEOUT} s") from None
     if child.returncode != 0:
         said = (err.strip() or out.strip() or "no output").splitlines()[-1]

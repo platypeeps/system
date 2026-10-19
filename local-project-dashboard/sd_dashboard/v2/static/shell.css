@@ -338,6 +338,9 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .msg { display: grid; gap: var(--space-2xs); font-size: var(--text-sm); }
 .msg .who { display: flex; align-items: center; gap: var(--space-2xs); }
 .msg p { margin: 0; color: var(--color-ink); }
+/* sd:5294: claude's answer is plain text; its line breaks are kept. A failure carries a warning rule, not red text. */
+.msg p.answer, .msg p.failed { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg p.failed { padding-left: var(--space-xs); border-left: var(--rule-lamp) solid var(--color-warning); color: var(--color-ink-2); }
 .suggest { display: grid; gap: var(--space-2xs); }
 .suggest button {
   display: flex; align-items: center; gap: var(--space-xs); text-align: left;
