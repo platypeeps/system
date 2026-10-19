@@ -17,5 +17,8 @@ column: yes or no, written with `sd-db repo dependabot`. A `platypeeps` repo
 and one the sweep denies by name show that rule and no toggle.
 It also shows `github_issues` (sd:4840): on or off, written with
 `sd-db repo github-issues`; a database before schema 35 shows it unread, with no toggle. Open item goes to
-the item's row on Tasks. The classic Jobs and Repos areas were retired in
+the item's row on Tasks. Land on a checkout's row (sd:5104, `land.py`) reads
+`GET /api/repos/land/preview`, asks with what would land, then posts `/api/repos/land` with that preview's revision:
+one commit per item, a `land/sd-<n>` branch and worktree when the checkout is on its default branch, then
+`sd-ship lane enqueue`. The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.
