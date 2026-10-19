@@ -714,7 +714,7 @@ class TheDocument(Collectors, ScreenCase):
     def test_disk_with_no_storage_folder_configured_names_the_file_rather_than_a_clean_area(self):
         rows = {row["id"]: row for row in self.doc(disk=scan_of({**DISK, "storage": [], "refused": ["line 2: junk"]}))["areas"][0]["rows"]}
         self.assertEqual(rows["rs:none"]["state"], "unknown")
-        self.assertIn("storage|<path> line in /config/project-dashboard/disk.conf (1 line not understood)", rows["rs:none"]["detail"])
+        self.assertIn("storage|<path> line in Settings, Dashboard (/config/project-dashboard/disk.conf) (1 line not understood)", rows["rs:none"]["detail"])
         unread = {**DISK, "storage": [{"root": "/Volumes/gone", "folders": [], "error": "du did not finish inside the Disk budget"}]}
         rows = {row["id"]: row for row in self.doc(disk=scan_of(unread))["areas"][0]["rows"]}
         self.assertEqual((rows["rs:/Volumes/gone"]["state"], rows["rs:/Volumes/gone"]["detail"]),
@@ -803,7 +803,7 @@ class TheDocument(Collectors, ScreenCase):
         config.write_text(f"# storage folders\nstorage|{store}\nstorage|{root / 'missing'}\nvolume|/nowhere\n")
         stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}):
-            scan = REAL_DISK_SCAN(self.connection, config=config)
+            scan = REAL_DISK_SCAN(self.connection, listed=health_collectors.storage_list(self.connection, config))
         self.assertEqual([volume["mount"] for volume in scan["volumes"]], ["/System/Volumes/Data", "/Volumes/my store"])
         self.assertEqual(scan["volumes"][0]["capacity"], 85)
         self.assertEqual(scan["build"]["checked"], 3)
@@ -814,38 +814,68 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual(missing["error"], "the folder does not exist or is not mounted")
         self.assertEqual(scan["refused"], ["line 4: volume|/nowhere"])
 
-    def test_the_committed_example_is_one_storage_folder_the_reader_understands(self):
-        example = Path(health_collectors.__file__).resolve().parents[1] / "disk.conf.example"
-        roots, refused, read = health_collectors.storage_roots(example)
-        self.assertEqual((roots, refused, read), ([Path("/Volumes/change-me/repo-storage")], [], example))
-
-    def test_a_config_that_cannot_be_read_is_a_named_refusal_not_an_error(self):
+    def test_a_config_that_cannot_be_read_is_a_named_problem_not_an_error(self):
         """sd:3532 (review 2026-10-12, A1 F7): only a missing disk.conf was caught; a folder in its place raised."""
         config = Path(self.tmp.name) / "disk.conf"
         config.mkdir()
-        roots, refused, read = health_collectors.storage_roots(config)
-        self.assertEqual((roots, read), ([], config))
-        self.assertEqual(len(refused), 1, refused)
-        self.assertTrue(refused[0].startswith(f"{config} could not be read: "), refused)
+        text, source, problem = health_collectors.storage_list(self.connection, config)
+        self.assertEqual((text, source), (None, "<config>/project-dashboard/disk.conf"))
+        self.assertEqual(problem, "not read: IsADirectoryError")
 
     def test_a_du_that_does_not_finish_is_a_row_not_a_refusal_of_the_area(self):
         store = Path(self.tmp.name) / "store"
         store.mkdir()
-        config = Path(self.tmp.name) / "disk.conf"
-        config.write_text(f"storage|{store}\n")
+        listed = (f"storage|{store}\n", "<config>/project-dashboard/disk.conf", "")
         stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
         self.stub("du", self.stalled())
         # The walk's clock holds still, so df spends none of the 1 s however
         # long it takes to start, and du alone meets its timeout (sd:2667).
         with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}), \
                 patch.object(health_collectors, "time", HeldClock()):
-            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, config=config, repo_paths=[]))
+            doc = self.doc(disk=lambda connection: REAL_DISK_SCAN(connection, within=1, listed=listed, repo_paths=[]))
         disk = doc["areas"][0]
         self.assertFalse(self.finished.exists(), "the page waited on du instead of stopping it")
         self.assertEqual(disk["error"], "")
         rows = {row["id"]: row for row in disk["rows"]}
         self.assertEqual(rows[f"rs:{store}"]["detail"], "du did not finish inside the Disk budget")
 
+
+    def page_storage(self):
+        """The Disk rows the page draws with the real reader on a stub df, the old disk.conf naming a folder `old`."""
+        config = Path(self.tmp.name) / "config"
+        (config / "project-dashboard").mkdir(parents=True, exist_ok=True)
+        (config / "project-dashboard" / "disk.conf").write_text(f"storage|{Path(self.tmp.name) / 'old'}\n")
+        stub = self.stub("df", f"cat <<'EOF'\n{self.DF}EOF\n")
+        with patch.dict(os.environ, {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}", "SYSTEM_TOOLS_CONFIG": str(config)}), \
+                patch.object(health_collectors, "disk_scan", REAL_DISK_SCAN):
+            disk = self.doc()["areas"][0]
+        self.assertEqual(disk["error"], "")
+        return {row["id"]: row for row in disk["rows"]}
+
+    def test_the_storage_folders_are_the_setting_row_not_disk_conf(self):
+        # sd:5109: dashboard.disk_storage wins; the page reads it before the walk starts on a thread of its own.
+        store = Path(self.tmp.name) / "store"
+        (store / "big").mkdir(parents=True)
+        (store / "big" / "data").write_bytes(b"x" * 8 * 1024)
+        writes.set_setting(self.connection, "dashboard.disk_storage", f"storage|{store}\n")
+        rows = self.page_storage()
+        self.assertIn(f"rs:{store / 'big'}", rows)
+        self.assertNotIn(f"rs:{Path(self.tmp.name) / 'old'}", rows)
+
+    def test_a_cleared_row_is_not_configured_and_a_failed_read_is_not_read(self):
+        writes.set_setting(self.connection, "dashboard.disk_storage", None)
+        none = self.page_storage()["rs:none"]
+        self.assertEqual((none["state"], none["facts"]["Config"]), ("unknown", "workflow database setting dashboard.disk_storage"))
+        self.assertIn("Settings", none["detail"])
+
+        def refuse(connection, keys):
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(writes, "read_settings", refuse):
+            rows = self.page_storage()
+        self.assertNotIn("rs:none", rows)
+        self.assertEqual(rows["rs:unread"]["state"], "unknown")
+        self.assertIn("database is locked", rows["rs:unread"]["detail"])
 
     def test_the_walkers_run_at_once_so_the_page_waits_for_the_slowest_not_the_sum(self):
         # Four walkers that each wait for all four: at once they meet and

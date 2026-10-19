@@ -79,7 +79,7 @@ __all__ = ["AREAS", "VIEWS", "document", "part", "summary"]
 
 #: The design's areas, in its order: id, name, the reader's source line, and what no reader covers yet.
 AREAS = (
-    ("disk", "Disk", "df -kPl · du -k -d 1 per disk.conf storage folder · git worktree list per registered repo",
+    ("disk", "Disk", "df -kPl · du -k -d 1 per dashboard.disk_storage folder · git worktree list per registered repo",
      ("build output sizes (its presence is read, not its size)", "build output in worktrees not yet merged")),
     ("cred", "Credentials", "sd-db credentials (nightly) → state heartbeat credentials:nightly", ()),
     ("wt", "Worktrees", "the fleet's .git/worktrees registrations", ()),
@@ -417,15 +417,18 @@ def _disk_rows(scan: dict) -> tuple[list[dict], dict]:
                 "note": "Not a fault: a storage folder is where large uncommitted data belongs. Review it when its volume passes 80%.",
                 "problem": [path],  # its size drifts with every write (sd:1896)
             })
-    if not scan["storage"]:
+    if scan.get("problem"):
+        rows.append({"id": "rs:unread", "state": "unknown", "type": "check", "what": "Storage folders not read: sizes not read",
+                     "detail": f"{scan['config']} {scan['problem']}", "kind": "Disk · storage folder",
+                     "facts": {"Config": scan["config"]}})
+    elif not scan["storage"]:
         rows.append({"id": "rs:none", "state": "unknown", "type": "check", "what": "No storage folder configured: sizes not read",
-                     "detail": f"name each with a storage|<path> line in {scan['config']}"
+                     "detail": f"name each with a storage|<path> line in Settings, Dashboard ({scan['config']})"
                                + (f" ({len(scan['refused'])} {_plural(len(scan['refused']), 'line', 'lines')} not understood)" if scan["refused"] else ""),
-                     "kind": "Disk · storage folder", "facts": {"Config": scan["config"]}, "list": list(scan["refused"]),
-                     "cli": "cp local-project-dashboard/disk.conf.example " + shlex.quote(scan["config"])})
+                     "kind": "Disk · storage folder", "facts": {"Config": scan["config"]}, "list": list(scan["refused"])})
     elif scan["refused"]:
         rows.append({"id": "rs:refused", "state": "unknown", "type": "check",
-                     "what": f"{len(scan['refused'])} disk.conf {_plural(len(scan['refused']), 'line', 'lines')} not understood",
+                     "what": f"{len(scan['refused'])} storage {_plural(len(scan['refused']), 'line', 'lines')} not understood",
                      "detail": f"{scan['config']} · each line is storage|<path>", "kind": "Disk · storage folder",
                      "facts": {"Config": scan["config"]}, "list": list(scan["refused"])})
     build = scan["build"]
@@ -991,6 +994,8 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         heads: dict | Exception = health_collectors.merged_heads(connection) if branches is None else {}
     except (SdDbError, sqlite3.Error) as failure:
         heads = failure
+    # The storage folders' row, on this thread too (sd:5109); a failed read is the answer's `problem`, never a raise.
+    storage = health_collectors.storage_list(connection) if disk is None else None
 
     def registered() -> list[str]:
         if isinstance(known, Exception):
@@ -1006,7 +1011,7 @@ def _readers(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
     collect_ports = ports or ports_screen._collect
     read_protection = protection or protection_module.rows
     read_creds = credentials or read_credentials
-    scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, repo_paths=registered()))
+    scan_disk = disk or (lambda connection: health_collectors.disk_scan(connection, listed=storage, repo_paths=registered()))
     scan_branches = branches or (lambda connection: health_collectors.branch_scan(
         connection, repo_paths=registered(), heads=merged()))
     read_doctor = doctor or (lambda: health_collectors.doctor_scan())

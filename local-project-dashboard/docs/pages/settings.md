@@ -36,6 +36,9 @@ row each, and the adversarial review's model and effort:
 - `dashboard.hoa_thresholds`: HOA's trend levels, one
   `<series>|below|<number>` or `<series>|above|<number>` line each, series
   `tank`, `runtime` or `aquifer`.
+- `dashboard.disk_storage`: Health's storage folders, one `storage|<path>`
+  line each, such as `storage|/Volumes/change-me/repo-storage`; `~` and
+  `$HOME` expand. Disk sizes the folders inside each.
 - `adversarial.model` and `adversarial.effort`: unset means `gpt-6-astra` at
   `high`.
 

@@ -1,8 +1,8 @@
 """Dashboard lists held as workflow database setting rows (sd:5109), each the pipe text its old file held.
 
 `LISTS` names each list's row, its old file under `<config>/project-dashboard/` and what Settings says about it. The
-readers (`places.realms`, `reports_screen.families`, `hoa_screen.thresholds`) keep their own grammar and read their text
-through `text`, the one rule:
+readers (`places.realms`, `reports_screen.families`, `hoa_screen.thresholds`, `health_collectors.storage_list`) keep
+their own grammar and read their text through `text`, the one rule:
 
 - **Row wins.** A row the database holds is the answer; a cleared row (`None`) is "not configured", and the old file is
   not read again.
@@ -30,6 +30,8 @@ LISTS = {
                                   "them. Families hoa and home are the HOA and Home pages' Reports and Briefs."),
     "dashboard.hoa_thresholds": ("hoa-thresholds.conf", "HOA's trend levels, one <series>|below|<number> or "
                                  "<series>|above|<number> line each; series is tank, runtime or aquifer."),
+    "dashboard.disk_storage": ("disk.conf", "Health's storage folders, one storage|<path> line each (~ and $HOME "
+                               "expand): Disk sizes the folders inside each, the place for large uncommitted data."),
 }
 
 
