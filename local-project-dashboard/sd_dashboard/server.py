@@ -342,6 +342,17 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # sd:5064: a codex review of a task, a brief, a repository or a change, started in the background.
         return adversarial.request(values)
+    issue_run = re.fullmatch(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/(confirm|check|discard)", path)
+    if issue_run:
+        from . import issue_filing
+
+        # sd:5103: Confirm files the previewed issue once and links it back; Check looks again for the issue of a run
+        # whose outcome is not known, and never files; Discard ends a run.
+        if issue_run[2] == "confirm":
+            return issue_filing.confirm_request(issue_run[1], values)
+        if issue_run[2] == "check":
+            return issue_filing.check_request(issue_run[1], values)
+        return issue_filing.discard_request(issue_run[1], values)
     if path == "/api/snooze":
         from . import snooze
 
@@ -445,7 +456,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if values:
             raise ValueError("Refresh satellites takes no values.")
         return lambda connection: refresh_satellites(connection)
-    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot|github-issues)", path)
+    match = re.fullmatch(r"/api/repos/(runner-merge|managed|lane-host|channels|dependabot|github-issues|jira-project)", path)
     if match:
         from .management_screen import set_repo
 
@@ -461,7 +472,8 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         # The sd-db repo verbs Management runs (sd:2118); `before` is what the page showed, refused when stale.
         # A lane host is `hub` or a typed host name (sd:3075): `repos.set_lane_host` refuses a bad one by its rule.
         def word(value) -> bool:
-            if match[1] == "lane-host":
+            if match[1] in ("lane-host", "jira-project"):
+                # A Jira key or `off` (sd:5103): `repos.set_jira_project` refuses a bad key by its rule.
                 return isinstance(value, str) and value != ""
             return value in {"runner-merge": ("manual", "auto"), "github-issues": ("on", "off")}.get(match[1], ("yes", "no"))
 
@@ -504,7 +516,7 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if parent is not None and (type(parent) is not int or not 1 <= parent <= 9223372036854775807):
             raise ValueError("Choose a valid item for the followup to follow up.")
         return lambda connection: capture_followup(connection, followup_of=parent, who="dashboard", **values)
-    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/cancel-task|/stage|/park|/revive|/fix|/draft-email|/experiment)?", path)
+    match = re.fullmatch(r"/api/(items|notes)/([1-9][0-9]*)(/status|/notes|/resolve|/relink|/cancel|/cancel-task|/stage|/park|/revive|/fix|/draft-email|/file-issue|/experiment)?", path)
     if not match:
         raise NotFound(path)
     entity, number, suffix = match.groups()
@@ -573,6 +585,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
 
         # Draft email (sd:3463): claude writes it, workspace-mcp saves it as a Gmail draft; nothing sends it.
         return email_draft.request(number, values, revision)
+    if entity == "items" and suffix == "/file-issue":
+        from . import issue_filing
+
+        # File issue (sd:5103): a tool-less claude drafts a sanitized issue in the background; nothing files until Confirm.
+        return issue_filing.request(number, values, revision)
     if entity == "items" and suffix == "/experiment":
         # sd:4639: the values `sd task edit <n> --experiment` takes, to the same `projection.designate` (pack sd:3982).
         specs = values.get("experiment")
@@ -771,6 +788,13 @@ class Dashboard(BaseHTTPRequestHandler):
             if not self._session(context):
                 return self._json(403, {"error": "Open a dashboard page before reading a review run."})
             return self._json(*adversarial.status(path[len("/api/adversarial/"):]))
+        if path.startswith("/api/issue-runs/") and not split.query:
+            from . import issue_filing
+
+            # sd:5103: one issue run's draft and state, from its state file; a read that never files.
+            if not self._session(context):
+                return self._json(403, {"error": "Open a dashboard page before reading an issue run."})
+            return self._json(*issue_filing.status(path[len("/api/issue-runs/"):]))
         parameters = parse_qs(split.query, keep_blank_values=True)
         try:
             connection = sd_db.connect(self.database, write=False)

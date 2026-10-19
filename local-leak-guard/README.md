@@ -29,7 +29,11 @@ sh local-leak-guard/leak-guard.sh install          # this repository's pre-push 
 sh local-leak-guard/leak-guard.sh check            # commits no remote has yet
 sh local-leak-guard/leak-guard.sh check --range origin/main..HEAD
 sh local-leak-guard/leak-guard.sh remove
+printf '%s\n' "$text" | sh local-leak-guard/leak-guard.sh scan   # one text on stdin
 ```
+
+`scan` checks text that is not a commit, such as an issue the dashboard is about
+to file (sd:5103). It prints the number of each matching line, never the line.
 
 `install` writes the hook into `git rev-parse --git-path hooks`, so it honours
 `core.hooksPath`. It refuses to replace a `pre-push` hook it did not write.
@@ -73,8 +77,9 @@ matching text, and it withholds a path that itself matches.
 | Code | Meaning |
 | --- | --- |
 | `0` | clean, or no pattern file |
-| `1` | a pushed commit matches a pattern |
+| `1` | a pushed commit, or the scanned text, matches a pattern |
 | `2` | usage or git error |
+| `3` | `scan` only: no pattern file, so the text is not known clean |
 
 ## CI
 
