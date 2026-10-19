@@ -73,6 +73,13 @@ thread, not one per refresh. Meanwhile the area shows its last answer under
   branch a worktree has checked out is its own queued row, since
   `git branch -d` refuses it. A repository with no `origin/HEAD`, or one git
   cannot read, is named in an unknown row, never counted as clean.
+  Merged worktrees (sd:5105) is one row: the registered worktrees whose
+  `HEAD` is the head a merged lane entry names for that worktree. The lane
+  squash-merges, so only its entry ties a tree to a merge; a fresh worktree
+  at `origin/HEAD` is not one. Each tree says why it stays, if it does: a
+  process works in it (`lsof -a -d cwd -Fn`, and no answer keeps every
+  tree), uncommitted or untracked files, ignored files other than build
+  output and tool caches, or a branch other than the merged one.
 - Disk draws a bar per volume from `df -kPl` (the data volume and each volume
   under `/Volumes`; local file systems only), with a row for each volume past
   80% (caution) or 90% (warning). It lists the three biggest subfolders of
@@ -104,8 +111,19 @@ in `origin/HEAD`, and clean; a symlink is never followed. A step whose result
 is not known answers 502 with `outcome: unknown` and what landed, and the page
 reads Health again; a check before a step that could not be read is unknown
 too, never a refusal. A write where git or a check refused every step wrote
-nothing and answers 400. None of the three runs in bulk. `health_cleanup`
+nothing and answers 400. None of them runs in the shell's bulk. `health_cleanup`
 holds the writes.
+
+Remove merged (sd:5105) checks each tree again, then deletes origin's branch
+with a lease on the merged head, detaches the tree, deletes the local branch
+with `update-ref -d` on that head, and runs `git worktree remove` without
+`--force`, which takes its build output with it. The tree stays on disk until
+the last step, so a stop between steps leaves it in the next read, and the
+next run finishes it. A branch that moved, here or on origin, keeps the tree.
+Clean all safe heads Checkouts: its confirm lists every row whose own cleanup
+would run, with what each removes, then it posts them in turn, each with its
+own revision. A refused row wrote nothing and the run goes on; an unknown
+outcome stops it.
 
 Vault mirror (sd:3977) reads the last `records-mirror` heartbeat: ok when it says so, a warning with its reason
 and refused files, and unknown before any render. Render mirror posts `/api/records/render`, the code

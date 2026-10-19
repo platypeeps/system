@@ -53,6 +53,17 @@ inventory gives the job's state, its off reason (not installed, running, or a
 start launchd refuses) and the last line of its log; while it runs, the page
 reads again every 15 seconds (`SRC_POLL`).
 
+The last Data sources row is the HOA sweep (sd:5095). Run sweep asks first,
+then posts `/api/hoa/sweep`, which starts the checkout's `tools/sweep.py run`
+detached, holding `<state>/system/hoa-sweep/lock` (`sd_dashboard/sweep.py`): a second
+post while it runs is a 409. That script runs one `claude -p` with an exact
+allowlist: it reads both Drives and the alias mail, updates the status and the
+VP brief, saves followups as Gmail drafts (never sent) and hands its commit to
+the lane. `/api/hoa` carries its `sweep` part, also at
+`/api/hoa/sweep/status`: `tools/sweep.py status --json`, bounded at 10
+seconds, and whether the lock is held. A run that ended without a record of
+its own reads failed, naming `start.log`.
+
 Gaps from the design: the map is one SVG of the files' vectors with Fit, zoom
 and drag, not Leaflet, so there are no asset clusters and no aerial button.
 Draft followup asks the chat, which has no backend yet; nothing is sent.

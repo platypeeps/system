@@ -52,6 +52,9 @@ COMMANDS = [
     ["brief.task", "brief", "Make task", "k", "safe"],
     ["brief.open", "brief", "Open in Obsidian", "o", "safe"],
     ["brief.adversarial-review", "brief", "Adversarial review", None, "safe"],
+    # sd:5102: commands.js declares both for Briefs and Documents.
+    ["brief.publish", "brief destination", "Publish to", None, "safe"],
+    ["brief.publish-now", "brief", "Publish now", None, "safe"],
 ]
 
 #: The briefs a small store holds: stem, when first filed, the body's first line.
@@ -356,7 +359,7 @@ R.primary = REG.filter(c => c.primary && c.primary({})).map(c => c.id); R.gated 
         self.assertEqual(out["R"]["reg"], COMMANDS)
         # Read is every row's primary action and is never off, so a row without a vault copy offers it too (the shell draws
         # the primary in each row: the browser check on the pull request).
-        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review"]))
+        self.assertEqual((out["R"]["primary"], out["R"]["gated"]), (["brief.read"], ["brief.open", "brief.adversarial-review", "brief.publish", "brief.publish-now"]))
 
     def test_adversarial_review_on_a_brief_posts_its_item(self):
         """sd:5064: a brief row asks for {kind: brief, target: <its item>}; the run starts in the background."""
@@ -768,7 +771,8 @@ class TheRecommendations(BriefCase):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs", "/api/briefs/7/recommendations")
+    page, section, route, api = "briefs", "Briefs", "/briefs", ("/api/briefs", "/api/briefs/7/recommendations", "/api/briefs/publish",
+                                                                "/api/briefs/publish-now", "/api/briefs/publish-now/drain-x-20261018T000000Z")
 
 
 if __name__ == "__main__":

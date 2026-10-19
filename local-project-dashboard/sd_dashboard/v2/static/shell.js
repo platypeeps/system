@@ -580,7 +580,7 @@
   // Hover help on a command button (sd:3457): the line it runs and whether it asks first or offers Undo. The button carries
   // it as data-tip; the help popover shows it after --delay-help, so a pass over the buttons shows nothing.
   const tipOf = (c, o) => {
-    const s = shownCli(c, o), r = c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
+    const s = shownCli(c, o), r = c.previews ? ' Asks first, with a preview.' : c.risk === 'confirm' || asksFirst(c, o) ? ' Asks first.' : c.risk === 'undo' && c.undo ? ' Undo offered.' : '';
     return `${c.label}: ${!s ? 'dashboard only, no CLI line' : executes(c, o) ? `runs ${s}` : `copy only, the dashboard does not run ${s}`}.${r}`;
   };
   // What a command does, in one plain sentence (sd:4963): a declaration's `does`, a string or o => a string. The Act bar
@@ -672,8 +672,10 @@
     };
     // A command with fields always asks: the dialog is where the operator types them. Its colour follows the risk, or the
     // command's danger(o) where one object's outcome is graver than another's (Tasks' item.complete, sd:2250).
+    // previews: true (Land, sd:5104) is a confirm whose run reads a preview first and asks with it through shell.ask, so the
+    // shell does not ask a second time.
     const fields = c.fields ? c.fields(o) : [];
-    if (c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length) return go();
+    if (c.previews || (c.risk !== 'confirm' && !asksFirst(c, o) && !fields.length)) return go();
     const act = actOf(c, o);
     confirmAction({ title: `${act}: ${o.label}?`, body: c.consequence ? c.consequence(o) : '', cli: v => { const s = cliOf(c, o, v); return noCli(s) ? '' : s; }, ok: act, keep: `Don't ${c.label.toLowerCase()}`, danger: c.danger ? !!c.danger(o) : c.risk === 'confirm', fields })
       .then(({ yes, from, values }) => { if (!yes) return; go(values); const a = document.activeElement; if (!a || a === body) refocus(from); });
@@ -1503,7 +1505,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

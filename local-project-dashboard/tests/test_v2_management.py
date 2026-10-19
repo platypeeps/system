@@ -763,6 +763,7 @@ class TheScript(PageScript):
             ["repo.lane-host", "repo", "safe", "h", False, False],
             ["repo.pull", "repo", "safe", "l", False, False],
             ["repo.adversarial-review", "repo", "safe", None, True, False],
+            ["repo.land", "repo", "confirm", "n", True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["file.prepare", "file change", "safe", "p", False, False],
             ["sddb.withdraw", "sd-db change", "safe", None, False, False],
@@ -779,6 +780,27 @@ class TheScript(PageScript):
             ["jobs.log", "job", "safe", "l", False, False],
             ["jobs.print", "job", "safe", "p", False, False],
         ])
+
+    def test_land_asks_with_the_preview_previews_again_for_new_items_and_posts_its_revision(self):
+        """sd:5104: the confirm shows the preview; a changed Items field reads a new preview before anything is posted."""
+        answer = """(path, body) => {
+  if (path.startsWith('/api/repos/land/preview')) { const items = new URLSearchParams(path.split('?')[1]).get('items');
+    return [200, { spec: items === null ? '7' : items, ready: true, why: '', revision: 'r-' + (items === null ? '7' : items),
+      mode: 'branch', branch: 'main', default: 'main', land_branch: 'land/sd-7', worktree: '/w', commits: [],
+      groups: [{ item: 7, title: 'T', paths: ['a'] }], cli: 'sd-ship -C /w lane enqueue' }]; }
+  if (path === '/api/repos/land') return [200, { ok: true, branch: 'land/sd-7', commits: [{}], lane: { status: 'pending' } }];
+  return [200, {}]; }"""
+        extra = """OUT.asks = []; var ASKED = ['7; 8: lib/', '7; 8: lib/'];
+window.shell.ask = a => { OUT.asks.push([a.body, a.fields[0].value]); return Promise.resolve({ yes: true, values: { items: ASKED.shift(), claim: 'deliver' } }); };"""
+        out = self.run_page("""const o = [...OBJ.values()].find(x => x.type === 'repo');
+R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""", answer=answer, extra=extra)
+        self.assertEqual([a[1] for a in out["asks"]], ["7", "7; 8: lib/"])
+        self.assertIn("land/sd-7", out["asks"][0][0])
+        self.assertEqual([g for g in out["gets"] if "land" in g][1].split("items=")[1], "7%3B%208%3A%20lib%2F")
+        posted = [body for path, body, _ in out["posts"] if path == "/api/repos/land"]
+        self.assertEqual(posted, [{"path": posted[0]["path"], "items": "7; 8: lib/", "revision": "r-7; 8: lib/", "claim": "deliver"}])
+        self.assertIn("lane pending", out["R"]["got"]["text"])
+        self.assertTrue(out["R"]["previews"])
 
     def test_the_page_reads_the_document_and_draws_repos_with_git_state(self):
         out = self.run_page("R.repos = ELS['view-repos'].html; R.sched = ELS['view-schedules'].html;")
@@ -1611,4 +1633,5 @@ class TheSatellites(PageScript):
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "management", "Management", "/management", ("/api/management",)
+    page, section, route, api = ("management", "Management", "/management",
+                                 ("/api/management", "/api/repos/land/preview", "/api/repos/land"))

@@ -54,7 +54,7 @@ from pathlib import Path
 from sd_db import writes
 from sd_db.errors import SdDbError
 
-from . import documents
+from . import documents, publishing
 
 __all__ = ["HEAD_BYTES", "VIEW_FIELDS", "document", "facts", "request", "views"]
 
@@ -296,6 +296,7 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         if own.get("hidden"):
             continue
         sources = _sources(checkout, [entry["name"] for entry in found]) if research else {}
+        publish = _publishing(connection, checkout) if research else None
         for entry in found:
             source = sources.get(entry["name"])
             try:
@@ -309,6 +310,7 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
                 **facts(root.path.expanduser() / entry["name"]),
                 # Unread or never set: shown, unpinned, untagged, the pack's VIEW_CLEAR (spelled here for a pack without it).
                 **kept.get(f"{root.key}/{entry['name']}", {"pinned": False, "hidden": False, "tags": []}),
+                "pub": publish(entry["name"]) if publish else None,
             })
     rows.sort(key=lambda row: row["modified"], reverse=True)
     contested = [{"key": key, "label": documents._label(key), "paths": [_tilde(path) for path in paths]}
@@ -324,6 +326,49 @@ def document(connection=None, *, now: str, config_path: Path | None = None, repo
         "documents": rows,
         "attention": _attention(rows),
     }
+
+
+def _publishing(connection, checkout: Path):
+    """One research root's `pub` reader (sd:5102): each page's published copies and its Publish to choice.
+
+    The channels setting, the designations, the queue and the vault are read once per root. A read that fails is named
+    in `unread` or `choice.why`, never shown as no copy or no designation.
+    """
+    setting, unread = publishing.read_channels(connection, checkout)
+    obsidian = None if unread else setting is None or "obsidian" in setting
+    picked = publishing.choices(checkout)
+    try:
+        kit = publishing.kit()
+        queue, receipts = kit.QUEUE, kit.receipts()
+    except ImportError as missing:
+        queue = receipts = None
+        unqueued = f"the pack's mirror queue was not read: {missing}"
+    else:
+        unqueued = ""
+    try:
+        vault = publishing._vault_name()
+    except Exception:  # noqa: BLE001 - no vault name is no vault link; the other copies still show
+        vault = None
+    try:
+        config = _collectors().read_research_config(checkout / "research.conf.py")
+    except Exception:  # noqa: BLE001 - computed data: no item= is read, the receipts still answer
+        config = {}
+    outs = {f"{Path(e['out']).name}.html": e["out"] for e in config.get("DOCS", [])}
+    outs.update({f"{Path(out).name}.html": out for out in picked["docs"]})
+    items = {e["out"]: e.get("item") for e in config.get("DOCS", []) if type(e.get("item")) is int}
+    fields = publishing.published_fields(connection, items.values())
+
+    def pub(name: str) -> dict:
+        out = outs.get(name, name[:-5] if name.endswith(".html") else name)
+        found = publishing.document_copies(checkout, out, setting=setting, unread=unread,
+                                           fields=fields.get(items.get(out)), vault=vault, queue=queue, receipts=receipts)
+        chosen = picked["docs"].get(out)
+        why = picked["why"] or ("" if chosen else f"research.conf.py has no literal entry for {out}; add the key by hand")
+        found["unread"] = "; ".join(cause for cause in (found["unread"], unqueued) if cause)
+        return {**found, "choice": {"notion": bool(chosen and chosen["notion"]), "drive": bool(chosen and chosen["drive"]),
+                                    "obsidian": obsidian, "why": why}}
+
+    return pub
 
 
 def _attention(rows) -> dict:

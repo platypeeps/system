@@ -13,6 +13,15 @@ was typed and gives sd's reason. A set that runs past its bound may have
 committed, so the page says the outcome is unknown and reads the values
 again. A failed list names its reason and draws no row.
 
+Sweeps (sd:5109) follows: the `sweep.<realm>.*` settings the Work and
+Personal Run sweep on Tasks reads (`realm_sweep.SETTINGS`), such as its Gmail
+search, the shared Drives it skips and the Jira, GitHub and Notion scopes.
+They are workflow database rows (`sd_db.writes.set_setting`), never a config
+file. `GET /api/settings` reads them on the page's connection. A change posts
+`/api/settings/sweep {key, value, before}`, `before` being the value shown;
+an empty value unsets the key. A row changed since the page read it refuses
+with 409, and the page reads the values again.
+
 The rest is what this browser keeps. The theme is Dark, Light or System
 (`theme.js`); Dark is the default. The sections rail is Narrow, Default, Wide
 or Widest, or any width from 176 to 384 px dragged at its edge

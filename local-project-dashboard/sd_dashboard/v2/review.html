@@ -3,9 +3,10 @@
   Review (sd:3709), at /review: the labelling queue (design docs/work/2026-10-12-review-queue, Queue UX). No design source
   page: built on the v2 shell from ui-design products/system/design.md (Rail: Review, g l; Keys: digits 1-9 on Review) and
   foundation/.
-  Data: /api/review (review_screen.document: each open batch and its open questions; a blind or sealed batch sends text and
-  options only), read when the page opens, on Read again and after a failed or stale write.
-  Writes: /api/review/rule (a label) and /api/review/withdraw (its Undo), each sd_db.review, the code sd-db review runs;
+  Data: /api/review (review_screen.document: each open batch and its questions, open or reviewed; a blind or sealed batch
+  sends text, options and label only), read when the page opens, on Read again and after a failed or stale write.
+  Each row carries its question, context and option buttons (sd:5123); the page has no Details pane.
+  Writes: /api/review/rule (a label) and /api/review/withdraw (its Undo, or a reviewed row's Withdraw label), each sd_db.review, the code sd-db review runs;
   a comment (n) posts the shell capture's note route on the batch as "On note #N: ...". Download reads
   /api/review/<item>/export, the lines sd-db review export writes. Nothing here is sample data.
 -->
@@ -39,7 +40,7 @@
   <annunciator-strip><ul class="annunciator" id="annunciator" hidden></ul></annunciator-strip>
   <section aria-labelledby="led-h">
     <div class="sec-head">
-      <h2 id="led-h">Open questions</h2>
+      <h2 id="led-h">Questions</h2>
       <p class="tally" id="tally"></p>
     </div>
     <table class="ledger review" aria-labelledby="led-h">
@@ -48,7 +49,6 @@
     </table>
   </section>
 </main>
-<div class="details" id="details"><p class="note">Select a question. Digits 1 to 9 label it; j and k move without a label.</p></div>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/review.js"></script>

@@ -12,7 +12,7 @@
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
 // Most fixes are a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
 // the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, and
-// the three cleanups (sd:3393), each behind a confirm that names what goes, posting the row's revision, and a service's
+// the cleanups (sd:3393, sd:5105) and Clean all safe, which lists every ready one first, each behind a confirm that names what goes, posting the row's revision, and a service's
 // Restart and Start (sd:3707), each a confirm that posts /api/services/<label>/<action>, `sd services`' own code.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
 (() => {
@@ -25,7 +25,7 @@
     disk: ['hard-drive', '<b>Where the space went.</b> Volume use from df, then the biggest items the fleet itself creates: the storage folders <code>disk.conf</code> names and build output left in worktrees. A merged worktree must not keep build output (rule of 2026-09-25). A volume lights caution at 80% and warning at 90%. Build output is found, not sized.'],
     cred: ['key-round', '<b>Presence and expiry only.</b> Token values are never read into this page. GitHub reports a classic PAT expiry in a response header; Home Assistant tokens carry none the dashboard can read.'],
     wt: ['folder-x', '<b>Registered is not present.</b> A worktree whose directory is gone still holds its branch. Prune clears the registration only; it never touches a directory that exists.'],
-    br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work.'],
+    br: ['git-branch', '<b>Merged but not deleted.</b> Local branches already contained in origin’s default branch. <code>git branch -d</code> refuses any branch that is not merged, so the fix cannot lose work. Merged worktrees are those at the head a lane entry merged: Remove takes the tree, its branch and origin’s, and keeps a tree with files, a process in it or a branch that moved.'],
     dep: ['package', '<b>Dependabot, per repo.</b> Open alerts on the unarchived managed repos, as the nightly sync stored them. A repo whose alerts could not be read is unknown, never clean.'],
     sec: ['shield-alert', '<b>Secret scanning, public repos only.</b> Private repos are not scanned, by policy. A public repo with scanning off is a finding.'],
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
@@ -133,6 +133,8 @@
   function pre(a) {
     const x = a.extra || {};
     if (a.id === 'disk') return x.volumes?.length ? html`<div class="bars" role="group" aria-label="Volume use: ${x.volumes.map(v => `${v.name} ${v.capacity}%`).join(', ')}">${x.volumes.map(v => html`<span class="name" title="${v.mount}">${v.name}</span><svg aria-hidden="true"><rect class="track" x="0.5" y="0.5" width="99%" height="11" rx="2"/><rect class="fill" x="0.5" y="0.5" width="${(v.used_kb / v.size_kb * 100 || 0).toFixed(1)}%" height="11" rx="2"/></svg><span class="v">${v.capacity}% · ${size(v.avail_kb)} free</span>`)}</div>` : '';
+    // Clean all safe (sd:5105) heads Checkouts: one button for every cleanup row there whose own command would run.
+    if (a.id === 'wt') return html`<p class="counts">${plural(safe().length, 'cleanup')} ready in Checkouts · ${shell.commands.rowActions('cleanup:safe')}</p>`;
     if (a.id === 'ports') return html`<p class="counts">${x.counts.configured} configured ports · ${x.counts.listening} listening · ${x.counts.unknown} unknown</p>${x.warnings.map(warn)}`;
     if (a.id !== 'prot' || !x.columns) return '';
     const cols = x.columns.map(byId).filter(Boolean), n = x.counts;
@@ -253,7 +255,8 @@
   // Ids, labels and keys are the design's. Prune, Delete merged and Remove build output run here (sd:3393): each confirms
   // with the count and the names, then posts the row and the revision it showed; the server reads the subject again and
   // refuses a changed one. A row with `disabled` (a merged branch a worktree holds) names why git would refuse it.
-  // None runs in bulk: the bulk confirm names four rows at most, and its tally counts an unknown outcome as landed.
+  // None runs in the shell's bulk: its confirm names four rows at most, and its tally counts an unknown outcome as landed.
+  // Clean all safe (sd:5105) is its own command instead: its confirm names every row, and an unknown outcome stops it.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
   const names = xs => xs.length > 6 ? `${xs.slice(0, 6).join(', ')} and ${xs.length - 6} more` : xs.join(', ');
   // A 4xx wrote nothing (health_cleanup); a 502 or no answer may follow a step that landed, so the page reads again either way.
@@ -267,6 +270,35 @@
     return `Not known what changed · ${o.label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
   const revised = o => !!o.revision || 'the row carries no revision: read Health again';
+  // The Checkouts cleanups by row type: when each runs, what it does in a few words, and its line. Each command's `when`
+  // is its `ready`, and Clean all safe runs a row only where that answers true.
+  const CLEAN = {
+    'worktree registrations': { ready: o => o.unreadable ? `${plural(o.unreadable, 'registration')} of this checkout could not be read, and prune would judge them itself` : revised(o),
+      what: o => `prunes ${names(o.list)}`, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v` },
+    'merged branches': { ready: o => o.disabled || revised(o), what: o => `deletes ${names(o.branches)}`, cli: o => o.cli },
+    'merged worktrees': { ready: o => revised(o) === true ? (o.removable.length ? true : 'every merged worktree has a reason to stay: Details lists each') : revised(o),
+      what: o => `removes ${names(o.removable)} with their branches`, cli: o => o.cli },
+  };
+  const safe = () => (S.checkouts?.ROWS || []).filter(r => CLEAN[r.type]?.ready(r) === true);
+  // It runs the rows its confirm listed, each with its own revision, so a read in between adds none the operator did not
+  // see. A refusal (4xx) wrote nothing for that row and the run goes on; an unknown outcome stops it there.
+  const cleanAll = async rows => {
+    const said = [];
+    for (const r of rows) {
+      try {
+        const out = await shell.post('/api/health/cleanup', { row: r.id, revision: r.revision });
+        said.push(`${r.what}: ${out.done.length} done${out.refused.length ? `, kept ${out.refused.length}` : ''}`);
+      } catch (e) {
+        if (!(e.status >= 400 && e.status < 500)) {
+          load();
+          return `Clean all safe stopped · not known what changed · ${r.what}: ${e.message}.${said.length ? ` Before it: ${said.join(' · ')}.` : ''} Health was read again; check the rows before you act again.`;
+        }
+        said.push(`${r.what}: not changed (${e.message})`);
+      }
+    }
+    load();
+    return `Clean all safe · ${said.join(' · ')}`;
+  };
   // A service write (sd:3707) answers the request launchd took and what it reads now; the page reads again either way.
   const service = action => o => shell.post(`/api/services/${encodeURIComponent(o.facts.Label)}/${action}`, { revision: o.revision }).then(out => {
     load();
@@ -298,6 +330,7 @@
     const C = shell.commands;
     // The protection collector is one object for the page, not a row of a reading: no read retires it.
     C.put({ id: 'collector:protection', type: 'collector', label: 'protection collector' });
+    C.put({ id: 'cleanup:safe', type: 'safe cleanups', label: 'Clean all safe' });
     C.register(
       { id: 'check.recheck', on: 'check', label: 'Re-check', does: 'Reads Health again; the line reruns this check.', key: 'e', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: () => { load(); return 'Reading Health again'; } },
@@ -311,12 +344,20 @@
       { id: 'volume.df', on: 'volume', label: 'Show use', does: 'Gives the line that shows this volume\'s use.', key: 'b', risk: 'safe', executes: false, primary: () => true,
         cli: o => o.cli, run: copyOnly },
       { id: 'worktree registrations.prune', on: 'worktree registrations', label: 'Prune registrations', does: 'Removes registrations of worktrees whose folders are gone; cannot be undone.', key: 'p', risk: 'confirm',
-        executes: true, primary: () => true, cli: o => `git -C ${shell.shq(o.repo_path)} worktree prune -v`,
-        when: o => o.unreadable ? `${plural(o.unreadable, 'registration')} of this checkout could not be read, and prune would judge them itself` : revised(o),
+        executes: true, primary: () => true, cli: CLEAN['worktree registrations'].cli, when: CLEAN['worktree registrations'].ready,
         consequence: o => `Removes ${o.facts.Registered} worktree registrations whose directories are gone: ${names(o.list)}. No directory is touched.`, run: cleanup },
       { id: 'merged branches.delete', on: 'merged branches', label: 'Delete merged', does: 'Deletes local branches already merged; this cannot be undone.', key: 'd', risk: 'confirm', executes: true,
-        primary: () => true, when: o => o.disabled || revised(o), cli: o => o.cli,
+        primary: () => true, when: CLEAN['merged branches'].ready, cli: o => o.cli,
         consequence: o => `Deletes ${o.facts.Merged} local branches already in origin's default branch: ${names(o.branches)}. git branch -d refuses any unmerged one.`, run: cleanup },
+      { id: 'merged worktrees.remove', on: 'merged worktrees', label: 'Remove merged', does: 'Removes worktrees the lane merged, with their branches; cannot be undone.', key: 'r', risk: 'confirm',
+        executes: true, primary: () => true, when: CLEAN['merged worktrees'].ready, cli: o => o.cli,
+        consequence: o => `Removes ${o.removable.length} worktrees the lane merged, with their build output, their local branch and origin's: ${names(o.removable)}.`
+          + (o.kept.length ? ` Keeps ${o.kept.length}: ${names(o.kept.map(x => `${x.name} (${x.why})`))}.` : '') + ' Each is checked again first. This cannot be undone.', run: cleanup },
+      { id: 'safe cleanups.clean', on: 'safe cleanups', label: 'Clean all safe', does: 'Runs every Checkouts cleanup that is ready, after listing each.', key: 'a', risk: 'confirm',
+        executes: true, primary: () => true, when: () => safe().length ? true : 'no Checkouts cleanup is ready: each row says why',
+        cli: () => safe().map(r => CLEAN[r.type].cli(r)).join('\n'),
+        consequence: o => { o.listed = safe(); return `Runs ${plural(o.listed.length, 'cleanup')} in turn, each checked again first: ${o.listed.map(r => `${r.what} (${CLEAN[r.type].what(r)})`).join('; ')}. This cannot be undone.`; },
+        run: o => cleanAll(o.listed || safe()) },
     );
     // Services (sd:3707): Restart and Start run sd services' code through Operations' route. sd_db.services protects the
     // dashboard's own service, and a restart from its page would end the request that asks, so that row is copy only.
@@ -357,7 +398,7 @@
     );
     // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
     window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
-      types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'port',
+      types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'merged worktrees', 'port',
         'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'vault mirror'] });
 
     const u = new URLSearchParams(location.search);

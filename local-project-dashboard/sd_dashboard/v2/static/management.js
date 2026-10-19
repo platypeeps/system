@@ -388,7 +388,7 @@ function renderRepoPage(el) {
         r.github_issues == null ? lock(why('repos') || 'the row has no github_issues column') : seg('github_issues', ['on', 'off'], r.github_issues), html` data-key="github_issues"`)}
       ${setRow(html`<code>lane_host</code> <button class="help" type="button" aria-label="Help: lane_host" data-help="<b>The machine that runs this repo's merge lane.</b> <b>hub</b>, where every row starts, or a machine's short host name, lower-cased. Only that machine takes this repo's ship lock; every other refuses.">${I('circle-help')}</button>`, r.lane,
         html`<input class="fld" type="text" data-set="lane_host" list="lane-hosts" value="${r.lane}" aria-label="Move lane to" autocomplete="off" spellcheck="false"><datalist id="lane-hosts">${laneHosts().map(h => html`<option value="${h}"></option>`)}</datalist>`, html` data-key="lane_host"`)}
-      ${setRow(html`<code>channels</code> <button class="help" type="button" aria-label="Help: channels" data-help="<b>Where this repo's briefs publish.</b> A checked channel is on; an empty folder is its default, shown greyed. <b>none</b> is no setting: each document's research.conf.py designation and the default folders, as before the setting existed. A change takes effect at the next render.">${I('circle-help')}</button>`, chShown(r), chForm(r), html` data-key="channels"`)}
+      ${setRow(html`Publishing <code>channels</code> <button class="help" type="button" aria-label="Help: publishing channels" data-help="<b>Where this repo's briefs and documents publish</b> (sd:5102): the Obsidian folder under the vault, the Notion page under the scope folder, the Drive path under My Drive. A checked channel is on; an empty folder is its default, shown greyed. A document still opts in to Notion or Drive under Publish to on the Documents page. <b>none</b> is no setting: each document's research.conf.py designation and the default folders, as before the setting existed. A change takes effect at the next render.">${I('circle-help')}</button>`, chShown(r), chForm(r), html` data-key="channels"`)}
       ${setRow(html`<code>email</code> <button class="help" type="button" aria-label="Help: email aliases" data-help="<b>The mail aliases this repo owns.</b> Each is an alias label in local-mail-intake's conf; Today shows the threads that came to them and wait on you. Labels only: the addresses stay in the conf.">${I('circle-help')}</button>`, chAliases(r).join(', ') || html`<span class="no">none</span>`,
         html`<input class="fld" type="text" data-set="mail_aliases" value="${chAliases(r).join(', ')}" placeholder="label, label" aria-label="Email aliases" autocomplete="off" spellcheck="false">`, html` data-key="mail_aliases"`)}
       ${setRow(html`<code>mode</code>`, r.mode || html`<span class="no">unset</span>`, lock('no sd-db verb writes it'))}
@@ -604,6 +604,13 @@ function registerCommands() {
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
     window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }),
       when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first' }),
+    // Land (sd:5104): the preview first, in the confirm, then the write with the preview's revision (land.py). A changed
+    // Items field previews again, so the confirm always shows what lands. build: it posts /api/repos/land.
+    { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', risk: 'confirm', executes: true,
+      primary: o => !!(o.row.git && (o.row.git.dirty || o.row.git.ahead)), when: landWhy,
+      cli: o => `sd-ship -C ${shq(o.path)} lane enqueue --item <n> --title <title> --body-file <body> --expected-head <head> --deliver`,
+      // previews: run() reads the preview and asks with it, so the shell's own confirm does not ask first.
+      previews: true, run: o => landRepo(o) },
     { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
@@ -650,6 +657,43 @@ function registerCommands() {
   );
 }
 async function refreshSatellites() { const got = await window.shell.post('/api/satellites/refresh', {}); await reread(); return got; }
+// Land (sd:5104): no git state, an unread tree or nothing new is the off reason; the server reads the tree again anyway.
+const landWhy = o => { const g = o.row.git;
+  if (!o.row.registered) return 'not registered in sd-db: sd-db repo add registers it first';
+  if (!g) return 'git state was not read, so nothing says what would land';
+  if (g.error || g.dirty == null) return "the tree's state was not fully read";
+  return g.dirty || g.ahead ? true : 'nothing to land: no uncommitted change and no unpushed commit'; };
+const landText = p => [
+  p.mode === 'resume' ? `Resumes ${p.land_branch}: an earlier Land stopped part way.` : p.mode === 'branch'
+    ? `On ${p.branch || 'a detached HEAD'}, so Land makes ${p.land_branch} in ${p.worktree}, restores this checkout and never pushes ${p.default}.`
+    : `Commits on ${p.branch}.`,
+  ...(p.groups || []).filter(g => g.paths.length).map(g => `sd:${g.item} ${g.title}: ${plural(g.paths.length, 'file')} (${g.paths.slice(0, 4).join(', ')}${g.paths.length > 4 ? ', …' : ''}).`),
+  p.commits.length ? `Carries ${plural(p.commits.length, 'unpushed commit')}: ${p.commits.map(c => c.subject).slice(0, 3).join('; ')}.` : '',
+  p.why || 'Each commit ends with Authored-with: claude/anthropic; then sd-ship lane enqueue publishes the branch and queues it.',
+].filter(Boolean).join(' ');
+// Ask with the preview until the Items field matches what was previewed, then post. A 4xx landed nothing; a 502 may follow
+// a step that landed, so it says what did and reads the page again.
+async function landRepo(o, items) {
+  const q = `/api/repos/land/preview?path=${encodeURIComponent(o.path)}${items === undefined ? '' : `&items=${encodeURIComponent(items)}`}`;
+  const p = await window.shell.getJSON(q);
+  const { yes, values } = await window.shell.ask({ title: `Land ${o.label}?`, body: landText(p), ok: 'Land', keep: "Don't land", danger: true,
+    cli: () => p.cli, fields: [
+      { name: 'items', label: 'Items, one commit each', required: true, value: p.spec, placeholder: '5104', help: '5104 takes every change; 5104: lib/ docs/; 5105 splits by path prefix.' },
+      { name: 'claim', label: 'The merge', options: [{ value: 'deliver', label: 'Closes the items (--deliver)' }, { value: 'associate-only', label: 'An earlier pull request of the items (--associate-only)' }] }] });
+  if (!yes) return { text: `Land not run · ${o.label}` };
+  if (values.items !== p.spec || !p.ready) return values.items !== p.spec ? landRepo(o, values.items) : { text: `Not landed · ${o.label}: ${p.why}` };
+  let out;
+  try { out = await window.shell.post('/api/repos/land', { path: o.path, items: p.spec, revision: p.revision, claim: values.claim }); }
+  catch (err) {
+    if (err.status >= 400 && err.status < 500) throw err;
+    load();
+    return { text: `Not known how far Land got · ${o.label}: ${err.message}. Read the checkout before you land again.` };
+  }
+  await reread();
+  const lane = out.lane || {};
+  const queued = lane.status === 'not queued' ? `not queued: ${lane.error}. Land again to retry the enqueue` : `lane ${lane.status}; Queue shows it`;
+  return { text: `Landed · ${o.label} · ${plural(out.commits.length, 'commit')} on ${out.branch} · ${queued}` };
+}
 async function service(o, action) { await window.shell.post(`/api/services/${encodeURIComponent(o.name)}/${action}`, { revision: o.revision }); await reread(); }
 // A cancel's outcome (sd:3388), as Queue words a lane write (queue_screen.py): a 4xx wrote nothing and says why; any other
 // failure, or no answer, may follow a signal that was sent, so the jobs are read again and the toast says the outcome is not
