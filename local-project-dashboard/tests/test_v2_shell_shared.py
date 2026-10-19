@@ -536,6 +536,27 @@ class TheTableGrammar(unittest.TestCase):
         self.assertEqual(out["facets"], [{"label": "Kind", "values": ["job", "mail"]}])
         self.assertEqual(out["skipped"], [])
 
+    def test_every_table_with_a_row_gets_the_filters_and_its_count_on_one_row(self):
+        # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own filter wins.
+        out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
+  R.own = tbar({ total: 40, ownFilter: true, bands: 3 });
+  R.counts = [tcount(1, 1), tcount(7, 7), tcount(2, 7)];""")
+        self.assertEqual(out["one"], {"find": True, "folds": False})
+        self.assertEqual(out["none"], {"find": False, "folds": False})
+        self.assertEqual(out["on"], {"find": True, "folds": False})
+        self.assertEqual(out["own"], {"find": False, "folds": True})
+        self.assertEqual(out["counts"], ["1 row", "7 rows", "2 of 7 rows"])
+
+    def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
+        # sd:5281: a table names its toolbar row (data-toolbar); the bar's parts join that row, the count last.
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertIn("const { find: findOn, folds: foldsOn } = tbar(", js)
+        self.assertIn("document.getElementById(t.dataset.toolbar)", js)
+        self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
+        self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
+        self.assertIn(".toolbar > .tgrid { display: contents; }", SHELL_CSS)
+        self.assertRegex(SHELL_CSS, r"\.toolbar \.tcount, \.toolbar > \.count \{[^}]*margin-left: auto;")
+
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
         out = run_tables("""R.bad = tstate({ sort: 3, dir: 7, q: null, f: ['x'], closed: 'Mon' });
   R.good = tstate({ sort: 'Kind', dir: -1, q: 'a', f: { Kind: 'job', n: 2 }, closed: ['Mon', 4] });

@@ -1165,7 +1165,14 @@
       f: Object.fromEntries(Object.entries(f).filter(([, x]) => typeof x === 'string')),
       closed: Array.isArray(o.closed) ? o.closed.filter(x => typeof x === 'string') : [] };
   }
-  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate };
+  // The toolbar standard (sd:5281): every table with a data row gets the text filter and the column filter, and its count
+  // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own. Folds come with 2 bands.
+  function tbar({ total = 0, filterOn = false, ownFilter = false, bands = 0 } = {}) {
+    return { find: !ownFilter && (total > 0 || filterOn), folds: bands >= 2 };
+  }
+  // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
+  const tcount = (shown, total) => shown === total ? plural(total, 'row') : `${shown} of ${plural(total, 'row')}`;
+  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate, tbar, tcount };
   // tables:end
 
   // The page side of the table grammar. State is kept per page and table in localStorage, a convenience: a blocked store
@@ -1262,20 +1269,34 @@
       if (r.kind === 'row') { total++; if (ownFilter || tshows(r, st, cols)) shown++; }
       if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
     });
-    // The bar above the table: filter box and column filter once there are 6 rows (or a filter is on), folds for 2 bands or more.
-    const findOn = !ownFilter && (total >= 6 || filterOn), facets = findOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
-    const foldsOn = groups.length >= 2;
+    // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
+    // filter is on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
+    // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. The count sits right-aligned on the
+    // table's title line (the .sec-head or .panel-head of the heading its or its section's aria-labelledby names); a title
+    // line with the page's own .tally shows it, before the tally, only while a filter hides rows. A table with no title line
+    // keeps the count at the bar's end.
+    const { find: findOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
+    const facets = findOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
     let bar = t._tbar;
     if (!findOn && !foldsOn) { if (bar?.isConnected) bar.hidden = true; return; }
     if (!bar || !bar.isConnected) {
       bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key;
       bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${t.getAttribute('aria-labelledby') ? ': ' + tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : ''}`);
-      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
-      twrap(t).before(bar);
+      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><span class="tcount" aria-live="polite"></span><div class="tchips"></div>`);
+      const row = t.dataset.toolbar && document.getElementById(t.dataset.toolbar);
+      row ? row.append(bar) : twrap(t).before(bar);
+      bar._count = bar.querySelector('.tcount');
+      const named = t.getAttribute('aria-labelledby') || t.closest('[aria-labelledby]')?.getAttribute('aria-labelledby') || '';
+      const line = document.getElementById(named)?.closest('.sec-head, .panel-head'), tally = line?.querySelector(':scope > .tally');
+      if (tally) tally.before(bar._count); else if (line) line.append(bar._count);
     }
     bar.hidden = false;
-    const input = bar.querySelector('input'), sel = bar.querySelector('select');
+    const input = bar.querySelector('input'), sel = bar.querySelector('select'), count = bar._count;
     bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
+    const quiet = !findOn || (shown === total && !!count.parentElement?.querySelector(':scope > .tally'));
+    if (count.hidden !== quiet) count.hidden = quiet;
+    const said = quiet ? '' : tcount(shown, total);
+    if (count.textContent !== said) count.textContent = said;
     if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
     const opts = html`<option value="">Filter by column…</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
     if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }

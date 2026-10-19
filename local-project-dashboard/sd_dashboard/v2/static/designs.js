@@ -98,7 +98,9 @@ function renderRows() {
   const empty = document.getElementById('empty');
   empty.hidden = rows.length > 0; empty.textContent = F.hidden && !F.f && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
-  document.getElementById('tally').textContent = `${rows.length} of ${ROWS.length} rows`;
+  // The count on the table's title line (sd:5281): the rows this view draws, of the view's rows while a filter narrows them.
+  const all = ROWS.filter(shown).length;
+  document.getElementById('tally').textContent = rows.length === all ? markup.plural(all, 'row') : `${rows.length} of ${markup.plural(all, 'row')}`;
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
   document.getElementById('src').textContent = `${D.root} at ${D.head || 'no commit'}`;
 }
