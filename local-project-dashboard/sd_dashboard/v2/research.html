@@ -71,6 +71,22 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="reader-tally"></p>
       </div>
+      <!-- sd:5112: Add source. Paste URLs or drop files anywhere on this panel; the list shows what Add writes. -->
+      <form class="intake" id="intake" aria-labelledby="intake-h">
+        <h3 id="intake-h" class="label">Add source</h3>
+        <label class="sr" for="intake-urls">URLs to add, one per line</label>
+        <textarea id="intake-urls" rows="2" spellcheck="false" placeholder="Paste URLs, one per line"></textarea>
+        <div class="intake-bar">
+          <label for="intake-to">To</label>
+          <select id="intake-to"></select>
+          <label class="btn quiet sm" for="intake-files">Choose files</label>
+          <input class="sr" type="file" id="intake-files" multiple accept=".pdf,.md,.markdown,.html,.htm,.txt">
+          <span class="hint">or drop PDF, Markdown, HTML or text files here</span>
+          <button class="btn sm" type="submit" id="intake-add" disabled>Add</button>
+        </div>
+        <ul class="intake-list" id="intake-list" aria-label="What Add writes"></ul>
+        <p class="intake-said" id="intake-said" role="status"></p>
+      </form>
       <div id="reader"></div>
     </section>
 
@@ -87,6 +103,7 @@
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
+<script src="/ui/commands.js"></script>
 <script src="/ui/research.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
