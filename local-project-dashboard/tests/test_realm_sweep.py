@@ -12,14 +12,17 @@ records its calls. The workflow database is a temporary one under the run's HOME
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -41,6 +44,12 @@ prompt = argv[argv.index("-p") + 1]
 with open(os.environ["STUB_SEEN"], "a") as seen:
     seen.write(json.dumps(argv) + "\n")
 mode = os.environ.get("STUB_MODE", "")
+# "hang" names its pid in STUB_READY, then outlives any test: the test kills it.
+if mode == "hang":
+    import time
+    open(os.environ["STUB_READY"] + ".partial", "w").write(str(os.getpid()))
+    os.replace(os.environ["STUB_READY"] + ".partial", os.environ["STUB_READY"])
+    time.sleep(120)
 if mode != "nobrief":
     brief = re.search(r"^- Brief file: (.+)$", prompt, re.M).group(1)
     series = re.search(r"^series: (.+)$", prompt, re.M).group(1)
@@ -330,6 +339,41 @@ class Run(unittest.TestCase):
         self.assertIn("another work sweep is already running", busy.stderr)
         self.assertFalse((self.state("work") / "last.json").exists())
         self.assertEqual(other.returncode, 0, other.stderr)
+
+    def test_a_runner_killed_mid_run_leaves_its_model_run_holding_the_lock(self):
+        """sd:5341, as sd:5296 finding 1: the model run inherits the realm's lock, so a runner killed mid-run leaves
+        no second run able to start beside its model, and status reads it running until the model ends."""
+        ready = self.root / "ready"
+        runner = subprocess.Popen([sys.executable, "-m", "sd_dashboard.realm_sweep", "run", "work"], cwd=self.root,
+                                  env={**self.env, "STUB_MODE": "hang", "STUB_READY": str(ready)},
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(runner.wait)
+        self.addCleanup(runner.kill)
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            self.assertLess(time.monotonic(), deadline, "the model run never started")
+            time.sleep(0.05)
+        model = int(ready.read_text())
+
+        def stop():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(model, signal.SIGKILL)
+
+        self.addCleanup(stop)
+        runner.kill()
+        runner.wait()
+        busy = self.sweep("run", "work")
+        self.assertEqual(busy.returncode, 3, busy.stderr)
+        status = json.loads(self.sweep("status", "work", "--json").stdout)
+        self.assertEqual((status["state"], status["running"]), ("running", True))
+        self.assertIn("its model run still holds the lock", status["reason"])
+        # The model gone, the lock is free: the record reads failed and the next run starts.
+        stop()
+        while self.sweep("status", "work", "--json").stdout.find('"running": true') >= 0:
+            self.assertLess(time.monotonic(), deadline + 30, "the lock outlived the model run")
+            time.sleep(0.05)
+        self.assertEqual(json.loads(self.sweep("status", "work", "--json").stdout)["state"], "failed")
+        self.assertEqual(self.sweep("run", "work").returncode, 0)
 
     def test_a_missing_account_or_filter_fails_naming_it_and_asks_no_model(self):
         self.accounts({"personal": {"email": "me@example.test"}})

@@ -141,10 +141,11 @@ def request_realm(values: dict):
     return lambda connection: start(connection, realm)
 
 
-def _held(state: Path) -> str | None:
-    """The lock's start time while a run holds it, else None. A lock file not there is not held."""
+def _held(state: Path, name: str = "lock") -> str | None:
+    """The lock's start time while a run holds it, else None. A lock file not there is not held. `name` is another
+    lock in `state`, such as a Work or Personal run's own `sweep.lock`."""
     try:
-        handle = open(state / "lock", encoding="utf-8")
+        handle = open(state / name, encoding="utf-8")
     except FileNotFoundError:
         return None
     with handle:
