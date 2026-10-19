@@ -1219,6 +1219,34 @@ C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; aw
         self.assertIn("not read", cell)
         self.assertNotIn('data-set="github_issues"', cell)
 
+    def test_the_repo_page_shows_jira_project_beside_github_issues_and_the_field_runs_the_verb_and_undoes(self):
+        """sd:5103: a key or off, written through `sd-db repo jira-project`; an empty field is off, a lower-case key is
+        upper-cased, the shown value proposes nothing, and an unread setting shows no field. Both issue settings sit
+        just before the publish channels."""
+        path = self.ids["checkout"]
+        doc = json.loads(json.dumps(self.doc))
+        next(r for r in doc["repos"] if r["path"] == path)["jira_project"] = "off"
+        out = self.run_page("""R.page = ELS['view-repos'].html; propose('jira_project', 'off'); R.same = pending.length;
+propose('jira_project', 'example'); R.cmd = pending[0].cmd; R.note = pending[0].note;
+C.run(cmd('sddb.run'), pending[0]); await flush(); R.toast = lastToast().msg; await lastToast().undo(); await flush();""",
+                            doc=doc, search=f"?repo={path}", answer="(p, b) => [200, {}]")
+        page = out["R"]["page"]
+        self.assertIn('data-set="jira_project"', page)
+        keys = re.findall(r'data-key="(\w+)"', page)
+        self.assertEqual(keys[keys.index("github_issues"):keys.index("channels") + 1], ["github_issues", "jira_project", "channels"])
+        self.assertEqual(out["R"]["same"], 0)
+        self.assertEqual(out["R"]["cmd"], f"~/repos/platypeeps/sd-ai-command-pack/bin/sd-db repo jira-project '{path}' 'EXAMPLE'")
+        self.assertIn("Jira project EXAMPLE", out["R"]["note"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/repos/jira-project", {"path": path, "value": "EXAMPLE", "before": "off"}),
+                          ("/api/repos/jira-project", {"path": path, "value": "off", "before": "EXAMPLE"})])
+        self.assertEqual(out["R"]["toast"], "Ran locally · jira_project off → EXAMPLE")
+        next(r for r in doc["repos"] if r["path"] == path)["jira_project"] = None
+        page = self.run_page("R.page = ELS['view-repos'].html;", doc=doc, search=f"?repo={path}")["R"]["page"]
+        cell = page.split('data-key="jira_project"')[1].split('<div class="row"')[0]
+        self.assertIn("not read", cell)
+        self.assertNotIn('data-set="jira_project"', cell)
+
     def test_the_repo_page_shows_dependabot_and_the_toggle_runs_the_verb_and_undoes(self):
         """sd:3984: yes or no for a repo outside the owner rule; an owner's or a denied repo shows the rule and no toggle."""
         path = self.ids["checkout"]

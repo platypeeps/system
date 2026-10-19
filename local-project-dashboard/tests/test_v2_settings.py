@@ -37,7 +37,7 @@ SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
 PAGE_JS = (V2 / "static" / "settings.js").read_text(encoding="utf-8") if (V2 / "static" / "settings.js").exists() else ""
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 
-#: A stand-in `sd`: `config list sd --json` prints the two fleet keys and one machine key, each fleet value read from
+#: A stand-in `sd`: `config list sd --json` prints the fleet keys and one machine key, each fleet value read from
 #: $SD_STUB/<key> (`database`), else unset (`default`); `config set` writes $SD_STUB/<key>, prints what sd prints, then
 #: does what $SD_STUB/mode says: `refuse` exits 1 before writing, `slow` sleeps past the bound after writing.
 STUB = r"""#!/bin/sh
@@ -50,6 +50,7 @@ case "$1 $2" in
     printf '{"copilot_review": {"description": "When sd-ship requests a Copilot review.", "pattern": "deep|never|always", "value": %s},\n' "$(value copilot_review)"
     printf ' "fleet_owners": {"description": "Comma-separated GitHub logins.", "pattern": "[A-Za-z0-9](-?[A-Za-z0-9])*(,[A-Za-z0-9](-?[A-Za-z0-9])*)*", "value": %s},\n' "$(value fleet_owners)"
     printf ' "hub_name": {"description": "The hub node name.", "pattern": "", "value": %s},\n' "$(value hub_name)"
+    printf ' "status_companions": {"description": "Repositories sd-status lists beside its own.", "pattern": "[~/].*", "value": %s},\n' "$(value status_companions)"
     printf ' "gate_slots": {"description": "Gates at once.", "pattern": "[0-9]+", "value": null, "source": "default"}}\n'
     exit 0 ;;
   "config set")
@@ -108,7 +109,7 @@ class TheFleetRead(unittest.TestCase):
         self.assertEqual(doc["reason"], "")
         self.assertEqual([(k["key"], k["value"], k["source"], k["choices"]) for k in doc["fleet"]],
                          [("fleet_owners", None, "default", None), ("copilot_review", "never", "database", ["deep", "never", "always"]),
-                          ("hub_name", None, "default", None)])
+                          ("hub_name", None, "default", None), ("status_companions", None, "default", None)])
         self.assertEqual(doc["fleet"][1]["description"], "When sd-ship requests a Copilot review.")
         self.assertEqual(self.sd.calls(), ["config list sd --json"])
 

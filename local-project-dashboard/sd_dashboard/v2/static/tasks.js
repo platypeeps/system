@@ -50,7 +50,7 @@ addEventListener('DOMContentLoaded', () => {
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
     status: r.status, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
-    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, real: true });
+    base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
   const byKey = k => tasks.find(t => t.key === k);
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
@@ -313,8 +313,41 @@ addEventListener('DOMContentLoaded', () => {
       d.notes.forEach(n => C.put(as({ id: `note:${n.id}`, type: 'note', label: `${n.kind} ${n.id} on #${d.item.id}`, note: n.id, kind: n.kind, resolved: n.resolved, item: d.item.id })));
       d.assignments.forEach(a => C.put(as({ id: `asg:${a.id}`, type: 'assignment', label: `Assignment #${a.id}`, n: a.id, status: a.status, item: d.item.id, repo: d.item.repo, can: a.cancel })));
     });
+    ISSUE_RUNS.forEach(r => C.put(issueObject(r)));
   }
   const redrawDet = id => { staleDet(id); readDet(id, true); };
+  // ---------- File issue (sd:5103, issue_filing) ----------
+  // The latest run an item's File GitHub issue or File Jira issue started on this page, read again every 3 s while it drafts
+  // or files. Each run is an `issue draft` object, so its File issue and Discard are registered commands, drawn in Details.
+  const TRACKER = { github: 'GitHub', jira: 'Jira' }, ISSUE_POLL = 3000, ISSUE_RUNS = new Map();
+  const issueBusy = r => ['queued', 'drafting', 'filing'].includes(r.state);
+  const issueWhere = x => x.kind === 'github' ? `GitHub ${x.repo}` : `Jira project ${x.project}`;
+  const issueObject = r => ({ id: `issue:${r.id}`, type: 'issue draft', label: `${TRACKER[r.kind]} issue for #${r.item}`, run: r });
+  function followIssue(run) {
+    ISSUE_RUNS.set(run.item, run); C.put(issueObject(run));
+    if (byKey(selected)?.id === run.item) renderDetails();
+    if (issueBusy(run)) setTimeout(() => readIssue(run), ISSUE_POLL);
+  }
+  // A failed read is not known, not settled: Details says so and the next read tries again. A newer run stops the old one's.
+  function readIssue(run) {
+    if (ISSUE_RUNS.get(run.item)?.id !== run.id) return;
+    window.shell.getJSON(`/api/issue-runs/${encodeURIComponent(run.id)}`).then(followIssue, e => followIssue({ ...run, unread: e.message }));
+  }
+  // The draft in Details: while it drafts, what runs; once ready, the exact target, title and body File issue sends; else
+  // the reason, which names a category or a line, never the matched value, so a blocked draft shows no text.
+  function issuePane(t) {
+    const r = ISSUE_RUNS.get(t.id); if (!r || r.state === 'discarded') return '';
+    const name = TRACKER[r.kind], unread = r.unread ? html`<p class="why">Its state was not read: ${r.unread}. This page tries again in 3 s.</p>` : '';
+    const head = html`<h3>${name} issue <span class="n">run ${r.id} · ${r.state}</span></h3>`;
+    if (issueBusy(r)) return html`<section aria-live="polite">${head}<p class="why">${r.state === 'filing' ? `Filing in ${issueWhere(r.target)}. Wait for the answer before you file it again.`
+      : 'Claude drafts the issue with no tools; the sanitizer then strips internal names and checks the privacy patterns. Nothing is filed.'}</p>${unread}</section>`;
+    if (r.state === 'linked') return html`<section aria-live="polite">${head}<p class="why">Filed: <a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${r.url}</a> · #${r.item} links it.</p></section>`;
+    const removed = Object.entries(r.removed || {}).map(([k, n]) => `${n} ${k}`).join(', ');
+    const preview = r.state === 'ready' ? html`<dl><dt>Target</dt><dd>${issueWhere(r.target)}</dd><dt>Title</dt><dd>${r.title}</dd></dl>
+      <pre class="body">${r.body}</pre><p class="why">${removed ? `The sanitizer took out ${removed}.` : 'The sanitizer took nothing out.'} File issue sends exactly this text.</p>` : '';
+    const filed = r.state === 'filed' ? html`<p class="why">Filed at <a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${r.url}</a>.</p>` : '';
+    return html`<section aria-live="polite">${head}${filed}${preview}${r.reason ? html`<p class="why">${r.reason}</p>` : ''}${unread}${C.bar(`issue:${r.id}`)}</section>`;
+  }
   // note.resolve: one declaration, copied on every page that lists followups (Tasks, Today; commands.md § Shared declarations).
   const NOTE_RESOLVE = done => ({ id: 'note.resolve', on: 'note', label: 'Resolve', key: 'v', risk: 'confirm', icon: 'check', primary: o => o.kind === 'followup' && !o.resolved,
     when: o => o.kind !== 'followup' ? `a ${o.kind} note has nothing to resolve` : o.resolved ? `resolved ${o.resolved.slice(0, 10)}` : true,
@@ -444,6 +477,48 @@ addEventListener('DOMContentLoaded', () => {
           v => { redrawDet(t.id); return `Draft saved · #${t.id} · "${v.draft.subject}" · in Gmail Drafts, not sent`; },
           err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you press Draft email again`);
             refused(); throw err; }); } },
+    // File GitHub issue and File Jira issue (sd:5103, issue_filing): a tool-less claude drafts an issue about the item in the
+    // background and the server strips internal names from it; nothing is filed here. Each is on where the item's repo
+    // enables it (Management's github_issues and jira_project), and off with the reason otherwise.
+    ...Object.entries(TRACKER).map(([kind, name]) => ({ id: `item.file-${kind}-issue`, on: 'item', label: `File ${name} issue`, risk: 'safe', executes: true, icon: 'send',
+      when: o => { const t = T(o), x = t?.issueTargets?.[kind]; return !t ? 'the task is no longer listed' : !x ? "the repo's issue settings were not read" : x.ok || x.why; },
+      does: () => `Drafts a public ${name} issue, internal names removed; files nothing yet.`,
+      cli: () => 'no sd verb: the dashboard drafts with claude -p, then files through gh or the Jira API on File issue',
+      sends: o => `POST /api/items/${T(o).id}/file-issue {revision, target: "${kind}"}`,
+      run: o => { const t = must(o);
+        // Not write(): the answer is a run, not the item's state, and the start changes nothing on the row.
+        return window.shell.post(`/api/items/${t.id}/file-issue`, { target: kind, revision: t.revision }).then(
+          run => { followIssue(run); select(t.key, true); return `Drafting ${name} issue · #${t.id} · run ${run.id}; Details shows it, and nothing is filed yet`; },
+          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft started is not known`); if (err.stale) refused(); throw err; }); } })),
+    // The draft's commands (sd:5103). File issue posts the digest of the text Details shows, so a draft that changed is
+    // refused; it asks first, naming the target, since a filed issue is public and stays. Once filed but not linked, it
+    // links only. A refusal or no answer reads the run again: the server writes what is known. No Undo for either.
+    { id: 'issue.file', on: 'issue draft', label: 'File issue', risk: 'confirm', executes: true, icon: 'send', primary: o => o.run.state !== 'unknown',
+      when: o => ['ready', 'filed'].includes(o.run.state) || `the draft is ${o.run.state}`,
+      does: o => o.run.state === 'filed' ? `Links #${o.run.item} to the filed issue; nothing is filed again.` : `Files this title and body in ${issueWhere(o.run.target)}.`,
+      cli: () => 'no sd verb: the dashboard files through gh or the Jira REST API',
+      sends: o => `POST /api/issue-runs/${o.run.id}/confirm {digest}`,
+      consequence: o => o.run.state === 'filed' ? `Links #${o.run.item} to ${o.run.url}. Nothing is filed again.`
+        : `Files the title and body shown in Details as a public issue in ${issueWhere(o.run.target)}, then links #${o.run.item} to it. The dashboard cannot delete a filed issue.`,
+      run: o => window.shell.post(`/api/issue-runs/${encodeURIComponent(o.run.id)}/confirm`, { digest: o.run.digest }).then(
+        run => { followIssue(run); reread(); return `${TRACKER[run.kind]} issue filed · ${run.url} · #${run.item} links it`; },
+        err => { readIssue(o.run); if (!err.status) throw new Error(`no answer (${err.message}), so whether the issue was filed is not known; look in ${TRACKER[o.run.kind]} before you file it again`); throw err; }) },
+    // Check again (sd:5103): a run whose outcome is not known may have filed, so it is never filed again; the server
+    // lists the tracker's newest issues for this exact title and links one if found.
+    { id: 'issue.check', on: 'issue draft', label: 'Check again', risk: 'safe', executes: true, icon: 'search', primary: o => o.run.state === 'unknown',
+      when: o => o.run.state === 'unknown' || `the draft is ${o.run.state}`,
+      does: o => `Looks for this issue in ${issueWhere(o.run.target)}; files nothing.`,
+      cli: () => 'no sd verb: the dashboard lists the newest issues through gh or the Jira API',
+      sends: o => `POST /api/issue-runs/${o.run.id}/check`,
+      run: o => window.shell.post(`/api/issue-runs/${encodeURIComponent(o.run.id)}/check`, {}).then(
+        run => { followIssue(run); reread(); return `${TRACKER[run.kind]} issue found · ${run.url} · #${run.item} links it`; },
+        err => { readIssue(o.run); throw err; }) },
+    { id: 'issue.discard', on: 'issue draft', label: 'Discard', risk: 'safe', executes: true, icon: 'x',
+      when: o => ['ready', 'blocked', 'failed', 'unknown'].includes(o.run.state) || `the draft is ${o.run.state}`,
+      does: o => o.run.state === 'unknown' ? 'Drops the run; it may have filed, so look in the tracker first.' : 'Drops the draft; nothing was filed.',
+      cli: () => "no sd verb: the draft lives in the dashboard's state folder",
+      sends: o => `POST /api/issue-runs/${o.run.id}/discard`,
+      run: o => window.shell.post(`/api/issue-runs/${encodeURIComponent(o.run.id)}/discard`, {}).then(run => { followIssue(run); return `Draft discarded · run ${run.id}; ${o.run.state === 'unknown' ? 'whether it filed is not known' : 'nothing was filed'}`; }) },
     { id: 'item.delete', on: 'item', label: 'Delete', risk: 'confirm', icon: 'x',
       when: () => 'no CLI verb: sd task has no delete; move it to Done to keep a record',
       cli: o => rowOr(o, t => `sd task delete ${t.id}`),
@@ -518,13 +593,15 @@ addEventListener('DOMContentLoaded', () => {
     return html`<select class="tile-f due ${dc}" data-edit="due" data-key="${t.key}" aria-label="Due date of ${label(t)}"><option value="${String(t.due || '')}" selected>${t.due ? dt : 'No due date'}</option>${
       near.map(([d, w]) => html`<option value="${d}">${w} · ${fmt(d)}</option>`)}${t.due && !repeats(t) ? html`<option value="">No due date</option>` : ''}<option value="pick">Pick a date…</option></select>`;
   }
+  // sd:5103: the issue File issue filed and linked, from the item's ref (tasks_screen's issue_link), on its card and row.
+  const issueLink = t => t.issueLink ? html`<a class="ext issue-link" href="${t.issueLink}" target="_blank" rel="noopener noreferrer" aria-label="Filed issue for ${label(t)}" title="${t.issueLink}">${ICON('link-2')}</a>` : '';
   function card(t, compact) {
     const st = state(t), [dt, dc] = dueText(t);
     return html`<article class="card" tabindex="0" data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}${st ? html` data-state="${st}"` : ''} aria-label="${label(t) + ' ' + t.title}">
       <div class="top">
         <label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label>
         ${st ? html`<span class="g g-${st}" aria-hidden="true">${GLYPH[st]}</span>` : ''}
-        <span class="id">${label(t)}</span>
+        <span class="id">${label(t)}</span>${issueLink(t)}
         ${tileF(t) ? html`<select class="tile-f pri" data-edit="p" data-key="${t.key}" data-p="${String(t.p || '')}" aria-label="Priority of ${label(t)}">${t.p ? '' : html`<option value="" selected>P–</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select>`
           : html`<span class="pri" data-p="${String(t.p || '')}" title="Priority">${t.p ? 'P' + t.p : 'P–'}</span>`}
         ${t.assignment === 'running' ? html`<span class="lock" title="Runner assignment running">${ICON('lock')}</span>` : ''}
@@ -594,7 +671,7 @@ addEventListener('DOMContentLoaded', () => {
     // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
     const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
     put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list" data-tfilter="page"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
-      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button><span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
+      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button>${issueLink(t)}<span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
@@ -638,6 +715,7 @@ addEventListener('DOMContentLoaded', () => {
       ${off ? html`<p class="why" id="det-off">The fields are off: ${off}.</p>` : ''}
       <h3>Act</h3>${gone ? html`<p class="why">This task was not read again after the change, so no command runs on it. Reload reads it.</p>` : act}
       ${window.commands.reviewPane('task', t.id)}
+      ${issuePane(t)}
       ${more(t, dis)}
       <p class="foot">${READ ? html`Rows read <time class="rel" datetime="${READ}"></time> from /api/tasks (the reads v1 /backlog makes).` : ''}</p>`);
     if (mine) {

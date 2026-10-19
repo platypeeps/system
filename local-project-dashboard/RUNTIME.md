@@ -238,6 +238,13 @@ Publish now answers 202 with a run id; the run takes Adversarial review's shape 
 It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
 The outcome is read from the queue, not the model. claude is `CLAUDE_BIN`, else on PATH, else `~/.local/bin/claude`; it needs the MCP servers `notion` and `workspace-mcp`.
 
+File GitHub issue and File Jira issue on Tasks (sd:5103, `issue_filing.py`) draft with Draft email's `claude -p` line: no tools, no MCP servers, 180 seconds.
+`POST /api/items/<id>/file-issue` answers 202 with a run id; `GET /api/issue-runs/<id>` reads the draft; only `POST /api/issue-runs/<id>/confirm` with the previewed text's digest files.
+One draft or filing at a time: the runner holds `~/.local/state/system/issue-filing/lock`. A draft that `local-leak-guard/leak-guard.sh scan` refuses, or that finds no `<config>/privacy-patterns`, is blocked.
+GitHub files through `gh issue create`, on the LaunchAgent's PATH or at `/opt/homebrew/bin/gh`, signed in as the operator; Jira through `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`, read from the server's environment (`<config>/project-dashboard/.env` or exported), as the Re-run collector reads them.
+Only an answer that proves a refusal is recorded as not filed. After any other failure the run looks for its issue: `gh api` lists the repository's newest issues, or JQL by project and age. It links the issue if found, or records the run as not known.
+`POST /api/issue-runs/<id>/check` looks again for a not-known run's issue and never files.
+
 Completed scheduled jobs call `sd reports ingest` once with their run identity,
 log offset, times and exit code. Existing job output, emails and notifications
 continue. Every run records a heartbeat, the job's health. A report item exists

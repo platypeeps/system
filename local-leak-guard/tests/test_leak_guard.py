@@ -389,3 +389,49 @@ class LeakGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScanTest(unittest.TestCase):
+    """`scan` (sd:5103): text on stdin, the number of each line a pattern matches on stdout, never the line."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.config = self.tmp / "config"
+        self.config.mkdir()
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.tmp), "TMPDIR": str(self.tmp),
+                    "SYSTEM_TOOLS_CONFIG": str(self.config)}
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def scan(self, text: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(SCRIPT), "scan", *args], input=text, env=self.env,
+                              capture_output=True, text=True, timeout=30, check=False)
+
+    def test_a_hit_prints_line_numbers_only_and_exits_1(self) -> None:
+        (self.config / "privacy-patterns").write_text(PATTERNS)
+        done = self.scan(f"{SECRET} at the start\nclean\nat the end {SECRET}\n\x00binary {SECRET}")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout.split(), ["1", "3", "4"])
+        self.assertNotIn(SECRET, done.stdout + done.stderr)
+
+    def test_clean_text_exits_0_and_prints_nothing(self) -> None:
+        (self.config / "privacy-patterns").write_text(PATTERNS)
+        done = self.scan("nothing private here\n")
+        self.assertEqual((done.returncode, done.stdout), (0, ""))
+
+    def test_no_pattern_file_or_an_empty_one_exits_3_not_0(self) -> None:
+        """Failures: no patterns is unknown, not clean, so a caller can refuse."""
+        self.assertEqual(self.scan(f"{SECRET}\n").returncode, 3)
+        (self.config / "privacy-patterns").write_text("# only a comment\n\n")
+        self.assertEqual(self.scan(f"{SECRET}\n").returncode, 3)
+
+    def test_a_pattern_grep_cannot_compile_exits_2_without_echoing_it(self) -> None:
+        (self.config / "privacy-patterns").write_text("zebra-[unclosed\n")
+        done = self.scan("zebra-x\n")
+        self.assertEqual(done.returncode, 2)
+        self.assertNotIn("unclosed", done.stdout + done.stderr)
+
+    def test_an_argument_is_a_usage_error(self) -> None:
+        self.assertEqual(self.scan("x\n", "extra").returncode, 2)
