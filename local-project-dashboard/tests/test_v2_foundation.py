@@ -19,14 +19,14 @@ from test_v2_tasks import V2
 STATIC = V2 / "static"
 
 #: The ui-design commit the copies below came from.
-FOUNDATION = "1613e4c1aa41fd5ea918096ad6b107fd90bf641c"
+FOUNDATION = "279dcb137cc86da497339d2c95e70b3d4e422758"
 
 #: Copy in v2/static -> (foundation path, SHA-256 of that file at FOUNDATION).
 COPIES = {
     "tokens.css": ("foundation/tokens.css", "6de06baf1da8dddbce8434b1db3591f935778764cb017aca7f1028139bff540a"),
     "theme.js": ("foundation/theme.js", "3d4cf4fc4b54c168212325d12c5d60b5487feee78329131c9e4ea17d029b3a24"),
     "annunciator-strip.css": ("foundation/components/annunciator-strip.css",
-                              "71929057df2385ca896fc5331284cf2fd32d19b27b07abc988f1beeb09049399"),
+                              "5e85672762ea8b596291f5e2389756bddf3baa466a733ce7db3cf3528c7c5784"),
     "annunciator-strip.js": ("foundation/components/annunciator-strip.js",
                              "9e76cb8d13ea602e32e960abf33e30fc50dd982994463da88b552092721f2637"),
 }
