@@ -31,6 +31,12 @@
         <h1>Management</h1>
         <p id="subhead">Reading repos, the lane, sessions, services and jobs…</p>
       </div>
+    </header>
+
+    <h2 class="sr">Areas</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+    <div class="toolbar" id="toolbar">
       <div class="shift">
         <label class="field">
           <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
@@ -41,10 +47,7 @@
         </label>
         <p class="hint sr" id="shift-hint">Free text filters rows. managed:yes, merge:auto, source:row and state:failed become chips. Esc clears.</p>
       </div>
-    </header>
-
-    <h2 class="sr">Areas</h2>
-    <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
+    </div>
     <section id="view-repos" aria-label="Repos"></section>
     <section id="view-lane" aria-label="Ship lane" hidden></section>
     <section id="view-sessions" aria-label="Sessions" hidden></section>

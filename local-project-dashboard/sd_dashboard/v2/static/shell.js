@@ -157,6 +157,7 @@
   //   the lamps. The rail lists the views under the current page, each linking <page>#view=<id>.
   //   A page whose views filter one surface instead (Tasks: All, HOA, Home) puts an empty <div id="viewswitch"> where the
   //   switch goes: the shell draws it there and keeps every declared view; a view-<id> panel is still hidden where one exists.
+  //   With no #viewswitch, a page's row-1 toolbar (id="toolbar", sd:5281) takes the switch at its start, else the first panel.
   //   key: the letter after v that shows the view (default the id's first letter).
   //   The address keeps the view as #view=<id>; another hash (#main, #chat) leaves the view as it is.
   //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
@@ -236,7 +237,8 @@
       const to = viewTabs.indexOf(open[k]);
       e.preventDefault(); viewShow(VIEW_LIST[to].id); viewTabs[to].focus();
     });
-    viewHost ? viewHost.append(bar) : viewPanel(VIEW_LIST[0]).before(bar);
+    const toolbar = document.getElementById('toolbar');
+    viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);
     rail.querySelector(`[data-section="${page}"]`)?.closest('li')?.append(sub);
     viewApply(viewOf(location.hash) || viewKept() || VIEW_LIST[0].id);
     const follow = () => { const id = viewOf(location.hash); if (id) viewApply(id); else if (!location.hash) viewApply(VIEW_LIST[0].id); };
@@ -1171,9 +1173,11 @@
       closed: Array.isArray(o.closed) ? o.closed.filter(x => typeof x === 'string') : [] };
   }
   // The toolbar standard (sd:5281): every table with a data row gets the text filter and the column filter, and its count
-  // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own. Folds come with 2 bands.
+  // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own text filter and gets the
+  // column filter alone. Folds come with 2 bands.
   function tbar({ total = 0, filterOn = false, ownFilter = false, bands = 0 } = {}) {
-    return { find: !ownFilter && (total > 0 || filterOn), folds: bands >= 2 };
+    const facet = total > 0 || filterOn;
+    return { find: !ownFilter && facet, facet, folds: bands >= 2 };
   }
   // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
   const tcount = (shown, total) => shown === total ? plural(total, 'row') : `${shown} of ${plural(total, 'row')}`;
@@ -1267,11 +1271,12 @@
       if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
       if (!open) s.body.forEach(r => hid.add(r.tr));
     });
-    const filterOn = !ownFilter && tchips(st).length > 0;
+    // A page's own text filter stands; the column filter still narrows its rows.
+    const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;
     let shown = 0, total = 0;
     rows.forEach(r => {
-      const out = hid.has(r.tr) || (!ownFilter && !tshows(r, st, cols));
-      if (r.kind === 'row') { total++; if (ownFilter || tshows(r, st, cols)) shown++; }
+      const out = hid.has(r.tr) || !tshows(r, use, cols);
+      if (r.kind === 'row') { total++; if (tshows(r, use, cols)) shown++; }
       if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
     });
     // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
@@ -1280,10 +1285,12 @@
     // table's title line (the .sec-head or .panel-head of the heading its or its section's aria-labelledby names); a title
     // line with the page's own .tally shows it, before the tally, only while a filter hides rows. A table with no title line
     // keeps the count at the bar's end.
-    const { find: findOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
-    const facets = findOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
+    const { find: findOn, facet: facetOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
+    const facets = facetOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
     let bar = t._tbar;
-    if (!findOn && !foldsOn) { if (bar?.isConnected) bar.hidden = true; return; }
+    // A table in a hidden view keeps its parts out of the shared row; the view change rescans.
+    const away = !!t.dataset.toolbar && !!t.closest('[hidden]');
+    if (away || (!facetOn && !foldsOn)) { if (bar?.isConnected) bar.hidden = true; return; }
     if (!bar || !bar.isConnected) {
       bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key;
       bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${t.getAttribute('aria-labelledby') ? ': ' + tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : ''}`);
@@ -1298,20 +1305,21 @@
     bar.hidden = false;
     const input = bar.querySelector('input'), sel = bar.querySelector('select'), count = bar._count;
     bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
-    const quiet = !findOn || (shown === total && !!count.parentElement?.querySelector(':scope > .tally'));
+    const quiet = !facetOn || (shown === total && !!count.parentElement?.querySelector(':scope > .tally'));
     if (count.hidden !== quiet) count.hidden = quiet;
     const said = quiet ? '' : tcount(shown, total);
     if (count.textContent !== said) count.textContent = said;
     if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
     const opts = html`<option value="">Filter by column…</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
     if (sel._t !== opts.text && document.activeElement !== sel) { put(sel, opts); sel._t = opts.text; }
-    const chipsHtml = findOn ? list.chips(tchips(st), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
+    const chipsHtml = facetOn ? list.chips(tchips(use), shown, total, 'tunfilter') : html``, slot = bar.querySelector('.tchips');
     if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
   }
   let tq = 0;
   const tscan = () => { tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } }); tobs.takeRecords(); };
   const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
   tobs.observe(body, { childList: true, subtree: true, characterData: false });
+  document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });
   const tfor = el => { const t = el.closest('table'); if (t) return t; const bar = el.closest('.tgrid'); return bar && document.querySelector(`table[data-tgrid="${CSS.escape(bar.dataset.tfor)}"]`); };
   const tdo = (el, f) => { const t = tfor(el); if (!t) return; const key = tkeyOf(t); f(tst(key)); tkeep(key); tapply(t); tobs.takeRecords(); };
   document.addEventListener('click', e => {

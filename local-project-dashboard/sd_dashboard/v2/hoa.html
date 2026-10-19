@@ -34,12 +34,15 @@
       <p id="subhead">Reading the HOA water system…</p>
     </div>
   </header>
-  <div class="place-switch" id="viewswitch" data-label="HOA views"></div>
 
   <div id="view-overview" data-place-view="overview" data-label="Overview">
   <div id="state" hidden></div>
   <h2 class="sr">Readings</h2>
   <annunciator-strip><ul class="annunciator" id="annunciator" aria-label="Water annunciator"></ul></annunciator-strip>
+  <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
+  <div class="toolbar" id="toolbar">
+    <div class="place-switch" id="viewswitch" data-label="HOA views"></div>
+  </div>
 
   <section class="panel" id="sources" aria-labelledby="src-h">
     <div class="panel-head">
@@ -82,8 +85,8 @@
 
   <section class="place-view" id="view-tasks" data-place-view="tasks" data-label="Tasks" aria-labelledby="tasks-h" hidden>
     <div class="sec-head"><div><h2 id="tasks-h">Tasks</h2><p>Every open item of the hoa checkout, ranked by urgency: overdue, due within a week, the rest. Drafts go to chat; you send.</p></div><p class="tally" id="tasks-tally"></p></div>
-    <div class="range" id="ob-kinds" role="group" aria-label="Kind"></div>
-    <table class="ledger" id="ob-table" aria-labelledby="tasks-h">
+    <div class="toolbar" id="ob-toolbar"><div class="range" id="ob-kinds" role="group" aria-label="Kind"></div></div>
+    <table class="ledger" id="ob-table" aria-labelledby="tasks-h" data-toolbar="ob-toolbar">
       <thead id="ob-head"></thead>
       <tbody id="ob-body"></tbody>
     </table>

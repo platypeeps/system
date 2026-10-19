@@ -19,6 +19,7 @@ import json
 import re
 import subprocess
 import unittest
+from html.parser import HTMLParser
 
 from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SHELL_JS, STAND_IN, V2
 from test_v2_today import OSASCRIPT
@@ -537,20 +538,26 @@ class TheTableGrammar(unittest.TestCase):
         self.assertEqual(out["skipped"], [])
 
     def test_every_table_with_a_row_gets_the_filters_and_its_count_on_one_row(self):
-        # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own filter wins.
+        # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own text filter
+        # wins, and its table still gets the column filter.
         out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
   R.own = tbar({ total: 40, ownFilter: true, bands: 3 });
   R.counts = [tcount(1, 1), tcount(7, 7), tcount(2, 7)];""")
-        self.assertEqual(out["one"], {"find": True, "folds": False})
-        self.assertEqual(out["none"], {"find": False, "folds": False})
-        self.assertEqual(out["on"], {"find": True, "folds": False})
-        self.assertEqual(out["own"], {"find": False, "folds": True})
+        self.assertEqual(out["one"], {"find": True, "facet": True, "folds": False})
+        self.assertEqual(out["none"], {"find": False, "facet": False, "folds": False})
+        self.assertEqual(out["on"], {"find": True, "facet": True, "folds": False})
+        self.assertEqual(out["own"], {"find": False, "facet": True, "folds": True})
         self.assertEqual(out["counts"], ["1 row", "7 rows", "2 of 7 rows"])
 
     def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
         # sd:5281: a table names its toolbar row (data-toolbar); the bar's parts join that row, the count last.
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
-        self.assertIn("const { find: findOn, folds: foldsOn } = tbar(", js)
+        self.assertIn("const { find: findOn, facet: facetOn, folds: foldsOn } = tbar(", js)
+        # A page's own filter keeps its text; the column filter narrows its rows all the same.
+        self.assertIn("const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;", js)
+        # A table in a hidden view keeps its parts out of the shared row, and a view change rescans.
+        self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
+        self.assertIn("document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
         self.assertIn("document.getElementById(t.dataset.toolbar)", js)
         self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
         self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
@@ -569,9 +576,91 @@ class TheTableGrammar(unittest.TestCase):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
         self.assertIn("try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch", js)
-        self.assertIn("list.chips(tchips(st), shown, total, 'tunfilter')", js)
+        self.assertIn("list.chips(tchips(use), shown, total, 'tunfilter')", js)
         self.assertIn("tr[data-tout] { display: none; }", SHELL_CSS)
         self.assertIn('td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }', SHELL_CSS)
+
+
+class _Tree(HTMLParser):
+    """Each start tag with the classes and ids of its ancestors, enough to place a control on its row."""
+    VOID = {"input", "br", "img", "meta", "link", "hr", "source", "use", "path"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack, self.tags = [], []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        me = (tag, set((a.get("class") or "").split()), a.get("id"), a)
+        self.tags.append((me, list(self.stack)))
+        if tag not in self.VOID:
+            self.stack.append(me)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        while self.stack and self.stack.pop()[0] != tag:
+            pass
+
+
+def tree(page):
+    t = _Tree()
+    t.feed(page.read_text(encoding="utf-8"))
+    return t.tags
+
+
+class TheToolbarStandard(unittest.TestCase):
+    """sd:5281: every page puts its controls on at most two rows from the shared standard, not in its head."""
+
+    PAGES = sorted(V2.glob("*.html"))
+    HEAD = {"head", "home-head"}
+    # The controls the standard moved out of the head: Shapeshift, a page's view group, its range and its filter box.
+    MOVED = {"shift", "views", "range", "filter", "repo-scope", "place-switch"}
+
+    def test_no_page_head_holds_a_control(self):
+        for page in self.PAGES:
+            for (tag, cls, _id, _a), up in tree(page):
+                in_head = any(c & self.HEAD for _t, c, _i, _x in up)
+                with self.subTest(page=page.name, tag=tag, cls=sorted(cls)):
+                    self.assertFalse(in_head and (tag in ("input", "select", "textarea") or cls & self.MOVED))
+
+    def test_the_view_switch_and_the_moved_controls_sit_in_row_one(self):
+        for page in self.PAGES:
+            for (tag, cls, id_, _a), up in tree(page):
+                # A panel's own range (HOA's Trends) belongs to its panel head, not to the page's rows.
+                if id_ == "viewswitch" or (cls & self.MOVED and not any("panel-head" in c for _t, c, _i, _x in up)):
+                    with self.subTest(page=page.name, el=id_ or sorted(cls)):
+                        self.assertTrue(any("toolbar" in c for _t, c, _i, _x in up))
+
+    def test_a_page_has_one_row_one_and_its_filter_rows_are_row_two(self):
+        for page in self.PAGES:
+            tags = tree(page)
+            with self.subTest(page=page.name):
+                self.assertLessEqual(sum(1 for (_t, _c, i, _a), _u in tags if i == "toolbar"), 1)
+                for (tag, cls, _i, _a), _u in tags:
+                    if cls & {"filters", "facets"}:
+                        self.assertIn("toolbar-2", cls)
+        for name in ("health.js", "management.js"):
+            self.assertNotIn('<div class="filters"', (STATIC / name).read_text(encoding="utf-8"))
+
+    def test_a_page_filtered_table_puts_its_column_filter_in_row_one(self):
+        # Briefs, Documents and the other page-filtered ledgers: the page's text filter and the grammar's column filter
+        # share row 1; the count stays on the table's title line.
+        for page in self.PAGES:
+            tags = tree(page)
+            if not any(i == "toolbar" for (_t, _c, i, _a), _u in tags):
+                continue
+            for (tag, _c, _i, a), _u in tags:
+                if tag == "table" and a.get("data-tfilter") == "page":
+                    with self.subTest(page=page.name):
+                        self.assertEqual(a.get("data-toolbar"), "toolbar")
+
+    def test_the_shell_draws_the_view_switch_at_the_start_of_row_one(self):
+        self.assertIn("viewHost ? viewHost.append(bar) : toolbar ? toolbar.prepend(bar) : viewPanel(VIEW_LIST[0]).before(bar);",
+                      (STATIC / "shell.js").read_text(encoding="utf-8"))
 
 
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")

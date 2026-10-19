@@ -268,7 +268,7 @@ function renderRepos() {
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
       <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
-    <div class="filters" aria-label="Filters">
+    <div class="filters toolbar-2" aria-label="Filters">
       <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
@@ -940,7 +940,7 @@ function renderDeploys() {
       ${SATS.satellites.length ? '' : html`<p class="empty">No satellite's repo-sync-follow job has reported a run yet.</p>`}`}
     <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">launchd · ${hhmm(READ)} UTC</p></div>
     ${!DOC.services ? unknown('Services were not read', why('services'), 'sd services list')
-      : html`<div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
+      : html`<div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
       <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
     ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
     ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
@@ -976,7 +976,7 @@ function renderSchedules() {
   put(el, html`
     <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Last run is the cron-jobs wrapper's stamp of each run's start, end and exit. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
       <p class="tally"><span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span></p></div>
-    <div class="filters"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
+    <div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
       <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
     ${shell.list.chips(textChip(), rows.length, CRON.length)}
     ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>

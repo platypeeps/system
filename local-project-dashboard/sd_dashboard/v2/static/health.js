@@ -105,7 +105,7 @@
   function filters() {
     const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
     const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    return html`<div class="filters" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}</div>`;
+    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}</div>`;
   }
 
   function areas() {
