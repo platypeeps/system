@@ -1,7 +1,7 @@
 // Contributions (sd:2113): the design source's products/system/designs/v2/contributions.js at b2b8c2b, ported. Each change from the
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
-// /classic/contributions renders, never sample data. The dashboard reads nothing from GitHub, so the reference's "GitHub now"
-// chip, its "settled on GitHub" lane and its settled-per-day chart have no reading here and say so. Acknowledge, Make task and
+// /classic/contributions renders, never sample data. The dashboard makes no GitHub call: the "Settled on GitHub" lamp, each
+// row's settle date and the settled-per-day chart read the dates the shadow collector records (sd:5301). Acknowledge, Make task and
 // Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 const { html, put, plural, cells } = window.markup;
@@ -18,7 +18,7 @@ window.PAGE_COMMANDS = [
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'contributions not read' };
 addEventListener('DOMContentLoaded', () => {
   const C = window.shell.commands;
-  const LABEL = { newly_unblocked: 'Newly unblocked', awaiting_you: 'Awaiting you', awaiting_them: 'Awaiting them', merged: 'Merged', closed: 'Closed' };
+  const LABEL = { newly_unblocked: 'Newly unblocked', awaiting_you: 'Awaiting you', awaiting_them: 'Awaiting them', merged: 'Merged', closed: 'Closed', github: 'Settled on GitHub' };
   const ORDER = ['newly_unblocked', 'awaiting_you', 'awaiting_them'];
   const STATE = { newly_unblocked: 'caution', awaiting_you: 'caution', awaiting_them: 'queued' };
   const GLYPH = { warning: '■', caution: '▲', queued: '◌', ok: '●', unknown: '▨' };
@@ -33,12 +33,17 @@ addEventListener('DOMContentLoaded', () => {
   const isIssue = r => /\/issues\/\d+$/.test(String(r.url || ''));
   const filed = r => r.url ? (isIssue(r) ? 'Issue' : 'Pull request') : r.has_draft ? 'Unfiled issue draft' : 'Unfiled local work';
   const num = r => r.url ? '#' + String(r.url).split('/').pop() : '';
+  // sd:5301: when GitHub merged or closed a row, as the shadow collector last read it; a date that does not parse is none.
+  const dated = v => isFinite(Date.parse(v || ''));
+  const settle = r => dated(r.merged_at) ? ['merged', r.merged_at] : dated(r.closed_at) ? ['closed', r.closed_at] : null;
 
   // ---------- Data (build: /api/contributions/page) ----------
   let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '';
   const u0 = new URLSearchParams(location.search);
   let scope = SCOPES.includes(u0.get('scope')) ? u0.get('scope') : 'all';
-  let lane = ORDER.includes(u0.get('lane')) ? u0.get('lane') : null;
+  // The lane filter: an open lane, or `github`, the open rows GitHub already merged or closed (the fourth lamp).
+  let lane = [...ORDER, 'github'].includes(u0.get('lane')) ? u0.get('lane') : null;
+  const inLane = r => !lane || (lane === 'github' ? !!settle(r) : r.lane === lane);
   const q = document.getElementById('q');
   if (u0.get('q')) q.value = u0.get('q');
   const inScope = r => scope === 'all' || (scope === 'internal') === !!r.internal;
@@ -53,7 +58,7 @@ addEventListener('DOMContentLoaded', () => {
   const LIST = { sort: 'at', dir: -1, size: 50 }, L = window.shell.list.listParams(u0, { ...LIST, page: 1 }, { sorts: Object.keys(SORTS), size: LIST.size });
   const COLS = [[null, html`<span class="sr">State</span>`], ['what', 'Contribution'], ['at', 'Observed'], [null, 'Act']];
   const order = (a, b) => { const x = SORTS[L.sort](a), y = SORTS[L.sort](b); return (x < y ? -1 : x > y ? 1 : 0) * L.dir; };
-  const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => (!lane || r.lane === lane) && (!v || words(r).includes(v))).sort(order); };
+  const shown = () => { const v = q.value.trim().toLowerCase(); return scoped().filter(r => inLane(r) && (!v || words(r).includes(v))).sort(order); };
   // The reader (read.js) puts the objects adopt returns and retires the ones a reading no longer lists: the pick is dropped
   // and the object becomes a type no command is on, so no stale Acknowledge can act.
   function adopt(doc) {
@@ -160,9 +165,12 @@ addEventListener('DOMContentLoaded', () => {
       return { button: !!k, pressed: k ? lane === id : undefined, state: s, attrs: html` data-cell="${id}"`, label: lbl, mark: I(icon),
         val: html`<span class="ph"><b>${k}</b> ${unit}</span>`, sr: `state ${s}` };
     };
-    // build: the reference's fourth lamp counted rows GitHub had already settled, from a gh read. The dashboard makes none.
-    putKeep(document.getElementById('annunciator'), cells([...LANES.map(lamp), { state: 'unknown', attrs: html` data-cell="github"`, label: 'Settled on GitHub',
-      mark: I('circle-dot'), val: html`<span class="ph">not checked</span> · <span class="ph">the dashboard does not read GitHub</span>`, sr: 'state unknown' }]));
+    // The fourth lamp: open rows GitHub already merged or closed, from the collector's dates (sd:5301). A pack that records
+    // none leaves it unknown, never zero.
+    const settledLamp = DOC.github_dates ? lamp(['github', 'Settled on GitHub', 'circle-dot', 'caution', 'rows'])
+      : { state: 'unknown', attrs: html` data-cell="github"`, label: 'Settled on GitHub', mark: I('circle-dot'),
+        val: html`<span class="ph">not recorded</span> · <span class="ph">this sd records no merge or close dates</span>`, sr: 'state unknown' };
+    putKeep(document.getElementById('annunciator'), cells([...LANES.map(lamp), settledLamp]));
     const unknown = tot('unknown');
     put(document.getElementById('source'), html`<span class="g-${unknown ? 'unknown' : 'ok'}" aria-hidden="true">${GLYPH[unknown ? 'unknown' : 'ok']}</span>
       <button class="linkish" type="button" data-collector>Collector</button>
@@ -178,11 +186,16 @@ addEventListener('DOMContentLoaded', () => {
     return html`<tr data-id="${r.key}" data-lane="${r.lane}" aria-selected="${String(r.key === selected)}">
       <td class="g g-${r.s}"><span aria-hidden="true">${GLYPH[r.s]}</span><span class="sr">${r.s}</span></td>
       <td class="what"><button type="button">${r.title}</button>
-        <span class="meta">${r.repo || 'local'} ${num(r)} · ${filed(r)}</span>
+        <span class="meta">${r.repo || 'local'} ${num(r)} · ${filed(r)}${settledMeta(r)}</span>
+        ${links(r).length ? html`<span class="links">${links(r)}</span>` : ''}
         ${r.reasons.length ? html`<span class="reason">${String(r.reasons[r.reasons.length - 1]).slice(0, 180)}</span>` : ''}</td>
       <td class="obs">${f.status === 'current' ? html`<span class="g-ok" aria-hidden="true">●</span>` : html`<span class="g-unknown" title="${f.reason}">▨</span>`}<time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time><span class="sr"> · ${f.status}</span></td>
       <td class="act"><span class="row-acts">${C.rowActions(r.key)}</span></td></tr>`;
   }
+  // sd:5308: the issues a row links, GitHub as owner/repo#N and Jira as its key, each in a new tab; none draws nothing.
+  const links = r => (Array.isArray(r.linked) ? r.linked : []).filter(l => l && /^https:\/\/[^/@\s]+\//.test(String(l.url || '')) && l.key)
+    .map((l, i) => html`${i ? ' ' : ''}<a class="ext" href="${l.url}" target="_blank" rel="noopener noreferrer">${l.key}</a>`);
+  const settledMeta = r => { const s = settle(r); return s ? html` · GitHub ${s[0]} <time class="rel" datetime="${s[1]}"></time>` : ''; };
   // No carried row in the scope: a cut document may still count open rows there, which the limit left out (review 4, PR #72).
   function empty() {
     const where = scope === 'all' ? 'any' : scope, left = openN(scope);
@@ -204,7 +217,35 @@ addEventListener('DOMContentLoaded', () => {
     window.shell.url({ ...(scope !== 'all' && { scope }), ...(lane && { lane }), ...(v && { q: v }), ...sort });
   }
 
-  // ---------- Settled: counts per repository; no dates ----------
+  // ---------- Settled: per local day over 28 days, then counts per repository ----------
+  // A day is the browser's local day; the document carries 29 days of dates, so any zone's 28 are inside it (sd:5301).
+  const DAYS = 28, dayOf = t => { const d = new Date(t); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+  const fmt = t => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  function renderDays(sides) {
+    const tp = document.getElementById('tp'), note = document.getElementById('tp-note');
+    if (!DOC.github_dates) {
+      tp.setAttribute('aria-label', 'Settle dates not recorded');
+      put(tp, html``);
+      note.textContent = 'This sd records no merge or close dates: update the command pack and run sd shadow sync.';
+      return;
+    }
+    const end = new Date(Date.parse(DOC.read)); end.setHours(12, 0, 0, 0);
+    const days = Array.from({ length: DAYS }, (_, i) => { const d = new Date(end); d.setDate(d.getDate() - (DAYS - 1 - i)); return d.getTime(); });
+    const at = new Map(days.map((d, i) => [dayOf(d), i])), merged = days.map(() => 0), closed = days.map(() => 0);
+    const S = (DOC.settled_recent || []).filter(inScope);
+    let older = sides.reduce((a, s) => a + ((DOC.settled_older || {})[s] || 0), 0);
+    S.forEach(e => { const t = Date.parse(e.at), i = at.get(dayOf(t)); if (i != null) (e.how === 'merged' ? merged : closed)[i]++; else if (t < days[0]) older++; });
+    const day = days.map((_, i) => merged[i] + closed[i]), max = Math.max(1, ...day), pk = day.indexOf(max);
+    const sumM = merged.reduce((a, b) => a + b, 0), sumC = closed.reduce((a, b) => a + b, 0);
+    tp.setAttribute('aria-label', `${sumM} merged and ${sumC} closed from ${fmt(days[0])} to ${fmt(days[DAYS - 1])}${sumM + sumC ? `; busiest day ${fmt(days[pk])} with ${max}` : ''}`);
+    put(tp, html`<svg viewBox="0 0 280 80" preserveAspectRatio="none" aria-hidden="true">${days.map((d, i) => { const hm = merged[i] / max * 76, hc = closed[i] / max * 76;
+      return html`<rect class="m" x="${i * 10 + 1}" y="${(79 - hm).toFixed(2)}" width="8" height="${hm.toFixed(2)}"><title>${fmt(d)}: ${merged[i]} merged, ${closed[i]} closed</title></rect><rect class="c" x="${i * 10 + 1}" y="${(79 - hm - hc).toFixed(2)}" width="8" height="${hc.toFixed(2)}"/>`; })}<line class="base" x1="0" x2="280" y1="79.5" y2="79.5"/></svg>
+      <div class="tp-axis"><span>${fmt(days[0])}</span><span>${sumM + sumC ? `busiest ${fmt(days[pk])} · ${max}` : 'none in this window'}</span><span>${fmt(days[DAYS - 1])}</span></div>`);
+    const undated = sides.reduce((a, s) => a + ((DOC.settled_undated || {})[s] || 0), 0);
+    note.textContent = [`When GitHub merged or closed each row, as the collector last read it; days are local.`,
+      older ? `${n(older)} settled before this window.` : '',
+      undated ? `${plural(undated, 'settled row')} ${undated === 1 ? 'has' : 'have'} no merge or close date.` : ''].filter(Boolean).join(' ');
+  }
   function renderSettled() {
     const S = (DOC.settled || []).filter(inScope), other = DOC.settled_other || {};
     const sides = scope === 'all' ? ['internal', 'external'] : [scope];
@@ -212,8 +253,7 @@ addEventListener('DOMContentLoaded', () => {
     const merged = S.reduce((a, e) => a + e.merged, 0) + sides.reduce((a, s) => a + (other[s]?.merged || 0), 0);
     const closed = S.reduce((a, e) => a + e.closed, 0) + sides.reduce((a, s) => a + (other[s]?.closed || 0), 0);
     document.getElementById('settled-tally').textContent = `${n(merged + closed)} rows · ${n(merged)} merged · ${n(closed)} closed`;
-    // build: the reference charted merge and close dates read from GitHub. The projection records neither, so the chart says so.
-    document.getElementById('tp-note').textContent = 'No merge or close dates recorded: the projection keeps each row\'s state, not when it settled, and the dashboard does not read GitHub.';
+    renderDays(sides);
     const top = S.slice(0, 12), rest = S.slice(12).reduce((a, e) => a + e.merged + e.closed, 0) + otherN;
     const list = [...top.map(e => [e.repo, e.merged + e.closed]), ...(rest ? [['other repositories', rest]] : [])];
     const max = Math.max(1, ...list.map(x => x[1]));
@@ -255,6 +295,9 @@ addEventListener('DOMContentLoaded', () => {
     const [st, said] = DELIVERY[e.status] || ['unknown', `delivery status ${e.status} is not one sd records`];
     return html`<li>${glyph(st)} ${e.reason} · ${said}${e.acknowledged_at ? html` · acknowledged <time class="rel" datetime="${e.acknowledged_at}"></time>` : ''}</li>`;
   })}</ul>` : html`<p class="note">No notifications recorded.</p>`;
+  // sd:5301: the settle date in local time, from the collector; unknown when this sd records none.
+  const onGitHub = r => { const s = settle(r); return s ? html`${s[0]} <time class="rel" datetime="${s[1]}" data-long=""></time>`
+    : DOC.github_dates ? 'no merge or close date recorded' : 'not recorded: this sd records no merge or close dates'; };
   const details = document.getElementById('details');
   const swap = () => { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); };
   function showCollector() {
@@ -281,7 +324,7 @@ addEventListener('DOMContentLoaded', () => {
     putKeep(details, html`<p class="kind"><span class="g-${r.s}" aria-hidden="true">${GLYPH[r.s]}</span> Contribution · ${LABEL[r.lane]}</p>
       <h2>${r.title}</h2>
       ${github(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${String(r.url).replace('https://github.com/', '')}${I('arrow-up-right')}</a></p>` : ''}
-      <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
+      <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}<dt>On GitHub</dt><dd>${onGitHub(r)}</dd>${links(r).length ? html`<dt>Linked</dt><dd>${links(r)}</dd>` : ''}<dt>Observed</dt><dd><time class="rel" datetime="${r.observed_at || ''}" data-empty="never"></time></dd></dl>
       ${r.reasons.length ? html`<h3>Why it is here</h3><ul class="reasons">${r.reasons.map(x => html`<li>${x}</li>`)}</ul>` : ''}
       <h3>Act</h3>${C.bar(r.key)}
       <p class="why">Acknowledge clears attention only. It does not complete a task or send a notification.</p>
@@ -318,7 +361,7 @@ addEventListener('DOMContentLoaded', () => {
   put(document.getElementById('rows-head'), window.shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   document.addEventListener('contributions:scope', e => setScope(e.detail));
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
-  tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+  tbody.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
   document.addEventListener('shell:open', e => select(e.detail, true));
   q.addEventListener('input', () => DOC && applyFilter());
   q.addEventListener('keydown', e => { if (e.key === 'Escape' && q.value) { e.stopPropagation(); q.value = ''; DOC && applyFilter(); } });
@@ -350,6 +393,8 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('tally'), html``);
     document.getElementById('settled-tally').textContent = '';
     document.getElementById('tp-note').textContent = '';
+    document.getElementById('tp').setAttribute('aria-label', 'Settle dates not read');
+    put(document.getElementById('tp'), html``);
     const bars = document.getElementById('bars');
     bars.setAttribute('aria-label', 'Settled contributions not read');
     put(bars, html``);

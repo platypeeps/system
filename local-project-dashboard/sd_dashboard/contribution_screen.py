@@ -163,11 +163,14 @@ SETTLED_REPOS = 100
 #: `repo` is rewritten by `_shown` and `draft_path` becomes `has_draft`: the page only asks whether a draft exists.
 #: Evidence, dependencies and notification delivery (sd:3394) are shaped by `_row_evidence`, `_row_dependencies` and
 #: `_row_delivery`.
+#: `merged_at` and `closed_at` are when GitHub settled the row, as the shadow collector last read it (sd:5301).
 ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "url", "external_state", "local_status",
-              "item_id", "local_branch", "tested_commit", "observed_at")
+              "item_id", "local_branch", "tested_commit", "observed_at", "merged_at", "closed_at")
 #: The fields each dependency kind may carry, as the library's `_dependency` admits them.
 DEPENDENCY_FIELDS = {"item": ("kind", "item"), "merge": ("kind", "url"), "issue": ("kind", "url"),
                      "release": ("kind", "repo", "tag", "contains_pull", "package")}
+#: Days of settle dates the document carries: the page's 28 local days, plus one for any zone's offset from UTC.
+SETTLED_DAYS = 29
 #: A local path inside a recorded command word: at its start or after `=`, never inside a URL or a relative path.
 LOCAL_PATH = re.compile(r"(?<![\w:/.~-])~?/[^\s=]*")
 
@@ -268,6 +271,25 @@ def _row_delivery(row):
     return {"state": "read", "entries": entries}
 
 
+def _row_links(row):
+    """The issues the row links (sd:5308): a GitHub issue it closes, or a Jira key its title or branch names, each an https
+    link with no credentials. A pack before sd:5315 sends none, and a link that does not read is left out: neither fails."""
+    found = row.get("linked")
+    links = []
+    for link in found if isinstance(found, list) else []:
+        if not isinstance(link, dict) or link.get("kind") not in ("github", "jira"):
+            continue
+        url, key = link.get("url"), link.get("key")
+        address = urlsplit(url if isinstance(url, str) else "")
+        if (address.scheme != "https" or not address.hostname or address.username or address.password
+                or not isinstance(key, str) or not key.strip() or len(key) > 200):
+            continue
+        if link["kind"] == "github" and not contributions.ISSUE.fullmatch(url):
+            continue
+        links.append({"url": url, "kind": link["kind"], "key": key})
+    return links
+
+
 def _freshness(connection, now):
     from datetime import datetime
 
@@ -280,31 +302,66 @@ def _freshness(connection, now):
     return {"state": found["state"], "last_success_at": found["last_success_at"], "reason": found["reason"]}
 
 
+def _moment(value):
+    """An ISO time with a zone, or None: a date that does not parse is unknown, never a settle."""
+    from datetime import datetime
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _settle(row):
+    """`(how, at)` for when GitHub merged or closed the row, or None when no date reads (sd:5301)."""
+    for how, key in (("merged", "merged_at"), ("closed", "closed_at")):
+        if _moment(row.get(key)) is not None:
+            return how, row[key]
+    return None
+
+
 def document(connection, *, now):
     """The Contributions page's document: open rows by lane, settled rows counted per repository, collector freshness."""
+    from datetime import timedelta
+
     rows = contributions.projection(connection)
     remotes, places = _registered(connection)
     lanes = dict.fromkeys(contributions.LANES, 0)
     fresh = {"current": 0, "unknown": 0}
     opened, settled = [], {}
-    # Per scope, over every open row, so a cut list still counts in full: lanes, unknown freshness, linked and unfiled.
-    counts = {side: dict.fromkeys((*OPEN_LANES, "unknown", "linked", "unfiled"), 0) for side in ("internal", "external")}
+    # Per scope, over every open row, so a cut list still counts in full: lanes, unknown freshness, linked, unfiled, and
+    # rows GitHub already merged or closed.
+    counts = {side: dict.fromkeys((*OPEN_LANES, "unknown", "linked", "unfiled", "github"), 0) for side in ("internal", "external")}
+    # Settle dates (sd:5301): every dated row in the window, any lane; the settled rows before it or with no date, per scope.
+    since = _moment(now) - timedelta(days=SETTLED_DAYS)
+    recent, older, undated = [], {"internal": 0, "external": 0}, {"internal": 0, "external": 0}
     for row in rows:
         lanes[row["lane"]] = lanes.get(row["lane"], 0) + 1
         status = (row.get("freshness") or {}).get("status")
         fresh["current" if status == "current" else "unknown"] += 1
         why = _scope(row.get("repo"), remotes, places)
+        scope = "internal" if why is not None else "external"
+        settle = _settle(row)
+        if settle and _moment(settle[1]) >= since:
+            recent.append({"at": settle[1], "how": settle[0], "internal": why is not None})
+        elif settle:
+            older[scope] += 1
+        elif row["lane"] not in OPEN_LANES:
+            undated[scope] += 1
         if row["lane"] in OPEN_LANES:
-            side = counts["internal" if why is not None else "external"]
+            side = counts[scope]
             side[row["lane"]] += 1
             side["unknown"] += status != "current"
             side["linked"] += bool(row.get("item_id"))
             side["unfiled"] += not row.get("url")
+            side["github"] += settle is not None
             opened.append({key: row.get(key) for key in ROW_FIELDS} | {
                 "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
                 "internal": why is not None, "why_internal": why,
-                "evidence": _row_evidence(row), "dependencies": _row_dependencies(row), "delivery": _row_delivery(row)})
+                "evidence": _row_evidence(row), "dependencies": _row_dependencies(row), "delivery": _row_delivery(row),
+                "linked": _row_links(row)})
         else:
             # Keyed on the repository as stored, shown by its label: two checkouts named alike stay two entries.
             entry = settled.setdefault(str(row.get("repo") or ""), {
@@ -313,6 +370,7 @@ def document(connection, *, now):
     # Newest observation first within a lane, never-observed rows last: two stable sorts.
     opened.sort(key=lambda row: str(row["observed_at"] or ""), reverse=True)
     opened.sort(key=lambda row: OPEN_LANES.index(row["lane"]))
+    recent.sort(key=lambda entry: _moment(entry["at"]), reverse=True)
     ranked = sorted(settled.values(), key=lambda entry: (-(entry["merged"] + entry["closed"]), entry["repo"]))
     other = {"internal": {"merged": 0, "closed": 0}, "external": {"merged": 0, "closed": 0}}
     for entry in ranked[SETTLED_REPOS:]:
@@ -331,6 +389,11 @@ def document(connection, *, now):
         "settled": ranked[:SETTLED_REPOS],
         "settled_other": other,
         "collector": _freshness(connection, now),
+        # A pack before sd:5303 gives rows no settle dates at all: the page reads that as not recorded, never as none.
+        "github_dates": all("merged_at" in row and "closed_at" in row for row in rows),
+        "settled_recent": recent,
+        "settled_older": older,
+        "settled_undated": undated,
         # The rail badge (sd:3446): the open rows that want the operator, in every scope.
         "attention": _attention(counts),
     }
