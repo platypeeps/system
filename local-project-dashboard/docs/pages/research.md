@@ -27,3 +27,11 @@ and the ledger. The child's deadline counts from the page's start (sd:2501).
 The page has three views on the shell's view switch (sd:5064): Projects (the board, the default), Sources and Claim
 map. The selected project carries to the other two; with none selected they link back to Projects. A tapped claim opens
 Sources with its sources lit, and a source's ◆ count opens Claim map with its claims lit.
+A project's Details hold its Experiment (sd:5296, `research_experiments.py`): the row of the team's experiments database
+in the work Notion that the checkout's repo declaration of kind `experiment` names. `GET /api/research/experiments?project=<key>`
+reads the link, the cached list, the runs and any setting that blocks one. Refresh experiments, the three drafts and
+Apply draft post to `/api/research/experiments/act`; each outward read or write is a headless `claude -p` run with an exact allowlist, one at a time.
+The drafts write nothing outward. Apply asks first, shows the draft it writes, and posts the draft's SHA-256; the server
+refuses it when the draft, the link, the data source or the deck's account changed since. Attach writes the workflow
+database only. Draft deck needs `RESEARCH_BRAND_KIT`. The shape and the failure table are in
+`docs/work/2026-10-19-research-notion-experiments/design.md`.

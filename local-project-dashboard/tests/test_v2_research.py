@@ -55,6 +55,12 @@ COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],
     ["research.review", "research project", "Review", "v", "safe"],
     ["research.start", "research request", "Run", "r", "confirm"],
+    ["experiment.refresh", "research project", "Refresh experiments", None, "safe"],
+    ["experiment.attach", "research project", "Attach experiment", None, "safe"],
+    ["experiment.create", "research project", "Draft experiment", None, "safe"],
+    ["experiment.status", "research project", "Draft status update", None, "safe"],
+    ["experiment.deck", "research project", "Draft deck", None, "safe"],
+    ["experiment.apply", "research project", "Apply draft", None, "safe"],
     ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
@@ -123,6 +129,22 @@ IDS = """| # | Source | Read |
 CITES = """The repo pins it ([file](https://example.test/org/repo/blob/main/x.rs#L3)). S12's notes agree. Section S1.2 is
 not a citation. S120 is not an ID. The old pin S3-old stands. A sibling path falls to the org
 ([r](https://example.test/org/repository)). [LOG-21](https://example.test/browse/LOG-21) is open.
+"""
+
+
+#: A ledger's own grade legend, as the research checkouts write it above their tables (sd:5297): one line per grade, or
+#: several on one line, a note on the line after, and a table cell in bold that is not a definition.
+LEGEND = """# Sources
+
+Grades: **A** = primary source, read directly (spec, source code).
+**B** = secondary, read directly ([blog](https://example.test/b)). **C** = search-result summary only, full page not read.
+**U** = unverified: fetch failed; lead only.
+**M** = measured in this repo, reproducible from a named tool.
+Graded 2026-10-18: a note on the next line, not part of M.
+
+| Grade | Source |
+|---|---|
+| **A** = not a definition | [Spec](https://example.test/other) |
 """
 
 
@@ -236,6 +258,22 @@ class TheReader(unittest.TestCase):
         cited = {r["title"]: (r["key"], r["cited"]) for r in found["rows"]}
         self.assertEqual(cited, {"Spec release": (spec, 2), "Vendor note": (note, 3), "A summary": (summary, 1),
                                  "Rumour": (rumour, 2), "Ungraded": (ungraded, 1), "Unlinked primary": ("", 0)})
+
+    def test_a_ledger_names_its_own_grades_and_the_claim_types_say_how_each_is_graded(self):
+        # sd:5297: the claim map gave no reason for a type; its rule sat only in the legend's copy, and the grades in none.
+        repo = claimed(self.root)
+        (repo / "SOURCES.md").write_text(LEGEND, encoding="utf-8")
+        found = research_screen.registry(repo)
+        self.assertEqual(found["grades"], {
+            "A": "primary source, read directly (spec, source code).", "B": "secondary, read directly (blog).",
+            "C": "search-result summary only, full page not read.", "U": "unverified: fetch failed; lead only.",
+            "M": "measured in this repo, reproducible from a named tool."})
+        claims = research_screen.sources("research/claims", now=NOW, backend=lambda *_: found)["claims"]
+        self.assertEqual(claims["grades"], found["grades"])
+        self.assertEqual(claims["types"], {"supported": {"rule": "cites an A, B or M source", "grades": "ABM"},
+                                           "unverified": {"rule": "cites only C, U or ungraded sources", "grades": "CU"}})
+        # A ledger that defines no grades sends none, and a table cell in bold is never read as a definition.
+        self.assertEqual(research_screen.registry(claimed(self.root, "research/bare"))["grades"], {})
 
     def test_a_claim_cites_a_row_by_its_id_or_a_deeper_link_and_an_ungraded_ledger_leaves_it_unverified(self):
         # sd:5064 follow-up: real ledgers cite S12 or LOG-21 by ID, and link deeper paths than their rows; none matched.
@@ -585,6 +623,11 @@ var ROW = null;
 """
 
 
+def ledger_reads(out):
+    """The page's reads less each selected project's experiment link (sd:5296), which `TheScript` tests on its own."""
+    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?")]
+
+
 def project(key, label, render, *, conf=None, docs=None, dirs=None):
     return {"key": key, "label": label, "path": f"~/repos/{key}", "dirs": dirs, "render": render, "conf": conf,
             "docs": docs or [], "git": {"branch": "main", "dirty": 1, "behind": 0, "last_iso": "2026-09-05T10:00:00Z", "subject": "A commit"}}
@@ -729,7 +772,8 @@ R.start = ELS['shift-hint'].html;""")
 
     def test_the_first_row_is_selected_and_its_ledger_is_read_and_drawn(self):
         out = self.run_page("R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.det = ELS.details.html; R.tally = ELS['reader-tally'].html;")
-        self.assertEqual(out["gets"], ["/api/research", "/api/research/research/beta"])
+        self.assertEqual(ledger_reads(out), ["/api/research", "/api/research/research/beta"])
+        self.assertIn("/api/research/experiments?project=research%2Fbeta", out["gets"])
         reader = out["R"]["reader"]
         self.assertIn("SOURCES.md", reader)
         self.assertIn("Spec release — bold code", reader)
@@ -744,7 +788,7 @@ R.start = ELS['shift-hint'].html;""")
 
     def test_the_row_in_the_address_wins_and_a_missing_ledger_says_why(self):
         out = self.run_page("R.reader = ELS.reader.html; R.det = ELS.details.html;", row="'group/gamma'")
-        self.assertEqual(out["gets"], ["/api/research", "/api/research/group/gamma"])
+        self.assertEqual(ledger_reads(out), ["/api/research", "/api/research/group/gamma"])
         self.assertIn("The ledger was not read: No research checkout at this address.", out["R"]["reader"])
         self.assertIn("could not read research.conf.py: “computed data”", out["R"]["det"])
 
@@ -756,7 +800,7 @@ R.start = ELS['shift-hint'].html;""")
         answer = (f"(path) => path === '/api/research' ? [200, {json.dumps(doc)}]"
                   f" : path === '/api/research/constructor' ? [200, {json.dumps(ledger)}] : [404, {{ error: 'none' }}]")
         out = self.run_page("R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html;", answer=answer)
-        self.assertEqual(out["gets"], ["/api/research", "/api/research/constructor"])
+        self.assertEqual(ledger_reads(out), ["/api/research", "/api/research/constructor"])
         self.assertIn("Spec release — bold code", out["R"]["reader"])
         self.assertIn("A 1", out["R"]["tally"])
 
@@ -769,7 +813,7 @@ R.start = ELS['shift-hint'].html;""")
         # Alpha's read is still out when beta is selected again; alpha's answer must not take the reader or the details.
         out = self.run_page("""PAGE_LIST.select('group/gamma'); PAGE_LIST.select('research/beta'); await flush();
 R.reader = ELS.reader.html; R.tally = ELS['reader-tally'].html; R.det = ELS.details.html; R.selected = selected;""")
-        self.assertEqual(out["gets"], ["/api/research", "/api/research/research/beta", "/api/research/group/gamma"])
+        self.assertEqual(ledger_reads(out), ["/api/research", "/api/research/research/beta", "/api/research/group/gamma"])
         self.assertEqual(out["R"]["selected"], "research/beta")
         self.assertIn("Spec release — bold code", out["R"]["reader"])
         self.assertNotIn("not read", out["R"]["reader"] + out["R"]["tally"])
@@ -952,6 +996,124 @@ R.views = OUT.views.slice();""")
         self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
 
+    def experiments(self, doc):
+        """The answer with `/api/research/experiments` for beta as `doc` (research_experiments.document's shape)."""
+        base = {"read": NOW, "running": "", "source": "u", "account": "operator@example.test", "kit": "/kit/design.md",
+                "problems": {"source": "", "account": "", "kit": ""}, "cache": None, "cache_error": "", "runs": [],
+                "runs_error": "", "project": "research/beta", "link": None, "link_error": ""}
+        return (f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}]"
+                f" : path === '/api/research/research/beta' ? [200, {json.dumps(self.ledger)}]"
+                f" : path === '/api/research/experiments?project=research%2Fbeta' ? [200, {json.dumps({**base, **doc})}]"
+                " : path === '/api/research/experiments/act' ? [202, { run: '20261019-170000-000001', started: 'x' }]"
+                " : [404, { error: 'no' }]")
+
+    def test_apply_shows_the_draft_it_writes_asks_first_and_posts_the_drafts_hash(self):
+        # sd:5296: a finished status draft waits for Apply; the confirm shows the old and new section before anything is sent.
+        draft = {"before": {"section": "2026-10-01 started", "status": "Todo"},
+                 "after": {"section": "2026-10-19 ran the probe. 2026-10-01 started", "status": "In Progress"}, "entry": "ran"}
+        run = {"run": "20261019-160000-000001", "verb": "draft", "action": "status", "project": "research/beta", "state": "done",
+               "reason": "RESULT: ok", "log": "/s/run.log", "fingerprint": "f" * 64, "draft": draft}
+        answer = self.experiments({"link": {"page": "1" * 32, "data_source": "u", "url": "https://example.test/x", "title": "Span sampling"},
+                                   "cache": {"read": NOW, "source": "u", "current": True, "rows": [{"page": "1" * 32, "title": "Span sampling", "stage": "Running", "status": "Todo"}]},
+                                   "runs": [run]})
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.section = ELS.details.html; R.on = cmd('experiment.apply').when(o); R.shows = cmd('experiment.apply').consequence(o);
+R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
+        self.assertIn('href="https://example.test/x"', out["R"]["section"])
+        self.assertIn("Stage</dt><dd>Running · Status Todo", out["R"]["section"])
+        self.assertIn("Waiting for Apply: the status update drafted 2026-10-19 16:00 UTC", out["R"]["section"])
+        self.assertTrue(out["R"]["on"])
+        self.assertIn("Now: “2026-10-01 started”. After: “2026-10-19 ran the probe. 2026-10-01 started”. Status Todo becomes In Progress.",
+                      out["R"]["shows"])
+        self.assertEqual(out["R"]["create"], "linked already: Attach replaces the link")
+        self.assertEqual(out["confirms"], ["experiment.apply"])
+        self.assertEqual(out["posts"], [["/api/research/experiments/act", {"verb": "apply", "run": run["run"], "fingerprint": "f" * 64,
+                                                                       "recreate": False}, 64]])
+
+    def test_the_apply_confirm_shows_the_whole_draft_and_apply_posts_only_the_draft_it_showed(self):
+        # sd:5296: the confirm shows every field Apply writes, and Apply posts the draft that confirm showed, never a newer one.
+        deck = {"title": "Span sampling", "slides": [{"id": f"sdexp_{n}", "message": f"m{n}", "elements": [
+            {"shape": "RECTANGLE", "x": 0, "y": 300, "w": 720, "h": 40, "fill": "#000000"},
+            {"shape": "TEXT_BOX", "x": 40, "y": 40, "w": 640, "h": 60, "text": f"say {n}", "color": "#FFFFFF", "size": 28,
+             "font": "Inter", "bold": True}]} for n in range(1, 7)]}
+        create = {"title": "Trace budgets", "problem": "Budgets drift.", "body": "## Hypothesis\nTail."}
+        done = {"verb": "draft", "project": "research/beta", "state": "done", "reason": "RESULT: ok", "log": "/s/run.log"}
+        linked = {"page": "1" * 32, "data_source": "u", "title": "Span sampling"}
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.deck = cmd('experiment.apply').consequence(o); shellRun(cmd('experiment.apply'), o); await flush();
+R.again = cmd('experiment.apply').run(o);""", answer=self.experiments({"link": linked, "runs": [
+            {**done, "run": "20261019-160000-000002", "action": "deck", "fingerprint": "d" * 64, "draft": deck}]}))
+        self.assertIn("6. m6 Shapes: RECTANGLE at 0,300 720x40 fill #000000; TEXT_BOX at 40,40 640x60 “say 6” text #FFFFFF 28pt Inter bold.",
+                      out["R"]["deck"])
+        self.assertEqual([p[1]["fingerprint"] for p in out["posts"]], ["d" * 64])
+        self.assertEqual(out["R"]["again"], "Apply writes only a draft its confirm showed: choose Apply draft again")
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({"runs": [
+            {**done, "run": "20261019-160000-000003", "action": "create", "fingerprint": "c" * 64, "draft": create}]}))
+        self.assertIn("its body “## Hypothesis\nTail.”", out["R"]["create"])
+
+    def test_refresh_and_drafts_post_without_asking_and_attach_asks_naming_what_it_writes(self):
+        answer = self.experiments({"cache": {"read": NOW, "source": "u", "current": True,
+                                             "rows": [{"page": "2" * 32, "title": "Trace budgets", "stage": "Idea", "status": "Todo"}]}})
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.section = ELS.details.html; R.status = cmd('experiment.status').when(o); R.apply = cmd('experiment.apply').when(o);
+R.options = cmd('experiment.attach').fields(o)[0].options; R.says = cmd('experiment.attach').consequence(o);
+shellRun(cmd('experiment.refresh'), o); await flush();
+FIELD_VALUES = { page: '2'.repeat(32), description: 'Tail sampling keeps the slow spans' };
+shellRun(cmd('experiment.attach'), o); await flush(); shellRun(cmd('experiment.create'), o); await flush();""", answer=answer)
+        self.assertIn("Not linked. Attach one from the list, or draft a new one.", out["R"]["section"])
+        self.assertEqual(out["R"]["status"], "not linked: attach or create an experiment first")
+        self.assertEqual(out["R"]["apply"], "no finished draft waits for Apply")
+        self.assertEqual(out["R"]["options"], [{"value": "2" * 32, "label": "Trace budgets · Idea"}])
+        self.assertEqual(out["R"]["says"], "Links Beta to the chosen experiment in the workflow database. Notion is not written.")
+        self.assertEqual(out["confirms"], ["experiment.attach", "experiment.create"])
+        self.assertEqual([p[1] for p in out["posts"]], [
+            {"verb": "list"}, {"verb": "attach", "page": "2" * 32, "replaces": None, "project": "research/beta"},
+            {"verb": "draft", "action": "create", "description": "Tail sampling keeps the slow spans", "project": "research/beta"}])
+
+    def test_the_deck_is_off_while_the_brand_kit_is_unset_and_the_section_says_why(self):
+        answer = self.experiments({"link": {"page": "1" * 32, "data_source": "u", "title": "Span sampling"},
+                                   "problems": {"source": "", "account": "", "kit": "RESEARCH_BRAND_KIT is not set. Export it, or copy x to y."}})
+        out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
+R.deck = cmd('experiment.deck').when(o); R.section = ELS.details.html;""", answer=answer)
+        self.assertEqual(out["R"]["deck"], "RESEARCH_BRAND_KIT is not set. Export it, or copy x to y.")
+        self.assertIn("RESEARCH_BRAND_KIT is not set. Export it, or copy x to y. The deck is off until then.", out["R"]["section"])
+
+    def test_each_claim_type_and_claim_carries_hover_text_from_the_document_and_the_ledgers_grades(self):
+        # sd:5297: the legend and the claims named a type with no hover text saying what it means or how it is graded.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = claimed(root, "research/beta")
+        (repo / "SOURCES.md").write_text(LEGEND, encoding="utf-8")
+        self.ledger = research_screen.sources("research/beta", now=NOW, backend=lambda *_: research_screen.registry(repo))
+        # The page reads the rule from the document, so a rule worded there differently shows that wording.
+        self.ledger["claims"]["types"]["supported"]["rule"] = "cites a strong source"
+        out = self.run_page("R.claims = ELS.claims.html;")
+        claims = out["R"]["claims"]
+        supported = ("Supported: cites a strong source. A = primary source, read directly (spec, source code). "
+                     "B = secondary, read directly (blog). M = measured in this repo, reproducible from a named tool.")
+        unverified = ("Unverified: cites only C, U or ungraded sources. C = search-result summary only, full page not read. "
+                      "U = unverified: fetch failed; lead only.")
+        self.assertIn(f'<span class="sr" id="claim-type-supported">{supported}</span>', claims)
+        self.assertIn(f'<span class="sr" id="claim-type-unverified">{unverified}</span>', claims)
+        self.assertIn(f'<span title="{supported}" aria-describedby="claim-type-supported">● supported: cites a strong source</span>', claims)
+        self.assertRegex(claims, r'<button type="button" class="v-unverified" data-verdict="unverified" aria-pressed="false"'
+                                 r' title="Unverified: [^"]+" aria-describedby="claim-type-unverified">')
+        # Each claim's mark says its type and the grades it cites; its button, which a keyboard reaches, points at the
+        # type's full text.
+        self.assertIn('<span class="g g-ok" title="Supported: cites a strong source. This claim cites B and U.">', claims)
+        self.assertIn('<span class="g g-unknown" title="Unverified: cites only C, U or ungraded sources. This claim cites only'
+                      ' ungraded sources.">', claims)
+        self.assertIn('<button type="button" aria-describedby="claim-type-supported">Both readings stand (note, rumour).</button>',
+                      claims)
+
+    def test_a_ledger_without_a_grade_legend_says_so_in_the_hover_text(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.ledger = research_screen.sources("research/beta", now=NOW,
+                                              backend=lambda *_: research_screen.registry(claimed(root, "research/beta")))
+        claims = self.run_page("R.claims = ELS.claims.html;")["R"]["claims"]
+        self.assertIn('<span class="sr" id="claim-type-supported">Supported: cites an A, B or M source. This ledger does not'
+                      ' define its grades.</span>', claims)
+
     def test_an_ungraded_ledger_says_why_every_claim_is_unverified(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         repo = checkout(root, "research/beta")
@@ -1051,7 +1213,8 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/example")
+    page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
+                                                                "/api/research/example")
 
 
 if __name__ == "__main__":
