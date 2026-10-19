@@ -717,11 +717,11 @@ def _with_row(found: tuple[list[dict], dict], row: dict) -> tuple[list[dict], di
 
 
 def _mirror_rows(found: tuple[str, dict] | None) -> tuple[list[dict], dict]:
-    """One row: the last render of the vault mirror, ok only when its heartbeat says so; Render mirror runs it again."""
+    """One row: the last render of the vault mirror, ok only when its heartbeat says so. Read-only: the page writes no vault note (sd:5134)."""
     row = {"id": "mir", "type": "vault mirror", "kind": "Vault mirror", "cli": MIRROR_CLI}
     if found is None:
         return [{**row, "state": "unknown", "what": "Vault mirror not yet rendered",
-                 "detail": "a base row write or Render mirror records it", "facts": {"Heartbeat": "records-mirror"}}], {"at": None}
+                 "detail": "a base row write records it", "facts": {"Heartbeat": "records-mirror"}}], {"at": None}
     stamp, body = found
     refused = [f"{one.get('path')}: {one.get('reason')}" for one in body.get("refused") or [] if isinstance(one, dict)]
     facts = {"Observed": stamp, "Kinds": ", ".join(body.get("kinds") or []) or "—", "Written": str(body.get("written", "—"))}

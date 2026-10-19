@@ -92,6 +92,7 @@ import ast
 import contextlib
 import datetime
 import ipaddress
+import json
 import os
 import pathlib
 import re
@@ -131,33 +132,32 @@ LABEL_PREFIX = system_tools_config.label_prefix()
 TODAY = datetime.date.today
 
 
-# ---------------------------------------------------------------- vault DBs
+# ---------------------------------------------------------------- decision queues
 
-# key -> definition: `title` and `folder` name it, `decide` is the status that
-# means nobody has ruled yet, and `columns` is what `db_rows` lifts out of the
-# frontmatter. Nothing here writes a status any more -- `statuses`, `machine`,
-# `views` and `rating` described a page with dropdowns on it and went with that
-# page. The single-writer rules they encoded are specified where they belong,
-# in the vault's System/Schema.md, and nothing in this repository is a writer
-# of those fields to contradict them.
+# key -> definition: `title` names it, `kind` is the base kind whose rows
+# `db_rows` reads from the workflow database, `decide` is the stage that means
+# nobody has ruled yet, and `columns` is what it lifts out of each row's
+# fields. The rows have been the source since pack sd:4627; the vault's
+# `System/Databases` notes were their mirror and are read here no more
+# (sd:5134). Nothing here writes a stage: Tasks moves it.
 DBS = {
     "blog": dict(
-        title="Blog Ideas", folder="System/Databases/Blog Ideas",
+        title="Blog Ideas", kind="sdw.blog-idea",
         decide="inbox",
         columns=["score", "my-rating", "topics", "description"],
     ),
     "tip": dict(
-        title="Tips and Tricks", folder="System/Databases/Tips and Tricks",
+        title="Tips and Tricks", kind="sdw.tip",
         decide="inbox",
         columns=["score", "my-rating", "topics", "description"],
     ),
     "topic": dict(
-        title="Topics", folder="System/Databases/Topics",
+        title="Topics", kind="sdw.topic",
         decide="candidate",
         columns=["slug", "description"],
     ),
     "watch": dict(
-        title="Market Watch", folder="System/Databases/Market Watch",
+        title="Market Watch", kind="sdw.market",
         decide="candidate",
         columns=["slug", "description"],
     ),
@@ -511,23 +511,6 @@ class Budget:
         return subprocess.CompletedProcess(argv, proc.returncode, out.decode("utf-8", "replace"), text)
 
 
-def frontmatter(path):
-    """(fm_text, body) for a note, or (None, None) when it has no frontmatter."""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return None, None
-    m = re.match(r"(?s)^---\n(.*?)\n---(.*)$", text)
-    if not m:
-        return None, None
-    return m.group(1), m.group(2)
-
-
-def field(fm, name):
-    m = re.search(rf"^{re.escape(name)}:[ \t]*[\"']?(.*?)[\"']?[ \t]*$", fm or "", re.M)
-    return m.group(1).strip() if m else ""
-
-
 def age_days(iso):
     try:
         return (TODAY() - datetime.date.fromisoformat(iso[:10])).days
@@ -690,11 +673,9 @@ def vault_blocked():
     """'' if the vault lists, otherwise why it does not.
 
     Probed once per process and answered the same way after. That is once per
-    tile invocation, which is the right grain: `tab_queues` reads the four
-    database folders in `DBS` and would otherwise spawn four probes inside a
-    five-second budget, and the answer cannot change mid-run -- a TCC grant
-    arriving between two reads of the same tile is not a case worth paying for
-    four times.
+    tile invocation, which is the right grain: the answer cannot change
+    mid-run -- a TCC grant arriving between two reads of the same tile is not
+    a case worth paying for twice.
 
     The child answers which failure it hit rather than the parent guessing.
     `VAULT.parent.exists()` was the only check, and it cannot tell a vault that
@@ -720,22 +701,6 @@ def vault_blocked():
     return _VAULT_STATE
 
 
-def require_vault():
-    """Raise unless the vault reads. For collectors with nowhere to put an error.
-
-    `collect_areas` returns a dict and reports the reason inside it, because
-    its tab draws a page either way. `db_rows` returns rows: there is no field to carry a sentence, and an empty
-    list is indistinguishable from an empty vault -- which is the failure the
-    probe exists to prevent. Raising instead gives the tile its exit 1 with
-    the reason on stderr, which a Resources view shows in place of the view
-    (the pack's loader showed an error row), rather than a tab that looks like
-    nothing happened.
-    """
-    blocked = vault_blocked()
-    if blocked:
-        raise RuntimeError(blocked)
-
-
 def obsidian_url(rel):
     return "obsidian://open?vault=%s&file=%s" % (
         urllib.parse.quote(VAULT.name), urllib.parse.quote(rel))
@@ -752,25 +717,28 @@ def as_float(v):
 
 
 def db_rows(key):
-    require_vault()
+    """One queue's base rows, highest score first, read with `sd store list <kind> --json`.
+
+    An answer that is not a JSON list of rows raises -- no answer, a command
+    that could not start, a timeout's cut: an empty list would read as an
+    empty queue, a negative nobody observed. `run` caps the call at the
+    tile's deadline.
+    """
     d = DBS[key]
-    folder = VAULT / d["folder"]
+    out = run(["sd", "store", "list", d["kind"], "--json"], timeout=10)
+    try:
+        listed = json.loads(out)
+    except ValueError:
+        listed = None
+    if not isinstance(listed, list) or not all(isinstance(entry, dict) for entry in listed):
+        raise RuntimeError(f"`sd store list {d['kind']} --json` gave no rows to read")
     rows = []
-    for f in sorted(folder.glob("*.md")):
-        fm, body = frontmatter(f)
-        if fm is None:
-            continue
-        row = {
-            "stem": f.stem,
-            "status": field(fm, "status"),
-            "created": field(fm, "dateCreated")[:10],
-            "obsidian": obsidian_url(f"{d['folder']}/{f.stem}"),
-            "url": field(fm, "url"),
-            "mtime": int(f.stat().st_mtime),
-        }
+    for entry in listed:
+        text = lambda name: "" if entry.get(name) is None else str(entry[name])
+        row = {"stem": text("title"), "status": text("status"), "created": text("dateCreated")[:10]}
         row["age"] = age_days(row["created"])
         for c in d["columns"]:
-            row[c] = field(fm, c)
+            row[c] = text(c)
         rows.append(row)
     rows.sort(key=lambda r: (-(as_float(r.get("score")) or 0), r["created"] or ""), reverse=False)
     return rows

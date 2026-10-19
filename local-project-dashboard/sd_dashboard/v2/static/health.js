@@ -31,7 +31,7 @@
     ports: ['link-2', '<b>Who holds which port.</b> Configured service ports, then every other TCP listener the Mac shows. <b>Unknown is not free</b>: an uninspected listener says nothing about the port.'],
     doc: ['shield-check', '<b>What machine-setup doctor says.</b> Its WARN and FAIL lines, one row each, and the lines that pass. The doctor runs <code>brew doctor</code>, so an answer stands for ten minutes; a run still going, stopped at its deadline or failed is unknown, never clean.'],
     svc: ['activity', '<b>Long-running user services.</b> Each LaunchAgent that keeps a process alive, as <code>sd services list</code> reads it. Restart and Start run <code>sd services restart</code> and <code>start</code> here, against the row as shown. The dashboard compares the commit it serves with the checkout; its own service is protected, so a stale one gives the kickstart line to copy.'],
-    mir: ['book-open', '<b>The vault mirror of base rows.</b> Each base row write renders its notes and its page under <code>docs/dashboard</code> in the vault; a hand-edited note is kept and listed. Render mirror runs <code>sd-db records render</code> here, to catch up after a failed render.'],
+    mir: ['book-open', '<b>The vault mirror of base rows.</b> The <code>records-mirror</code> heartbeat a base row write leaves, read-only: this page writes no vault note.'],
     prot: ['lock', '<b>What each default branch enforces.</b> One column per registered repo, one line per check: a filled cell is a gap, a short mark passes, an empty cell does not apply. <b>Unknown is not protected</b>: a hatched column was not read and shows no cells. Every column opens its repo; the table below carries the same cells.'],
   };
   // Protection has no lamp: the annunciator holds 2 to 8 (the design's rule), and its matrix is Health's evidence strip.
@@ -308,15 +308,6 @@
     if (e.status >= 400 && e.status < 500) throw e;
     return `Not known what changed · ${o.facts.Label}: ${e.message}. Health was read again; check the row before you act again.`;
   });
-  // Render mirror (sd:3977) answers what it wrote, or a 409 that names why it did not; the page reads again either way.
-  const render = o => shell.post('/api/records/render', {}).then(out => {
-    load();
-    return `Vault mirror rendered: ${out.kinds.join(', ') || 'no kind'} · ${plural(out.written.length, 'file')} written`;
-  }, e => {
-    load();
-    if (e.status >= 400 && e.status < 500) throw e;
-    return `Not known what changed · vault mirror: ${e.message}. Health was read again; check the row before you act again.`;
-  });
   const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
   window.PAGE_COMMANDS = [
     { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
@@ -389,10 +380,6 @@
         executes: false, cli: o => o.cli, run: copyOnly },
       { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Gives the line that opens the secret scanning alerts on GitHub.', key: 'o', risk: 'safe', primary: () => true,
         executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'vault mirror.render', on: 'vault mirror', label: 'Render mirror', does: 'Writes each base row\'s mirror note into the vault; hand edits stay.', key: 'r', risk: 'confirm', executes: true,
-        primary: () => true, cli: o => o.cli,
-        consequence: () => 'Writes every base row\'s mirror note and page into the vault. A hand-edited note is kept and listed, not overwritten.',
-        run: render },
       { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );

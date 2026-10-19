@@ -1442,7 +1442,6 @@ class TheScript(Collectors, ScreenCase):
             ["collector.sync", "collector", "safe", "r", None, False],
             ["dependabot alerts.review", "dependabot alerts", "safe", "o", False, False],
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
-            ["vault mirror.render", "vault mirror", "confirm", "r", True, False],
             ["credential.probe", "credential", "safe", "r", False, False],
         ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
           + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
@@ -1704,22 +1703,6 @@ shellRun(c, o); await flush();""")
         self.assertEqual(out["gets"], ["/api/health/machine", "/api/health/summary"])
         self.assertEqual(out["toasts"][-1][0], "com.example.alpha: accepted · launchctl accepted the request; "
                                                "current state is observed separately")
-
-    RENDER_ANSWER = ("ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : path === '/api/records/render' "
-                     "? [STATUS_W, WROTE] : [404, { error: 'no answer' }];\n")
-
-    def test_render_mirror_confirms_then_posts_and_names_what_it_wrote(self):
-        """sd:3977: the vault mirror row runs `sd-db records render` through POST /api/records/render."""
-        wrote = {"ok": True, "kinds": ["blog-idea", "topic"], "written": ["docs/dashboard/base-topic.html"], "refused": [], "reason": None}
-        out = self.run_page(f"var STATUS_W = 200, WROTE = {json.dumps(wrote)};\n" + self.RENDER_ANSWER
-                            + """var o = C.get('mir'); OUT.gets = []; var c = cmd('vault mirror.render');
-R.cli = c.cli(o); R.why = c.consequence(o); shellRun(c, o); await flush();""", view="jobs")
-        self.assertEqual(out["R"]["cli"], "sd-db records render")
-        self.assertIn("A hand-edited note is kept and listed", out["R"]["why"])
-        self.assertEqual(out["confirms"], ["vault mirror.render"])
-        self.assertEqual([post[:2] for post in out["posts"]], [["/api/records/render", {}]])
-        self.assertEqual(out["gets"], ["/api/health/jobs", "/api/health/summary"])
-        self.assertEqual(out["toasts"][-1][0], "Vault mirror rendered: blog-idea, topic · 1 file written")
 
     def test_a_down_service_offers_start_and_says_why_restart_is_off(self):
         out = self.service_page("svc:com.example.beta", """R.start = cmd('service.start').when(o); R.primary = cmd('service.start').primary(o);
@@ -2043,8 +2026,7 @@ R.all = BODY().html;""", view="machine")
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/summary", "/api/health/cleanup",
-                                                               "/api/records/render")
+    page, section, route, api = "health", "Health", "/fleet-health", ("/api/health", "/api/health/summary", "/api/health/cleanup")
 
 
 if __name__ == "__main__":

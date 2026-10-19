@@ -183,41 +183,59 @@ class Resources(unittest.TestCase):
         self.assertEqual(set(reports_screen.VIEW_SECONDS), {area for area, _ in reports_screen.VIEWS})
         self.assertTrue(all(0 < seconds <= 5 for seconds in reports_screen.VIEW_SECONDS.values()))
 
-    def vault(self):
-        """A vault holding the decision databases `sd_tile.py queues` reads."""
+    # Each queue's `sd store list <kind> --json` answer, as the stub `sd` prints it: the rows' source is the
+    # workflow database (sd:5134), so the view must show these and no vault note.
+    LISTED = {"sdw.blog-idea": [{"title": "Old idea", "status": "inbox", "dateCreated": "2026-01-02", "score": "4"},
+                                {"title": "New idea", "status": "inbox", "dateCreated": "2026-02-03", "score": None},
+                                {"title": "Declined idea", "status": "declined", "dateCreated": "2026-01-01"}],
+              "sdw.tip": [], "sdw.market": [],
+              "sdw.topic": [{"title": "Ruled topic", "status": "active", "dateCreated": "2026-01-01"}]}
+
+    def stub_sd(self, listed):
+        """A stub `sd` first on PATH: `store list KIND --json` prints `listed[KIND]`; a kind not listed exits 1."""
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        notes = {"blog": (("Old idea", "inbox", "2026-01-02"), ("New idea", "inbox", "2026-02-03"),
-                          ("Declined idea", "declined", "2026-01-01")),
-                 "topic": (("Ruled topic", "accepted", "2026-01-01"),)}
-        for key, spec in collectors.DBS.items():
-            folder = root / spec["folder"]; folder.mkdir(parents=True)
-            for stem, status, created in notes.get(key, ()):
-                (folder / f"{stem}.md").write_text(f"---\nstatus: {status}\ndateCreated: {created}\n---\nBody\n")
+        for kind, rows in listed.items():
+            (root / f"{kind}.json").write_text(json.dumps(rows))
+        (root / "calls").touch()
+        stub = root / "sd"
+        stub.write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" >> {str(root / "calls")!r}
+[ "$1 $2 $4" = "store list --json" ] && [ -f {str(root)!r}/"$3.json" ] || exit 1
+cat {str(root)!r}/"$3.json"
+""")
+        stub.chmod(0o755)
         return root
 
-    def test_queues_view_renders_rows_from_a_fixture_vault(self):
-        # The real tile, reading a fixture vault through the page's own path.
-        with patch.dict(os.environ, {"OBSIDIAN_VAULT": str(self.vault())}):
+    def queues(self, listed):
+        stub = self.stub_sd(listed)
+        # A vault folder with a waiting note in it: the view must not read it.
+        vault = stub / "vault" / "System" / "Databases" / "Blog Ideas"; vault.mkdir(parents=True)
+        (vault / "Vault note.md").write_text("---\nstatus: inbox\ndateCreated: 2026-01-01\n---\n")
+        with patch.dict(os.environ, {"PATH": f"{stub}:{os.environ['PATH']}", "OBSIDIAN_VAULT": str(stub / "vault")}):
             html = str(reports_screen.resources({"resource": ["queues"]}))
+        return html, (stub / "calls").read_text().splitlines()
+
+    def test_queues_view_renders_the_base_rows_from_the_database(self):
+        # The real tile, through the page's own path, reading `sd store list` for each queue.
+        html, calls = self.queues(self.LISTED)
         self.assertIn('aria-current="page">Queues</a>', html)
         self.assertNotIn("could not be observed", html)
+        self.assertEqual(sorted(calls), sorted(f"store list {kind} --json" for kind in self.LISTED))
         self.assertIn("<td>Blog Ideas</td><td>2</td><td>3</td>", html)
         self.assertIn("<td>Topics</td><td>0</td><td>1</td>", html)
         self.assertIn("<td>Old idea</td><td>Blog Ideas</td>", html)
         self.assertIn("<td>New idea</td><td>Blog Ideas</td>", html)
         self.assertNotIn("Declined idea", html)
+        self.assertNotIn("Vault note", html)
         self.assertIn("<dt>2 in Blog Ideas to decide</dt>", html)
 
     def test_queues_collector_failure_surfaces_on_the_screen(self):
-        # A vault that is not there is an error the page states, never a calm
-        # table of zero queues.
-        missing = self.vault() / "moved"
-        with patch.dict(os.environ, {"OBSIDIAN_VAULT": str(missing)}):
-            html = str(reports_screen.resources({"resource": ["queues"]}))
+        # A read that fails is an error the page states, never a calm table of zero queues.
+        html, _ = self.queues({kind: rows for kind, rows in self.LISTED.items() if kind != "sdw.tip"})
         self.assertIn('aria-current="page">Queues</a>', html)
         self.assertIn("This resource could not be observed: queues: ", html)
-        self.assertIn(f"vault path does not exist: {missing}", html)
+        self.assertIn("`sd store list sdw.tip --json` gave no rows to read", html)
         self.assertNotIn("<table", html)
 
     def test_collector_markup_cannot_add_active_content(self):

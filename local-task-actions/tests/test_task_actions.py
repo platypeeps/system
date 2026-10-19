@@ -23,7 +23,6 @@ import tempfile
 import time
 import unittest
 import urllib.error
-import urllib.parse
 import urllib.request
 
 FOLDER = pathlib.Path(__file__).resolve().parent.parent
@@ -31,10 +30,11 @@ SCRIPT = pathlib.Path(os.environ.get("TASK_ACTIONS_TEST_SCRIPT") or FOLDER / "ta
 LIB_CONFIG = FOLDER.parent / "lib" / "config.sh"
 
 # launchd holds no label: `launchctl print` fails, anything else succeeds.
+# TASK_ACTIONS_TEST_LOADED makes `print` answer, so `status` goes on to probe.
 # Every call is logged so a case can assert the stub answered.
 LAUNCHCTL = """#!/bin/sh
 echo "launchctl $*" >> "$TASK_ACTIONS_TEST_CALLS"
-[ "$1" != print ] || exit 113
+[ "$1" != print ] || [ -n "$TASK_ACTIONS_TEST_LOADED" ] || exit 113
 exit 0
 """
 # No Funnel configured: `tailscale funnel status` prints nothing.
@@ -42,6 +42,12 @@ TAILSCALE = """#!/bin/sh
 echo "tailscale $*" >> "$TASK_ACTIONS_TEST_CALLS"
 exit 0
 """
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 class LabelPrefixTest(unittest.TestCase):
@@ -81,6 +87,26 @@ class LabelPrefixTest(unittest.TestCase):
         return subprocess.run(["sh", str(self.script), *args], env=base,
                               capture_output=True, text=True, timeout=60)
 
+    def serve(self, env=None):
+        """Start `run` from the copy, on whatever port its config names, and wait until it answers."""
+        base = {"PATH": self.path, "HOME": str(self.home),
+                "SYSTEM_TOOLS_CONFIG": str(self.config)}
+        base.update(env or {})
+        server = subprocess.Popen(["sh", str(self.script), "run"], env=base,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(server.wait)
+        self.addCleanup(server.terminate)
+        return server
+
+    def answers(self, port):
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                return True
+            except OSError:
+                time.sleep(0.1)
+        return False
+
     def test_status_uses_the_prefix_from_env_file(self):
         # REGRESSION (sd:1944). The prefix was read before st_source_env, so
         # a prefix set only in .env was ignored and status looked for the
@@ -118,38 +144,41 @@ class LabelPrefixTest(unittest.TestCase):
     def test_port_from_env_file(self):
         # REGRESSION. TASK_ACTIONS_PORT was read before st_source_env too, so
         # the port help says .env may set was ignored.
-        self.write_env('TASK_ACTIONS_PORT="18766"\n')
-        result = self.run_script("base-url")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "http://127.0.0.1:18766")
+        port = free_port()
+        self.write_env(f'TASK_ACTIONS_PORT="{port}"\n')
+        self.serve()
+        self.assertTrue(self.answers(port), "run did not bind the port .env names")
 
-    def test_base_url_does_not_wait_out_the_funnel_timeout(self):
+    def test_status_does_not_wait_out_the_funnel_timeout(self):
         # REGRESSION (sd:1770). The watchdog's `sleep` inherited the stdout
         # of `$(funnel_url)`, so the substitution waited for the sleep to end:
         # every probe cost the full FUNNEL_TIMEOUT even when tailscale
-        # answered at once, and a digest paid it once per button.
-        import time
+        # answered at once.
+        port = free_port()
+        env = {"TASK_ACTIONS_PORT": str(port)}
+        self.serve(env)
+        self.assertTrue(self.answers(port))
         start = time.monotonic()
-        result = self.run_script("base-url",
-                                 env={"TASK_ACTIONS_FUNNEL_TIMEOUT": "20"})
+        result = self.run_script("status", env={**env, "TASK_ACTIONS_TEST_LOADED": "1",
+                                                "TASK_ACTIONS_FUNNEL_TIMEOUT": "20"})
         elapsed = time.monotonic() - start
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "http://127.0.0.1:8766")
-        self.assertLess(elapsed, 10, "base-url waited out the watchdog")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("public: not configured", result.stdout)
+        self.assertLess(elapsed, 10, "status waited out the watchdog")
 
     def test_exported_values_win_over_env_file(self):
         # REGRESSION (Copilot cd43501067e5 on PR 12). st_source_env assigns
         # over the environment, and only OBSIDIAN_VAULT was put back, so .env
         # beat an exported prefix and port; .env.example says exported wins.
+        port = free_port()
         self.write_env('SYSTEM_TOOLS_LABEL_PREFIX="example.test"\n'
-                       'TASK_ACTIONS_PORT="18766"\n')
+                       f'TASK_ACTIONS_PORT="{free_port()}"\n')
         env = {"SYSTEM_TOOLS_LABEL_PREFIX": "other.example.test",
-               "TASK_ACTIONS_PORT": "28766"}
+               "TASK_ACTIONS_PORT": str(port)}
         status = self.run_script("status", env=env)
         self.assertIn("label:  other.example.test.task-actions", status.stdout)
-        base = self.run_script("base-url", env=env)
-        self.assertEqual(base.returncode, 0, base.stderr)
-        self.assertEqual(base.stdout.strip(), "http://127.0.0.1:28766")
+        self.serve(env)
+        self.assertTrue(self.answers(port), "run bound the .env port over the exported one")
 
     def test_start_passes_the_config_root_to_the_agent(self):
         # REGRESSION (sd:1959). launchd passes only the environment the plist
@@ -178,7 +207,7 @@ class LabelPrefixTest(unittest.TestCase):
         self.assertNotIn("ProcessType", plistlib.loads(agent.read_bytes()))
 
 
-class ConfirmPageTest(unittest.TestCase):
+class PageTest(unittest.TestCase):
     """The pages the server sends wear the foundation: its tokens, its theme control, no colour of their own.
 
     These run the real `run` from the real folder, because the stylesheets
@@ -193,24 +222,25 @@ class ConfirmPageTest(unittest.TestCase):
         (self.tmp / "config" / "task-actions").mkdir(parents=True)
         home = self.tmp / "home"
         home.mkdir()
+        # A decision note where the digest's links used to flip a status: it
+        # must come through every case unchanged (sd:5134).
         vault = self.tmp / "vault"
         (vault / "System" / "Databases" / "Blog Ideas").mkdir(parents=True)
         self.idea = vault / "System" / "Databases" / "Blog Ideas" / "Idea.md"
         self.idea.write_text("---\nstatus: proposed\n---\nbody\n")
-        self.vault = vault
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            self.port = sock.getsockname()[1]
+        self.addCleanup(lambda: self.assertEqual(
+            self.idea.read_text(), "---\nstatus: proposed\n---\nbody\n", "a vault note changed"))
+        self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
+        # An old brief's link to accept that note, as the digest built it.
+        self.old_link = f"{self.base}/task?db=blog&f=Idea&a=accept&t=1&s=00"
         path = os.pathsep.join([os.path.dirname(sys.executable), "/usr/bin", "/bin"])
         self.env = {"PATH": path, "HOME": str(home),
                     "SYSTEM_TOOLS_CONFIG": str(self.tmp / "config"),
                     "TASK_ACTIONS_PORT": str(self.port),
-                    "OBSIDIAN_VAULT": str(vault),
-                    "TASK_ACTIONS_SECRET_FILE": str(self.tmp / "secret"),
-                    "TASK_ACTIONS_BASE_URL": self.base}
+                    "OBSIDIAN_VAULT": str(vault)}
         self.server = subprocess.Popen(
-            ["sh", str(FOLDER / "task-actions.sh"), "run"], env=self.env,
+            ["sh", str(SCRIPT), "run"], env=self.env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(self.server.wait)
         self.addCleanup(self.server.terminate)
@@ -222,12 +252,6 @@ class ConfirmPageTest(unittest.TestCase):
                 time.sleep(0.1)
         else:
             self.fail("the server did not start")
-
-    def signed(self, action, db="blog", name="Idea"):
-        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "-b", db, name, action],
-                             env=self.env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(out.returncode, 0, out.stderr)
-        return out.stdout.strip()
 
     def get(self, url):
         try:
@@ -241,34 +265,33 @@ class ConfirmPageTest(unittest.TestCase):
         status, headers, body = self.get(url)
         return status, headers, body.decode()
 
-    def test_the_confirm_page_loads_the_foundation_and_carries_no_style_of_its_own(self):
-        status, _, page = self.page(self.signed("accept"))
-        self.assertEqual(status, 200)
+    def test_an_old_decision_link_changes_nothing_and_sends_you_to_tasks(self):
+        # REGRESSION (sd:5134). The digest's links flipped a status in the
+        # vault note; the decision moved to the dashboard's Tasks page, so an
+        # old link, opened or posted, answers 410 and reads no note.
+        for path in ("/task", "/open"):
+            status, _, page = self.page(self.old_link.replace("/task", path))
+            self.assertEqual(status, 410, path)
+            self.assertIn("decide on Tasks", page)
+        status, _, page = self.post(self.old_link)
+        self.assertEqual(status, 410)
+        self.assertIn("Nothing changed", page)
+
+    def test_the_page_loads_the_foundation_and_carries_no_style_of_its_own(self):
+        _, _, page = self.page(self.old_link)
         self.assertIn('href="/static/tokens.css"', page)
         self.assertIn('src="/static/theme.js"', page)
         self.assertNotIn("style=", page)
         self.assertNotIn("<style", page)
         self.assertNotRegex(page, self.RAW_COLOUR)
 
-    def test_the_confirm_page_names_the_action_and_asks_for_the_button(self):
-        _, _, page = self.page(self.signed("adopt", db="topic"))
-        self.assertIn("Adopt", page)
-        self.assertIn('method="POST"', page)
-        self.assertIn("Nothing changes until you press the button", page)
-
-    def test_decline_is_the_danger_button_and_the_rest_are_not(self):
-        _, _, decline = self.page(self.signed("decline"))
-        _, _, accept = self.page(self.signed("accept"))
-        self.assertIn('class="btn danger"', decline)
-        self.assertNotIn("danger", accept)
-
     def test_the_theme_control_is_on_the_page(self):
-        _, _, page = self.page(self.signed("accept"))
+        _, _, page = self.page(self.old_link)
         for choice in ("dark", "light", "system"):
             self.assertIn(f'data-theme-choice="{choice}"', page)
 
     def test_the_pages_send_a_policy_that_runs_only_their_own_files(self):
-        _, headers, _ = self.get(self.signed("accept"))
+        _, headers, _ = self.get(self.old_link)
         policy = headers["Content-Security-Policy"]
         for directive in ("default-src 'none'", "script-src 'self'", "style-src 'self'",
                           "font-src 'self'", "form-action 'self'", "frame-ancestors 'none'"):
@@ -276,7 +299,7 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertNotIn("unsafe-inline", policy)
 
     def test_every_stylesheet_and_script_the_page_names_is_served(self):
-        _, _, page = self.page(self.signed("accept"))
+        _, _, page = self.page(self.old_link)
         wanted = re.findall(r'(?:href|src)="(/static/[^"]+)"', page)
         self.assertGreaterEqual(len(wanted), 3)
         for name in wanted:
@@ -312,36 +335,17 @@ class ConfirmPageTest(unittest.TestCase):
         self.assertEqual(used - defined, set(), "a token the foundation does not define")
 
     def post(self, url):
-        data = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-        form = urllib.parse.urlencode({k: v[0] for k, v in data.items()}).encode()
-        with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=form),
-                                    timeout=10) as r:
-            return r.read().decode()
+        query = url.split("?", 1)[1].encode()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(self.base + "/task", data=query),
+                                        timeout=10) as r:
+                return r.status, r.headers, r.read().decode()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.headers, e.read().decode()
 
-    def test_an_accepted_note_says_so_with_a_glyph_and_words(self):
-        page = self.post(self.signed("accept"))
-        self.assertIn("status: proposed \u2192 accepted", page)
-        self.assertIn("\u25cf", page)  # normal
-        self.assertIn("status: accepted", self.idea.read_text())
-
-    def test_a_link_without_a_database_is_refused_and_signed_never(self):
-        # The TaskNotes done/postpone actions are gone (sd:4635): no database, no link.
-        out = subprocess.run(["sh", str(FOLDER / "task-actions.sh"), "url", "Idea", "done"],
-                             env=self.env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(out.returncode, 1)
-        self.assertIn("usage:", out.stderr)
-        query = urllib.parse.urlparse(self.signed("accept")).query
-        bare = "&".join(p for p in query.split("&") if not p.startswith("db="))
-        status, _, page = self.page(f"{self.base}/task?{bare}")
-        self.assertEqual(status, 403)
-        self.assertIn("Unknown database", page)
-        self.assertIn("status: proposed", self.idea.read_text())
-
-    def test_a_refusal_says_nothing_changed_with_a_glyph_and_words(self):
-        url = self.signed("accept").replace("t=", "t=0")
-        status, _, page = self.page(url)
-        self.assertEqual(status, 403)
-        self.assertIn("Bad signature", page)
+    def test_the_answer_says_nothing_changed_with_a_glyph_and_words(self):
+        _, _, page = self.page(self.old_link)
         self.assertIn("\u25a0", page)  # warning
         self.assertIn("Nothing changed", page)
         self.assertNotRegex(page, self.RAW_COLOUR)

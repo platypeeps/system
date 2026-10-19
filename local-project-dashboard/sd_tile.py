@@ -113,7 +113,6 @@ import re
 import shutil
 import sys
 import time
-import urllib.parse
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -710,25 +709,15 @@ def tab_ports(collectors) -> dict:
 
 
 def tab_queues(collectors) -> dict:
-    """The vault's decision queues: how much is waiting, and what is oldest.
+    """The decision queues' base rows: how much is waiting, and what is oldest.
 
-    **Read-only, and that is a decision rather than an unfinished half.** The
-    system dashboard edited a note's `status` from this table, and the pack
-    dashboard could not: its actions were commands, not forms, so nothing a
-    page sent was interpolated into an argv (the pack's R11-D23). The Resources
-    view that shows this table now is read-only too. Setting a status
-    needs `{key, stem, field, value}` per row, which no fixed command can
-    express, so the writing stays in Obsidian -- where it already happens, and
-    where the old `update_note`'s guard against becoming the second writer of a
-    machine-owned field lived. That writer was deleted with the server at 6b-8
-    rather than reimplemented here. `sd-plugin.json` therefore declares one
-    action per queue that opens it (`dashboard.sh queue-open`), though no
-    dashboard renders those actions now, and the tab's job is to say which
-    queue is asking.
+    **Read-only.** The rows come from the workflow database (`collectors.db_rows`,
+    `sd store list`), their source since pack sd:4627, never the vault notes
+    (sd:5134). A stage moves on Tasks, which offers each base row's moves under
+    its kind's rules, so this table only says which queue is asking.
 
-    One pass over the vault, not two: `collect_queues` re-reads every note to
-    count it, and this needs the notes anyway to say what is oldest, so the
-    counts are derived here from the same rows.
+    One pass per queue, not two: the counts are derived here from the same rows
+    that say what is oldest.
     """
     queues, waiting = [], []
     for key, spec in collectors.DBS.items():
@@ -750,7 +739,7 @@ def tab_queues(collectors) -> dict:
             ("waiting on you", pending_total),
             ("queues", len(queues)),
             ("with something to decide", sum(1 for q in queues if q["pending"])),
-            ("notes", sum(q["total"] for q in queues)),
+            ("rows", sum(q["total"] for q in queues)),
             ("oldest, days", max((q["oldest"] for q in queues), default=0)),
         ]),
         table(
@@ -770,11 +759,11 @@ def tab_queues(collectors) -> dict:
         parts += [
             heading("Waiting on a decision, oldest first"),
             table(
-                [("Note", "text"), ("Queue", "text"), ("Age, days", "num"),
+                [("Title", "text"), ("Queue", "text"), ("Age, days", "num"),
                  ("Score", "num")],
                 [[row["stem"], row["queue"], num(row["age"]), num(row.get("score") or "")]
                  for row in waiting[:LIST_ROWS]],
-                search="filter notes",
+                search="filter rows",
             ),
         ]
         if pending_total > LIST_ROWS:
@@ -787,7 +776,7 @@ def tab_queues(collectors) -> dict:
     rows = [
         {"rank": 3, "kind": "queue", "id": f"queue:{q['key']}",
          "what": f"{len(q['pending'])} in {q['title']} to decide",
-         "detail": f"oldest {q['oldest']} days \u00b7 {q['total']} notes in the queue"}
+         "detail": f"oldest {q['oldest']} days \u00b7 {q['total']} rows in the queue"}
         for q in queues if q["pending"]
     ]
     return {"title": "Queues", "html": "".join(parts), "rows": rows}
@@ -800,21 +789,6 @@ TABS = {
     "ports": tab_ports,
     "queues": tab_queues,
 }
-
-
-def queue_url(collectors, key: str) -> str:
-    """Where Obsidian should land to work one queue.
-
-    A search rather than `obsidian://open`, which wants a file: the thing to
-    open is a folder's worth of undecided notes, and `path:` plus the decide
-    status is exactly the set the table above counted. Built here rather than
-    in the collectors because the server that owned them is deleted and the
-    collectors are a library now: a URL for a tab belongs with the tab.
-    """
-    spec = collectors.DBS[key]
-    query = f'path:"{spec["folder"]}" ["status": "{spec["decide"]}"]'
-    return "obsidian://search?vault=%s&query=%s" % (
-        urllib.parse.quote(collectors.VAULT.name), urllib.parse.quote(query))
 
 
 # `--grants`' exit when nothing was refused but the answers were not measured
@@ -867,7 +841,7 @@ def vault_grants(collectors, named: list[str]) -> tuple[list[str], int]:
     """One line per interpreter path, each probed as the binary whose grant is in question.
 
     `named` is `ROLE=path` per interpreter, the two `dashboard.sh grants`
-    passes: `DASHBOARD_PYTHON` for `tile` and `queue-open` from a shell and
+    passes: `DASHBOARD_PYTHON` for `tile` from a shell and
     `SD_DASHBOARD_PYTHON` for the server and the tiles a Resources view runs
     as its children. macOS grants Full Disk Access per binary, and a
     `brew upgrade python` moves one Cellar path and drops that path's grant
@@ -925,28 +899,17 @@ def vault_grants(collectors, named: list[str]) -> tuple[list[str], int]:
 
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--grants"]:
-        # The second mode that is not a tab, for the same reason as `--url`:
-        # the probe and the refusal are the collectors', so the report is
-        # built where they are loaded. `dashboard.sh grants` names the paths.
+        # The one mode that is not a tab: the probe and the refusal are the
+        # collectors', so the report is built where they are loaded. `dashboard.sh grants` names the paths.
         if len(argv) < 2 or any("=" not in entry or not entry.partition("=")[0] for entry in argv[1:]):
             print("usage: dashboard.sh grants (runs sd_tile.py --grants ROLE=<interpreter>...)", file=sys.stderr)
             return 2
         lines, code = vault_grants(load_collectors(), argv[1:])
         print("\n".join(lines))
         return code
-    if len(argv) == 2 and argv[0] == "--url":
-        # The one mode that is not a tab. A queue's action opens Obsidian, and
-        # the URL is built from `DBS`, so it is built where `DBS` is already
-        # loaded rather than by a third copy of the module loader in shell.
-        try:
-            print(queue_url(load_collectors(), argv[1]))
-        except KeyError:
-            print(f"no such queue: {argv[1]}", file=sys.stderr)
-            return 2
-        return 0
     if len(argv) not in (1, 2) or (len(argv) == 2 and not re.fullmatch(r"\d+(\.\d+)?", argv[1])):
         print(f"usage: dashboard.sh tile <{'|'.join(sorted(TABS))}> | "
-              f"dashboard.sh tile --url <queue> | dashboard.sh grants", file=sys.stderr)
+              f"dashboard.sh grants", file=sys.stderr)
         return 2
     started = time.monotonic()
     name = argv[0]

@@ -16,7 +16,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -103,16 +102,6 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(out, GOLDEN_LIST)
         self.assertEqual(brief, GOLDEN_BRIEF)
 
-    def test_the_vault_comes_from_shared_env_when_none_is_exported(self):
-        # sd:3990. Kept once in <config>/shared.env, not in each tool's .env.
-        (self.root / "config").mkdir(exist_ok=True)
-        (self.root / "config" / "shared.env").write_text(f'OBSIDIAN_VAULT="{self.root / "vault"}"\n')
-        home = self.root / "no-home"
-        home.mkdir()
-        out, brief, rc = harness.run(self.root, {"OBSIDIAN_VAULT": None, "HOME": str(home)})
-        self.assertEqual(rc, 0)
-        self.assertEqual(harness.templated(out), self.digest()[0])
-
     def test_a_failing_jev_leaves_the_digest_intact(self):
         out, brief = self.digest({**ON, "JEV_STUB_ASK_FAIL": "1"})
         self.assertEqual(out, GOLDEN_LIST)
@@ -121,7 +110,6 @@ class DigestTest(unittest.TestCase):
     def test_a_failing_jev_says_so_on_stderr(self):
         env = dict(os.environ)
         env.update({
-            "OBSIDIAN_VAULT": str(self.root / "vault"),
             **harness.sd_stub(self.root),
             "JEV_STUB_ASK_FAIL": "1",
         })
@@ -134,198 +122,39 @@ class DigestTest(unittest.TestCase):
         self.assertIn("jev did not rank this digest", proc.stderr)
         self.assertIn("keeping the usual order", proc.stderr)
 
-    # --- an unreachable signer is a bounded failure, not a crash ---------
+    # --- the rows come from the workflow database ------------------------
 
-    def test_a_hanging_signer_does_not_kill_the_digest(self):
-        """The signer that never answers costs one timeout, not the run.
+    def test_the_digest_reads_the_database_rows_not_the_vault_notes(self):
+        """sd:5134: the database is the source since pack sd:4627, and the notes are going away."""
+        folder = self.root / "vault" / "System" / "Databases" / "Blog Ideas"
+        folder.mkdir(parents=True)
+        (folder / "vault-only.md").write_text(
+            "---\nstatus: inbox\nscore: 99\ndateCreated: 2026-01-01\n---\n")
+        out, brief = self.digest({**OFF, "OBSIDIAN_VAULT": str(self.root / "vault")})
+        self.assertNotIn("vault-only", out)
+        self.assertEqual(shown(out), harness.EXPECTED_SHOWN)
 
-        `task-actions.sh url` signs the URL on this machine; it never calls the
-        service on port 8766, so a listening service does not make this call
-        safe. It shells out to `tailscale funnel status`, and a stalled daemon
-        makes it unbounded. The digest used to die on `subprocess.TimeoutExpired`
-        -- which `except OSError` never caught -- after blocking. It must now
-        file the same Open-only digest it files when the signer is absent.
-        """
-        out, brief = self.digest({**OFF, "ACTIONS_STUB_HANG": "30"})
-        self.assertEqual(out, GOLDEN_LIST)
-        self.assertEqual(brief, GOLDEN_BRIEF)
+    def test_each_card_opens_its_row_on_the_dashboards_tasks_page(self):
+        ids = harness.item_ids(self.root)
+        _, brief = self.digest(OFF)
+        for queue, stems in harness.EXPECTED_SHOWN.items():
+            for stem in stems:
+                card = brief.split(f"- **{stem}** · ", 1)[1].split("\n", 1)[0]
+                self.assertTrue(card.startswith(f"what {stem} is about · "), card)
+                self.assertTrue(card.endswith(f" · [\u2197 Open](/tasks?row={ids[stem]})"), card)
+        self.assertNotIn("obsidian://", brief)
 
-    def test_a_hanging_signer_names_the_endpoint_it_could_not_reach(self):
-        env = dict(os.environ)
-        env.update({
-            "OBSIDIAN_VAULT": str(self.root / "vault"),
-            **harness.sd_stub(self.root),
-            "ACTIONS_STUB_HANG": "30",
-        })
-        proc = subprocess.run(
-            ["sh", str(self.root / "local-obsidian-review" / "obsidian-review.sh"),
-             "run"],
-            capture_output=True, text=True, env=env, timeout=120)
-        self.assertEqual(proc.returncode, 0)
-        self.assertNotIn("TimeoutExpired", proc.stderr)
-        self.assertIn("action links unsigned", proc.stderr)
-        self.assertIn("task-actions.sh", proc.stderr)
-        self.assertIn("did not answer within", proc.stderr)
-        # One timeout retires the signer: the message is said once, not once
-        # per card, and the run does not pay the timeout sixty times over.
-        self.assertEqual(proc.stderr.count("action links unsigned"), 1)
+    def test_an_unreadable_database_stops_the_run_and_files_nothing(self):
+        """A read that fails is unknown, never "all decision queues empty"."""
+        from sd_db.database import local_path
 
-    def test_the_signer_is_asked_for_a_base_url_once_and_never_again(self):
-        """sd:1203, review round 1. One probe a run, not one a button.
-
-        Bounding `url` was not enough. `task-actions.sh` answered every call
-        with exit 0 and a `http://127.0.0.1:8766` base whenever its funnel
-        probe timed out, so nothing outside could see the stall: every button
-        on every card paid the timeout again, and every link it signed pointed
-        at a host only this machine can reach.
-
-        The base is now discovered once, by `base-url`, and handed to each
-        `url` call in TASK_ACTIONS_BASE_URL. This reads the stub's own log of
-        what it was called with, so it fails if the digest ever goes back to
-        asking per link.
-        """
-        record = self.root / "actions.calls"
-        self.digest({**OFF,
-                     "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.test"})
-        calls = [line.split(" ", 1) for line in
-                 record.read_text().splitlines() if line]
-        verbs = [verb for verb, _ in calls]
-        self.assertEqual(verbs.count("base-url"), 1, calls)
-        self.assertGreater(verbs.count("url"), 1, calls)
-        # Every signing call got the answer the one probe produced, so none of
-        # them had any reason to reach the daemon.
-        self.assertEqual(
-            {base for verb, base in calls if verb == "url"},
-            {"https://mac.example.test"})
-
-    def test_one_signing_timeout_retires_the_signer_for_the_run(self):
-        """sd:1203, review round 2. Caching discovery is not the whole breaker.
-
-        The base URL being in hand stops the daemon being asked again; it does
-        not stop signing itself being slow. Each `url` call still starts an
-        interpreter and reads the secret file, so a loaded machine or a secret
-        on a stalled mount is its own stall, and 192 buttons times the signing
-        timeout is sixteen minutes. The first signing timeout ends it.
-        """
-        record = self.root / "actions.calls"
-        self.digest({**OFF,
-                     "ACTIONS_STUB_RECORD": str(record),
-                     "ACTIONS_STUB_SIGNS": "https://mac.example.test",
-                     "ACTIONS_STUB_SIGN_HANG": "3",
-                     "OBSIDIAN_REVIEW_SIGN_TIMEOUT": "1"})
-        verbs = [line.split(" ", 1)[0] for line in
-                 record.read_text().splitlines() if line]
-        self.assertEqual(verbs.count("base-url"), 1, verbs)
-        # The first link is tried once more (sd:2536); no later link is tried.
-        self.assertEqual(verbs.count("url"), 2, verbs)
-
-    # --- a slow signer at night (sd:2536) ---------------------------------
-
-    def signing(self, **extra):
-        """A run against a stub that signs; returns (stderr, brief, url calls)."""
-        record = self.root / "actions.calls"
-        record.unlink(missing_ok=True)
-        state = self.root / "stub-state"
-        shutil.rmtree(state, ignore_errors=True)
-        state.mkdir()
-        proc, brief = harness.run_proc(self.root, {
-            **OFF, "ACTIONS_STUB_RECORD": str(record), "ACTIONS_STUB_STATE": str(state),
-            "ACTIONS_STUB_SIGNS": "https://mac.example.test", **extra})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        verbs = [line.split(" ", 1)[0] for line in record.read_text().splitlines() if line]
-        return proc.stderr, brief, verbs.count("url")
-
-    def test_a_signer_slower_than_five_seconds_still_signs(self):
-        # 0.1 s by day, over 5 s under the nightly load: the old bound gave up.
-        err, brief, _ = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="6")
-        self.assertNotIn("action links unsigned", err)
-        self.assertIn("https://mac.example.test/task?stub=1", brief)
-
-    def test_a_signing_timeout_is_tried_once_more(self):
-        _, _, links = self.signing()
-        # sd:2683: every link's call shares the bound. At 1 s a call with no
-        # hang ran out under a loaded gate and was retried too (57 != 56); at
-        # 10 s only the hung first call runs out.
-        err, brief, calls = self.signing(ACTIONS_STUB_FIRST_SIGN_HANG="11", OBSIDIAN_REVIEW_SIGN_TIMEOUT="10")
-        self.assertNotIn("action links unsigned", err)
-        self.assertIn("https://mac.example.test/task?stub=1", brief)
-        self.assertEqual(calls, links + 1)
-
-    def test_a_signer_that_never_answers_says_why_with_the_load(self):
-        err, brief, calls = self.signing(ACTIONS_STUB_SIGN_HANG="3", OBSIDIAN_REVIEW_SIGN_TIMEOUT="1")
-        self.assertEqual(err.count("action links unsigned"), 1, err)
-        self.assertRegex(err, r"action links unsigned -- \S+task-actions\.sh did not sign "
-                              r"within 1s, 2 times \(load averages [0-9.]+ [0-9.]+ [0-9.]+\)")
-        self.assertNotIn("/task?stub=1", brief)
-        self.assertEqual(calls, 2)
-
-    def test_a_signer_that_exits_non_zero_says_why(self):
-        # Before sd:2536 a failed `url` gave an empty link and said nothing.
-        err, brief, calls = self.signing(ACTIONS_STUB_SIGN_EXIT="1")
-        self.assertEqual(err.count("action links unsigned"), 1, err)
-        self.assertRegex(err, r"task-actions\.sh url exited 1 \(load averages ")
-        self.assertNotIn("/task?stub=1", brief)
-        self.assertEqual(calls, 1)
-
-    def test_a_base_url_failure_says_why(self):
-        err, _, calls = self.signing(ACTIONS_STUB_SIGNS="")
-        self.assertRegex(err, r"no base URL could be discovered \(base-url exited 1, load averages ")
-        self.assertEqual(calls, 0)
-
-    def test_a_stalled_daemon_refuses_rather_than_signing_a_localhost_link(self):
-        """The real script, not the stub: `url` exits non-zero on a stall.
-
-        A link signed against 127.0.0.1 opens on this machine and nowhere the
-        digest is read, so returning one after a timeout is worse than
-        returning nothing. `tailscale` here is a stub that never answers.
-        """
-        bin_dir = self.root / "stalled-bin"
-        bin_dir.mkdir()
-        stub = bin_dir / "tailscale"
-        stub.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env.update({
-            "PATH": f"{bin_dir}:{env['PATH']}",
-            "TASK_ACTIONS_FUNNEL_TIMEOUT": "1",
-            "TASK_ACTIONS_SECRET_FILE": str(self.root / "secret"),
-        })
-        env.pop("TASK_ACTIONS_BASE_URL", None)
-        script = harness.TOOL_DIR.parent / "local-task-actions" / "task-actions.sh"
-        proc = subprocess.run(["sh", str(script), "url", "-b", "blog",
-                               "some-stem", "accept"],
-                              capture_output=True, text=True, env=env,
-                              timeout=60)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertNotIn("127.0.0.1", proc.stdout)
-        self.assertIn("did not answer", proc.stderr)
-
-    def test_a_machine_with_no_funnel_still_signs_a_localhost_link(self):
-        """Not-configured is not a stall, and must not be treated as one.
-
-        `tailscale` answers here, with no line naming our port. That is the
-        ordinary state of a machine without a funnel, and a localhost base is
-        the right answer for it.
-        """
-        bin_dir = self.root / "quiet-bin"
-        bin_dir.mkdir()
-        stub = bin_dir / "tailscale"
-        stub.write_text("#!/bin/sh\necho 'no serve config'\n", encoding="utf-8")
-        stub.chmod(0o755)
-        env = dict(os.environ)
-        env.update({
-            "PATH": f"{bin_dir}:{env['PATH']}",
-            "TASK_ACTIONS_FUNNEL_TIMEOUT": "5",
-            "TASK_ACTIONS_SECRET_FILE": str(self.root / "secret"),
-        })
-        env.pop("TASK_ACTIONS_BASE_URL", None)
-        script = harness.TOOL_DIR.parent / "local-task-actions" / "task-actions.sh"
-        proc = subprocess.run(["sh", str(script), "base-url"],
-                              capture_output=True, text=True, env=env,
-                              timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.strip(), "http://127.0.0.1:8766")
+        local_path(self.root / "home").unlink()
+        proc, brief = harness.run_proc(self.root, OFF)
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("the base rows could not be read", proc.stderr)
+        self.assertNotIn("all decision queues empty", proc.stdout)
+        self.assertEqual(brief, "")
+        self.assertFalse((self.root / "sd.args").exists())
 
     # --- and the one way it does something -------------------------------
 
@@ -351,13 +180,13 @@ class DigestTest(unittest.TestCase):
             # the two notes over the twelve-card cap stay over it
             self.assertNotIn("blog-01", out)
             self.assertNotIn("blog-02", out)
-            self.assertIn("… and 2 more in Obsidian", brief)
+            self.assertIn("… and 2 more on Tasks", brief)
             # and nothing whose status is not a pending decision appears
             for hidden in ("blog-accepted", "skill-done", "tip-ready-a"):
                 self.assertNotIn(hidden, out)
             self.assertIn("2 tip(s) are `ready`", brief)
 
-    def test_the_buttons_and_their_links_are_untouched(self):
+    def test_the_links_are_untouched(self):
         plain = self.digest()[1]
         ranked = self.digest(ON)[1]
         hrefs = lambda doc: sorted(re.findall(r"\]\(([^)]+)\)", doc))
@@ -377,7 +206,7 @@ class DigestTest(unittest.TestCase):
         self.assertEqual(args, f"reports brief add --belongs-to {self.root} --replace "
                                + args.split(" --replace ", 1)[1])
         self.assertTrue(args.endswith(f"/{harness.TODAY.isoformat()} - Review Queue.md"), args)
-        self.assertTrue(brief.startswith("---\njob: obsidian-review-daily\n---\n\n**20** note(s) across 5 queue(s)"))
+        self.assertTrue(brief.startswith("---\njob: obsidian-review-daily\n---\n\n**20** item(s) across 5 queue(s)"))
         self.assertFalse((self.root / "local-notify").exists())
 
     def test_a_brief_that_cannot_be_filed_exits_1(self):
@@ -386,7 +215,7 @@ class DigestTest(unittest.TestCase):
         self.assertIn("brief NOT filed", proc.stderr)
 
     def test_list_files_nothing(self):
-        env = {**os.environ, **harness.sd_stub(self.root), "OBSIDIAN_VAULT": str(self.root / "vault"), **OFF}
+        env = {**os.environ, **harness.sd_stub(self.root), **OFF}
         proc = subprocess.run(["sh", str(self.root / "local-obsidian-review" / "obsidian-review.sh"), "list"],
                               capture_output=True, text=True, env=env, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -401,7 +230,7 @@ class DigestTest(unittest.TestCase):
         payload = json.dumps(sent)
         self.assertNotIn("A body nobody outside this machine", payload)
         self.assertNotIn("what blog-14 is about", payload)   # description
-        self.assertNotIn("System/Databases", payload)
+        self.assertNotIn("Base/", payload)  # no row path
         self.assertNotIn(str(self.root), payload)
         self.assertNotIn("obsidian://", payload)
         for item in sent["state"]["items"]:

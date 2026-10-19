@@ -6,13 +6,13 @@
 # The legacy collectors back two Operations areas: Resources runs sd_tile.py
 # for Toolbox, Briefs, Vault, Research and Queues, and Ports calls one of
 # them, `collectors.collect_ports`, in-process -- not the whole tile set.
-# `tile` runs one view from a shell; `queue-open` opens a queue.
-# Usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | pages | test
+# `tile` runs one view from a shell.
+# Usage: dashboard.sh tile <tab> | serve | preflight | install | health | pages | test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# DASHBOARD_PYTHON (.env) is the interpreter for `tile` and `queue-open`, the
-# two subcommands a person runs from a shell, and for nothing else. `serve`
+# DASHBOARD_PYTHON (.env) is the interpreter for `tile`, the subcommand a
+# person runs from a shell, and for nothing else. `serve`
 # runs under SD_DASHBOARD_PYTHON (below), and a Resources view runs the tile as
 # a child of that server under its own sys.executable — so the same tile has
 # two interpreters, today Homebrew python@3.15 on this path and Homebrew
@@ -59,27 +59,6 @@ cmd_tile() {
   # wrong. A Resources view shows that reason for any nonzero exit. Nothing
   # but the payload may reach stdout, so this execs.
   exec "${DASHBOARD_PYTHON:-python3}" "$DIR/sd_tile.py" "$@"
-}
-
-cmd_queue_open() {
-  # The command behind the four `sys/queue-*` actions in `sd-plugin.json`, one
-  # per decision queue. No dashboard renders those actions now (sd:719 step 3
-  # removed them from the pack dashboard, which is no longer served, and the
-  # system dashboard does not read the manifest). `sd plugin list` lists them
-  # but runs nothing, so this subcommand is the way to run one. Each
-  # declaration names its queue in its own command line, and a person running
-  # this subcommand names the queue as its argument.
-  # No `local`: this script is `#!/bin/sh` and every other function here keeps
-  # to POSIX, where `local` is not defined -- it happens to work under the
-  # macOS `/bin/sh` and would fail under `dash`. Found in review.
-  queue_key="${1:-}"
-  if [ -z "$queue_key" ]; then
-    echo "usage: $(basename "$0") queue-open <queue>" >&2
-    exit 2
-  fi
-  queue_url=$("${DASHBOARD_PYTHON:-python3}" "$DIR/sd_tile.py" --url "$queue_key") || exit $?
-  open "$queue_url"
-  echo "opened $queue_key in Obsidian"
 }
 
 # sd_db is the command pack checkout's lib/ (sd:2997), here and in the test
@@ -177,7 +156,6 @@ cmd_test() {
 
 case "${1:-}" in
   tile) shift; cmd_tile "$@" ;;
-  queue-open) shift; cmd_queue_open "${1:-}" ;;
   serve) shift; cmd_serve "$@" ;;
   preflight|install|health) cmd_runtime "$@" ;;
   grants) shift; cmd_grants "$@" ;;
@@ -186,7 +164,7 @@ case "${1:-}" in
   test|check) shift; cmd_test "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | pages | test
+usage: dashboard.sh tile <tab> | serve | preflight | install | health | grants | docs | pages | test
 
   tile <tab>       one tab as JSON on stdout — toolbox, vault, research,
                    ports or queues. The Resources views are
@@ -195,9 +173,6 @@ usage: dashboard.sh tile <tab> | queue-open <queue> | serve | preflight | instal
                    collect_ports in-process. Exits 1 with the reason on
                    stderr when a collector fails and 2 when the tab name is
                    not one of those
-  queue-open <q>   open one decision queue in Obsidian, where a status is
-                   still written. sd-plugin.json declares one action per
-                   queue that runs this; no dashboard renders those actions
   serve            Today, Backlog, Writing, Operations and item controls.
                    All reads/writes use `sd_db`. Binds loopback; optional ip_origin
                    adds a listener on this node's Tailscale IP with peer authentication.
@@ -243,7 +218,7 @@ controls save to the shared database without status commits; the legacy plugin
 collector commands remain available.
 
 environment:
-  DASHBOARD_PYTHON            interpreter for `tile` and `queue-open` only
+  DASHBOARD_PYTHON            interpreter for `tile` only
                               (.env; Homebrew python, not /usr/bin/python3).
                               It does not select the tiles a Resources view
                               renders -- those run under the server's
@@ -272,7 +247,7 @@ HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") tile <tab> | queue-open <queue> | serve | preflight | install | health | grants | docs | pages | test" >&2
+    echo "usage: $(basename "$0") tile <tab> | serve | preflight | install | health | grants | docs | pages | test" >&2
     exit 1
     ;;
 esac

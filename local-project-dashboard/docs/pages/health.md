@@ -126,8 +126,8 @@ own revision. A refused row wrote nothing and the run goes on; an unknown
 outcome stops it.
 
 Vault mirror (sd:3977) reads the last `records-mirror` heartbeat: ok when it says so, a warning with its reason
-and refused files, and unknown before any render. Render mirror posts `/api/records/render`, the code
-`sd-db records render` runs, after a confirm; it answers 409 with the reason when the render did not run clean.
+and refused files, and unknown before any render. The row is read-only: Health writes no vault note, and
+`/api/records/render` is gone (sd:5134).
 
 Attribute, Show biggest, Show use and Inspect listener are CLI lines for Copy,
 and Re-check reads the document again. Re-run collector posts `/api/shadow/sync`, as

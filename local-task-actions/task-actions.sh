@@ -1,18 +1,18 @@
 #!/bin/sh
-# task-actions — tiny localhost HTTP service that lets the Obsidian review
-# digest email carry decision buttons. Links are HMAC-signed and expire; the
-# server binds 127.0.0.1 only and flips one frontmatter status in the vault.
-# LaunchAgent pattern as in local-cswap.
-# Usage: task-actions.sh run|start|stop|status|base-url|url -b <db> <file-stem> <action>|test
+# task-actions — tiny localhost HTTP service that served the Review Queue
+# digest's signed decision links, which flipped a status in a vault note. The
+# decision moved to the dashboard's Tasks page (sd:5134): the server now
+# answers an old link with a page that says so and changes nothing. It binds
+# 127.0.0.1 only. LaunchAgent pattern as in local-cswap.
+# Usage: task-actions.sh run|start|stop|status|test
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$DIR/../lib/config.sh"
 
 # <config>/task-actions/.env (outside the checkout; <config> is $SYSTEM_TOOLS_CONFIG,
 # default ~/.config/system; see .env.example) provides defaults only; an exported
-# OBSIDIAN_VAULT, SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins; the vault
-# and the prefix are kept once, in <config>/shared.env. Read it
-# before anything below uses a value it may set.
+# SYSTEM_TOOLS_LABEL_PREFIX or TASK_ACTIONS_PORT wins; the prefix is kept once,
+# in <config>/shared.env. Read it before anything below uses a value it may set.
 st_source_env task-actions
 
 LABEL_PREFIX="$(st_label_prefix)"
@@ -25,21 +25,12 @@ SERVICE="$DOMAIN/$LABEL"
 OUT_LOG="$DIR/logs/task-actions.log"
 
 PORT="${TASK_ACTIONS_PORT:-8766}"
-VAULT="$(st_obsidian_vault)"
-SECRET_FILE="${TASK_ACTIONS_SECRET_FILE:-$HOME/.config/task-actions/secret}"
-
-ensure_secret() {
-  if [ ! -f "$SECRET_FILE" ]; then
-    mkdir -p "$(dirname "$SECRET_FILE")"
-    umask 077
-    openssl rand -hex 32 > "$SECRET_FILE"
-  fi
-}
 
 is_loaded() { launchctl print "$SERVICE" >/dev/null 2>&1; }
 
 # Public https URL from Tailscale Funnel, but only when the funnel actually
 # proxies our port (bare "tailscale funnel status" header lines are ignored).
+# `status` asks it, to say whether the public side still answers.
 # `tailscale funnel status` talks to tailscaled over a local socket, and a
 # daemon that is restarting or reconnecting answers slowly or not at all. It is
 # bounded so a stalled daemon costs a few seconds, never an unbounded block in
@@ -50,8 +41,8 @@ is_loaded() { launchctl print "$SERVICE" >/dev/null 2>&1; }
 # port" are different answers: the second is a configured machine with no
 # funnel, where a localhost URL is correct, and the first is a machine that
 # probably does have one and could not be asked. Flattening both into an empty
-# string is what made this expensive -- every caller paid the timeout again and
-# got a localhost link that works nowhere but this machine.
+# string is what made this expensive -- every signing call paid the timeout
+# again and got a localhost link that works nowhere but this machine.
 #
 #   0  prints the https base URL
 #   1  no funnel proxies this port (or tailscale answered nothing useful)
@@ -84,34 +75,6 @@ funnel_url() {
   printf '%s\n' "$url"
 }
 
-# The base URL every signed link is built on, resolved once. `url` calls this
-# per invocation; a caller that signs many links in a row -- the Obsidian
-# review digest signs three or four per card -- asks for it once with
-# `base-url` and passes the answer back in TASK_ACTIONS_BASE_URL, so the
-# daemon is probed once per digest instead of once per button.
-#
-#   0  prints the base URL, public or localhost
-#   2  discovery could not answer; the caller decides what an unsigned run does
-resolve_base() {
-  if [ -n "${TASK_ACTIONS_BASE_URL:-}" ]; then
-    printf '%s\n' "$TASK_ACTIONS_BASE_URL"
-    return 0
-  fi
-  if command -v tailscale >/dev/null 2>&1; then
-    code=0
-    url="$(funnel_url)" || code=$?
-    if [ "$code" -eq 2 ]; then
-      echo "task-actions: tailscaled did not answer within ${FUNNEL_TIMEOUT}s" >&2
-      return 2
-    fi
-    if [ -n "$url" ]; then
-      printf '%s\n' "$url"
-      return 0
-    fi
-  fi
-  printf '%s\n' "http://127.0.0.1:$PORT"
-}
-
 wait_until_unloaded() {
   i=0
   while [ "$i" -lt 50 ]; do
@@ -123,74 +86,21 @@ wait_until_unloaded() {
 }
 
 cmd_run() {
-  ensure_secret
-  exec /usr/bin/env PORT="$PORT" VAULT="$VAULT" \
-    SECRET_FILE="$SECRET_FILE" FOLDER="$DIR" \
+  exec /usr/bin/env PORT="$PORT" FOLDER="$DIR" \
     DASH_STATIC="$DIR/../local-project-dashboard/sd_dashboard/v2/static" python3 - <<'PY'
-import datetime, hashlib, hmac, html, os, pathlib, re, urllib.parse
+import html, os, pathlib, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ["PORT"])
-VAULT = pathlib.Path(os.environ["VAULT"])
-SECRET = open(os.environ["SECRET_FILE"]).read().strip().encode()
 
-# Decision databases (local-obsidian-review digest): key -> (folder,
-# action -> new status). The write is exactly the frontmatter `status`
-# flip that the accept routines (blog-idea-accept, tips-accept,
-# market-watch) key on; Meta Bind dropdowns in the note bodies bind to the
-# same field, so no body edit is needed.
-#
-# The `skill` row below is the exception since 2026-08-31: `skill-proposal-accept`
-# was retired that day (sd-ai-command-pack's `sd-skill-adopt` replaces the whole
-# six-stage intake path it belonged to), so a Skill Proposal set to `accepted`
-# records your decision and nothing carries it further. The row stays because
-# recording the decision is still worth doing and `declined` was always terminal
-# on its own; what is gone is the filing behind it.
-DBS = {
-    "blog":  ("System/Databases/Blog Ideas",      {"accept": "accepted", "decline": "declined"}),
-    "skill": ("System/Databases/Skill Proposals", {"accept": "accepted", "decline": "declined"}),
-    "tip":   ("System/Databases/Tips and Tricks", {"accept": "accepted", "decline": "declined"}),
-    "watch": ("System/Databases/Market Watch",    {"track": "active", "pause": "paused", "decline": "declined"}),
-    "topic": ("System/Databases/Topics",          {"adopt": "active", "park": "parked"}),
-}
-
-def sign(f, a, d, exp, db):
-    # d is a day count nothing reads any more; it stays in the payload so
-    # links already in mailboxes stay valid.
-    msg = f"{db}|{f}|{a}|{d}|{exp}".encode()
-    return hmac.new(SECRET, msg, hashlib.sha256).hexdigest()
-
-def set_field(fm, name, value):
-    # Replace a scalar frontmatter field, or append it if missing.
-    pat = rf"^{name}:.*$"
-    if re.search(pat, fm, re.M):
-        return re.sub(pat, f"{name}: {value}", fm, count=1, flags=re.M)
-    return fm + f"\n{name}: {value}"
-
-def apply_note(db, f, action):
-    # Decision databases: the whole action is one status flip.
-    subdir, actions = DBS[db]
-    path = VAULT / subdir / f"{f}.md"
-    if not path.is_file() or ".." in f or "/" in f:
-        return None, "note not found"
-    new = actions.get(action)
-    if not new:
-        return None, "unknown action"
-    text = path.read_text()
-    m = re.match(r"(?s)^---\n(.*?)\n---(.*)$", text)
-    if not m:
-        return None, "no frontmatter"
-    fm, rest = m.group(1), m.group(2)
-    cur = (re.search(r"^status:\s*(\S+)", fm, re.M) or [None, ""])[1]
-    if cur == new:
-        return f"already {new}", None
-    fm = set_field(fm, "status", new)
-    path.write_text(f"---\n{fm}\n---{rest}")
-    return f"status: {cur or '(none)'} → {new}", None
+# The paths the digest's signed links used (`/task` to decide, `/open` to open
+# the note). A link from a brief filed before sd:5134 still lands here for up
+# to seven days: it gets this answer, and nothing reads or writes a note.
+MOVED = ("/task", "/open")
 
 # Every page is one panel on the foundation: tokens, theme control, no inline
 # style. A state is a glyph and words, and the lamp edge repeats it.
-GLYPHS = {"ok": "\u25cf", "warning": "\u25a0", "unknown": "\u25a8", "confirm": ""}
+GLYPHS = {"warning": "■", "unknown": "▨"}
 THEME = ('<div class="theme" role="group" aria-label="Theme">'
          '<button type="button" data-theme-choice="dark">Dark</button>'
          '<button type="button" data-theme-choice="light">Light</button>'
@@ -204,7 +114,7 @@ PAGE = """<!doctype html>
 <link rel="stylesheet" href="/static/fonts.css">
 <link rel="stylesheet" href="/static/confirm.css">
 </head><body>
-<main class="panel" data-state="{state}"><h1>{title}</h1>{detail}{extra}</main>
+<main class="panel" data-state="{state}"><h1>{title}</h1>{detail}</main>
 {theme}
 </body></html>"""
 
@@ -223,41 +133,14 @@ ASSETS = {
     "confirm.css": (pathlib.Path(os.environ["FOLDER"]), "text/css"),
 }
 
-# GET /task shows this instead of acting, so a mail scanner prefetching the
-# link cannot mutate a note; the human clicks the button, which POSTs.
-CONFIRM_BTN = """<form method="POST" action="/task">
-{inputs}<button type="submit" class="btn{variant}">{label}</button>
-</form><p class="hint">Nothing changes until you press the button.</p>"""
-
-def obsidian_uri(f, db):
-    subdir = DBS[db][0]
-    return "obsidian://open?vault=%s&file=%s" % (
-        urllib.parse.quote(VAULT.name), urllib.parse.quote(f"{subdir}/{f}"))
-
-# action -> (button label, glyph, button variant). Declining is the one
-# danger button.
-LABELS = {
-    "accept":  ("Accept",    "\u2713", ""),
-    "decline": ("Decline",   "\u2717", " danger"),
-    "track":   ("Track",     "\u25b6", ""),
-    "pause":   ("Pause",     "\u23f8", ""),
-    "adopt":   ("Adopt",     "\u2713", ""),
-    "park":    ("Park",      "\u23f8", ""),
-}
-
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         print("[task-actions]", self.address_string(), fmt % a, flush=True)
 
-    def reply(self, code, state, title, detail="", extra="", headers=None):
-        glyph = GLYPHS[state]
-        line = (f'<p><span class="g" aria-hidden="true">{glyph}</span>{html.escape(detail)}</p>'
-                if glyph and detail else f"<p>{html.escape(detail)}</p>" if detail else "")
-        b = PAGE.format(state=state, title=html.escape(title), detail=line,
-                        extra=extra, theme=THEME).encode()
+    def reply(self, code, state, title, detail):
+        line = f'<p><span class="g" aria-hidden="true">{GLYPHS[state]}</span>{html.escape(detail)}</p>'
+        b = PAGE.format(state=state, title=html.escape(title), detail=line, theme=THEME).encode()
         self.send_response(code)
-        for k, v in (headers or {}).items():
-            self.send_header(k, v)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("Content-Length", str(len(b)))
@@ -280,66 +163,22 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def params(self, query):
-        q = urllib.parse.parse_qs(query)
-        return (q.get("f", [""])[0], q.get("a", [""])[0],
-                q.get("d", ["3"])[0], q.get("exp", [""])[0],
-                q.get("t", [""])[0], q.get("db", [""])[0])
-
-    def checked(self, f, a, d, exp, t, db):
-        if db not in DBS:
-            self.reply(403, "warning", "Unknown database", "Nothing changed.")
-            return False
-        if not hmac.compare_digest(sign(f, a, d, exp, db), t):
-            self.reply(403, "warning", "Bad signature",
-                       "Nothing changed. Run the digest again for fresh links.")
-            return False
-        if exp < datetime.date.today().isoformat():
-            self.reply(403, "warning", "Link expired",
-                       "Nothing changed. Run the digest again for fresh links.")
-            return False
-        return True
+    def moved(self):
+        self.reply(410, "warning", "Decide on the dashboard",
+                   "Nothing changed. Open the Review Queue brief on Today and decide on Tasks.")
 
     def do_GET(self):
-        u = urllib.parse.urlparse(self.path)
-        f, a, d, exp, t, db = self.params(u.query)
-        if u.path == "/open":
-            if not self.checked(f, a, d, exp, t, db) or a != "open":
-                return
-            self.send_response(302)
-            self.send_header("Location", obsidian_uri(f, db))
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        if u.path.startswith("/static/"):
-            return self.asset(u.path[len("/static/"):])
-        if u.path != "/task":
-            return self.reply(404, "unknown", "Not found", "Nothing is served here.")
-        if not self.checked(f, a, d, exp, t, db):
-            return
-        if a not in LABELS or a not in DBS[db][1]:
-            return self.reply(400, "warning", "Unknown action", "Nothing changed.")
-        inputs = "".join(
-            f'<input type="hidden" name="{k}" value="{html.escape(v, quote=True)}">'
-            for k, v in (("f", f), ("a", a), ("d", d), ("exp", exp),
-                         ("t", t), ("db", db)) if v)
-        label, glyph, variant = LABELS[a]
-        self.reply(200, "confirm", f, "Confirm the action below.",
-                   CONFIRM_BTN.format(inputs=inputs, variant=variant,
-                                      label=html.escape(f"{glyph} {label}")))
+        path = urllib.parse.urlparse(self.path).path
+        if path in MOVED:
+            return self.moved()
+        if path.startswith("/static/"):
+            return self.asset(path[len("/static/"):])
+        self.reply(404, "unknown", "Not found", "Nothing is served here.")
 
     def do_POST(self):
-        u = urllib.parse.urlparse(self.path)
-        if u.path != "/task":
-            return self.reply(404, "unknown", "Not found", "Nothing is served here.")
-        n = int(self.headers.get("Content-Length", "0") or "0")
-        f, a, d, exp, t, db = self.params(self.rfile.read(min(n, 65536)).decode())
-        if not self.checked(f, a, d, exp, t, db):
-            return
-        outcome, err = apply_note(db, f, a)
-        if err:
-            return self.reply(400, "warning", err[0].upper() + err[1:], "Nothing changed.")
-        self.reply(200, "ok", f, outcome)
+        if urllib.parse.urlparse(self.path).path in MOVED:
+            return self.moved()
+        self.reply(404, "unknown", "Not found", "Nothing is served here.")
 
 print(f"[task-actions] listening on 127.0.0.1:{PORT}", flush=True)
 srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
@@ -348,35 +187,7 @@ srv.serve_forever()
 PY
 }
 
-# Prints a signed action URL for the digest email. Links carry a 7-day
-# expiry; the secret never appears in the URL, only the HMAC. The base URL
-# is the Tailscale Funnel URL when one proxies our port (so buttons work
-# from any device), else localhost; TASK_ACTIONS_BASE_URL overrides both.
-cmd_url() { # -b db file-stem action
-  [ "${1:-}" = "-b" ] && [ $# -eq 4 ] || { echo "usage: $(basename "$0") url -b <db> <file-stem> <action>" >&2; exit 1; }
-  DB="$2"; shift 2
-  ensure_secret
-  # Exit 2 rather than a localhost link the recipient cannot open: a link
-  # signed against 127.0.0.1 works on this machine and nowhere the digest is
-  # read. The caller sees the code and drops to Open-only.
-  code=0
-  base="$(resolve_base)" || code=$?
-  [ "$code" -eq 0 ] || exit "$code"
-  F="$1" A="$2" D=3 DB="$DB" BASE="$base" SECRET_FILE="$SECRET_FILE" python3 - <<'PY'
-import datetime, hashlib, hmac, os, urllib.parse
-f, a, d, db = os.environ["F"], os.environ["A"], os.environ["D"], os.environ["DB"]
-exp = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
-secret = open(os.environ["SECRET_FILE"]).read().strip().encode()
-msg = f"{db}|{f}|{a}|{d}|{exp}"
-t = hmac.new(secret, msg.encode(), hashlib.sha256).hexdigest()
-path = "/open" if a == "open" else "/task"
-q = {"f": f, "a": a, "d": d, "exp": exp, "t": t, "db": db}
-print(os.environ["BASE"] + path + "?" + urllib.parse.urlencode(q))
-PY
-}
-
 cmd_start() {
-  ensure_secret
   mkdir -p "$AGENT_DIR"
   # launchd passes the agent only the environment the plist names, so the
   # config root this start read goes in it, or `run` would read another.
@@ -457,57 +268,35 @@ case "${1:-}" in
   start)  cmd_start ;;
   stop)   cmd_stop ;;
   status) cmd_status ;;
-  url)    shift; cmd_url "$@" ;;
-  base-url) resolve_base ;;
   test)   shift
           exec "${PYTHON:-python3}" -m unittest discover -s "$DIR/tests" -t "$DIR" "$@" ;;
   -h|--help|help)
     cat <<'HELPEOF'
-usage: task-actions.sh run|start|stop|status|base-url|url -b <db> <file-stem> <action>|test
+usage: task-actions.sh run|start|stop|status|test
 
   run     the HTTP server itself (what the LaunchAgent calls): binds
-          127.0.0.1:8766 and applies signed decision actions to
-          note frontmatter in the vault
+          127.0.0.1:8766. The Review Queue digest's signed decision links
+          (/task, /open) went with sd:5134: an old link gets a page that
+          sends you to the dashboard's Tasks page, and nothing changes
   start   install + load the LaunchAgent ($SYSTEM_TOOLS_LABEL_PREFIX.task-actions,
           prefix default local.system-tools), rendered from
           task-actions.plist.template
   stop    unload the LaunchAgent
   status  agent + HTTP state; exits 0 ok / 1 degraded / 3 not loaded (nothing
           to check) — local-health-check reads these codes
-  url     print a signed action URL (used by local-obsidian-review
-          to build digest email buttons); links
-          expire after 7 days. `url -b <db> <stem> <action>`.
-          Base URL: TASK_ACTIONS_BASE_URL, else the Tailscale Funnel
-          URL when one proxies this port, else http://127.0.0.1:8766.
   test    run the unittest suite in tests/
 
-actions: open — HTTPS wrapper that 302-redirects to the obsidian:// URI
-(mail clients strip custom-scheme links, https survives). GET on /task only
-shows a confirmation page; the actual edit happens on POST, so mail-scanner
-link prefetches cannot mutate anything.
-
-decision databases (-b, required): one frontmatter status flip per action —
-  blog   System/Databases/Blog Ideas       accept|decline
-  skill  System/Databases/Skill Proposals  accept|decline
-  tip    System/Databases/Tips and Tricks  accept|decline
-  watch  System/Databases/Market Watch     track|pause|decline
-  topic  System/Databases/Topics           adopt|park
-The nightly accept routines pick up the flipped statuses from there.
-
-The HMAC secret lives in ~/.config/task-actions/secret (auto-generated,
-0600, never leaves the machine). The server binds localhost; Tailscale
-Funnel fronts it for other devices (tailscale funnel --bg 8766 — the
-serve config persists across restarts, no extra LaunchAgent needed).
+The server binds localhost; Tailscale Funnel fronts it for other devices
+(tailscale funnel --bg 8766), and `status` probes that public side too.
 
 environment (exported, or in <config>/task-actions/.env, where <config> is
 $SYSTEM_TOOLS_CONFIG, default ~/.config/system; see .env.example): TASK_ACTIONS_PORT
-(8766), OBSIDIAN_VAULT (~/Documents/Obsidian Vault),
-TASK_ACTIONS_SECRET_FILE, TASK_ACTIONS_BASE_URL, SYSTEM_TOOLS_LABEL_PREFIX
+(8766), TASK_ACTIONS_FUNNEL_TIMEOUT (3), SYSTEM_TOOLS_LABEL_PREFIX
 HELPEOF
     exit 0
     ;;
   *)
-    echo "usage: $(basename "$0") run|start|stop|status|base-url|url -b <db> <stem> <action>|test" >&2
+    echo "usage: $(basename "$0") run|start|stop|status|test" >&2
     exit 1
     ;;
 esac

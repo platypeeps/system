@@ -560,24 +560,23 @@ in its own help. So "the dashboard moved to the pack" describes one week of
 framework dashboard, which is historical as the deleted HTML dashboard above is:
 of the three surfaces named here, only the workflow dashboard is served.
 `sd-plugin.json` stopped declaring `tile` and `tabs` on 2026-09-13, before the
-pack deleted the loader that read them; only the queue actions remain.
+pack deleted the loader that read them, and its queue actions on 2026-10-18
+(sd:5134): it declares only its `prefix`.
 
 ## Usage
 
 ```sh
 ./dashboard.sh tile toolbox     # one tab as JSON on stdout
-./dashboard.sh queue-open blog  # open one decision queue in Obsidian
 ```
 
 The framework dashboard's plugin loader read the six tab names and the tile
 command from `../sd-plugin.json` and ran one of these commands per tab per load.
-The manifest now declares only the four queue actions.
 
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `sd-plugin.json` (repo root) | the manifest: `prefix` and one declared action per decision queue |
+| `sd-plugin.json` (repo root) | the manifest: the `sys` prefix and nothing else |
 | `dashboard.sh` | collector verbs, workflow server, runtime installer and tests; `<config>/project-dashboard/.env` selects the legacy collector interpreter |
 | `sd_tile.py` | one tab per invocation — the part that turns a collector's output into a table |
 | `collectors.py` | the collectors themselves. A library with no entry point: everything that started something went with the server |
@@ -590,7 +589,7 @@ The manifest now declares only the four queue actions.
 | **Vault** | One card per `* Home` area with its note count, plus Inbox pressure | vault frontmatter |
 | **Research** | Every checkout carrying a `research.conf.py`, its documents, and whether the rendered HTML is **fresh**, **stale** or **not built** | the conf itself, plus the built page's mtime in `docs/dashboard/` (or the older `build/`) |
 | **Ports** | Each service's effective ports, and which of them clash with another candidate or are already held — read from `machine-setup.sh`'s own conflict lines, which the collector could not see until 6b-9 | `machine-setup.sh candidates service` |
-| **Queues** | The four vault decision databases: how many are waiting, and the oldest undecided notes across all of them | the database folders under `System/Databases/` |
+| **Queues** | The four decision queues: how many base rows are waiting, and the oldest undecided ones across all of them | the workflow database's base rows, through `sd store list <kind> --json` (sd:5134) |
 
 A cron job's last exit code says the last run was fine; it cannot say the job
 has quietly stopped firing. The **next run** column is computed from each job's
@@ -600,30 +599,12 @@ is visible without waiting for the watchdog.
 The **Ports** tab exists because `.claude/rules/services.md` says the port list in prose goes
 stale and to ask the machine instead. This asks the machine on every load.
 
-## Queues reads; Obsidian writes
+## Queues reads; Tasks writes
 
-The old dashboard offered a status dropdown on every database row and wrote the
-chosen value into the note's frontmatter. That went with the server, and it was
-a decision rather than a casualty: a plugin tab was markup, the loader dropped
-script, and the pack dashboard's declared actions took **no arguments from the
-page** — an action was a fixed command, so "set *this* note to *that* value" had
-no way to travel. Rather than widen the action contract for one tab, the tab
-read and Obsidian kept the writing. The Resources views that show it now are
-read-only too.
-
-So `sd-plugin.json` declares one action per queue instead: `queue-open <q>`
-builds an `obsidian://search` URL for that folder's undecided notes and opens
-it. No dashboard renders those four `sys/queue-*` actions now. sd:719 step 3
-removed them from the pack dashboard, which is no longer served, and no module
-of the system dashboard reads the manifest. The Queues view under Operations,
-Resources shows the counts; run `./dashboard.sh queue-open <q>` to open a queue.
-The decision is made where it always could be made.
-
-The rule that made the old dropdown careful still holds wherever a status is
-written: `System/Schema.md` names a single writer for each machine-owned
-transition — `tips-accept` alone may write `ready`, `pack.py tips attach`
-refuses anything but `approved` — and nothing in this directory may become a
-second writer for them.
+The Queues view only counts. A base row's stage moves on Tasks, which offers
+each row's moves under its kind's rules (`records.rules_for`) and writes them
+through `records.edit_row`. The view reads the rows from the workflow database,
+their source since pack sd:4627, and reads no vault note (sd:5134).
 
 ## How it works
 
@@ -672,8 +653,8 @@ first two learned the hard way on 2026-08-28 when the page sat on
   Resources view runs the tile as a child of the server, under the server's own
   `sys.executable` — `SD_DASHBOARD_PYTHON`, the command pack's
   `.venv/bin/python`, which is Homebrew python@3.13 and execs that framework's
-  `Python.app/Contents/MacOS/Python`. `dashboard.sh tile` and
-  `dashboard.sh queue-open` run it under `DASHBOARD_PYTHON` from `<config>/project-dashboard/.env`, today
+  `Python.app/Contents/MacOS/Python`. `dashboard.sh tile` runs
+  it under `DASHBOARD_PYTHON` from `<config>/project-dashboard/.env`, today
   `/opt/homebrew/bin/python3`, which is Homebrew python@3.15 and execs a
   different `Python.app`. `DASHBOARD_PYTHON` therefore does not govern what the
   dashboard's own pages read. The Resources path is the one the dashboard
@@ -710,7 +691,7 @@ first two learned the hard way on 2026-08-28 when the page sat on
 | --- | --- |
 | `SYSTEM_TOOLS_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/system` — config root: `project-dashboard/.env`, `project-dashboard/documents.conf`, and the cron job files Toolbox reads from `cron-jobs/jobs` |
 | `CRON_JOBS_EXTRA_DIRS` | none — further job directories Toolbox reads, as `cron-jobs.sh` does |
-| `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile` and `queue-open`, and one of the two paths `grants` probes |
+| `DASHBOARD_PYTHON` | PATH `python3` (set to Homebrew in `<config>/project-dashboard/.env`); the interpreter for `tile`, and one of the two paths `grants` probes |
 | `SD_DASHBOARD_PYTHON` | command pack `.venv/bin/python`; runs `serve`, `preflight`, `install`, `health` and `grants`, and so the tiles a Resources view renders |
 | `OBSIDIAN_VAULT` | `~/Documents/Obsidian Vault` — read by `collectors.py` itself; kept once in `<config>/shared.env` |
 | `REPO_ROOT` | `~/repos` — read by `collectors.py` itself; set it in `<config>/project-dashboard/.env` |
