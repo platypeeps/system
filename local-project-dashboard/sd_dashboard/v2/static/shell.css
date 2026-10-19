@@ -31,6 +31,44 @@ html, body { overflow-x: clip; }
 :where(select[multiple], select[size]:not([size="1"])) { background-image: none; padding-right: var(--space-xs); }
 @media (pointer: coarse) { :where(select:not(.tile-f)) { min-height: var(--row-touch); } }
 @media (forced-colors: active) { :where(select:not(.tile-f)) { appearance: auto; background-image: none; } }
+
+/* 2026-10-19 component: filter dropdown (shell.list.pick, sd:5158) · a single filter is the select above (.fsel); a multi
+ *   filter is a <details> menu of checkboxes whose summary wears the same pill and chevron, so the two read as one control.
+ *   The menu floats under its summary; Esc, a press outside or focus leaving closes it (shell.js). · pre-emit critique: P4 H4 E4 S4 R5 V4
+ *   states: default · hover · focus · open · picked (accent) · option off (aria-disabled, reason shown); no loading, error or success */
+.fsel { min-height: 1.75rem; max-width: 14rem; font-size: var(--text-xs); }
+.fpick { position: relative; }
+.fpick > summary {
+  display: flex; align-items: center; min-height: 1.75rem; max-width: 14rem; padding: 0 calc(var(--space-xs) + 1rem) 0 var(--space-sm);
+  list-style: none; border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background-color: var(--color-panel); color: var(--color-ink);
+  font: 400 var(--text-xs)/1.2 var(--font-data); white-space: nowrap; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%), linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
+  background-position: right calc(var(--space-xs) + 5px) center, right var(--space-xs) center; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.fpick > summary::-webkit-details-marker { display: none; }
+.fpick > summary > span { overflow: hidden; text-overflow: ellipsis; }
+.fpick > summary:hover, .fpick[open] > summary { border-color: var(--color-ink-2); }
+.fpick:has(:checked) > summary { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
+.fpick > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.fpick-menu {
+  position: absolute; z-index: 30; top: calc(100% + var(--space-3xs)); left: 0; display: grid; min-width: 12rem; max-width: min(20rem, calc(100vw - 2 * var(--space-md)));
+  max-height: 18rem; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-2xs);
+  border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); box-shadow: var(--shadow-overlay);
+}
+.fpick-opt {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0 var(--space-xs); min-height: var(--row); padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm); color: var(--color-ink-2); font: 400 var(--text-xs)/1.2 var(--font-data); cursor: pointer;
+}
+.fpick-opt:hover, .fpick-opt:has(:focus-visible) { background: var(--color-well); color: var(--color-ink); }
+.fpick-opt:has(:checked) { color: var(--color-ink); }
+.fpick-opt input { margin: 0; accent-color: var(--color-accent); }
+.fpick-opt input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.fpick-opt .nm { overflow-wrap: anywhere; }
+.fpick-opt .n { color: var(--color-muted); }
+.fpick-opt:has([aria-disabled="true"]) { color: var(--color-muted); cursor: not-allowed; }
+.fpick-opt .why { grid-column: 2 / -1; padding-bottom: var(--space-3xs); color: var(--color-muted); }
+@media (pointer: coarse) { .fsel, .fpick > summary, .fpick-opt { min-height: var(--row-touch); } }
+@media (forced-colors: active) { .fpick > summary { background-image: none; } }
 * { box-sizing: border-box; }
 body {
   margin: 0;

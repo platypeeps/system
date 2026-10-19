@@ -198,9 +198,9 @@ class TheScriptForBases(Bases, ScreenCase):
 
     def test_the_base_filter_the_stage_column_and_the_score_sort(self):
         out = self.run_page("""R.filters = ELS.filters.html;
-ELS.filters.listeners.change[0]({ target: { dataset: { fsel: 'base' }, value: 'blog-idea' } });
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'base' }, value: 'blog-idea' } });
 R.board = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
-        self.assertIn('<select id="f-base" class="fsel" data-fsel="base"><option value="" selected>All</option>'
+        self.assertIn('<select id="f-base" class="fsel" data-pick="base"><option value="" selected>All</option>'
                       '<option value="blog-idea">blog-idea</option></select>', out["R"]["filters"])
         self.assertIn("An idea", out["R"]["board"])
         self.assertNotIn("Plan the review", out["R"]["board"])
