@@ -548,6 +548,19 @@ esac
                           and l.endswith(": app crash report(s) in the last day: Example Helper")])
         self.assertEqual(len([l for l in out.splitlines() if l.endswith("last day: Example Helper")]), 1, out)
 
+    def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
+        """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
+        reports = self.tmp / "reports-pids"
+        reports.mkdir()
+        for f in (".claude-mem-1234.tmp" + stamped(hours=1), ".claude-mem-56789.tmp" + stamped(hours=2),
+                  ".claude-mem-7.tmp" + stamped(hours=3), "Example Helper" + stamped(hours=1)):
+            (reports / (f + ".ips")).write_text("{}\n")
+        out = self.run_check("pids", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        self.assertIn(".claude-mem.tmp(3) ", out)
+        self.assertIn("Example Helper(1) ", out)
+        self.assertEqual(len([l for l in out.splitlines() if l.endswith("last day: .claude-mem.tmp")]), 1, out)
+
     def test_ssd_wear_re_raises_in_5_percent_steps(self):
         """REGRESSION (sd:4682). Wear only grows; one key for 85% and over hid
         it growing after an acknowledgement. Each 5% step from 85 is a new
