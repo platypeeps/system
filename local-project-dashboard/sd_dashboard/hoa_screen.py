@@ -68,8 +68,10 @@ FILES = {
     "alarms": ("alarm-events.csv", "datetime", ("kind", "event", "notified", "minutes")),
 }
 
-#: The trend series' problem levels (sd:4969), in this machine's config directory: the hoa checkout states its levels in
-#: prose only (the tank's fire floor), so no file there names one. The checkout ships `hoa-thresholds.conf.example`.
+#: The trend series' problem levels (sd:4969): the hoa checkout states its levels in prose only (the tank's fire floor),
+#: so the `dashboard.hoa_thresholds` setting row holds them (sd:5109). The file it replaced is read only while the
+#: database has never held the row (`setting_rows.text`).
+THRESHOLDS_KEY = "dashboard.hoa_thresholds"
 THRESHOLDS = _config_dir() / "hoa-thresholds.conf"
 
 #: The trend series a level may name: `hoa.js` SERIES keys.
@@ -163,34 +165,39 @@ def _mission(folder: Path | None, today: date) -> dict:
     return out
 
 
-def thresholds(path: Path | None = None) -> dict:
+def thresholds(connection, path: Path | None = None) -> dict:
     """Each series' problem level, `{"dir": "below"|"above", "value"}`, from `<series>|below|<number>` lines; a line not
-    read is named in `problems`. No file is no level, which the page says; a file that does not read is `error`."""
-    path = THRESHOLDS if path is None else path
-    out = {"source": str(path), "levels": {}, "problems": [], "error": ""}
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    read is named in `problems`. No list is no level, which the page says; a row or file that does not read is `error`."""
+    from . import setting_rows
+
+    text, source, problem = setting_rows.text(connection, THRESHOLDS_KEY, THRESHOLDS if path is None else path)
+    # The page says "problem level not read: <error>".
+    out = {"source": source, "levels": {}, "problems": [], "error": problem.removeprefix("not read: ")}
+    if problem or text is None:
         return out
-    except (OSError, UnicodeDecodeError) as error:
-        out["error"] = f"{path.name} did not read: {error}"
-        return out
+    out["problems"] = parse_thresholds(text, out["levels"])
+    return out
+
+
+def parse_thresholds(text: str, levels: dict | None = None) -> list[str]:
+    """One problem per line of `text` that is not a level; each level goes into `levels`."""
+    levels, problems = {} if levels is None else levels, []
     for number, _, fields in pipe_lines(text):
         if len(fields) != 3 or fields[0] not in SERIES or fields[1] not in ("below", "above"):
-            out["problems"].append(f"line {number}: expected <series>|below|<number> or <series>|above|<number>, "
-                                   f"series one of {', '.join(SERIES)}")
+            problems.append(f"line {number}: expected <series>|below|<number> or <series>|above|<number>, "
+                            f"series one of {', '.join(SERIES)}")
             continue
         try:
             value = float(fields[2])
         except ValueError:
             value = math.nan
         if not math.isfinite(value):
-            out["problems"].append(f"line {number}: {fields[2]!r} is not a number")
-        elif fields[0] in out["levels"]:
-            out["problems"].append(f"line {number}: {fields[0]} has a level already")
+            problems.append(f"line {number}: {fields[2]!r} is not a number")
+        elif fields[0] in levels:
+            problems.append(f"line {number}: {fields[0]} has a level already")
         else:
-            out["levels"][fields[0]] = {"dir": fields[1], "value": value}
-    return out
+            levels[fields[0]] = {"dir": fields[1], "value": value}
+    return problems
 
 
 def sources(place: Path | None) -> dict:
@@ -436,7 +443,7 @@ def document(connection, *, now: str, jobs=None) -> dict:
         "base": base,
         "lots": lots,
         "items": items,
-        "thresholds": thresholds(),
+        "thresholds": thresholds(connection),
         "sources": ages,
         "sweep": sweep.status(place) if not problems else {**sweep.status(None), "error": problems[0]},
         "attention": _attention(mission, items),

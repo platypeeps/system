@@ -9,10 +9,9 @@ the lamps, shows the Reports view (the ledger, the default) or the Cadence view
 (`reports_screen.document`) gives the newest 200 reports v1 lists, the launchd
 jobs, and each job's runs per local day, read from its `cron-jobs.sh` log. A
 day the job's calendar leaves out is not scheduled. The families come from
-`<config>/project-dashboard/report-families.conf`, one
-`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Job names are the
-operator's, so the checkout ships only `report-families.conf.example`; without
-the file no family lamp is drawn and every job is listed under "Other jobs".
+the `dashboard.report_families` setting, edited on Settings (sd:5109), one
+`family|<key>|<label>|<icon>|<job>,<job>,...` per line. Without it no family
+lamp is drawn and every job is listed under "Other jobs".
 A family lamp follows each job's own last scheduled run before today, however
 rare; a job whose last scheduled run the log does not hold makes it unknown.
 Acknowledge posts v1's route with the report's revision. It is off while an

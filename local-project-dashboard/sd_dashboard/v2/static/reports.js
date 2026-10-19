@@ -1,6 +1,6 @@
 // Reports (sd:2121): the design source's products/system/designs/v2/reports.js at 7f50ad4, ported. Each change from the
 // reference is marked "build:". The rows are /api/reports (reports_screen.document), never sample data: the newest 200
-// database reports, the scheduled jobs, each job's run cadence from its log, and the job families the config folder names.
+// database reports, the scheduled jobs, each job's run cadence from its log, and the job families the dashboard.report_families setting row names.
 // A command that executes posts to a route server.action_route answers, and its toast comes after the write lands.
 // The page reads /api/reports through the shell's reader (read.js, sd:2487), which holds the generation, retirement and
 // failure rules; Acknowledge's Undo posts the reopen route with the revision the acknowledge answered (sd:2395).
@@ -96,7 +96,7 @@ function lamps() {
   // build: without a family list the page draws no family lamp; this one says which file it reads.
   const fam = DOC.families || {};
   if (fam.state !== 'read' && !FAMILIES.length) out.push({ state: 'unknown', attrs: html` title="${fam.problems?.join('; ') || ''}"`, label: 'Job families', mark: I('clipboard-list'),
-    val: html`<span class="ph">no family list</span> · <span class="ph">${fam.source || 'report-families.conf'}</span>` });
+    val: html`<span class="ph">no family list</span> · <span class="ph">${fam.source || 'dashboard.report_families'}</span>` });
   // A lamp with nothing to filter is a div that says why (design.md § Lamps); the partial read above the table says the rest.
   // build: the HTML count is the documents roots.
   out.push({ state: 'unknown', label: 'HTML reports', mark: I('file-text'), val: html`${DOC.html == null ? html`<span class="ph">not read</span>` : html`<span class="ph"><b>${DOC.html}</b> folders</span>`} · <span class="ph">not indexed</span>` });
@@ -110,7 +110,7 @@ function pageState() {
   const fam = DOC.families || {};
   const parts = [];
   if (failed.length) parts.push(`Not read: ${failed.join(', ')}.`);
-  if (fam.state === 'missing') parts.push(`No family list: copy project-dashboard/report-families.conf.example to ${fam.source}.`);
+  if (fam.state === 'missing') parts.push('No family list: set dashboard.report_families on Settings, under Dashboard.');
   else if (fam.problems?.length) parts.push(`${fam.source}: ${fam.problems.join('; ')}.`);
   return parts.length ? { kind: 'partial', text: parts.join(' '), source: `/api/reports · ${READ.slice(0, 16).replace('T', ' ')} UTC` } : null;
 }

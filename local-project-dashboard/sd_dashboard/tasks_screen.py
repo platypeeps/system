@@ -107,7 +107,7 @@ def _document(connection, *, now: str) -> dict:
     label = _repo_labels(row["repo"] for row in rows)
     live = _assignment_states(connection, now=now)
     hoa = checkout(connection)[0]
-    found = realms()
+    found = realms(connection)
     rules = found["list"] if found["state"] in ("read", "partial") else None
     out = []
     for row in rows:
