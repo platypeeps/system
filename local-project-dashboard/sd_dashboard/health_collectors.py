@@ -25,10 +25,11 @@ no answer is a reason to stay, never a pass.
 - volume use from `df -kPl`, local file systems only, so a network mount
   that does not answer cannot hold the page: the data volume (`/` where
   there is no `/System/Volumes/Data`) and every volume under `/Volumes`;
-- the folder sizes under each `storage|<path>` line of
-  `<config>/project-dashboard/disk.conf`, one `du -k -d 1` per folder with
-  what is left of the budget; a folder `du` could not finish is a row that
-  says so, not a refusal of the area;
+- the folder sizes under each `storage|<path>` line of the
+  `dashboard.disk_storage` setting row (sd:5109; `disk.conf` answers only
+  while the database has never held the row), one `du -k -d 1` per folder
+  with what is left of the budget; a folder `du` could not finish is a row
+  that says so, not a refusal of the area;
 - registered worktrees whose `HEAD` is in `origin/HEAD` and that still hold
   `target/`, `node_modules/` or `.venv/` (the 2026-09-25 rule: delete build
   output once the PR merges). Presence only: sizing build output needs a
@@ -56,7 +57,6 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -64,8 +64,9 @@ from sd_db import paths, reads, repos
 
 from . import documents
 
-__all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "DOCTOR_SECONDS", "branch_scan", "disk_scan", "doctor_scan", "merged_heads",
-           "merged_tree_kept", "merged_worktrees", "parse_doctor", "revision", "storage_roots"]
+__all__ = ["BRANCH_SECONDS", "DISK_SECONDS", "DOCTOR_SECONDS", "STORAGE_KEY", "branch_scan", "disk_scan", "doctor_scan",
+           "merged_heads", "merged_tree_kept", "merged_worktrees", "parse_doctor", "parse_storage", "revision",
+           "storage_list"]
 
 #: Each reader's overall budget. Branches is two git calls per registered repository; Disk is df, a few git calls per repository and the du walks, which get what is left.
 BRANCH_SECONDS = 8.0
@@ -272,28 +273,31 @@ def merged_worktrees(walk: Walk, keys: list[str], heads: dict) -> dict:
     return {"trees": trees, "revision": worktrees_revision(trees)}
 
 
+#: The storage folders' setting row (sd:5109). The file it replaced is read only while the database has never held it.
+STORAGE_KEY = "dashboard.disk_storage"
+
+
 def _storage_config() -> Path:
-    lib = str(Path(__file__).resolve().parents[2] / "lib")
-    if lib not in sys.path:
-        sys.path.insert(0, lib)
-    import system_tools_config
-    return system_tools_config.config_dir("project-dashboard") / "disk.conf"
+    """The old `<config>/project-dashboard/disk.conf`, at call time, so a test can point the config root elsewhere."""
+    return documents._config_dir() / "disk.conf"
 
 
-def storage_roots(config: Path | None = None) -> tuple[list[Path], list[str], Path]:
-    """The `storage|<path>` folders of `disk.conf`, the lines it could not read, and the file read.
+def storage_list(connection, config: Path | None = None) -> tuple[str | None, str, str]:
+    """`setting_rows.text` for the storage folders: their text, its source and why it was not read.
+
+    On the caller's thread: a connection belongs to the thread that opened it, so Health reads this before the walk.
+    """
+    from . import setting_rows
+
+    return setting_rows.text(connection, STORAGE_KEY, config or _storage_config())
+
+
+def parse_storage(text: str) -> tuple[list[Path], list[str]]:
+    """The `storage|<path>` folders, and one problem per line that is not one.
 
     `~` and `$HOME` expand; any other line is named, never guessed at.
     """
-    config = config or _storage_config()
     roots, refused = [], []
-    try:
-        text = config.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return roots, refused, config
-    except (OSError, UnicodeDecodeError) as error:
-        # A file that is there but cannot be read is a named line, as on Now and Home, not the whole area's error.
-        return roots, [f"{config} could not be read: {error.__class__.__name__}: {error}"], config
     for number, line, _ in documents.pipe_lines(text):
         kind, _, value = line.partition("|")
         value = value.strip().replace("$HOME", "~", 1) if value.strip().startswith("$HOME") else value.strip()
@@ -301,7 +305,7 @@ def storage_roots(config: Path | None = None) -> tuple[list[Path], list[str], Pa
             refused.append(f"line {number}: {line}")
             continue
         roots.append(Path(value).expanduser())
-    return roots, refused, config
+    return roots, refused
 
 
 def _volumes(walk: Walk) -> list[dict]:
@@ -395,16 +399,21 @@ def _storage(walk: Walk, roots: list[Path]) -> list[dict]:
     return out
 
 
-def disk_scan(connection: sqlite3.Connection, *, within: float = DISK_SECONDS, config: Path | None = None,
+def disk_scan(connection: sqlite3.Connection, *, within: float = DISK_SECONDS, listed: tuple | None = None,
               repo_paths: list[str] | None = None) -> dict:
-    """Volume use, each configured storage folder's sizes and merged worktrees that keep build output."""
+    """Volume use, each configured storage folder's sizes and merged worktrees that keep build output.
+
+    `listed` is `storage_list`'s answer, which Health reads on its own thread; None reads it here. `problem` says why
+    the folders were not read: then they are unknown, not "none configured".
+    """
     keys = _registered(connection, repo_paths)
+    text, source, problem = listed if listed is not None else storage_list(connection)
     walk = Walk(within, "the Disk reading")
     volumes = _volumes(walk)
     build = build_output(walk, keys)
-    roots, refused, read = storage_roots(config)
+    roots, refused = parse_storage(text or "")
     return {"volumes": volumes, "build": build, "storage": _storage(walk, roots), "refused": refused,
-            "config": str(read)}
+            "config": source, "problem": problem}
 
 
 #: The doctor's deadline: it runs `brew doctor`, which takes tens of seconds on a quiet machine.

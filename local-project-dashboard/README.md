@@ -636,7 +636,7 @@ their source since pack sd:4627, and reads no vault note (sd:5134).
 ## macOS TCC, and the two interpreters that read the vault
 
 The vault is in `~/Documents`, so the `python3` that reads it needs the same
-one-time Documents grant `local-task-actions` needed. Three things follow, the
+one-time Documents grant every LaunchAgent that reads it needs. Three things follow, the
 first two learned the hard way on 2026-08-28 when the page sat on
 *collecting…* for 27 minutes:
 

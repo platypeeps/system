@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import queue_screen, v2
+from sd_dashboard import pack_bin, queue_screen, v2
 from sd_db import upsert_repo
 
 from support import NOW, ScreenCase
@@ -655,9 +655,12 @@ class TheMove(Lane, BrowserSession):
 
 
 def pinned_pack() -> Path:
-    """The pack the gate pins (`SD_ACCEPTANCE_PACK`), else the `sd-ship` this machine runs."""
-    named = os.environ.get("SD_ACCEPTANCE_PACK")
-    return Path(named) if named else Path(os.path.realpath(queue_screen.command("sd-ship"))).parent.parent
+    """The pack whose `sd_db` this process loaded: the gate's pin, or `SD_PACK_ROOT` in a hand run (sd:5140).
+
+    Not the `sd-ship` on PATH: on the hub that is the serving copy, and a fixture database one library writes, the
+    other may refuse.
+    """
+    return pack_bin().parent
 
 
 #: Three pending entries, written by the pinned pack's own `sd_lane.store` into the fixture database.
@@ -737,6 +740,21 @@ class RealLane(BrowserSession):
 
     def order(self):
         return [entry["item"] for entry in self.entries() if entry["status"] == "pending"]
+
+
+class ThePinnedPack(unittest.TestCase):
+    """The real-lane tests write, run and read with one pack: the one whose `sd_db` this process loaded (sd:5140)."""
+
+    def test_an_sd_ship_on_path_from_another_pack_is_not_the_pinned_pack(self):
+        # On the hub, PATH's `sd-ship` is the serving copy and `SD_PACK_ROOT` the checkout. When they differ, the
+        # fixture written by one pack's library and read by the other's failed 5 tests and erred 7 (SchemaTooNew).
+        with tempfile.TemporaryDirectory() as other:
+            ship = Path(other) / "bin" / "sd-ship"
+            ship.parent.mkdir()
+            ship.write_text("#!/bin/sh\nexit 1\n")
+            ship.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{ship.parent}:{os.environ['PATH']}"}):
+                self.assertEqual(pinned_pack(), pack_bin().parent)
 
 
 class TheRealLane(RealLane):

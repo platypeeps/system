@@ -102,7 +102,6 @@ the second column; the third column is free text.
 | local-postgres | `5434` | PostgreSQL (`POSTGRES_HOST_PORT`) |
 | local-project-dashboard | `8767` | the workflow dashboard (`dashboard.sh serve --port`) |
 | local-redis | `6379`, `8001` | Redis Stack, RedisInsight |
-| local-task-actions | `8766` | answers old review-digest links: decide on Tasks (`TASK_ACTIONS_PORT`) |
 | mezmo-aura | `3033`, `3101`, `3102` | Aura, experiment orchestrator, single-agent |
 
 ## Tests
