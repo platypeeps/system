@@ -24,8 +24,8 @@ Vault and Queues. The board reads through the
 shell's reader, `read.js` (sd:2491): only the newest read draws, a project
 the read no longer lists runs no command, and a failed read clears the board
 and the ledger. The child's deadline counts from the page's start (sd:2501).
-The page has three views on the shell's view switch (sd:5064): Projects (the board, the default), Sources and Claim
-map. The selected project carries to the other two; with none selected they link back to Projects. A tapped claim opens
+The page has four views on the shell's view switch (sd:5064): Projects (the board, the default), Sources, Claim
+map and Experiments. The selected project carries across them; with none selected Sources and Claim map link back to Projects. A tapped claim opens
 Sources with its sources lit, and a source's ◆ count opens Claim map with its claims lit.
 A project's Details hold its Experiment (sd:5296, `research_experiments.py`): the row of the team's experiments database
 in the work Notion that the checkout's repo declaration of kind `experiment` names. `GET /api/research/experiments?project=<key>`
@@ -35,3 +35,10 @@ The drafts write nothing outward. Apply asks first, shows the draft it writes, a
 refuses it when the draft, the link, the data source or the deck's account changed since. Attach writes the workflow
 database only. Draft deck needs `RESEARCH_BRAND_KIT`. The shape and the failure table are in
 `docs/work/2026-10-19-research-notion-experiments/design.md`.
+Experiments (pack sd:5525) is each checkout's status brief, `30-brief/BRIEF-status.md`, read with the board
+(`research_screen.experiment`): the State word (Running, Decided or Done ●, Waiting ▲, Blocked ■, any other ▨), the
+Updated day, stale past 7 days, the line, the first two asks with the count, the Experiment and Deck links, and whether
+`30-brief/deck.json` sits beside it. Build roundup posts `/api/research/roundup`, which queues one
+`sd-research-kit roundup` over every listed deck.json, newest Updated first, in Publish now's run shape
+(`research_roundup.py`): one at a time behind a lock, a 409 while one builds, bounded at 300 s, its state read from
+`/api/research/roundup/<id>`, the last run from `/api/research/roundup/status`. The deck stays in `~/.local/state/system/research-roundup/runs/`; nothing uploads.

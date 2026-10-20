@@ -61,6 +61,7 @@ COMMANDS = [
     ["experiment.status", "research project", "Draft status update", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
+    ["research.roundup", "experiment roundup", "Build roundup", None, "safe"],
     ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
@@ -617,15 +618,16 @@ class ThePage(BrowserSession):
 # shown and the counts put on them) and a record of fetched paths.
 SHELL_MORE = r"""
 window.shell.row = () => ROW; window.shell.setContext = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
-OUT.views = []; OUT.counts = {};
+OUT.views = []; OUT.counts = {}; function clearTimeout() {}
 window.shell.view = { show: id => OUT.views.push(id), count: (id, n) => { OUT.counts[id] = n; }, current: () => null };
 var ROW = null;
 """
 
 
 def ledger_reads(out):
-    """The page's reads less each selected project's experiment link (sd:5296), which `TheScript` tests on its own."""
-    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?")]
+    """The page's reads less each selected project's experiment link (sd:5296) and the last roundup run (pack sd:5525),
+    which `TheScript` tests on their own."""
+    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?") and path != "/api/research/roundup/status"]
 
 
 def project(key, label, render, *, conf=None, docs=None, dirs=None):
@@ -964,10 +966,10 @@ R.filtered = ELS.claims.html;""")
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
 
-    def test_the_page_has_three_views_and_the_selected_project_carries_across_them(self):
+    def test_the_page_has_four_views_and_the_selected_project_carries_across_them(self):
         # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
         page = (V2 / "research.html").read_text(encoding="utf-8")
-        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims"])
+        self.assertEqual(re.findall(r'<section id="view-([a-z]+)"', page), ["projects", "sources", "claims", "experiments"])
         out = self.run_page("""R.declared = window.PAGE_VIEWS.map(v => [v.id, v.label]);
 R.start = OUT.views.slice(); PAGE_LIST.select('research/alpha'); PAGE_LIST.select('research/beta'); await flush();
 R.selecting = OUT.views.slice(); R.counts = Object.assign({}, OUT.counts); R.for = [ELS['reader-for'].textContent, ELS['claims-for'].textContent];
@@ -976,15 +978,83 @@ R.afterClaim = OUT.views.slice(); R.lit = ELS.reader.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '0' } } : null } }));
 R.afterSource = OUT.views.slice(); R.litClaims = ELS.claims.html;""")
         r = out["R"]
-        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"]])
+        self.assertEqual(r["declared"], [["projects", "Projects"], ["sources", "Sources"], ["claims", "Claim map"], ["experiments", "Experiments"]])
         # Selecting a project stays on Projects; the panels name it.
         self.assertEqual((r["start"], r["selecting"]), ([], []))
         self.assertEqual(r["for"], ["· Beta", "· Beta · 2 claims"])
-        self.assertEqual(r["counts"], {"sources": 3, "claims": 2})
+        self.assertEqual(r["counts"], {"experiments": 0, "sources": 3, "claims": 2})
         self.assertEqual(r["afterClaim"], ["sources"])
         self.assertEqual(re.findall(r'<li class="src" data-i="(\d+)"[^>]*data-lit', r["lit"]), ["1"])
         self.assertEqual(r["afterSource"], ["sources", "claims"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', r["litClaims"]), ["0"])
+
+    def experiment_board(self):
+        """Alpha keeps a stale brief with three asks and a deck.json, beta an unread one; gamma keeps none."""
+        rows = self.doc["projects"]
+        rows[0]["experiment"] = {"state": "Waiting on review", "tone": "caution", "updated": "2026-08-20", "stale": True,
+                                 "line": "11 pull requests are open.", "error": "", "deck": True, "deck_url": "https://example.test/deck",
+                                 "links": [{"text": "Alpha: execution", "url": "https://example.test/exp/2"}],
+                                 "asks": [{"who": "Owners", "what": "Review #1"}, {"who": "Docs", "what": "Review #2"}, {"who": "QA", "what": "Run it"}],
+                                 "asks_total": 3}
+        rows[1]["experiment"] = {"error": "30-brief/BRIEF-status.md exceeds the bounded read size.", "deck": False}
+        return json.dumps(self.doc)
+
+    def test_experiments_lists_each_status_brief_with_its_state_staleness_asks_and_links(self):
+        """pack sd:5525: one row per brief; a stale Updated day and an unread brief each say so."""
+        doc = self.experiment_board()
+        answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/roundup/status' ? [200, {{ run: null }}]"
+                  " : [404, { error: 'No research checkout at this address.' }]")
+        out = self.run_page("R.rows = ELS['xp-rows'].html; R.tally = ELS['xp-tally'].html; R.run = ELS['xp-run'].html;", answer=answer)
+        rows, r = re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), out["R"]
+        self.assertEqual(rows, ["research/alpha", "research/beta"])
+        self.assertIn('<td class="g g-caution" title="waiting">', r["rows"])
+        self.assertIn("Waiting on review", r["rows"])
+        self.assertIn("stale: over 7 days", r["rows"])
+        self.assertIn("<b>Owners</b>: Review #1", r["rows"])
+        self.assertIn("1 more in the brief", r["rows"])
+        self.assertNotIn("Run it", r["rows"])
+        self.assertIn('href="https://example.test/exp/2"', r["rows"])
+        self.assertIn('href="https://example.test/deck"', r["rows"])
+        self.assertIn("The status brief was not read: 30-brief/BRIEF-status.md exceeds the bounded read size.</span>", r["rows"])
+        self.assertEqual(re.findall(r"<span>([^<]+)</span>", r["tally"]), ["2 briefs", "1 stale", "3 asks", "1 deck"])
+        self.assertEqual(out["counts"]["experiments"], 2)
+        self.assertEqual(r["run"], "No roundup built yet. 1 deck would go in it, newest Updated first.")
+        # The page's filter field reaches this ledger by the board's words.
+        out = self.run_page("R.rows = ELS['xp-rows'].html;", answer=answer, search="?q=beta")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["research/beta"])
+
+    def test_build_roundup_posts_once_follows_the_run_and_names_the_deck_it_wrote(self):
+        """pack sd:5525: the button queues the run as Publish now queues a drain, and the line follows it until it settles."""
+        doc = self.experiment_board()
+        run = {"id": "roundup-20260906T120000Z", "state": "queued", "reason": None, "decks": ["/r/alpha/30-brief/deck.json"],
+               "out": "/state/runs/roundup-20260906T120000Z.pptx", "started": NOW, "finished": None}
+        done = {**run, "state": "done", "finished": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {doc}] : path === '/api/research/roundup' ? [202, {json.dumps(run)}] : path === '/api/research/roundup/status' ? [200, {{ run: null }}]"
+                  f" : path === '/api/research/roundup/{run['id']}' ? [200, {json.dumps(done)}] : [404, {{ error: 'No research checkout at this address.' }}]")
+        out = self.run_page("""const o = C.get('roundup'), c = cmd('research.roundup');
+R.when = c.when(o); R.cli = c.cli(o); shellRun(c, o); await flush(); await flush(); R.run = ELS['xp-run'].html; R.after = c.when(o);""", answer=answer)
+        self.assertIs(out["R"]["when"], True)
+        self.assertEqual(out["R"]["cli"], "sd-research-kit roundup roundup.pptx ~/'repos/research/alpha/30-brief/deck.json'")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/roundup", {}]], out["toasts"])
+        self.assertIn(f"/api/research/roundup/{run['id']}", out["gets"])
+        self.assertIn("from 1 deck: /state/runs/roundup-20260906T120000Z.pptx. Import it into Slides by hand.", out["R"]["run"])
+        self.assertIn(["Roundup built · /state/runs/roundup-20260906T120000Z.pptx", False], out["toasts"])
+        self.assertIs(out["R"]["after"], True)
+
+    def test_build_roundup_is_off_with_no_deck_and_while_a_run_builds(self):
+        # The poll's first read fails, which is not known, not settled; the stand-in's timers fire at once, so the second answers.
+        running = {"id": "roundup-20260906T120000Z", "state": "running", "decks": [], "out": "/x.pptx", "started": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}] : path === '/api/research/roundup/status' ? [200, {{ run: {json.dumps(running)} }}]"
+                  f" : path !== '/api/research/roundup/{running['id']}' ? [404, {{ error: 'none' }}]"
+                  f" : (POLLS = (typeof POLLS === 'number' ? POLLS : 0) + 1) < 2 ? [503, {{ error: 'unread' }}] : [200, {json.dumps({**running, 'state': 'failed', 'reason': 'the kit exited 1'})}]")
+        out = self.run_page("""const o = C.get('roundup');
+R.when = cmd('research.roundup').when(o); R.run = ELS['xp-run'].html; R.empty = ELS['xp-empty'].html;""", answer=answer)
+        self.assertIn("Last roundup failed: the kit exited 1.", out["R"]["run"])
+        self.assertEqual(out["gets"].count("/api/research/roundup/roundup-20260906T120000Z"), 2)
+        self.assertIn("No checkout keeps a status brief", out["R"]["empty"])
+        answer = f"(path, body) => path === '/api/research' ? [200, {json.dumps(self.doc)}] : [200, {{ run: null }}]"
+        out = self.run_page("R.when = cmd('research.roundup').when(C.get('roundup'));", answer=answer)
+        self.assertEqual(out["R"]["when"], "no checkout keeps a 30-brief/deck.json")
 
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
@@ -993,7 +1063,7 @@ R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign
 R.views = OUT.views.slice();""")
         for panel in ("reader", "claims"):
             self.assertIn('No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.', out["R"][panel])
-        self.assertEqual(out["R"]["counts"], {"sources": None, "claims": None})
+        self.assertEqual(out["R"]["counts"], {"experiments": None, "sources": None, "claims": None})
         self.assertEqual(out["R"]["views"], ["projects"])
 
     def experiments(self, doc):
@@ -1145,7 +1215,7 @@ R.det = ELS.details.html; R.lit = ELS.reader.html;""")
         empty = research_screen.document(now=NOW, backend=lambda *_: {"root": "~/repos", "projects": []})
         out = self.run_page("", answer=f"() => [200, {json.dumps(empty)}]")
         self.assertEqual((out["states"][-1]["kind"], out["states"][-1]["title"]), ("empty", "No research checkouts"))
-        self.assertEqual(out["gets"], ["/api/research"])
+        self.assertEqual(ledger_reads(out), ["/api/research"])
 
     def test_the_page_reads_its_board_through_the_shared_reader(self):
         # read.js holds the generation, retirement and failure rules (sd:2491); the ledger keeps its own per-project cache.
@@ -1214,6 +1284,7 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
+                                                                "/api/research/roundup", "/api/research/roundup/status", "/api/research/roundup/roundup-20261020T120000Z",
                                                                 "/api/research/example")
 
 

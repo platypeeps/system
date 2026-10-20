@@ -23,7 +23,8 @@ function attention() {
 }
 // The page's views (sd:5064), drawn by the shell's view switch: the board, then the selected project's ledger and claim map.
 // The selection carries across them; a claim opens Sources with its sources lit, and a source's ◆ count opens Claim map.
-window.PAGE_VIEWS = [{ id: 'projects', label: 'Projects' }, { id: 'sources', label: 'Sources' }, { id: 'claims', label: 'Claim map' }];
+window.PAGE_VIEWS = [{ id: 'projects', label: 'Projects' }, { id: 'sources', label: 'Sources' }, { id: 'claims', label: 'Claim map' },
+  { id: 'experiments', label: 'Experiments' }];
 // With no project selected, Sources and Claim map send the viewer back to the board.
 const PICK = () => html`<p class="why">No project is selected. <button class="linkbtn" type="button" data-view="projects">Pick one in Projects</button>.</p>`;
 // The tally filters the board by state; the URL carries it (?state=), and the tally's Clear or a second tap removes it.
@@ -71,6 +72,7 @@ function renderBoard() {
       <td class="last"><span class="d">${p.git?.last_iso ? html`<time class="rel" datetime="${p.git.last_iso}"></time>` : 'no commit read'}<span class="sub">${gitSub(p.git)}</span></span></td>
       <td class="acts">${shell.commands.rowActions(p.key)}</td></tr>`)}`);
   document.getElementById('empty').hidden = !!list.length || !PROJECTS.length;
+  renderExperiments();
   const n = s => PROJECTS.filter(p => p.s === s).length;
   const states = ['caution', 'unknown', 'ok'];
   put(document.getElementById('tally'), html`${states.map(s => html`<button class="chip" type="button" data-state="${s}" aria-pressed="${String(stateFilter === s)}"${n(s) || stateFilter === s ? '' : html` disabled`} aria-label="${stateFilter === s ? 'Showing' : 'Show'} ${n(s)} ${STATE_WORDS[s]}"><span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${n(s)} ${STATE_WORDS[s]}</button>`)}${
@@ -105,6 +107,76 @@ document.getElementById('tally').addEventListener('click', e => {
   const s = b.dataset.state; setState(stateFilter === s ? null : s);
   document.querySelector(`#tally button[data-state="${s}"]`)?.focus();
 });
+
+// ---------- Experiments (pack sd:5525) ----------
+// Each checkout's status brief (research_screen.experiment), read with the board: its State word, Updated day, line, Asks and
+// links. Over 7 days since Updated is stale (research_screen.stale). Build roundup posts /api/research/roundup, which lays every
+// listed 30-brief/deck.json out as one deck (research_roundup.py), and reads the run every 5 s until it settles.
+const xpBody = document.getElementById('xp-rows');
+const XP_WORDS = { ok: 'running, decided or done', caution: 'waiting', warning: 'blocked', unknown: 'state not in the standard' };
+const ROUNDUP_OBJ = { id: 'roundup', type: 'experiment roundup', label: 'Roundup deck' }, ROUNDUP_POLL = 5000;
+let ROUNDUP = null, roundupTimer = 0;
+// The page's filter field reaches this ledger too, by the same words as the board.
+const briefs = () => PROJECTS.filter(p => p.experiment && (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)));
+const decksOf = () => PROJECTS.filter(p => p.experiment?.deck);
+function updatedCell(x) {
+  if (!x.updated) return html`<span class="d"><span class="g-unknown">▨</span> no Updated day</span>`;
+  return html`<span class="d">${x.updated}${x.stale ? html`<span class="stale"><span class="g-caution" aria-hidden="true">▲</span> stale: over 7 days</span>` : ''}</span>`;
+}
+function asksCell(x) {
+  if (!x.asks.length) return html`<span class="d">none</span>`;
+  return html`<ul class="asks">${x.asks.slice(0, 2).map(a => html`<li><b>${a.who}</b>: ${a.what}</li>`)}${x.asks_total > 2 ? html`<li>${x.asks_total - 2} more in the brief</li>` : ''}</ul>`;
+}
+function linksCell(x) {
+  const ext = (url, text) => html`<a class="ext" href="${url}" target="_blank" rel="noopener">${text} ${I('arrow-up-right')}</a>`;
+  return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}<span class="d">${x.deck ? 'deck.json ●' : 'no deck.json'}</span></span>`;
+}
+function renderExperiments() {
+  const list = briefs();
+  put(xpBody, html`${list.map(p => { const x = p.experiment;
+    if (x.error) return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}"><td class="g g-unknown"><span aria-hidden="true">▨</span><span class="sr">unknown</span></td>
+      <td class="what" colspan="4"><button type="button">${p.label}</button><span class="line">The status brief was not read: ${x.error.replace(/\.$/, '')}.</span></td></tr>`;
+    return html`<tr data-id="${p.key}" aria-selected="${String(p.key === selected)}">
+      <td class="g g-${x.tone}" title="${XP_WORDS[x.tone]}"><span aria-hidden="true">${GLYPH[x.tone]}</span><span class="sr">${XP_WORDS[x.tone]}</span></td>
+      <td class="what"><button type="button">${p.label}</button><span class="path">${x.state || 'no State row'}</span><span class="line">${x.line}</span></td>
+      <td class="upd" data-l="Updated">${updatedCell(x)}</td>
+      <td class="ask" data-l="Asks">${asksCell(x)}</td>
+      <td class="lnk" data-l="Links">${linksCell(x)}</td></tr>`; })}`);
+  const stale = list.filter(p => p.experiment.stale).length, asks = list.reduce((n, p) => n + (p.experiment.asks_total || 0), 0);
+  put(document.getElementById('xp-tally'), list.length ? html`<span>${plural(list.length, 'brief')}</span><span>${stale} stale</span><span>${plural(asks, 'ask')}</span><span>${plural(decksOf().length, 'deck')}</span>` : html``);
+  const empty = document.getElementById('xp-empty');
+  empty.hidden = !!list.length || !LOADED;
+  put(empty, html`${PROJECTS.some(p => p.experiment) ? 'No brief matches. Clear the filter or type another word.' : 'No checkout keeps a status brief: 30-brief/BRIEF-status.md, in the research standard\'s six sections.'}`);
+  shell.view.count('experiments', LOADED ? list.length : null);
+  drawRoundup();
+}
+function drawRoundup() {
+  put(document.getElementById('xp-act'), shell.commands.bar(ROUNDUP_OBJ.id));
+  const r = ROUNDUP, said = document.getElementById('xp-run');
+  if (!r) { put(said, html`No roundup built yet. ${plural(decksOf().length, 'deck')} would go in it, newest Updated first.`); return; }
+  const from = plural((r.decks || []).length, 'deck');
+  put(said, r.state === 'done' ? html`Last roundup built <time class="rel" datetime="${r.finished}"></time> from ${from}: ${r.out}. Import it into Slides by hand.`
+    : r.state === 'failed' ? html`<span class="g-warning" aria-hidden="true">■</span> Last roundup failed: ${r.reason || 'no reason recorded'}.`
+    : html`<span class="g-queued" aria-hidden="true">◌</span> Run ${r.id} is ${r.state}${r.unread ? `; its state was not read: ${r.unread}` : ''}. This reads it every 5 s.`);
+}
+const settled = r => !r || r.state === 'done' || r.state === 'failed';
+function followRoundup(run, told) {
+  ROUNDUP = run; clearTimeout(roundupTimer); drawRoundup();
+  if (settled(run)) { if (told && run) shell.toast(run.state === 'done' ? `Roundup built · ${run.out}` : `Build roundup failed: ${run.reason || 'no reason recorded'}`); return; }
+  // A failed read is not known, not settled: the line says so and the next poll tries again.
+  roundupTimer = setTimeout(() => window.shell.getJSON(`/api/research/roundup/${encodeURIComponent(run.id)}`).then(next => followRoundup(next, told),
+    e => followRoundup({ ...run, unread: e.message }, told)), ROUNDUP_POLL);
+}
+function roundupCommand() {
+  return { id: 'research.roundup', on: 'experiment roundup', label: 'Build roundup', icon: 'package', risk: 'safe', executes: true,
+    does: 'Builds one PowerPoint deck from every listed deck.json; nothing uploads.',
+    when: () => (!LOADED ? 'the checkouts are not read yet' : !settled(ROUNDUP) ? `run ${ROUNDUP.id} is ${ROUNDUP.state}`
+      : decksOf().length ? true : 'no checkout keeps a 30-brief/deck.json'),
+    cli: () => `sd-research-kit roundup roundup.pptx ${decksOf().map(p => shPath(`${p.path}/30-brief/deck.json`)).join(' ')}`,
+    sends: () => 'POST /api/research/roundup {}',
+    run: () => window.shell.post('/api/research/roundup', {}).then(run => { followRoundup(run, true); return `Roundup started · run ${run.id}`; }, refused) };
+}
+xpBody.addEventListener('click', e => { if (e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
 // ---------- Data (build) ----------
 // The board reads through shell.read (the Start block); the ledger is read here, per project.
@@ -486,7 +558,7 @@ function showClaim(s, x) {
 function select(key, open) {
   if (!PROJECTS.some(p => p.key === key)) return;
   selected = key; curSource = null; resetClaims();
-  tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key));
+  [tbody, xpBody].forEach(b => b.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === key)));
   readerFor(key); renderClaims(key); showProject(key);
   writeURL();
   // Only a project the viewer opens becomes the Add source target: the board selects its first row by itself (sd:5112).
@@ -510,7 +582,7 @@ const START = { id: 'research.start', on: 'research request', label: 'Run', does
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
 function registerCommands() {
   const C = shell.commands;
-  C.put(DRAFT);
+  C.put(DRAFT); C.put(ROUNDUP_OBJ);
   C.register(
     { id: 'research.render', on: 'research project', label: 'Render', does: 'Gives the line that renders this research project again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
       cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, run: () => COPY },
@@ -518,6 +590,7 @@ function registerCommands() {
       cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
     START,
     ...experimentCommands(),
+    roundupCommand(),
     // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
     window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
       does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
@@ -652,7 +725,7 @@ function adopt(doc) {
     : !PROJECTS.length ? { kind: 'empty', title: 'No research checkouts', text: `No checkout under ${doc.root || 'REPO_ROOT'} carries a research.conf.py.`, source: 'collectors.collect_research' }
     : unknown ? { kind: 'partial', text: `${plural(unknown, 'project')} with a config or render the collector could not read. Review rounds are not read: ${ROUNDS}.${cut}`, source: '/api/research' }
     : { kind: 'partial', title: 'No rounds read', text: `${ROUNDS}.${cut}`, source: '/api/research' };
-  return { objects: [...PROJECTS, DRAFT], state };
+  return { objects: [...PROJECTS, DRAFT, ROUNDUP_OBJ], state };
 }
 function draw() {
   renderBoard();
@@ -680,4 +753,5 @@ document.addEventListener('DOMContentLoaded', () => {
     unselect,
   });
   load();
+  window.shell.getJSON('/api/research/roundup/status').then(d => followRoundup(d.run, false), e => put(document.getElementById('xp-run'), html`The last roundup was not read: ${e.message}.`));
 });

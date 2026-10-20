@@ -1,7 +1,9 @@
 """Research (sd:2122): the board, and one checkout's source registry, from collect_research in a child. The classic
 Resources table stays in the palette: it also holds Toolbox, Vault and Queues, which have no page yet. A project's
 experiment in the work Notion (sd:5296) is `/api/research/experiments`: GET reads the link, the list and the runs; POST
-`/api/research/experiments/act` attaches, drafts and applies (`research_experiments`). It is listed before the checkout pattern, which would match it."""
+`/api/research/experiments/act` attaches, drafts and applies (`research_experiments`). Build roundup (pack sd:5525) posts
+`/api/research/roundup` and reads `/api/research/roundup/status` (the last run) and `/api/research/roundup/<id>`
+(`research_roundup`). Each is listed before the checkout pattern, which would match it."""
 
 from __future__ import annotations
 
@@ -26,6 +28,24 @@ def _experiment(payload, principal):
     return research_experiments.request(dict(payload))
 
 
+def _roundup(payload, principal):
+    from ... import research_roundup
+
+    return research_roundup.request(dict(payload))
+
+
+def _roundup_last(read):
+    from ... import research_roundup
+
+    return research_roundup.latest()
+
+
+def _roundup_run(read):
+    from ... import research_roundup
+
+    return research_roundup.status(read.path.rsplit("/", 1)[1])
+
+
 def _sources(read):
     from ... import research_screen
 
@@ -41,7 +61,10 @@ PAGE = Page(
     html="research.html",
     item="sd:2122",
     api=(Api("/api/research", _board), Api("/api/research/experiments", _experiments, query=True),
-         Api("/api/research/experiments/act", write=_experiment), Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources)),
+         Api("/api/research/experiments/act", write=_experiment), Api("/api/research/roundup", write=_roundup),
+         Api("/api/research/roundup/status", _roundup_last),
+         Api(pattern=r"/api/research/roundup/roundup-[0-9TZ]+", example="/api/research/roundup/roundup-20261020T120000Z", read=_roundup_run),
+         Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources)),
     classic={"Resources (classic)": "/operations?area=resources"},
     count="/api/research",
 )
