@@ -415,8 +415,8 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 /* Published copies (sd:5102, sd:5300, commands.published): one icon per configured destination, its state a fill and an edge
  * as well as a colour: a copy is filled, a queued one a dashed accent edge, a designated one with no copy a caution outline,
  * and one not read a dashed unknown edge. */
-.pub { display: inline-flex; align-items: center; gap: var(--space-3xs); margin-right: var(--space-2xs); vertical-align: middle; }
-.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: var(--row-touch); min-height: var(--row-touch); color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
+.pub { display: inline-flex; align-items: center; gap: 0; margin-right: var(--space-2xs); vertical-align: middle; }
+.pub a, .pub span { display: inline-flex; align-items: center; justify-content: center; min-width: 1.75rem; min-height: 1.75rem; color: var(--color-ink-2); border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm); }
 .pub .has { color: var(--color-ink); background: var(--color-accent-bg); border-color: var(--color-accent); }
 .pub a:hover { color: var(--color-accent); background: var(--color-well); }
 .pub a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
@@ -424,6 +424,10 @@ dialog.palette::backdrop { background: var(--color-scrim); }
 .pub .missing { color: var(--color-caution); background: transparent; border-color: var(--color-caution); }
 .pub .unread { color: var(--color-unknown); background: transparent; border-style: dashed; border-color: var(--color-unknown); }
 .pub .pub-unknown { color: var(--color-muted); font-size: var(--text-xs); }
+/* sd:5485: every destination shows; one that is not the row's is dim and edgeless. Icons sit at the row's text size, each
+ * box 28px, over WCAG 2.2's 24px target. */
+.pub .off { color: var(--color-muted); opacity: .45; }
+.pub .i { width: .875rem; height: .875rem; }
 @media (forced-colors: active) { .pub .has { border-width: 2px; } }
 /* Publish to (sd:5102, commands.publishPane): each destination a checkbox button; checked is the accent, mixed (not known) is dashed. */
 .pubboxes { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }

@@ -155,6 +155,7 @@
   const PUB_WHERE = (ch, url) => { const f = ch === 'obsidian' && /[?&]file=([^&]*)/.exec(url); return f ? decodeURIComponent(f[1]) : url; };
   function published(pub) {
     const { html } = window.markup;
+    if (!pub) return '';
     const copies = (pub && pub.copies) || [], choice = pub && pub.choice, unread = (pub && pub.unread) || '';
     const glyph = ch => html`<svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg>`;
     const mark = (cls, tip) => html`<span class="${cls}" role="img" aria-label="${tip}" title="${tip}">`;
@@ -169,7 +170,8 @@
           : html`${mark(cls, tip)}${glyph(ch)}</span>`;
       }
       const on = choice ? choice[ch] : false;
-      if (on === false || on === undefined) return '';
+      // sd:5485: every destination shows; one that is not this row's is dim, so the active ones stand out.
+      if (on === false || on === undefined) return html`${mark(`pub-${ch} off`, `${PUB_NAME[ch]}: not a destination`)}${glyph(ch)}</span>`;
       // A designated destination with no copy is missing only when every read behind it answered.
       const why = on === true ? unread : unread || choice.why || 'the channels setting was not read';
       if (why) said = true;

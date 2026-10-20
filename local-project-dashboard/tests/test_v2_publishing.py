@@ -319,6 +319,9 @@ class BriefRows(brief_tests.BriefCase):
                       'title="Google Drive: queued, not yet drained"><svg class="i" aria-hidden="true"><use href="#i-triangle"/></svg></span>', rows)
         self.assertIn(f'<a class="pub-notion has" href="{NOTION_URL}" target="_blank" rel="noopener noreferrer" aria-label="Open in Notion" '
                       f'title="Notion: {NOTION_URL}"><svg class="i" aria-hidden="true"><use href="#i-box"/></svg></a>', rows)
+        # sd:5485: a destination with no copy and no designation still shows, dim, so every destination is on the row.
+        self.assertIn('<span class="pub-obsidian off" role="img" aria-label="Obsidian: not a destination" '
+                      'title="Obsidian: not a destination"><svg class="i" aria-hidden="true"><use href="#i-gem"/></svg></span>', rows)
 
 
 class BriefDesignation(brief_tests.BriefCase):
@@ -458,10 +461,11 @@ class DocumentRows(ScreenCase):
         self.assertEqual(got, {"obsidian": ("a", "has", "Obsidian: Briefs/lab/plan"),
                                "drive": ("span", "missing", "Google Drive: designated, no copy yet"),
                                "notion": ("span", "missing", "Notion: designated, no copy yet")})
-        # A destination not configured shows nothing; a failed read is not "no copy".
+        # A destination not configured shows dim (sd:5485); a failed read is not "no copy".
         got = marks({"unread": "the pack's mirror queue was not read: x", "copies": [],
                      "choice": {"notion": True, "drive": False, "obsidian": None, "why": ""}})
-        self.assertEqual(got, {"notion": ("span", "unread", "Notion: not read · the pack&#39;s mirror queue was not read: x"),
+        self.assertEqual(got, {"drive": ("span", "off", "Google Drive: not a destination"),
+                               "notion": ("span", "unread", "Notion: not read · the pack&#39;s mirror queue was not read: x"),
                                "obsidian": ("span", "unread", "Obsidian: not read · the pack&#39;s mirror queue was not read: x")})
         css = (STATIC / "shell.css").read_text(encoding="utf-8")
         for cls, want in ((".has", "background: var(--color-accent-bg)"), (".missing", "background: transparent"),
