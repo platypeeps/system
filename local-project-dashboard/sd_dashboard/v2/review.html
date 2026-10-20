@@ -1,12 +1,15 @@
 <!doctype html>
 <!--
-  Review (sd:3709), at /review: the labelling queue (design docs/work/2026-10-12-review-queue, Queue UX). No design source
-  page: built on the v2 shell from ui-design products/system/design.md (Rail: Review, g l; Keys: digits 1-9 on Review) and
-  foundation/.
+  Review (sd:3709), at /review: two views (sd:5497). Questions lists the decisions that wait on the operator, the rows
+  Today's Decisions lists (/api/decisions, decisions.js; a choice posts /api/decisions/answer). Bulk scoring is the
+  labelling queue (design docs/work/2026-10-12-review-queue, Queue UX). No design source page: built on the v2 shell from
+  ui-design products/system/design.md (Rail: Review, g l; Keys: digits 1-9 on Review) and foundation/.
   Data: /api/review (review_screen.document: each open batch and its questions, open or reviewed; a blind or sealed batch
   sends text, options and label only), read when the page opens, on Read again and after a failed or stale write.
-  Each row carries its question, context and option buttons (sd:5123); the page has no Details pane.
-  Writes: /api/review/rule (a label) and /api/review/withdraw (its Undo, or a reviewed row's Withdraw label), each sd_db.review, the code sd-db review runs;
+  Bulk scoring bands its rows by batch, a fold each; each row carries its question, context, recommendation, option
+  buttons and a checkbox (sd:5123, sd:5497); the bar over the table labels every selected row. The page has no Details pane.
+  Writes: /api/review/rule (a label, one per question, from a row or the bar) and /api/review/withdraw (its Undo, or a
+  reviewed row's Withdraw label), each sd_db.review, the code sd-db review runs;
   a comment (n) posts the shell capture's note route on the batch as "On note #N: ...". Download reads
   /api/review/<item>/export, the lines sd-db review export writes. Nothing here is sample data.
 -->
@@ -22,6 +25,7 @@
 <script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/annunciator-strip.css">
+<link rel="stylesheet" href="/ui/decisions.css">
 <link rel="stylesheet" href="/ui/review.css">
 </head>
 <body data-page="Review" data-scope="fleet">
@@ -29,29 +33,44 @@
 <div class="shell">
 <main id="main">
   <header class="head">
-    <div>
-      <h1>Review</h1>
-      <p class="progress" id="sub">Reading the review queue…</p>
-    </div>
+    <h1>Review</h1>
     <button class="btn quiet sm" type="button" id="reload">Read again</button>
   </header>
-  <div id="state" hidden></div>
-  <h2 class="sr">Open batches</h2>
-  <annunciator-strip><ul class="annunciator" id="annunciator" hidden></ul></annunciator-strip>
-  <section aria-labelledby="led-h">
-    <div class="sec-head">
-      <h2 id="led-h">Questions</h2>
-      <p class="tally" id="tally"></p>
-    </div>
-    <table class="ledger review" aria-labelledby="led-h">
-      <thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Question</th><th scope="col">Batch</th><th scope="col">Asked</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </section>
+  <div id="view-questions" aria-label="Questions">
+    <section aria-labelledby="decisions-h">
+      <div class="sec-head">
+        <h2 id="decisions-h">Questions</h2>
+        <p class="tally" id="decisions-tally"></p>
+      </div>
+      <table class="ledger decisions" aria-labelledby="decisions-h">
+        <thead id="decisions-head"></thead>
+        <tbody id="decisions"><tr class="empty"><td colspan="4">Reading questions…</td></tr></tbody>
+      </table>
+      <p class="filtered" id="decisions-note" role="status" hidden></p>
+    </section>
+  </div>
+  <div id="view-bulk" aria-label="Bulk scoring" hidden>
+    <div id="state" hidden></div>
+    <h2 class="sr">Open batches</h2>
+    <annunciator-strip><ul class="annunciator" id="annunciator" hidden></ul></annunciator-strip>
+    <section aria-labelledby="led-h">
+      <div class="sec-head">
+        <h2 id="led-h">Bulk scoring</h2>
+        <p class="tally" id="tally"></p>
+      </div>
+      <p class="progress" id="sub">Reading the review queue…</p>
+      <div class="bulk" id="bulk" role="group" aria-label="Selected questions"></div>
+      <table class="ledger review" aria-labelledby="led-h">
+        <thead><tr><th scope="col" class="pk"><span class="sr">Select</span></th><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Question</th><th scope="col">Asked</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </div>
 </main>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/review.js"></script>
+<script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>

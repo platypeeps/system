@@ -1,4 +1,6 @@
 // Today's Decisions (sd:3012): each open question note, one button per option. It loads before shell.js.
+// Review's Questions view (sd:5497) runs it too, on the same ids; that page has no line linking to Review and names its
+// read button reload, not refresh.
 // Rows: /api/decisions (sd_dashboard.decisions.document). A click posts /api/decisions/answer with the item, note, option
 // and the item revision the read gave; the server writes the ruling and resolves the question in one transaction.
 // A question with fewer than two Option: lines (sd:5064) gets a text box: its words post as the option, the same ruling
@@ -45,8 +47,10 @@
   function draw() {
     const tb = $('decisions'), line = $('decisions-review'), n = LIST ? REVIEW : 0;
     put($('decisions-head'), window.shell.list.sortHead(COLS, SORT));
-    put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="/review">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Review</a>` : html``);
-    line.hidden = !n;
+    if (line) {
+      put(line, n ? html`<span class="g-caution" aria-hidden="true">▲</span> <a href="/review">${n} ${n === 1 ? 'question waits' : 'questions wait'} on Review</a>` : html``);
+      line.hidden = !n;
+    }
     if (!LIST) {
       put(tb, html`<tr class="empty"><td colspan="4">Decisions could not be read: ${failed}. Refresh tries again.</td></tr>`);
       put($('decisions-tally'), html``); window.todayCount?.('decisions', null);
@@ -110,7 +114,7 @@
       e.preventDefault(); choose(+f.dataset.note, null, f.elements.answer.value);
     });
     $('decisions').addEventListener('input', e => { const f = e.target.closest('form.answer'); if (f) DRAFT.set(+f.dataset.note, e.target.value); });
-    $('refresh').addEventListener('click', () => { say(''); load(); });
+    ($('refresh') || $('reload')).addEventListener('click', () => { say(''); load(); });
     $('decisions-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, SORT)) window.shell.list.keepFocus(e, draw); });
     put($('decisions-head'), window.shell.list.sortHead(COLS, SORT)); // drawn before the read, so a failed one keeps the columns
     load();

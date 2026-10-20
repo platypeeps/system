@@ -638,6 +638,23 @@ class TheTableGrammar(unittest.TestCase):
         # The fold is keyed by the band's model cell, which is that name, not the band's words.
         self.assertIn("const label = s.head.cells[0]", js)
 
+    def test_a_band_fold_keeps_a_data_tkeep_control_beside_its_button_not_inside_it(self):
+        """sd:5497: Review's band carries a checkbox; a control inside the fold button would nest one control in another."""
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        found = re.search(r"\n  (function tbandFold\(td\) \{.*?\n  \})\n", js, re.S)
+        self.assertIsNotNone(found, "shell.js has no tbandFold")
+        out = run_js(found.group(1) + """
+  const node = (name, keep) => ({ name, matches: s => keep && s === '[data-tkeep]' });
+  const kids = [node('words'), node('count'), node('box', true)];
+  const td = { childNodes: kids, prepend(b) { kids.unshift(b); }, append(b) { kids.push(b); } };
+  const put = window.markup.put, bare = document.createElement;
+  document.createElement = tag => { if (tag === 'template') return bare(tag); const e = El(tag); e.kids = []; e.append = (...n) => { n.forEach(x => { const i = kids.indexOf(x); if (i >= 0) kids.splice(i, 1); }); e.kids.push(...n); }; return e; };
+  const b = tbandFold(td);
+  R.td = kids.map(k => k.name || k.className || k.id);
+  R.inButton = b.kids.flatMap(k => k.kids ? k.kids.map(x => x.name) : [k.name || 'icon']);""")
+        self.assertEqual(out["td"], ["tfold", "box"])
+        self.assertEqual([k for k in out["inButton"] if k != "icon"], ["words", "count"])
+
     def test_the_grammar_keeps_its_state_in_local_storage_inside_try_and_its_chips_apart(self):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)

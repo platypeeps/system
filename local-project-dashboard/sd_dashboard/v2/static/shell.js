@@ -1252,6 +1252,15 @@
       return { kind, cells: kind === 'row' ? [...tr.cells].map(tcell) : [kind === 'group' && tr.dataset.band || tlabel(tr)], pos: tr._tpos, tr };
     });
   }
+  // A band's words go into its fold button. One span holds them, so their mixed font sizes share a baseline instead of each
+  // centring as a flex item. A [data-tkeep] child (Review's batch checkbox, sd:5497) stays beside the button: a control
+  // may not sit inside another.
+  function tbandFold(td) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';
+    const text = document.createElement('span'); text.append(...[...td.childNodes].filter(n => !n.matches?.('[data-tkeep]')));
+    put(b, html`${ICON('chevron-right')}`); b.append(text); td.prepend(b);
+    return b;
+  }
   function tapply(t) {
     if (!t.tHead || !t.tBodies.length || t.matches('.sr, [data-tgrid="off"]') || t.closest('.sr, dialog')) return;
     const key = tkeyOf(t), st = tst(key), ths = theads(t);
@@ -1294,13 +1303,7 @@
     groups.forEach(s => {
       const label = s.head.cells[0], td = s.head.tr.cells[0], open = !closed.has(label);
       let b = td.querySelector(':scope > button.tfold');
-      if (!b) {
-        b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';
-        // One span holds the label, so its mixed font sizes share a baseline instead of each centring as a flex item.
-        const text = document.createElement('span'); text.append(...[...td.childNodes]);
-        put(b, html`${ICON('chevron-right')}`); b.append(text); td.append(b);
-        s.head.tr.removeAttribute('aria-hidden');
-      }
+      if (!b) { b = tbandFold(td); s.head.tr.removeAttribute('aria-hidden'); }
       b.dataset.tfold = label;
       if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
       if (!open) s.body.forEach(r => hid.add(r.tr));
