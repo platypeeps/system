@@ -261,6 +261,12 @@ class TheDefaultCapture(unittest.TestCase):
 class TheChat(unittest.TestCase):
     """sd:5294: the pane posts the question with the page's row and shows the answer, or a failure that says no answer."""
 
+    def test_the_box_opts_out_of_writing_extension_overlays(self):
+        # sd:5455: Grammarly and LanguageTool drew badges over the box's border.
+        box = re.search(r'<textarea id="chat-input"[^>]*>', SHELL_JS).group(0)
+        for attr in ('data-gramm="false"', 'data-gramm_editor="false"', 'data-enable-grammarly="false"', 'data-lt-active="false"'):
+            self.assertIn(attr, box)
+
     def run_chat(self, body):
         block = re.search(r"^  // chat:start\n(.*?)^  // chat:end$", SHELL_JS, re.S | re.M)
         self.assertIsNotNone(block, "shell.js has no chat:start block, so the pane posts nothing")

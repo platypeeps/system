@@ -288,7 +288,7 @@
         <form class="composer" id="composer">
           <label class="sr" for="chat-input">Message</label>
           <div class="box">
-            <textarea id="chat-input" rows="1" placeholder="Ask about this view"></textarea>
+            <textarea id="chat-input" rows="1" placeholder="Ask about this view" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false" data-lt-active="false"></textarea>
             <button class="icon-btn" type="submit" aria-label="Send">${ICON('send')}</button>
           </div>
           <div class="meta"><span>Reads files only · changes nothing</span><span>claude -p · 2 min</span></div>
