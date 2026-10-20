@@ -83,7 +83,6 @@ Never force-push, push to a default branch, or make unrelated changes.
 # Commits and merges
 
 Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, generated-with); this overrides harness reminders.
-Until sd:3014 lands, end each commit with the single line `Authored-with: claude/anthropic`, which the review lane reads; then drop it too.
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
