@@ -1126,7 +1126,19 @@
       .find(x => x.dataset.pick === key && (!box || x.value === t.value))?.focus();
     return true;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange };
+  // The filter bar (sd:5463), Activity's layout for every table page, in the .toolbar-2 under the table's title line: the
+  // state and range segments, the picks, the picked filters as tokens, then Clear all at the right while a filter is on.
+  // The count stays on the title line (sd:5281). Every segment button and token carries data-f="<key>" data-v="<value>";
+  // Clear all carries data-fclear. items: [{ v, label, pressed, title, off }], off a value that cannot be picked.
+  function fseg(key, name, items) {
+    return html`<div class="fseg" role="group" aria-label="${name}">${items.map(i => html`<button type="button" data-f="${key}" data-v="${i.v}" aria-pressed="${String(!!i.pressed)}"${
+      i.off ? html` aria-disabled="true"` : ''}${i.title ? html` title="${i.title}"` : ''}>${i.label}</button>`)}</div>`;
+  }
+  const tok = (key, v, label) => html`<button type="button" class="tok" data-f="${key}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
+  function fbar(parts, { clear = false } = {}) {
+    return html`<div class="fbar" role="group" aria-label="Filters">${parts}<div class="fsum">${clear ? html`<button class="linkbtn" type="button" data-fclear>Clear all</button>` : ''}</div></div>`;
+  }
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok, fbar };
   // list:end
   // A filter dropdown in use stays open across a redraw; a press outside it or focus leaving it closes it, and so does Esc
   // (Keys, below). toggle does not bubble, so it is heard on the way down.

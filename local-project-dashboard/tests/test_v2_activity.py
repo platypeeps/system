@@ -478,11 +478,11 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
 
     def test_all_read_adds_the_older_journal_records_and_24h_leaves_them_out(self):
         older = self.ids["older"]
-        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-r]' ? { dataset: { r: '%s' } } : null } });"
+        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
         out = self.run_page("R.day = ELS.rows.html; R.chip = ELS.filters.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html;"
                             + range_ % "all" + "R.all = ELS.rows.html;" + range_ % "24h" + "R.back = ELS.rows.html;")
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["day"])
-        self.assertRegex(out["R"]["chip"], r'data-r="all"[^>]*title="All read: the 24 hours and 1 older journal record">All <span class="n">\+1</span>')
+        self.assertRegex(out["R"]["chip"], r'data-f="range" data-v="all"[^>]*title="All read: the 24 hours and 1 older journal record">All <span class="n">\+1</span>')
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["lanes"], "the chart is the 24 hours")
         self.assertIn(f'data-id="cmd:{older}"', out["R"]["all"])
         self.assertIn([None, "all"], out["urls"])
@@ -767,7 +767,7 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         return doc
 
     def test_the_filters_are_one_bar_with_no_stacked_label_rows(self):
-        out = self.run_page("R.filters = ELS.filters.html;")
+        out = self.run_page("R.filters = ELS.filters.html; R.tally = ELS.tally.textContent;")
         bar = out["R"]["filters"]
         self.assertEqual(bar.count('class="fbar"'), 1)
         self.assertTrue(bar.startswith('<div class="fbar" role="group" aria-label="Filters">'), bar[:80])
@@ -779,12 +779,13 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         self.assertRegex(state, rf'data-f="state" data-v="warning" aria-pressed="false" title="failed: {failed}"><span class="g-warning" aria-hidden="true">■</span><span class="n">{failed}</span>')
         self.assertEqual(re.findall(r'aria-hidden="true">(.)</span>', state), ["■", "▲", "●"])
         rng = re.search(r'<div class="fseg" role="group" aria-label="Range">(.*?)</div>', bar).group(1)
-        self.assertEqual(re.findall(r'data-r="(\w+)"', rng), ["1h", "24h", "all", "7d", "30d"])
-        self.assertIn('data-r="24h" aria-pressed="true"', rng)
+        self.assertEqual(re.findall(r'data-f="range" data-v="(\w+)"', rng), ["1h", "24h", "all", "7d", "30d"])
+        self.assertIn('data-v="24h" aria-pressed="true"', rng)
         self.assertRegex(bar, r'<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="repo-pop">Repo')
-        self.assertNotIn('id="clear"', bar, "no filter is on, so there is nothing to clear")
+        self.assertTrue(bar.endswith('<div class="fsum"></div></div>'), "no filter is on, so there is nothing to clear")
+        # sd:5463: the count sits once, on the Timeline title line, not in the bar.
         inside = sum(1 for e in self.doc["events"] if e["at"] >= self.doc["from"])
-        self.assertIn(f'<div class="fsum"><span>{inside} of {len(self.doc["events"])}</span></div>', bar, "24h leaves the older record out")
+        self.assertEqual(out["R"]["tally"], f'{inside} of {len(self.doc["events"])} events', "24h leaves the older record out")
 
     def test_the_repo_popover_opens_filters_and_closes_and_round_trips_the_address(self):
         key = "ELS['%s'].listeners.keydown[0]({ key: '%s', preventDefault() {}, stopPropagation() { R.stopped = (R.stopped || 0) + 1; } });"
@@ -822,21 +823,21 @@ R.bar = ELS.filters.html; R.list = ELS['repo-list'].html;""", doc=self.repos_doc
 
     def test_clear_all_resets_every_filter_and_the_address(self):
         out = self.run_page("""R.before = ELS.filters.html;
-ELS.filters.listeners.click[0]({ target: { closest: s => s === '#clear' ? {} : null } });
+ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear]' ? {} : null } });
 R.after = ELS.filters.html; R.rows = ELS.rows.html; R.input = ELS.shift.value;""",
                             pre="location.search = '?kind=merge&repo=system&state=ok&range=1h&q=port'; "
                                 "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
         before, after = out["R"]["before"], out["R"]["after"]
-        self.assertIn('id="clear"', before)
+        self.assertIn('data-fclear', before)
         self.assertEqual(len(re.findall(r'class="tok"', before)), 3, "kind, repo and the query are tokens")
         self.assertIn('data-f="q" data-v="" aria-label="Remove filter: “port”"', before)
         self.assertRegex(before, r'data-v="ok" aria-pressed="true"')
-        self.assertRegex(before, r'data-r="1h" aria-pressed="true"')
+        self.assertRegex(before, r'data-v="1h" aria-pressed="true"')
         self.assertEqual(out["qs"][-1], "")
-        self.assertNotIn('id="clear"', after)
+        self.assertNotIn('data-fclear', after)
         self.assertNotIn('class="tok"', after)
         self.assertNotIn('aria-pressed="true" title="', re.search(r'aria-label="State">(.*?)</div>', after).group(1))
-        self.assertRegex(after, r'data-r="24h" aria-pressed="true"')
+        self.assertRegex(after, r'data-v="24h" aria-pressed="true"')
         self.assertEqual(out["R"]["input"], "")
 
     def test_a_query_token_clears_the_field(self):
@@ -848,7 +849,7 @@ R.bar = ELS.filters.html; R.input = ELS.shift.value;""", pre="location.search = 
 
     def test_a_range_that_is_not_read_toasts_the_range_that_stays(self):
         """sd:2424. At 1h or All read, 7d keeps that range; the toast said 24h."""
-        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-r]' ? { dataset: { r: '%s' } } : null } });"
+        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
         out = self.run_page(range_ % "7d" + range_ % "1h" + range_ % "7d" + range_ % "all" + range_ % "30d")
         self.assertEqual([t[0] for t in out["toasts"]], [
             "7d is not read: /api/activity holds the last 24 hours. The range stays at 24h.",

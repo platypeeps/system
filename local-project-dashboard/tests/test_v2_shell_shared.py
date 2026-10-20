@@ -38,12 +38,18 @@ SHARED = (
     " color: var(--color-muted); padding: var(--space-xs); border-bottom: var(--rule-hair) solid var(--color-rule); white-space: nowrap; }",
     ".ledger td { padding: var(--space-2xs) var(--space-xs); height: var(--row); border-bottom: var(--rule-hair) solid var(--color-rule-2); vertical-align: middle; }",
     ".ledger .g { text-align: center; font-family: var(--font-data); }",
+    # sd:5463: Activity's title line and filter bar, the ones every table page draws (the bar through shell.list.fbar).
+    ".sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }",
+    ".sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }",
+    ".fbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }",
+    ".fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }",
+    ".fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }",
 )
 # The lamp selectors only annunciator-strip.css may style, and the ledger selectors only shell.css may. A page keeps what is
 # its own: a cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.
 LAMP_ONLY = re.compile(r'(?m)^\s*((\.annunciator\s+)?\.cell(\s*[{,]|:hover|:focus-visible|:disabled|\s+\.(lbl|ph|val)\b|\[data-state|\[aria-pressed)'
                        r'|(a|button)\.cell\b|\.annunciator(\s+li)?\s*[{,])')
-SHELL_ONLY = re.compile(LAMP_ONLY.pattern + r'|^\s*\.ledger(\s+(th|td)\s*[{,]|\s*[{,]|\s+col\b|\s+tbody tr(:hover td|\[aria-selected="true"\] td)?\s*[{,])')
+SHELL_ONLY = re.compile(LAMP_ONLY.pattern + r'|^\s*\.(fbar|fseg|fsum|tok)\b' + r'|^\s*\.ledger(\s+(th|td)\s*[{,]|\s*[{,]|\s+col\b|\s+tbody tr(:hover td|\[aria-selected="true"\] td)?\s*[{,])')
 # The pages whose script draws an annunciator; each draws it through markup.cells. Today's lamps are server HTML that
 # today.js fills in place, so its test reads today.html against the same grammar.
 LAMP_PAGES = ("activity", "briefs", "contributions", "designs", "health", "hoa", "metrics", "reports", "skills")
@@ -1264,6 +1270,25 @@ class TheOneViewModel(unittest.TestCase):
             if 'id="viewswitch"' not in page:
                 missing += [f"{stem}: {v}" for v in sorted(views - panels)]
         self.assertEqual((stray, missing), ([], []))
+
+
+class TheFilterBar(unittest.TestCase):
+    """sd:5463: Activity's filter row, drawn by the shell once: segments, picks, tokens, then Clear all at the right."""
+
+    def test_a_segment_group_names_its_filter_and_marks_the_pressed_value(self):
+        out = run_js("""R.seg = String(list.fseg('state', 'State', [{ v: 'warning', label: html`<span class="g-warning">■</span><span class="n">2</span>`, pressed: true, title: 'failed: 2' },
+  { v: 'ok', label: 'ok', off: true }]));""")
+        self.assertEqual(out["seg"], '<div class="fseg" role="group" aria-label="State">'
+                         '<button type="button" data-f="state" data-v="warning" aria-pressed="true" title="failed: 2"><span class="g-warning">■</span><span class="n">2</span></button>'
+                         '<button type="button" data-f="state" data-v="ok" aria-pressed="false" aria-disabled="true">ok</button></div>')
+
+    def test_the_bar_ends_with_clear_all_only_while_a_filter_is_on(self):
+        out = run_js("""R.on = String(list.fbar([list.tok('repo', 'system', 'system')], { clear: true }));
+  R.off = String(list.fbar([], { clear: false }));""")
+        self.assertEqual(out["on"], '<div class="fbar" role="group" aria-label="Filters">'
+                         '<button type="button" class="tok" data-f="repo" data-v="system" aria-label="Remove filter: system"><span>system</span><span class="x" aria-hidden="true">×</span></button>'
+                         '<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>')
+        self.assertEqual(out["off"], '<div class="fbar" role="group" aria-label="Filters"><div class="fsum"></div></div>')
 
 
 class TheRowActions(unittest.TestCase):

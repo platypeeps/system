@@ -163,33 +163,33 @@ addEventListener('DOMContentLoaded', () => {
     F.kind.has(k) ? F.kind.delete(k) : F.kind.add(k); page = 1; update(); window.shell.view.show('timeline');
   });
 
-  // ---------- Filters: one bar (state, range, repo, the picked tokens, the count) ----------
+  // ---------- Filters: one bar (state, range, repo, the picked tokens, Clear all) ----------
   // A lamp and a lane already toggle each kind, so the bar draws no kind chips; a picked kind shows as a removable token.
+  // sd:5463: the shell draws the bar (shell.list.fbar), as on every table page; the count sits on the Timeline title line.
   const STATES = [['warning', '■', 'failed'], ['caution', '▲', 'caution'], ['ok', '●', 'ok']];
   const pop = $('repo-pop'), repoQ = $('repo-q'), repoList = $('repo-list');
   let cursor = 0; // the active option in the repo list, for the arrow keys and Enter
   pop.hidden = true; // the list starts closed, whatever a restored page left
-  const token = (f, v, label) => html`<button type="button" class="tok" data-f="${f}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
   function renderFilters() {
     const shown = EVENTS.filter(match).length, older = EVENTS.filter(e => !inWindow(e)).length;
     const count = s => String(EVENTS.filter(e => e.s === s).length);
-    const range = (r, label, pressed, title) => html`<button type="button" data-r="${r}" aria-pressed="${String(pressed)}"${title ? html` title="${title}"` : ''}>${label}</button>`;
+    const { fseg, tok, fbar } = window.shell.list;
     // build: the document holds 24 hours and the journal's older records, so 7d and 30d stay off and say why.
-    const unread = r => html`<button type="button" data-r="${r}" aria-pressed="false" aria-disabled="true" title="${r} is not read: /api/activity holds the last 24 hours">${r}<span class="n" aria-hidden="true">▨</span></button>`;
-    put($('filters'), html`<div class="fbar" role="group" aria-label="Filters">
-      <div class="fseg" role="group" aria-label="State">${STATES.map(([s, g, w]) => html`<button type="button" data-f="state" data-v="${s}" aria-pressed="${String(F.state === s)}" title="${w}: ${count(s)}"><span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span></button>`)}</div>
-      <div class="fseg" role="group" aria-label="Range">${range('1h', '1h', F.hour)}${range('24h', '24h', !F.hour && !F.all)}${range('all', html`All <span class="n">+${String(older)}</span>`, F.all, `All read: the 24 hours and ${plural(older, 'older journal record')}`)}${unread('7d')}${unread('30d')}</div>
+    const unread = r => ({ v: r, off: true, title: `${r} is not read: /api/activity holds the last 24 hours`, label: html`${r}<span class="n" aria-hidden="true">▨</span>` });
+    put($('filters'), fbar(html`${fseg('state', 'State', STATES.map(([s, g, w]) => ({ v: s, pressed: F.state === s, title: `${w}: ${count(s)}`,
+      label: html`<span class="g-${s}" aria-hidden="true">${g}</span><span class="n">${count(s)}</span><span class="sr"> ${w}</span>` })))}
+      ${fseg('range', 'Range', [{ v: '1h', label: '1h', pressed: F.hour }, { v: '24h', label: '24h', pressed: !F.hour && !F.all },
+        { v: 'all', label: html`All <span class="n">+${String(older)}</span>`, pressed: F.all, title: `All read: the 24 hours and ${plural(older, 'older journal record')}` }, unread('7d'), unread('30d')])}
       ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}</button>` : ''}
-      ${[...F.kind].map(k => token('kind', k, kindOf(k).name))}${[...F.repo].map(r => token('repo', r, r))}${F.q ? token('q', '', `“${F.q}”`) : ''}
-      <div class="fsum"><span>${String(shown)} of ${String(EVENTS.length)}</span>${active() ? html`<button class="linkbtn" type="button" id="clear">Clear all</button>` : ''}</div>
-    </div>`);
+      ${[...F.kind].map(k => tok('kind', k, kindOf(k).name))}${[...F.repo].map(r => tok('repo', r, r))}${F.q ? tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
+    $('tally').textContent = shown === EVENTS.length ? plural(shown, 'event') : `${shown} of ${plural(EVENTS.length, 'event')}`;
   }
   $('filters').addEventListener('click', e => {
-    if (e.target.closest('#clear')) return clearAll();
+    if (e.target.closest('[data-fclear]')) return clearAll();
     if (e.target.closest('#repo-btn')) return pop.hidden ? openRepos() : closeRepos(true);
-    const r = e.target.closest('[data-r]');
+    const r = e.target.closest('[data-f="range"]');
     if (r) {
-      const v = r.dataset.r;
+      const v = r.dataset.v;
       // build: the range stays where it was, which is 1h or All read as often as 24h.
       if (v === '7d' || v === '30d') return toast(`${v} is not read: /api/activity holds the last 24 hours. The range stays at ${F.hour ? '1h' : F.all ? 'All read' : '24h'}.`);
       F.hour = v === '1h'; F.all = v === 'all'; page = 1; return update();
