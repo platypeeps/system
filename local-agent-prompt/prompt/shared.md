@@ -68,7 +68,6 @@ In an unattended run (builder, lane, scheduled job), file the question with `sd 
 Record an answer with `sd task note N "<ruling>" --kind decision --answers <note>`: a bare decision leaves the question in Decisions waiting (sd:5014).
 Notify the operator (PushNotification in Claude Code) only for a critical question; other decisions wait on the dashboard.
 Write a park trigger as an sd item that must reach done, or a named measurement with an owner and a date: two free-text triggers fired unnoticed (sd:2453, sd:3355).
-When the operator asks for status (`sd-status`, `sd today`, "status", "what next"), run /sd-next: one report shape across sessions.
 Name every work item with its repo, as `system sd:5103` or `pack sd:5098`: items live in several repos.
 Run every step yourself; ask the operator to run a command only when no tool can, such as an interactive login.
 When a step keeps failing or repeating by hand, codify it in a script wrapper instead of handing it over.
