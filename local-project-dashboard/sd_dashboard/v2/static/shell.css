@@ -42,6 +42,8 @@ html, body { overflow-x: clip; }
  * The OS chevron gives way to the shared one; an option takes its select's face, so a filter's list stays small. */
 @supports (appearance: base-select) {
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))), :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) { appearance: base-select; }
+  /* A base-select box is inline-flex with align-items normal, so its label rode the top of the pill (sd:5460). */
+  :where(select:not(.tile-f, [multiple], [size]:not([size="1"]))) { align-items: center; }
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker-icon { display: none; }
   :where(select:not(.tile-f, [multiple], [size]:not([size="1"])))::picker(select) {
     margin-block: var(--space-3xs); padding: var(--space-2xs); border: var(--rule-hair) solid var(--color-rule);
