@@ -262,7 +262,7 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     const offWhy = o => !o.control ? (DOC?.controls?.error ? `the provider registry was not read: ${DOC.controls.error}` : 'not in the provider registry')
       : o.revision ? true : 'the page holds no registry revision';
     C.register(
-      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', risk: 'undo', executes: true, primary: () => true,
+      { id: 'providers.configure', on: 'provider', label: 'Configure', does: 'Saves the enabled providers and role orders; Undo restores the old ones.', key: 'f', icon: 'settings', risk: 'undo', executes: true, primary: () => true,
         when: offWhy, fields: configureFields, consequence: () => 'Saves the enabled choices and both automatic role orders together, as the registry reads them now.',
         cli: () => 'sd providers configure --file CONFIG.json', run: (o, v) => configure(o, v) },
       { id: 'bill.cap', on: 'bill', label: 'Cap', does: o => o.control?.write === 'clear' ? 'Clears the legacy cap on this bill; this cannot be undone.' : 'Sets a monthly cap on this bill; Undo restores the old cap.', key: 'p', risk: 'undo', executes: true, primary: () => true,

@@ -398,7 +398,7 @@ addEventListener('DOMContentLoaded', () => {
       run: o => landing(reconcile(o), out => out.unknown
         || `Outcome of note ${o.note} recorded · ${out.exit_code == null ? 'no exit code' : `exit ${out.exit_code}`}`) },
     // The journal (sd:2180). build: output reads /api/executions/<note>, as v1 Operations > Commands does.
-    { id: 'command.output', on: 'command', label: 'Show output', does: 'Reads the run\'s saved output and shows it in Details.', key: 'o', risk: 'safe', primary: () => true,
+    { id: 'command.output', on: 'command', label: 'Show output', does: 'Reads the run\'s saved output and shows it in Details.', key: 'o', icon: 'terminal', risk: 'safe', primary: () => true,
       when: o => ev(o).source === 'runner' ? 'a runner record keeps its log in the retained clone, not in the execution log directory'
         : ev(o).expired ? `the output expired ${ev(o).expired}` : true,
       run: o => landing(readOutput(o), () => `Output of note ${o.note} shown in Details`) },

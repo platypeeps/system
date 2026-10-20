@@ -36,7 +36,7 @@
   // not found": Retry is not the row's act, and it asks first, naming the exit, so a path fixed outside the dashboard can be
   // tested (sd:3392). run(o) is the page's write; it words the answer with answered().
   function retry({ job, run }) {
-    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', risk: 'safe', bulk: true,
+    return { id: 'jobs.retry', on: 'job', label: 'Run now', does: 'Starts the job now; after a failure, this reruns it.', key: 't', icon: 'play', risk: 'safe', bulk: true,
       primary: o => !!job(o).failed && job(o).exit !== 127,
       when: o => { const j = job(o), c = j.capability; return !c ? (j.failed || 'no failed run to retry') : c.allowed || c.reason || 'launchd refuses a retry now'; },
       askFirst: o => job(o).exit === 127,
@@ -60,21 +60,21 @@
   // Print: launchd's whole record of the job, copy only. It is the row's act after exit 127, where Retry is not (sd:3392).
   // `job(o)` names { service, exit }.
   function printJob({ job }) {
-    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
+    return { id: 'jobs.print', on: 'job', label: 'Print', does: 'Gives the line that prints launchd\'s full record of the job.', key: 'p', icon: 'terminal', risk: 'safe', executes: false, primary: o => job(o).exit === 127,
       when: o => !!job(o).service || 'the row names no launchd service', cli: o => `launchctl print ${job(o).service}`,
       run: () => 'Copy it into a terminal: the dashboard does not show the whole launchd record' };
   }
 
   // Show assignment: `sd assignments get` prints what the page's Details show, so the line is copy only. run(o) shows it.
   function showAssignment({ primary = () => true, run }) {
-    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', does: 'Shows the assignment\'s record in Details.', key: 'o', risk: 'safe', primary, executes: false,
+    return { id: 'asg.get', on: 'assignment', label: 'Show assignment', does: 'Shows the assignment\'s record in Details.', key: 'o', icon: 'clipboard-list', risk: 'safe', primary, executes: false,
       cli: o => `sd assignments get ${o.n}`, run };
   }
 
   // Open a pull request on GitHub, in a new tab, from a pull request row or a review of one (`on`). `pr(o)` names
   // { repo: 'owner/name', number, url }.
   function openPullRequest({ on = 'pull request', pr, primary = () => true }) {
-    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', does: 'Opens the pull request on GitHub in a new tab.', key: 'o', risk: 'safe', primary,
+    return { id: on === 'pull request' ? 'pr.open' : `${on}.open`, on, label: 'Open on GitHub', does: 'Opens the pull request on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary,
       when: o => !!(pr(o).repo && pr(o).number) || 'the row names no pull request',
       cli: o => `gh pr view ${pr(o).number} --repo ${pr(o).repo} --web`,
       run: o => { window.open(pr(o).url || `https://github.com/${pr(o).repo}/pull/${pr(o).number}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } };
@@ -92,7 +92,7 @@
       const bad = s.error || s.trackers.filter(t => !t.ok && t.configured).map(t => `${t.tracker}: ${t.reason || 'failed'}`)[0];
       if (bad) window.shell.toast(`Shadow sync ended with a problem: ${bad}`);
     }, e => window.shell.toast(`The sync's state was not read: ${e.message}`)), SYNC_POLL);
-    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', does: 'Runs shadow sync now, for up to 2 minutes, then reads again.', key: 'r', risk: 'safe', primary: () => true,
+    return { id: 'collector.sync', on: 'collector', label: 'Re-run collector', does: 'Runs shadow sync now, for up to 2 minutes, then reads again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true,
       cli: () => 'sd shadow sync --max-seconds 120',
       run: () => window.shell.post('/api/shadow/sync', {}).then(() => { wait(); return `Shadow sync started · ${page} reads again when it ends`; }) };
   }

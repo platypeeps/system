@@ -373,8 +373,10 @@ addEventListener('DOMContentLoaded', () => {
       : t.nextDue === null ? 'it repeats: 5 completes it and ends the series, since its rule gives no next date'
       : 'it repeats: 5 completes it and opens the next occurrence';
     const L = legal(t, s); return L.ok || L.reason; };
+  // sd:5457: each move's icon names the status it moves to, so the row's act reads without its label.
+  const STATUS_ICON = { planning: 'notebook-pen', ready: 'flag-triangle-right', in_progress: 'play', blocked: 'ban', done: 'check' };
   const STATUS_CMD = Object.fromEntries(STATUSES.map(([s, name], i) => [s, {
-    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: 'kanban', bar: false,
+    id: `item.status.${s}`, on: 'item', label: `Status → ${name}`, key: String(i + 1), risk: 'undo', bulk: true, icon: STATUS_ICON[s], bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === s && !(s === 'done' && repeats(T(o))),
     when: o => { const t = T(o); return t ? moveOn(s, t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, s)),
@@ -389,7 +391,7 @@ addEventListener('DOMContentLoaded', () => {
   // on a key that is on, so the two `when` tests split on repeats() and never are both on. Not bulk: a picked repeating
   // row is skipped with its reason (keys below).
   const completeOn = t => { if (!repeats(t)) return 'the task does not repeat; Status → Done completes it'; const L = legal(t, 'done'); return L.ok || L.reason; };
-  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-check', bar: false,
+  const COMPLETE = { id: 'item.complete', on: 'item', label: 'Done → next occurrence', key: '5', risk: 'confirm', executes: true, icon: 'calendar-clock', bar: false,
     primary: o => view === 'list' && NEXT[T(o)?.status] === 'done' && repeats(T(o)),
     when: o => { const t = T(o); return t ? completeOn(t) : 'the task is no longer listed'; },
     cli: o => rowOr(o, t => cliMove(t, 'done')),
@@ -1349,7 +1351,7 @@ addEventListener('DOMContentLoaded', () => {
   // POST /api/tasks/sweep {realm} starts that realm's sweep in the background (sd_dashboard/sweep.py); a 409 names the run going. It asks
   // first: the run files a brief and followups and saves drafts, and takes up to an hour.
   C.register({ id: 'realm-sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs this realm\'s sweep headless: a brief, followups and drafts; sends nothing.',
-    risk: 'safe', askFirst: true, executes: true, primary: () => true,
+    icon: 'play', risk: 'safe', askFirst: true, executes: true, primary: () => true,
     when: o => { const w = sweepOf(o); return !w ? 'the sweep was not read' : w.error || (w.running ? 'a sweep is running now' : true); },
     consequence: o => `Reads the ${o.id === 'sweep:work' ? 'work mail, Drive, Notion, Jira and GitHub' : 'personal mail and My Drive'} since the last run, files a dated brief and sd followups, and saves Gmail drafts. Nothing is sent or committed. Up to 60 min.`,
     cli: o => sweepOf(o)?.command || `python3 -m sd_dashboard.realm_sweep run ${String(o.id).slice(6)}`,

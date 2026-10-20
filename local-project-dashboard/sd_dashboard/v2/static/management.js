@@ -628,7 +628,7 @@ function registerCommands() {
   const C = shell.commands;
   C.register(
     // Repo rows: the two sd-db verbs, each an Undo-able flip of one column. build: they post /api/repos/<verb>.
-    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
+    { id: 'repo.runner-merge', on: 'repo', label: 'Switch runner-merge', does: 'Switches runner merge between auto and manual; Undo switches it back.', key: 'm', icon: 'git-merge', risk: 'undo', bulk: true, primary: o => o.row.managed === 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
       cli: o => `${SDDB} repo runner-merge ${shq(o.path)} ${o.row.merge === 'auto' ? 'manual' : 'auto'}`, executes: true,
       run: o => flipRepo('runner-merge', o), undo: undoOf },
     { id: 'repo.managed', on: 'repo', label: 'Switch managed', does: 'Switches whether sd manages this repo; Undo switches it back.', key: 'g', risk: 'undo', bulk: true, primary: o => o.row.managed !== 'yes', when: o => o.row.registered || 'not registered in sd-db: sd-db repo add registers it first',
@@ -639,7 +639,7 @@ function registerCommands() {
       cli: o => `${SDDB} repo lane-host ${shq(o.path)} hub`,
       run: o => { location.href = `?repo=${encodeURIComponent(o.path)}#view=repos`; return `Move lane: ${o.label}'s settings page opens`; } },
     // Pull is copy only (repos_screen.py): the dashboard never pulls a checkout it did not open. when() carries v1's refusals.
-    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
+    { id: 'repo.pull', on: 'repo', label: 'Pull', does: 'Gives a git pull line to copy; the dashboard never pulls.', key: 'l', icon: 'download', risk: 'safe', executes: false, primary: o => o.row.git?.state === 'behind',
       when: pullWhy, cli: o => `git -C ${shq(o.row.git ? o.row.git.path : o.path)} pull --ff-only`, run: () => 'Copy it into a terminal: the dashboard never pulls' },
     // sd:5064: a codex review of the repository, in the background; the backend reviews only a registered checkout.
     window.commands.adversarialReview('repo', { payload: o => ({ kind: 'repo', target: o.path }), when: registeredWhy }),
@@ -668,12 +668,12 @@ function registerCommands() {
         return window.shell.post('/api/adversarial/settings', changed).then(async () => { await reread(); return `Deep review settings saved · ${Object.keys(changed).map(k => k.split('.').pop()).join(', ')}`; }); } },
     // Land (sd:5104): the preview first, in the confirm, then the write with the preview's revision (land.py). A changed
     // Items field previews again, so the confirm always shows what lands. build: it posts /api/repos/land.
-    { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', risk: 'confirm', executes: true,
+    { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', icon: 'rocket', risk: 'confirm', executes: true,
       primary: o => !!(o.row.git && (o.row.git.dirty || o.row.git.ahead)), when: landWhy,
       cli: o => `sd-ship -C ${shq(o.path)} lane enqueue --item <n> --title <title> --body-file <body> --expected-head <head> --deliver`,
       // previews: run() reads the preview and asks with it, so the shell's own confirm does not ask first.
       previews: true, run: o => landRepo(o) },
-    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
+    { id: 'sddb.run', on: 'sd-db change', label: 'Run', does: 'Runs this sd-db change on this machine; Undo restores the old value.', key: 'u', icon: 'play', risk: 'undo', primary: () => true, cli: o => o.cmd, executes: true,
       run: o => { dropProposal(o);
         // sd:3465: a channels write answers the render remedy, and its Undo writes the setting back (`back`) over the row the
         // write answered (sd:4632): the library keeps an inbound key the form never posts, so that row is not the posted value.
@@ -681,30 +681,30 @@ function registerCommands() {
         return landing(setRepo(o.verb, o.repo, o.value, o.before), v => `Ran locally · ${o.title}${v?.remedy ? ` · ${v.remedy}` : ''}`, undo); },
       undo: undoOf },
     // sd:5159: copy only. `sd-db repo declare` checks the value with sd-review's own validator before it writes the row.
-    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', risk: 'safe', primary: () => true, executes: false,
+    { id: 'declaration.copy', on: 'declaration change', label: 'Copy', does: 'Gives the sd-db repo declare line that writes this change to the repo row.', key: 'p', icon: 'copy', risk: 'safe', primary: () => true, executes: false,
       cli: o => o.cmd, run: () => 'Copy it into a terminal: the dashboard does not write declarations' },
     ...Object.values(ROUTE).map(([type]) => ({ id: `${type.split(' ')[0].toLowerCase().replace('-', '')}.withdraw`, on: type, label: 'Withdraw', does: 'Drops this proposal from the list; nothing was run.', risk: 'safe', executes: false,
       run: o => { withdraw(o.key, true); return `Proposal withdrawn · ${o.title}`; } })),
     window.commands.showAssignment({ run: o => { selectRow(`${o.id.split(':')[0]}:${o.n}`, true); return `Assignment #${o.n} shown in Details`; } }),
     // build: the item opens in Tasks, whose Details read it.
-    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
+    { id: 'item.show', on: 'item', label: 'Open item', does: 'Opens the work item.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true, cli: o => `sd task show ${o.item}`, executes: false,
       run: o => window.shell.openItem(o.item) },
     { id: 'wt.prune', on: 'worktrees', label: 'Prune', does: 'Removes records of worktrees whose folders are gone; this cannot be undone.', key: 'p', risk: 'confirm', primary: () => true, when: () => 'no dashboard route: run the CLI line', cli: () => 'sd sessions prune --abandoned',
       consequence: o => `Removes ${o.n} worktree registrations whose directories are gone. Branches and files stay.` },
     // Services on this Mac. build: each posts /api/services/<label>/<action> with the service's revision; when() is its capability.
-    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
+    { id: 'svc.restart', on: 'service', label: 'Restart', does: 'Stops and starts the service; what it serves drops for seconds.', key: 't', icon: 'rotate-ccw', risk: 'confirm', primary: () => true, when: o => capWhy(o, 'restart', 'not read'), cli: o => `sd services restart ${o.name}`,
       consequence: o => `Stops and starts ${o.name}. Anything it serves drops for a few seconds.`, run: o => landing(service(o, 'restart'), () => `Restart requested · ${o.label}`) },
     { id: 'svc.stop', on: 'service', label: 'Stop', does: 'Stops the service through launchd; Start brings it back.', key: 's', risk: 'confirm', when: o => capWhy(o, 'stop', o.running || 'not running'), cli: o => `sd services stop ${o.name}`,
       consequence: o => `Stops ${o.name} through launchd. Start brings it back.`, run: o => landing(service(o, 'stop'), () => `Stop requested · ${o.label}`) },
     { id: 'svc.start', on: 'service', label: 'Start', does: 'Starts the service through launchd.', key: 'a', risk: 'safe', when: o => capWhy(o, 'start', !o.running || 'already running'), cli: o => `sd services start ${o.name}`,
       run: o => landing(service(o, 'start'), () => `Start requested · ${o.label}`) },
     // sd:5108: one request row in the hub database; each satellite's next repo-sync follow run (every 5 min) answers it.
-    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', risk: 'confirm', primary: () => true,
+    { id: 'sats.refresh', on: 'satellite refresh', label: 'Refresh satellites', does: 'Asks each satellite to follow the hub\'s pins and run machine-setup update --apply.', icon: 'rotate-ccw', risk: 'confirm', primary: () => true,
       cli: () => 'no CLI: the dashboard writes the refresh.request row', executes: true,
       consequence: () => 'Each satellite, on its next repo-sync follow run (every five minutes), drains its lanes, follows the hub\'s pins and runs machine-setup update --apply, then writes its result here.',
       run: () => landing(refreshSatellites(), v => `Refresh requested · ${v.id}`) },
     // sd:5405: local-shared-upload's signer, run by the server; the link is one setting row and the toast never holds it.
-    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it here.', risk: 'confirm',
+    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it here.', icon: 'link-2', risk: 'confirm',
       primary: () => true, cli: () => 'no CLI: the dashboard signs the link with local-shared-upload and keeps it as the dashboard.shared_upload_link row', executes: true,
       sends: () => 'aws configure export-credentials --profile <SHARED_UPLOAD_PROFILE>',
       consequence: () => `Signs a new link for uploads under ${UPLOAD?.prefix || 'inbox/'} that works for 7 days and shows it here in place of the current one. Links already handed out keep working until they expire.`,
@@ -715,7 +715,7 @@ function registerCommands() {
       run: o => landing(job(o, 'retry'), out => window.commands.answered(out, o.job, 'retried', `Run started · ${o.job}`)) }),
     // build (sd:3388): Cancel is `sd jobs cancel`, which sends SIGTERM to the running job through launchd. It posts
     // /api/jobs/<name>/cancel with the row's revision; the confirm names the job, since the run stops part way.
-    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', risk: 'confirm', primary: o => o.running,
+    { id: 'jobs.cancel', on: 'job', label: 'Cancel', does: 'Stops the running job with SIGTERM; the stopped run cannot resume.', key: 'x', icon: 'ban', risk: 'confirm', primary: o => o.running,
       when: o => capWhy(o, 'cancel', o.running || 'not running'), cli: o => `sd jobs cancel ${o.job}`, sends: o => `launchctl kill SIGTERM ${o.service}`,
       consequence: o => `Sends SIGTERM to ${o.job}${o.pid ? ` (PID ${o.pid})` : ''} through launchd. The run stops part way through; its next scheduled run still starts.`,
       run: cancelJob },
@@ -723,7 +723,7 @@ function registerCommands() {
     window.commands.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
     // sd:5126: End session sends SIGTERM to a Claude session on this Mac, so a full builder cap can be cleared. A subagent
     // runs inside its session's process, so a stalled agent ends with its session; the confirm names each agent that does.
-    { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', risk: 'confirm',
+    { id: 'cs.end', on: 'claude session', label: 'End session', does: 'Sends SIGTERM to the Claude session; its turn and every agent under it stop.', key: 'e', icon: 'square', risk: 'confirm',
       primary: o => o.row.agents.some(a => a.state === 'stalled'), when: o => o.pid != null || 'claude agents gave no pid, so there is nothing to signal',
       cli: o => `kill -TERM ${o.pid}`, executes: true, sends: o => `POST /api/claude-sessions/end {"id":"${o.sid}","pid":${o.pid}}`,
       consequence: endWhat, run: o => landing(endSession(o), v => `${v.ended === 'already gone' ? 'Already gone' : 'End requested'} · ${o.label}`) },

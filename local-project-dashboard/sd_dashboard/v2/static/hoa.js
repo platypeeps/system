@@ -477,8 +477,8 @@ let polling = 0;
           v => reader.reread().then(() => `Draft saved · sd:${o.item} · "${v.draft.subject}" · in Gmail Drafts, not sent`),
           err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you draft again`);
             reader.reread(); throw err; }) },
-      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
-      { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
+      { id: 'item.open', on: 'item', label: 'Open item', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
+      { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', icon: 'message-square', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },
     );
 
@@ -553,7 +553,7 @@ let polling = 0;
     const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/hoa/alarm)';
     C.register(
       { id: 'alarm.ack', on: 'alarm', label: 'Acknowledge', does: 'Hides the event here only; the Mission portal is not told. Undo shows it.',
-        key: 'a', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
+        key: 'a', icon: 'check', risk: 'undo', bulk: true, primary: o => !o.acked, when: o => o.acked ? 'already acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, true).then(() => `Acknowledged: ${o.label}. The Acknowledged view lists it.`), undo: o => ack(o, false) },
       { id: 'alarm.unack', on: 'alarm', label: 'Unacknowledge', does: 'Shows the event in the list again. Undo acknowledges it again.',
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
@@ -581,7 +581,7 @@ let polling = 0;
     // off reason is Retry's own; the toast names what started and what did not.
     const jobRows = () => SRC.filter(r => r.job).map(r => C.get(`source:${r.source}`)).filter(Boolean);
     const startable = () => jobRows().filter(o => retry.when(o) === true);
-    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', risk: 'safe', primary: () => true, executes: true,
+    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: true,
       does: 'Starts every source\'s refresh job that can start, as each row\'s Run now does.',
       when: () => { const all = jobRows(); return !all.length ? 'no source has a refresh job' : startable().length ? true : all.map(o => `${o.label}: ${retry.when(o)}`).join(' · '); },
       askFirst: () => startable().some(o => retry.askFirst(o)),
@@ -604,7 +604,7 @@ let polling = 0;
     // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.
     C.register({ id: 'sweep.run', on: 'sweep', label: 'Run sweep', does: 'Runs the HOA sweep headless: drafts followups, never sends; lands through the lane.',
-      key: 'w', risk: 'safe', askFirst: true, executes: true, primary: () => true,
+      key: 'w', icon: 'play', risk: 'safe', askFirst: true, executes: true, primary: () => true,
       when: () => SWEEP?.error || (SWEEP?.running ? 'a sweep is running now' : true),
       consequence: () => 'Reviews the week, both Drives and the alias mail, updates the status and the VP brief, saves followups as Gmail drafts, and hands the commit to the lane. Up to 90 min.',
       cli: () => SWEEP?.command || 'python3 tools/sweep.py run', sends: () => 'POST /api/hoa/sweep {}',

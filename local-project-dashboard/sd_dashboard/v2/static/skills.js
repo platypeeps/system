@@ -402,7 +402,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     run: o => write(o, 'promote', `promotion to ${o.path} filed`, out => `Promotion of ${o.id} to ${o.path} filed${itemOf(out)}`, { path_name: o.path }) };
   function registerCommands() {
     C.register(
-      { id: 'skill.try', on: 'skill', label: 'Try', does: 'Starts a 30-day trial at the next install; it cannot end early.', key: 't', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
+      { id: 'skill.try', on: 'skill', label: 'Try', does: 'Starts a 30-day trial at the next install; it cannot end early.', key: 't', icon: 'flask-conical', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
         when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : asked(o, 'trial queued'),
         consequence: o => `This starts a 30-day trial of ${o.id}; it installs at the next sd install. No verb ends a trial early.`,
         cli: o => `sd skill try ${shq(o.id)}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
@@ -411,20 +411,20 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         cli: o => `sd skill review ${shq(o.id)}`, run: o => write(o, 'review', 'review filed', out => `Review of ${o.id} filed${itemOf(out)}`) },
       { id: 'skill.promote', on: 'skill', label: 'Promote', does: 'Opens the form that picks a path to promote this skill to.', key: 'p', risk: 'safe', fills: true, when: o => sk(o).status !== 'path' || `on ${sk(o).paths.join(', ')} already`,
         cli: o => `sd skill promote ${shq(o.id)} --path PATH`, run: o => { select(o.id, true); openPromote(sk(o)); return null; } },
-      { id: 'skill.demote', on: 'skill', label: 'Demote', does: 'Files a task in Tasks that moves the skill off every path.', key: 'd', risk: 'safe', askFirst: true, primary: o => sk(o).status === 'path' && !total(sk(o)),
+      { id: 'skill.demote', on: 'skill', label: 'Demote', does: 'Files a task in Tasks that moves the skill off every path.', key: 'd', icon: 'arrow-down', risk: 'safe', askFirst: true, primary: o => sk(o).status === 'path' && !total(sk(o)),
         when: o => sk(o).status === 'path' ? asked(o, 'demotion filed') : 'not on a path',
         consequence: o => `This files a task in Tasks to move ${o.id} from skills/ to contrib/ and off every path, with one pull request. Close the task there to drop it.`,
         cli: o => `sd skill demote ${shq(o.id)}`, run: o => write(o, 'demote', 'demotion filed', out => `Removal of ${o.id} from paths filed${itemOf(out)}`) },
       { id: 'skill.reimport', on: 'skill', label: 'Re-import', does: 'Reads the skill\'s source again and shows the intake report.', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
         cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
-      { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', does: 'Reads this user skill\'s source and shows the intake report.', key: 'i', risk: 'safe', primary: () => true,
+      { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', does: 'Reads this user skill\'s source and shows the intake report.', key: 'i', icon: 'download', risk: 'safe', primary: () => true,
         cli: o => `sd skill intake ${shq(o.name)} --scope user`, run: o => { showAdopt(); return evaluate('adopt', { source: o.name, scope: 'user' }); } },
       { id: 'skill.schedule', on: 'skill', label: 'Schedule', does: 'Says why not: a scheduled job is a launchd agent, and sd adds none.', key: 's', risk: 'safe', executes: false, when: o => sk(o).status !== 'contrib' || 'not installed · try it first',
         cli: () => 'no sd verb: a job is a launchd agent', run: () => 'No sd verb adds a job: a job is a launchd agent' },
       // build: applying review notes lives on the review item's page, where the notes are.
       { id: 'skill.apply', on: 'skill', label: 'Apply', does: 'Applies review notes to the skill; run it from the review item.', key: 'a', risk: 'confirm', when: () => 'apply review notes from the review item',
         cli: () => 'sd skill apply ITEM NOTE…' },
-      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Gives the line that reads codex sessions into skill use records.', key: 's', risk: 'safe', executes: false, primary: () => true,
+      { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Gives the line that reads codex sessions into skill use records.', key: 's', icon: 'search', risk: 'safe', executes: false, primary: () => true,
         cli: () => 'sd skill scan', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd skill scan' },
     );
   }

@@ -36,10 +36,10 @@
       when: o => off(o) || true, cli: CLI,
       run: o => post(o.id, FOREVER, o.seen).then(() => `Ignored until it changes · ${o.label}`),
       undo: o => post(o.id, null, o.seen) }));
-    C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', does: 'Shows the row again now; Undo snoozes it again.', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
+    C.register({ id: 'snoozed row.unsnooze', on: 'snoozed row', label: 'Unsnooze', does: 'Shows the row again now; Undo snoozes it again.', key: 's', icon: 'bell-ring', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
       run: o => post(o.row, null, o.seen).then(() => `Shows again · ${o.label}`),
       undo: o => post(o.row, o.until, o.seen) });
-    if (ignore) C.register({ id: 'ignored row.unignore', on: 'ignored row', label: 'Unignore', does: 'Shows the row again now; Undo ignores it again.', key: 's', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
+    if (ignore) C.register({ id: 'ignored row.unignore', on: 'ignored row', label: 'Unignore', does: 'Shows the row again now; Undo ignores it again.', key: 's', icon: 'eye', risk: 'undo', bulk: true, primary: () => true, cli: CLI,
       run: o => post(o.row, null, o.seen).then(() => `Shows again · ${o.label}`),
       undo: o => post(o.row, FOREVER, o.seen) });
   }

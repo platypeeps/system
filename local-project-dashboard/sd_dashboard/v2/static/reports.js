@@ -425,14 +425,14 @@ function registerCommands() {
     // with the library's reason, for a report an open followup holds or whose fields cannot be read.
     // The design's risk, 'undo': reporting.reopen moves the report back to the status it was acknowledged from (sd:2395). It
     // was 'confirm' while sd-db had no verb that reopens a report (operator ruling, sd:2121).
-    { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
+    { id: 'report.ack', on: 'report', label: 'Acknowledge', does: 'Marks the report done; Undo puts it back.', key: 'a', icon: 'check', risk: 'undo', journal: o => o.n, bulk: true, primary: o => o.open, executes: true,
       when: o => !o.open ? 'already acknowledged' : !o.source.fields_read ? `its fields cannot be read: sd reports acknowledge ${o.n} finishes it`
         : o.source.followups.length ? `an open followup holds it: sd note resolve ${o.source.followups[0]}` : true,
       fields: () => [{ name: 'reason', label: 'Reason (optional)', placeholder: 'why it can close', help: 'Written on the report as a comment just before it is acknowledged. Leave it empty for none.' }],
       cli: (o, v = {}) => `${v.reason ? `sd task note ${o.n} ${shq(v.reason)} && ` : ''}sd reports acknowledge ${o.n}`, run: acknowledge, undo: reopen },
     // sd:5064: an open followup holds the report; this resolves it, as sd note resolve does, so Acknowledge can follow. No
     // route reopens a note, so it asks first.
-    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', risk: 'confirm', journal: o => o.n, executes: true,
+    { id: 'report.resolve', on: 'report', label: 'Resolve followup', does: 'Resolves the followup that holds this report.', key: 'e', icon: 'check-check', risk: 'confirm', journal: o => o.n, executes: true,
       primary: o => o.open, when: o => !o.open ? 'already acknowledged' : !o.source.followups.length ? 'no open followup holds it' : true,
       consequence: o => `Note ${o.source.followups[0]} is resolved. No dashboard control reopens it.`,
       cli: o => `sd note resolve ${o.source.followups[0] ?? '<note>'}`, sends: o => `POST /api/notes/${o.source.followups[0]}/resolve {revision}`, run: resolveFollowup },

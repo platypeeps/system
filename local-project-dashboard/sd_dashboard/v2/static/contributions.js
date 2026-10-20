@@ -108,13 +108,13 @@ addEventListener('DOMContentLoaded', () => {
     .then(v => { landed(o, { hidden }); reread(); return v; }, e => { load(); throw e; });
   function registerCommands() {
     C.register(
-      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', risk: 'confirm', bulk: true, primary: () => true,
+      { id: 'contribution.ack', on: 'contribution', label: 'Acknowledge', does: 'Clears this row\'s attention events; this cannot be undone.', key: 'a', icon: 'check', risk: 'confirm', bulk: true, primary: () => true,
         when: o => o.event_ids.length ? true : 'no attention event on this row',
         consequence: o => `This clears ${plural(o.event_ids.length, 'attention event')} on ${o.title}. No verb restores them; it completes no task and sends nothing.`,
         cli: ackCli,
         run: o => window.shell.post('/api/contributions/acknowledge', { key: o.key, revision: o.revision, event_ids: o.event_ids })
           .then(() => { landed(o, { event_ids: [] }); reread(); return `Acknowledged · ${o.label}`; }, e => { load(); throw e; }) },
-      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', risk: 'safe', executes: false, primary: () => true,
+      { id: 'contribution.nudge', on: 'contribution', label: 'Draft nudge', does: 'Gives a gh line to post a nudge; the dashboard posts nothing.', key: 'd', icon: 'message-square', risk: 'safe', executes: false, primary: () => true,
         when: o => !o.url ? 'not filed on GitHub' : o.lane !== 'awaiting_them' ? 'the next step is yours, not theirs' : true,
         cli: o => `gh ${isIssue(o) ? 'issue' : 'pr'} comment ${o.url} --body-file nudge.md`,
         run: () => 'Copy the line and write nudge.md: the dashboard posts nothing' },
