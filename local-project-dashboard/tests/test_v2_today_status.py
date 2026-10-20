@@ -86,12 +86,14 @@ def row(n, **changes):
 
 
 def doc(**changes):
-    found = {"now": "2026-10-19T16:00:00Z", "attention": [], "decisions": [],
+    found = {"now": "2026-10-19T16:00:00Z", "attention": [], "operations": {"host": None, "findings": [], "gate": None},
+             "decisions": [],
              "landing": {"entries": [], "gate": {"holders": [], "waiters": [], "error": None}},
              "delivered": [], "planned": [], "blocked": [], "unscheduled": [], "followups": [], "work": [],
              "closed_by_hand": []}
     found.update(changes)
-    found["summary"] = {**{key: len(found[key]) for key in today.ORDER if key != "landing"},
+    found["summary"] = {**{key: len(found[key]) for key in today.ORDER if key not in ("landing", "operations")},
+                        "operations": len(found["operations"]["findings"]),
                         "landing": len(found["landing"]["entries"]), "planned_this_week": len(found["planned"]),
                         "closed_by_hand": len(found["closed_by_hand"]), "review_questions": 0}
     return found
