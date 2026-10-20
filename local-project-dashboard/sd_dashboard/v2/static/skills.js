@@ -485,7 +485,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   }
   document.getElementById('track-btn').addEventListener('click', () => showTrack());
   const REPO_COMMANDS = [
-    { id: 'skill.intake.refresh', on: 'tracked repo', label: 'Refresh', does: 'Fetches the repository and lists its new and changed skills; installs nothing.', key: 'e', risk: 'safe', primary: () => true,
+    { id: 'skill.intake.refresh', on: 'tracked repo', label: 'Refresh', does: 'Fetches the repository and lists its new and changed skills; installs nothing.', key: 'e', risk: 'safe', icon: 'rotate-ccw', primary: () => true,
       when: o => REFRESH[o.url]?.wait ? 'refreshing now' : true,
       cli: o => `sd skill intake --refresh ${shq(o.url)}`, run: o => { select(`repo:${o.url}`, true); return refresh(o); } },
     { id: 'skill.intake.untrack', on: 'tracked repo', label: 'Remove', does: 'Stops tracking this repository; its installed skills stay. Undo tracks it again.', key: 'm', risk: 'undo',
@@ -494,7 +494,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         return { text: `Stopped tracking ${o.url}; its installed skills stay`, removed: out.removed }; }, unknown(o, 'Removal')),
       // Undo tracks the repository again with the scope it had; its last refresh time and result are not restored.
       undo: (o, v) => trackPost(o.url, v?.removed?.scope || o.scope).then(() => { repoReader.reread(); }, e => { repoReader.load(); throw e; }) },
-    { id: 'skill.intake.track', on: 'untracked repo', label: 'Track', does: 'Adds this repository to the tracked list, so Refresh reads it.', key: 't', risk: 'safe', primary: () => true,
+    { id: 'skill.intake.track', on: 'untracked repo', label: 'Track', does: 'Adds this repository to the tracked list, so Refresh reads it.', key: 't', risk: 'safe', icon: 'plus', primary: () => true,
       cli: o => `sd skill intake --track ${shq(o.url)}`, run: o => trackPost(o.url).then(() => { repoReader.reread(); return `Tracking ${o.url}`; }, unknown(o, 'Tracking')) },
   ];
   repoRows.addEventListener('click', e => {
