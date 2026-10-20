@@ -257,6 +257,8 @@ SECRETS_GLOBS=".env .env.local .env.development .env.staging .env.production .en
 # Third-party checkouts and test fixtures under ~/repos, skipped in critical
 # mode only — they are full of sample keys and other people's material.
 # Rule for adding: not your remote AND no local files of yours inside.
+# Test files and fixture folders in any repo are skipped too (sd:5493): their keys are fakes, and one new fixture
+# failed the Monday run until its path was listed. A real key pasted into a test goes unflagged; -a does not change it.
 CRITICAL_EXCLUDE_PATHS="
 .gemini/extensions
 .codex/.tmp
@@ -264,7 +266,10 @@ CRITICAL_EXCLUDE_PATHS="
 .codex/plugins
 .codex/vendor_imports
 .codex/process_manager
-repos/platypeeps/sd-ai-command-pack/tests
+repos/**/tests
+repos/**/fixtures
+repos/**/test_*.py
+repos/**/*_test.*
 "
 # Per-user additions live in <config>/scan-for-secrets/scan-for-secrets.conf
 # (<config> is $SYSTEM_TOOLS_CONFIG, default ~/.config/system; copy
@@ -1295,7 +1300,11 @@ rg_args() { # shared ripgrep flags: unignored + hidden (secrets live in
   fi
   if [ "$MODE" = critical ]; then
     set -- "$@" -g "!.bash_profile"
+    # set -f: the entries are ripgrep globs; unquoted, the shell expanded repos/**/tests to the folders it
+    # found and the glob was lost (sd:5493). Back on after: targets, in the same subshell, globs the dotfiles.
+    set -f
     for p in $CRITICAL_EXCLUDE_PATHS; do set -- "$@" -g "!$p" -g "!$p/**"; done
+    set +f
   fi
   printf '%s\n' "$@"
 }
