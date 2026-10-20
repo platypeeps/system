@@ -43,6 +43,16 @@ class TheSnoozeRoute(BrowserSession):
         self.assertEqual(self.post("/api/snooze", {"page": "health", "row": "br:system", "until": later(days=7), "seen": "0f0f"})[0], 200)
         self.assertEqual(list(self.held()), ["health:br:system"])
 
+    def test_ignore_is_a_snooze_with_no_end_and_a_null_time_shows_the_row_again(self):
+        """sd:5470: Health's Ignore posts `forever`; it binds to `seen` like any snooze, and needs one."""
+        row = {"page": "health", "row": "dep:/c/alpha", "until": "forever", "seen": "0f0f"}
+        self.assertEqual(self.post("/api/snooze", {**row, "seen": None})[0], 400)
+        status, _, body = self.post("/api/snooze", row)
+        self.assertEqual((status, body), (200, {"key": "health:dep:/c/alpha", "until": "forever"}))
+        self.assertEqual(self.held(), {"health:dep:/c/alpha": {"until": "forever", "seen": "0f0f"}})
+        self.assertEqual(self.post("/api/snooze", {**row, "until": None})[2], {"key": "health:dep:/c/alpha", "until": None})
+        self.assertEqual(self.held(), {})
+
     def test_a_request_it_cannot_judge_writes_nothing(self):
         good = {"page": "today", "row": "ahead:pushy:1", "until": later(hours=1), "seen": "0f0f"}
         for bad in ({**good, "page": "tasks"}, {**good, "row": ""}, {**good, "row": 7}, {**good, "until": 3600},

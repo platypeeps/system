@@ -3,7 +3,8 @@
 // started the first time the view opens; PAGE_VIEWS declares them to the shell's view switch, which owns #view=<id>. The
 // lamps, the badge and each view's count are /api/health/summary, read at start and again after a view's read; it waits on
 // no walker, so the strip draws before any view's rows. Show draws the rows that want something (warning, caution,
-// unknown) by default; All adds the ok and queued ones, and ?show=all keeps it.
+// unknown) by default; All adds the ok and queued ones, and ?show=all keeps it. Ignored (sd:5470) lists the rows Ignore hid,
+// a snooze with no end, instead of the areas' rows, each with Unignore; ?show=ignored keeps it.
 // Rows: the areas health_screen.document builds from the fleet child (worktree registrations),
 // Operations > Ports' reader (ports), protection.rows (branch protection, and the
 // alerts behind Dependencies and Security, sd:2205 and sd:2206), the nightly credentials heartbeat (sd:2203) and
@@ -11,7 +12,8 @@
 // Ported from the design source's products/system/designs/v2/health page, its stylesheet and script, at d82daa1.
 // An area with no reader shows as unknown with what it does not read, never as a clean lamp.
 // Most fixes are a CLI line for Copy; Re-check reads the document again. The writes are Re-run collector, which starts
-// the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, and
+// the server's shadow sync (sd:2894), Snooze (sd:1896): an area's `snoozed` rows leave it, and snooze.js draws them, Ignore
+// (sd:5470), the same write with no end, whose rows Show ignored lists, and
 // the cleanups (sd:3393, sd:5105) and Clean all safe, which lists every ready one first, each behind a confirm that names what goes, posting the row's revision, and a service's
 // Restart and Start (sd:3707), each a confirm that posts /api/services/<label>/<action>, `sd services`' own code.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
@@ -49,14 +51,15 @@
     { id: 'jobs', label: 'Jobs', api: '/api/health/jobs', areas: ['cred', 'mir'] },
   ];
 
-  let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], selected = null, query = '';
+  let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], IGNORED = [], selected = null, query = '';
   let SUMMARY = null, VIEW = null, showing = 'findings';
   const S = {}, readers = {}; // each view's last reading and its reader
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
-  // Show: the rows that want something, or all of them. A filter on ok or queued names those rows, so it shows them.
+  // Show: the rows that want something, or all of them, or the ignored ones. A filter on ok or queued names those rows, so it shows them.
   const QUIET = new Set(['ok', 'queued']);
-  const drawn = r => showing === 'all' || !QUIET.has(r.state) || F.state.has(r.state);
+  const drawn = r => showing !== 'findings' || !QUIET.has(r.state) || F.state.has(r.state);
+  const listed = () => showing === 'ignored' ? IGNORED : ROWS;
   const viewOf = area => PAGE_VIEWS.find(v => v.areas.includes(area))?.id;
 
   // The design's size wording, from a count of KiB.
@@ -90,7 +93,7 @@
   const hashView = () => (/(?:^#|&)view=([a-z0-9-]+)/.exec(location.hash || '') || [])[1];
   // A view's reading becomes the page's rows; an unread view has none.
   function use(id) {
-    ({ DOC, AREAS, ROWS, SNOOZED } = S[id] || { DOC: null, AREAS: [], ROWS: [], SNOOZED: [] });
+    ({ DOC, AREAS, ROWS, SNOOZED, IGNORED } = S[id] || { DOC: null, AREAS: [], ROWS: [], SNOOZED: [], IGNORED: [] });
     if (DOC) document.body.dataset.observed = DOC.read; else delete document.body.dataset.observed;
   }
   // A view opens with its own rows, keeping only the Area values it holds; the first time, its reader starts.
@@ -105,7 +108,8 @@
   function filters(sum) {
     const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
     const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}${sum}</div>`;
+    const L = listed();
+    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}${chip('ignored', 'ignored', IGNORED.length)}</div></div>${grp('state', 'State', STATES.filter(s => L.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, L.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, L.filter(r => r.area === a.id).length])) : ''}${sum}</div>`;
   }
 
   function areas() {
@@ -126,6 +130,19 @@
           <td class="fix">${shell.commands.rowActions(r.id)}</td></tr>`)}</tbody></table>` : ''}
       ${a.read && !a.error && quiet(a) && !filtering() ? html`<p class="quiet">${rows.length ? '' : 'Nothing wants you here. '}${plural(quiet(a), 'ok or queued row')} not shown: Show all lists ${quiet(a) === 1 ? 'it' : 'them'}.</p>` : ''}
     </section>`; })}`;
+  }
+
+  // Show ignored (sd:5470): the rows Ignore hid, which the filters narrow, in place of the areas. A row here has no Details,
+  // only Unignore, so it carries no data-id and the selection passes it by.
+  function ignored() {
+    const rows = IGNORED.filter(passes), name = id => AREAS.find(a => a.id === id)?.name;
+    return html`<section class="area" aria-labelledby="h-ignored"><div class="sec-head"><h2 id="h-ignored">${I('eye-off')}Ignored</h2></div>
+      ${rows.length ? html`<table class="ledger" aria-labelledby="h-ignored" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Unignore</th></tr></thead>
+        <tbody>${rows.map(r => html`<tr><td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>
+          <td class="what">${r.what}<span class="detail">${name(r.area)} · ${r.detail}</span></td>
+          <td class="fix">${shell.commands.rowActions(`ignored:${r.id}`)}</td></tr>`)}</tbody></table>`
+        : html`<p class="quiet">${IGNORED.length ? 'No ignored row matches the filter.' : 'No row here is ignored. Ignore on a row hides it until its problem changes.'}</p>`}
+    </section>`;
   }
 
   // What an area draws above its ledger: v1's counts line and warnings, and for Protection the matrix and its table.
@@ -188,20 +205,20 @@
     const q = new URLSearchParams();
     ['state', 'area'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
     if (query) q.set('q', query);
-    if (showing === 'all') q.set('show', 'all');
+    if (showing !== 'findings') q.set('show', showing);
     shell.url(q); // the shell keeps ?row=
   }
   // The open view's panel: its filters, the filter note and its areas. Another view's panel keeps what it last drew.
   function apply() {
     if (!VIEW) return;
-    const on = filtering(), shown = ROWS.filter(passes).length;
-    const total = ROWS.filter(drawn).length;
+    const on = filtering(), shown = listed().filter(passes).length;
+    const total = listed().filter(drawn).length;
     // sd:5469: the count and Clear all end the filter bar, as on Activity; the pressed chips already say what filters.
     const sum = html`<div class="fsum"><span>${shown} of ${total}</span>${on ? html`<button class="linkbtn" type="button" data-clear>Clear all</button>` : ''}</div>`;
-    put($(`body-${VIEW}`), html`${DOC ? filters(sum) : ''}${areas()}`);
+    put($(`body-${VIEW}`), html`${DOC ? filters(sum) : ''}${DOC && showing === 'ignored' ? ignored() : areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
-      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
+      clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : showing === 'ignored' ? 'Nothing is selected: an ignored row has Unignore only. Show findings to pick a row.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
     writeURL();
   }
   function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; $('q').value = ''; lamps(); apply(); return had; }
@@ -234,10 +251,12 @@
     adopt: doc => {
       const areas = doc.areas;
       // Each row carries its area: the filter reads r.area on a.rows as well as on ROWS (sd:3708).
-      areas.forEach(a => { a.rows.forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
-      S[view] = { DOC: doc, AREAS: areas, ROWS: areas.flatMap(a => a.rows), SNOOZED: areas.flatMap(a => a.snoozed) };
+      areas.forEach(a => { [...a.rows, ...a.snoozed].forEach(r => { r.area = a.id; }); a.rows.sort((x, y) => RANK[x.state] - RANK[y.state]); });
+      // An ignored row (sd:5470) is a snooze with no end: Show ignored lists it, not the Snoozed list under the page.
+      const hidden = areas.flatMap(a => a.snoozed), forever = r => r.until === window.snooze.FOREVER;
+      S[view] = { DOC: doc, AREAS: areas, ROWS: areas.flatMap(a => a.rows), SNOOZED: hidden.filter(r => !forever(r)), IGNORED: hidden.filter(forever) };
       if (view === VIEW) use(view);
-      const { ROWS: rows, SNOOZED: snoozed } = S[view], failed = areas.filter(a => a.error || a.stale), source = `/api/health/${view}`;
+      const { ROWS: rows } = S[view], snoozed = hidden, failed = areas.filter(a => a.error || a.stale), source = `/api/health/${view}`;
       return { objects: [...rows.map(r => ({ ...r, label: r.what })), ...snoozed.map(window.snooze.object)],
         state: failed.length ? { kind: 'partial', text: `${failed.map(a => `${a.name}: ${a.error || a.stale}`).join(' · ')}. The other areas are current.`, source }
           : doc.snooze_error ? window.snooze.unread(doc.snooze_error, source) : null };
@@ -384,8 +403,8 @@
       { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );
-    // Snooze (sd:1896) on every row type; an ok row wants nothing, so it has nothing to snooze.
-    window.snooze.register(C, { page: 'health', reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
+    // Snooze (sd:1896) and Ignore (sd:5470) on every row type; an ok row wants nothing, so it has nothing to snooze.
+    window.snooze.register(C, { page: 'health', ignore: true, reread: () => load(), off: o => o.state === 'ok' && 'an ok row has nothing to snooze',
       types: ['check', 'storage folder', 'build output', 'volume', 'worktree registrations', 'unread registrations', 'merged branches', 'merged worktrees', 'port',
         'branch protection', 'dependabot alerts', 'secret scanning', 'credential', 'service', 'dashboard service', 'vault mirror'] });
 
@@ -393,7 +412,7 @@
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
     query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
-    showing = u.get('show') === 'all' ? 'all' : 'findings';
+    showing = ['all', 'ignored'].includes(u.get('show')) ? u.get('show') : 'findings';
     // An ?area= link opens that area's view unless #view= names one. The shell's first shell:view fires after this listener.
     const asked = viewOf([...F.area][0]);
     if (asked && !hashView()) { history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`); shell.view.show(asked); }

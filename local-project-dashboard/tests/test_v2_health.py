@@ -399,6 +399,21 @@ class TheDocument(Collectors, ScreenCase):
         self.assertEqual([(row["id"], row["state"]) for row in worse["rows"]], [("dep:/checkouts/alpha", "warning")])
         self.assertEqual(worse["snoozed"], [])
 
+    def test_an_ignored_row_stays_out_at_any_time_until_its_problem_changes(self):
+        """sd:5470: Ignore is a snooze with no end. It still binds to the problem: a worse one shows again."""
+        def alerts(severity, now=NOW):
+            found = [{**PROTECTION[0], "managed": True, "observed_at": NOW,
+                      "alerts": {"dependabot": {"open": sum(severity.values()), "severity": severity}}}]
+            return health_screen.document(self.connection, now=now, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                          protection=lambda connection: found)
+        snooze(self.connection, "health:dep:/checkouts/alpha", writes.SNOOZE_FOREVER,
+               seen=self.seen("dep:/checkouts/alpha", alerts({"low": 1})), now=NOW)
+        a_year_on = alerts({"low": 1}, now="2027-09-06T12:00:00Z")["areas"][4]
+        self.assertEqual([(row["id"], row["until"]) for row in a_year_on["snoozed"]], [("dep:/checkouts/alpha", "forever")])
+        self.assertNotIn("dep:/checkouts/alpha", [row["id"] for row in a_year_on["rows"]])
+        worse = alerts({"low": 1, "critical": 1})["areas"][4]
+        self.assertEqual(([row["id"] for row in worse["rows"]], worse["snoozed"]), (["dep:/checkouts/alpha"], []))
+
     def test_a_snooze_read_that_fails_shows_every_row_and_says_why(self):
         snooze(self.connection, "health:gone:group/alpha", "2026-09-06T15:00:00Z", seen=self.seen("gone:group/alpha"), now=NOW)
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):
@@ -1474,7 +1489,9 @@ class TheScript(Collectors, ScreenCase):
             ["secret scanning.review", "secret scanning", "safe", "o", False, False],
             ["credential.probe", "credential", "safe", "r", False, False],
         ] + [[f"{t}.snooze", t, "undo", "z", None, True] for t in SNOOZED_TYPES]
-          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True]])
+          + [[f"{t}.ignore", t, "undo", "h", None, True] for t in SNOOZED_TYPES]
+          + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True],
+             ["ignored row.unignore", "ignored row", "undo", "s", None, True]])
 
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
@@ -1826,6 +1843,46 @@ shellRun(cmd('snoozed row.unsnooze'), o); await flush(); OUT.toasts[OUT.toasts.l
                          [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen},
                           {"page": "health", "row": "gone:group/alpha", "until": "2026-09-07T08:00:00+00:00", "seen": seen}])
         self.assertEqual(out["toasts"][-2][0], "Shows again · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_ignore_posts_a_snooze_with_no_end_and_undo_clears_it(self):
+        """sd:5470: Ignore is the snooze write with `forever`, beside Snooze; the row's fingerprint goes with it."""
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
+var o = C.get('gone:group/alpha'); shellRun(cmd('worktree registrations.ignore'), o); await flush();
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush(); R.seen = o.seen;""")
+        row = {"page": "health", "row": "gone:group/alpha", "seen": out["R"]["seen"]}
+        self.assertEqual([body for _, body, _ in out["posts"]], [{**row, "until": "forever"}, {**row, "until": None}])
+        self.assertEqual(out["toasts"][-2], ["Ignored until it changes · group/alpha: 2 worktrees registered, directory gone", True])
+        self.assertEqual(out["toasts"][-1][0], "Ignore undone · group/alpha: 2 worktrees registered, directory gone")
+
+    def test_show_ignored_lists_the_ignored_rows_instead_and_unignore_brings_one_back(self):
+        """sd:5470: an ignored row leaves its area and the Snoozed list; the Show chip "ignored" lists it, with Unignore."""
+        doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot,
+                                     protection=protection_of(PROTECTION))
+        seen = {row["id"]: row["seen"] for row in doc["areas"][2]["rows"]}
+        snooze(self.connection, "health:gone:group/alpha", writes.SNOOZE_FOREVER, seen=seen["gone:group/alpha"], now=NOW)
+        snooze(self.connection, "health:unread:beta", "2026-09-07T08:00:00Z", seen=seen["unread:beta"], now=NOW)
+        out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
+R.snoozed = ELS.snoozed.html; R.findings = BODY().html;
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'ignored' } } : null } });
+R.ignored = BODY().html; var o = C.get('ignored:gone:group/alpha'); R.type = o.type;
+shellRun(cmd('ignored row.unignore'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
+window.snooze.draw(ELS.snoozed, [{ id: 'x', what: 'today row', until: 'forever', seen: 's' }]); R.today = ELS.snoozed.html;""")
+        alpha = "group/alpha: 2 worktrees registered, directory gone"
+        self.assertIn("Snoozed · 1", out["R"]["snoozed"])
+        self.assertNotIn(alpha, out["R"]["snoozed"])
+        self.assertNotIn(alpha, out["R"]["findings"])
+        self.assertRegex(out["R"]["findings"], r'data-show="ignored" aria-pressed="false">ignored <span class="n">1</span>')
+        self.assertIn(alpha, out["R"]["ignored"])
+        self.assertIn('data-show="ignored" aria-pressed="true"', out["R"]["ignored"])
+        self.assertNotIn("data-id=", out["R"]["ignored"], "the areas' rows are not drawn beside the ignored ones")
+        self.assertEqual(out["R"]["type"], "ignored row")
+        self.assertEqual([body for _, body, _ in out["posts"]],
+                         [{"page": "health", "row": "gone:group/alpha", "until": None, "seen": seen["gone:group/alpha"]},
+                          {"page": "health", "row": "gone:group/alpha", "until": "forever", "seen": seen["gone:group/alpha"]}])
+        self.assertEqual(out["toasts"][-2][0], f"Shows again · {alpha}")
+        # Today shares the list: a snooze with no end there reads as ignored, not as a time.
+        self.assertIn("ignored until it changes", out["R"]["today"])
+        self.assertNotIn("Invalid", out["R"]["today"])
 
     def test_a_snooze_read_that_failed_is_a_partial_read(self):
         with patch.object(writes, "snoozed", side_effect=sqlite3.OperationalError("database is locked")):

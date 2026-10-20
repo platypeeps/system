@@ -5,7 +5,8 @@
   Data: /api/health/summary (every lamp and the badge, waiting on no walker) and /api/health/<view> (one view's areas,
   health_screen.part: Checkouts, Machine, GitHub, Jobs), each read the first time its view opens and on Refresh. Every fix is a CLI line for Copy. The two writes are
   Re-run collector: POST /api/shadow/sync starts the server's shadow sync, as Contributions' does (sd:2894), and
-  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Health reads again.
+  Snooze (sd:1896): /ui/snooze.js; a row's Snooze or Unsnooze posts /api/snooze, and Health reads again; Ignore and
+  Unignore (sd:5470) post the same route with no end.
   Nothing here is sample data.
 -->
 <html lang="en">
