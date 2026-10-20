@@ -338,6 +338,14 @@ const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchE
         return {f"/api/{area}/{view}": [200, getattr(places, view)(self.connection, area, now=NOW, **({} if view == "tasks" else {"config": self.config}))]
                 for view in ("tasks", "briefs", "reports")}
 
+    def test_a_click_on_a_row_opens_what_its_link_opens(self):
+        # sd:5481: a row opens its page with its Details; a click on the link itself or with a modifier is the browser's.
+        out = self.run_page("""R.went = []; location.assign = h => R.went.push(h); globalThis.getSelection = () => ({ toString: () => '' });
+const tr = { querySelector: () => ({ href: '/tasks?row=5' }) };
+const click = (onLink, more = {}) => (DOC_LISTENERS['click'] || []).forEach(f => f(Object.assign({ button: 0, target: { closest: sel => sel === '.place-rows tbody tr' ? tr : onLink ? {} : null } }, more)));
+click(false); click(true); click(false, { metaKey: true });""", self.docs())
+        self.assertEqual(out["R"]["went"], ["/tasks?row=5"])
+
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();
 await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();

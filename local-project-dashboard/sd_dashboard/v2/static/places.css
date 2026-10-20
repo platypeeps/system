@@ -17,8 +17,7 @@
 .place-view .state-unknown { margin: var(--space-xs) 0; padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--color-ink-2);
   background: repeating-linear-gradient(135deg, var(--color-panel) 0 6px, var(--color-well) 6px 7px); }
 
-.place-rows tbody tr { cursor: default; }
-.place-rows tbody tr:hover td { background: transparent; }
+.place-rows tbody tr { cursor: pointer; }
 .place-rows td { vertical-align: top; height: auto; padding-block: var(--space-xs); }
 .place-rows .ref, .place-rows .when, .place-rows .job, .place-rows .num { white-space: nowrap; font: 400 var(--text-xs)/1.35 var(--font-data); color: var(--color-ink-2); }
 .place-rows .num { text-align: right; }

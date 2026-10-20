@@ -43,6 +43,14 @@
     },
   };
 
+  // sd:5481: a click anywhere on a row opens what its link opens (Tasks, Briefs or Reports with the row's Details and its
+  // actions); a click on the link itself, or with a modifier, stays the browser's.
+  document.addEventListener('click', e => {
+    const tr = e.target.closest('.place-rows tbody tr'), a = tr?.querySelector('a[href]');
+    if (!a || e.target.closest('a, button') || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || getSelection().toString()) return;
+    location.assign(a.href);
+  });
+
   const seen = {};
   async function load({ id: view, api }) {
     const box = $(`${view}-rows`), tally = $(`${view}-tally`), mine = seen[view] = (seen[view] || 0) + 1;
