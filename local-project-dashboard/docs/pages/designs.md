@@ -7,10 +7,10 @@ row per product with a brief and no page. `GET /api/designs`
 read live: each page's kind, title, size and last commit, its screenshots and
 which of them are stale, and whether the working tree changed it. Details
 opens the page and its 1440 px screenshot at `/designs/<path>`, where the tab
-serves them sandboxed, as before. History, Retake screenshots and Read brief
-are copy only: the dashboard runs no git, no `shots.mjs` and no pager.
+serves them sandboxed, as before. Read brief is copy only: the dashboard runs
+no git, no `shots.mjs` and no pager.
 Each row's act is Hide, or Unhide on the Hidden view (sd:5457). History and
-Retake screenshots are in the row's ⋯ menu and the palette, not in Details.
+Retake screenshots are gone (sd:5530): the operator takes both by hand.
 The filters are Activity's bar (sd:5463): the state as a segment with its
 counts, the product as a pick, a pressed lamp and the query as tokens, then
 Clear all; the count sits on the title line.

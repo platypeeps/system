@@ -67,8 +67,7 @@ DOC["attention"] = designs._attention(DOC)
 
 #: The design's commands (design source products/system/designs/pages/designs.js): id, object type, label, key, risk.
 COMMANDS = [
-    ["design.log", "page", "History", "l", "safe"],
-    ["design.shots", "page", "Retake screenshots", "s", "safe"],
+    # sd:5530 (operator, 2026-10-20): History and Retake screenshots are gone from the row menu, and so from the page.
     ["design.brief", "brief", "Read brief", "b", "safe"],
     # sd:3447: Hide and Unhide, the view state Documents' Hide writes, on each row type.
     ["design.hide", "page", "Hide", "h", "undo"], ["design.unhide", "page", "Unhide", "h", "undo"],
@@ -178,27 +177,17 @@ class TheScript(unittest.TestCase):
         return out
 
     def test_the_design_commands_are_registered_and_each_is_copy_only(self):
-        out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.exec = REG.map(c => c.executes);"
-                            " R.cli = cmd('design.log').cli(C.get('" + PAGES + "/today.html'));")
+        out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]); R.exec = REG.map(c => c.executes);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
-        # The three design commands are copy only; Hide and Unhide (sd:3447) write view state, as Documents' do.
-        self.assertEqual(out["R"]["exec"], [False, False, False, None, None, None, None])
-        self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
+        # Read brief is copy only; Hide and Unhide (sd:3447) write view state, as Documents' do.
+        self.assertEqual(out["R"]["exec"], [False, None, None, None, None])
 
-    def test_hide_and_unhide_are_the_rows_act_and_details_drops_history_and_retake(self):
-        # sd:5457: the row shows Hide (or Unhide, on the Hidden view) on every page and brief row; Details' Act bar drops
-        # History and Retake screenshots, which the ⋯ menu, their keys and the palette keep.
+    def test_hide_and_unhide_are_the_rows_act(self):
+        # sd:5457: the row shows Hide (or Unhide, on the Hidden view) on every page and brief row.
         rows = {"page": f"{PAGES}/tasks.html", "brief": "product:brand"}
         out = self.run_page(f"const ROWS_ = {json.dumps(rows)};"
-                            " R.primary = Object.fromEntries(Object.entries(ROWS_).map(([t, id]) => [t, REG.filter(c => c.on === t && c.primary?.(C.get(id))).map(c => c.id)]));"
-                            " R.offBar = REG.filter(c => c.bar === false).map(c => c.id);")
+                            " R.primary = Object.fromEntries(Object.entries(ROWS_).map(([t, id]) => [t, REG.filter(c => c.on === t && c.primary?.(C.get(id))).map(c => c.id)]));")
         self.assertEqual(out["R"]["primary"], {"page": ["design.hide", "design.unhide"], "brief": ["design.hide", "design.unhide"]})
-        self.assertEqual(out["R"]["offBar"], ["design.log", "design.shots"])
-
-    def test_the_copy_only_commands_post_nothing_and_say_so(self):
-        out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); await flush();")
-        self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"], ["Copy the line to retake designs/pages/tasks.html at 1440 and 375; the dashboard does not run it"])
 
     def test_read_brief_shows_the_brief_in_details(self):
         # Tuning: Read brief only toasted "Copy the line", its line folded shut, so it seemed to do nothing. It now selects
@@ -215,10 +204,6 @@ class TheScript(unittest.TestCase):
         doc["products"][0]["briefCut"] = True
         out = self.run_page("open('product:brand'); R.details = ELS.details.html;", answer=f"(path) => [200, {json.dumps(doc)}]")
         self.assertIn("The rest is in products/brand/README.md.", out["R"]["details"])
-
-    def test_retake_is_off_for_a_page_shots_mjs_does_not_draw(self):
-        out = self.run_page("R.off = cmd('design.shots').when(C.get('products/system/designs/v1-today.html'));")
-        self.assertEqual(out["R"]["off"], "shots.mjs draws the v2 pages only")
 
     def test_rows_lamps_and_the_badge_come_from_the_ledger(self):
         out = self.run_page("")
