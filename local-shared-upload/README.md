@@ -14,6 +14,9 @@ Hand out the `curl` line; the uploader replaces `/path/to/file`.
 One link takes many files: S3 names each `<prefix>/<file name>`, and a second upload of the same name replaces the first.
 Give each repository or person its own prefix, such as `<repo>/...`, so uses of the bucket do not overwrite each other.
 
+The dashboard's Management > Deploys shows one link under `inbox/` with Regenerate, and the bucket's console page (sd:5405).
+It keeps that link in the workflow database; links signed before keep working until they expire.
+
 ## Setup
 
 Copy `.env.example` to `<config>/shared-upload/.env` (`<config>` is `$SYSTEM_TOOLS_CONFIG`, default `~/.config/system`).
