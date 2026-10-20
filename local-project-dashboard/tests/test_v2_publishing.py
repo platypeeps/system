@@ -53,7 +53,7 @@ class AddKey(unittest.TestCase):
     def test_a_dict_call_entry_gains_the_key_on_its_own_line(self):
         result = publishing.add_key(CONF, "plan", "notion")
         self.assertIn('        item=7,\n        notion=dict(),\n    ),', result)
-        self.assertEqual(publishing.choices_of(result)["plan"], {"notion": True, "drive": False})
+        self.assertEqual(publishing.choices_of(result)["plan"], {"notion": True, "drive": False, "obsidian": False})
 
     def test_a_brace_entry_gains_a_quoted_key(self):
         source = 'DOCS = [{"src": "a.md", "out": "a"}]\n'
@@ -62,7 +62,7 @@ class AddKey(unittest.TestCase):
     def test_what_it_cannot_do_safely_is_refused(self):
         for source, out, channel, said in (
                 ("DOCS = make()\n", "plan", "notion", "builds DOCS in code"),
-                (CONF, "plan", "obsidian", "not a destination a document designates"),
+                (CONF, "plan", "slack", "not a destination a document designates"),
                 (CONF, "missing", "notion", "no literal entry with out='missing'"),
                 (CONF, "idea", "notion", "already carries notion="),
                 (CONF, "idea", "drive", "switched off"),
@@ -71,8 +71,8 @@ class AddKey(unittest.TestCase):
                 publishing.add_key(source, out, channel)
 
     def test_choices_read_the_keys_without_running_the_file(self):
-        self.assertEqual(publishing.choices_of(CONF), {"plan": {"notion": False, "drive": False},
-                                                       "idea": {"notion": True, "drive": False}})
+        self.assertEqual(publishing.choices_of(CONF), {"plan": {"notion": False, "drive": False, "obsidian": False},
+                                                       "idea": {"notion": True, "drive": False, "obsidian": False}})
 
 
 class Designate(unittest.TestCase):
@@ -192,7 +192,7 @@ class Request(unittest.TestCase):
             self.ask(root="lab", file="plan.html", channel="notion")(None)
 
     def test_what_names_no_research_document_is_refused(self):
-        for values, said in (({"root": "lab", "file": "plan.html", "channel": "obsidian"}, "channels setting"),
+        for values, said in (({"root": "lab", "file": "plan.html", "channel": "slack"}, "notion, drive or obsidian"),
                              ({"root": "lab", "file": "plan.html"}, "root and file"),
                              ({"root": "lab", "file": "nope.html", "channel": "notion"}, "is served"),
                              ({"root": "civic", "file": "brief.html", "channel": "notion"}, "no research.conf.py"),
@@ -218,7 +218,7 @@ class RemoveKey(unittest.TestCase):
     def test_a_dict_call_entry_loses_the_key_and_its_line(self):
         result = publishing.remove_key(PINNED, "plan", "notion")
         self.assertEqual(result, PINNED.replace('\n        notion=dict(page="0123456789abcdef0123456789abcdef"),', ""))
-        self.assertEqual(publishing.choices_of(result)["plan"], {"notion": False, "drive": False})
+        self.assertEqual(publishing.choices_of(result)["plan"], {"notion": False, "drive": False, "obsidian": False})
 
     def test_a_brace_entry_loses_its_quoted_key(self):
         source = 'DOCS = [{"src": "a.md", "out": "a", "drive": {}, "item": 3}]\n'
@@ -226,7 +226,8 @@ class RemoveKey(unittest.TestCase):
 
     def test_what_is_not_designated_is_refused(self):
         for source, out, channel, said in ((CONF, "plan", "notion", "not designated"), (CONF, "idea", "drive", "not designated"),
-                                           (CONF, "plan", "obsidian", "not a destination"), ("DOCS = make()\n", "plan", "notion", "in code")):
+                                           (CONF, "plan", "obsidian", "not designated"), (CONF, "plan", "slack", "not a destination"),
+                                           ("DOCS = make()\n", "plan", "notion", "in code")):
             with self.subTest(said=said), self.assertRaisesRegex(publishing.Refused, said):
                 publishing.remove_key(source, out, channel)
 
@@ -305,12 +306,174 @@ class Undesignate(unittest.TestCase):
         conf = self.base / "lab" / "research.conf.py"
         conf.write_text('DOCS = [{"src": "notes/PLAN.md", "out": "plan", "drive": {}}]\n', encoding="utf-8")
         self.kit.trust_conf(self.base / "lab", conf.read_bytes())
-        with self.assertRaisesRegex(ValueError, "notion or drive"):
-            publishing.unrequest({"root": "lab", "file": "plan.html", "channel": "obsidian"}, config_path=self.base / "none.conf", repo_root=self.base)
+        with self.assertRaisesRegex(ValueError, "notion, drive or obsidian"):
+            publishing.unrequest({"root": "lab", "file": "plan.html", "channel": "slack"}, config_path=self.base / "none.conf", repo_root=self.base)
         answer = publishing.unrequest({"root": "lab", "file": "plan.html", "channel": "drive"},
                                       config_path=self.base / "none.conf", repo_root=self.base)(None)
         self.assertEqual((answer["trash"], answer["dropped"]), ("nothing", True))
         self.assertNotIn("drive", conf.read_text(encoding="utf-8"))
+
+
+OBSIDIAN = '''DOCS = [
+    dict(
+        src="notes/PLAN.md",
+        out="plan",
+        item=7,
+        obsidian=dict(),
+    ),
+    {"src": "notes/IDEA.md", "out": "idea"},
+]
+'''
+
+
+class ObsidianDocument(unittest.TestCase):
+    """sd:5500: outside the vault's own repository Obsidian is a document's `obsidian=` key, ticked and unticked like
+    Notion and Drive; the untick moves the vault copy into the vault's .trash through the pack's `trash_obsidian`."""
+
+    def setUp(self):
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.checkout = git_checkout(self.base / "lab", OBSIDIAN)
+        self.conf = self.checkout / "research.conf.py"
+        self.kit = publishing.kit()
+        self.vault = self.base / "Vault"
+        self.copy = self.vault / "Briefs" / "lab" / "plan.md"
+        self.copy.parent.mkdir(parents=True)
+        self.copy.write_text(f"---\nsource_checkout: {self.checkout}\n---\n\n# Plan\n", encoding="utf-8")
+        self.enterContext(mock.patch.object(self.kit, "VAULT", str(self.vault)))
+        self.enterContext(mock.patch.object(self.kit, "read_channels", return_value=(None, "")))
+        self.enterContext(mock.patch.object(self.kit, "_shown", side_effect=str))
+        self.enterContext(mock.patch.object(publishing, "_vault_name", return_value=self.vault))
+        self.kit.trust_conf(self.checkout, self.conf.read_bytes())
+
+    def test_a_tick_adds_the_key_and_publish_writes_the_vault_copy(self):
+        runner = lambda argv, **o: subprocess.CompletedProcess(argv, 0, "obsidian: wrote 2 document(s) to x\n", "")
+        answer = publishing.designate(self.checkout, "idea", "obsidian", runner=runner)
+        self.assertEqual((answer["designated"], answer["wrote"], answer["queued"]), ("obsidian", True, False))
+        self.assertEqual(publishing.choices_of(self.conf.read_text(encoding="utf-8"))["idea"]["obsidian"], True)
+
+    def test_an_untick_moves_the_copy_to_the_vault_trash_then_drops_the_key(self):
+        dropped = []
+        answer = publishing.undesignate(self.checkout, "plan", "obsidian", drop=lambda: dropped.append(1) or (True, "item: dropped"))
+        self.assertEqual((answer["trash"], answer["dropped"]), ("trashed", True))
+        self.assertFalse(self.copy.exists())
+        self.assertIn("# Plan", (self.vault / ".trash" / "plan.md").read_text(encoding="utf-8"))
+        self.assertEqual((dropped, answer["lines"][-1]), ([1], "item: dropped"))
+        after = self.conf.read_bytes()
+        self.assertNotIn(b"obsidian=", after)
+        self.assertTrue(self.kit.conf_trusted(self.checkout, after))
+
+    def test_a_stop_after_the_trash_keeps_the_key_and_a_second_untick_finishes(self):
+        with mock.patch.object(publishing, "_write", side_effect=OSError("disk full")):
+            answer = publishing.undesignate(self.checkout, "plan", "obsidian")
+        self.assertEqual((answer["trash"], answer["dropped"]), ("trashed", False))
+        self.assertIn("still designated", answer["lines"][-1])
+        self.assertIn("obsidian=dict()", self.conf.read_text(encoding="utf-8"))
+        again = publishing.undesignate(self.checkout, "plan", "obsidian")
+        self.assertEqual((again["trash"], again["dropped"]), ("nothing", True))
+        self.assertEqual([p.name for p in (self.vault / ".trash").iterdir()], ["plan.md"])
+
+    def test_a_url_not_dropped_keeps_the_key_and_a_second_untick_finishes(self):
+        """From the adversarial review: a failed URL drop removed the key, so no untick could retry it."""
+        answer = publishing.undesignate(self.checkout, "plan", "obsidian", drop=lambda: (False, "item: not dropped (locked)"))
+        self.assertEqual((answer["trash"], answer["dropped"]), ("trashed", False))
+        self.assertIn("obsidian=dict()", self.conf.read_text(encoding="utf-8"))
+        again = publishing.undesignate(self.checkout, "plan", "obsidian", drop=lambda: (True, ""))
+        self.assertEqual((again["trash"], again["dropped"]), ("nothing", True))
+        self.assertNotIn("obsidian=", self.conf.read_text(encoding="utf-8"))
+
+    def test_the_post_drops_the_items_obsidian_url(self):
+        from sd_db import channels, connect
+        from sd_db.migrate import initialise
+        from sd_db.writes import create_item
+
+        initialise(self.base / "sd.db")
+        db = connect(self.base / "sd.db")
+        self.addCleanup(db.close)
+        for _ in range(7):
+            create_item(db, kind="task", title="t")
+        channels.record_url(db, 7, str(self.checkout), "plan", "Plan", "obsidian", "obsidian://open?vault=Vault&file=x", "test")
+        self.assertEqual(publishing._drop_obsidian(db, 7, self.checkout, "plan"), (True, "item: obsidian link for sd:7 dropped"))
+        self.assertEqual(publishing.published_fields(db, [7]), {7: {}})
+        self.assertEqual(publishing._drop_obsidian(None, 7, self.checkout, "plan")[0], False)
+
+    def test_another_checkouts_copy_refuses_and_changes_nothing(self):
+        self.copy.write_text("---\nsource_checkout: ~/elsewhere/lab\n---\nx\n", encoding="utf-8")
+        with self.assertRaisesRegex(publishing.Refused, "not this checkout's copy"):
+            publishing.undesignate(self.checkout, "plan", "obsidian")
+        self.assertEqual(self.conf.read_text(encoding="utf-8"), OBSIDIAN)
+
+    def test_the_vaults_own_repository_keeps_obsidian_repo_wide(self):
+        with mock.patch.object(publishing, "_vault_name", return_value=self.checkout):
+            self.assertTrue(publishing.vault_repository(self.checkout))
+            with self.assertRaisesRegex(publishing.Refused, "vault itself"):
+                publishing.designate(self.checkout, "idea", "obsidian", runner=None)
+        self.assertFalse(publishing.vault_repository(self.checkout))
+
+    def test_a_trashed_copy_shows_no_icon_from_a_stale_item_url(self):
+        stale = {"x::plan": {"obsidian": "obsidian://open?vault=Vault&file=Briefs%2Flab%2Fplan"}}
+        found = publishing.document_copies(self.checkout, "plan", setting=None, unread="", fields=stale, vault=self.vault)
+        self.assertEqual([c["channel"] for c in found["copies"]], ["obsidian"])
+        self.copy.unlink()
+        found = publishing.document_copies(self.checkout, "plan", setting=None, unread="", fields=stale, vault=self.vault)
+        self.assertEqual(found["copies"], [])
+
+
+class SeedObsidian(unittest.TestCase):
+    """sd:5500's seed: each entry of a repo whose render wrote every entry into the vault gains `obsidian=dict()`, once."""
+
+    def setUp(self):
+        from sd_db import connect
+        from sd_db.migrate import initialise
+        from sd_db.writes import upsert_repo
+
+        self.base = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        initialise(self.base / "sd.db")
+        self.db = connect(self.base / "sd.db")
+        self.addCleanup(self.db.close)
+        self.kit = publishing.kit()
+        self.lab = git_checkout(self.base / "lab", CONF)
+        self.off = git_checkout(self.base / "off", CONF)
+        self.vault = git_checkout(self.base / "Vault", CONF)
+        for checkout in (self.lab, self.off, self.vault, self.base / "plain"):
+            upsert_repo(self.db, str(checkout))
+        repos.set_channels(self.db, self.off, {"notion": {}})
+        self.db.commit()
+        self.kit.trust_conf(self.lab, (self.lab / "research.conf.py").read_bytes())
+        self.enterContext(mock.patch.object(publishing, "_vault_name", return_value=self.vault))
+
+    def seed(self, apply):
+        return [line.replace(str(self.base), "{base}") for line in publishing.seed_obsidian(self.db, apply=apply)]
+
+    def test_a_dry_run_names_what_it_would_seed_and_writes_nothing(self):
+        said = self.seed(False)
+        self.assertIn("{base}/lab: would seed obsidian= on plan (no vault copy now)", said)
+        self.assertIn("{base}/lab: would seed obsidian= on idea (no vault copy now)", said)
+        self.assertTrue(any(line.startswith("{base}/off: Obsidian is off") for line in said), said)
+        self.assertTrue(any(line.startswith("{base}/Vault: the vault's own repository") for line in said), said)
+        self.assertEqual((self.lab / "research.conf.py").read_text(encoding="utf-8"), CONF)
+
+    def test_apply_seeds_keeps_the_trust_and_a_rerun_seeds_nothing(self):
+        said = self.seed(True)
+        self.assertIn("{base}/lab: seeded obsidian= on plan (no vault copy now)", said)
+        after = (self.lab / "research.conf.py").read_bytes()
+        self.assertEqual(publishing.choices_of(after.decode())["plan"]["obsidian"], True)
+        self.assertEqual(publishing.choices_of(after.decode())["idea"]["obsidian"], True)
+        self.assertTrue(self.kit.conf_trusted(self.lab, after))
+        self.assertEqual((self.off / "research.conf.py").read_text(encoding="utf-8"), CONF)
+        self.assertIn("{base}/lab: every entry already designates obsidian=; nothing to seed", self.seed(True))
+        self.assertEqual((self.lab / "research.conf.py").read_bytes(), after)
+
+    def test_an_untrusted_conf_is_seeded_and_left_untrusted(self):
+        (self.lab / "research.conf.py").write_text(CONF + "# edited\n", encoding="utf-8")
+        said = self.seed(True)
+        self.assertTrue(any("not trusted before" in line for line in said), said)
+        self.assertFalse(self.kit.conf_trusted(self.lab, (self.lab / "research.conf.py").read_bytes()))
+
+    def test_an_unread_setting_seeds_nothing(self):
+        with mock.patch.object(publishing, "read_channels", return_value=(None, "hub down")):
+            said = self.seed(True)
+        self.assertIn("{base}/lab: held, hub down; nothing seeded", said)
+        self.assertEqual((self.lab / "research.conf.py").read_text(encoding="utf-8"), CONF)
 
 
 class Copies(ScreenCase):
@@ -392,7 +555,8 @@ class Copies(ScreenCase):
             doc = documents_screen.document(self.connection, now=NOW, config_path=self.base / "none.conf", repo_root=self.base)
         rows = {f"{r['key']}/{r['file']}": r for r in doc["documents"]}
         pub = rows["lab/plan.html"]["pub"]
-        self.assertEqual(pub["choice"], {"notion": False, "drive": True, "obsidian": True, "why": ""})
+        # sd:5500: Obsidian is the entry's own key outside the vault's repository, whatever the repo setting says.
+        self.assertEqual(pub["choice"], {"notion": False, "drive": True, "obsidian": False, "repo_wide": "", "why": ""})
         self.assertEqual([(c["channel"], c["state"]) for c in pub["copies"]], [("drive", "queued")])
         self.assertIsNone(rows["civic/brief.html"]["pub"])
 
@@ -400,7 +564,7 @@ class Copies(ScreenCase):
         document_tests.fixture(self.base)
         doc = documents_screen.document(now=NOW, config_path=self.base / "none.conf", repo_root=self.base)
         pub = {f"{r['key']}/{r['file']}": r for r in doc["documents"]}["lab/plan.html"]["pub"]
-        self.assertIsNone(pub["choice"]["obsidian"])
+        self.assertIs(pub["choice"]["obsidian"], False)
         self.assertIn("no database connection", pub["unread"])
 
 
@@ -529,7 +693,8 @@ class BriefDesignation(brief_tests.BriefCase):
         publishing.designate_brief(self.connection, self.brief, "drive", enqueue=self.enqueue)
         with mock.patch.object(publishing.kit(), "QUEUE", queue):
             brief = next(b for b in self.doc()["briefs"] if b["id"] == self.STEM)
-        self.assertEqual(brief["pub"]["choice"], {"notion": False, "drive": True, "obsidian": True, "why": ""})
+        self.assertEqual(brief["pub"]["choice"], {"notion": False, "drive": True, "obsidian": True,
+                                                  "repo_wide": publishing.BRIEF_REPO_WIDE, "why": ""})
         self.assertEqual([(c["channel"], c["state"]) for c in brief["pub"]["copies"]], [("drive", "queued")])
 
 
@@ -658,13 +823,14 @@ class DocumentRows(ScreenCase):
                           (".unread", "border-style: dashed"), (".queued", "border-style: dashed")):
             self.assertRegex(css, rf"(?m)^\.pub \{cls} \{{[^}}]*{re.escape(want)}", cls)
 
-    def test_details_shows_publish_to_with_obsidian_from_the_repo_setting(self):
-        self.plan({"unread": "", "copies": [], "choice": {"notion": True, "drive": False, "obsidian": False, "why": ""}})
+    def test_details_shows_publish_to_with_a_per_document_obsidian_box(self):
+        self.plan({"unread": "", "copies": [], "choice": {"notion": True, "drive": False, "obsidian": False, "repo_wide": "", "why": ""}})
         out = self.run_page("""R.det = ELS.details.html;
 R.off = ['drive', 'notion', 'obsidian'].map(ch => { const o = OBJ.get(`pub:lab/plan.html:${ch}`); return REG.find(c => c.id === 'document.publish').when(o); });
 R.now = REG.find(c => c.id === 'document.publish-now').when(OBJ.get('lab/plan.html'));
 const un = REG.find(c => c.id === 'document.unpublish');
-R.un = ['notion', 'drive', 'obsidian'].map(ch => { const o = OBJ.get(`pub:lab/plan.html:${ch}`); const w = un.when(o); return ch === 'obsidian' ? /Management/.test(w) : w; });
+R.un = ['notion', 'drive', 'obsidian'].map(ch => un.when(OBJ.get(`pub:lab/plan.html:${ch}`)));
+R.vault = REG.find(c => c.id === 'document.publish').consequence(OBJ.get('pub:lab/plan.html:obsidian'));
 R.says = un.consequence(OBJ.get('pub:lab/plan.html:notion'));
 R.kind = [un.risk, un.askFirst];""", row="'lab/plan.html'")
         det = out["R"]["det"]
@@ -674,12 +840,24 @@ R.kind = [un.risk, un.askFirst];""", row="'lab/plan.html'")
         self.assertIn('aria-checked="true" data-cmd="document.unpublish" data-obj="pub:lab/plan.html:notion"', det)
         self.assertIn('aria-checked="false" data-cmd="document.publish" data-obj="pub:lab/plan.html:obsidian"', det)
         self.assertEqual(out["R"]["off"][0], True)
-        self.assertIn("Management > Publishing", out["R"]["off"][2])
-        self.assertEqual(out["R"]["un"], [True, "not designated for Google Drive", True])
+        # sd:5500: outside the vault's own repository Obsidian ticks like the others and writes the vault copy at once.
+        self.assertEqual(out["R"]["off"][2], True)
+        self.assertIn("writes its Markdown into the vault", out["R"]["vault"])
+        self.assertEqual(out["R"]["un"], [True, "not designated for Google Drive", "not designated for Obsidian"])
         self.assertIn("trash", out["R"]["says"])
         self.assertIn("Undo", out["R"]["says"])
         self.assertEqual(out["R"]["kind"], ["undo", True])
         self.assertIn("nothing is queued", out["R"]["now"])
+
+
+    def test_details_in_the_vaults_own_repository_says_obsidian_is_repo_wide(self):
+        self.plan({"unread": "", "copies": [], "choice": {"notion": False, "drive": False, "obsidian": True,
+                                                          "repo_wide": publishing.VAULT_REPO, "why": ""}})
+        out = self.run_page("""R.det = ELS.details.html;
+const o = OBJ.get('pub:lab/plan.html:obsidian');
+R.when = [REG.find(c => c.id === 'document.publish').when(o), REG.find(c => c.id === 'document.unpublish').when(o)];""", row="'lab/plan.html'")
+        self.assertIn("<p class=\"why\">Obsidian: this repository is the vault itself", out["R"]["det"])
+        self.assertEqual(out["R"]["when"], [publishing.VAULT_REPO, publishing.VAULT_REPO])
 
 
 class Drain(unittest.TestCase):

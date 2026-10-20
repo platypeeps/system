@@ -20,10 +20,11 @@ An entry is `{"channel", "url", "state", "title"}`: `state` is `published`, or `
 last delivered URL, if any). A channels setting that cannot be read leaves Obsidian out and says why in `unread`:
 unknown is not "no copy".
 
-**The choice.** A research-kit document's designation is its research.conf.py entry's `notion=` or `drive=` key
-(contract § Outward destinations). `choices` reads which entries carry one without running the file: a key present
-with any value but `None` or `False` is designated. Obsidian is not per document: the repo's channels setting turns it
-on or off, so the page shows it and links to Management > Publishing.
+**The choice.** A research-kit document's designation is its research.conf.py entry's `notion=`, `drive=` or
+`obsidian=` key (contract § Outward destinations). `choices` reads which entries carry one without running the file: a
+key present with any value but `None` or `False` is designated. Obsidian is per document too (ruling on sd:5489, system
+sd:5500), except in the vault's own repository, the checkout `OBSIDIAN_VAULT` names (`vault_repository`): it mirrors
+the whole vault, so Obsidian there stays the repo's channels setting and the page links to Management > Publishing.
 
 `designate` adds one key, in four steps, and is idempotent:
 
@@ -41,7 +42,12 @@ the designation, in two steps: the pack's `enqueue_trash` queues a trash request
 (the entry's `page=` or `file=`, the pending request, the item's URL, the receipt), then `undesignate` removes the key as
 `designate` adds one, AST-checked and trusted again. A trash refused writes nothing; a stop after it leaves the trash
 queued and the designation in place, says so, and a second untick finishes. The next drain trashes the copy (Notion's
-Trash, Drive's bin) and takes its URL off the item. Obsidian stays the repo's setting, so it has no untick here.
+Trash, Drive's bin) and takes its URL off the item. The vault copy needs no drain: the pack's `trash_obsidian` moves it
+into the vault's `.trash` at once, the item's obsidian URL goes, then the key, with the same stop-and-retry rule.
+
+**The seed** (system sd:5500). Before sd:5500 every document of a repo with Obsidian on was written into the vault.
+`seed_obsidian` designates each such entry once, so it stays mirrored: idempotent, a dry run unless asked to write,
+and it names each entry it seeds. `python3 -m sd_dashboard.publishing seed-obsidian [--apply]` runs it.
 
 **A brief's choice** (ruling on sd:5102, note #23223) is `fields.publish.<channel>` on its item: `designate_brief` writes
 it in one transaction and calls the pack's `enqueue_briefs`, which builds the request from the row and queues it as for a
@@ -59,14 +65,16 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-__all__ = ["CHANNELS", "OUTWARD", "PUBLISH_SECONDS", "brief_choice", "brief_copies", "brief_request", "choices", "choices_of",
+__all__ = ["CHANNELS", "DESIGNATED", "OUTWARD", "PUBLISH_SECONDS", "brief_choice", "brief_copies", "brief_request", "choices", "choices_of",
            "designate", "designate_brief", "document_copies", "item_fields", "published_fields", "remove_key", "request",
-           "undesignate", "undesignate_brief", "unrequest", "brief_unrequest"]
+           "seed_obsidian", "undesignate", "undesignate_brief", "unrequest", "brief_unrequest", "vault_repository"]
 
 #: The destinations, in the order a row shows their icons.
 CHANNELS = ("drive", "notion", "obsidian")
-#: The destinations a document designates; Obsidian is the repo's setting, not the document's.
+#: The destinations a drain mirrors to, from the pack's queue.
 OUTWARD = ("notion", "drive")
+#: The keys a research document's entry designates: the outward ones, and the vault copy the render writes (sd:5500).
+DESIGNATED = OUTWARD + ("obsidian",)
 #: The bound on `sd-research-kit publish`, which registers, writes vault copies and queues; it renders nothing.
 PUBLISH_SECONDS = 120
 #: What the hook-style trigger is called when the dashboard runs `publish`.
@@ -105,6 +113,17 @@ def _vault_name() -> Path:
     import system_tools_config
 
     return system_tools_config.obsidian_vault()
+
+
+def vault_repository(checkout: Path) -> bool:
+    """Whether `checkout` is the vault itself (sd:5500), whose Obsidian copy stays the repo's channels setting.
+
+    A vault that cannot be named is no vault: no checkout is it, and Obsidian is per document everywhere.
+    """
+    try:
+        return checkout.resolve() == _vault_name().expanduser().resolve()
+    except Exception:  # noqa: BLE001 - no vault named is no vault repository
+        return False
 
 
 def obsidian_link(vault: Path, relative: str) -> str:
@@ -178,10 +197,12 @@ def document_copies(checkout: Path, out: str, *, setting, unread: str, fields: d
     copies = []
     for channel in CHANNELS:
         if channel == "obsidian":
-            url = from_item.get("obsidian")
+            # The vault note decides when it can be looked for: a trashed copy keeps no icon from a stale item URL.
             folder = None if unread else vault_folder(checkout, setting)
-            if not url and folder and vault and (vault / folder / f"{out}.md").is_file():
-                url = obsidian_link(vault, f"{folder}/{out}")
+            if folder and vault:
+                url = obsidian_link(vault, f"{folder}/{out}") if (vault / folder / f"{out}.md").is_file() else None
+            else:
+                url = from_item.get("obsidian")
             entry = _entry(channel, url, False)
         else:
             name = f"{key}.{out}.{channel}.json"
@@ -291,11 +312,12 @@ def _entries_of(tree: ast.Module) -> dict | None:
 
 
 def choices_of(source: str) -> dict[str, dict[str, bool]]:
-    """`{out: {"notion": bool, "drive": bool}}` for each literal entry; `Refused` when the text cannot be read this way."""
+    """`{out: {"notion": bool, "drive": bool, "obsidian": bool}}` for each literal entry; `Refused` when the text cannot
+    be read this way."""
     tree, entries = _entries(source)
     if tree is None:
         raise Refused(entries)
-    return {out: {channel: channel in items and _on(items[channel]) for channel in OUTWARD}
+    return {out: {channel: channel in items and _on(items[channel]) for channel in DESIGNATED}
             for out, entry in entries.items() if (items := _items(entry)) is not None}
 
 
@@ -321,8 +343,8 @@ def add_key(source: str, out: str, channel: str) -> str:
 
     The result must parse to the same tree plus the one key, or nothing is returned.
     """
-    if channel not in OUTWARD:
-        raise Refused(f"{channel!r} is not a destination a document designates; expected notion or drive")
+    if channel not in DESIGNATED:
+        raise Refused(f"{channel!r} is not a destination a document designates; expected notion, drive or obsidian")
     tree, entries = _entries(source)
     if tree is None:
         raise Refused(entries)
@@ -375,8 +397,8 @@ def remove_key(source: str, out: str, channel: str) -> str:
     The key goes with the separator before it, so its line goes too. The result must parse to the old tree less that one
     key, or nothing is returned.
     """
-    if channel not in OUTWARD:
-        raise Refused(f"{channel!r} is not a destination a document designates; expected notion or drive")
+    if channel not in DESIGNATED:
+        raise Refused(f"{channel!r} is not a destination a document designates; expected notion, drive or obsidian")
     tree, entries = _entries(source)
     if tree is None:
         raise Refused(entries)
@@ -426,6 +448,22 @@ def _trash_queue():
     return queue
 
 
+def _vault_trash():
+    """The pack's `trash_obsidian`, or `Refused` naming the update a pack without it needs."""
+    trash = getattr(kit(), "trash_obsidian", None)
+    if trash is None:
+        raise Refused("the installed command pack has no trash_obsidian (pack sd:5502), so the vault copy cannot be moved "
+                      "to the vault's .trash; update it. Nothing changed")
+    return trash
+
+
+#: Why a brief has no Obsidian box of its own: its vault copy stays the repo's setting (question on sd:5500).
+BRIEF_REPO_WIDE = "a brief's Obsidian copy is the repo's channels setting: change it under Management > Publishing"
+#: Why the vault's own repository has no per-document Obsidian box (sd:5500).
+VAULT_REPO = ("this repository is the vault itself, so every document of it is in the vault: Obsidian here is the repo's "
+              "channels setting, under Management > Publishing")
+
+
 def _write(path: Path, text: str) -> None:
     partial = path.with_name(path.name + ".dashboard-partial")
     partial.write_text(text, encoding="utf-8")
@@ -452,7 +490,13 @@ def _publish(checkout: Path, runner=subprocess.run) -> tuple[int, list[str]]:
 
 
 def designate(checkout: Path, out: str, channel: str, *, runner=subprocess.run) -> dict:
-    """Steps 1 to 4 above: `{"designated", "queued", "lines"}`, or `Refused` with nothing changed."""
+    """Steps 1 to 4 above: `{"designated", "queued", "wrote", "lines"}`, or `Refused` with nothing changed.
+
+    For Obsidian step 4 writes the vault copy rather than queueing one, so `wrote` says whether it did; the vault's own
+    repository refuses, since every document there is already in the vault.
+    """
+    if channel == "obsidian" and vault_repository(checkout):
+        raise Refused(VAULT_REPO)
     conf = checkout / "research.conf.py"
     publish = kit()
     try:
@@ -475,15 +519,19 @@ def designate(checkout: Path, out: str, channel: str, *, runner=subprocess.run) 
     status, lines = _publish(checkout, runner)
     # The pack's report lines: `mirror: queued <out> -> ...`, or `mirror: <out>: already queued -> ...` (`enqueue`).
     queued = any(line.startswith((f"mirror: queued {out} ", f"mirror: {out}: already queued")) for line in lines)
-    return {"designated": channel, "already": already, "queued": queued and status == 0, "exit": status, "lines": lines[-12:]}
+    wrote = channel == "obsidian" and status == 0 and any(line.startswith("obsidian: wrote ") for line in lines)
+    return {"designated": channel, "already": already, "queued": queued and status == 0 and channel != "obsidian",
+            "wrote": wrote, "exit": status, "lines": lines[-12:]}
 
 
-def undesignate(checkout: Path, out: str, channel: str, *, url: str = "") -> dict:
+def undesignate(checkout: Path, out: str, channel: str, *, url: str = "", drop=None) -> dict:
     """Untick a document's destination (sd:5489): the trash queued, then the key removed.
 
-    `{"undesignated", "trash", "dropped", "lines"}`; `trash` is the pack's state, `queued` or `nothing`. `Refused` with
-    nothing changed when the conf is not trusted, the key cannot be removed safely, or the pack refuses the trash.
-    `dropped` False means the trash is queued and the designation stays: the lines say so, and a second untick finishes.
+    `{"undesignated", "trash", "dropped", "lines"}`; `trash` is the pack's state, `queued` or `nothing`, and for Obsidian
+    `trashed` (the pack's `trash_obsidian` moved the vault copy into `.trash`) or `nothing`. `drop()`, when given, then
+    takes the item's obsidian URL off and answers `(done, line)`; not done keeps the key, so a second untick retries it. `Refused` with nothing changed when the conf is not trusted,
+    the key cannot be removed safely, or the pack refuses the trash. `dropped` False means the trash is done or queued
+    and the designation stays: the lines say so, and a second untick finishes.
     """
     conf = checkout / "research.conf.py"
     publish = kit()
@@ -499,11 +547,20 @@ def undesignate(checkout: Path, out: str, channel: str, *, url: str = "") -> dic
     items = _items(_entries(source)[1][out]) or {}
     item = items.get("item")
     item = item.value if isinstance(item, ast.Constant) and type(item.value) is int else None
-    what = {"notion": "page", "drive": "file"}[channel]
-    state, said = _trash_queue()(checkout, out, channel, designated=_pinned(items[channel], what), item=item, url=url)
+    if channel == "obsidian":
+        state, said = _vault_trash()(checkout, out)
+    else:
+        what = {"notion": "page", "drive": "file"}[channel]
+        state, said = _trash_queue()(checkout, out, channel, designated=_pinned(items[channel], what), item=item, url=url)
     if not state:
         raise Refused(f"{said}; the designation stays")
     lines = [said]
+    if channel == "obsidian" and drop:
+        done, line = drop()
+        lines += [line] if line else []
+        if not done:
+            lines.append(f"{out} is still designated for Obsidian, so its URL is not lost; untick again to finish")
+            return {"undesignated": channel, "trash": state, "dropped": False, "lines": lines}
     try:
         if conf.read_bytes() != before:
             raise OSError("research.conf.py changed while the dashboard read it")
@@ -520,15 +577,17 @@ def _document(values: dict, config_path, repo_root, what: str):
     from . import documents, documents_screen
 
     if set(values) != {"root", "file", "channel"} or not all(isinstance(values[k], str) for k in values):
-        raise ValueError("Send the document's root and file, and the channel: notion or drive.")
-    if values["channel"] not in OUTWARD:
-        raise ValueError("A document designates notion or drive; Obsidian is the repo's channels setting.")
+        raise ValueError("Send the document's root and file, and the channel: notion, drive or obsidian.")
+    if values["channel"] not in DESIGNATED:
+        raise ValueError("A document designates notion, drive or obsidian.")
     if documents.resolve(values["root"], values["file"], config_path, repo_root) is None:
         raise ValueError(f"No document {values['root']}/{values['file']} is served: read the documents again.")
     root = next((r for r in documents.roots(config_path, repo_root) if r.key == values["root"]), None)
     checkout = documents_screen._checkout(root) if root else None
     if checkout is None or not (checkout / "research.conf.py").is_file():
         raise ValueError("Only a research-kit document has a designation: its checkout holds no research.conf.py.")
+    if values["channel"] == "obsidian" and vault_repository(checkout):
+        raise ValueError(VAULT_REPO[0].upper() + VAULT_REPO[1:] + ".")
     # The page is the entry's `out` name plus `.html`, as `documents_screen._sources` matches them.
     outs = [out for out in choices(checkout)["docs"] if f"{Path(out).name}.html" == values["file"]]
     if len(outs) != 1:
@@ -544,11 +603,27 @@ def unrequest(values: dict, *, config_path=None, repo_root=None):
         item = _item_of(checkout, out)
         published = published_fields(connection, [item]) if connection is not None and item is not None else {}
         try:
-            return undesignate(checkout, out, values["channel"], url=_document_url(published, checkout, out, values["channel"]))
+            return undesignate(checkout, out, values["channel"], url=_document_url(published, checkout, out, values["channel"]),
+                               drop=lambda: _drop_obsidian(connection, item, checkout, out))
         except Refused as refused:
             raise ValueError(str(refused)) from None
 
     return write
+
+
+def _drop_obsidian(connection, item, checkout: Path, out: str) -> tuple[bool, str]:
+    """Take the trashed vault copy's URL off its item (`channels.drop_url`): `(done, line)`; a failure is not done."""
+    if item is None:
+        return True, ""
+    if connection is None:
+        return False, f"item: obsidian link for sd:{item} not dropped (no database connection)"
+    from sd_db import channels
+
+    try:
+        answer = channels.drop_url(connection, item, str(checkout), out, "obsidian", "dashboard")
+    except Exception as error:  # noqa: BLE001 - not dropped is not done: the key stays for a second untick
+        return False, f"item: obsidian link for sd:{item} not dropped ({error})"
+    return True, f"item: obsidian link for sd:{item} dropped" if answer == "dropped" else ""
 
 
 def _item_of(checkout: Path, out: str):
@@ -591,6 +666,101 @@ def request(values: dict, *, config_path=None, repo_root=None):
     return write
 
 
+# -- the seed: documents mirrored to the vault before sd:5500 stay mirrored ----------------------------------------
+
+
+def seed_obsidian(connection, *, apply: bool = False) -> list[str]:
+    """Designate `obsidian=` once on every entry the render wrote into the vault before sd:5500: a line per repo or entry.
+
+    Before sd:5500 a repo whose channels setting was none, or named obsidian, had every entry written. Each such entry
+    without the key gains `obsidian=dict()`, by `add_key`; one with it switched off is left and named. The vault's own
+    repository, a repo with Obsidian off and a setting not read seed nothing and say why. A dry run writes nothing; with
+    `apply` the file is replaced atomically and trusted again only when a render by hand trusted it before. A second run
+    finds every key there and seeds nothing.
+    """
+    from sd_db import paths
+
+    lines: list[str] = []
+    for row in connection.execute("SELECT path FROM repo ORDER BY path"):
+        checkout = paths.expand(row[0])
+        conf = checkout / "research.conf.py"
+        if not conf.is_file():
+            continue
+        if vault_repository(checkout):
+            lines.append(f"{row[0]}: the vault's own repository; its documents stay repo-wide, nothing to seed")
+            continue
+        setting, unread = read_channels(connection, checkout)
+        if unread:
+            lines.append(f"{row[0]}: held, {unread}; nothing seeded")
+        elif setting is not None and "obsidian" not in setting:
+            lines.append(f"{row[0]}: Obsidian is off for this repository, so nothing of it was mirrored; nothing to seed")
+        else:
+            lines += _seed(row[0], checkout, conf, vault_folder(checkout, setting), apply)
+    return lines
+
+
+def _seed(name: str, checkout: Path, conf: Path, folder: str, apply: bool) -> list[str]:
+    """One checkout's seed: its lines, every entry it designates named with whether its vault copy is there."""
+    try:
+        before = conf.read_bytes()
+        source = before.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return [f"{name}: research.conf.py was not read ({error}); nothing seeded"]
+    tree, entries = _entries(source)
+    if tree is None:
+        return [f"{name}: {entries}; nothing seeded"]
+    after, seeded, lines = source, [], []
+    for out, entry in entries.items():
+        items = _items(entry) or {}
+        if "obsidian" in items:
+            lines += [] if _on(items["obsidian"]) else [f"{name}: {out} has obsidian= switched off; left as it is"]
+            continue
+        try:
+            after = add_key(after, out, "obsidian")
+        except Refused as refused:
+            lines.append(f"{name}: {out} not seeded: {refused}")
+            continue
+        seeded.append(out)
+    if not seeded:
+        return lines + [f"{name}: every entry already designates obsidian=; nothing to seed"]
+    try:
+        vault = _vault_name().expanduser()
+    except Exception:  # noqa: BLE001 - only the "vault copy" words need it
+        vault = None
+    verb = "seeded" if apply else "would seed"
+    lines += [f"{name}: {verb} obsidian= on {out} ("
+              + ("vault copy present" if vault and (vault / folder / f"{out}.md").is_file() else "no vault copy now") + ")"
+              for out in seeded]
+    if apply:
+        publish = kit()
+        trusted = publish.conf_trusted(checkout, before)
+        if conf.read_bytes() != before:
+            return lines[:-len(seeded)] + [f"{name}: research.conf.py changed while it was read; nothing seeded, run again"]
+        _write(conf, after)
+        if trusted:
+            publish.trust_conf(checkout, after.encode("utf-8"))
+        else:
+            lines.append(f"{name}: research.conf.py was not trusted before, so it is not now: a render by hand trusts it")
+    return lines
+
+
+def main(argv=None) -> int:
+    """`seed-obsidian [--apply]`: print `seed_obsidian`'s lines; a dry run unless `--apply`."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] != "seed-obsidian" or set(args[1:]) - {"--apply"}:
+        print("usage: python3 -m sd_dashboard.publishing seed-obsidian [--apply]", file=sys.stderr)
+        return 1
+    import sd_db
+
+    connection = sd_db.connect(write=False)
+    try:
+        for line in seed_obsidian(connection, apply="--apply" in args):
+            print(line)
+    finally:
+        connection.close()
+    return 0
+
+
 # -- a routine brief's designation: its item's fields.publish (ruling on sd:5102, note #23223) ----------------------
 
 
@@ -618,7 +788,7 @@ def brief_choice(fields: dict, setting, unread: str) -> dict:
     """A brief's Publish to boxes: its `fields.publish` keys, and Obsidian from the repo's setting (None when unread)."""
     publish = fields.get("publish") if isinstance(fields.get("publish"), dict) else {}
     return {"notion": isinstance(publish.get("notion"), dict), "drive": isinstance(publish.get("drive"), dict),
-            "obsidian": None if unread else setting is None or "obsidian" in setting, "why": ""}
+            "obsidian": None if unread else setting is None or "obsidian" in setting, "repo_wide": BRIEF_REPO_WIDE, "why": ""}
 
 
 def _brief(connection, item: int):
@@ -747,3 +917,7 @@ def brief_unrequest(values: dict):
             raise ValueError(str(refused)) from None
 
     return write
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -251,6 +251,7 @@ Publishing (sd:5102, `publishing.py`, `publish_drain.py`) reuses the pack's mirr
 Publish to on Documents adds the contract's `drive=dict()` or `notion=dict()` key to a trusted `research.conf.py` entry, then runs `sd-research-kit publish`.
 Publish to on Briefs writes `fields.publish.<channel>` on the item and calls the pack's `enqueue_briefs`; each brief render queues it again.
 Unticking either (sd:5489) calls the pack's `enqueue_trash` first, then drops the key or field; the next drain moves that one copy to the trash.
+A document's Obsidian box (sd:5500) is its `obsidian=` key: ticking runs `sd-research-kit publish`, which writes the vault copy; unticking calls the pack's `trash_obsidian`, which moves this checkout's copy into `<vault>/.trash`, then drops the key. The vault's own repository (the checkout `OBSIDIAN_VAULT` names) and briefs keep Obsidian as the repo's channels setting. `python3 -m sd_dashboard.publishing seed-obsidian [--apply]` designated, once, the entries the render wrote before sd:5500.
 Publish now answers 202 with a run id; the run takes Adversarial review's shape under `~/.local/state/system/publish-drain/`, one at a time, bounded at 900 seconds.
 It runs `claude -p` on Sonnet, `--restricted`, allowing Notion and Drive read and write tools, Edit on the queue, and Bash on `sd-db repo channels` and `sd-research-kit delivered` only.
 A drain holding a trash request also gets `notion-delete-pages` and `update_drive_file`; both trash recoverably.
