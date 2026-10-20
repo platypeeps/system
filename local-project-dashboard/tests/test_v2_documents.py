@@ -68,6 +68,8 @@ COMMANDS = [
     ["root.unhide", "document root", "Unhide root", None, "undo"],
     # sd:5102: Publish to a destination and Publish now, declared in commands.js.
     ["document.publish", "document destination", "Publish to", None, "safe"],
+    # sd:5489: a ticked destination unticks: ask first, and Undo ticks it again.
+    ["document.unpublish", "document destination", "Remove copy", None, "undo"],
     ["document.publish-now", "document", "Publish now", None, "safe"],
 ]
 
@@ -899,7 +901,7 @@ R.rows = ELS.rows.html; R.type = C.get('lab/plan.html').type; R.att = window.PAG
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view", "/api/documents/publish",
+    page, section, route, api = "documents", "Documents", "/documents", ("/api/documents", "/api/documents/view", "/api/documents/publish", "/api/documents/unpublish",
                                                                          "/api/documents/publish-now", "/api/documents/publish-now/drain-x-20261018T000000Z")
 
 

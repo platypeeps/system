@@ -33,6 +33,7 @@ for (sd:5102, sd:5300): Drive, Notion, Obsidian. A copy is filled and opens in
 a new tab; a queued one has a dashed edge; a designated one with no copy is an
 outline; one whose read failed is unknown and says why. The hover names the
 destination and its link or vault path. Details' Publish to ticks Drive or Notion: it adds the key to
-`research.conf.py` and queues through `sd-research-kit publish`. Obsidian
+`research.conf.py` and queues through `sd-research-kit publish`. Unticking asks
+first, queues the copy for the trash (sd:5489), then removes the key; Undo ticks it again. Obsidian
 follows the repo's channels setting. Publish now drains that row's requests;
 RUNTIME.md names the run.

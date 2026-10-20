@@ -36,12 +36,16 @@ on or off, so the page shows it and links to Management > Publishing.
 4. `sd-research-kit publish` runs in the checkout, as an automatic run (`SD_RESEARCH_TRIGGER=dashboard`), so it checks
    the trust record against the bytes it executes and queues through the pack's own path. Its lines are the answer.
 
-Removing a designation is refused: the entry may hold the page or file id a drain wrote, and dropping it orphans the
-copy. The operator edits the file.
+**Unticking** (ruling on sd:5489, replacing the sd:5102 refusal) moves the copy to the trash, recoverably, and drops
+the designation, in two steps: the pack's `enqueue_trash` queues a trash request naming the copy by every record of it
+(the entry's `page=` or `file=`, the pending request, the item's URL, the receipt), then `undesignate` removes the key as
+`designate` adds one, AST-checked and trusted again. A trash refused writes nothing; a stop after it leaves the trash
+queued and the designation in place, says so, and a second untick finishes. The next drain trashes the copy (Notion's
+Trash, Drive's bin) and takes its URL off the item. Obsidian stays the repo's setting, so it has no untick here.
 
 **A brief's choice** (ruling on sd:5102, note #23223) is `fields.publish.<channel>` on its item: `designate_brief` writes
 it in one transaction and calls the pack's `enqueue_briefs`, which builds the request from the row and queues it as for a
-research document; every brief render queues it again when its text changes.
+research document; every brief render queues it again when its text changes. `undesignate_brief` unticks it as above.
 """
 
 from __future__ import annotations
@@ -56,7 +60,8 @@ import urllib.parse
 from pathlib import Path
 
 __all__ = ["CHANNELS", "OUTWARD", "PUBLISH_SECONDS", "brief_choice", "brief_copies", "brief_request", "choices", "choices_of",
-           "designate", "designate_brief", "document_copies", "item_fields", "published_fields", "request"]
+           "designate", "designate_brief", "document_copies", "item_fields", "published_fields", "remove_key", "request",
+           "undesignate", "undesignate_brief", "unrequest", "brief_unrequest"]
 
 #: The destinations, in the order a row shows their icons.
 CHANNELS = ("drive", "notion", "obsidian")
@@ -66,6 +71,8 @@ OUTWARD = ("notion", "drive")
 PUBLISH_SECONDS = 120
 #: What the hook-style trigger is called when the dashboard runs `publish`.
 TRIGGER = "dashboard"
+#: A pending request's `action` when it asks a drain to trash the copy (the pack's `TRASH`, sd:5492).
+TRASH = "trash"
 #: How a page names each destination.
 NAMES = {"drive": "Google Drive", "notion": "Notion", "obsidian": "Obsidian"}
 
@@ -142,11 +149,13 @@ def _openable(channel: str, url) -> bool:
     return _http(url)
 
 
-def _entry(channel: str, url, queued: bool) -> dict | None:
+def _entry(channel: str, url, queued) -> dict | None:
+    """`queued` is False, True for a mirror request, or `"trash"` for a trash request (sd:5489)."""
     url = url if _openable(channel, url) else None
     if not url and not queued:
         return None
-    title = NAMES[channel] + (": queued, not yet drained" if queued else "")
+    title = NAMES[channel] + (": queued for the trash, not yet drained" if queued == TRASH
+                              else ": queued, not yet drained" if queued else "")
     return {"channel": channel, "url": url, "state": "queued" if queued else "published", "title": title}
 
 
@@ -178,7 +187,7 @@ def document_copies(checkout: Path, out: str, *, setting, unread: str, fields: d
             name = f"{key}.{out}.{channel}.json"
             pending = _record(queue / name) if queue else {}
             receipt = _record(receipts / name) if receipts else {}
-            queued = bool(pending) and _same(pending.get("repo"), checkout)
+            queued = (TRASH if pending.get("action") == TRASH else True) if pending and _same(pending.get("repo"), checkout) else False
             delivered = receipt.get("url") if receipt.get("delivered") and _same(receipt.get("repo"), checkout) else None
             entry = _entry(channel, delivered or from_item.get(channel), queued)
         if entry:
@@ -192,16 +201,22 @@ def brief_copies(published: dict, open_link: str | None, queued=()) -> dict:
     urls = _from_fields(published)
     if open_link:
         urls["obsidian"] = open_link
-    return {"copies": [entry for channel in CHANNELS if (entry := _entry(channel, urls.get(channel), channel in queued))],
+    queued = queued if isinstance(queued, dict) else {channel: True for channel in queued}
+    return {"copies": [entry for channel in CHANNELS if (entry := _entry(channel, urls.get(channel), queued.get(channel, False)))],
             "unread": ""}
 
 
-def brief_queued(checkout: Path, stem: str, queue: Path | None) -> set[str]:
-    """The channels a brief has a pending request for, under this checkout's key and naming this checkout."""
+def brief_queued(checkout: Path, stem: str, queue: Path | None) -> dict[str, object]:
+    """The channels a brief has a pending request for, under this checkout's key and naming this checkout: True for a
+    mirror, `"trash"` for a trash request."""
     if queue is None:
-        return set()
-    return {channel for channel in OUTWARD
-            if _same(_record(queue / f"{repo_key(checkout)}.{stem}.{channel}.json").get("repo"), checkout)}
+        return {}
+    found = {}
+    for channel in OUTWARD:
+        record = _record(queue / f"{repo_key(checkout)}.{stem}.{channel}.json")
+        if _same(record.get("repo"), checkout):
+            found[channel] = TRASH if record.get("action") == TRASH else True
+    return found
 
 
 def _record(path: Path) -> dict:
@@ -350,6 +365,67 @@ def _check(tree: ast.Module, result: str, out: str, channel: str) -> None:
         raise Refused("the edit changed more than the one key; add the key by hand")
 
 
+def _span(source: str, node) -> tuple[int, int]:
+    return _offset(source, node.lineno, node.col_offset), _offset(source, node.end_lineno, node.end_col_offset)
+
+
+def remove_key(source: str, out: str, channel: str) -> str:
+    """`source` without the `channel` designation on the entry `out` (sd:5489); `Refused` when it cannot be done safely.
+
+    The key goes with the separator before it, so its line goes too. The result must parse to the old tree less that one
+    key, or nothing is returned.
+    """
+    if channel not in OUTWARD:
+        raise Refused(f"{channel!r} is not a destination a document designates; expected notion or drive")
+    tree, entries = _entries(source)
+    if tree is None:
+        raise Refused(entries)
+    entry = entries.get(out)
+    items = _items(entry) if entry is not None else None
+    if not items or channel not in items or not _on(items[channel]):
+        raise Refused(f"{out} is not designated for {channel}, so there is nothing to untick")
+    if isinstance(entry, ast.Call):
+        pairs = [(k, k.value) for k in entry.keywords]
+    else:
+        pairs = list(zip(entry.keys, entry.values))
+    at = next(i for i, (key, _) in enumerate(pairs) if (key.arg if isinstance(entry, ast.Call) else key.value) == channel)
+    start = _span(source, pairs[at][0])[0]
+    end = _span(source, pairs[at][1])[1]
+    if at:
+        start = _span(source, pairs[at - 1][1])[1]
+    elif len(pairs) > 1:
+        end = _span(source, pairs[1][0])[0]
+    result = source[:start] + source[end:]
+    try:
+        after = ast.parse(result)
+    except SyntaxError as error:
+        raise Refused(f"the edit would not parse ({error.msg}); remove the key by hand") from None
+    if isinstance(entry, ast.Call):
+        entry.keywords = [k for k in entry.keywords if k.arg != channel]
+    else:
+        kept = [(k, v) for k, v in zip(entry.keys, entry.values) if k.value != channel]
+        entry.keys, entry.values = [k for k, _ in kept], [v for _, v in kept]
+    if ast.dump(after) != ast.dump(tree):
+        raise Refused("the edit changed more than the one key; remove the key by hand")
+    return result
+
+
+def _pinned(node, what: str) -> str:
+    """The literal `page=` or `file=` a designation's value holds, or ""."""
+    items = _items(node)
+    value = items.get(what) if items else None
+    return value.value.strip() if isinstance(value, ast.Constant) and isinstance(value.value, str) else ""
+
+
+def _trash_queue():
+    """The pack's `enqueue_trash`, or `Refused` naming the update a pack without it needs."""
+    queue = getattr(kit(), "enqueue_trash", None)
+    if queue is None:
+        raise Refused("the installed command pack has no enqueue_trash (pack sd:5492), so the copy cannot be queued for "
+                      "the trash; update it. Nothing changed")
+    return queue
+
+
 def _write(path: Path, text: str) -> None:
     partial = path.with_name(path.name + ".dashboard-partial")
     partial.write_text(text, encoding="utf-8")
@@ -402,8 +478,45 @@ def designate(checkout: Path, out: str, channel: str, *, runner=subprocess.run) 
     return {"designated": channel, "already": already, "queued": queued and status == 0, "exit": status, "lines": lines[-12:]}
 
 
-def request(values: dict, *, config_path=None, repo_root=None):
-    """The POST `/api/documents/publish` checks: `{root, file, channel}` naming a research document the page lists."""
+def undesignate(checkout: Path, out: str, channel: str, *, url: str = "") -> dict:
+    """Untick a document's destination (sd:5489): the trash queued, then the key removed.
+
+    `{"undesignated", "trash", "dropped", "lines"}`; `trash` is the pack's state, `queued` or `nothing`. `Refused` with
+    nothing changed when the conf is not trusted, the key cannot be removed safely, or the pack refuses the trash.
+    `dropped` False means the trash is queued and the designation stays: the lines say so, and a second untick finishes.
+    """
+    conf = checkout / "research.conf.py"
+    publish = kit()
+    try:
+        before = conf.read_bytes()
+    except OSError as error:
+        raise Refused(f"research.conf.py was not read: {error}") from None
+    if not publish.conf_trusted(checkout, before):
+        raise Refused(f"no render by hand has executed this research.conf.py; read it, run `sd-research-kit render` in "
+                      f"{checkout}, then untick again")
+    source = before.decode("utf-8")
+    after = remove_key(source, out, channel)
+    items = _items(_entries(source)[1][out]) or {}
+    item = items.get("item")
+    item = item.value if isinstance(item, ast.Constant) and type(item.value) is int else None
+    what = {"notion": "page", "drive": "file"}[channel]
+    state, said = _trash_queue()(checkout, out, channel, designated=_pinned(items[channel], what), item=item, url=url)
+    if not state:
+        raise Refused(f"{said}; the designation stays")
+    lines = [said]
+    try:
+        if conf.read_bytes() != before:
+            raise OSError("research.conf.py changed while the dashboard read it")
+        _write(conf, after)
+        publish.trust_conf(checkout, after.encode("utf-8"))
+    except OSError as error:
+        lines.append(f"{out} is still designated for {NAMES[channel]}: {error}; untick again to drop it")
+        return {"undesignated": channel, "trash": state, "dropped": False, "lines": lines}
+    return {"undesignated": channel, "trash": state, "dropped": True, "lines": lines}
+
+
+def _document(values: dict, config_path, repo_root, what: str):
+    """`(checkout, out)` for the research document `{root, file, channel}` names, or `ValueError`."""
     from . import documents, documents_screen
 
     if set(values) != {"root", "file", "channel"} or not all(isinstance(values[k], str) for k in values):
@@ -419,8 +532,48 @@ def request(values: dict, *, config_path=None, repo_root=None):
     # The page is the entry's `out` name plus `.html`, as `documents_screen._sources` matches them.
     outs = [out for out in choices(checkout)["docs"] if f"{Path(out).name}.html" == values["file"]]
     if len(outs) != 1:
-        raise ValueError(f"research.conf.py has no single literal entry rendering {values['file']}; add the key by hand.")
-    out = outs[0]
+        raise ValueError(f"research.conf.py has no single literal entry rendering {values['file']}; {what} by hand.")
+    return checkout, outs[0]
+
+
+def unrequest(values: dict, *, config_path=None, repo_root=None):
+    """The POST `/api/documents/unpublish` checks (sd:5489): `{root, file, channel}`; the untick as a write."""
+    checkout, out = _document(values, config_path, repo_root, "remove the key")
+
+    def write(connection):
+        item = _item_of(checkout, out)
+        published = published_fields(connection, [item]) if connection is not None and item is not None else {}
+        try:
+            return undesignate(checkout, out, values["channel"], url=_document_url(published, out, values["channel"]))
+        except Refused as refused:
+            raise ValueError(str(refused)) from None
+
+    return write
+
+
+def _item_of(checkout: Path, out: str):
+    """The literal `item=` of the entry `out`, or None."""
+    try:
+        tree, entries = _entries((checkout / "research.conf.py").read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    items = _items(entries[out]) if tree is not None and out in entries else None
+    item = (items or {}).get("item")
+    return item.value if isinstance(item, ast.Constant) and type(item.value) is int else None
+
+
+def _document_url(published: dict, out: str, channel: str) -> str:
+    """The URL an item's `fields.published` records for this document's channel, or ""."""
+    for fields in published.values():
+        url = _from_fields(fields, {k for k in fields if k.endswith(f"::{out}")}).get(channel)
+        if url:
+            return url
+    return ""
+
+
+def request(values: dict, *, config_path=None, repo_root=None):
+    """The POST `/api/documents/publish` checks: `{root, file, channel}` naming a research document the page lists."""
+    checkout, out = _document(values, config_path, repo_root, "add the key")
 
     def write(connection):
         try:
@@ -533,6 +686,56 @@ def brief_request(values: dict):
     def write(connection):
         try:
             return designate_brief(connection, values["item"], values["channel"])
+        except Refused as refused:
+            raise ValueError(str(refused)) from None
+
+    return write
+
+
+def undesignate_brief(connection, item: int, channel: str) -> dict:
+    """Untick a brief's destination (sd:5489): the trash queued with the item's URL, then `fields.publish.<channel>`
+    dropped in one transaction. Answers as `undesignate`; `Refused` with nothing changed before the trash is queued."""
+    from sd_db import reads, writes
+    from sd_db.database import transaction
+
+    if channel not in OUTWARD:
+        raise Refused(f"{channel!r} is not a destination a brief designates; expected notion or drive")
+    row, checkout, fields = _brief(connection, item)
+    publish = fields.get("publish") if isinstance(fields.get("publish"), dict) else {}
+    if not isinstance(publish.get(channel), dict):
+        raise Refused(f"sd:{item} is not designated for {channel}, so there is nothing to untick")
+    published = fields.get("published") if isinstance(fields.get("published"), dict) else {}
+    state, said = _trash_queue()(checkout, row["title"], channel, item=item, url=_from_fields(published).get(channel, ""))
+    if not state:
+        raise Refused(f"{said}; the designation stays")
+    lines = [said]
+    try:
+        with transaction(connection):
+            current = json.loads(reads.item_by_id(connection, item)["fields"] or "{}")
+            if not isinstance(current, dict):
+                raise ValueError("its fields are not a JSON object")
+            held = dict(current.get("publish")) if isinstance(current.get("publish"), dict) else {}
+            held.pop(channel, None)
+            current = {k: v for k, v in current.items() if k != "publish"}
+            if held:
+                current["publish"] = held
+            writes.set_item_fields(connection, item, fields=current)
+    except Exception as error:  # noqa: BLE001 - the trash stands; the next untick drops the designation
+        lines.append(f"sd:{item} is still designated for {NAMES[channel]}: {error}; untick again to drop it")
+        return {"undesignated": channel, "trash": state, "dropped": False, "lines": lines}
+    return {"undesignated": channel, "trash": state, "dropped": True, "lines": lines}
+
+
+def brief_unrequest(values: dict):
+    """The POST `/api/briefs/unpublish` checks (sd:5489): `{item, channel}`; the untick as a write."""
+    if set(values) != {"item", "channel"} or type(values["item"]) is not int or not isinstance(values["channel"], str):
+        raise ValueError("Send the brief's item and the channel: notion or drive.")
+    if values["channel"] not in OUTWARD:
+        raise ValueError("A brief designates notion or drive; Obsidian is the repo's channels setting.")
+
+    def write(connection):
+        try:
+            return undesignate_brief(connection, values["item"], values["channel"])
         except Refused as refused:
             raise ValueError(str(refused)) from None
 

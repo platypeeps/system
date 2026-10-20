@@ -185,8 +185,9 @@
   // Publish to and Publish now (sd:5102), for a research document on Documents and a routine brief on Briefs. `on` is the
   // row's noun; `base` the page's API (`/api/documents`, `/api/briefs`); `payload(o)` what names the row; `cli(o, channel)`
   // the line by hand; `reread()` the page's reread. Publish to ticks one destination: POST <base>/publish adds its designation
-  // (research.conf.py for a document, the item's fields.publish for a brief) and queues it through the pack. Unticking is
-  // refused: the designation may hold the id a drain wrote. Obsidian is the repo's channels setting (Management > Publishing).
+  // (research.conf.py for a document, the item's fields.publish for a brief) and queues it through the pack. Unticking
+  // (Remove copy, sd:5489) posts <base>/unpublish: the pack queues the copy for the trash, then the designation goes; it
+  // asks first, and Undo ticks it again. Obsidian is the repo's channels setting (Management > Publishing).
   // Publish now posts <base>/publish-now, which starts one headless drain of the row's queued requests (publish_drain.py); the
   // page reads <base>/publish-now/<id> every 10 s until it settles, fires 'publish:run' so Details draws again, then rereads.
   const PUB_NAME = { drive: 'Google Drive', notion: 'Notion', obsidian: 'Obsidian' };
@@ -207,13 +208,24 @@
     return [
       { id: `${on}.publish`, on: `${on} destination`, label: 'Publish to', does: 'Designates the destination and queues the copy; Publish now drains it.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
         when: o => o.channel === 'obsidian' ? 'Obsidian is the repo\'s channels setting: change it under Management > Publishing'
-          : o.set ? `already designated for ${o.name}; remove the designation by hand` : o.why || true,
+          : o.set ? `already designated for ${o.name}; untick it to remove the copy` : o.why || true,
         cli: o => cli(o.row, o.channel),
         sends: o => `POST ${base}/publish ${JSON.stringify({ ...payload(o.row), channel: o.channel })}`,
         consequence: o => `Designates ${o.row.label} for ${o.name} and queues it. Nothing leaves the machine until Publish now or a drain by hand.`,
         run: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(
           r => reread().then(() => r.queued ? `Queued for ${o.name} · ${o.row.label}` : `${o.name} designated; not queued: ${(r.lines || []).slice(-1)[0] || 'publish said nothing'}`),
           err => refusal(err, 'it was designated')) },
+      { id: `${on}.unpublish`, on: `${on} destination`, label: 'Remove copy', does: 'Drops the designation and queues its copy for the trash, where it can be restored; Publish now drains it. Undo ticks it again.', icon: 'x', risk: 'undo', askFirst: true, executes: true,
+        when: o => o.channel === 'obsidian' ? 'Obsidian is the repo\'s channels setting: change it under Management > Publishing'
+          : !o.set ? `not designated for ${o.name}` : o.why || true,
+        cli: () => 'no sd verb: remove the designation by hand, then trash the copy by the publication contract',
+        sends: o => `POST ${base}/unpublish ${JSON.stringify({ ...payload(o.row), channel: o.channel })}`,
+        consequence: o => `Drops ${o.row.label}'s ${o.name} designation and queues its ${o.name} copy for the trash (${o.channel === 'notion' ? 'Notion\'s Trash' : 'the Drive bin'}), where it can be restored. Nothing leaves the machine until Publish now. Undo ticks it again and republishes.`,
+        run: o => window.shell.post(`${base}/unpublish`, { ...payload(o.row), channel: o.channel }).then(
+          r => reread().then(() => !r.dropped ? `Trash queued, but ${o.name} is still designated: ${(r.lines || []).slice(-1)[0] || 'no reason given'}`
+            : r.trash === 'queued' ? `${o.name} removed · its copy is queued for the trash; Publish now drains it` : `${o.name} removed · no copy was queued or delivered`),
+          err => refusal(err, 'the trash was queued')),
+        undo: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(() => reread()) },
       { id: `${on}.publish-now`, on, label: 'Publish now', does: 'Starts a drain that mirrors the queued copies to Notion or Drive.', icon: 'send', risk: 'safe', askFirst: true, executes: true,
         when: o => !o.pub ? `not a ${on} the dashboard publishes` : (o.pub.copies || []).some(c => c.state === 'queued') || 'nothing is queued: tick Drive or Notion under Publish to first',
         cli: () => 'no sd verb: drain the queue in a Claude session by the publication contract',
@@ -231,7 +243,7 @@
     const box = ch => {
       const id = `pub:${o.id}:${ch}`, set = c[ch];
       window.shell.commands.put({ id, type: `${on} destination`, label: `${PUB_NAME[ch]} for ${o.label}`, row: o, channel: ch, name: PUB_NAME[ch], set, why: c.why });
-      return html`<button class="pubbox" type="button" role="checkbox" aria-checked="${set == null ? 'mixed' : String(!!set)}" data-cmd="${on}.publish" data-obj="${id}"><svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg><span>${PUB_NAME[ch]}</span></button>`;
+      return html`<button class="pubbox" type="button" role="checkbox" aria-checked="${set == null ? 'mixed' : String(!!set)}" data-cmd="${on}.${set ? 'unpublish' : 'publish'}" data-obj="${id}"><svg class="i" aria-hidden="true"><use href="#i-${PUB_ICON[ch]}"/></svg><span>${PUB_NAME[ch]}</span></button>`;
     };
     const run = DRAINS.get(o.id);
     const state = !run ? '' : run.state === 'done' || run.state === 'failed' ? `Last drain ${run.state}${run.reason ? `: ${run.reason}` : ''}.`
