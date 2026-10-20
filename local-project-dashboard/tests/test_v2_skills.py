@@ -58,6 +58,10 @@ COMMANDS = [
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
     ["skill.apply", "skill", "Apply", "a", "confirm"],
     ["skill.scan", "use surfaces", "Scan", "s", "safe"],
+    # The Intake view (system sd:5478): Remove has Undo, which tracks the repository again.
+    ["skill.intake.refresh", "tracked repo", "Refresh", "e", "safe"],
+    ["skill.intake.untrack", "tracked repo", "Remove", "m", "undo"],
+    ["skill.intake.track", "untracked repo", "Track", "t", "safe"],
 ]
 
 SKILL = "---\nname: {name}\ndescription: The {name} fixture.\n---\n## When to use\nFor a bounded fixture.\n"
@@ -253,8 +257,8 @@ def scratch(case):
     return folder
 
 
-class TheIntakeRoute(Pack, BrowserSession):
-    """POST /api/skills/intake runs `sd skill intake` once, as an argv list, and installs only with --approve (sd:3992)."""
+class StubSd(Pack, BrowserSession):
+    """A pack, a session, and `sd` replaced by STUB_SD."""
 
     def setUp(self):
         super().setUp()
@@ -268,6 +272,10 @@ class TheIntakeRoute(Pack, BrowserSession):
         patcher = mock.patch.object(skill_intake, "command", lambda name: str(stub) if name == "sd" else name)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+
+class TheIntakeRoute(StubSd):
+    """POST /api/skills/intake runs `sd skill intake` once, as an argv list, and installs only with --approve (sd:3992)."""
 
     def intake(self, payload, *, out=None, code=0):
         environment = {"INTAKE_ARGS": str(self.args), "INTAKE_OUT": json.dumps(REPORT) if out is None else out, "INTAKE_EXIT": str(code)}
@@ -361,6 +369,106 @@ class TheIntakeRoute(Pack, BrowserSession):
         self.assertEqual((status, body["outcome"]), (502, "unknown"))
 
 
+REPO = "https://github.com/example/skills"
+#: What `sd skill intake --tracked --json` prints (pack bin/sd_skill_intake.py `tracked`): one tracked repository.
+OTHER = "https://github.com/example/other"
+TRACKED = {"key": "skills.intake_repos", "seeded": False,
+           "untracked": [{"url": OTHER, "skills": [{"name": "sd-other", "scope": "user", "url": f"{OTHER}/tree/main/sd-other", "commit": "d" * 40}]}],
+           "repos": [{"url": REPO, "scope": "pack", "refreshed": "2026-10-20T15:00:00Z", "result": "1 new, 1 changed",
+                      "skills": [{"name": "sd-example", "scope": "pack", "url": URL, "commit": "a" * 40}]}]}
+#: What `sd skill intake --refresh URL --json` prints (`refresh`): one report per skill, each with its revision.
+REFRESHED = {"url": REPO, "branch": "main", "commit": "c" * 40, "result": "1 changed, 1 unchanged, 1 failed", "recorded": True,
+             "unrecorded": "", "refreshed": "2026-10-20T16:00:00Z", "recovered": [], "counts": {"changed": 1, "unchanged": 1, "failed": 1},
+             "skills": [dict(REPORT, path="sd-example", diff_lines=1205), dict(REPORT, path="sd-same", skill="sd-same", mode="unchanged", diff=[]),
+                        {"path": "sd-broken", "url": f"{REPO}/tree/main/sd-broken", "error": "sd-broken/SKILL.md is over the size bound"}]}
+
+
+class TheTrackingRoute(StubSd):
+    """GET /api/skills/intake/repos and POST /api/skills/intake/tracking run `sd skill intake` with one repository URL
+    (system sd:5478). Neither installs: a refresh lists reports, and each installs only through /api/skills/intake."""
+
+    def run_sd(self, method, path, payload=None, *, out, code=0):
+        environment = {"INTAKE_ARGS": str(self.args), "INTAKE_OUT": out if isinstance(out, str) else json.dumps(out),
+                       "INTAKE_EXIT": str(code)}
+        with mock.patch.dict(os.environ, environment):
+            if method == "GET":
+                status, _, raw = self.request(path, headers={"Cookie": self.cookie})
+                body = json.loads(raw)
+            else:
+                status, _, body = self.post(path, payload)
+        argv = self.args.read_text().splitlines() if self.args.exists() else None
+        if self.args.exists():
+            self.args.unlink()
+        return status, body, argv
+
+    def track(self, payload, *, out=None, code=0):
+        return self.run_sd("POST", "/api/skills/intake/tracking", payload,
+                           out=dict(TRACKED, url=REPO) if out is None else out, code=code)
+
+    def test_the_list_is_the_verbs_tracked_view(self):
+        status, body, argv = self.run_sd("GET", "/api/skills/intake/repos", out=TRACKED)
+        self.assertEqual((status, argv), (200, ["skill", "intake", "--json", "--tracked"]))
+        self.assertEqual(body["repos"][0]["url"], REPO)
+
+    def test_a_list_that_did_not_read_is_unknown_not_empty(self):
+        for out, code in (("sd: the skills.intake_repos setting row does not read; set it again with --track", 1), ("not json", 0)):
+            with self.subTest(out=out):
+                status, body, _ = self.run_sd("GET", "/api/skills/intake/repos", out=out, code=code)
+                self.assertEqual(status, 503)
+                self.assertIn("were not read", body["error"])
+
+    def test_track_untrack_and_refresh_pass_one_repository_url(self):
+        cases = (({"action": "track", "url": REPO}, ["--track=" + REPO]),
+                 ({"action": "track", "url": REPO, "scope": "user"}, ["--track=" + REPO, "--scope=user"]),
+                 ({"action": "untrack", "url": REPO}, ["--untrack=" + REPO]),
+                 ({"action": "refresh", "url": REPO}, ["--refresh=" + REPO]))
+        for payload, tail in cases:
+            with self.subTest(payload=payload):
+                out = REFRESHED if payload["action"] == "refresh" else None
+                status, body, argv = self.track(payload, out=out)
+                self.assertEqual((status, argv), (200, ["skill", "intake", "--json", *tail]))
+                self.assertEqual(body["url"], REPO)
+
+    def test_a_refresh_never_passes_an_approval(self):
+        status, _, argv = self.track({"action": "refresh", "url": REPO, "approve": REVISION}, out=REFRESHED)
+        self.assertEqual((status, argv), (400, None))
+        _, _, argv = self.track({"action": "refresh", "url": REPO}, out=REFRESHED)
+        self.assertFalse(any(arg.startswith("--approve") for arg in argv))
+
+    def test_anything_but_a_repository_url_is_refused_and_runs_nothing(self):
+        for url in (URL, REPO + "/", "https://github.com/example", "http://github.com/example/skills", "https://github.com/-x/y",
+                    "https://github.com/example/..", "https://github.com/example/sk ills", "https://github.com/a/b`c",
+                    "https://github.com/a/b;touch x", "--untrack", "", None, 7):
+            with self.subTest(url=url):
+                status, body, argv = self.track({"action": "track", "url": url})
+                self.assertEqual((status, argv), (400, None))
+                self.assertIn("https://github.com/<owner>/<repo>", body["error"])
+        for payload in ({"action": "install", "url": REPO}, {"url": REPO}, {"action": "untrack", "url": REPO, "scope": "pack"},
+                        {"action": "track", "url": REPO, "scope": "all"}, {"action": "track", "url": REPO, "extra": 1}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.track(payload)[::2], (400, None))
+
+    def test_a_refused_or_failed_run_says_what_is_known(self):
+        status, body, _ = self.track({"action": "untrack", "url": REPO}, out=f"sd: {REPO} is not tracked; nothing written", code=1)
+        self.assertEqual((status, body["error"]), (400, f"Not changed: {REPO} is not tracked; nothing written"))
+        stale = "sd: the tracked repositories changed since they were read; read them again"
+        status, body, _ = self.track({"action": "track", "url": REPO}, out=stale, code=1)
+        self.assertEqual((status, body.get("reload")), (409, True))
+        status, body, _ = self.track({"action": "refresh", "url": REPO}, out="sd: git fetch failed: no such repository", code=1)
+        self.assertEqual((status, body["error"]), (400, "Not refreshed: git fetch failed: no such repository"))
+        # A list write that failed any other way may have landed: unknown, and the page reads the list again.
+        for out, code in (("sd: database is locked", 1), ("not json", 0)):
+            with self.subTest(out=out):
+                status, body, _ = self.track({"action": "untrack", "url": REPO}, out=out, code=code)
+                self.assertEqual((status, body["outcome"]), (502, "unknown"))
+
+    def test_a_refresh_past_its_bound_says_nothing_installed(self):
+        with mock.patch.object(skill_intake, "INTAKE_SECONDS", 0.5), mock.patch.dict(os.environ, {"INTAKE_SLEEP": "5"}):
+            status, body, _ = self.track({"action": "refresh", "url": REPO})
+        self.assertEqual(status, 502)
+        self.assertIn("Nothing was installed", body["error"])
+
+
 SHELL_MORE = r"""
 window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
 window.shell.setContext = () => {}; OUT.picks = []; C.pick = id => OUT.picks.push(id);
@@ -378,11 +486,11 @@ class TheScript(Pack, ScreenCase):
         self.seed_use()
         self.doc = skills_screen.document(self.connection, now=NOW)
 
-    def run_page(self, body, answer=None, search=""):
+    def run_page(self, body, answer=None, search="", before=""):
         answer = answer or "(path, body) => path === '/api/skills' ? [200, DOC] : [200, { item: { id: 42 } }]"
         script = (STAND_IN + f"location.search = {json.dumps(search)};\nvar DOC = {json.dumps(self.doc)};\n" + MARKUP_JS
                   + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + PAGE_JS
-                  + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+                  + "\nvar R = {};\n(async () => { try {\n" + before + "\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION; OUT.html = Object.fromEntries(Object.entries(ELS).map(([k, e]) => [k, e.html]));"
                   + " OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
@@ -684,6 +792,126 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
             out = self.run_page(f"R.cli = cmd('skill.reimport.user').cli({{ name: {json.dumps(name)} }});")
             self.assertEqual(shell_argv(self, out["R"]["cli"], folder), ["skill", "intake", name, "--scope", "user"])
 
+    # The Intake view (system sd:5478). Its stand-in server answers the list, and each tracking post with the list or a refresh.
+    VIEWS = ("(path, body) => path === '/api/skills' ? [200, DOC] : path === '/api/skills/intake/repos' ? [200, %(tracked)s]"
+             " : path === '/api/skills/intake/tracking' ? [200, body.action === 'refresh' ? %(refreshed)s : Object.assign({}, %(tracked)s, { url: body.url },"
+             " body.action === 'untrack' ? { removed: { url: body.url, scope: 'user', refreshed: null, result: null } } : {})]"
+             " : path === '/api/skills/intake' ? [200, Object.assign({}, %(report)s, { installed: !!body.approve })] : [200, {}]")
+    INTAKE_VIEW = "document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: 'intake', first: true, api: '/api/skills/intake/repos' } })); await flush();"
+    TRACKING = "/api/skills/intake/tracking"
+
+    def views(self, tracked=None):
+        return self.VIEWS % {"tracked": json.dumps(tracked or TRACKED), "refreshed": json.dumps(REFRESHED), "report": json.dumps(REPORT)}
+
+    def test_the_intake_view_reads_the_tracked_list_the_first_time_it_opens(self):
+        out = self.run_page("R.before = OUT.gets.slice(); " + self.INTAKE_VIEW
+                            + " R.rows = ELS['intake-rows'].html; R.untracked = ELS['intake-untracked'].html; R.tally = ELS['intake-tally'].textContent;"
+                            " R.details = ELS.details.html;", answer=self.views())
+        self.assertEqual(out["R"]["before"], ["/api/skills"])
+        self.assertEqual(out["gets"], ["/api/skills", "/api/skills/intake/repos"])
+        for shown in (REPO, "sd-example", "1 new, 1 changed", "pack · contrib/"):
+            self.assertIn(shown, out["R"]["rows"])
+        self.assertIn(OTHER, out["R"]["untracked"])
+        self.assertEqual(out["R"]["tally"], "1 repository tracked")
+        self.assertIn(f"<h2>{REPO}</h2>", out["R"]["details"], "the view did not open on its first repository")
+
+    def test_a_view_the_shell_showed_before_the_page_listened_still_reads_its_list(self):
+        # The shell listens for DOMContentLoaded on document and the page on window, so its first shell:view came first and
+        # the view stayed unread in the browser check: the page asks shell.view at start.
+        out = self.run_page("R.rows = ELS['intake-rows'].html; R.count = OUT.count;", answer=self.views(),
+                            before="window.shell.view = { current: () => 'intake', count: (id, n) => { OUT.count = [id, n]; } };")
+        self.assertIn("/api/skills/intake/repos", out["gets"])
+        self.assertIn(REPO, out["R"]["rows"])
+        self.assertEqual(out["R"]["count"], ["intake", 1])
+
+    def test_an_empty_list_says_why_and_a_failed_read_is_not_an_empty_one(self):
+        empty = dict(TRACKED, seeded=True, repos=[], untracked=[])
+        out = self.run_page(self.INTAKE_VIEW + " R.rows = ELS['intake-rows'].html;", answer=self.views(empty))
+        self.assertIn("No repository is tracked.", out["R"]["rows"])
+        self.assertIn("No installed skill was adopted by sd skill intake", json.dumps(out["states"]))
+        answer = "(path) => path === '/api/skills' ? [200, DOC] : [503, { error: 'The tracked repositories were not read: database is locked' }]"
+        out = self.run_page(self.INTAKE_VIEW + " R.rows = ELS['intake-rows'].html;", answer=answer)
+        self.assertIn("Not read: The tracked repositories were not read: database is locked", out["R"]["rows"])
+        self.assertNotIn("No repository is tracked", out["R"]["rows"])
+
+    SHOW_REPORT = "ELS.details.listeners.click.forEach(f => f({ target: { closest: s => s === '[data-report]' ? { dataset: { report: '0' } } : null } }));"
+
+    def test_refresh_lists_each_skills_report_and_installs_nothing_until_approve(self):
+        out = self.run_page(self.INTAKE_VIEW + f" shellRun(cmd('skill.intake.refresh'), C.get('repo:{REPO}')); await flush();"
+                            " R.refresh = ELS['refresh-slot'].html; R.posts = OUT.posts.length; " + self.SHOW_REPORT
+                            + " R.slot = ELS['intake-slot'].html; R.shown = OUT.posts.length; " + self.CLICK_APPROVE + " await flush();",
+                            answer=self.views())
+        self.assertEqual(out["posts"][0], [self.TRACKING, {"action": "refresh", "url": REPO}, 64])
+        self.assertEqual((out["R"]["posts"], out["R"]["shown"]), (1, 1), "a refresh or Show report posted on its own")
+        refresh = out["R"]["refresh"]
+        for shown in ("1 changed, 1 unchanged, 1 failed", "sd-example · changed", "sd-broken · not read", "over the size bound",
+                      "1 skill matches the installed copy", "nothing installed"):
+            self.assertIn(shown, refresh)
+        self.assertNotIn("sd-same", refresh, "an unchanged skill is a count, not a row")
+        self.assertIn('<span class="g-caution" aria-hidden="true">▲</span> sd-example · changed', refresh)
+        self.assertEqual(len(re.findall(r"data-report=", refresh)), 1, "a skill that was not read offers a report")
+        self.assertEqual(re.findall(r"<button[^>]*data-approve[^>]*>([^<]*)", out["R"]["slot"]), [f"Approve revision {REVISION}"])
+        self.assertEqual(out["confirms"], ["skill.intake.approve"])
+        self.assertEqual(out["posts"][1], ["/api/skills/intake", {"source": URL, "scope": "pack", "approve": REVISION}, 64])
+        self.assertIn("1200 more lines", out["R"]["slot"], "the refresh's own count of diff lines was not used")
+        self.assertEqual(out["toasts"][0], [f"Refreshed {REPO}: 1 changed, 1 unchanged, 1 failed. Nothing installed", False])
+        self.assertIn("/api/skills/intake/repos", out["gets"][2:], "the list was not read again for the refresh time")
+
+    def test_a_refused_skill_in_a_refresh_carries_the_warning_glyph(self):
+        refused = dict(REPORT, path="sd-bad", skill="sd-bad", mode="new", risk=[{"severity": "refuse", "rule": "pipe-to-shell", "file": "SKILL.md", "line": 3}],
+                       verdict={"action": "decline", "reason": "refused: pipe-to-shell"})
+        answer = self.views().replace(json.dumps(REFRESHED), json.dumps(dict(REFRESHED, skills=[refused])))
+        out = self.run_page(self.INTAKE_VIEW + f" shellRun(cmd('skill.intake.refresh'), C.get('repo:{REPO}')); await flush();"
+                            " R.refresh = ELS['refresh-slot'].html;", answer=answer)
+        self.assertIn('<span class="g-warning" aria-hidden="true">■</span> sd-bad · new', out["R"]["refresh"])
+
+    def test_a_failed_refresh_says_why_and_reads_the_list_again(self):
+        answer = ("(path, body) => path === '/api/skills' ? [200, DOC] : path === '/api/skills/intake/repos' ? [200, %s]"
+                  " : [400, { error: 'Not refreshed: git fetch failed' }]" % json.dumps(TRACKED))
+        out = self.run_page(self.INTAKE_VIEW + f" shellRun(cmd('skill.intake.refresh'), C.get('repo:{REPO}')); await flush();"
+                            " R.refresh = ELS['refresh-slot'].html;", answer=answer)
+        self.assertIn("Not refreshed: git fetch failed", out["R"]["refresh"])
+        self.assertEqual(out["toasts"][-1], [f"{REPO} not changed: Not refreshed: git fetch failed", False])
+        self.assertEqual(out["gets"].count("/api/skills/intake/repos"), 2)
+
+    def test_remove_stops_tracking_and_undo_tracks_it_again_with_its_scope(self):
+        out = self.run_page(self.INTAKE_VIEW + f" shellRun(cmd('skill.intake.untrack'), C.get('repo:{REPO}')); await flush();"
+                            " await lastUndo().undo(); await flush();", answer=self.views())
+        self.assertEqual(out["posts"], [[self.TRACKING, {"action": "untrack", "url": REPO}, 64],
+                                        [self.TRACKING, {"action": "track", "url": REPO, "scope": "user"}, 64]])
+        self.assertEqual(out["confirms"], [], "Remove has Undo; it does not ask first")
+        self.assertIn([f"Stopped tracking {REPO}; its installed skills stay", True], out["toasts"])
+        self.assertEqual(out["toasts"][-1], [f"Remove undone · {REPO}", False])
+
+    def test_a_list_write_with_no_answer_is_not_known_and_reads_again(self):
+        answer = ("(path, body) => path === '/api/skills' ? [200, DOC] : path === '/api/skills/intake/repos' ? [200, %s]"
+                  " : [502, { error: 'sd skill intake gave no answer', outcome: 'unknown' }]" % json.dumps(TRACKED))
+        out = self.run_page(self.INTAKE_VIEW + f" shellRun(cmd('skill.intake.track'), C.get('source:{OTHER}')); await flush();", answer=answer)
+        self.assertEqual(out["posts"], [[self.TRACKING, {"action": "track", "url": OTHER}, 64]])
+        self.assertEqual(out["toasts"][-1], [f"Tracking of {OTHER} not known: sd skill intake gave no answer", False])
+        self.assertEqual(out["gets"].count("/api/skills/intake/repos"), 2)
+
+    OPEN_TRACK = ("ELS.details.querySelector = s => s[0] === '#' ? document.getElementById(s.slice(1)) : El('x');"
+                  " ELS['track-btn'].listeners.click[0](); ELS['tr-url'].value = %s; ELS['tr-scope'].value = 'user';"
+                  " ELS['tr-url'].listeners.input[0](); ELS['track-form'].listeners.submit[0]({ preventDefault() {} }); await flush();")
+
+    def test_the_track_form_takes_a_repository_url_alone(self):
+        for url in (URL, REPO + "/", "https://github.com/example", "https://github.com/example/..", "owner/repo"):
+            with self.subTest(url=url):
+                out = self.run_page(self.INTAKE_VIEW + self.OPEN_TRACK % json.dumps(url) + " R.err = ELS['tr-err'].textContent;", answer=self.views())
+                self.assertEqual(out["posts"], [])
+                self.assertIn("https://github.com/<owner>/<repo>", out["R"]["err"])
+        out = self.run_page(self.INTAKE_VIEW + self.OPEN_TRACK % json.dumps(OTHER) + " R.cli = ELS['tr-cli'].textContent;", answer=self.views())
+        self.assertEqual(out["posts"], [[self.TRACKING, {"action": "track", "url": OTHER, "scope": "user"}, 64]])
+        self.assertEqual(out["R"]["cli"], f"sd skill intake --track '{OTHER}' --scope 'user'")
+        self.assertEqual(out["toasts"][-1], [f"Tracking {OTHER}", False])
+
+    def test_the_tracking_lines_quote_the_url(self):
+        out = self.run_page(self.INTAKE_VIEW + f" R.cli = ['skill.intake.refresh', 'skill.intake.untrack'].map(id => cmd(id).cli(C.get('repo:{REPO}')))"
+                            f".concat([cmd('skill.intake.track').cli(C.get('source:{OTHER}'))]);", answer=self.views())
+        self.assertEqual(out["R"]["cli"], [f"sd skill intake --refresh '{REPO}'", f"sd skill intake --untrack '{REPO}'",
+                                           f"sd skill intake --track '{OTHER}'"])
+
     def test_the_script_adds_no_sink_no_inline_style_and_no_reader_of_its_own(self):
         self.assertNotIn("innerHTML", PAGE_JS)
         self.assertNotRegex(PAGE_JS, r"style=\\?\"")
@@ -695,7 +923,8 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "skills", "Skills", "/skills", ("/api/skills", "/api/skills/intake")
+    page, section, route, api = "skills", "Skills", "/skills", ("/api/skills", "/api/skills/intake", "/api/skills/intake/repos",
+                                                               "/api/skills/intake/tracking")
 
 
 if __name__ == "__main__":

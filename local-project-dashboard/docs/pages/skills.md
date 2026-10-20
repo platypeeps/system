@@ -26,3 +26,20 @@ diff. Approve revision appears only under a report that can install, asks
 first, and posts the URL, scope and revision that report printed; nothing
 installs without it. A refused approve wrote nothing; one that failed any
 other way is reported as unknown, and the next Evaluate finishes or undoes it.
+
+The Intake view (system sd:5478) lists the repositories skills are adopted
+from. `GET /api/skills/intake/repos` (`skill_intake.repos`) runs
+`sd skill intake --tracked --json`: the `skills.intake_repos` setting row,
+or, until the list is first changed, the repositories the installed skills'
+Provenance names. Each row shows the skills adopted from it and the last
+refresh's time and result; the repositories skills came from that are not
+tracked sit under the table, each with Track. Track a repository takes a
+`https://github.com/<owner>/<repo>` URL and a scope.
+`POST /api/skills/intake/tracking` (`skill_intake.tracking`) runs `--track`,
+`--untrack` or `--refresh` with that one URL. Refresh fetches the default
+branch and lists its new, changed, blocked, removed and unread skills; Show
+report puts one skill's intake report in Details, where Approve is the same
+as Evaluate's. A refresh installs nothing. Remove stops tracking and keeps
+the installed skills; its Undo tracks the repository again with its scope,
+without its last refresh. A list write with no answer is reported as not
+known, and the list is read again.

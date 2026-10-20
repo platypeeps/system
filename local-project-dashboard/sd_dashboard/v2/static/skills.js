@@ -8,7 +8,12 @@
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
 // A skill the intake installed in ~/.claude/skills (sd:3997) is a "user skill": the Adopt panel lists it with Re-import, which
 // runs the intake with the user scope. It is no catalog row, so Try, Review, Promote and Demote are not on it.
+// The Intake view (system sd:5478) lists the repositories `sd skill intake --tracked` names, from /api/skills/intake/repos.
+// Track, Refresh and Remove post /api/skills/intake/tracking; Remove keeps the installed skills and its Undo tracks the
+// repository again. A refresh lists each skill's intake report and installs nothing: Approve under a report is the intake's.
 const { html, put, plural, cells } = window.markup;
+// The views, for the shell's view switch: the catalog, and the tracked repositories, read the first time the view opens.
+window.PAGE_VIEWS = [{ id: 'catalog', label: 'Catalog' }, { id: 'intake', label: 'Intake', api: '/api/skills/intake/repos' }];
 // Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
 window.PAGE_KEYS = [['/', 'Filter, run or adopt a skill'], ['→', 'In the field: the next reading (filter, run, adopt)']];
 window.PAGE_COMMANDS = [
@@ -182,6 +187,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   }
   const mark = () => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected)));
   function show(id) {
+    if (id === 'track' || /^(repo|source):/.test(id)) return showRepo(id);
     if (id === 'adopt' || String(id).startsWith('user:')) return showAdopt(); // a user skill's details are its Adopt panel line
     if (!DOC) return false;
     if (id === 'hygiene' || id === 'surfaces') return showNote(id);
@@ -297,7 +303,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const verdictMark = r => r.installed ? ['●', 'ok'] : refused(r) ? ['■', 'warning'] : r.verdict.action === 'install' ? ['●', 'ok'] : ['▲', 'caution'];
   const diffLine = l => html`<span class="${/^(\+\+\+|---|@@)/.test(l) ? 'hd' : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : ''}">${l}</span>`;
   function reportOf(r) {
-    const [g, st] = verdictMark(r), shown = r.diff.slice(0, DIFF_LINES);
+    // A refresh's report carries its first diff lines and diff_lines, their count (system sd:5478); an evaluation, all of them.
+    const [g, st] = verdictMark(r), shown = r.diff.slice(0, DIFF_LINES), more = (r.diff_lines ?? r.diff.length) - shown.length;
     const after = r.installed ? html`<p class="why"><span class="g-ok" aria-hidden="true">●</span> Installed at revision <code>${r.revision}</code>.</p>`
       : approvable(r) ? html`<div class="row"><button class="btn" type="button" data-approve>Approve revision ${r.revision}</button></div>
         <p class="why">Installs this revision only. If the source or the installed copy changed since this report, the install is refused.</p>`
@@ -313,7 +320,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         <dt>Revision</dt><dd>${r.revision}</dd></dl>
       ${r.recovered.length ? html`<p class="note">${r.recovered.join(' · ')}</p>` : ''}
       <h3>Diff against the installed copy</h3>${shown.length ? html`<pre class="diff">${shown.map(diffLine)}</pre>` : html`<p class="why">No diff${r.mode === 'blocked' ? ': the name belongs to another skill' : ''}.</p>`}
-      ${r.diff.length > DIFF_LINES ? html`<p class="why">${r.diff.length - DIFF_LINES} more lines; <code>sd skill intake --json</code> holds them all.</p>` : ''}
+      ${more > 0 ? html`<p class="why">${more} more lines; <code>sd skill intake --json</code> holds them all.</p>` : ''}
       ${after}<div class="cli"><code>${line}</code><button class="icon-btn" type="button" aria-label="Copy: ${line}" data-copy="${line}">${I('copy')}</button></div></section>`;
   }
   function drawIntake() {
@@ -334,7 +341,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     cli: o => approveLine(o),
     run: o => { const at = intake;
       return window.shell.post('/api/skills/intake', { source: o.url, scope: o.scope, approve: o.revision }).then(r => {
-        intake = { ...at, report: r }; drawIntake(); reread();
+        intake = { ...at, report: r }; drawIntake(); reread(); repoReader?.reread();
         return r.installed ? `Installed ${r.skill} at revision ${r.revision}` : `Nothing installed: ${r.mode}`;
       }, e => {
         // A 502 is an install whose outcome is not known; a refusal (400, or 409 for a changed source) wrote nothing.
@@ -347,6 +354,168 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     const r = intake.report;
     C.run(APPROVE, { id: 'intake', type: 'intake report', label: r.skill, url: r.url, scope: r.scope, revision: r.revision, destination: r.destination });
   });
+  // ---------- Intake view: tracked repositories (system sd:5478) ----------
+  // The list is `sd skill intake --tracked`: the skills.intake_repos setting, or, until it is first written, the repositories
+  // the installed skills' Provenance names; then the ones skills were adopted from that are not tracked. One refresh at a
+  // time per repository; its answer stays in REFRESH and draws under that repository's Details, where Show report puts one
+  // skill's report in the intake slot and Approve is the intake's own (APPROVE above).
+  const TRACKING = '/api/skills/intake/tracking';
+  const REPO_URL = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
+  let VIEW = null, REPOS = null, REPO_FAILED = '', repoReader = null;
+  const REFRESH = {}; // per URL: { wait } while it runs, then { report } or { error }
+  const repoRows = document.getElementById('intake-rows');
+  const repoOf = id => String(id).replace(/^(repo|source):/, '');
+  const when = iso => window.shell.time ? window.shell.time(iso) : utc(iso);
+  const scopeOf = skills => skills.length && skills.every(s => s.scope === 'user') ? 'user' : 'pack';
+  // A refresh's skill: new, changed (a re-import), unchanged, blocked (the name is another skill's), gone or failed.
+  const bucket = r => r.mode === 'gone' ? 'gone' : r.error ? 'failed' : r.mode === 're-import' ? 'changed' : r.mode;
+  const BUCKET = { new: ['▲', 'caution', 'new'], changed: ['▲', 'caution', 'changed'], unchanged: ['●', 'ok', 'unchanged'],
+    blocked: ['■', 'warning', 'blocked'], gone: ['▲', 'caution', 'removed upstream'], failed: ['▨', 'unknown', 'not read'] };
+  const repoGlyph = r => REFRESH[r.url]?.wait ? ['◌', 'queued', 'Refreshing now']
+    : !r.refreshed ? ['▨', 'unknown', 'Not refreshed yet']
+    : /^failed/.test(r.result || '') ? ['▨', 'unknown', 'The last refresh failed']
+    : /\d+ (new|changed|blocked|gone)\b/.test(r.result || '') ? ['▲', 'caution', 'The last refresh found skills to review']
+    : ['●', 'ok', 'The last refresh found nothing new or changed'];
+  const refreshed = r => REFRESH[r.url]?.wait ? 'refreshing…' : r.refreshed ? html`${when(r.refreshed)} · ${r.result}` : 'never';
+  function adoptRepos(doc) {
+    REPOS = doc; REPO_FAILED = '';
+    const n = doc.repos.length;
+    return { objects: [...doc.repos.map(r => ({ id: `repo:${r.url}`, type: 'tracked repo', label: r.url, url: r.url, scope: r.scope })),
+      ...doc.untracked.map(u => ({ id: `source:${u.url}`, type: 'untracked repo', label: u.url, url: u.url, scope: scopeOf(u.skills) }))],
+      state: n || doc.untracked.length ? null : { kind: 'empty', title: 'No tracked repository',
+        text: doc.seeded ? 'No installed skill was adopted by sd skill intake, so nothing seeds the list. Track a repository adds one.'
+          : 'The list is empty. Track a repository adds one.', source: '/api/skills/intake/repos' } };
+  }
+  function drawRepos() {
+    const rows = REPOS ? REPOS.repos : [];
+    put(repoRows, html`${rows.length ? rows.map(r => { const id = `repo:${r.url}`, [g, st, why] = repoGlyph(r); return html`<tr data-id="${id}" aria-selected="${String(id === selected)}">
+      <td class="g g-${st}" title="${why}">${g}<span class="sr">${why}</span></td>
+      <td class="name"><button type="button">${r.url}</button><p>${r.scope === 'user' ? 'user · ~/.claude/skills' : 'pack · contrib/'}</p></td>
+      <td class="avail">${r.skills.length ? r.skills.map(x => x.name).join(', ') : 'none installed'}</td>
+      <td class="avail">${refreshed(r)}</td>
+      <td class="act">${C.rowActions(id)}</td></tr>`; })
+      : html`<tr class="lane"><td colspan="5">${REPOS ? 'No repository is tracked.' : REPO_FAILED ? `Not read: ${REPO_FAILED}` : 'Not read yet.'}</td></tr>`}`);
+    put(document.getElementById('intake-untracked'), html`${REPOS?.untracked.length ? html`<h3>Adopted from, not tracked</h3>
+      <ul class="imported">${REPOS.untracked.map(u => html`<li><span><b>${u.url}</b><span class="src">${u.skills.map(x => x.name).join(', ')}</span></span>${C.rowActions(`source:${u.url}`)}</li>`)}</ul>` : ''}`);
+    document.getElementById('intake-tally').textContent = REPOS ? `${plural(rows.length, 'repository', 'repositories')} tracked${REPOS.seeded ? ' · from Provenance, not yet saved' : ''}` : '';
+    put(document.getElementById('intake-foot'), REPOS ? html`The list is the <code>${REPOS.key}</code> setting; until it is first changed, it is read from the installed skills' Provenance. Remove keeps the installed skills.` : html``);
+    window.shell.view?.count('intake', REPOS ? rows.length : null);
+  }
+  const markRepos = () => repoRows.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected)));
+  function showRepo(id) {
+    if (id === 'track') return showTrack();
+    const url = repoOf(id), tracked = id.startsWith('repo:');
+    const r = REPOS && (tracked ? REPOS.repos : REPOS.untracked).find(x => x.url === url); if (!r) return false;
+    selected = id; markRepos(); C.select(id);
+    const [g, st, why] = tracked ? repoGlyph(r) : ['▨', 'unknown', 'Not tracked: Refresh does not read it'];
+    put(details, html`<p class="kind"><span class="g-${st}" aria-hidden="true">${g}</span> ${tracked ? `Tracked repository · ${r.scope}` : 'Adopted from, not tracked'}</p>
+      <h2>${url}</h2><p class="desc">${why}.</p>
+      <dl><dt>Adopted</dt><dd>${r.skills.length ? r.skills.map(x => `${x.name} (${x.scope})`).join(' · ') : 'no installed skill'}</dd>
+        ${tracked ? html`<dt>Last refresh</dt><dd>${refreshed(r)}</dd>` : ''}</dl>
+      <h3>Act</h3>${C.bar(id)}<div id="refresh-slot"></div><div id="intake-slot"></div>`);
+    drawRefresh(); drawIntake();
+    window.shell.setContext?.(url); swap();
+    return true;
+  }
+  function drawRefresh() {
+    const slot = document.getElementById('refresh-slot'), at = REFRESH[repoOf(selected)];
+    if (!slot || !String(selected).startsWith('repo:')) return;
+    if (!at) return put(slot, html``);
+    if (at.wait) return put(slot, html`<p class="why" role="status"><span class="g-queued" aria-hidden="true">◌</span> Refreshing ${repoOf(selected)}: fetching its default branch and reading each skill. Nothing installs.</p>`);
+    if (at.error) return put(slot, html`<p class="err" role="alert"><span class="g-unknown" aria-hidden="true">▨</span> ${at.error}</p>`);
+    const out = at.report, listed = out.skills.map((r, i) => [r, i]).filter(([r]) => bucket(r) !== 'unchanged'), same = out.skills.length - listed.length;
+    put(slot, html`<section class="intake" aria-labelledby="refresh-h"><h3 id="refresh-h">Refresh at ${out.branch} ${out.commit.slice(0, 12)}</h3>
+      <p class="verdict"><b>${out.result}</b> · nothing installed${out.recorded ? '' : ` · not saved to the list: ${out.unrecorded}`}</p>
+      ${listed.length ? html`<ul class="imported">${listed.map(([r, i]) => { const [g0, st0, label] = BUCKET[bucket(r)] || BUCKET.failed, [g, st] = !r.error && refused(r) ? ['■', 'warning'] : [g0, st0];
+        return html`<li><span><b><span class="g-${st}" aria-hidden="true">${g}</span> ${r.skill || r.path || 'repository root'} · ${label}</b><span class="src">${r.error || `${r.verdict.action} · ${r.verdict.reason}`}</span></span>${r.error ? '' : html`<button class="btn quiet sm" type="button" data-report="${i}">Show report</button>`}</li>`; })}</ul>` : ''}
+      ${same ? html`<p class="why">${plural(same, 'skill')} ${same === 1 ? 'matches' : 'match'} the installed copy.</p>` : ''}
+      ${out.recovered.length ? html`<p class="note">${out.recovered.join(' · ')}</p>` : ''}</section>`);
+  }
+  // Show report: that skill's report under the refresh, as Evaluate would show it; Approve there posts /api/skills/intake.
+  details.addEventListener('click', e => {
+    const b = e.target.closest('[data-report]'), out = REFRESH[repoOf(selected)]?.report; if (!b || !out) return;
+    const r = out.skills[Number(b.dataset.report)]; if (!r || r.error) return;
+    intake = { for: selected, body: { source: r.url, scope: r.scope }, report: r }; drawIntake();
+  });
+  // A refresh's answer is a report, not a write the list must show: it reads the list again for the refresh time it saved.
+  function refresh(o) {
+    REFRESH[o.url] = { wait: true }; if (intake?.for === `repo:${o.url}`) intake = null;
+    drawRepos(); if (selected === `repo:${o.url}`) showRepo(selected);
+    return window.shell.post(TRACKING, { action: 'refresh', url: o.url }).then(out => {
+      REFRESH[o.url] = { report: out };
+      // Until the reread lands, the row shows the time and result this refresh saved.
+      const row = REPOS?.repos.find(x => x.url === o.url); if (row && out.recorded) Object.assign(row, { refreshed: out.refreshed, result: out.result });
+      drawRepos(); drawRefresh(); repoReader.reread();
+      return `Refreshed ${o.url}: ${out.result}. Nothing installed`;
+    }, e => {
+      REFRESH[o.url] = { error: e.message }; drawRepos(); drawRefresh(); repoReader.load();
+      if (e.status === 502) return `Refresh of ${o.url} not finished: ${e.message}`;
+      throw e;
+    });
+  }
+  // A list write the verb did not answer may have landed (502): the list is read again and the toast says it is not known.
+  const unknown = (o, what) => e => { repoReader.load(); if (e.status === 502) return `${what} of ${o.url} not known: ${e.message}`; throw e; };
+  const trackPost = (url, scope) => window.shell.post(TRACKING, { action: 'track', url, ...(scope ? { scope } : {}) });
+  function showTrack() {
+    selected = 'track'; C.select(null); markRepos();
+    put(details, html`<p class="kind">${I('plus')} Track a repository</p><h2>Track a repository</h2>
+      <p class="desc">Refresh reads a tracked repository's default branch and lists its new and changed skills, each with its intake report. Nothing installs until you approve a report.</p>
+      <form class="form" id="track-form" novalidate><label>Repository<input id="tr-url" placeholder="https://github.com/owner/repo" autocomplete="off" aria-describedby="tr-err"></label>
+        <div class="row"><label class="target">New skills install to<select id="tr-scope"><option value="pack">pack · contrib/</option><option value="user">user · ~/.claude/skills</option></select></label>
+          <button class="btn" type="submit">Track</button></div>
+        <p class="err" id="tr-err" hidden></p></form>
+      <h3>Same thing from the CLI</h3><div class="cli"><code id="tr-cli"></code><button class="icon-btn" type="button" id="tr-copy" aria-label="Copy the track line">${I('copy')}</button></div>`);
+    const url = details.querySelector('#tr-url'), scope = details.querySelector('#tr-scope'), err = details.querySelector('#tr-err');
+    const cli = details.querySelector('#tr-cli'), copy = details.querySelector('#tr-copy');
+    const upd = () => { const line = `sd skill intake --track ${REPO_URL.test(url.value.trim()) ? shq(url.value.trim()) : 'URL'} --scope ${shq(scope.value)}`; cli.textContent = line; copy.dataset.copy = line; };
+    url.addEventListener('input', upd); scope.addEventListener('change', upd); upd();
+    details.querySelector('#track-form').addEventListener('submit', e => {
+      e.preventDefault(); const v = url.value.trim();
+      err.hidden = REPO_URL.test(v); err.textContent = err.hidden ? '' : 'Track takes a repository URL, https://github.com/<owner>/<repo>, with nothing after it.';
+      if (!err.hidden) return;
+      trackPost(v, scope.value).then(out => { window.shell.toast(`Tracking ${out.url}`); repoReader.reread(); }, e2 => { repoReader.load(); window.shell.toast(e2.status === 502 ? `Tracking of ${v} not known: ${e2.message}` : `${v} not tracked: ${e2.message}`); });
+    });
+    window.shell.setContext?.('track a repository'); window.shell.row?.('track'); window.shell.openPane('tab-details'); swap(); url.focus?.();
+    return true;
+  }
+  document.getElementById('track-btn').addEventListener('click', () => showTrack());
+  const REPO_COMMANDS = [
+    { id: 'skill.intake.refresh', on: 'tracked repo', label: 'Refresh', does: 'Fetches the repository and lists its new and changed skills; installs nothing.', key: 'e', risk: 'safe', primary: () => true,
+      when: o => REFRESH[o.url]?.wait ? 'refreshing now' : true,
+      cli: o => `sd skill intake --refresh ${shq(o.url)}`, run: o => { select(`repo:${o.url}`, true); return refresh(o); } },
+    { id: 'skill.intake.untrack', on: 'tracked repo', label: 'Remove', does: 'Stops tracking this repository; its installed skills stay. Undo tracks it again.', key: 'm', risk: 'undo',
+      cli: o => `sd skill intake --untrack ${shq(o.url)}`,
+      run: o => window.shell.post(TRACKING, { action: 'untrack', url: o.url }).then(out => { delete REFRESH[o.url]; repoReader.reread();
+        return { text: `Stopped tracking ${o.url}; its installed skills stay`, removed: out.removed }; }, unknown(o, 'Removal')),
+      // Undo tracks the repository again with the scope it had; its last refresh time and result are not restored.
+      undo: (o, v) => trackPost(o.url, v?.removed?.scope || o.scope).then(() => { repoReader.reread(); }, e => { repoReader.load(); throw e; }) },
+    { id: 'skill.intake.track', on: 'untracked repo', label: 'Track', does: 'Adds this repository to the tracked list, so Refresh reads it.', key: 't', risk: 'safe', primary: () => true,
+      cli: o => `sd skill intake --track ${shq(o.url)}`, run: o => trackPost(o.url).then(() => { repoReader.reread(); return `Tracking ${o.url}`; }, unknown(o, 'Tracking')) },
+  ];
+  repoRows.addEventListener('click', e => {
+    if (e.target.closest('.rowact')) return;
+    const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true);
+  });
+  const repoSpec = () => ({
+    source: '/api/skills/intake/repos', what: 'the tracked repositories', slot: 'state-intake', active: () => VIEW === 'intake',
+    adopt: adoptRepos, draw: drawRepos,
+    clear: err => { REPOS = null; REPO_FAILED = err.message; },
+    current: () => selected,
+    first: () => REPOS?.repos[0] ? `repo:${REPOS.repos[0].url}` : REPOS?.untracked[0] ? `source:${REPOS.untracked[0].url}` : null,
+    select: (id, opened) => (id === 'track' || /^(repo|source):/.test(id) ? select(id, opened) : null),
+    unselect: () => { selected = null; markRepos(); put(details, html`<p class="why">${REPOS ? 'No repository is tracked, so nothing is selected. Track a repository adds one.' : 'The tracked repositories were not read, so nothing is selected. Reload retries it.'}</p>`); },
+  });
+  // The catalog's selection and the Intake view's are one: a view opens on its own first row, or keeps the one it had.
+  // The list is read the first time the view opens. The shell's first shell:view can fire before this listener (it listens
+  // on document, this page on window), so the start below also asks shell.view which view is shown.
+  function onView(id) {
+    VIEW = id;
+    if (VIEW === 'intake') {
+      if (!repoReader) { repoReader = window.shell.read(repoSpec()); repoReader.load(); }
+      else if (REPOS && !/^(repo|source):|^track$/.test(selected || '')) { const f = repoSpec().first(); if (f) select(f, false); }
+    } else if (DOC && !(byName[selected] || KEEP(selected))) { const f = visible()[0]?.name; if (f) select(f, false); }
+  }
+  document.addEventListener('shell:view', e => onView(e.detail.id));
   document.getElementById('annunciator').addEventListener('click', e => {
     // design.md § Lamps: a button lamp toggles a filter; a lamp that opens a reading is a link to it (here, Details).
     // A modified or non-primary click is the browser's: a new tab at the link's ?row= (PR #31 review).
@@ -384,7 +553,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
     if (e.key === '/') { e.preventDefault(); input.focus(); }
   });
   // The shell walks these rows on j / k. The Use records panels are selections that are not list rows (sd:2306).
-  window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), keep: KEEP };
+  window.PAGE_LIST = { rows: () => (VIEW === 'intake' ? repoRows : tbody).querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), keep: id => KEEP(id) || id === 'track' };
 
   // ---------- Commands (products/system/commands.md) ----------
   // Each skill is an object; each command is declared once and the shell renders row, menu, Details and palette.
@@ -426,6 +595,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         cli: () => 'sd skill apply ITEM NOTE…' },
       { id: 'skill.scan', on: 'use surfaces', label: 'Scan', does: 'Gives the line that reads codex sessions into skill use records.', key: 's', icon: 'search', risk: 'safe', executes: false, primary: () => true,
         cli: () => 'sd skill scan', run: () => 'Copy it into a terminal: the dashboard has no route that runs sd skill scan' },
+      ...REPO_COMMANDS,
     );
   }
   document.addEventListener('shell:open', e => select(e.detail, true));
@@ -441,6 +611,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   if (u.get('q')) { input.value = u.get('q'); q = u.get('q').toLowerCase(); }
   const reading = window.shell.read({
     source: '/api/skills', what: 'the skills', adopt, clear, draw,
+    // The catalog's reads leave the Intake view's selection alone (read.js, active).
+    active: () => VIEW !== 'intake',
     current: () => selected,
     first: () => visible()[0]?.name ?? null,
     // A ?row= the filter hides goes to the first shown row, as a filter change does; the panels are kept.
@@ -449,5 +621,6 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   });
   const load = () => reading.load(), reread = () => reading.reread();
   registerCommands();
+  if (window.shell.view?.current()) onView(window.shell.view.current());
   load();
 });

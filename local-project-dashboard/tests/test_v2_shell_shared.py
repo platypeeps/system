@@ -795,6 +795,7 @@ class TheToolbarStandard(unittest.TestCase):
         "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h", "up-h"},  # lane, processes, worktrees,
         # satellites, the shared upload link
         "reports.html": {"cad"},  # the cadence table
+        "skills.html": {"repos-h"},  # the Intake view's tracked repositories: the toolbar filters the catalog alone
         "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
         "today.html": {"active-h", "work-h", "problems-h", "briefs-h", "mail-h", "issues-h", "intake-h", "decisions-h",
                        "Snoozed rows", "st-${key}-h"},  # Now's filter reaches the Now ledger alone
