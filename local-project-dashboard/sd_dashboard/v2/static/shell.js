@@ -47,7 +47,8 @@
   // item:start
   // build (sd:3526): an item's one address, its row on Tasks, whose Details read it, from every page; the classic /item/<n>
   // page is retiring (sd:3402). A page links with itemHref(n); an Open item command runs openItem(n), whose answer is its toast.
-  // Tasks lists no quiet report and nothing done before the week; it hands such an item on to itemPage(n), its classic page.
+  // An item Tasks does not list, a quiet report or one done before the week, opens in its Details all the same (sd:5462).
+  // itemPage(n) is the classic page, which a few links still open.
   const itemHref = n => `/tasks?row=${encodeURIComponent(n)}`;
   const itemPage = n => `/item/${encodeURIComponent(n)}`;
   const openItem = n => { location.href = itemHref(n); return `#${n} opens in Tasks`; };
