@@ -3,7 +3,8 @@
 the old screen lists every one. Details shows evidence, dependencies and notification delivery (sd:3394). Acknowledge
 posts /api/contributions/acknowledge, which v1 posts too, so it stays in server.py's action_route. Dismiss (sd:3432) closes
 a row with no item. Hide (sd:5486) posts /api/contributions/view, the view state Designs' Hide writes, and the Hidden view
-lists the hidden rows with Unhide. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
+lists the hidden rows with Unhide. The Filed view (sd:5488) reads the document's `filed`: what the operator filed in Jira and on
+GitHub this year, with Edit opening it in a new tab. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
 
 from __future__ import annotations
 

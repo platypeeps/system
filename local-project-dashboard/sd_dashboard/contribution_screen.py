@@ -409,6 +409,7 @@ def document(connection, *, now):
         "settled": ranked[:SETTLED_REPOS],
         "settled_other": other,
         "collector": _freshness(connection, now),
+        "filed": filed_view(connection, now=now),
         "store": {"available": not unread, "reason": unread},
         # A pack before sd:5303 gives rows no settle dates at all: the page reads that as not recorded, never as none.
         "github_dates": all("merged_at" in row and "closed_at" in row for row in rows),
@@ -418,6 +419,58 @@ def document(connection, *, now):
         # The rail badge (sd:3446): the open rows that want the operator, in every scope.
         "attention": _attention(counts),
     }
+
+
+#: The Filed view's trackers (sd:5488), in the order its source line names them.
+FILED_TRACKERS = ("jira", "github")
+UNRECORDED = "this sd stores no filed flag or created date; update the command pack and migrate (pack sd:5496)"
+
+
+def filed_view(connection, *, now):
+    """The Filed view (sd:5488): the Jira tickets and GitHub issues the operator filed this local year, from `shadow`.
+
+    Filed is the `filed` flag (pack sd:5496), or a `reason` of filed where the flag is not synced yet. A filed row with no
+    `created_at` yet is listed with None, never dropped; one whose filer is not synced is counted per tracker. Each tracker
+    carries its freshness; one that does not read is `unread`, and a pack with no filed flag `unrecorded`, with the reason.
+    """
+    from sd_db import progress
+
+    from .trackers_screen import reference
+
+    moment = _moment(now)
+    year = moment.astimezone().year
+    rows, trackers = [], {}
+    for tracker in FILED_TRACKERS:
+        try:
+            items = progress.tracker_items(connection, tracker=tracker, state=None)
+            fresh = progress.tracker_freshness(connection, tracker=tracker, now=moment)
+        except (ValueError, sqlite3.Error) as error:
+            trackers[tracker] = {"state": "unread", "reason": f"{type(error).__name__}: {error}", "last_success_at": None,
+                                 "filer_unknown": 0}
+            continue
+        if any("filed" not in item or "created_at" not in item for item in items):
+            trackers[tracker] = {"state": "unrecorded", "reason": UNRECORDED, "last_success_at": None, "filer_unknown": 0}
+            continue
+        unknown = 0
+        for item in items:
+            if tracker == "github" and item["kind"] != "issue":
+                continue
+            if not (item["filed"] == 1 if item["filed"] is not None else item["reason"] == "filed"):
+                unknown += item["filed"] is None
+                continue
+            created = _moment(item["created_at"])
+            if created is not None and created.astimezone().year != year:
+                continue
+            rows.append({"key": f"filed:{tracker}:{item['url']}", "tracker": tracker, "url": item["url"], "ref": reference(item),
+                         "title": item["title"] or "", "project": item["repo"] or "", "state": item["state"] or "",
+                         "status": item["status"] or item["state"] or "",
+                         "created_at": item["created_at"] if created is not None else None, "updated_at": item["updated_at"],
+                         "assignee": item["assignee"], "author": item["author"] or "", "seen": item["last_seen"]})
+        trackers[tracker] = {"state": fresh["state"], "reason": fresh["reason"] or "", "last_success_at": fresh["last_success_at"],
+                             "filer_unknown": unknown}
+    # Newest created first; a row with no created date yet sorts last.
+    rows.sort(key=lambda row: row["created_at"] or "", reverse=True)
+    return {"year": year, "rows": rows, "trackers": trackers}
 
 
 def _attention(counts) -> dict:

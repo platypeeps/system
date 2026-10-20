@@ -29,7 +29,15 @@ document with `hidden`, after every shown row, and leaves the lanes, tallies
 and badge; the Hidden view lists it on the Open table with Unhide. Unlike
 Dismiss, new activity does not unhide it, and settled rows keep their counts.
 A view store that does not read hides nothing: `store.reason` says why, and
-Hide is off. Details shows each row's dependencies, test
+Hide is off. The Filed view (sd:5488) lists the Jira tickets and GitHub issues
+the operator filed this local year, from the document's `filed`
+(`contribution_screen.filed_view`): `shadow` rows through
+`progress.tracker_items`, filed by the `filed` flag (pack sd:5496) or, before
+it syncs, by a `reason` of filed. A filed row with no created date yet is
+listed and says so; a row whose filer is not synced is counted per tracker.
+Each tracker shows its sync state, and one that does not read, or a pack with
+no `filed` column, is named with its reason, never an empty list. Edit opens
+the row's https link in a new tab and posts nothing. Details shows each row's dependencies, test
 evidence and notification delivery (sd:3394); the document cuts each local path
 in a recorded check to its last part, and a section it cannot read says
 "Not read" with the reason. The old screen moved to `/classic/contributions`.

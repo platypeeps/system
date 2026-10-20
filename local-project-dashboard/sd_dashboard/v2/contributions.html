@@ -9,7 +9,8 @@
   Writes: Acknowledge (POST /api/contributions/acknowledge), Make task (POST /api/contributions/task, a task linked to the
   contribution by its GitHub URL) and Dismiss (POST /api/contributions/dismiss, sd:3432: closes a row with no item), each asked first.
   Hide and Unhide (POST /api/contributions/view, sd:5486) write the view state Designs' Hide writes, each with Undo; the
-  Hidden view shows the Open table with the hidden rows. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
+  Hidden view shows the Open table with the hidden rows. The Filed view (sd:5488) lists the Jira tickets and GitHub issues you
+  filed this year from the same read, as sd shadow sync stored them (pack sd:5496); its Edit opens one in a new tab and posts nothing. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
   sd shadow sync in a thread, on one 120 s deadline and one run at a time; the page reads GET /api/shadow/state until it ends.
   The page reads nothing from GitHub itself, and nothing here is sample data. The design's Trackers view opens the classic Operations > Trackers.
 -->
@@ -83,6 +84,19 @@
     <h3 class="sub">Per repository</h3>
     <div class="bars" id="bars" role="img"></div>
     <p class="note">Merged and closed rows stay for the record. Counts per repository; the repository filter applies here; the lane lamps do not.</p>
+  </section>
+
+  <section class="filed" id="view-filed" aria-labelledby="filed-h">
+    <div class="sec-head">
+      <h2 id="filed-h">Filed this year <button class="help" type="button" aria-label="Help: Filed" data-help="<b>The Jira tickets and GitHub issues you filed this year,</b> newest first, as sd shadow sync last stored them. Edit opens one in Jira or on GitHub in a new tab; the dashboard changes nothing there, and the next sync reads your edit back. A row with no created date yet is listed and says so. The filter applies here; the repository scope and the lane lamps do not.">
+        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+      <p class="tally" id="filed-tally"></p>
+    </div>
+    <p class="source" id="filed-source"></p>
+    <table class="ledger" aria-labelledby="filed-h" data-tfilter="page" data-toolbar="toolbar">
+      <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Ticket or issue</th><th scope="col">Created</th><th scope="col">Act</th></tr></thead>
+      <tbody id="filed-rows"></tbody>
+    </table>
   </section>
 </main>
 <div class="details" id="details"><p class="why">Select a contribution to see why it is here and what you can do.</p></div></div>
