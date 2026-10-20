@@ -126,7 +126,7 @@ input.fld.num { width: 5rem; }
 [hidden] { display: none !important; }
 
 @media (pointer: coarse) {
-  .segctl button, .linkbtn, .ledger a.ext, .crumb .ext, .filters .chip { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
+  .segctl button, .linkbtn, .ledger a.ext, .crumb .ext { min-height: var(--row-touch); min-width: var(--row-touch); justify-content: center; }
   .fld, .chans .chk { min-height: var(--row-touch); }
 }
 @media (max-width: 899px) {

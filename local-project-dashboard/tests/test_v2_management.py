@@ -1130,18 +1130,24 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         self.assertIn('<span class="range">1–32 of 32</span>', out["R"]["a"])
         self.assertEqual(out["qs"][-1], "size=50")
 
-    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
-        """sd:2682: Repos' managed, merge and text filters as shell.list chips above the list."""
+    def test_the_filters_are_activitys_bar_whose_token_removes_the_text_and_clear_all_every_filter(self):
+        """sd:2682, sd:5504: Repos' managed and merge filters are segments, the text a token, then Clear all (shell.list.fbar);
+        the count sits on the title line while a filter hides rows, never in the bar."""
         click = "document.querySelector('main').listeners.click.forEach(f => f({ target: { closest: s => s === %s ? { dataset: %s } : null } }));"
-        out = self.run_page("R.a = ELS['view-repos'].html;" + click % ("'[data-unfilter]'", "{ unfilter: 'managed' }")
-                            + " R.b = ELS['view-repos'].html;" + click % ("'[data-unfilter-all]'", "{}")
+        out = self.run_page("R.a = ELS['view-repos'].html;" + click % ("'[data-f=\"q\"]'", "{ f: 'q', v: '' }")
+                            + " R.b = ELS['view-repos'].html;" + click % ("'[data-fclear]'", "{}")
                             + " R.c = ELS['view-repos'].html; R.box = ELS.shift.value;", search="?view=repos&managed=yes&q=busy")
-        chips = lambda key: re.findall(r'data-unfilter="(\w+)"', out["R"][key])
-        self.assertEqual(chips("a"), ["managed", "q"])
-        self.assertIn("2 filters · ", out["R"]["a"])
-        self.assertEqual(chips("b"), ["q"])
-        self.assertEqual(out["qs"][-2], "q=busy")
-        self.assertEqual((chips("c"), out["qs"][-1], out["R"]["box"]), ([], "", ""))
+        bar = lambda key: re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"][key], re.S).group(0)
+        self.assertIn('data-f="managed" data-v="yes" aria-pressed="true"', bar("a"))
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', bar("a")), ["q"])
+        self.assertTrue(bar("a").endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertNotRegex(re.sub(r"<[^>]+>", " ", bar("a")), r"\b\d+ of \d+\b", "the bar holds no count")
+        self.assertRegex(re.search(r'<p class="tally">.*?</p>', out["R"]["a"]).group(0), r"<span>\d+ of \d+ repos</span>")
+        self.assertNotIn('class="tok"', bar("b"))
+        self.assertEqual(out["qs"][-2], "managed=yes")
+        self.assertTrue(bar("c").endswith('<div class="fsum"></div></div>'))
+        self.assertNotRegex(re.search(r'<p class="tally">.*?</p>', out["R"]["c"]).group(0), r"\d+ of \d+ repos")
+        self.assertEqual((out["qs"][-1], out["R"]["box"]), ("", ""))
 
     def settings_doc(self):
         """The document with the seeded checkout managed, protected with two required checks, and pinned to Python 3.14."""
@@ -1169,11 +1175,11 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         self.assertNotIn("<select", repos)
 
     def test_the_column_set_is_a_control_kept_in_the_url(self):
-        click = ("ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === '[data-cols]' ? { dataset: { cols: '%s' } } : null } });"
+        click = ("ELS['view-repos'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"cols\"]' ? { dataset: { f: 'cols', v: '%s' } } : null } });"
                  " R.%s = ELS['view-repos'].html;")
         out = self.run_page(click % ("settings", "a") + click % ("git", "b"), doc=self.settings_doc())
         self.assertIn('data-k="floor"', out["R"]["a"])
-        self.assertIn('data-cols="settings" aria-pressed="true"', out["R"]["a"])
+        self.assertIn('data-f="cols" data-v="settings" aria-pressed="true"', out["R"]["a"])
         self.assertIn('data-k="branch"', out["R"]["b"])
         self.assertNotIn('data-k="floor"', out["R"]["b"])
         self.assertEqual(out["qs"][-2:], ["cols=settings", ""])
@@ -1696,8 +1702,8 @@ R.want = [at(2026, 9, 15, 3, 0), at(2027, 0, 1, 0, 5), at(2028, 1, 29, 0, 0), at
 
     def test_the_failed_state_chip_writes_the_url(self):
         out = self.run_page("""shell.view.show('schedules');
-const chip = { dataset: { stateF: 'failed' } };
-const target = { closest: sel => sel === '[data-state-f]' ? chip : null };
+const chip = { dataset: { f: 'state', v: 'failed' } };
+const target = { closest: sel => sel === '[data-f="state"]' ? chip : null };
 ELS['view-schedules'].listeners.click.forEach(f => f({ target }));
 R.sched = ELS['view-schedules'].html;""")
         self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": "state:failed"})
@@ -2026,7 +2032,7 @@ selectRow('repo:' + DOC0.repos[0].path, false); R.details = ELS.details.html;"""
         self.assertRegex(repos, r'data-sort="merge"[^>]*>Lane merge')
         self.assertIn('aria-label="Lane merge"', repos)
         self.assertIn("lane merge auto", repos)
-        self.assertIn("Lane merge: manual", repos)
+        self.assertIn('data-f="merge" data-v="manual" aria-pressed="true"', repos)
         self.assertIn('data-f="merge"', repos)
         self.assertIn("<dt>Lane merge</dt>", out["R"]["details"])
         self.assertIn('<span class="label">Lane merge</span>', out["R"]["lane"])
@@ -2115,10 +2121,10 @@ class TheJobLogAndCancel(PageScript):
         self.assertIn("page=2", out["qs"])
 
     def test_services_filter_by_a_state_chip_and_by_any_column(self):
-        click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === '[data-svc-state]' ? { dataset: { svcState: 'failed' } } : null } });"
+        click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"state\"]' ? { dataset: { f: 'state', v: 'failed' } } : null } });"
         out = self.run_page("R.a = ELS['view-deploys'].html;" + click + " R.b = ELS['view-deploys'].html; R.box = ELS.shift.value;",
                             doc=self.services(30), search="?view=deploys")
-        self.assertEqual(re.findall(r'data-svc-state="(\w+)"', out["R"]["a"]), ["failed", "running"])
+        self.assertEqual(re.findall(r'data-f="state" data-v="(\w+)"', out["R"]["a"]), ["failed", "running"])
         self.assertIn("10 of 30", out["R"]["b"])
         self.assertEqual(out["R"]["box"], "state:failed")
         self.assertEqual(out["qs"][-1], "q=state%3Afailed")

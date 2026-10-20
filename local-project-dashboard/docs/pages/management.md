@@ -22,3 +22,6 @@ the item's row on Tasks. Land on a checkout's row (sd:5104, `land.py`) reads
 one commit per item, a `land/sd-<n>` branch and worktree when the checkout is on its default branch, then
 `sd-ship lane enqueue`. The classic Jobs and Repos areas were retired in
 sd:3402; Services, Sessions and Protection stay as palette screens.
+Repos, Services and Schedules filter through Activity's bar (sd:5504): their
+segments, the text as a token, then Clear all; each list's title line counts
+its rows while a filter hides some.

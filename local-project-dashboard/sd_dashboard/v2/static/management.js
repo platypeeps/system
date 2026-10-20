@@ -205,8 +205,13 @@ const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
 // build (sd:3388): the services list sorts, filters and pages as v1 Operations > Services did.
 const SVC_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Service'], ['what', 'What'], ['state', 'State'], [null, 'PID', 'num'], [null, 'Previous exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
-// The text filter is one chip on every list; Repos adds its managed and merge filters.
+// The text filter is one token on every list; Repos adds its managed and merge filters.
 const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
+// sd:5504: each list's filter bar is Activity's (shell.list.fbar): its segments, the text as a token, then Clear all.
+// The count sits on the list's title line while a filter hides rows (sd:5281).
+const filterSeg = (k, name, vals, on) => shell.list.fseg(k, name, vals.map(v => ({ v, label: v, pressed: on === v })));
+const filterBar = (parts, clear) => shell.list.fbar(html`${parts}${text.q ? shell.list.tok('q', '', `“${text.q}”`) : ''}`, { clear: !!clear });
+const hides = (n, all, noun) => n < all ? html`<span>${shell.list.count(n, all, noun)}</span>` : '';
 const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Lane merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
 const text = { q: '' };
 function tokens() {
@@ -265,14 +270,9 @@ function renderRepos() {
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
-      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
+      <p class="tally">${hides(rows.length, ALL.length, 'repo')}<span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
-    <div class="filters toolbar-2" aria-label="Filters">
-      <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
-      <div class="fgroup" role="group" aria-label="Lane merge"><span class="label">Lane merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
-      <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
-      ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
-    </div>
+    <div class="filters toolbar-2">${filterBar(html`${filterSeg('managed', 'Managed', ['yes', 'no'], RS.managed)}${filterSeg('merge', 'Lane merge', ['auto', 'manual'], RS.merge)}${filterSeg('cols', 'Columns', ['git', 'settings'], RS.cols)}`, repoChips().length)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="repos-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(repoCols(), RS)}</thead>
       <tbody>${shown.map(r => html`<tr data-id="${'repo:' + r.path}" data-repo="${r.path}">
         <td class="g" aria-hidden="true">${I(r.registered ? 'settings' : 'folder-code')}</td>
@@ -288,9 +288,9 @@ function renderRepos() {
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
-  const cols = e.target.closest('[data-cols]');
-  if (cols) { RS.cols = cols.dataset.cols === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
-  const f = e.target.closest('[data-f]'), tr = e.target.closest('tr[data-repo]');
+  const cols = e.target.closest('[data-f="cols"]');
+  if (cols) { RS.cols = cols.dataset.v === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
+  const f = e.target.closest('[data-f="managed"], [data-f="merge"]'), tr = e.target.closest('tr[data-repo]');
   if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
   if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
   if (f) { RS[f.dataset.f] = RS[f.dataset.f] === f.dataset.v ? null : f.dataset.v; RS.page = 1; renderRepos(); return setURL(); }
@@ -930,19 +930,17 @@ function renderDeploys() {
       ${SATS.satellites.map(x => { const st = SATSTATE(x), r = x.result || {}; return html`<tr data-id="sat:${x.host}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${x.state}</span></td><td class="what"><button type="button">${x.host}</button></td><td class="d mono">${x.state}${r.attempt > 1 ? ` · attempt ${r.attempt}` : ''}</td><td class="d mono"><time class="rel" datetime="${r.finished || r.started || ''}" data-empty="never"></time></td><td class="d num" data-k="exit">${r.exit ?? '—'}</td><td class="d mono">${x.state === 'unread' ? x.reason : r.step ? `${r.step}: ${r.line}` : '—'}</td><td class="act end"></td></tr>`; })}</tbody></table>
       ${SATS.satellites.length ? '' : html`<p class="empty">No satellite's repo-sync-follow job has reported a run yet.</p>`}`}
     ${uploadSection()}
-    <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">launchd · ${hhmm(READ)} UTC</p></div>
+    <div class="sec-head"><h2 id="svc-h">Services on this Mac</h2><p class="tally">${hides(rows.length, SERVICES.length, 'service')}<span>launchd · ${hhmm(READ)} UTC</span></p></div>
     ${!DOC.services ? unknown('Services were not read', why('services'), 'sd services list')
-      : html`<div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span>${states.map(k => html`<button class="chip" type="button" data-svc-state="${k}" aria-pressed="${String(chips.state === k)}">${k}</button>`)}</div>
-      <p class="fsum"><span>${rows.length} of ${SERVICES.length}</span></p></div>
-    ${shell.list.chips(textChip(), rows.length, SERVICES.length)}
+      : html`<div class="filters toolbar-2">${filterBar(filterSeg('state', 'State', states, chips.state), text.q)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="svc-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SVC_COLS, DS)}</thead>
       <tbody>${shown.map(s => { const st = SVCSTATE(s); return html`<tr data-id="svc:${s.label}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${s.state}</span></td><td class="what"><button type="button">${s.name}</button></td><td class="d mono">${svcWhat(s)}</td><td class="d mono">${s.state}</td><td class="d num" data-k="pid">${s.pid ?? '—'}</td><td class="d num" data-k="exit">${s.last_signal != null ? `signal ${s.last_signal}` : s.last_exit ?? '—'}</td>${ACT('svc:' + s.label)}</tr>`; })}</tbody></table>${shell.list.pager(rows.length, DS, 'services')}`
       : html`<p class="empty">${SERVICES.length ? html`No service matches. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No installed service was found.'}</p>`}`}`);
 }
 document.getElementById('view-deploys').addEventListener('click', e => {
   if (shell.list.sortBy(e, DS) || shell.list.paging(e, DS)) { shell.list.keepFocus(e, renderDeploys); return setURL(); }
-  const f = e.target.closest('[data-svc-state]');
-  if (f) { const inp = document.getElementById('shift'), word = `state:${f.dataset.svcState}`, was = inp.value.split(/\s+/).filter(Boolean);
+  const f = e.target.closest('[data-f="state"]');
+  if (f) { const inp = document.getElementById('shift'), word = `state:${f.dataset.v}`, was = inp.value.split(/\s+/).filter(Boolean);
     inp.value = (was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '); text.q = inp.value; DS.page = 1; renderDeploys(); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
@@ -967,10 +965,8 @@ function renderSchedules() {
   const shown = pageOf(rows, SS);
   put(el, html`
     <div class="sec-head"><h2 id="sch-h">Schedules <button class="help" type="button" aria-label="Help: Schedules" data-help="<b>launchd calendar jobs, ranked.</b> Failed first, then by next run. Last run is the cron-jobs wrapper's stamp of each run's start, end and exit. Times are this browser's clock; launchd reads the Mac's.">${I('circle-help')}</button></h2>
-      <p class="tally"><span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span></p></div>
-    <div class="filters toolbar-2"><div class="fgroup" role="group" aria-label="State"><span class="label">State</span><button class="chip" type="button" data-state-f="failed" aria-pressed="${String(chips.state === 'failed')}">failed</button></div>
-      <p class="fsum"><span>${rows.length} of ${CRON.length}</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
-    ${shell.list.chips(textChip(), rows.length, CRON.length)}
+      <p class="tally">${hides(rows.length, CRON.length, 'job')}<span class="g-warning">■ ${failed} failed</span><span class="g-ok">● ${CRON.length - failed} not failed</span><span>launchd · ${hhmm(READ)} UTC</span><span class="g-unknown">▨ cloud routines not read</span></p></div>
+    <div class="filters toolbar-2">${filterBar(filterSeg('state', 'State', ['failed'], chips.state), text.q)}</div>
     ${rows.length ? html`<table class="ledger" aria-labelledby="sch-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(SCHED_COLS, SS)}</thead>
       <tbody>${shown.map((c, i, a) => html`<tr data-id="cron:${c.name}"${i && a[i - 1].rank !== c.rank ? html` class="band-start"` : ''}><td class="g g-${c.rank}">${GLYPH[c.rank]}<span class="sr">${c.rank}</span></td>
         <td class="what"><button type="button">${c.name}</button></td><td class="d mono">${human(c.schedule)}</td><td class="d mono">${c.state}</td><td class="d mono" data-k="last">${lastCell(c)}</td><td class="d mono" data-k="next"><time class="rel" datetime="${c.next}" data-future data-empty="never"></time></td>
@@ -979,7 +975,7 @@ function renderSchedules() {
 }
 document.getElementById('view-schedules').addEventListener('click', e => {
   if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { shell.list.keepFocus(e, renderSchedules); return setURL(); }
-  const f = e.target.closest('[data-state-f]');
+  const f = e.target.closest('[data-f="state"]');
   if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
@@ -987,10 +983,11 @@ document.getElementById('view-schedules').addEventListener('click', e => {
 document.querySelector('main').addEventListener('click', e => {
   const box = document.getElementById('shift');
   if (e.target.closest('[data-clear-q]')) { box.value = ''; text.q = ''; applyText(); return; }
-  // A filter chip (shell.list): one removes its filter, Clear all removes every one; applyText draws the view once and writes the URL.
-  const u = e.target.closest('[data-unfilter]'), all = e.target.closest('[data-unfilter-all]'); if (!u && !all) return;
-  (all ? ['managed', 'merge', 'q'] : [u.dataset.unfilter]).forEach(k => { if (k === 'q') box.value = ''; else RS[k] = null; });
-  applyText();
+  // The filter bar (shell.list.fbar): the text token removes the text, Clear all every filter; applyText draws the view once
+  // and writes the URL.
+  const q = e.target.closest('[data-f="q"]'), all = e.target.closest('[data-fclear]'); if (!q && !all) return;
+  if (all) RS.managed = RS.merge = null;
+  box.value = ''; text.q = ''; applyText();
 });
 
 // ---------- Details pane ----------
