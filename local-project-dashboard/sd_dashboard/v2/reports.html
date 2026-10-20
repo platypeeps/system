@@ -37,27 +37,8 @@
 
     <h2 class="sr">Job families</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
-      <div class="shift">
-        <label class="field">
-          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="sr">Filter, capture or ask</span>
-          <input id="shift" placeholder="Filter reports, capture a task, or ask" autocomplete="off" aria-describedby="shift-hint">
-          <span class="ghost" id="ghost"></span>
-          <kbd>/</kbd>
-        </label>
-        <div class="preview" id="shift-preview" hidden>
-          <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
-          <div class="chips" role="group" aria-label="Interpret as">
-            <button class="chip" type="button" data-as="filter" aria-pressed="true">filter rows</button>
-            <button class="chip" type="button" data-as="task" aria-pressed="false">new task</button>
-            <button class="chip" type="button" data-as="ask" aria-pressed="false">ask chat</button>
-          </div>
-          <p class="hint" id="shift-hint">→ accepts · Enter runs · Tab moves on</p>
-        </div>
-      </div>
-    </div>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift></div>
 
     <section id="view-reports" aria-labelledby="led-h">
       <div class="sec-head">

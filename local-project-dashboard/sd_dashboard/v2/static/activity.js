@@ -1,14 +1,11 @@
 // Activity (sd:2111): the design source's products/system/designs/v2/activity.js at d82daa1, ported. Each change from the
 // reference is marked "build:". The events are /api/activity (activity_screen.py), never sample data. A command that executes
 // posts to the route v1 already answers, and its toast comes after the write lands, not before.
-// Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 const { html, put, plural, cells } = window.markup;
-window.PAGE_COMMANDS = [
-  { label: 'Filter the timeline', icon: 'search', run: () => document.getElementById('shift').focus() },
-];
 // The shell's view switch (shell.js, view block): the Timeline first, the 24-hour lane chart second. Both read /api/activity.
 window.PAGE_VIEWS = [{ id: 'timeline', label: 'Timeline' }, { id: 'cadence', label: 'Cadence' }];
-window.PAGE_KEYS = [['/', 'Filter events, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
+// The shell's Shapeshift bar (sd:5539) filters the timeline through shell:filter, and the cadence fallback table itself.
+window.PAGE_FILTER = { timeline: 'the timeline' };
 addEventListener('DOMContentLoaded', () => {
   const { ICON, toast, suggest, openPane } = window.shell;
   const C = window.shell.commands;
@@ -198,10 +195,10 @@ addEventListener('DOMContentLoaded', () => {
     const { f, v } = c.dataset;
     if (f === 'kind' || f === 'repo') F[f].has(v) ? F[f].delete(v) : F[f].add(v);
     if (f === 'state') F.state = F.state === v ? '' : v;
-    if (f === 'q') { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; }
+    if (f === 'q') { F.q = ''; window.shell.filter(''); }
     page = 1; update();
   });
-  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+  function clearAll() { F.kind.clear(); F.repo.clear(); F.state = ''; F.q = ''; F.hour = false; F.all = false; window.shell.filter(''); page = 1; update(); }
 
   // The repo picker: a listbox under the Repo button, every repo with its count, most events first. Typing filters it;
   // the arrows move, Enter or a tap picks, Esc closes and gives focus back to the button. A picked repo with no events
@@ -453,39 +450,12 @@ addEventListener('DOMContentLoaded', () => {
   document.addEventListener('shell:open', e => { if (EVENTS.some(v => v.id === e.detail)) select(e.detail, true); });
   document.addEventListener('shell:picked', e => tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
-  // ---------- Shapeshift bar ----------
-  const input = $('shift'), prev = $('shift-preview'), as = $('shift-as'), ghost = $('ghost');
-  let mode = 'filter';
-  function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-  function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === m))); renderShift(); }
-  function renderShift() {
-    const v = input.value.trim();
-    prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-    put(as, mode === 'task' ? html`${ICON('list-todo')} task “${v}”` : mode === 'ask' ? html`${ICON('message-square')} ask chat in fleet scope` : html`${ICON('filter')} filter the timeline`);
-    const q = mode === 'filter' ? v.toLowerCase() : '';
-    if (q !== F.q) { F.q = q; page = 1; update(); }
-  }
-  input.addEventListener('input', () => setMode(guess(input.value.trim())));
-  input.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
-    if (e.key === 'Enter' && input.value.trim()) {
-      e.preventDefault();
-      // build: a task goes to the shell's capture form, which files it; ask goes to chat.
-      if (mode === 'task') { window.shell.capture(null, input.value.trim()); input.value = ''; renderShift(); }
-      if (mode === 'ask') { window.shell.openChat(); window.shell.send(input.value.trim()); input.value = ''; renderShift(); }
-    }
-    if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; renderShift(); }
-  });
-  prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-    if (e.key === '/') { e.preventDefault(); input.focus(); }
-  });
+  // ---------- Shapeshift bar (the shell's, sd:5539) ----------
+  document.addEventListener('shell:filter', e => { if (e.detail.q !== F.q) { F.q = e.detail.q; page = 1; update(); } });
   // build: the shell owns j/k, Enter, Esc and ?row= through PAGE_LIST; Esc with nothing open clears the filters.
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected,
     select: id => select(id, false), clear: () => { if (!active()) return false; clearAll(); return true; } };
 
   readURL();
-  if (F.q) input.value = F.q;
   load();
 });

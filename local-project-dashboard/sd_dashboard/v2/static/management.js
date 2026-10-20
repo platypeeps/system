@@ -140,7 +140,7 @@ function setURL() {
   shell.url(p);
 }
 function readURL() {
-  if (params.get('q')) { text.q = params.get('q'); input.value = text.q; }
+  if (params.get('q')) text.q = params.get('q'); // the shell's bar reads ?q= too
   if (params.get('cols') === 'settings') RS.cols = 'settings';
   const L = LIST_STATE(); if (!L) return;
   const [st, , , cols] = L;
@@ -159,7 +159,6 @@ const unknown = (what, reason, read) => html`<div class="unknown"><span><span cl
 // ---------- Views (sd:5080: the shell's tabs) ----------
 function showView(v) {
   view = v;
-  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'The lane has no filter', sessions: 'Filter Claude sessions by name, directory or item', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
   const row = shell.row(); if (row && !document.querySelector(`#view-${v} tr[data-id="${CSS.escape(row)}"]`)) shell.row(null);
   applyText();
   defaultDetails();
@@ -296,7 +295,7 @@ document.getElementById('view-repos').addEventListener('click', e => {
   const cols = e.target.closest('[data-f="cols"]');
   if (cols) { RS.cols = cols.dataset.v === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
   const f = e.target.closest('[data-f="managed"], [data-f="merge"]'), tr = e.target.closest('tr[data-repo]');
-  if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; document.getElementById('shift').value = ''; RS.page = 1; renderRepos(); return setURL(); }
+  if (e.target.closest('[data-clear]')) { RS.managed = RS.merge = null; text.q = ''; shell.filter(''); RS.page = 1; renderRepos(); return setURL(); }
   if (shell.list.sortBy(e, RS) || shell.list.paging(e, RS)) { shell.list.keepFocus(e, renderRepos); return setURL(); }
   if (f) { RS[f.dataset.f] = RS[f.dataset.f] === f.dataset.v ? null : f.dataset.v; RS.page = 1; renderRepos(); return setURL(); }
   if (tr) selectRow(tr.dataset.id, true);
@@ -945,8 +944,8 @@ function renderDeploys() {
 document.getElementById('view-deploys').addEventListener('click', e => {
   if (shell.list.sortBy(e, DS) || shell.list.paging(e, DS)) { shell.list.keepFocus(e, renderDeploys); return setURL(); }
   const f = e.target.closest('[data-f="state"]');
-  if (f) { const inp = document.getElementById('shift'), word = `state:${f.dataset.v}`, was = inp.value.split(/\s+/).filter(Boolean);
-    inp.value = (was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '); text.q = inp.value; DS.page = 1; renderDeploys(); return setURL(); }
+  if (f) { const word = `state:${f.dataset.v}`, was = text.q.split(/\s+/).filter(Boolean);
+    applyText(shell.filter((was.includes(word) ? was.filter(w => w !== word) : [...was.filter(w => !/^state:/i.test(w)), word]).join(' '))); return; }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -981,18 +980,17 @@ function renderSchedules() {
 document.getElementById('view-schedules').addEventListener('click', e => {
   if (shell.list.sortBy(e, SS) || shell.list.paging(e, SS)) { shell.list.keepFocus(e, renderSchedules); return setURL(); }
   const f = e.target.closest('[data-f="state"]');
-  if (f) { const inp = document.getElementById('shift'); inp.value = /state:failed/.test(inp.value) ? inp.value.replace(/\s*state:failed/, '').trim() : (inp.value + ' state:failed').trim(); text.q = inp.value; SS.page = 1; renderSchedules(); return setURL(); }
+  if (f) { applyText(shell.filter(/state:failed/.test(text.q) ? text.q.replace(/\s*state:failed/, '').trim() : (text.q + ' state:failed').trim())); return; }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
 document.querySelector('main').addEventListener('click', e => {
-  const box = document.getElementById('shift');
-  if (e.target.closest('[data-clear-q]')) { box.value = ''; text.q = ''; applyText(); return; }
+  if (e.target.closest('[data-clear-q]')) { applyText(shell.filter('')); return; }
   // The filter bar (shell.list.fbar): the text token removes the text, Clear all every filter; applyText draws the view once
   // and writes the URL.
   const q = e.target.closest('[data-f="q"]'), all = e.target.closest('[data-fclear]'); if (!q && !all) return;
   if (all) RS.managed = RS.merge = null;
-  box.value = all ? '' : box.value.split(/\s+/).filter(w => FIELD.test(w)).join(' '); applyText();
+  applyText(shell.filter(all ? '' : text.q.split(/\s+/).filter(w => FIELD.test(w)).join(' ')));
 });
 
 // ---------- Details pane ----------
@@ -1113,30 +1111,22 @@ function selectRow(id, open) {
   if (open) shell.openPane('tab-details');
 }
 
-// ---------- Filter box ----------
-const input = document.getElementById('shift'), ghost = document.getElementById('ghost');
+// ---------- Filter: the shell's Shapeshift bar (sd:5539) ----------
+// Its text is this view's filter: free words and the managed:, merge: and state: chips. A chip control sets the bar's text.
 const RENDER = new Map([['repos', renderRepos], ['lane', renderLane], ['sessions', renderSessions], ['deploys', renderDeploys], ['schedules', renderSchedules]]);
 function render() {
   const draw = RENDER.get(view);
   if (!draw) throw new Error(`no such view: ${view}`);
   draw();
 }
-function applyText() {
-  text.q = input.value.trim();
-  const n = Object.keys(tokens().chips).length;
-  ghost.textContent = n ? `${plural(n, 'chip')}` : '';
+function applyText(q = text.q) {
+  text.q = q.trim();
   RS.page = SS.page = DS.page = 1;
   if (DOC) render();
   setURL();
 }
-input.addEventListener('input', applyText);
-input.addEventListener('keydown', e => { if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; applyText(); } });
-
-document.addEventListener('keydown', e => {
-  if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
-});
-window.PAGE_KEYS = [['/', 'Filter the open view']];
+document.addEventListener('shell:filter', e => { if (e.detail.q !== text.q) applyText(e.detail.q); });
+window.PAGE_FILTER = { repos: 'repos, e.g. merge:auto', sessions: 'Claude sessions', deploys: 'services, e.g. state:running', schedules: 'jobs, e.g. state:failed' };
 window.PAGE_LIST = { rows: () => document.querySelectorAll(`#view-${view} tbody tr[data-id]`), select: id => selectRow(id, false) };
 
 // build (sd:3521): capture's repo default is the selected repo row's.

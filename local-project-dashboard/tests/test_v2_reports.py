@@ -977,7 +977,7 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
                             + " R.st2 = F.status; R.bar3 = ELS.filters.html;"
                             + "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear]' ? {} : null } });"
                             + " R.bar4 = ELS.filters.html; R.url4 = String(OUT.urls[OUT.urls.length - 1]); R.tally4 = OUT.counts.reports;"
-                            + " R.F = [F.job, F.status, F.q, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
+                            + " R.F = [F.job, F.status, F.q, (OUT.shift ?? null)]; R.n = shown.length; R.all = ROWS.length;",
                             prelude="location.search = '?job=nightly-sync&act=1&q=sync';")
         R, all_ = out["R"], out["R"]["all"]
         bar = R["bar"]

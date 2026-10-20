@@ -10,7 +10,8 @@ window.PAGE_COMMANDS = [];
 // sd:5080: the list and the cadence strip are the shell's views (shell.js, view:start). The Range chips sit in each view's
 // head and set one range for both; a tick or a lane shows the list with that brief or that source.
 window.PAGE_VIEWS = [{ id: 'list', label: 'Briefs', key: 'b' }, { id: 'cadence', label: 'Cadence' }];
-window.PAGE_KEYS = [['/', 'Filter briefs, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
+// The shell's Shapeshift bar (sd:5539) filters the list through shell:filter, and the cadence fallback table itself.
+window.PAGE_FILTER = { list: 'subject, source and first lines' };
 addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
@@ -143,10 +144,10 @@ addEventListener('DOMContentLoaded', () => {
     const { f: k, v } = u.dataset;
     if (k === 'src') F.src.delete(v);
     if (k === 'day') F.day = '';
-    if (k === 'q') { F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; }
+    if (k === 'q') { F.q = ''; shell.filter(''); }
     page = 1; update();
   });
-  function clearAll() { F.src.clear(); F.day = ''; F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; page = 1; update(); }
+  function clearAll() { F.src.clear(); F.day = ''; F.q = ''; shell.filter(''); page = 1; update(); }
 
   // ---------- Ledger ----------
   const tbody = document.getElementById('rows');
@@ -312,34 +313,8 @@ addEventListener('DOMContentLoaded', () => {
   }
   document.addEventListener('shell:open', e => { if (BRIEFS.some(b => b.id === e.detail)) select(e.detail, true); });
 
-  // ---------- Shapeshift bar ----------
-  const input = document.getElementById('shift'), prev = document.getElementById('shift-preview'), as = document.getElementById('shift-as'), ghost = document.getElementById('ghost');
-  let mode = 'filter';
-  function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-  function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.as === m)); renderShift(); }
-  function renderShift() {
-    const v = input.value.trim();
-    prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-    put(as, html`${mode === 'task' ? html`${I('list-todo')} task “${v}”` : mode === 'ask' ? html`${I('message-square')} ask chat about briefs` : html`${I('filter')} filter subject, source and first lines`}`);
-    const q = mode === 'filter' ? v.toLowerCase() : '';
-    if (q !== F.q) { F.q = q; page = 1; update(); }
-  }
-  input.addEventListener('input', () => setMode(guess(input.value.trim())));
-  input.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
-    if (e.key === 'Enter' && input.value.trim()) {
-      e.preventDefault();
-      // build: a task opens the capture form with the text; the form files it (the shell's fileCapture).
-      if (mode === 'task') { const v = input.value.trim(); input.value = ''; renderShift(); shell.capture(null, v); }
-      if (mode === 'ask') { shell.openChat(); shell.send(input.value.trim()); input.value = ''; renderShift(); }
-    }
-    if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; renderShift(); }
-  });
-  prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches?.('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-    if (e.key === '/') { e.preventDefault(); input.focus(); }
-  });
+  // ---------- Shapeshift bar (the shell's, sd:5539) ----------
+  document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q !== F.q) { F.q = q; page = 1; update(); } });
   // The shell walks these rows on j / k and clears the filter on Esc.
   window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false), clear: () => !!active() && (clearAll(), true) };
 
@@ -376,7 +351,6 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see it.</p>`); },
   });
   readURL();
-  if (F.q) input.value = F.q;
   registerCommands();
   briefs.load();
 });

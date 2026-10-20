@@ -824,7 +824,7 @@ R.bar = ELS.filters.html; R.list = ELS['repo-list'].html;""", doc=self.repos_doc
     def test_clear_all_resets_every_filter_and_the_address(self):
         out = self.run_page("""R.before = ELS.filters.html;
 ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear]' ? {} : null } });
-R.after = ELS.filters.html; R.rows = ELS.rows.html; R.input = ELS.shift.value;""",
+R.after = ELS.filters.html; R.rows = ELS.rows.html; R.input = (OUT.shift ?? null);""",
                             pre="location.search = '?kind=merge&repo=system&state=ok&range=1h&q=port'; "
                                 "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
         before, after = out["R"]["before"], out["R"]["after"]
@@ -842,7 +842,7 @@ R.after = ELS.filters.html; R.rows = ELS.rows.html; R.input = ELS.shift.value;""
 
     def test_a_query_token_clears_the_field(self):
         out = self.run_page("""ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'q', v: '' } } : null } });
-R.bar = ELS.filters.html; R.input = ELS.shift.value;""", pre="location.search = '?q=port';"
+R.bar = ELS.filters.html; R.input = (OUT.shift ?? null);""", pre="location.search = '?q=port';"
                                                       "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
         self.assertEqual((out["R"]["input"], out["qs"][-1]), ("", ""))
         self.assertNotIn('class="tok"', out["R"]["bar"])

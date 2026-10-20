@@ -50,6 +50,8 @@
     { id: 'github', label: 'GitHub', api: '/api/health/github', areas: ['prot', 'dep', 'sec'] },
     { id: 'jobs', label: 'Jobs', api: '/api/health/jobs', areas: ['cred', 'mir'] },
   ];
+  // The shell's Shapeshift bar is the text filter (sd:5539): it matches a row's repo, path and branch in every view.
+  window.PAGE_FILTER = Object.fromEntries(window.PAGE_VIEWS.map(v => [v.id, 'repo, path and branch']));
 
   let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], IGNORED = [], selected = null, query = '';
   let SUMMARY = null, VIEW = null, showing = 'findings';
@@ -223,7 +225,7 @@
       clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : showing === 'ignored' ? 'Nothing is selected: an ignored row has Unignore only. Show findings to pick a row.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
     writeURL();
   }
-  function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; $('q').value = ''; lamps(); apply(); return had; }
+  function clearFilters() { const had = filtering(); F.state.clear(); F.area.clear(); query = ''; shell.filter(''); lamps(); apply(); return had; }
 
   // The badge is the summary's (sd:3446, health_screen._attention over every area); the subhead says it in words.
   function attention() {
@@ -332,7 +334,6 @@
   });
   const can = action => o => revised(o) === true ? (o.can[action].allowed || o.can[action].reason) : revised(o);
   window.PAGE_COMMANDS = [
-    { label: 'Filter rows', icon: 'search', key: '/', run: () => $('q').focus() },
     { label: 'Read Health again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Open Sessions in Operations', icon: 'folder-x', run: () => { location.href = '/operations?area=sessions'; } },
   ];
@@ -413,7 +414,7 @@
     const u = new URLSearchParams(location.search);
     (u.get('state') || '').split(',').filter(s => STATES.includes(s)).forEach(s => F.state.add(s));
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
-    query = (u.get('q') || '').trim().toLowerCase(); $('q').value = u.get('q') || '';
+    query = (u.get('q') || '').trim().toLowerCase(); // the shell's bar reads ?q= too
     showing = ['all', 'ignored'].includes(u.get('show')) ? u.get('show') : 'findings';
     // An ?area= link opens that area's view unless #view= names one. The shell's first shell:view fires after this listener.
     const asked = viewOf([...F.area][0]);
@@ -424,7 +425,7 @@
       if (e.target.closest('[data-fclear]')) { clearFilters(); return; }
       const c = e.target.closest('[data-f]');
       if (c && c.dataset.f === 'show') { if (c.dataset.v !== showing) { showing = c.dataset.v; apply(); } return; }
-      if (c && c.dataset.f === 'q') { query = ''; $('q').value = ''; apply(); return; }
+      if (c && c.dataset.f === 'q') { query = ''; shell.filter(''); apply(); return; }
       if (c) { const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v); lamps(); apply(); return; }
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
       const col = e.target.closest('.pmx-col'); if (col) { select(col.dataset.row, true); return; }
@@ -440,12 +441,8 @@
       F.area.has(id) ? F.area.delete(id) : F.area.add(id);
       lamps(); apply();
     });
-    $('q').addEventListener('input', () => { query = $('q').value.trim().toLowerCase(); apply(); });
-    $('q').addEventListener('keydown', e => { if (e.key === 'Escape' && $('q').value) { e.stopPropagation(); $('q').value = ''; query = ''; apply(); } });
-    document.addEventListener('keydown', e => {
-      if (e.target.matches('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu') || shell.chording()) return;
-      if (e.key === '/') { e.preventDefault(); $('q').focus(); }
-    });
+    // The text filter is the shell's Shapeshift bar (sd:5539).
+    document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q !== query) { query = q; apply(); } });
     document.addEventListener('shell:open', e => { if (byId(e.detail)) select(e.detail, true); });
     document.addEventListener('shell:picked', e => { document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))); });
 

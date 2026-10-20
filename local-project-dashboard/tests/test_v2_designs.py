@@ -312,7 +312,7 @@ class TheScript(unittest.TestCase):
         bar = "ELS.filters.listeners.%s[0]({ target: %s });"
         out = self.run_page("R.bar = ELS.filters.html; R.tally = OUT.counts.pages;"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'q', v: '' } } : null }")
-                            + " R.bar2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1]; R.input = ELS.shift.value;"
+                            + " R.bar2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1]; R.input = (OUT.shift ?? null);"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'state', v: 'ok' } } : null }")
                             + " R.url3 = OUT.urls[OUT.urls.length - 1];"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { fclear: '' } } : null }")
@@ -371,14 +371,15 @@ class TheRegistration(Registers, unittest.TestCase):
 
 
 class TheToolbar(unittest.TestCase):
-    """sd:5281: the Designs page's top controls are one toolbar row: the views, the filter, then the count at the right."""
+    """sd:5281: the Designs page's top controls are one toolbar row: the views, then the shell's Shapeshift bar (sd:5539)."""
 
     HTML = (V2 / "designs.html").read_text(encoding="utf-8")
 
     def test_the_views_then_the_filter_share_one_row_and_no_count_sits_on_the_title_line(self):
-        row = re.search(r'<div class="toolbar" id="toolbar">(.*?)\n    </div>', self.HTML, re.S)
-        self.assertIsNotNone(row, "designs.html has no toolbar row")
-        self.assertLess(row.group(1).index('id="viewswitch"'), row.group(1).index('id="shift"'))
+        row = re.search(r'<div class="toolbar" id="toolbar" data-shift>(.*?)\n    </div>', self.HTML, re.S)
+        self.assertIsNotNone(row, "designs.html has no toolbar row the shell draws its bar in")
+        self.assertIn('id="viewswitch"', row.group(1))
+        self.assertNotIn("<input", row.group(1), "the page draws a text box of its own beside the shell's bar")
         self.assertNotIn('id="tally"', row.group(1))
         title = re.search(r'<div class="sec-head">(.*?)\n      </div>', self.HTML, re.S).group(1)
         self.assertNotIn('id="tally"', title, "sd:5524: the Pages tab carries the count")

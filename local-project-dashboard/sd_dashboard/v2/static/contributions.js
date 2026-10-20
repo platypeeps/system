@@ -11,14 +11,14 @@
 // (pack sd:5496), with Details and Edit, which opens one in Jira or on GitHub in a new tab; the dashboard writes nothing there.
 // A row with no created date yet is listed and says so; a tracker that did not read or is stale is named with its reason.
 const { html, put, plural, cells } = window.markup;
-// Palette "This page" group and the key sheet. shell.js reads both at start, so they are set before the shell runs.
-window.PAGE_KEYS = [['/', 'Filter contributions']];
+// Palette "This page" group. shell.js reads it at start, so it is set before the shell runs.
 // The shell's view switch (shell.js, view block, sd:5064): Open, the rows acted on, first; Settled, the record, second;
 // Filed (sd:5488), what you filed in Jira and on GitHub this year, on its own table; Hidden (sd:5486), the rows the operator
 // hid, on the Open table, never the remembered view.
 window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }, { id: 'filed', label: 'Filed' }, { id: 'hidden', label: 'Hidden', panel: 'open', keep: false }];
+const BY_TEXT = 'repo, title and reason';
+window.PAGE_FILTER = { open: BY_TEXT, settled: BY_TEXT, hidden: BY_TEXT, filed: 'tickets and issues' };
 window.PAGE_COMMANDS = [
-  { label: 'Filter contributions', icon: 'search', key: '/', run: () => document.getElementById('q').focus() },
   { label: 'Show the collector', icon: 'activity', run: () => document.dispatchEvent(new CustomEvent('shell:open', { detail: 'collector' })) },
   ...['all', 'internal', 'external'].map(v => ({ label: `Show ${v} repositories`, icon: 'filter', run: () => document.dispatchEvent(new CustomEvent('contributions:scope', { detail: v })) })),
 ];
@@ -60,8 +60,8 @@ addEventListener('DOMContentLoaded', () => {
   // The lane filter: an open lane, or `github`, the open rows GitHub already merged or closed (the fourth lamp).
   let lane = [...ORDER, 'github'].includes(u0.get('lane')) ? u0.get('lane') : null;
   const inLane = r => !lane || (lane === 'github' ? !!settle(r) : r.lane === lane);
-  const q = document.getElementById('q');
-  if (u0.get('q')) q.value = u0.get('q');
+  // The text filter is the shell's Shapeshift bar (sd:5539), which reads ?q= too.
+  const q = { value: u0.get('q') || '' };
   const inScope = r => scope === 'all' || (scope === 'internal') === !!r.internal;
   const scoped = () => ROWS.filter(r => inScope(r) && inView(r));
   // build: counts come from the document's per-scope totals, which cover every open row; ROWS may be cut at OPEN_LIMIT.
@@ -471,12 +471,7 @@ addEventListener('DOMContentLoaded', () => {
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
   [tbody, ftbody].forEach(b => b.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
   document.addEventListener('shell:open', e => select(e.detail, true));
-  q.addEventListener('input', () => DOC && applyFilter());
-  q.addEventListener('keydown', e => { if (e.key === 'Escape' && q.value) { e.stopPropagation(); q.value = ''; DOC && applyFilter(); } });
-  document.addEventListener('keydown', e => {
-    if (e.target.matches?.('input, textarea, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu')) return;
-    if (e.key === '/') { e.preventDefault(); q.focus(); }
-  });
+  document.addEventListener('shell:filter', e => { if (e.detail.q === q.value) return; q.value = e.detail.q; if (DOC) applyFilter(); });
   // The shell walks the shown rows on j / k; Esc clears the lane filter.
   window.PAGE_LIST = { rows: listed, current: () => selected, select: id => select(id, false), keep: k => k === 'collector',
     clear: () => { if (!lane) return false; lane = null; renderHead(); applyFilter(); return true; } };

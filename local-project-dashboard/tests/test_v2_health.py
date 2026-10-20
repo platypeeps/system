@@ -1387,6 +1387,7 @@ class ThePage(Collectors, BrowserSession):
 
 # Extras the Health script reads from the shell that the Tasks stand-in does not carry.
 HEALTH_SHELL = r"""
+delete window.shell.view; // the Tasks stand-in's stub; VIEW_SHELL below brings the switch health.js meets
 window.shell.shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 window.shell.row = () => null;
 window.shell.url = q => { OUT.url = String(q && q.toString ? q.toString() : q); };
@@ -1565,8 +1566,9 @@ R.areas = BODY().html; R.lamps = ELS.annunciator.html;""")
         self.assertIn("not read", out["R"]["lamps"])
 
     def test_the_filter_finds_a_row_by_a_path_in_its_facts_or_its_list(self):
-        # The box says "repo, path, branch": a registered worktree's path is in `list`, the checkout's in `facts`.
-        out = self.run_page("""const filter = v => { ELS.q.value = v; ELS.q.listeners.input[0](); return BODY().html; };
+        # The shell's Shapeshift bar sends its text as shell:filter (sd:5539): a registered worktree's path is in `list`, the
+        # checkout's in `facts`.
+        out = self.run_page("""const filter = v => { document.dispatchEvent(new CustomEvent('shell:filter', { detail: { q: v, view: 'checkouts' } })); return BODY().html; };
 R.list = filter('/work/wt-b'); R.facts = filter('/checkouts/group/alpha'); R.none = filter('/work/nowhere');""")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["list"], "a path in the row's list did not match")
         self.assertIn('data-id="gone:group/alpha"', out["R"]["facts"], "a path in the row's facts did not match")

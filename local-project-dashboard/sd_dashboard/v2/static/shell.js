@@ -277,6 +277,106 @@
   }
   // view:end
 
+  // ---------- The Shapeshift bar: filter, capture or ask (sd:5539) ----------
+  // One bar for every page with a table: a page marks its row 1 <div class="toolbar" id="toolbar" data-shift>, and the shell
+  // draws the bar there, after the view switch. A page whose own Shapeshift has readings of its own (Documents, Research,
+  // Skills, Tasks, Writing) keeps that one and marks nothing. The bar keeps its text per view, so each view shows its own.
+  //   filter  filters the shown view. A table the page filters itself (data-tfilter="page") gets the text through
+  //           'shell:filter' on document, detail { q, view }, at each change: a key, a reading, a view change, shell.filter.
+  //           Every other table takes it as the table grammar's text filter.
+  //   task    Enter opens Capture with the text.   ask   Enter sends the text to chat.
+  // The reading is guessed from the text; → at the field's end takes the next one; Esc clears; / focuses the field.
+  // shell.filter() is the shown view's filter text; shell.filter(q) sets it (a page's Clear all). The bar reads ?q= at load.
+  // window.PAGE_FILTER = { <view id, or '' on a page without views>: 'reports, bodies included' } says what the filter
+  // covers; without it the shown tables' titles say it.
+  // shift:start
+  const SHIFT_MODES = ['filter', 'task', 'ask'];
+  const shiftGuess = v => /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter';
+  const shiftNext = m => SHIFT_MODES[(SHIFT_MODES.indexOf(m) + 1) % SHIFT_MODES.length];
+  // What the filter covers, from the shown tables' titles: a title starts lower-case unless it opens with an acronym (CI).
+  function shiftWhat(names) {
+    const n = [...new Set(names.filter(Boolean).map(s => /^.[a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s))];
+    return !n.length ? 'this view' : n.length > 3 ? `${n.length} tables` : n.length === 1 ? n[0] : `${n.slice(0, -1).join(', ')} and ${n.at(-1)}`;
+  }
+  // The As line: the icon and the words for the reading.
+  const shiftAs = (mode, v, page, what) => mode === 'task' ? ['list-todo', `task “${v}”`]
+    : mode === 'ask' ? ['message-square', `ask chat about ${page.toLowerCase()}`] : ['filter', `filter ${what}`];
+  // shift:end
+  const shiftRow = main.querySelector('[data-shift]');
+  const SQ = {}; // the bar's text per view
+  let shiftIn = null, shiftPrev = null, shiftMode = 'filter', shiftSaid = null, shiftOn = null;
+  const shiftView = () => view.current() || '';
+  const shiftQ = () => shiftIn && shiftMode === 'filter' ? shiftIn.value.trim() : '';
+  // A table's name: its heading, its aria-label, its section's heading, then its caption (often a sentence).
+  function shiftName(t) {
+    const id = t.getAttribute('aria-labelledby'), label = t.getAttribute('aria-label');
+    const el = (id && document.getElementById(id.split(' ')[0])) || (!label && (t.closest('section')?.querySelector('h2, h3') || t.caption));
+    return (el ? el.textContent : label || '').replace(/\s+/g, ' ').trim();
+  }
+  const shiftCovers = () => window.PAGE_FILTER?.[shiftView()]
+    ?? shiftWhat([...main.querySelectorAll('table')].filter(t => !t.closest('[hidden], dialog, .sr')).map(shiftName));
+  // The field's placeholder follows the view, and the tables once they are drawn (tscan calls it).
+  function shiftPlace() {
+    if (!shiftIn) return;
+    const p = `Filter ${shiftCovers()}, capture a task, or ask`;
+    if (shiftIn.placeholder !== p) shiftIn.placeholder = p;
+  }
+  function shiftFire() {
+    const q = shiftQ(), said = `${shiftView()}\n${q}`;
+    if (said === shiftSaid) return;
+    shiftSaid = said;
+    document.dispatchEvent(new CustomEvent('shell:filter', { detail: { q, view: shiftView() } }));
+  }
+  function shiftRender() {
+    const v = shiftIn.value.trim(), [icon, words] = shiftAs(shiftMode, v, page || 'this page', shiftCovers());
+    shiftPrev.hidden = !v;
+    shiftRow.querySelector('#shift-ghost').textContent = v ? `→ ${shiftMode}` : '';
+    shiftPrev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === shiftMode)));
+    put(shiftPrev.querySelector('#shift-as'), html`${ICON(icon)} ${words}`);
+    shiftPlace(); shiftFire();
+  }
+  function shiftSet(v, mode = shiftGuess(v.trim())) { shiftOn = shiftView(); shiftIn.value = v; SQ[shiftOn] = v; shiftMode = mode; shiftRender(); }
+  // shell.filter: the shown view's filter text, or set it; a page without the bar has none.
+  function filter(...a) {
+    if (a.length && shiftIn) shiftSet(String(a[0] ?? ''), 'filter');
+    return shiftQ();
+  }
+  const shiftClear = () => !!shiftIn?.value && (shiftSet(''), true);
+  if (shiftRow) {
+    const el = document.createElement('div'); el.className = 'shift';
+    put(el, html`<label class="field">${ICON('search')}<span class="sr">Filter, capture or ask</span><input id="shift" autocomplete="off" spellcheck="false" aria-describedby="shift-hint"><span class="ghost" id="shift-ghost"></span><kbd>/</kbd></label>
+      <div class="preview" id="shift-preview" hidden>
+        <p class="as"><span class="label">As</span><span id="shift-as"></span></p>
+        <div class="chips" role="group" aria-label="Interpret as">${SHIFT_MODES.map(m => html`<button class="chip" type="button" data-as="${m}" aria-pressed="${String(m === 'filter')}">${{ filter: 'filter', task: 'new task', ask: 'ask chat' }[m]}</button>`)}</div>
+        <p class="hint" id="shift-hint">→ changes the reading · Enter runs · Esc clears</p>
+      </div>`);
+    const after = shiftRow.querySelector(':scope > .viewswitch, :scope > #viewswitch, :scope > .place-switch');
+    after ? after.after(el) : shiftRow.prepend(el);
+    shiftIn = el.querySelector('#shift'); shiftPrev = el.querySelector('#shift-preview');
+    // A ?q= link opens with its text as the filter; a page that keeps ?q= reads it too.
+    shiftSet(new URLSearchParams(location.search).get('q') || '', 'filter');
+    shiftIn.addEventListener('input', () => shiftSet(shiftIn.value));
+    shiftIn.addEventListener('keydown', e => {
+      const v = shiftIn.value.trim();
+      if (e.key === 'ArrowRight' && shiftIn.selectionStart === shiftIn.value.length && v) { e.preventDefault(); shiftMode = shiftNext(shiftMode); shiftRender(); }
+      if (e.key === 'Enter' && v) {
+        e.preventDefault();
+        if (shiftMode === 'task') { shiftSet(''); openCapture(null, v); }
+        if (shiftMode === 'ask') { shiftSet(''); openChat(); send(v); }
+      }
+      if (e.key === 'Escape' && shiftIn.value) { e.stopPropagation(); shiftSet(''); }
+    });
+    shiftPrev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { shiftMode = c.dataset.as; shiftRender(); shiftIn.focus(); } });
+    // Each view keeps its own text: a view change puts that view's back, and shell:filter tells the page.
+    document.addEventListener('shell:view', e => { if (e.detail.id !== shiftOn) shiftSet(SQ[e.detail.id] || ''); });
+    document.addEventListener('keydown', e => {
+      if (e.key !== '/' || e.target.matches('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest?.('.actmenu')) return;
+      e.preventDefault(); shiftIn.focus();
+    });
+    window.PAGE_KEYS = [['/', 'Filter, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)'], ...(window.PAGE_KEYS || [])];
+    window.PAGE_COMMANDS = [{ label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => shiftIn.focus() }, ...(window.PAGE_COMMANDS || [])];
+  }
+
   // ---------- Right pane: Details | Chat ----------
   const details = document.getElementById('details'); // page-owned
   const pane = document.createElement('aside');
@@ -1197,8 +1297,8 @@
       return [...(s.head ? [s.head] : []), ...data, ...s.body.filter(r => r.kind !== 'row')];
     });
   }
-  // A data row shows when every word of the text filter is in its cells and each column filter equals its cell; a filter
-  // on a column the table no longer has passes. Bands and notes always show.
+  // A data row shows when every word of the text filter (the Shapeshift bar's, sd:5539) is in its cells and each column
+  // filter equals its cell; a filter on a column the table no longer has passes. Bands and notes always show.
   function tshows(r, st, cols) {
     if (r.kind !== 'row') return true;
     const hay = r.cells.join(' ').toLowerCase();
@@ -1224,19 +1324,19 @@
     return st;
   }
   // A kept state is read back field by field; anything malformed falls back to the default, since the store is only a convenience.
+  // The text filter is the Shapeshift bar's (sd:5539), not the table's: a q an older build kept is not read back, so no row
+  // hides behind a box that is gone.
   function tstate(v) {
     const o = v && typeof v === 'object' ? v : {}, f = o.f && typeof o.f === 'object' && !Array.isArray(o.f) ? o.f : {};
-    return { sort: typeof o.sort === 'string' ? o.sort : null, dir: o.dir === -1 ? -1 : 1, q: typeof o.q === 'string' ? o.q : '',
+    return { sort: typeof o.sort === 'string' ? o.sort : null, dir: o.dir === -1 ? -1 : 1,
       f: Object.fromEntries(Object.entries(f).filter(([, x]) => typeof x === 'string')),
       closed: Array.isArray(o.closed) ? o.closed.filter(x => typeof x === 'string') : [] };
   }
-  // The toolbar standard (sd:5281): every table with a data row gets the text filter and the column filter, and its count
-  // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own text filter and gets the
-  // column filter alone. Folds come with 2 bands.
+  // The toolbar standard (sd:5281): every table with a data row gets the column filter; its text filter is the page's
+  // Shapeshift bar (sd:5539), so no table draws a text box. Folds come with 2 bands.
   function tbar({ total = 0, filterOn = false, ownFilter = false, bands = 0 } = {}) {
-    // sd:5467: a page with its own filter bar is the one place to filter its table, so it gets neither box nor column filter.
-    const facet = !ownFilter && (total > 0 || filterOn);
-    return { find: facet, facet, folds: bands >= 2 };
+    // sd:5467: a page with its own filter bar is the one place to filter its table, so it gets no column filter.
+    return { facet: !ownFilter && (total > 0 || filterOn), folds: bands >= 2 };
   }
   // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
   const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate, tbar };
@@ -1335,8 +1435,8 @@
       if (b.getAttribute('aria-expanded') !== String(open)) b.setAttribute('aria-expanded', String(open));
       if (!open) s.body.forEach(r => hid.add(r.tr));
     });
-    // A page's own text filter stands; the column filter still narrows its rows.
-    const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;
+    // A table the page filters takes the bar's text from the page; every other table takes it here.
+    const use = { ...st, q: ownFilter ? '' : shiftQ() }, filterOn = tchips(use).length > 0;
     let shown = 0, total = 0;
     rows.forEach(r => {
       const out = hid.has(r.tr) || !tshows(r, use, cols);
@@ -1344,13 +1444,13 @@
       if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
     });
     t._rows = { shown, total };
-    // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
-    // filter is on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
+    // The bar above the table (sd:5281, the toolbar standard): the column filter from the first row (or while a filter is
+    // on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
     // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. A table the page's text filter covers
     // (data-tfilter="page") names the row that holds that filter, so the column filter sits beside it and no table gets two
     // text filters (the sd:5281 ruling; test_v2_shell_shared walks every page). The bar carries no row count: the view's tab
     // does (sd:5524), and the filter chips say how many of how many while a filter is on.
-    const { find: findOn, facet: facetOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
+    const { facet: facetOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
     const facets = facetOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
     let bar = t._tbar;
     // A table in a hidden view keeps its parts out of the shared row; the view change rescans.
@@ -1360,14 +1460,13 @@
       bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key; bar._t = t;
       bar._name = t.getAttribute('aria-labelledby') ? tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : '';
       bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${bar._name ? ': ' + bar._name : ''}`);
-      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
+      put(bar, html`<label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
       const row = t.dataset.toolbar && document.getElementById(t.dataset.toolbar);
       row ? row.append(bar) : twrap(t).before(bar);
     }
     bar.hidden = false;
-    const input = bar.querySelector('input'), sel = bar.querySelector('select');
-    bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
-    if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
+    const sel = bar.querySelector('select');
+    bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
     // A shared row that serves two shown tables or more (Health's areas) names each one's table in its column filter.
     const many = !!t.dataset.toolbar && [...document.querySelectorAll(`main table[data-toolbar="${CSS.escape(t.dataset.toolbar)}"]`)].filter(x => !x.closest('[hidden]')).length > 1;
     const opts = html`<option value="">${many && bar._name ? `${bar._name}: filter by column…` : 'Filter by column…'}</option>${facets.map(c => html`<optgroup label="${c.label}">${c.values.map(v => html`<option value="${JSON.stringify([c.label, v])}">${v}</option>`)}</optgroup>`)}`;
@@ -1381,11 +1480,12 @@
   const tscan = () => {
     tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } });
     document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) bar.remove(); });
-    view.auto(); tobs.takeRecords();
+    view.auto(); shiftPlace(); tobs.takeRecords();
   };
   const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
   tobs.observe(body, { childList: true, subtree: true, characterData: false });
   document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });
+  document.addEventListener('shell:filter', () => { if (!tq) tq = requestAnimationFrame(tscan); });
   const tfor = el => { const t = el.closest('table'); if (t) return t; const bar = el.closest('.tgrid'); return bar && document.querySelector(`table[data-tgrid="${CSS.escape(bar.dataset.tfor)}"]`); };
   const tdo = (el, f) => { const t = tfor(el); if (!t) return; const key = tkeyOf(t); f(tst(key)); tkeep(key); tapply(t); tobs.takeRecords(); };
   document.addEventListener('click', e => {
@@ -1393,11 +1493,12 @@
     if (b.dataset.tsort != null) return tdo(b, st => tsortBy(st, b.dataset.tsort));
     if (b.classList.contains('tfold')) return tdo(b, st => { const s = new Set(st.closed); s.has(b.dataset.tfold) ? s.delete(b.dataset.tfold) : s.add(b.dataset.tfold); st.closed = [...s]; });
     if (b.dataset.tfoldAll) return tdo(b, st => { st.closed = b.dataset.tfoldAll === 'open' ? [] : [...tfor(b).querySelectorAll('button.tfold')].map(x => x.dataset.tfold); });
-    const bar = b.closest('.tgrid');
-    tdo(b, st => tunfilter(st, b.hasAttribute('data-tunfilter-all') ? null : b.dataset.tunfilter));
-    bar.querySelector('input')?.focus();
+    const bar = b.closest('.tgrid'), key = b.hasAttribute('data-tunfilter-all') ? null : b.dataset.tunfilter;
+    tdo(b, st => tunfilter(st, key));
+    // The text chip is the bar's text: taking it off empties the bar.
+    if (key == null || key === 'q') filter('');
+    bar.querySelector('select')?.focus();
   });
-  document.addEventListener('input', e => { if (e.target.matches?.('.tgrid input')) tdo(e.target, st => { st.q = e.target.value.trim(); }); });
   document.addEventListener('change', e => {
     if (!e.target.matches?.('.tgrid select') || !e.target.value) return;
     const [label, v] = JSON.parse(e.target.value); e.target.value = '';
@@ -1468,7 +1569,7 @@
       if (sheet || menuOpen) return;
       // A page's field clears its own text on Esc and stops the key there; an empty field reaches here and lets go of focus.
       if (e.target.matches('input, textarea, select, [contenteditable]')) { e.target.blur(); return; }
-      if (window.PAGE_LIST?.clear?.()) e.preventDefault();
+      if (window.PAGE_LIST?.clear?.() || shiftClear()) e.preventDefault();
       return;
     }
     if (e.target.matches('input, textarea, select, [contenteditable]') || document.querySelector('dialog[open]') || menuEl.contains(e.target)) return;
@@ -1653,7 +1754,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

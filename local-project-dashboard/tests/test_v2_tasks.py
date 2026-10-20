@@ -422,6 +422,8 @@ C.runBulk = shellBulk;
 function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null }); }
 window.shell = { commands: C, post, getJSON, shown: stillShown, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
+  // The Shapeshift bar's text (shell.filter, sd:5539): a page sets it with this and hears it as shell:filter.
+  filter: q => (OUT.shift = String(q ?? '').trim()),
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   view: { current: () => null, show: () => true, hide() {}, count: (id, n) => { (OUT.counts = OUT.counts || {})[id] = n; } },
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;

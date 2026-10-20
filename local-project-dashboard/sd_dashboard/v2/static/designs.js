@@ -164,7 +164,7 @@ function reconcile() {
 // The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
 function writeFilter() {
   const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
-  shell.url({ ...(F.f && { f: F.f }), ...(F.state && { state: F.state }), ...(F.product && { product: F.product }), ...(input.value.trim() && { q: input.value.trim() }), ...sort });
+  shell.url({ ...(F.f && { f: F.f }), ...(F.state && { state: F.state }), ...(F.product && { product: F.product }), ...(qText && { q: qText }), ...sort });
 }
 function update() {
   if (!D) return;
@@ -204,22 +204,20 @@ document.addEventListener('click', e => {
   }
   const tr = e.target.closest?.('tr[data-id]'); if (tr && !e.target.closest('button, a, time')) select(tr.dataset.id, false);
 });
-const input = document.getElementById('shift'), bar = document.getElementById('filters');
+// The text filter is the shell's Shapeshift bar (sd:5539); ?q= keeps its words as typed.
+const bar = document.getElementById('filters');
+let qText = '';
 bar.addEventListener('change', e => shell.list.pickChange(e, F, () => { writeFilter(); update(); }));
 bar.addEventListener('click', e => {
   const b = e.target.closest('[data-fclear], [data-f]'); if (!b) return;
   if (b.dataset.fclear != null) Object.assign(F, { f: '', q: '', state: '', product: '' });
   else if (b.dataset.f === 'state') F.state = F.state === b.dataset.v ? '' : b.dataset.v;
   else F[b.dataset.f] = '';
-  if (!F.q) input.value = '';
+  if (!F.q && qText) { qText = ''; shell.filter(''); }
   writeFilter(); update();
 });
 document.getElementById('rows-head').addEventListener('click', e => { if (D && shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderRows); writeFilter(); } });
-input.addEventListener('input', () => { F.q = input.value.trim().toLowerCase(); writeFilter(); update(); });
-document.addEventListener('keydown', e => {
-  if (e.target.matches?.('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
-});
+document.addEventListener('shell:filter', e => { if (e.detail.q === qText) return; qText = e.detail.q; F.q = qText.toLowerCase(); writeFilter(); update(); });
 // The shell walks these rows on j / k and writes ?row= when show() selects.
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), current: () => selected, select: id => select(id, false) };
 
@@ -233,7 +231,7 @@ window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'designs not read' };
 window.PAGE_COMMANDS = [
   ...['stale', 'recent'].map(k => ({ label: `Filter: ${FILTERS[k].lbl}`, icon: 'filter', run: () => { F.f = k; writeFilter(); update(); } })),
 ];
-window.PAGE_KEYS = [['/', 'Filter pages']];
+window.PAGE_FILTER = { pages: 'pages', hidden: 'hidden pages' };
 
 // ---------- Start (build: read /api/designs through shell.read, then draw) ----------
 // The reader (read.js) holds the guards: of overlapping reads only the newest draws, a row the read no longer lists runs no
@@ -265,7 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
   F.state = STATES.some(([s]) => s === p.get('state')) ? p.get('state') : '';
   F.product = p.get('product') || ''; // a product the read does not name stays a pick option, so it can be lifted
   F.hidden = shell.view.current() === 'hidden';
-  if (p.get('q')) { input.value = p.get('q'); F.q = p.get('q').trim().toLowerCase(); }
+  if (p.get('q')) { qText = p.get('q').trim(); F.q = qText.toLowerCase(); }
   shell.list.listParams(p, L, { sorts: Object.keys(BY), size: LIST.size });
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   reading = shell.read({

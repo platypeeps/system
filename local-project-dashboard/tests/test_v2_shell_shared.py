@@ -591,22 +591,23 @@ class TheTableGrammar(unittest.TestCase):
         self.assertEqual(out["skipped"], [])
 
     def test_every_table_with_a_row_gets_the_filters_and_its_count_on_one_row(self):
-        # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own text filter
-        # wins. sd:5467 (operator, 2026-10-20) reverses the rest: a page with its own filter bar gets no column filter either,
-        # so one table has one place to filter, and keeps only the folds.
+        # sd:5281: the toolbar standard. A column filter from the first data row, not the sixth. sd:5467 (operator,
+        # 2026-10-20): a page with its own filter bar gets no column filter either, so one table has one place to filter, and
+        # keeps only the folds. sd:5539: the text filter is the Shapeshift bar's, so no table draws a box of its own.
         out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
   R.own = tbar({ total: 40, ownFilter: true, bands: 3 });""")
-        self.assertEqual(out["one"], {"find": True, "facet": True, "folds": False})
-        self.assertEqual(out["none"], {"find": False, "facet": False, "folds": False})
-        self.assertEqual(out["on"], {"find": True, "facet": True, "folds": False})
-        self.assertEqual(out["own"], {"find": False, "facet": False, "folds": True})
+        self.assertEqual(out["one"], {"facet": True, "folds": False})
+        self.assertEqual(out["none"], {"facet": False, "folds": False})
+        self.assertEqual(out["on"], {"facet": True, "folds": False})
+        self.assertEqual(out["own"], {"facet": False, "folds": True})
 
     def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
         # sd:5281: a table names its toolbar row (data-toolbar); the bar's parts join that row, the count last.
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
-        self.assertIn("const { find: findOn, facet: facetOn, folds: foldsOn } = tbar(", js)
-        # A page's own filter keeps its text; the column filter narrows its rows all the same.
-        self.assertIn("const use = ownFilter ? { ...st, q: '' } : st, filterOn = tchips(use).length > 0;", js)
+        self.assertIn("const { facet: facetOn, folds: foldsOn } = tbar(", js)
+        # The text is the Shapeshift bar's (sd:5539): a table the page filters hears it as shell:filter; the shell filters the rest.
+        self.assertIn("const use = { ...st, q: ownFilter ? '' : shiftQ() }, filterOn = tchips(use).length > 0;", js)
+        self.assertIn("document.addEventListener('shell:filter', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
         # A table in a hidden view keeps its parts out of the shared row, and a view change rescans.
         self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
         self.assertIn("document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
@@ -623,7 +624,7 @@ class TheTableGrammar(unittest.TestCase):
         self.assertNotIn("tcount", js)
         self.assertNotIn(".tcount", SHELL_CSS)
         self.assertIn("t._rows = { shown, total };", js)
-        self.assertIn("view.auto(); tobs.takeRecords();", js)
+        self.assertIn("view.auto(); shiftPlace(); tobs.takeRecords();", js)
         self.assertIn("viewSet(i, ts.length === 1 ? ts[0]._rows.shown : null);", js)
         self.assertIn("if (viewOwned.has(v.id) || (v.api && !viewSeen.has(v.id))) return;", js)
         # A page's own count wins: shell.view.count marks the view owned.
@@ -642,8 +643,9 @@ class TheTableGrammar(unittest.TestCase):
         out = run_tables("""R.bad = tstate({ sort: 3, dir: 7, q: null, f: ['x'], closed: 'Mon' });
   R.good = tstate({ sort: 'Kind', dir: -1, q: 'a', f: { Kind: 'job', n: 2 }, closed: ['Mon', 4] });
   R.none = tstate(null);""")
-        self.assertEqual(out["bad"], {"sort": None, "dir": 1, "q": "", "f": {}, "closed": []})
-        self.assertEqual(out["good"], {"sort": "Kind", "dir": -1, "q": "a", "f": {"Kind": "job"}, "closed": ["Mon"]})
+        self.assertEqual(out["bad"], {"sort": None, "dir": 1, "f": {}, "closed": []})
+        # sd:5539: an older build kept the table's own text (q); it is not read back, so no row hides behind a box that is gone.
+        self.assertEqual(out["good"], {"sort": "Kind", "dir": -1, "f": {"Kind": "job"}, "closed": ["Mon"]})
         self.assertEqual(out["none"], out["bad"])
 
     def test_a_band_with_data_band_keys_its_fold_by_it_so_a_changing_count_keeps_it_shut(self):
@@ -802,38 +804,53 @@ class TheToolbarStandard(unittest.TestCase):
         for name in ("health.js", "management.js"):
             self.assertNotIn('<div class="filters"', (STATIC / name).read_text(encoding="utf-8"))
 
-    # The tables a page's toolbar text filter does not reach: each keeps the shell's own filter box (one text filter each).
+    # The tables a page's own Shapeshift does not reach (sd:5539): no text filter reaches them; the column filter does.
     UNREACHED = {
-        "activity.html": {"Events per hour by kind"},  # the chart's fallback table
-        "briefs.html": {"Briefs per source and day"},  # the cadence fallback table
-        "health.html": {"Snoozed rows", "pmx-cap"},  # snoozed rows; the protection matrix's table
-        "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h", "up-h"},  # lane, processes, worktrees,
-        # satellites, the shared upload link
-        "reports.html": {"cad"},  # the cadence table
-        "skills.html": {"repos-h"},  # the Intake view's tracked repositories: the toolbar filters the catalog alone
+        "skills.html": {"repos-h"},  # the Intake view's tracked repositories: the bar filters the catalog alone
         "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
-        "today.html": {"active-h", "work-h", "problems-h", "briefs-h", "mail-h", "issues-h", "intake-h", "decisions-h",
-                       "Snoozed rows", "st-${key}-h"},  # Now's filter reaches the Now ledger alone
     }
 
-    def test_no_table_gets_two_text_filters(self):
-        # The sd:5281 ruling: where a page's toolbar text filter covers a table, the table is data-tfilter="page" and the
-        # shell draws no box of its own; its column filter joins the row that holds the page's filter (data-toolbar).
-        # Briefs, Documents and the other page-filtered ledgers share row 1; the count stays on the table's title line.
+    def test_every_page_with_a_table_has_one_bar_and_no_box_of_its_own(self):
+        # sd:5539 (operator, 2026-10-20): one "Filter, capture or ask" bar on every page with a table, and no table-level
+        # "Filter rows" box. The shell draws the bar in row 1 marked data-shift; a page whose own Shapeshift has readings of
+        # its own (a .shift in its markup) keeps that one. A page-filtered table's column filter joins the bar's row.
         for page in self.PAGES:
+            tags, tables = tree(page), list(page_tables(page))
+            marked = [i for (_t, _c, i, a), _u in tags if "data-shift" in a]
+            own = [c for (_t, c, _i, _a), _u in tags if "shift" in c]
             finds = page_finds(page)
-            seen = set()
-            for key, attrs in page_tables(page):
-                seen.add(key)
+            with self.subTest(page=page.name):
+                if tables:
+                    self.assertEqual(len(marked) + len(own), 1, "a page with a table has one bar")
+                self.assertEqual(set(marked), {"toolbar"} if marked else set(), "the shell's bar goes in row 1")
+                if marked:
+                    self.assertFalse(finds, "a text box of the page's own beside the shell's bar")
+            for key, attrs in tables:
                 with self.subTest(page=page.name, table=key):
                     if attrs.get("data-tfilter") == "page":
-                        self.assertTrue(finds, "a page-filtered table on a page with no text filter has none")
-                        self.assertIn(attrs.get("data-toolbar"), finds, "its column filter is not in the page filter's row")
-                    elif finds:
+                        self.assertIn(attrs.get("data-toolbar"), set(marked) | finds, "its column filter is not in the bar's row")
+                    elif own:
                         self.assertIn(key, self.UNREACHED.get(page.name, set()),
-                                      "the page's text filter reaches it too: mark it data-tfilter=\"page\", or list it here")
+                                      "the page's own bar reaches it too: mark it data-tfilter=\"page\", or list it here")
             with self.subTest(page=page.name, stale=True):
-                self.assertLessEqual(self.UNREACHED.get(page.name, set()), seen)
+                self.assertLessEqual(self.UNREACHED.get(page.name, set()), {k for k, _a in tables})
+
+    def test_a_page_that_filters_its_own_rows_hears_the_bar(self):
+        # One hook (sd:5539): a page-filtered table on a page with the shell's bar takes the text from shell:filter, and
+        # no page script keeps a box, a / key or a Shapeshift of its own.
+        for page in self.PAGES:
+            text = page.read_text(encoding="utf-8")
+            if "data-shift" not in text:
+                continue
+            scripts = "".join((STATIC / f"{n}.js").read_text(encoding="utf-8") for n in re.findall(r'<script src="/ui/([\w-]+)\.js"', text)
+                              if n not in SHELL_SCRIPTS and (STATIC / f"{n}.js").exists())
+            with self.subTest(page=page.name):
+                if any(a.get("data-tfilter") == "page" for _k, a in page_tables(page)):
+                    self.assertIn("addEventListener('shell:filter'", scripts)
+                self.assertNotIn("getElementById('shift')", scripts)
+                self.assertNotIn("$('q')", scripts)
+                self.assertNotRegex(scripts, r"\[\s*'/'\s*,", "a / key of the page's own: the shell's bar owns /")
+                self.assertNotIn("shift-as", scripts)
 
     def test_each_view_keeps_the_view_switch_and_row_one_visible(self):
         # Review round 1: HOA's row 1 sat inside view-overview, so picking Tasks hid the tabs. Select each view as
@@ -1148,6 +1165,69 @@ view.show('cadence'); R.back = shown();""", host=True)
         self.assertRegex(SHELL_CSS, r"\.viewswitch \[role=\"tab\"\][^{]*\{[^}]*white-space: nowrap")
 
 
+
+SHIFT = re.search(r"^  // shift:start\n(.*?)^  // shift:end$", SHELL_JS, re.S | re.M)
+
+
+class TheShapeshiftBar(unittest.TestCase):
+    """sd:5539: one Filter, capture or ask bar, in shell.js; the pages that drew a copy only mark row 1 for it."""
+
+    def run_shift(self, body):
+        if SHIFT is None:
+            raise AssertionError("shell.js has no shift:start block")
+        return run_js(SHIFT.group(1) + body)
+
+    def test_the_bar_guesses_the_reading_and_the_arrow_cycles_filter_task_ask(self):
+        out = self.run_shift("""R.guess = ['port 8767', 'why is it red?', 'what failed', 'p1 fix the gate', 'add a test', 'renew it due friday', ''].map(shiftGuess);
+  R.next = ['filter', 'task', 'ask'].map(shiftNext);""")
+        self.assertEqual(out["guess"], ["filter", "ask", "ask", "task", "task", "task", "filter"])
+        self.assertEqual(out["next"], ["task", "ask", "filter"])
+
+    def test_the_ask_line_names_the_page_and_the_filter_line_what_it_filters(self):
+        out = self.run_shift("""R.ask = shiftAs('ask', 'why?', 'Reports', 'reports');
+  R.task = shiftAs('task', 'p1 fix', 'Reports', 'reports');
+  R.filter = shiftAs('filter', 'x', 'Reports', 'reports, bodies included');
+  R.what = [[], ['Timeline'], ['Repos', 'Lane'], ['CI runs', 'Mail', 'Briefs'], ['A', 'B', 'C', 'D'], ['Now', 'Now', '']].map(shiftWhat);""")
+        self.assertEqual(out["ask"], ["message-square", "ask chat about reports"])
+        self.assertEqual(out["task"], ["list-todo", "task “p1 fix”"])
+        self.assertEqual(out["filter"], ["filter", "filter reports, bodies included"])
+        self.assertEqual(out["what"], ["this view", "timeline", "repos and lane", "CI runs, mail and briefs", "4 tables", "now"])
+
+    def test_no_table_draws_a_filter_rows_box(self):
+        # The operator's ruling: no table-level text box anywhere; Filter by column, the folds and the count stay.
+        self.assertNotIn("tfind", SHELL_JS)
+        self.assertNotIn("tfind", SHELL_CSS)
+        self.assertNotIn("Filter rows", SHELL_JS)
+        self.assertIn('<label class="tfacet"><span class="sr">Filter by a column value</span>', SHELL_JS)
+        self.assertIn('data-tfold-all="open">Expand all</button>', SHELL_JS)
+
+    def test_no_page_carries_a_copy_of_the_bar(self):
+        # Reports, Activity, Briefs and Today drew the bar in their markup and wired it in their script; the shell draws it
+        # now on every page that marks row 1 (data-shift). The pages whose own bar has readings of its own keep theirs.
+        marked = [p for p in sorted(V2.glob("*.html")) if "data-shift" in p.read_text(encoding="utf-8")]
+        for name in ("reports", "activity", "briefs", "today", "health", "contributions", "designs", "management", "review"):
+            self.assertIn(V2 / f"{name}.html", marked)
+        for page in marked:
+            text = page.read_text(encoding="utf-8")
+            files = [(page.name, text)] + [(f"{n}.js", (STATIC / f"{n}.js").read_text(encoding="utf-8"))
+                                           for n in re.findall(r'<script src="/ui/([\w-]+)\.js"', text)
+                                           if n not in SHELL_SCRIPTS and (STATIC / f"{n}.js").exists()]
+            for name, body in files:
+                with self.subTest(page=page.name, file=name):
+                    self.assertNotIn('class="shift"', body)
+                    self.assertNotIn("shift-as", body)
+                    self.assertNotIn("shell.capture(null, v)", body)
+
+    def test_the_shell_wires_the_bar_once(self):
+        # Enter: a task opens Capture with the text, an ask goes to chat; Esc clears; / focuses; each view keeps its text.
+        self.assertIn("if (shiftMode === 'task') { shiftSet(''); openCapture(null, v); }", SHELL_JS)
+        self.assertIn("if (shiftMode === 'ask') { shiftSet(''); openChat(); send(v); }", SHELL_JS)
+        self.assertIn("document.addEventListener('shell:view', e => { if (e.detail.id !== shiftOn) shiftSet(SQ[e.detail.id] || ''); });", SHELL_JS)
+        self.assertIn("document.dispatchEvent(new CustomEvent('shell:filter', { detail: { q, view: shiftView() } }));", SHELL_JS)
+        self.assertIn("if (window.PAGE_LIST?.clear?.() || shiftClear()) e.preventDefault();", SHELL_JS)
+        self.assertIn("window.PAGE_KEYS = [['/', 'Filter, capture a task or ask']", SHELL_JS)
+        self.assertRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bfilter\b")
+
 class TheSelect(unittest.TestCase):
     """sd:5064: one native select style in shell.css; a page sets only size and width, so every select reads the same."""
 
@@ -1194,7 +1274,7 @@ class TheSelect(unittest.TestCase):
         filter (.tgrid), a page's .filters selects (Reports) and the toolbar row's."""
         self.assertRegex(SHELL_CSS, r"(?m)" + r"^:where\(\.fsel, \.filters select, \.tgrid select, \.toolbar select\) \{([^}]*)\}")
         self.assertIn('<select id="f-${key}" class="fsel" data-pick="${key}">', SHELL_JS)
-        self.assertIn('put(bar, html`<label class="tfind">', SHELL_JS)
+        self.assertIn('put(bar, html`<label class="tfacet">', SHELL_JS)
         summary = re.search(r"^\.fpick > summary, [^{]*\{([^}]*)\}", SHELL_CSS, re.M).group(1)
         self.assertIn("border-radius: 999px", summary)
 

@@ -205,7 +205,7 @@ const UNFILTER = {
   status: () => { F.status = ''; },
   day: () => { F.day = ''; },
   fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
-  q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
+  q: () => { F.q = ''; window.shell.filter(''); },
 };
 function unfilter(keys) { keys.forEach(k => UNFILTER[k]()); L.page = 1; renderRows(); }
 const clearAll = () => unfilter(activeFilters().map(f => f.key));
@@ -327,7 +327,7 @@ function readURL() {
   ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (v && offered[k].includes(v)) F[k] = v; });
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
-  if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
+  if (p.get('q')) F.q = p.get('q').toLowerCase(); // the shell's bar shows it
   window.shell.list.listParams(p, L, { sorts: Object.keys(SORTS), size: LIST.size });
   if (!p.get('page') && /^[1-9]\d*$/.test(p.get('p') || '')) L.page = +p.get('p'); // ?page= is the shared pager key that views reset; ?p= is an old link
 }
@@ -342,33 +342,9 @@ function writeURL() {
 function select(id, open) { show(id); writeURL(); if (open) window.shell.openPane('tab-details'); }
 tbody.addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
-// Shapeshift bar: filter / new task / ask, previewed before commit.
-const input = byId('shift'), prev = byId('shift-preview'), as = byId('shift-as'), ghost = byId('ghost');
-let mode = 'filter';
-function guess(v) { return /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter'; }
-function setMode(m) { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.as === m))); render(); }
-function render() {
-  const v = input.value.trim();
-  prev.hidden = !v;
-  ghost.textContent = v ? `→ ${mode}` : '';
-  put(as, html`${mode === 'task' ? html`${I('list-todo')} task “${v}”` : mode === 'ask' ? html`${I('message-square')} ask chat about reports` : html`${I('filter')} filter reports, bodies included`}`);
-  F.q = mode === 'filter' ? v.toLowerCase() : ''; L.page = 1; renderRows();
-}
-input.addEventListener('input', () => { mode = guess(input.value.trim()); setMode(mode); });
-input.addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const order = ['filter', 'task', 'ask']; setMode(order[(order.indexOf(mode) + 1) % 3]); }
-  if (e.key === 'Enter' && input.value.trim()) {
-    e.preventDefault();
-    if (mode === 'task') { const v = input.value.trim(); input.value = ''; render(); window.shell.capture(null, v); }
-    if (mode === 'ask') { window.shell.openChat(); window.shell.send(input.value.trim()); input.value = ''; render(); }
-  }
-  if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; render(); }
-});
-prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-document.addEventListener('keydown', e => {
-  if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
-  if (e.key === '/') { e.preventDefault(); input.focus(); }
-});
+// The shell's Shapeshift bar (sd:5539) gives the list its text, bodies included; the cadence table takes it from the shell.
+document.addEventListener('shell:filter', e => { const q = e.detail.q.toLowerCase(); if (q === F.q) return; F.q = q; L.page = 1; if (DOC) renderRows(); });
+window.PAGE_FILTER = { reports: 'reports, bodies included', attention: 'reports, bodies included' };
 // The shell's view switch (shell.js, view block): the list first, the run table second. Both read /api/reports, so neither
 // names an api of its own.
 window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'attention', label: 'Needs attention', panel: 'reports' }, { id: 'cadence', label: 'Cadence' }];
@@ -379,11 +355,9 @@ document.addEventListener('shell:view', e => {
   F.status = want; L.page = 1; if (DOC) renderRows();
 });
 // The shell walks these rows on j / k.
-window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };
 
 window.PAGE_COMMANDS = [
-  { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
   { label: 'Show reports that need action', icon: 'filter', run: () => { F.status = 'act'; L.page = 1; renderRows(); } },
 ];
 

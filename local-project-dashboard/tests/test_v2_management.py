@@ -1136,7 +1136,7 @@ R.got = await cmd('repo.land').run(o); R.previews = cmd('repo.land').previews;""
         click = "document.querySelector('main').listeners.click.forEach(f => f({ target: { closest: s => s === %s ? { dataset: %s } : null } }));"
         out = self.run_page("R.a = ELS['view-repos'].html;" + click % ("'[data-f=\"q\"]'", "{ f: 'q', v: '' }")
                             + " R.b = ELS['view-repos'].html;" + click % ("'[data-fclear]'", "{}")
-                            + " R.c = ELS['view-repos'].html; R.box = ELS.shift.value;", search="?view=repos&managed=yes&q=busy")
+                            + " R.c = ELS['view-repos'].html; R.box = (OUT.shift ?? null);", search="?view=repos&managed=yes&q=busy")
         bar = lambda key: re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"][key], re.S).group(0)
         self.assertIn('data-f="managed" data-v="yes" aria-pressed="true"', bar("a"))
         self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', bar("a")), ["q"])
@@ -1713,7 +1713,7 @@ R.sched = ELS['view-schedules'].html;""")
         """sd:5504: the pressed failed segment already shows state:failed, so the token is the free words alone; removing it
         keeps the segment's word, and each segment keeps its visible label."""
         click = "document.querySelector('main').listeners.click.forEach(f => f({ target: { closest: s => s === '[data-f=\"q\"]' ? { dataset: { f: 'q', v: '' } } : null } }));"
-        out = self.run_page("R.a = ELS['view-schedules'].html;" + click + " R.b = ELS['view-schedules'].html; R.box = ELS.shift.value;",
+        out = self.run_page("R.a = ELS['view-schedules'].html;" + click + " R.b = ELS['view-schedules'].html; R.box = (OUT.shift ?? null);",
                             search="?view=schedules&q=state:failed nightly")
         self.assertIn('<div class="fgroup"><span class="label" aria-hidden="true">State</span><div class="fseg" role="group" aria-label="State">', out["R"]["a"])
         self.assertIn('data-f="state" data-v="failed" aria-pressed="true"', out["R"]["a"])
@@ -2135,7 +2135,7 @@ class TheJobLogAndCancel(PageScript):
 
     def test_services_filter_by_a_state_chip_and_by_any_column(self):
         click = "ELS['view-deploys'].listeners.click[0]({ target: { closest: s => s === '[data-f=\"state\"]' ? { dataset: { f: 'state', v: 'failed' } } : null } });"
-        out = self.run_page("R.a = ELS['view-deploys'].html;" + click + " R.b = ELS['view-deploys'].html; R.box = ELS.shift.value;",
+        out = self.run_page("R.a = ELS['view-deploys'].html;" + click + " R.b = ELS['view-deploys'].html; R.box = (OUT.shift ?? null);",
                             doc=self.services(30), search="?view=deploys")
         self.assertEqual(re.findall(r'data-f="state" data-v="(\w+)"', out["R"]["a"]), ["failed", "running"])
         self.assertIn("10 of 30", out["R"]["b"])

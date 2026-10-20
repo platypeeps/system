@@ -10,6 +10,7 @@
 // hides the tab's count. Status counts nothing: what waits in it is counted on the tab that acts on it.
 window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'status', label: 'Status' }, { id: 'work', label: 'Work' },
   { id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'issues', label: 'Issues' }, { id: 'decisions', label: 'Decisions' }];
+window.PAGE_FILTER = { now: 'the Now ledger' };
 (() => {
   const VIEW_OF = { now: 'now', work: 'work', problems: 'inbox', briefs: 'inbox', mail: 'inbox', issues: 'issues', intake: 'issues', decisions: 'decisions' };
   const COUNTS = {};
@@ -258,7 +259,6 @@ window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'status', label: 'Status
   window.PAGE_REPO = o => o && o.type === 'repo' ? o.id.split(':')[1] : (o && o.repo) || null;
 
   window.PAGE_COMMANDS = [
-    { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => $('shift').focus() },
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
     { label: 'Read Now again', icon: 'rotate-ccw', run: () => load() },
   ];
@@ -307,34 +307,8 @@ window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'status', label: 'Status
       applyFilter();
     });
 
-    // Shapeshift bar: filter / new task / ask, previewed before commit.
-    const input = $('shift'), prev = $('shift-preview'), as = $('shift-as'), ghost = $('ghost');
-    let mode = 'filter';
-    const guess = v => /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)/i.test(v) ? 'task' : 'filter';
-    const setMode = m => { mode = m; prev.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.as === m)); paint(); };
-    function paint() {
-      const v = input.value.trim(), p = v.match(/\bp([1-4])\b/i);
-      prev.hidden = !v; ghost.textContent = v ? `→ ${mode}` : '';
-      put(as, mode === 'task' ? html`${I('list-todo')} task “${v.replace(/\bp[1-4]\b/gi, '').trim()}”${p ? ` · P${p[1]}` : ''}`
-        : mode === 'ask' ? html`${I('message-square')} ask chat in fleet scope` : html`${I('filter')} filter the ledger`);
-      query = mode === 'filter' ? v.toLowerCase() : '';
-      if (DOC) applyFilter();
-    }
-    input.addEventListener('input', () => setMode(guess(input.value.trim())));
-    input.addEventListener('keydown', e => {
-      if (e.key === 'ArrowRight' && input.selectionStart === input.value.length && input.value) { e.preventDefault(); const o = ['filter', 'task', 'ask']; setMode(o[(o.indexOf(mode) + 1) % 3]); }
-      if (e.key === 'Enter' && input.value.trim()) {
-        e.preventDefault(); const v = input.value.trim();
-        if (mode === 'task') { shell.fileCapture({ kind: 'task', title: v }).then(shell.toast, err => shell.toast(err.message)); input.value = ''; paint(); }
-        if (mode === 'ask') { shell.openChat(); shell.send(v); input.value = ''; paint(); }
-      }
-      if (e.key === 'Escape') { input.value = ''; paint(); input.blur(); }
-    });
-    prev.addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) { setMode(c.dataset.as); input.focus(); } });
-    document.addEventListener('keydown', e => {
-      if (e.target.matches('input, textarea') || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]') || e.target.closest('.actmenu')) return;
-      if (e.key === '/') { e.preventDefault(); input.focus(); }
-    });
+    // The shell's Shapeshift bar (sd:5539) filters the Now ledger through shell:filter, and every other table itself.
+    document.addEventListener('shell:filter', e => { query = e.detail.q.toLowerCase(); if (DOC) applyFilter(); });
     // The shell walks the rows on j / k, and Esc clears the source filter through clear() (sd:3525): the page binds neither.
     window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(id, false),
       clear: () => !!srcFilter && (clearSource(), true) };

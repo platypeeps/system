@@ -35,19 +35,8 @@
 
     <h2 class="sr">Areas</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator"></ul></annunciator-strip>
-    <!-- The toolbar standard (sd:5281): row 1, the views then the page's filter; the count sits on the table's title line. -->
-    <div class="toolbar" id="toolbar">
-      <div class="shift">
-        <label class="field">
-          <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-          <span class="sr">Filter this view</span>
-          <input id="shift" placeholder="Filter repos, e.g. hoa or merge:auto" autocomplete="off" spellcheck="false" aria-describedby="shift-hint">
-          <span class="ghost" id="ghost"></span>
-          <kbd>/</kbd>
-        </label>
-        <p class="hint sr" id="shift-hint">Free text filters rows. managed:yes, merge:auto, source:row and state:failed become chips. Esc clears.</p>
-      </div>
-    </div>
+    <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539); the count sits on the view's tab. -->
+    <div class="toolbar" id="toolbar" data-shift></div>
     <section id="view-repos" aria-label="Repos"></section>
     <section id="view-lane" aria-label="Ship lane" hidden></section>
     <section id="view-sessions" aria-label="Sessions" hidden></section>
