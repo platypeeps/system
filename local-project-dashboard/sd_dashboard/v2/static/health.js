@@ -102,10 +102,10 @@
     if (first) { readers[id] = shell.read(spec(id)); load(); }
   }
 
-  function filters() {
+  function filters(sum) {
     const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
     const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}</div>`;
+    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}</div></div>${grp('state', 'State', STATES.filter(s => ROWS.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, ROWS.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, a.rows.length])) : ''}${sum}</div>`;
   }
 
   function areas() {
@@ -195,9 +195,10 @@
   function apply() {
     if (!VIEW) return;
     const on = filtering(), shown = ROWS.filter(passes).length;
-    const what = [F.area.size ? `${AREAS.filter(a => F.area.has(a.id)).map(a => a.name).join(', ')} only` : '', [...F.state].join(' or '), query ? `“${query}”` : ''].filter(Boolean).join(' · ');
     const total = ROWS.filter(drawn).length;
-    put($(`body-${VIEW}`), html`${DOC ? filters() : ''}${on ? html`<p class="filtered" role="status">${shown ? `Filtered to ${what}: ${shown} of ${total} rows.` : `No row matches ${what}.`} <button class="linkbtn" type="button" data-clear>Show all rows</button></p>` : ''}${areas()}`);
+    // sd:5469: the count and Clear all end the filter bar, as on Activity; the pressed chips already say what filters.
+    const sum = html`<div class="fsum"><span>${shown} of ${total}</span>${on ? html`<button class="linkbtn" type="button" data-clear>Clear all</button>` : ''}</div>`;
+    put($(`body-${VIEW}`), html`${DOC ? filters(sum) : ''}${areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
       clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });

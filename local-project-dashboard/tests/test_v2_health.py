@@ -1602,7 +1602,9 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = BODY().html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        self.assertIn("Filtered to Credentials only: 1 of 3 rows.", out["R"]["note"])
+        # sd:5469: the count sits at the filter bar's end, as on Activity; no note line repeats the filter.
+        self.assertIn('<div class="fsum"><span>1 of 3</span><button class="linkbtn" type="button" data-clear>Clear all</button></div>', out["R"]["note"])
+        self.assertNotIn("Filtered to", out["R"]["note"])
         self.assertEqual(out["R"]["address"], "/fleet-health#view=jobs")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["cred", "mir"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown), ["cred:none", "mir", "mir:briefs"])
@@ -1621,7 +1623,7 @@ R.observed = document.body.dataset.observed;""")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
         self.assertIn('data-id="unread:beta"', out["R"]["wt"])
-        self.assertIn("Filtered to Worktrees only: ", out["R"]["note"])
+        self.assertIn('data-clear>Clear all</button>', out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = BODY().html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",

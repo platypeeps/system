@@ -24,7 +24,7 @@ p.quiet { margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.4 var(--font-d
 .fixes .btn.sm { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; display: inline-block; line-height: 2rem; }
 .ledger tr[hidden] { display: none; }
 .area[hidden] { display: none; }
-.filtered { margin: 0 0 var(--space-md); font-size: var(--text-xs); color: var(--color-muted); }
+.fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
 
 /* Filters: Tasks' chip grammar. Chips in one group widen, groups narrow; a lamp sets the Area group to its area. */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-lg); padding: var(--space-sm) 0; border-top: var(--rule-hair) solid var(--color-rule-2); border-bottom: var(--rule-hair) solid var(--color-rule-2); margin-bottom: var(--space-md); }
@@ -59,7 +59,7 @@ dialog.confirm .actions { margin-top: var(--space-md); }
 .ledger tbody tr[data-picked] td:first-child { box-shadow: inset var(--rule-lamp) 0 0 var(--color-focus); }
 @media (pointer: coarse) {
   .fixes .btn.sm { line-height: var(--row-touch); }
-  .filtered .linkbtn { display: inline-flex; align-items: center; min-height: var(--row-touch); min-width: var(--row-touch); }
+  .fsum .linkbtn { display: inline-flex; align-items: center; min-height: var(--row-touch); min-width: var(--row-touch); }
 }
 @media (max-width: 899px) {
   .ledger thead { display: none; }
