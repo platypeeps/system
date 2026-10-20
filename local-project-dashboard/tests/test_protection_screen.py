@@ -143,7 +143,7 @@ class ProtectionScreen(ScreenCase):
     def test_the_two_baseline_flags_are_columns_and_another_owner_reads_not_applicable(self):
         """sd:1741, S3: one column each, read from `merge_settings`."""
         labels = dict(FLAGS)
-        self.assertEqual((labels["protection_source"], labels["required_check"]), ("Rulesets only", "Required check"))
+        self.assertEqual((labels["protection_source"], labels["required_check"]), ("Classic protection", "Required check"))
         upsert_repo(self.connection, "/repos/classic", remote="git@github.com:platypeeps/classic.git")
         upsert_repo(self.connection, "/repos/product", remote="git@github.com:example-corp/product.git")
         self.observe("/repos/classic", "protected", flags=FLAGS_CLEAN[:2] + [
@@ -152,7 +152,7 @@ class ProtectionScreen(ScreenCase):
             {"id": "required_check", "value": "CI Result", "flagged": True, "gap": "`ci` is not a required check"}])
         self.observe("/repos/product", "protected", flags=FLAGS_CLEAN[:2])
         body = self.render("/protection")
-        self.assertIn(">Rulesets only<", body)
+        self.assertIn(">Classic protection<", body)
         self.assertIn(">Required check<", body)
         rows = self.rows(body)
         classic = next(row for row in rows if "platypeeps/classic" in row)

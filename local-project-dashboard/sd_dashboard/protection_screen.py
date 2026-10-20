@@ -28,7 +28,7 @@ GAPS = (
 #: its two cells read as not applicable. The required check is `ci`, or
 #: `sd/local-gate` under `repo.ci = local`, so each cell names its own (sd:2509).
 FLAGS = (("squash_message", "Squash message"), ("rebase_merge", "Rebase merge"),
-         ("protection_source", "Rulesets only"), ("required_check", "Required check"))
+         ("protection_source", "Classic protection"), ("required_check", "Required check"))
 
 #: Which gap columns a status can answer. `unprotected` has no admins rule to
 #: be exempt from, no checks to be strict about, no contexts to compare and
