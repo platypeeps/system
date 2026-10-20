@@ -127,21 +127,20 @@ addEventListener('DOMContentLoaded', () => {
 
   // ---------- Filters ----------
   // build (sd:5158): Source is a dropdown of checkboxes, so any sources at once, and Day a select of the days with a brief;
-  // both are shell.list.pick. The picked values show as removable chips (shell.list.chips) with the count and Clear all.
-  const activeFilters = () => [...[...F.src].map(s => ({ key: `src:${s}`, label: `Source: ${s}` })),
-    ...(F.day ? [{ key: 'day', label: `Day: ${dayLabel(F.day)}` }] : []), ...(F.q ? [{ key: 'q', label: `Text: ${F.q}` }] : [])];
+  // both are shell.list.pick. sd:5463: Activity's bar (shell.list.fbar): the picked sources and the query as removable
+  // tokens, then Clear all; the count sits once, on the title line.
   function renderFilters() {
-    const L = shell.list, all = ranged(), shown = all.filter(match).length;
+    const L = shell.list, all = ranged();
     const busy = DAYS.slice().reverse().filter(d => all.some(b => b.day === d));
-    put(document.getElementById('filters'), html`${L.pick('src', 'Source', SOURCES.map(s => [s.id, s.id, all.filter(b => b.src === s.id).length]), F.src, { multi: true })}${
+    put(document.getElementById('filters'), L.fbar(html`${L.pick('src', 'Source', SOURCES.map(s => [s.id, s.id, all.filter(b => b.src === s.id).length]), F.src, { multi: true })}${
       L.pick('day', 'Day', busy.map(d => [d, dayLabel(d), all.filter(b => b.day === d).length]), F.day, { all: 'Any day' })}${
-      active() ? L.chips(activeFilters(), shown, all.length) : html`<div class="fsum"><span>${shown} of ${all.length}</span></div>`}`);
+      [...F.src].map(s => L.tok('src', s, s))}${F.q ? L.tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
   }
   document.getElementById('filters').addEventListener('change', e => shell.list.pickChange(e, F, () => { page = 1; update(); }));
   document.getElementById('filters').addEventListener('click', e => {
-    if (e.target.closest('[data-unfilter-all]')) return clearAll();
-    const u = e.target.closest('[data-unfilter]'); if (!u) return;
-    const [k, v] = u.dataset.unfilter.split(/:(.*)/);
+    if (e.target.closest('[data-fclear]')) return clearAll();
+    const u = e.target.closest('[data-f]'); if (!u) return;
+    const { f: k, v } = u.dataset;
     if (k === 'src') F.src.delete(v);
     if (k === 'day') F.day = '';
     if (k === 'q') { F.q = ''; input.value = ''; prev.hidden = true; ghost.textContent = ''; }
@@ -175,7 +174,7 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
-    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${all.length} shown</span>`);
+    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${shell.list.count(all.length, ranged().length, 'brief')}</span>`);
     document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
   document.getElementById('pager').addEventListener('click', e => {

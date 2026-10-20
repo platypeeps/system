@@ -583,6 +583,24 @@ R.day = ELS.rows.html;""")
         self.assertEqual(out["R"]["url"], [["src", "Intel Brief"], ["src", "Fun Events"]])
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["day"]), ["2026-09-04 - Intel Brief"])
 
+    def test_the_filters_are_activitys_bar_and_the_count_sits_once_on_the_title_line(self):
+        """sd:5463: the picked sources and the query are tokens, Clear all ends the bar, and the count is the title line's
+        alone: the bar said "3 of 3" beside the title's "3 shown"."""
+        click = "ELS.filters.listeners.click[0]({ target: { closest: s => s === %s ? { dataset: %s } : null } }); await flush();"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.html;"
+                            + click % ("'[data-f]'", "{ f: 'src', v: 'Fun Events' }") + " R.bar2 = ELS.filters.html; R.tally2 = ELS.tally.html;"
+                            + click % ("'[data-fclear]'", "{}") + " R.bar3 = ELS.filters.html; R.tally3 = ELS.tally.html;",
+                            search="?src=Intel%20Brief&src=Fun%20Events")
+        R = out["R"]
+        self.assertTrue(R["bar"].startswith('<div class="fbar" role="group" aria-label="Filters">'), R["bar"][:80])
+        self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar"]), ["Intel Brief", "Fun Events"])
+        self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertNotRegex(R["bar"], r"\d+ of \d+", "the bar holds no count")
+        self.assertRegex(R["tally"], r"<span>3 of \d+ briefs</span>")
+        self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar2"]), ["Intel Brief"])
+        self.assertTrue(R["bar3"].endswith('<div class="fsum"></div></div>'))
+        self.assertRegex(R["tally3"], r"<span>\d+ briefs</span>$")
+
     def test_a_search_from_the_address_matches_as_typing_it_does(self):
         # Review 27bec38c4a96: the address keeps the case the reader typed; the match ignores case either way.
         out = self.run_page("R.rows = ELS.rows.html;", search="?q=Intel")
