@@ -174,8 +174,9 @@ addEventListener('DOMContentLoaded', () => {
     put(document.getElementById('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${page - 1}">${I('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${page + 1}">Next${I('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${n}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
-    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span><span>${shell.list.count(all.length, ranged().length, 'brief')}</span>`);
-    document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `${plural(READER.shown, 'brief')}${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
+    put(document.getElementById('tally'), html`<span>${plural(new Set(ranged().map(b => b.src)).size, 'source')}</span>`);
+    shell.view.count('list', all.length);
+    document.getElementById('sub').textContent = READER ? (capped() ? `newest ${plural(READER.shown, 'brief')} read` : `All read${READER.skipped ? `, ${READER.skipped} skipped` : ''}`) : 'Reading the briefs…';
   }
   document.getElementById('pager').addEventListener('click', e => {
     const c = e.target.closest('.chip'); if (!c) return;

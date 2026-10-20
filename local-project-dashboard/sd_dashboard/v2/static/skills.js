@@ -132,6 +132,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       <td class="act">${C.rowActions(s.name)}</td></tr>`; })
       : html`<tr class="lane"><td colspan="5">${DOC ? `No skill matches${q ? ` “${q}”` : ''}.` : `Not read: ${FAILED}`}</td></tr>`}`);
     put(pagerEl, DOC ? list.pager(v.length, L, 'skills') : html``);
+    window.shell.view?.count('catalog', DOC ? v.length : null);
     document.getElementById('tally').textContent = DOC ? `${DOC.totals[DOC.totals.length - 1]} uses this week · ${S.filter(s => now(s)).length} catalog skills used` : '';
     document.querySelectorAll('.cell[data-facet]').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.facet === filter)));
     if (had && window.CSS) tbody.querySelector(`tr[data-id="${CSS.escape(had)}"] .name button`)?.focus();
@@ -402,7 +403,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       : html`<tr class="lane"><td colspan="5">${REPOS ? 'No repository is tracked.' : REPO_FAILED ? `Not read: ${REPO_FAILED}` : 'Not read yet.'}</td></tr>`}`);
     put(document.getElementById('intake-untracked'), html`${REPOS?.untracked.length ? html`<h3>Adopted from, not tracked</h3>
       <ul class="imported">${REPOS.untracked.map(u => html`<li><span><b>${u.url}</b><span class="src">${u.skills.map(x => x.name).join(', ')}</span></span>${C.rowActions(`source:${u.url}`)}</li>`)}</ul>` : ''}`);
-    document.getElementById('intake-tally').textContent = REPOS ? `${plural(rows.length, 'repository', 'repositories')} tracked${REPOS.seeded ? ' · from the installed skills, not yet saved' : ''}` : '';
+    document.getElementById('intake-tally').textContent = REPOS?.seeded ? 'From the installed skills, not yet saved' : '';
     put(document.getElementById('intake-foot'), REPOS ? html`The list is the <code>${REPOS.key}</code> setting; until it is first changed, it is read from the installed skills: their Provenance, the <code>skills</code> lock file and linked GitHub checkouts. Remove keeps the installed skills.` : html``);
     window.shell.view?.count('intake', REPOS ? rows.length : null);
   }

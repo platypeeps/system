@@ -144,8 +144,8 @@ function renderCad() {
   b.hidden = false; b.textContent = cadAll ? 'Show only jobs with gaps' : `Show all ${CAD_JOBS.length} jobs`; b.setAttribute('aria-expanded', String(cadAll));
   const counts = { warning: 0, caution: 0 };
   CAD_JOBS.forEach(([, j]) => { const s = lastState(j); if (s in counts) counts[s]++; });
-  put(byId('cad-tally'), html`<span class="g-warning">■ ${counts.warning} failed last run</span><span class="g-caution">▲ ${counts.caution} partial</span><span>${list.length} of ${CAD_JOBS.length} shown</span>`);
-  window.shell.view.count('cadence', CAD_JOBS.length);
+  put(byId('cad-tally'), html`<span class="g-warning">■ ${counts.warning} failed last run</span><span class="g-caution">▲ ${counts.caution} partial</span>`);
+  window.shell.view.count('cadence', list.length);
 }
 byId('cad-more').addEventListener('click', () => { cadAll = !cadAll; renderCad(); });
 byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('tr[data-job]'); if (!tr) return; setJob(jobFilter === tr.dataset.job ? '' : tr.dataset.job); window.shell.view.show('reports'); byId('led-h').scrollIntoView?.({ block: 'start' }); });
@@ -243,7 +243,6 @@ function renderRows(read) {
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
   renderFilters();
-  byId('tally').textContent = DOC.reports ? list.count(shown.length, ROWS.length, 'report') : '';
   // Day bands read only in time order; another sort draws the rows without them.
   const byDay = L.sort === 'at';
   let lastDay = '';

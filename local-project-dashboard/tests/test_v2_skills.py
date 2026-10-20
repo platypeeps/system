@@ -812,14 +812,15 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         for shown in (REPO, "sd-example", "1 new, 1 changed", "pack · contrib/"):
             self.assertIn(shown, out["R"]["rows"])
         self.assertIn(OTHER, out["R"]["untracked"])
-        self.assertEqual(out["R"]["tally"], "1 repository tracked")
+        # sd:5524: the Intake tab carries the count; the tally says only where an unsaved list comes from.
+        self.assertEqual(out["R"]["tally"], "")
         self.assertIn(f"<h2>{REPO}</h2>", out["R"]["details"], "the view did not open on its first repository")
 
     def test_a_view_the_shell_showed_before_the_page_listened_still_reads_its_list(self):
         # The shell listens for DOMContentLoaded on document and the page on window, so its first shell:view came first and
         # the view stayed unread in the browser check: the page asks shell.view at start.
         out = self.run_page("R.rows = ELS['intake-rows'].html; R.count = OUT.count;", answer=self.views(),
-                            before="window.shell.view = { current: () => 'intake', count: (id, n) => { OUT.count = [id, n]; } };")
+                            before="window.shell.view = { current: () => 'intake', count: (id, n) => { if (id === 'intake') OUT.count = [id, n]; } };")
         self.assertIn("/api/skills/intake/repos", out["gets"])
         self.assertIn(REPO, out["R"]["rows"])
         self.assertEqual(out["R"]["count"], ["intake", 1])

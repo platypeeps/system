@@ -512,7 +512,7 @@ fire('click', act('reject')); await flush(); await flush();""", hold_a=False, ho
         self.assertEqual(cell_grammar(self, ann), [("div", "ok"), ("div", "unknown"), ("div", "ok"), ("button", None)])
         self.assertIn("Vault copies", ann)
         self.assertEqual(len(re.findall(r'class="lane-btn"', out["R"]["lanes"])), 3)
-        self.assertEqual(out["R"]["sub"], "5 briefs")
+        self.assertEqual(out["R"]["sub"], "All read")
         self.assertEqual(out["states"][0]["kind"], "loading")
         self.assertIsNone(out["states"][-1])
         self.assertEqual(out["attention"], {"state": "unknown", "n": 0, "what": "watchdog not read"})
@@ -596,10 +596,10 @@ R.day = ELS.rows.html;""")
         self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar"]), ["Intel Brief", "Fun Events"])
         self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
         self.assertNotRegex(R["bar"], r"\d+ of \d+", "the bar holds no count")
-        self.assertRegex(R["tally"], r"<span>3 of \d+ briefs</span>")
+        self.assertNotRegex(R["tally"], r"briefs", "sd:5524: the Briefs tab carries the count")
         self.assertEqual(re.findall(r'class="tok" data-f="src" data-v="([^"]+)"', R["bar2"]), ["Intel Brief"])
         self.assertTrue(R["bar3"].endswith('<div class="fsum"></div></div>'))
-        self.assertRegex(R["tally3"], r"<span>\d+ briefs</span>$")
+        self.assertNotRegex(R["tally3"], r"briefs")
 
     def test_a_search_from_the_address_matches_as_typing_it_does(self):
         # Review 27bec38c4a96: the address keeps the case the reader typed; the match ignores case either way.
@@ -698,7 +698,7 @@ R.cli = cmd('brief.open').cli(C.get('2026-09-06 - Intel Brief')); R.exec = cmd('
         self.assertIn("1 row skipped: not a brief.", out["states"][-1]["text"])
         self.assertNotIn("Showing the newest", out["states"][-1]["text"])
         self.assertNotIn("at least", out["R"]["ann"])
-        self.assertEqual(out["R"]["sub"], "5 briefs, 1 skipped")
+        self.assertEqual(out["R"]["sub"], "All read, 1 skipped")
 
     def test_a_failed_read_a_reader_refusal_and_a_capped_read_each_say_so(self):
         out = self.run_page("R.rows = ELS.rows.html;", answer="() => [500, { error: 'boom' }]")

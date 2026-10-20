@@ -164,7 +164,10 @@
   //   The last view the reader chose is kept per page in localStorage (sd:5064) and shown when the address names none; a
   //   view with keep: false (Designs' Hidden) is never restored, so the page opens on its default.
   //   shell.view.current() is the shown id; shell.view.show(id) shows a view and writes the hash (a lamp that filters a view
-  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it. shell.view.hide(id, on) hides a
+  //   calls it); shell.view.count(id, n) puts n on the view's segment, and null hides it. The tab is where a list's row count
+  //   shows (sd:5524): a view the page never counts takes the shown rows of the one table in its panel, and none for two or more
+  //   (a view with an api, once it has shown).
+  //   shell.view.hide(id, on) hides a
   //   view's segment and rail entry, for a view with nothing in it (Writing's realms, sd:5064); a hidden view does not show,
   //   and hiding the shown one shows the first view left.
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
@@ -202,16 +205,27 @@
     viewApply(id);
     return true;
   }
-  function viewCount(id, n) {
-    const t = viewTabs[VIEW_LIST.findIndex(v => v.id === id)]; if (!t) return;
-    const c = t.children[1]; c.hidden = n == null; c.textContent = n == null ? '' : String(n);
+  const viewOwned = new Set();
+  function viewSet(i, n) {
+    const t = viewTabs[i]; if (!t) return;
+    const c = t.children[1], said = n == null ? '' : String(n);
+    if (c.hidden !== (n == null)) c.hidden = n == null; if (c.textContent !== said) c.textContent = said;
+  }
+  function viewCount(id, n) { viewOwned.add(id); viewSet(VIEW_LIST.findIndex(v => v.id === id), n); }
+  function viewAuto() {
+    VIEW_LIST.forEach((v, i) => {
+      // A view that reads its own document (api) counts once it has shown: before, its table is not drawn yet.
+      if (viewOwned.has(v.id) || (v.api && !viewSeen.has(v.id))) return;
+      const p = viewPanel(v), ts = p ? [...p.querySelectorAll('table')].filter(t => t._rows && !t.closest('dialog')) : [];
+      viewSet(i, ts.length === 1 ? ts[0]._rows.shown : null);
+    });
   }
   function viewHide(id, on) {
     const i = VIEW_LIST.findIndex(v => v.id === id); if (i < 0) return;
     viewTabs[i].hidden = !!on; viewItems[i].hidden = !!on;
     if (on && viewNow === id) { const left = VIEW_LIST.find((v, j) => viewOpen(j)); if (left) viewApply(left.id); }
   }
-  const view = { current: () => viewNow, show: viewShow, count: viewCount, hide: viewHide };
+  const view = { current: () => viewNow, show: viewShow, count: viewCount, hide: viewHide, auto: viewAuto };
   if (VIEW_LIST.length) {
     const bar = document.createElement('div');
     bar.className = 'viewswitch'; bar.setAttribute('role', 'tablist'); bar.setAttribute('aria-label', `${page} views`);
@@ -1225,8 +1239,7 @@
     return { find: facet, facet, folds: bands >= 2 };
   }
   // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
-  const tcount = (shown, total) => shown === total ? plural(total, 'row') : `${shown} of ${plural(total, 'row')}`;
-  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate, tbar, tcount };
+  const tables = { tcompare, tsegments, torder, tshows, tfacets, tsortBy, tchips, tunfilter, tstate, tbar };
   // tables:end
 
   // The page side of the table grammar. State is kept per page and table in localStorage, a convenience: a blocked store
@@ -1330,14 +1343,13 @@
       if (r.kind === 'row') { total++; if (tshows(r, use, cols)) shown++; }
       if (r.tr.hasAttribute('data-tout') !== out) r.tr.toggleAttribute('data-tout', out);
     });
+    t._rows = { shown, total };
     // The bar above the table (sd:5281, the toolbar standard): filter box and column filter from the first row (or while a
     // filter is on) and folds for 2 bands or more. A table that names its toolbar row (data-toolbar="<id>", the row with the
     // view buttons) puts the bar's parts in that row; otherwise the bar is its own row. A table the page's text filter covers
     // (data-tfilter="page") names the row that holds that filter, so the column filter sits beside it and no table gets two
-    // text filters (the sd:5281 ruling; test_v2_shell_shared walks every page). The count sits right-aligned on the
-    // table's title line (the .sec-head or .panel-head of the heading its or its section's aria-labelledby names); a title
-    // line with the page's own .tally shows it, before the tally, only while a filter hides rows. A table with no title line
-    // keeps the count at the bar's end.
+    // text filters (the sd:5281 ruling; test_v2_shell_shared walks every page). The bar carries no row count: the view's tab
+    // does (sd:5524), and the filter chips say how many of how many while a filter is on.
     const { find: findOn, facet: facetOn, folds: foldsOn } = tbar({ total, filterOn, ownFilter, bands: groups.length });
     const facets = facetOn ? tfacets(cols, rows, sortable.map(s => !s)) : [];
     let bar = t._tbar;
@@ -1348,21 +1360,13 @@
       bar = t._tbar = document.createElement('div'); bar.className = 'tgrid'; bar.dataset.tfor = key; bar._t = t;
       bar._name = t.getAttribute('aria-labelledby') ? tlabel(document.getElementById(t.getAttribute('aria-labelledby')) || t) : '';
       bar.setAttribute('role', 'group'); bar.setAttribute('aria-label', `Table controls${bar._name ? ': ' + bar._name : ''}`);
-      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><span class="tcount" aria-live="polite"></span><div class="tchips"></div>`);
+      put(bar, html`<label class="tfind"><span class="sr">Filter rows</span>${ICON('filter')}<input type="search" placeholder="Filter rows" autocomplete="off" spellcheck="false"></label><label class="tfacet"><span class="sr">Filter by a column value</span><select></select></label><span class="tfolds"><button class="linkbtn" type="button" data-tfold-all="open">Expand all</button><button class="linkbtn" type="button" data-tfold-all="shut">Collapse all</button></span><div class="tchips"></div>`);
       const row = t.dataset.toolbar && document.getElementById(t.dataset.toolbar);
       row ? row.append(bar) : twrap(t).before(bar);
-      bar._count = bar.querySelector('.tcount');
-      const named = t.getAttribute('aria-labelledby') || t.closest('[aria-labelledby]')?.getAttribute('aria-labelledby') || '';
-      const line = document.getElementById(named)?.closest('.sec-head, .panel-head') || t.closest('section')?.querySelector(':scope > .sec-head, :scope > .panel-head'), tally = line?.querySelector(':scope > .tally');
-      if (tally) tally.before(bar._count); else if (line) line.append(bar._count);
     }
     bar.hidden = false;
-    const input = bar.querySelector('input'), sel = bar.querySelector('select'), count = bar._count;
+    const input = bar.querySelector('input'), sel = bar.querySelector('select');
     bar.querySelector('.tfind').hidden = !findOn; bar.querySelector('.tfolds').hidden = !foldsOn; bar.querySelector('.tfacet').hidden = !facets.length;
-    const quiet = !facetOn || (shown === total && !!count.parentElement?.querySelector(':scope > .tally'));
-    if (count.hidden !== quiet) count.hidden = quiet;
-    const said = quiet ? '' : tcount(shown, total);
-    if (count.textContent !== said) count.textContent = said;
     if (document.activeElement !== input && input.value !== st.q) input.value = st.q;
     // A shared row that serves two shown tables or more (Health's areas) names each one's table in its column filter.
     const many = !!t.dataset.toolbar && [...document.querySelectorAll(`main table[data-toolbar="${CSS.escape(t.dataset.toolbar)}"]`)].filter(x => !x.closest('[hidden]')).length > 1;
@@ -1372,11 +1376,12 @@
     if (slot._t !== chipsHtml.text) { put(slot, chipsHtml); slot._t = chipsHtml.text; }
   }
   let tq = 0;
-  // A bar whose table a redraw replaced goes, with its count: in a shared row (data-toolbar) nothing else removes it.
+  // A bar whose table a redraw replaced goes: in a shared row (data-toolbar) nothing else removes it. Then each view's tab
+  // takes its count.
   const tscan = () => {
     tq = 0; document.querySelectorAll('main table').forEach(t => { try { tapply(t); } catch (e) { console.error('table grammar', e); } });
-    document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });
-    tobs.takeRecords();
+    document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) bar.remove(); });
+    view.auto(); tobs.takeRecords();
   };
   const tobs = new MutationObserver(recs => { if (!tq && !recs.every(r => r.target.closest?.('.tgrid'))) tq = requestAnimationFrame(tscan); });
   tobs.observe(body, { childList: true, subtree: true, characterData: false });

@@ -423,6 +423,7 @@ function shellToast(msg, undo) { OUT.toasts.push({ msg: msg, undo: undo || null 
 window.shell = { commands: C, post, getJSON, shown: stillShown, itemHref, itemPage, openItem, ICON: () => mk`<svg></svg>`, toast: shellToast, shq: s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`,
   suggest() {}, openPane() {}, url() {}, chording: () => false, reconcile() {}, capture() {},
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
+  view: { current: () => null, show: () => true, hide() {}, count: (id, n) => { (OUT.counts = OUT.counts || {})[id] = n; } },
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
     return list; })() };
@@ -779,7 +780,8 @@ R.pick = [menu.hidden, btn.attrs['aria-label'], OUT.focus.at(-1)];""")
         self.assertIn('<select id="f-p" class="fsel" data-pick="p"><option value="" selected>All</option><option value="1">P1</option>', filters)
         self.assertIn('<option value="unset">unset</option></select>', filters)
         self.assertIn("Port the page", out["R"]["board"])
-        self.assertIn("3 tasks", out["R"]["sub"])
+        self.assertEqual(out["counts"]["all"], 3, "sd:5524: the All tab carries the count")
+        self.assertNotIn("3 tasks", out["R"]["sub"])
         # The badge is the read's own (sd:3446): at NOW the seeded due date is 3 days off, so nothing is due yet.
         self.assertEqual(out["attention"][-1], {"state": "ok", "n": 0, "what": "nothing due"})
         self.assertEqual(out["attention"][-1], self.doc["attention"])
@@ -1459,7 +1461,7 @@ R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C
                 for drawn in out["R"]["views"] + out["R"]["views2"]:
                     self.assertNotIn(item, keys(drawn))
                     self.assertNotIn(title, drawn)
-                self.assertIn("3 tasks · read", out["R"]["sub"])
+                self.assertTrue(out["R"]["sub"].startswith("read "), out["R"]["sub"])
                 # A filter change keeps it selected though no row shows it, and a reread after a write keeps it in Details.
                 kept = out["R"]["kept"]
                 self.assertEqual(set(zip(kept[::2], kept[1::2])), {(str(item), True)})
@@ -1494,7 +1496,8 @@ R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
 ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'parked' }, value: '1' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
-        self.assertIn("3 tasks · 1 parked", out["R"]["sub"])
+        self.assertIn("1 parked · read", out["R"]["sub"])
+        self.assertEqual(out["counts"]["all"], 3)
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
         self.assertIn('<select id="f-parked" class="fsel" data-pick="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])

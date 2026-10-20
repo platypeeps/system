@@ -73,8 +73,8 @@ addEventListener('DOMContentLoaded', () => {
   const sweepText = w => !w ? '' : w.error ? `sweep not read: ${w.error}` : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
     : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}${w.last.gaps?.length ? ` · not read: ${w.last.gaps.join(', ')}` : ''}`
     : `sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
-  const inPlace = t => PLACE === 'all' || (PLACE === 'hoa' || PLACE === 'home' ? t.area === PLACE : t.realm === PLACE);
-  const placed = () => listed().filter(inPlace);
+  const inPlace = (t, p = PLACE) => p === 'all' || (p === 'hoa' || p === 'home' ? t.area === p : t.realm === p);
+  const placed = () => listed().filter(t => inPlace(t));
   const label = t => `#${t.id}`;
   // A write readback is workflow.item_state: fold its item into the row, so the row updates where it is.
   function absorb(key, state) {
@@ -1174,7 +1174,9 @@ addEventListener('DOMContentLoaded', () => {
       ? ` · repos in no realm: ${REALMS.state === 'missing' ? 'no realm list; set dashboard.realms on Settings' : `${REALMS.source} ${REALMS.problems[0] || 'was not read'}`}` : '';
     // The Personal and Work views name their sweep's last run and carry Run sweep (sd:5096, sd:5097).
     const w = SWEEP_NAME[PLACE] && SWEEPS?.[PLACE];
-    put(document.getElementById('subhead'), html`${plural(listed().length, 'task')}${parked ? ` · ${parked} parked` : ''} · read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
+    // Each view's tab carries its tasks (sd:5524), so the line under the title counts none.
+    window.PAGE_VIEWS.forEach(v => window.shell.view.count(v.id, listed().filter(t => inPlace(t, v.id)).length));
+    put(document.getElementById('subhead'), html`${parked ? `${parked} parked · ` : ''}read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
   }
   // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
   const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');

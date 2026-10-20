@@ -378,7 +378,6 @@ let polling = 0;
     put($('ob-kinds'), html`${['all', ...kinds].map(k => html`<button class="chip" type="button" data-kind="${k}" aria-pressed="${String(k === kind)}">${k === 'all' ? 'All' : k} <b>${k === 'all' ? OB.length : n(k)}</b></button>`)}`);
     put($('ob-head'), window.shell.list.sortHead(OB_COLS, OB_ST));
     const rows = obRows();
-    put($('tasks-tally'), DOC && !f.error ? html`<span>${plural(rows.length, 'open item')}</span>` : html``);
     put($('ob-body'), !DOC ? html`` : f.error ? html`<tr><td colspan="7">${unknownBlock(f.error)}</td></tr>`
       : rows.length ? html`${rows.map(o => html`<tr data-id="${o.id}" aria-selected="${o.id === selected ? 'true' : 'false'}">
         <td class="id num">sd:${o.item}</td><td class="g g-${o.state}" aria-label="${o.state}">${GLYPH[o.state]}</td>

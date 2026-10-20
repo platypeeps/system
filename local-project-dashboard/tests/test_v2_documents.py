@@ -578,7 +578,7 @@ shellRun(cmd('root.unhide'), C.get('root:civic')); await flush();""", answer=sel
         self.assertIn("Civic", facets.split('class="rootfold"')[1])
         self.assertEqual(out["R"]["when"], ["already hidden", "not hidden", True])
         self.assertEqual(self.view_posts(out), [{"root": "civic", "hidden": False}])
-        self.assertIn("in 2 roots", out["R"]["sub"])
+        self.assertIn("2 roots · read", out["R"]["sub"])
         self.assertIn("label|lab|Old Lab", out["R"]["det"])
         self.assertIn("not read", out["R"]["det"])
 
@@ -668,7 +668,10 @@ shellRun(r, plan); R.toast = lastToast().msg;""")
         self.assertEqual(re.findall(r'data-id="([^"]+)"', rows), ["civic/brief.html", "lab/orphan.html", "lab/plan.html", "lab/overview.html"])
         self.assertEqual(re.findall(r'class="g g-(\w+)"', rows), ["unknown", "unknown", "caution", "ok"])
         self.assertIn("▲ 1 render-stale", out["R"]["tally"])
-        self.assertIn("4 documents in 3 roots", out["R"]["sub"])
+        # sd:5524: the tab carries the count; the line under the title names only the roots.
+        self.assertIn("3 roots · read", out["R"]["sub"])
+        self.assertNotIn("documents in", out["R"]["sub"])
+        self.assertEqual(out["counts"], {"documents": 4})
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "render-stale documents"})
 
     def test_a_request_is_a_copy_only_line_and_files_nothing(self):

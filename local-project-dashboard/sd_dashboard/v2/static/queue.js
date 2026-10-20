@@ -1,3 +1,5 @@
+// One view, so the tab carries the lane count (sd:5524); the panel is view-lanes.
+window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];
 // Queue (sd:2585): /api/queue (queue_screen.py), one section per managed repository's lane, one row per item in its state:
 // merging, next, building, blocked, cancelled, landed. A lane with no row shares one Idle line, each with its host (sd:3284). Up, down, top, hold, release and cancel post /api/queue/move with the lane's
 // revision; the server runs sd-ship lane move|hold|release|cancel|retry, refuses a stale revision, and the page reads again.
@@ -100,7 +102,8 @@
     try {
       DOC = await S.getJSON('/api/queue');
       S.state(DOC.problems.length ? { kind: 'partial', text: `${plural(DOC.problems.length, 'lane')} not read; the others are current.`, source: '/api/queue' } : null);
-      put($('subhead'), html`${plural(DOC.lanes.length, 'lane')} of ${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
+      window.shell?.view.count('lanes', DOC.lanes.length);
+      put($('subhead'), html`${plural(DOC.managed, 'managed repository', 'managed repositories')} · read ${at(DOC.read)}`);
       // The badge is the read's own (sd:3446, queue_screen._attention): blocked rows in every lane.
       S.attention(DOC.attention || { state: 'unknown', n: 0, what: 'lanes not read' });
     } catch (err) {

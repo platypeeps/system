@@ -6,6 +6,8 @@
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
+// One view, so the tab carries the list's count (sd:5524); the panel is the list's section, view-documents.
+window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];
 // build: the page claims nothing for the rail until /api/documents answers; load() sets it from the rows.
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'documents not read' };
 // build: the reading arrives by fetch, not as data/documents-data.js globals. OBSERVED is its time; ROOTS and DOCS its rows.
@@ -147,6 +149,7 @@ function render() {
   put(empty, html`${F.hidden ? html`Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a document from its row or from Details.'}` : html`No document matches these filters. <button class="linkish" type="button" data-clear>Clear filters</button>`}`);
   put(document.getElementById('chips'), L_.chips(activeFilters(), list.length, DOCS.filter(d => d.hidden === F.hidden).length));
   put(document.getElementById('pager'), L_.pager(list.length, L, 'documents'));
+  window.shell?.view.count('documents', list.length);
   // A filter that hides the selected row moves the selection to the first shown row, or clears it (design.md, Page contract).
   // No selection counts too: after an empty filter clears it, the next non-empty list selects its first row again.
   shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: selected, select: id => show(id),
@@ -156,7 +159,7 @@ function render() {
   const nosrc = DOCS.filter(d => !d.src && !d.hidden).length;
   put(document.getElementById('tally'), html`<span class="g-caution">▲ ${stale} render-stale</span><span class="g-unknown">▨ ${nosrc} no source</span><span>${DOCS.filter(d => d.pinned).length} pinned</span>`);
   // build: the subhead names the reading's time from /api/documents, not a fixed observation.
-  put(document.getElementById('subhead'), html`${plural(DOCS.length, 'document')} in ${plural(shownRoots().length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
+  put(document.getElementById('subhead'), html`${plural(shownRoots().length, 'root')} · read ${DOC ? html`<time class="rel" datetime="${DOC.read}"></time>` : 'not yet'}`);
 }
 document.getElementById('rows-head').addEventListener('click', e => { if (window.shell.list.sortBy(e, L)) window.shell.list.keepFocus(e, render); });
 document.getElementById('pager').addEventListener('click', e => { if (window.shell.list.paging(e, L)) window.shell.list.keepFocus(e, render); });

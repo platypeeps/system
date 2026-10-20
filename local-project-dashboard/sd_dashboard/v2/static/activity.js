@@ -182,7 +182,7 @@ addEventListener('DOMContentLoaded', () => {
         { v: 'all', label: html`All <span class="n">+${String(older)}</span>`, pressed: F.all, title: `All read: the 24 hours and ${plural(older, 'older journal record')}` }, unread('7d'), unread('30d')])}
       ${REPOS.length || F.repo.size ? html`<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="${String(!pop.hidden)}" aria-controls="repo-pop">Repo${F.repo.size ? html` <span class="n">· ${String(F.repo.size)}</span>` : ''}</button>` : ''}
       ${[...F.kind].map(k => tok('kind', k, kindOf(k).name))}${[...F.repo].map(r => tok('repo', r, r))}${F.q ? tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
-    $('tally').textContent = shown === EVENTS.length ? plural(shown, 'event') : `${shown} of ${plural(EVENTS.length, 'event')}`;
+    window.shell.view.count('timeline', shown);
   }
   $('filters').addEventListener('click', e => {
     if (e.target.closest('[data-fclear]')) return clearAll();

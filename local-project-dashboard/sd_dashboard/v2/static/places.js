@@ -25,15 +25,16 @@
     <tbody>${rows.length ? rows : html`<tr class="empty"><td colspan="${head.length}">${empty}</td></tr>`}</tbody></table>`;
 
   // Each place view: its table head, one row, the empty text and the tally. The rows open where their page acts on them.
+  // The view's tab carries the row count (sd:5524, shell.view.auto), so a tally says only what the count does not.
   const DRAW = {
     tasks: doc => [table([['ID', 'num'], ['What'], ['Kind', 'hide-sm'], ['Status'], ['Due', 'hide-sm']],
       doc.rows.map(r => html`<tr><td class="ref num"><a href="${window.shell.itemHref(r.id)}">sd:${r.id}</a></td><td class="what">${r.title}</td>
         <td class="hide-sm">${r.kind}</td><td>${r.status}</td><td class="hide-sm">${day(r.due) || '—'}</td></tr>`),
-      'No open item without a repo.'), `${plural(doc.rows.length, 'open item')}`],
+      'No open item without a repo.'), ''],
     briefs: doc => [table([['Day'], ['Brief'], ['Words', 'num hide-sm'], ['Lead', 'hide-sm']],
       doc.rows.map(r => html`<tr><td class="when">${r.day}</td><td class="what"><a href="/briefs?row=${encodeURIComponent(r.id)}">${r.subj}</a></td>
         <td class="num hide-sm">${r.words}</td><td class="lead hide-sm">${r.lead}</td></tr>`),
-      'No brief is filed for this place.'), `${plural(doc.rows.length, 'brief')}`],
+      'No brief is filed for this place.'), ''],
     reports: doc => {
       const state = r => r.status === 'done' ? 'ok' : r.attention ? 'warning' : 'queued';
       return [table([[html`<span class="sr">State</span>`], ['Job'], ['Report'], ['Status', 'hide-sm'], ['When']],
@@ -61,7 +62,7 @@
     if (doc.state !== 'read') { put(box, unknown(doc.reason)); return; }
     const [body, count] = DRAW[view](doc);
     put(box, html`${doc.reason ? html`<p class="note">${doc.reason}</p>` : ''}${body}`);
-    put(tally, html`<span>${count}</span>`);
+    put(tally, count ? html`<span>${count}</span>` : html``);
   }
 
   // A place page: <body data-place="hoa|home"> and one block per view, id="view-<id>" with data-place-view, its data-label,

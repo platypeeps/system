@@ -285,7 +285,7 @@ PAGE = r"""
 C.select = () => {}; C.pick = () => {};
 window.shell.row = () => null; window.shell.setContext = () => {}; window.shell.openChat = () => {}; window.shell.send = () => {};
 window.shell.pages = { Tasks: '/tasks' };
-OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); OUT.shown = []; window.shell.view = { show: id => OUT.shown.push(id), current: () => 'timeline', count() {} };
+OUT.urls = []; window.shell.url = p => OUT.urls.push([p.get('kind'), p.get('range')]); OUT.shown = []; window.shell.view = { show: id => OUT.shown.push(id), current: () => 'timeline', count(id, n) { if (id === 'timeline') OUT.timeline = n; } };
 """
 
 
@@ -767,7 +767,7 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         return doc
 
     def test_the_filters_are_one_bar_with_no_stacked_label_rows(self):
-        out = self.run_page("R.filters = ELS.filters.html; R.tally = ELS.tally.textContent;")
+        out = self.run_page("R.filters = ELS.filters.html; R.tally = OUT.timeline;")
         bar = out["R"]["filters"]
         self.assertEqual(bar.count('class="fbar"'), 1)
         self.assertTrue(bar.startswith('<div class="fbar" role="group" aria-label="Filters">'), bar[:80])
@@ -785,7 +785,7 @@ R.runner = r.when(C.get('cmd:{self.ids['runner']}')); R.cli = r.cli ? r.cli(C.ge
         self.assertTrue(bar.endswith('<div class="fsum"></div></div>'), "no filter is on, so there is nothing to clear")
         # sd:5463: the count sits once, on the Timeline title line, not in the bar.
         inside = sum(1 for e in self.doc["events"] if e["at"] >= self.doc["from"])
-        self.assertEqual(out["R"]["tally"], f'{inside} of {len(self.doc["events"])} events', "24h leaves the older record out")
+        self.assertEqual(out["R"]["tally"], inside, "24h leaves the older record out (sd:5524: the Timeline tab's count)")
 
     def test_the_repo_popover_opens_filters_and_closes_and_round_trips_the_address(self):
         key = "ELS['%s'].listeners.keydown[0]({ key: '%s', preventDefault() {}, stopPropagation() { R.stopped = (R.stopped || 0) + 1; } });"

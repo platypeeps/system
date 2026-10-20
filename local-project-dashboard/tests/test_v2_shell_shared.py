@@ -594,13 +594,11 @@ class TheTableGrammar(unittest.TestCase):
         # wins. sd:5467 (operator, 2026-10-20) reverses the rest: a page with its own filter bar gets no column filter either,
         # so one table has one place to filter, and keeps only the folds.
         out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
-  R.own = tbar({ total: 40, ownFilter: true, bands: 3 });
-  R.counts = [tcount(1, 1), tcount(7, 7), tcount(2, 7)];""")
+  R.own = tbar({ total: 40, ownFilter: true, bands: 3 });""")
         self.assertEqual(out["one"], {"find": True, "facet": True, "folds": False})
         self.assertEqual(out["none"], {"find": False, "facet": False, "folds": False})
         self.assertEqual(out["on"], {"find": True, "facet": True, "folds": False})
         self.assertEqual(out["own"], {"find": False, "facet": False, "folds": True})
-        self.assertEqual(out["counts"], ["1 row", "7 rows", "2 of 7 rows"])
 
     def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
         # sd:5281: a table names its toolbar row (data-toolbar); the bar's parts join that row, the count last.
@@ -612,16 +610,32 @@ class TheTableGrammar(unittest.TestCase):
         self.assertIn("const away = !!t.dataset.toolbar && !!t.closest('[hidden]');", js)
         self.assertIn("document.addEventListener('shell:view', () => { if (!tq) tq = requestAnimationFrame(tscan); });", js)
         self.assertIn("document.getElementById(t.dataset.toolbar)", js)
-        # Health and Management redraw a table on each filter key: the replaced table's bar and count leave the shared row.
-        self.assertIn("document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) { bar._count?.remove(); bar.remove(); } });", js)
+        # Health and Management redraw a table on each filter key: the replaced table's bar leaves the shared row.
+        self.assertIn("document.querySelectorAll('.tgrid').forEach(bar => { if (!bar._t?.isConnected) bar.remove(); });", js)
         self.assertIn("`${bar._name}: filter by column…`", js)
-        self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
-        self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
-        # sd:5458: a view tab renames its panel's aria-labelledby to the tab (vt-<id>), so the section's own head is the fallback;
-        # without it Reports' Run cadence printed "15 rows" under its "15 of 58 shown" tally.
-        self.assertIn("|| t.closest('section')?.querySelector(':scope > .sec-head, :scope > .panel-head')", js)
         self.assertIn(".toolbar > .tgrid, .filters > .tgrid { display: contents; }", SHELL_CSS)
-        self.assertRegex(SHELL_CSS, r"\.toolbar \.tcount, \.toolbar > \.count \{[^}]*margin-left: auto;")
+
+    def test_the_view_tab_carries_the_row_count_and_the_table_bar_none(self):
+        # sd:5524 (operator, 2026-10-20): "remove the row count, instead the sub tab view should carry that". The bar drew
+        # "15 rows" on the title line; now each rescan gives every view the page does not count the shown rows of its one table.
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        self.assertNotIn("tcount", js)
+        self.assertNotIn(".tcount", SHELL_CSS)
+        self.assertIn("t._rows = { shown, total };", js)
+        self.assertIn("view.auto(); tobs.takeRecords();", js)
+        self.assertIn("viewSet(i, ts.length === 1 ? ts[0]._rows.shown : null);", js)
+        self.assertIn("if (viewOwned.has(v.id) || (v.api && !viewSeen.has(v.id))) return;", js)
+        # A page's own count wins: shell.view.count marks the view owned.
+        self.assertIn("function viewCount(id, n) { viewOwned.add(id);", js)
+        # The pages that printed a separate count put it on a tab, and the two pages without views have one now.
+        for page, call in [("designs.js", "shell.view.count(F.hidden ? 'hidden' : 'pages', rows.length);"),
+                           ("activity.js", "window.shell.view.count('timeline', shown);"),
+                           ("briefs.js", "shell.view.count('list', all.length);"),
+                           ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
+                           ("management.js", "shell.view.count('repos', rows.length);"),
+                           ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];"),
+                           ("queue.js", "window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];")]:
+            self.assertIn(call, (STATIC / page).read_text(encoding="utf-8"), page)
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
         out = run_tables("""R.bad = tstate({ sort: 3, dir: 7, q: null, f: ['x'], closed: 'Mon' });

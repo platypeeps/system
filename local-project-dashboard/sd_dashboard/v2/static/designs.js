@@ -101,9 +101,8 @@ function renderRows() {
   const empty = document.getElementById('empty');
   empty.hidden = rows.length > 0; empty.textContent = F.hidden && !active() ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : active() ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
-  // The count on the table's title line (sd:5281): the rows this view draws, of the view's rows while a filter narrows them.
-  const all = ROWS.filter(shown).length;
-  document.getElementById('tally').textContent = shell.list.count(rows.length, all, 'row');
+  // The shown view's tab carries the rows it draws (sd:5524).
+  shell.view.count(F.hidden ? 'hidden' : 'pages', rows.length);
   renderFilters();
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
   document.getElementById('src').textContent = `${D.root} at ${D.head || 'no commit'}`;
@@ -260,7 +259,7 @@ function adopt(doc) {
 function clear() {
   D = null; ROWS = []; PRODUCTS = []; STORE = ''; delete document.body.dataset.observed;
   put(document.getElementById('annunciator'), html``); shell.view.count('pages', null); shell.view.count('hidden', null); put(tbody, html``);
-  document.getElementById('tally').textContent = ''; put(document.getElementById('filters'), html``);
+  put(document.getElementById('filters'), html``);
   document.getElementById('sub').textContent = 'Not read';
   document.getElementById('src').textContent = 'ui-design';
   put(details, html`<p class="why">The designs were not read. Reload retries it.</p>`);

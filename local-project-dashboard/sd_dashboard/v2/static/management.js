@@ -273,6 +273,7 @@ function renderRepos() {
   const rows = repoRows(), shown = pageOf(rows, RS);
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
+  shell.view.count('repos', rows.length);
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
       <p class="tally">${hides(rows.length, ALL.length, 'repo')}<span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>

@@ -325,13 +325,13 @@ class TheScript(unittest.TestCase):
         """sd:5463: Activity's layout from shell.list.fbar: the state as a segment with its counts, the product as a pick,
         the pressed lamp and the query as tokens, then Clear all; the count stays once, on the title line."""
         bar = "ELS.filters.listeners.%s[0]({ target: %s });"
-        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.textContent;"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = OUT.counts.pages;"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'q', v: '' } } : null }")
                             + " R.bar2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1]; R.input = ELS.shift.value;"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'state', v: 'ok' } } : null }")
                             + " R.url3 = OUT.urls[OUT.urls.length - 1];"
                             + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { fclear: '' } } : null }")
-                            + " R.bar4 = ELS.filters.html; R.url4 = OUT.urls[OUT.urls.length - 1]; R.tally4 = ELS.tally.textContent;"
+                            + " R.bar4 = ELS.filters.html; R.url4 = OUT.urls[OUT.urls.length - 1]; R.tally4 = OUT.counts.pages;"
                             + bar % ("change", "{ dataset: { pick: 'product' }, type: 'select-one', value: 'brand' }")
                             + " R.rows5 = ELS.rows.html; R.url5 = OUT.urls[OUT.urls.length - 1];",
                             search="?f=stale&q=tasks")
@@ -343,13 +343,13 @@ class TheScript(unittest.TestCase):
                       '<option value="system">system · 4</option><option value="brand">brand · 1</option></select>', R["bar"])
         self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar"]), ["f", "q"])
         self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
-        self.assertEqual(R["tally"], "1 of 5 rows")
+        self.assertEqual(R["tally"], 1, "sd:5524: the Pages tab carries the rows shown")
         self.assertEqual((R["url2"], R["input"]), ({"f": "stale"}, ""))
         self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar2"]), ["f"])
         self.assertEqual(R["url3"], {"f": "stale", "state": "ok"})
         self.assertEqual(R["url4"], {})
         self.assertTrue(R["bar4"].endswith('<div class="fsum"></div></div>'))
-        self.assertEqual(R["tally4"], "5 rows")
+        self.assertEqual(R["tally4"], 5)
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', R["rows5"]), ["product:brand"])
         self.assertEqual(R["url5"], {"product": "brand"})
 
@@ -390,13 +390,13 @@ class TheToolbar(unittest.TestCase):
 
     HTML = (V2 / "designs.html").read_text(encoding="utf-8")
 
-    def test_the_views_then_the_filter_share_one_row_and_the_count_sits_on_the_title_line(self):
+    def test_the_views_then_the_filter_share_one_row_and_no_count_sits_on_the_title_line(self):
         row = re.search(r'<div class="toolbar" id="toolbar">(.*?)\n    </div>', self.HTML, re.S)
         self.assertIsNotNone(row, "designs.html has no toolbar row")
         self.assertLess(row.group(1).index('id="viewswitch"'), row.group(1).index('id="shift"'))
         self.assertNotIn('id="tally"', row.group(1))
         title = re.search(r'<div class="sec-head">(.*?)\n      </div>', self.HTML, re.S).group(1)
-        self.assertIn('<p class="tally" id="tally"', title)
+        self.assertNotIn('id="tally"', title, "sd:5524: the Pages tab carries the count")
 
     def test_the_head_keeps_no_control_of_its_own(self):
         head = re.search(r'<header class="head">(.*?)</header>', self.HTML, re.S).group(1)

@@ -383,7 +383,7 @@ R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup
         self.assertEqual(out["gets"], ["/api/home/tasks"])
         self.assertIn(f'href="/tasks?row={self.home_item}">sd:{self.home_item}</a>', out["R"]["tasks"])
         self.assertNotIn("Fix the valve log", out["R"]["tasks"])
-        self.assertIn("1 open item", out["R"]["tally"])
+        self.assertEqual("", out["R"]["tally"], "sd:5524: the Tasks tab carries the count")
 
     def test_a_view_that_did_not_read_is_unknown_with_its_reason_never_an_empty_table(self):
         docs = self.docs()

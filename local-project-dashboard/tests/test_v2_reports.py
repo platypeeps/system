@@ -785,13 +785,13 @@ TB.querySelector = () => TB.querySelectorAll()[0] || null;"""
         doc = json.loads(json.dumps(self.doc))
         doc["families"]["list"] = [{"key": "sync", "label": "Sync", "icon": "bot", "jobs": ["nightly-sync"]}]
         out = self.run_page(f"R.decl = window.PAGE_VIEWS || null; R.before = OUT.views.slice(); {lamp} R.lamp = [OUT.views.slice(), F.fam, shown.length];"
-                            f" {row} R.row = [OUT.views.slice(), F.job, shown.length]; R.counts = OUT.counts; R.jobs = CAD_JOBS.length;", doc=doc)
+                            f" {row} R.row = [OUT.views.slice(), F.job, shown.length]; R.counts = OUT.counts; R.jobs = (cadAll ? CAD_JOBS : CAD_JOBS.filter(interesting)).length;", doc=doc)
         self.assertEqual(out["R"]["decl"], [{"id": "reports", "label": "Reports"}, {"id": "attention", "label": "Needs attention", "panel": "reports"},
                                             {"id": "cadence", "label": "Cadence"}])
         self.assertEqual(out["R"]["before"], [])
         self.assertEqual(out["R"]["lamp"], [["reports"], "sync", 1])
         self.assertEqual(out["R"]["row"], [["reports", "reports"], "weekly-scan", 0])
-        self.assertEqual({k: v for k, v in out["R"]["counts"].items() if k != "attention"}, {"reports": 0, "cadence": out["R"]["jobs"]})
+        self.assertEqual({k: v for k, v in out["R"]["counts"].items() if k != "attention"}, {"reports": 0, "cadence": out["R"]["jobs"]})  # sd:5524: the jobs the Cadence view shows
         self.assertIn("attention", out["R"]["counts"])
         page = (V2 / "reports.html").read_text(encoding="utf-8")
         # The lamps sit above the switch, which goes before the first panel; the list is the first view.
@@ -958,13 +958,13 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         # sd:5463: Activity's layout from shell.list.fbar. Status is a segment with its counts, Job and Day are picks, the
         # query is a token, Clear all ends the bar, and the count sits on the title line, once. sd:5064: Needs action is a
         # Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.
-        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.textContent; R.url = String(OUT.urls[OUT.urls.length - 1]);"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = OUT.counts.reports; R.url = String(OUT.urls[OUT.urls.length - 1]);"
                             + self.CLICK % ("filters", "'[data-f]'", "{ f: 'q', v: '' }")
                             + " R.bar2 = ELS.filters.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]);"
                             + self.CLICK % ("filters", "'[data-f]'", "{ f: 'status', v: 'act' }")
                             + " R.st2 = F.status; R.bar3 = ELS.filters.html;"
                             + "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear]' ? {} : null } });"
-                            + " R.bar4 = ELS.filters.html; R.url4 = String(OUT.urls[OUT.urls.length - 1]); R.tally4 = ELS.tally.textContent;"
+                            + " R.bar4 = ELS.filters.html; R.url4 = String(OUT.urls[OUT.urls.length - 1]); R.tally4 = OUT.counts.reports;"
                             + " R.F = [F.job, F.status, F.q, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
                             prelude="location.search = '?job=nightly-sync&act=1&q=sync';")
         R, all_ = out["R"], out["R"]["all"]
@@ -977,7 +977,7 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', bar), ["q"])
         self.assertTrue(bar.endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
         self.assertNotIn(" of ", re.sub(r"<[^>]+>", "", bar.split('class="fsum"')[1]), "the bar holds no count")
-        self.assertRegex(R["tally"], rf"^\d+ of {all_} reports$")
+        self.assertLess(R["tally"], all_, "sd:5524: the Reports tab carries the rows the filters leave")
         self.assertEqual(R["url"], "job=nightly-sync&status=act&q=sync")
         self.assertNotIn('class="tok"', R["bar2"])
         self.assertEqual(R["url2"], "job=nightly-sync&status=act")
@@ -986,7 +986,7 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertNotIn('data-fclear', R["bar4"])
         self.assertTrue(R["bar4"].endswith('<div class="fsum"></div></div>'))
         self.assertEqual(R["url4"], "")
-        self.assertEqual(R["tally4"], f"{all_} reports")
+        self.assertEqual(R["tally4"], all_)
         self.assertEqual(R["F"], ["", "", "", ""])
         self.assertEqual(R["n"], all_)
 

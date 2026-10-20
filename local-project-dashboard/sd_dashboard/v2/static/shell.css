@@ -699,8 +699,6 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 /* A column filter that is on wears the picked pill, as a filter dropdown does (.fpick:has(:checked)). */
 .tgrid:has(.tchips [data-tunfilter^="f:"]) select { border-color: var(--color-accent); background-color: var(--color-accent-bg); }
 /* The count: right-aligned on the table's title line, or at the end of the bar when the table has none (sd:5281). */
-.tcount { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
-.tcount[hidden] { display: none; }
 .tgrid .tfolds { display: inline-flex; gap: var(--space-sm); }
 .tgrid .tchips { flex: 1 0 100%; }
 .tgrid .tchips:empty { display: none; }
@@ -717,7 +715,7 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .toolbar > .tgrid, .filters > .tgrid { display: contents; }
 .toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
 .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
-.toolbar .tcount, .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
+.toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }
 /* A page's own text filter on row 1 wears the table filter's pill (.tgrid .tfind). */
 .toolbar > .tfind { display: flex; align-items: center; gap: var(--space-xs); flex: 0 1 16rem; min-width: 0; min-height: 1.75rem; padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: 999px; background: var(--color-panel); color: var(--color-muted); font-size: var(--text-xs); }
