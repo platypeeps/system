@@ -355,7 +355,8 @@ R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'
         self.assertIn("<b>▨ Not read.</b> the cost ledger records bill and provider, not model", r["model"])
         self.assertIn("GitHub Actions is off", r["ci"])
         self.assertIn("no test-result store exists", r["ci"])
-        self.assertEqual(re.findall(r'data-ev="(skill:[^"]+)"', r["top"]), ["skill:sd-ship", "skill:sd-review"])
+        # sd:5476: a skill is a link to Skills with that skill's Details loaded (?row=, which Skills selects).
+        self.assertEqual(re.findall(r'<a class="hbar" href="([^"]+)"', r["top"]), ["/skills?row=sd-ship", "/skills?row=sd-review"])
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
         # sd:5474: a bar links to Tasks' list at its bucket, open items only, in the All view: the scope the bar counts.
