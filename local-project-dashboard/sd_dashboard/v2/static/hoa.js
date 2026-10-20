@@ -413,7 +413,7 @@ let polling = 0;
       const c = doc.config, failed = [M.error && `Mission export: ${M.error}`, doc.assets.error && `Assets: ${doc.assets.error}`, doc.base.error && `Base map: ${doc.base.error}`, !doc.base.error && doc.lots.error && `Lots: ${doc.lots.error}`, doc.items.error && `Tasks: ${doc.items.error}`].filter(Boolean);
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
-        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind })),
+        ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind, revision: o.revision })),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
@@ -450,12 +450,17 @@ let polling = 0;
     const S = window.shell, C = S.commands;
     reader = S.read(spec);
     // ---------- Commands (products/system/commands.md) ----------
-    // Drafting is safe: it only asks in chat. Email is never sent from the dashboard.
+    // Draft followup is Tasks' Draft email (sd:5483, email_draft): claude writes it and workspace-mcp saves it as a Gmail draft
+    // in the EMAIL_FROM account, with no recipient. Email is never sent from the dashboard.
     const openItem = o => S.openItem(o.item);
     C.register(
       // A followup's first action drafts it; any other kind's opens the item (sd:4959).
       { id: 'item.draft', on: 'item', label: 'Draft followup', key: 'd', risk: 'safe', primary: o => o.kind === 'followup',
-        run: o => { S.openChat(); S.send(`Draft a followup for sd:${o.item}: ${o.what}`); return 'Asked in chat · nothing is sent'; } },
+        icon: 'mail', executes: true, sends: o => `POST /api/items/${o.item}/draft-email {revision}`,
+        run: o => S.post(`/api/items/${o.item}/draft-email`, { revision: o.revision }).then(
+          v => reader.reread().then(() => `Draft saved · sd:${o.item} · "${v.draft.subject}" · in Gmail Drafts, not sent`),
+          err => { if (!err.status) throw new Error(`no answer (${err.message}), so whether a draft was saved is not known; look in Gmail Drafts before you draft again`);
+            reader.reread(); throw err; }) },
       { id: 'item.open', on: 'item', label: 'Open item', key: 'o', risk: 'safe', primary: o => o.kind !== 'followup', journal: o => o.item, cli: o => `sd task show ${o.item}`, run: openItem },
       { id: 'asset.ask', on: 'asset', label: 'Ask', key: 'a', risk: 'safe', primary: () => true,
         run: o => { S.openChat(); S.send(`What do we know about ${o.asset} (${o.name})?`); return ''; } },

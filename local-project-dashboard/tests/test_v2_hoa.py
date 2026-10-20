@@ -469,6 +469,16 @@ R.after = ELS.map.html;""")
 R.p = [p('item.draft', {self.late}), p('item.open', {self.late}), p('item.draft', {self.task}), p('item.open', {self.task})];""")
         self.assertEqual(out["R"]["p"], [True, False, False, True])
 
+    def test_draft_followup_saves_a_gmail_draft_through_the_draft_email_route(self):
+        # sd:5483: the chat is read-only and saved no draft; Draft followup posts Tasks' Draft email with the row's revision.
+        doc = self.doc()
+        row = next(r for r in doc["items"]["rows"] if r["item"] == self.late)
+        self.assertTrue(row["revision"])
+        out = self.run_page(f"""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, {{ draft: {{ subject: 'Gate quote', id: 'd1' }} }}];
+C.run(cmd('item.draft'), OBJ.get('item:{self.late}')); await flush();""", doc)
+        self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{self.late}/draft-email", {"revision": row["revision"]}]])
+        self.assertIn('Draft saved · sd:%d · "Gate quote" · in Gmail Drafts, not sent' % self.late, out["toasts"][-1][0])
+
     def test_one_followup_one_task_and_one_blocked_task_show_and_kind_narrows(self):
         kind = "ELS['ob-kinds'].listeners.click[0]({ target: { closest: s => s === 'button[data-kind]' ? { dataset: { kind: 'K' } } : null } }); "
         rows = "re = () => [...ELS['ob-body'].html.matchAll(/data-id=\"item:(\\d+)\"/g)].map(m => +m[1]); "
