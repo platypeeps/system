@@ -229,6 +229,7 @@ function renderRows(read) {
   const list = window.shell.list;
   shown = ROWS.filter(matches).sort(order);
   window.shell.view.count('reports', DOC.reports ? shown.length : null);
+  window.shell.view.count('attention', DOC.reports ? ROWS.filter(r => r.act).length : null);
   const slice = list.pageOf(shown, L);
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
@@ -359,7 +360,13 @@ document.addEventListener('keydown', e => {
 });
 // The shell's view switch (shell.js, view block): the list first, the run table second. Both read /api/reports, so neither
 // names an api of its own.
-window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'cadence', label: 'Cadence' }];
+window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'attention', label: 'Needs attention', panel: 'reports' }, { id: 'cadence', label: 'Cadence' }];
+// Needs attention is the Reports table with Status set to Needs action (sd:5461); Reports clears that value again.
+document.addEventListener('shell:view', e => {
+  const want = e.detail.id === 'attention' ? 'act' : e.detail.id === 'reports' && F.status === 'act' ? '' : F.status;
+  if (want === F.status) return;
+  F.status = want; byId('f-status').value = want; L.page = 1; if (DOC) renderRows();
+});
 // The shell walks these rows on j / k.
 window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
 window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: id => select(id, false), clear: () => !!activeFilters().length && (clearAll(), true) };

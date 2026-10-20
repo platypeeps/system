@@ -169,7 +169,7 @@
   //   'shell:view' fires on document with detail { id, first, api }: once at DOMContentLoaded, after the page's own listener,
   //   then on every change (a segment, a key, a rail sub-entry, back and forward). first is true the first time a view shows,
   //   so a page starts that view's reader (shell.read with source: api) then; the shell fetches nothing itself.
-  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.id}`);
+  const viewHost = document.getElementById('viewswitch'), viewPanel = v => document.getElementById(`view-${v.panel || v.id}`);
   const VIEW_LIST = (window.PAGE_VIEWS || []).filter(v => /^[a-z0-9-]+$/.test(v.id) && (viewHost || viewPanel(v)));
   const viewKey = v => v.key || v.id[0];
   let viewNow = null, viewStarted = false, viewChord = 0;
@@ -187,7 +187,8 @@
     VIEW_LIST.forEach((v, i) => {
       const on = v.id === id;
       viewTabs[i].setAttribute('aria-selected', on); viewTabs[i].tabIndex = on ? 0 : -1;
-      const panel = viewPanel(v); if (panel) panel.hidden = !on;
+      // A view may show another view's panel (v.panel, Reports' Needs attention): the panel shows while either is on.
+      const panel = viewPanel(v); if (panel) panel.hidden = viewPanel(VIEW_LIST.find(w => w.id === id) || {}) !== panel;
       if (viewLinks[i]) on ? viewLinks[i].setAttribute('aria-current', 'true') : viewLinks[i].removeAttribute('aria-current');
     });
     if (viewStarted) viewFire(id);
@@ -222,7 +223,7 @@
       t.append(nm, n); t.addEventListener('click', () => viewShow(v.id));
       bar.append(t); viewTabs.push(t);
       const panel = viewPanel(v);
-      if (panel) { t.setAttribute('aria-controls', panel.id); panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); }
+      if (panel) { t.setAttribute('aria-controls', panel.id); if (!v.panel) { panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', `vt-${v.id}`); } }
       const li = document.createElement('li'), a = document.createElement('a');
       a.setAttribute('href', `${hrefOf(page) || ''}#view=${v.id}`); a.textContent = v.label;
       // On the page a sub-entry switches in place, so the page keeps its query (?job=); the href opens a new tab there.

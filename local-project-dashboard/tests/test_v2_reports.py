@@ -787,11 +787,13 @@ document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: '
         doc["families"]["list"] = [{"key": "sync", "label": "Sync", "icon": "bot", "jobs": ["nightly-sync"]}]
         out = self.run_page(f"R.decl = window.PAGE_VIEWS || null; R.before = OUT.views.slice(); {lamp} R.lamp = [OUT.views.slice(), F.fam, shown.length];"
                             f" {row} R.row = [OUT.views.slice(), F.job, shown.length]; R.counts = OUT.counts; R.jobs = CAD_JOBS.length;", doc=doc)
-        self.assertEqual(out["R"]["decl"], [{"id": "reports", "label": "Reports"}, {"id": "cadence", "label": "Cadence"}])
+        self.assertEqual(out["R"]["decl"], [{"id": "reports", "label": "Reports"}, {"id": "attention", "label": "Needs attention", "panel": "reports"},
+                                            {"id": "cadence", "label": "Cadence"}])
         self.assertEqual(out["R"]["before"], [])
         self.assertEqual(out["R"]["lamp"], [["reports"], "sync", 1])
         self.assertEqual(out["R"]["row"], [["reports", "reports"], "weekly-scan", 0])
-        self.assertEqual(out["R"]["counts"], {"reports": 0, "cadence": out["R"]["jobs"]})
+        self.assertEqual({k: v for k, v in out["R"]["counts"].items() if k != "attention"}, {"reports": 0, "cadence": out["R"]["jobs"]})
+        self.assertIn("attention", out["R"]["counts"])
         page = (V2 / "reports.html").read_text(encoding="utf-8")
         # The lamps sit above the switch, which goes before the first panel; the list is the first view.
         self.assertLess(page.index('id="annunciator"'), page.index('id="view-reports"'))
@@ -940,6 +942,18 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertIn('<span class="range">1–100 of 130</span>', out["R"]["pager3"])
         self.assertEqual(out["R"]["url3"], "size=100&sort=what&dir=desc")
         self.assertNotIn("Newer", (V2 / "reports.html").read_text(encoding="utf-8"))
+
+    def test_the_needs_attention_view_is_the_reports_table_with_status_needs_action(self):
+        # sd:5461 (ruling: the view sets the filter): Needs attention reuses the Reports panel; Reports clears the value.
+        view = "document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: '%s' } })); await flush();"
+        out = self.run_page((view % "attention") + " R.a = [F.status, ELS['f-status'].value, shown.every(r => r.act), shown.length];"
+                            + (view % "reports") + " R.r = [F.status, shown.length, ROWS.length];"
+                            + " R.views = window.PAGE_VIEWS.map(v => [v.id, v.panel || null]);")
+        self.assertEqual(out["R"]["views"], [["reports", None], ["attention", "reports"], ["cadence", None]])
+        self.assertEqual(out["R"]["a"][:3], ["act", "act", True])
+        self.assertGreater(out["R"]["a"][3], 0)
+        self.assertEqual(out["R"]["r"][0], "")
+        self.assertEqual(out["R"]["r"][1], out["R"]["r"][2])
 
     def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
         # sd:5064: Needs action is a Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.

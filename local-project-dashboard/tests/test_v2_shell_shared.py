@@ -1189,7 +1189,9 @@ class TheOneViewModel(unittest.TestCase):
     def declared(self, stem):
         js = (STATIC / f"{stem}.js").read_text(encoding="utf-8") if (STATIC / f"{stem}.js").exists() else ""
         block = re.search(r"PAGE_VIEWS = \[(.*?)\];", js, re.S)
-        return set(re.findall(r"\bid: '([a-z0-9-]+)'", block.group(1)) if block else []) | \
+        # A view that names another view's panel (panel: 'reports', sd:5461) has no panel of its own.
+        own = [m.group(1) for m in re.finditer(r"\{ id: '([a-z0-9-]+)'[^}]*\}", block.group(1)) if "panel:" not in m.group(0)] if block else []
+        return set(own) | \
             set(re.findall(r'data-place-view="([a-z0-9-]+)"', self.PAGES[stem]))
 
     def test_every_rail_page_is_read(self):
