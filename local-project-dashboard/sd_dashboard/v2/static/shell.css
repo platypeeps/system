@@ -738,7 +738,8 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .vseg .n { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); }
 @media (pointer: coarse) { .vseg > button, .toolbar > .tfind { min-height: var(--row-touch); } }
 @media (forced-colors: active) { .vseg > button[aria-pressed="true"] { outline: var(--rule-focus) solid CanvasText; } }
-tr[data-tout] { display: none; }
+/* Important: a page's mobile `.ledger tbody tr { display: grid }` outranks a plain rule, and a shut fold must hide on every page (sd:5490). */
+tr[data-tout] { display: none !important; }
 /* A band row's fold: the band keeps its look; the chevron turns down while the rows under it show. */
 td > .tfold { all: unset; display: inline-flex; align-items: center; gap: var(--space-2xs); width: 100%; min-height: 1.75rem; cursor: pointer; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; }
 td > .tfold:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; border-radius: var(--radius-sm); }

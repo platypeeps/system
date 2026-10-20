@@ -91,8 +91,6 @@
   .rootfold { grid-column: 1; }
   .ledger thead { display: none; }
   .ledger tbody tr.band { display: block; padding: 0; }
-  /* The grid row above outranks the shell's tr[data-tout]; a shut band's rows stay hidden here too. */
-  .ledger tbody tr[data-tout] { display: none; }
   .ledger tbody tr.band td { display: block; }
   .ledger tbody tr { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". meta acts"; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
   .ledger td { height: auto; border: 0; padding: 0 var(--space-2xs); }

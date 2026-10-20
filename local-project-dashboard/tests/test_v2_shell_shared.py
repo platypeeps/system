@@ -643,8 +643,28 @@ class TheTableGrammar(unittest.TestCase):
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
         self.assertIn("try { localStorage.setItem(TKEY, JSON.stringify(TKEPT)); } catch", js)
         self.assertIn("list.chips(tchips(use), shown, total, 'tunfilter')", js)
-        self.assertIn("tr[data-tout] { display: none; }", SHELL_CSS)
+        self.assertIn("tr[data-tout] { display: none !important; }", SHELL_CSS)
         self.assertIn('td > .tfold[aria-expanded="true"] > .i:first-child { transform: rotate(90deg); }', SHELL_CSS)
+
+    def test_a_folded_row_stays_hidden_under_every_page_rule_that_sets_a_row_display(self):
+        # A page's mobile `.ledger tbody tr { display: grid }` outranks a plain `tr[data-tout]`, so a shut fold hid nothing at
+        # 899px and narrower (sd:5490). The shell's hide rule must win over every page rule that gives a table row a display.
+        rule = re.compile(r"([^{}@]+)\{([^{}]*)\}")
+        setters = {}
+        for css in sorted(STATIC.glob("*.css")):
+            if css.name == "shell.css":
+                continue
+            for sel, body in rule.findall(css.read_text(encoding="utf-8")):
+                disp = re.search(r"(?<![-\w])display\s*:\s*([^;]+)", body)
+                if disp and re.search(r"(^|[\s,>+~])tr\b", sel):
+                    setters.setdefault(css.name, []).append((sel.strip(), disp.group(1).strip()))
+        for page in ("activity.css", "briefs.css", "designs.css", "contributions.css", "documents.css"):
+            self.assertIn(page, setters, page + " sets a mobile row display")
+        for page, rules in setters.items():
+            for sel, value in rules:
+                self.assertNotIn("!important", value, f"{page}: {sel} would beat the fold")
+        self.assertIn("tr[data-tout] { display: none !important; }", SHELL_CSS)
+        self.assertNotIn("tr[data-tout]", (STATIC / "documents.css").read_text(encoding="utf-8"))
 
 
 class _Tree(HTMLParser):
