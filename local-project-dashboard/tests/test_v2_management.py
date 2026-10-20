@@ -4,7 +4,7 @@ What this slice promises: `/management` answers under the shared policy and
 loads its script before `shell.js`; `/api/management` is one document built
 from the reads v1 already makes (the sd-db repo table with each row's review
 declaration and protection reading, the fleet's git state and
-sessions, the assignment lane, services and jobs), where a source that fails is
+sessions, the ship lane, services and jobs), where a source that fails is
 a reason and never an empty list; `/api/repos/<verb>` runs the two sd-db repo
 verbs and refuses a stale `before`.
 
@@ -125,9 +125,8 @@ class TheDocument(ScreenCase):
 
     def test_every_source_is_read_and_says_so(self):
         doc = self.document()
-        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "pulls", "deep", "git", "lane", "assignments",
-                                                          "sessions", "claude", "services", "jobs", "satellites",
-                                                          "upload")})
+        self.assertEqual(doc["sources"], {k: "" for k in ("repos", "pulls", "deep", "git", "lane", "sessions",
+                                                          "claude", "services", "jobs", "satellites", "upload")})
         self.assertEqual(doc["read"], NOW)
         # sd:3041: the runner stopped, so no archive refresh from runner.sh and no runner heartbeat.
         self.assertNotIn("archive", doc)
@@ -336,12 +335,13 @@ class TheDocument(ScreenCase):
         self.assertEqual((git["system"]["state"], git["system"]["remedy"]), ("behind", "git -C /repos/system pull --ff-only"))
         self.assertEqual(git["busy"]["remedy"], "No pull offered: 3 uncommitted files.")
 
-    def test_assignments_carry_the_history_counts(self):
+    def test_the_document_carries_no_assignment_history_and_no_merge_assignments(self):
+        """sd:5472: the author runner has been idle since 2026-09-27; the page lists neither its assignments nor its merges."""
         doc = self.document()
-        (blocked,) = doc["assignments"]["latest"]
-        self.assertEqual((blocked["id"], blocked["status"]), (self.ids["blocked"], "blocked"))
-        self.assertEqual([m["id"] for m in doc["lane"]["merges"]], [self.ids["merged"]])
-        self.assertEqual(doc["assignments"]["history"], {"blocked": 1, "done": 1})
+        self.assertNotIn("assignments", doc)
+        self.assertNotIn("assignments", doc["sources"])
+        self.assertNotIn("merges", doc["lane"])
+        self.assertEqual(sorted(doc["lane"]), ["live", "ready"])
         self.assertEqual((doc["sessions"]["registered"], doc["sessions"]["abandoned"]), (2, 1))
         jobs = {job["name"]: job for job in doc["jobs"]}
         self.assertEqual((jobs["nightly-sync"]["state"], jobs["nightly-sync"]["capabilities"]["retry"]["allowed"]), ("failed", True))
@@ -2005,6 +2005,34 @@ class TheLastRun(PageScript):
         out = self.run_page("R.lane = ELS['view-lane'].html;", search="?view=lane")
         self.assertNotIn('<span class="label">Runner</span>', out["R"]["lane"])
         self.assertNotIn('<span class="label">Archive refresh</span>', out["R"]["lane"])
+
+    def test_the_lane_and_sessions_draw_no_runner_assignments_and_no_recent_merges(self):
+        """sd:5472: both sections read assignment rows the idle author runner wrote; the Queue stays."""
+        out = self.run_page("R.lane = ELS['view-lane'].html; R.sess = ELS['view-sessions'].html;", search="?view=lane")
+        lane, sess = out["R"]["lane"], out["R"]["sess"]
+        for text in ("Recent merges", "merged-h", "merge assignments"):
+            self.assertNotIn(text, lane)
+        for text in ("Runner assignments", "runner-h", "data-hist", "Assignment history"):
+            self.assertNotIn(text, sess)
+        self.assertIn('id="queue-h"', lane)
+        self.assertIn('id="ready-h"', lane)
+        self.assertIn('id="claude-h"', sess)
+
+    def test_the_merge_setting_reads_lane_merge_in_the_column_the_group_the_tally_the_chip_and_the_details(self):
+        """sd:5472: the label only; the setting key runner_merge and the merge: token stay."""
+        out = self.run_page("""R.repos = ELS['view-repos'].html; R.lane = ELS['view-lane'].html;
+selectRow('repo:' + DOC0.repos[0].path, false); R.details = ELS.details.html;""", search="?view=repos&merge=manual")
+        repos = out["R"]["repos"]
+        self.assertRegex(repos, r'data-sort="merge"[^>]*>Lane merge')
+        self.assertIn('aria-label="Lane merge"', repos)
+        self.assertIn("lane merge auto", repos)
+        self.assertIn("Lane merge: manual", repos)
+        self.assertIn('data-f="merge"', repos)
+        self.assertIn("<dt>Lane merge</dt>", out["R"]["details"])
+        self.assertIn('<span class="label">Lane merge</span>', out["R"]["lane"])
+        for key in ("repos", "lane", "details"):
+            self.assertNotIn("Runner merge", out["R"][key])
+            self.assertNotIn("runner merge", out["R"][key])
 
 
 class TheJobLogAndCancel(PageScript):

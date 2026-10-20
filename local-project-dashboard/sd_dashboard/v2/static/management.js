@@ -16,7 +16,7 @@ const SDDB = '~/repos/platypeeps/sd-ai-command-pack/bin/sd-db';
 
 // ---------- Data (build): /api/management, read through shell.read on load and after each write ----------
 let DOC = null, READ = '';
-let REPOS = [], ALL = [], GIT = null, LANE = null, ASG = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [], SATS = null, UPLOAD = null;
+let REPOS = [], ALL = [], GIT = null, LANE = null, SESS = null, CLAUDE = null, SERVICES = [], CRON = [], SATS = null, UPLOAD = null;
 const tilde = p => { const h = GIT?.root ? GIT.root.replace(/\/repos\/?$/, '') : ''; return h && p.startsWith(h + '/') ? '~' + p.slice(h.length) : p; };
 const nameOf = p => p.replace(/^~\/(repos\/)?/, '');
 const hhmm = iso => iso ? iso.slice(11, 16) : '';
@@ -46,7 +46,7 @@ function absorb(doc) {
   // build (sd:1629): the settings columns sort on their shown words.
   ALL.forEach(r => { const rv = r.review || {}, rt = r.runtimes || {}; r.floor = rv.severity_floor || ''; r.copilot = rv.automatic_deep == null ? '' : String(rv.automatic_deep);
     r.python = rt.python?.value || ''; r.node = rt.node?.value || ''; });
-  LANE = doc.lane; ASG = doc.assignments; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || []; SATS = doc.satellites || null; UPLOAD = doc.upload || null;
+  LANE = doc.lane; SESS = doc.sessions; CLAUDE = doc.claude; SERVICES = doc.services || []; SATS = doc.satellites || null; UPLOAD = doc.upload || null;
   CRON = (doc.jobs || []).map(j => ({ ...j, next: nextRun(j.schedule), rank: stateOf(j) }));
 }
 // Age of the last fetch at the reading, as v1 words it (repos_screen._age).
@@ -128,7 +128,7 @@ const repoParam = params.get('repo');
 // checked against the five names before anything indexes by it.
 const VIEWS = window.PAGE_VIEWS.map(v => v.id);
 let view = 'repos';
-const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], lane: [LS, 'id', -1, MERGE_COLS], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
+const LIST_STATE = () => ({ repos: [RS, 'name', 1, repoCols()], deploys: [DS, 'name', 1, SVC_COLS], schedules: [SS, 'rank', 1, SCHED_COLS] })[view];
 function setURL() {
   const p = new URLSearchParams();
   if (repoParam) p.set('repo', repoParam);
@@ -159,7 +159,7 @@ const unknown = (what, reason, read) => html`<div class="unknown"><span><span cl
 // ---------- Views (sd:5080: the shell's tabs) ----------
 function showView(v) {
   view = v;
-  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'Filter merges by repo', sessions: 'Filter assignments by repo or agent', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
+  document.getElementById('shift').placeholder = { repos: 'Filter repos, e.g. hoa or merge:auto', lane: 'The lane has no filter', sessions: 'Filter Claude sessions by name, directory or item', deploys: 'Filter services, e.g. state:running or redis', schedules: 'Filter jobs, e.g. state:failed or backup' }[v];
   const row = shell.row(); if (row && !document.querySelector(`#view-${v} tr[data-id="${CSS.escape(row)}"]`)) shell.row(null);
   applyText();
   defaultDetails();
@@ -198,21 +198,20 @@ function lamps() {
 // ---------- Lists: sort, filter, page (shell.list, sd:2682) ----------
 // build: a page from the URL or an older reading can pass the last page; shell.list clamps it before the slice, and the URL follows.
 function pageOf(rows, st) { const was = st.page, slice = shell.list.pageOf(rows, st); if (st.page !== was) setURL(); return slice; }
-const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const REPO_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', 'Lane merge'], ['lane', html`Lane<span class="sr"> host</span>`], ['branch', html`Branch<span class="sr"> and uncommitted files</span>`], ['lag', html`<span aria-hidden="true">+/−</span><span class="sr">Ahead and behind default</span>`], ['fetched', 'Fetched'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // build (sd:1629): the condensed overview, one row per repo with its settings, swaps the git columns for these.
-const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', html`Merge<span class="sr"> (runner merge)</span>`], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
+const SETTING_COLS = [[null, html`<span class="sr">Settings</span>`, 'g'], ['name', 'Repo'], ['managed', 'Managed'], ['merge', 'Lane merge'], ['lane', html`Lane<span class="sr"> host</span>`], ['floor', html`Floor<span class="sr"> (review severity floor)</span>`], ['copilot', html`Copilot<span class="sr"> automatic deep review</span>`], [null, 'Required checks'], ['python', 'Python'], ['node', 'Node'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const repoCols = () => RS.cols === 'settings' ? SETTING_COLS : REPO_COLS;
-const MERGE_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['id', 'Assignment'], [null, 'Repo'], ['at', 'Ended'], [null, 'Status'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // build (sd:3388): the services list sorts, filters and pages as v1 Operations > Services did.
 const SVC_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Service'], ['what', 'What'], ['state', 'State'], [null, 'PID', 'num'], [null, 'Previous exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', 'Job'], [null, 'Schedule'], [null, 'State'], [null, 'Last run'], ['next', 'Next run'], [null, 'Exit', 'num'], [null, html`<span class="sr">Actions</span>`, 'act']];
 // The text filter is one chip on every list; Repos adds its managed and merge filters.
 const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
-const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Runner merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
+const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Lane merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
 const text = { q: '' };
 function tokens() {
   const chips = {}, free = [];
-  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|state|agent):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
+  text.q.split(/\s+/).filter(Boolean).forEach(w => { const m = w.match(/^(managed|merge|state):(\w+)$/i); m ? chips[m[1].toLowerCase()] = m[2].toLowerCase() : free.push(w.toLowerCase()); });
   return { chips, free };
 }
 
@@ -266,11 +265,11 @@ function renderRepos() {
   const auto = REPOS.filter(r => r.merge === 'auto').length, managed = REPOS.filter(r => r.managed === 'yes').length;
   const c = GIT?.counts || {};
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
-      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} runner merge auto</span></p>
+      <p class="tally"><span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
     <div class="filters toolbar-2" aria-label="Filters">
       <div class="fgroup" role="group" aria-label="Managed"><span class="label">Managed</span>${['yes', 'no'].map(v => html`<button class="chip" type="button" data-f="managed" data-v="${v}" aria-pressed="${String(RS.managed === v)}">${v}</button>`)}</div>
-      <div class="fgroup" role="group" aria-label="Runner merge"><span class="label">Runner merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
+      <div class="fgroup" role="group" aria-label="Lane merge"><span class="label">Lane merge</span>${['auto', 'manual'].map(v => html`<button class="chip" type="button" data-f="merge" data-v="${v}" aria-pressed="${String(RS.merge === v)}">${v}</button>`)}</div>
       <div class="fgroup" role="group" aria-label="Columns"><span class="label">Columns</span>${['git', 'settings'].map(v => html`<button class="chip" type="button" data-cols="${v}" aria-pressed="${String(RS.cols === v)}">${v}</button>`)}</div>
       ${repoChips().length ? shell.list.chips(repoChips(), rows.length, ALL.length) : html`<p class="fsum"><span>${rows.length} of ${ALL.length}</span></p>`}
     </div>
@@ -591,7 +590,7 @@ function flipRepo(field, o) {
     () => setRepo(field, REPOS.find(x => x.path === o.path) || r, before, value));
 }
 const colOf = field => field === 'runner-merge' ? 'runner_merge' : 'managed';
-const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.latest || [])].find(a => a.id === n);
+const asgOf = n => (LANE?.live || []).find(a => a.id === n);
 
 // ---------- Commands (products/system/commands.md) ----------
 // build (sd:2485): one object per drawn row, for shell.read to put and to retire once a read stops listing it. A queue row
@@ -599,9 +598,8 @@ const asgOf = n => [...(LANE?.live || []), ...(LANE?.merges || []), ...(ASG?.lat
 // let a selection or a ?row= link survive a read. A pending proposal is the page's own and stays until it is withdrawn.
 function objects() {
   const out = ALL.map(r => ({ id: `repo:${r.path}`, type: 'repo', label: r.name, path: r.path, row: r }));
-  const asg = kind => a => out.push({ id: `${kind(a)}:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
-  const byRole = a => a.role === 'merge' ? 'merge' : 'asg';
-  (LANE?.merges || []).forEach(asg(byRole)); (LANE?.live || []).forEach(asg(() => 'asg')); (ASG?.latest || []).forEach(asg(byRole));
+  const asg = a => out.push({ id: `asg:${a.id}`, type: 'assignment', label: `#${a.id} ${a.title || a.role}`, n: a.id, status: a.status, repo: a.repo || 'no repo', item: a.item });
+  (LANE?.live || []).forEach(asg);
   (LANE?.ready || []).forEach(t => out.push({ id: `ready:${t.id}`, type: 'item', label: `#${t.id} ${t.title}`, item: t.id }));
   (CLAUDE?.sessions || []).forEach(r => out.push({ id: `cs:${r.id}`, type: 'claude session', label: r.name || r.id, sid: r.id, pid: r.pid, row: r }));
   if (SESS) out.push({ id: 'wt:abandoned', type: 'worktrees', label: `${SESS.abandoned} abandoned worktrees`, n: SESS.abandoned },
@@ -802,46 +800,35 @@ document.addEventListener('shell:open', e => {
 document.addEventListener('shell:picked', e => document.querySelectorAll('.ledger tbody tr[data-id]').forEach(tr => tr.toggleAttribute('data-picked', e.detail.includes(tr.dataset.id))));
 
 // ---------- Ship lane ----------
-const LS = { sort: 'id', dir: -1, page: 1, size: 25 }; // unpaged; page and size are the shared grammar's defaults
+const ASTATE = { blocked: 'caution', queued: 'queued', running: 'queued', ending: 'queued', done: 'ok', cancelled: 'ok' };
 const asgRepo = a => (a.repo || 'no repo').replace(/^~\/repos\//, '');
 function renderLane() {
   const el = document.getElementById('view-lane');
   if (!LANE) { put(el, unknown('The lane was not read', why('lane'), 'sd assignments list')); return; }
-  const { free } = tokens();
   const queued = LANE.live.filter(a => a.status === 'queued'), running = LANE.live.filter(a => a.status !== 'queued');
-  const rows = LANE.merges.filter(m => free.every(f => (asgRepo(m) + ' ' + (m.title || '')).toLowerCase().includes(f)));
   const lease = running.filter(a => a.role === 'merge');
   put(el, html`
     <ul class="strip" aria-label="Lane state">
       <li><span class="label">Queue</span><span class="val">${queued.length} queued · ${running.length} running</span></li>
       <li><span class="label">Claim</span><span class="val">${lease.length ? `${lease.length} merge running` : 'no merge running'}</span></li>
-      <li><span class="label">Runner merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
+      <li><span class="label">Lane merge</span><span class="val">${REPOS.filter(r => r.merge === 'auto').length} repos auto</span></li>
     </ul>
     <div class="sec-head"><h2 id="queue-h">Queue <button class="help" type="button" aria-label="Help: merge lane" data-help="<b>One writer per repo.</b> A merge or serial assignment takes an exclusive lease on its repo; nothing else in that repo starts until the lease is released. The runner queues a merge only for runner_merge=auto repos, after a done author run with a reviewed head.">${I('circle-help')}</button></h2><p class="tally">assignment table · ${hhmm(READ)} UTC</p></div>
     ${LANE.live.length ? html`<table class="ledger" aria-labelledby="queue-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Role</th><th scope="col">Since</th>${ACTH}</tr></thead>
       <tbody>${LANE.live.map(a => html`<tr data-id="asg:${a.id}"><td class="g g-queued">◌<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono">${a.role} · ${a.status}</td><td class="d mono"><time class="rel" datetime="${a.started || a.queued_at || ''}"></time></td>${ACT('asg:' + a.id)}</tr>`)}</tbody></table>`
-      : html`<p class="empty"><span class="g-queued" aria-hidden="true">◌</span> Nothing queued or running.${LANE.merges[0]?.ended ? html` The last merge ended <time class="rel" datetime="${LANE.merges[0].ended}"></time>.` : ''}</p>`}
+      : html`<p class="empty"><span class="g-queued" aria-hidden="true">◌</span> Nothing queued or running.</p>`}
     <div class="sec-head"><h2 id="ready-h">Waiting on you</h2><p class="tally">${LANE.ready.length} ready_to_send · not lane candidates</p></div>
     ${LANE.ready.length ? html`<table class="ledger" aria-labelledby="ready-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">Repo</th>${ACTH}</tr></thead>
       <tbody>${LANE.ready.map(t => html`<tr data-id="ready:${t.id}"><td class="g g-queued">◌<span class="sr">queued</span></td><td class="what"><button type="button">#${t.id} ${t.title}</button></td><td class="d mono" data-k="repo">${asgRepo(t)}</td>${ACT('ready:' + t.id)}</tr>`)}</tbody></table>`
-      : html`<p class="empty">No item waits at ready_to_send.</p>`}
-    <div class="sec-head"><h2 id="merged-h">Recent merges</h2><p class="tally">latest ${LANE.merges.length} merge assignments</p></div>
-    ${shell.list.chips(textChip(), rows.length, LANE.merges.length)}
-    ${rows.length ? html`<table class="ledger" aria-labelledby="merged-h" data-tfilter="page" data-toolbar="toolbar"><thead>${shell.list.sortHead(MERGE_COLS, LS)}</thead>
-      <tbody>${rows.slice().sort((a, b) => (LS.sort === 'id' ? a.id - b.id : String(a.ended || '').localeCompare(String(b.ended || ''))) * LS.dir).map(m => { const st = m.status === 'done' ? 'ok' : m.status === 'blocked' ? 'caution' : 'queued'; return html`<tr data-id="merge:${m.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${st}</span></td>
-        <td class="what"><button type="button">#${m.id} ${m.title || 'merge'}</button></td><td class="d mono" data-k="repo">${asgRepo(m)}</td><td class="d mono"><time class="rel" datetime="${m.ended || ''}" data-empty="never"></time></td>
-        <td class="d mono">${m.status}</td>${ACT('merge:' + m.id)}</tr>`; })}</tbody></table>`
-      : html`<p class="empty">${LANE.merges.length ? html`No merge matches “${text.q}”. <button class="linkbtn" type="button" data-clear-q>Clear filters</button>` : 'No merge assignment has run.'}</p>`}`);
+      : html`<p class="empty">No item waits at ready_to_send.</p>`}`);
 }
 document.getElementById('view-lane').addEventListener('click', e => {
   if (e.target.closest('a')) return;
-  if (shell.list.sortBy(e, LS)) { shell.list.keepFocus(e, renderLane); return setURL(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
 
 // ---------- Sessions and agents ----------
-let histFilter = null;
 // build (sd:5106): each Claude session on this Mac (claude_sessions.py), the ones waiting on you first. Safe to exit is the
 // server's: yes only when nothing runs under it and no checkout it answers for holds unpushed work; a fact not read is ▨.
 const CSTATE = r => r.status === 'waiting' ? 'caution' : r.status === 'unknown' ? 'unknown' : r.status === 'busy' ? 'queued' : 'ok';
@@ -877,14 +864,8 @@ function claudeDetails(r, act) {
     <h3>Checkouts</h3>${list(r.checkouts, c => html`<span class="mono">${c.path}</span> · ${c.error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${c.error}` : `${c.branch} · ${plural(c.dirty, 'uncommitted file')} · ${plural(c.unpushed, 'unpushed commit')}`}`, 'No git checkout.')}
     <p class="why">Read from claude agents --json, the session's transcripts, ps and git. Sessions on other machines are not listed.</p>${act}`;
 }
-const ASTATE = { blocked: 'caution', queued: 'queued', running: 'queued', ending: 'queued', done: 'ok', cancelled: 'ok' };
 function renderSessions() {
   const el = document.getElementById('view-sessions');
-  const { chips, free } = tokens();
-  const latest = ASG ? ASG.latest : [];
-  const rows = latest.filter(a => (!histFilter || a.status === histFilter) && (!chips.agent || a.provider === chips.agent)
-    && free.every(f => (asgRepo(a) + ' ' + (a.provider || '') + ' ' + (a.title || '')).toLowerCase().includes(f)));
-  const hist = ASG ? Object.entries(ASG.history) : [], total = hist.reduce((s, h) => s + h[1], 0), max = Math.max(1, ...hist.map(h => h[1]));
   put(el, html`
     <div class="sec-head"><h2 id="claude-h">Claude sessions <button class="help" type="button" aria-label="Help: Claude sessions" data-help="<b>This Mac's Claude sessions.</b> From claude agents --json, each session's transcripts, ps and git. Safe to exit means idle, no agent or lane watch under it, and no unpushed work in its checkouts. A stalled or unread agent counts as running until it gives a final answer.">${I('circle-help')}</button></h2><p class="tally">${CLAUDE ? html`<span>${plural(CLAUDE.sessions.length, 'session')}</span><span>${CLAUDE.builders.running == null ? html`<span class="g-unknown" aria-hidden="true">▨</span> builders not counted` : plural(CLAUDE.builders.running, 'builder') + ' running'}</span><span>claude agents · ${hhmm(CLAUDE.read)} UTC</span>` : ''}</p></div>
     ${renderClaude()}
@@ -895,16 +876,6 @@ function renderSessions() {
       <tbody>${SESS.processes.map((p, i) => html`<tr data-id="proc:${i}"><td class="g g-ok">●<span class="sr">ok</span></td><td class="what"><button type="button">${p.command}</button></td><td class="d mono" data-k="up">${p.elapsed}</td><td class="d num">${p.pid}</td></tr>`)}</tbody></table>`
       : html`<p class="empty">${SESS.processes_error ? html`<span class="g-unknown" aria-hidden="true">▨</span> ${SESS.processes_error}` : 'No sd-* command is running.'}</p>`}
 
-    <div class="sec-head"><h2 id="runner-h">Runner assignments</h2><p class="tally">${ASG ? html`<span>${total} in history</span><span>latest ${latest.length} shown</span><span>assignment table · ${hhmm(READ)} UTC</span>` : ''}</p></div>
-    ${!ASG ? unknown('Assignments were not read', why('assignments'), 'sd assignments list') : html`
-    <div class="bars" role="group" aria-label="Assignment history by outcome. Select a bar to filter.">
-      ${hist.map(([k, n]) => html`<button class="bar" type="button" data-hist="${k}" aria-pressed="${String(histFilter === k)}"><span>${k}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="10"/><rect class="fill" x="0" y="0" width="${(n / max * 100).toFixed(1)}" height="10"/></svg><span class="n">${n}</span></button>`)}
-    </div>
-    <table class="sr"><caption>Assignment history</caption><tbody>${hist.map(([k, n]) => html`<tr><th scope="row">${k}</th><td>${n}</td></tr>`)}</tbody></table>
-    ${rows.length ? html`<table class="ledger" aria-labelledby="runner-h" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Assignment</th><th scope="col">Repo</th><th scope="col">Agent</th><th scope="col">Ended</th>${ACTH}</tr></thead>
-      <tbody>${rows.map(a => { const st = ASTATE[a.status] || 'unknown'; return html`<tr data-id="asg:${a.id}"><td class="g g-${st}">${GLYPH[st]}<span class="sr">${a.status}</span></td><td class="what"><button type="button">#${a.id} ${a.title || a.role}</button></td><td class="d mono" data-k="repo">${asgRepo(a)}</td><td class="d mono" data-k="agent">${a.provider || '—'}</td><td class="d mono"><time class="rel" datetime="${a.ended || ''}" data-empty="never"></time></td>${ACT('asg:' + a.id)}</tr>`; })}</tbody></table>`
-      : html`<p class="empty">${histFilter ? `No ${histFilter} assignment among the latest ${latest.length}.` : text.q ? `No assignment matches “${text.q}”.` : 'No assignment has run.'}</p>`}`}
-
     <div class="sec-head"><h2 id="wt-h">Worktrees</h2><p class="tally">fleet sessions · ${SESS ? seen(SESS) : `${hhmm(READ)} UTC`}</p></div>
     ${SESS ? html`<table class="ledger" aria-labelledby="wt-h"><tbody>
       <tr data-id="wt:abandoned"><td class="g g-${SESS.abandoned ? 'caution' : 'ok'}">${SESS.abandoned ? '▲' : '●'}<span class="sr">${SESS.abandoned ? 'caution' : 'ok'}</span></td><td class="what"><button type="button">${SESS.abandoned} abandoned worktrees</button></td><td class="d mono">registered, directory gone</td>${ACT('wt:abandoned')}</tr>
@@ -912,7 +883,6 @@ function renderSessions() {
     </tbody></table>` : unknown('Worktrees were not read', why('sessions'))}`);
 }
 document.getElementById('view-sessions').addEventListener('click', e => {
-  const b = e.target.closest('[data-hist]'); if (b) { histFilter = histFilter === b.dataset.hist ? null : b.dataset.hist; return renderSessions(); }
   if (e.target.closest('.rowact')) return;
   const tr = e.target.closest('tr[data-id]'); if (tr) selectRow(tr.dataset.id, true);
 });
@@ -1078,7 +1048,7 @@ function selectRow(id, open) {
       <dt>Last request</dt><dd>${requestDetail(c.last_request)}</dd></dl>
       ${c.last_exit === 127 ? html`<p class="why">Exit 127: the shell could not find the command. A retry fails the same way until the path is fixed.</p>` : ''}${act}${logDetail(c)}`;
     shell.suggest([`Why did ${c.name} exit ${c.last_exit ?? 0}?`, `What does ${c.name} do and who reads its output?`, 'Which schedules overlap tonight?']);
-  } else if (kind === 'merge' || kind === 'asg') {
+  } else if (kind === 'asg') {
     const a = asgOf(+key); if (!a) return;
     h = asgDetails(a, act);
     shell.suggest([`Why is #${a.id} ${a.status}?`, `What else is blocked in ${asgRepo(a).split('/').pop()}?`, 'Group blocked runs by cause']);
@@ -1094,7 +1064,7 @@ function selectRow(id, open) {
         ${pw === true ? '' : html`<p class="why">No pull offered: ${pw}.</p>`}`
       : html`<h3>Git state</h3><p class="why"><span class="g-unknown" aria-hidden="true">▨</span> Not read: ${pw}.</p>`;
     h = html`<p class="kind">${I(r.registered ? 'settings' : 'folder-code')} Repo${r.registered ? '' : ' · not registered'}</p><h2>${r.name}</h2>
-      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Runner merge</dt><dd>${r.merge}</dd></dl>
+      <dl><dt>Path</dt><dd>${r.path}</dd><dt>Owner</dt><dd>${r.owner}</dd><dt>Managed</dt><dd>${r.managed}</dd><dt>Lane merge</dt><dd>${r.merge}</dd></dl>
       ${r.registered ? html`<p><a class="btn quiet" href="?repo=${encodeURIComponent(r.path)}#view=repos">${I('settings')} Open settings</a></p>
       <p class="why">The settings page shows the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.</p>`
         : html`<p class="why">sd-db has no row for this checkout, so it has no settings page. <code>sd-db repo add ${r.path}</code> registers it.</p>`}${git}${act}
@@ -1136,7 +1106,7 @@ function selectRow(id, open) {
   }
   put(details, h); swap();
   if (shell.commands.get(id)) shell.commands.select(id); else shell.setContext(details.querySelector('h2')?.textContent || '');
-  if (!['cron', 'asg', 'merge'].includes(kind)) shell.suggest(['What changed here in the last day?', 'What should I look at first on this page?', 'Explain this row']);
+  if (!['cron', 'asg'].includes(kind)) shell.suggest(['What changed here in the last day?', 'What should I look at first on this page?', 'Explain this row']);
   shell.row(id);
   if (open) shell.openPane('tab-details');
 }
@@ -1188,7 +1158,7 @@ function adopt(doc) {
   return { objects: objects(), state: failed.length ? { kind: 'partial', text: `Not read: ${failed.join(', ')}. Each shows why in its view.`, source: '/api/management' } : null };
 }
 function clear(err) {
-  DOC = null; READ = ''; GIT = LANE = ASG = SESS = CLAUDE = SATS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
+  DOC = null; READ = ''; GIT = LANE = SESS = CLAUDE = SATS = null; REPOS = []; ALL = []; SERVICES = []; CRON = [];
   FAILED = err.message;
 }
 function draw() {
