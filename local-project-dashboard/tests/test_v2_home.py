@@ -148,14 +148,14 @@ COMMANDS = [
     ["scene.turn_on", "scene", "Activate", "a", "safe"],
     ["script.turn_on", "script", "Run", "r", "safe"],
     ["button.press", "button", "Press", "p", "safe"],
-    ["lock.unlock", "lock", "Unlock", "u", "confirm"],
-    ["lock.lock", "lock", "Lock", "l", "confirm"],
-    ["alarm_control_panel.alarm_disarm", "alarm_control_panel", "Disarm", "d", "confirm"],
-    ["alarm_control_panel.alarm_arm_home", "alarm_control_panel", "Arm home", "h", "confirm"],
-    ["alarm_control_panel.alarm_arm_away", "alarm_control_panel", "Arm away", "w", "confirm"],
-    ["alarm_control_panel.alarm_arm_night", "alarm_control_panel", "Arm night", "n", "confirm"],
-    ["cover.open_cover", "cover", "Open", "o", "confirm"],
-    ["cover.close_cover", "cover", "Close", "x", "confirm"],
+    ["lock.unlock", "lock", "Unlock", "u", "safe"],
+    ["lock.lock", "lock", "Lock", "l", "safe"],
+    ["alarm_control_panel.alarm_disarm", "alarm_control_panel", "Disarm", "d", "safe"],
+    ["alarm_control_panel.alarm_arm_home", "alarm_control_panel", "Arm home", "h", "safe"],
+    ["alarm_control_panel.alarm_arm_away", "alarm_control_panel", "Arm away", "w", "safe"],
+    ["alarm_control_panel.alarm_arm_night", "alarm_control_panel", "Arm night", "n", "safe"],
+    ["cover.open_cover", "cover", "Open", "o", "safe"],
+    ["cover.close_cover", "cover", "Close", "x", "safe"],
     ["sensor.read", "sensor", "Read state", "s", "safe"],
 ]
 
@@ -602,16 +602,14 @@ class TheService(BrowserSession):
             self.assertIn(why, answer["error"])
         self.assertEqual((self.ha.calls, self.journal()["executions"]), ([], []))
 
-    def test_a_danger_service_without_its_typed_confirm_is_refused(self):
-        for more in ({}, {"confirm": "yes"}, {"confirm": "lock.example"}):
-            status, _, answer = self.call("lock.example_door", "unlock", **more)
-            self.assertEqual(status, 400, (more, answer))
-            self.assertIn("changes physical security: type lock.example_door to confirm", answer["error"])
-        self.assertEqual(self.ha.calls, [])
-        status, _, answer = self.call("lock.example_door", "unlock", confirm="lock.example_door")
+    def test_a_security_service_runs_with_no_typed_confirm(self):
+        # sd:5479: the operator ruled every Home action runs at once; a confirm key is now an unexpected key.
+        status, _, answer = self.call("lock.example_door", "unlock")
         self.assertEqual(status, 200, answer)
         self.assertEqual(self.ha.calls[0], ("POST /api/services/lock/unlock", f"Bearer {HA_TOKEN}", {"entity_id": "lock.example_door"}))
         self.assertEqual(answer["state"]["value"], "unlocked")
+        status, _, answer = self.call("lock.example_door", "unlock", confirm="lock.example_door")
+        self.assertEqual(status, 400, answer)
 
     def test_a_refusal_from_home_assistant_shows_its_reason_and_is_journalled(self):
         self.refuse = (403, {"message": "User does not have permission to call this service"}, {})
@@ -809,18 +807,12 @@ await lastUndo().undo(); await flush();""", answer=self.answer_service(f"[200, {
         self.assertIn('datetime="2026-09-06T12:01:00+00:00"', out["R"]["tile"])
         self.assertEqual(out["toasts"][0], ["Guest mode · input_boolean.turn_on sent", True])
 
-    def test_a_danger_service_asks_for_the_entity_id_typed_and_sends_what_was_typed(self):
-        out = self.run_page("""shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();
-R.fields = cmd('lock.unlock').fields(C.get('lock.front_door')); R.danger = cmd('lock.unlock').danger();
-R.says = cmd('lock.unlock').consequence(C.get('lock.front_door'));
-FIELD_VALUES.confirm = 'lock.front_door'; shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();""",
+    def test_a_security_service_runs_at_once_with_no_dialog(self):
+        # sd:5479: Unlock sends on the first run, with no dialog and no typed field.
+        out = self.run_page("""shellRun(cmd('lock.unlock'), C.get('lock.front_door')); await flush();""",
                             answer=self.answer_service("[200, { sent: 'lock.unlock', state: null, reread: '', journal: '', note: 3 }]"))
-        self.assertEqual(out["confirms"], ["lock.unlock", "lock.unlock"])
-        self.assertEqual([(f["name"], f["required"], f["label"]) for f in out["R"]["fields"]], [("confirm", True, "Type lock.front_door to confirm")])
-        self.assertTrue(out["R"]["danger"])
-        self.assertIn("changes physical security", out["R"]["says"])
-        self.assertEqual([p[1].get("confirm") for p in out["posts"]], ["lock.front_door"], "nothing is sent until the field is typed")
-        self.assertIn("not run: OK is off until Type lock.front_door to confirm is typed", out["toasts"][0][0])
+        self.assertEqual(out["confirms"], [])
+        self.assertEqual([p[1] for p in out["posts"]], [{"entity_id": "lock.front_door", "service": "unlock", "before": out["posts"][0][1]["before"]}])
 
     def test_a_refusal_shows_home_assistants_reason_and_an_unknown_outcome_reads_again(self):
         refused = "Home Assistant refused input_boolean.turn_on (HTTP 403): User does not have permission. Nothing changed."

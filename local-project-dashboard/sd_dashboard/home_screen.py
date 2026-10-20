@@ -41,10 +41,10 @@ tile carries the short error; an entity the answer does not list is
 no document, error or log line holds it, nor the host. No proxy is used and
 no redirect is followed, so the token goes to that host alone.
 
-**Service calls (sd:4966).** `POST /api/home/service {entity_id, service, before[, confirm]}` (`service`) calls one
+**Service calls (sd:4966).** `POST /api/home/service {entity_id, service, before}` (`service`) calls one
 Home Assistant service on one tile, `POST /api/services/<domain>/<service>` with the read's base and token, bounded
 by `SERVICE_TIMEOUT`. It refuses (400, nothing sent) an entity the tile list does not name, a service `SERVICES` does
-not allow for the entity's domain, and a `danger` service whose `confirm` is not the entity id typed out; a `before`
+not allow for the entity's domain; a lock, alarm or cover service runs with no typed confirm (sd:5479); a `before`
 that is not the digest of the tile text the page showed is a 409. Each call is one record in the command journal
 (`runner_exec.execution_journal`, Activity's "Command journal"), on the Home page's item `JOURNAL_ITEM`: the output
 file is made, with the dispatch line, before the request leaves, and the note is written with the outcome after it,
@@ -92,15 +92,15 @@ TIMEOUT = 3.0
 LIMIT = 16 * 1024 * 1024
 
 #: The Home Assistant services a tile may call, by the entity's domain, each with its risk (sd:4966). `undo` and `safe`
-#: run on one click; `danger` changes physical security and needs the entity id typed in `confirm`. Every other domain
-#: and service is refused.
+#: run on one click; the security domains are `safe` too, as the operator ruled out every Home confirm (sd:5479).
+#: Every other domain and service is refused.
 _SWITCH = {"turn_on": "undo", "turn_off": "undo", "toggle": "undo"}
 SERVICES = {
     "light": _SWITCH, "switch": _SWITCH, "fan": _SWITCH, "input_boolean": _SWITCH,
     "scene": {"turn_on": "safe"}, "script": {"turn_on": "safe"}, "button": {"press": "safe"},
-    "lock": {"lock": "danger", "unlock": "danger"},
-    "alarm_control_panel": {"alarm_arm_home": "danger", "alarm_arm_away": "danger", "alarm_arm_night": "danger", "alarm_disarm": "danger"},
-    "cover": {"open_cover": "danger", "close_cover": "danger"},
+    "lock": {"lock": "safe", "unlock": "safe"},
+    "alarm_control_panel": {"alarm_arm_home": "safe", "alarm_arm_away": "safe", "alarm_arm_night": "safe", "alarm_disarm": "safe"},
+    "cover": {"open_cover": "safe", "close_cover": "safe"},
 }
 
 #: Seconds for each socket step of one service call: Home Assistant answers once the service has run, and a lock takes a while.
@@ -488,12 +488,11 @@ def _journal(connection, who: str, domain: str, name: str, entity: str):
 
 
 def service(payload, who: str, *, environ=None, timeout: float = SERVICE_TIMEOUT) -> object:
-    """`POST /api/home/service {entity_id, service, before[, confirm]}` (sd:4966): the write that calls one Home Assistant
+    """`POST /api/home/service {entity_id, service, before}` (sd:4966): the write that calls one Home Assistant
     service on one tile, or `ValueError` (400) before anything is read or sent."""
     keys = set(payload)
-    if keys - {"confirm"} != {"entity_id", "service", "before"} or not all(isinstance(payload[key], str) for key in keys):
-        raise ValueError("Expected {entity_id, service, before[, confirm]}: the tile, the service, the digest of the tile list the page showed,"
-                         " and for a security service the entity id typed out.")
+    if keys != {"entity_id", "service", "before"} or not all(isinstance(payload[key], str) for key in keys):
+        raise ValueError("Expected {entity_id, service, before}: the tile, the service and the digest of the tile list the page showed.")
     entity, name = payload["entity_id"], payload["service"]
     if not ENTITY.fullmatch(entity):
         raise ValueError(f"{entity!r} is not an entity id (domain.object_id); nothing was sent.")
@@ -502,8 +501,6 @@ def service(payload, who: str, *, environ=None, timeout: float = SERVICE_TIMEOUT
     if name not in allowed:
         offered = f"it allows {', '.join(allowed)} on {domain}" if allowed else f"it calls no {domain} service"
         raise ValueError(f"{domain}.{name} is not a service the dashboard calls: {offered}. Nothing was sent.")
-    if allowed[name] == "danger" and payload.get("confirm") != entity:
-        raise ValueError(f"{domain}.{name} changes physical security: type {entity} to confirm. Nothing was sent.")
     stale = {"error": "The tile list changed since this page read it; nothing was sent. Read it again.", "reload": True}
 
     def write(connection):
