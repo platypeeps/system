@@ -44,7 +44,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["BRIEF", "CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DECK", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "experiment",
+__all__ = ["BRIEF", "BUILT", "CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DECK", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "experiment",
            "grade_legend", "parse_registry", "project", "source_key", "sources", "stale"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
@@ -108,6 +108,8 @@ CONF_CHARS = 1000
 #: The status brief and the deck beside it (pack sd:5525): its glance rows and Asks table are the Experiments view.
 BRIEF = "30-brief/BRIEF-status.md"
 DECK = "30-brief/deck.json"
+#: What `sd-research-kit deck` writes from it, in the checkout.
+BUILT = "docs/dashboard/deck.pptx"
 #: The State cell's first word, as the standard names it, read as a state; any other word is unknown.
 STATES = {"running": "ok", "decided": "ok", "done": "ok", "waiting": "caution", "blocked": "warning"}
 GLANCE = ("State", "Updated", "In one line", "Experiment", "Deck")
@@ -306,12 +308,19 @@ def experiment(repo: Path) -> dict | None:
     if path.is_symlink() or not path.is_file():
         return None
     deck = (repo / DECK).is_file() and not (repo / DECK).is_symlink()
+    # When `sd-research-kit deck` last wrote the deck, or "" when it has not (sd:5525).
+    pptx = repo / BUILT
+    try:
+        stamp = pptx.stat().st_mtime if pptx.is_file() and not pptx.is_symlink() else None
+    except OSError:
+        stamp = None
+    built = datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if stamp is not None else ""
     try:
         if path.stat().st_size > REGISTRY_BYTES:
             raise ValueError(f"{BRIEF} exceeds the bounded read size")
         text = path.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError) as error:
-        return {"error": _cut(str(error)), "deck": deck}
+        return {"error": _cut(str(error)), "deck": deck, "built": built}
     glance: dict[str, str] = {}
     for cells in _table(_section(text, "status at a glance")):
         if len(cells) >= 2 and (key := _cell(cells[0])) in GLANCE:
@@ -326,7 +335,7 @@ def experiment(repo: Path) -> dict | None:
         "line": _cell(glance.get("In one line", "")),
         "links": [{"text": _cut(label), "url": url} for label, url in LINK.findall(glance.get("Experiment", ""))
                   if len(url) <= 400][:4],
-        "deck_url": _url([glance.get("Deck", "")]), "deck": deck,
+        "deck_url": _url([glance.get("Deck", "")]), "deck": deck, "built": built,
         "asks": [{"who": _cell(cells[0]), "what": _cell(cells[1])} for cells in asks[:ASKS]], "asks_total": len(asks),
         "error": "",
     }

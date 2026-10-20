@@ -803,6 +803,8 @@ class Dashboard(BaseHTTPRequestHandler):
             return self._document(path[len("/documents/") :])
         if path.startswith("/designs/"):
             return self._design(path[len("/designs/") :])
+        if path.startswith("/research/deck/"):
+            return self._research_deck(context, path[len("/research/deck/") :])
         if path.startswith("/api/adversarial/") and not split.query:
             from . import adversarial
 
@@ -1184,6 +1186,24 @@ class Dashboard(BaseHTTPRequestHandler):
             )
         # A `*.app.html` page gets a sandbox and its own script; every other page gets none (sd:1502).
         self._send(200, body, "text/html; charset=utf-8", policy=policy(root, name, body))
+
+    def _research_deck(self, context, key: str) -> None:
+        """One experiment's built status deck, `docs/dashboard/deck.pptx` in its checkout, as a download (pack sd:5525)."""
+        from .research_deck import built
+
+        if not self._session(context):
+            return self._send(403, error_page(403, "Open a dashboard page before downloading a deck.").encode("utf-8"),
+                              "text/html; charset=utf-8")
+        found = built(key)
+        try:
+            body = found.read_bytes() if found is not None else None
+        except OSError as problem:
+            return self._send(503, error_page(503, str(problem)).encode("utf-8"), "text/html; charset=utf-8")
+        if body is None:
+            return self._send(404, error_page(404, "No built deck at this address.").encode("utf-8"), "text/html; charset=utf-8")
+        name = key.replace("/", "-") + "-deck.pptx"
+        self._send(200, body, "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                   overrides={"Content-Disposition": f'attachment; filename="{name}"'})
 
     def _design(self, tail: str) -> None:
         """One file from the ui-design checkout, at its path in the tree.

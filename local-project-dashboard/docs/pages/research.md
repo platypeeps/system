@@ -38,8 +38,9 @@ database only. Draft deck needs `RESEARCH_BRAND_KIT`. The shape and the failure 
 Experiments (pack sd:5525) is each checkout's status brief, `30-brief/BRIEF-status.md`, read with the board
 (`research_screen.experiment`): the State word (Running, Decided or Done ●, Waiting ▲, Blocked ■, any other ▨), the
 Updated day, stale past 7 days, the line, the first two asks with the count, the Experiment and Deck links, and whether
-`30-brief/deck.json` sits beside it. Build roundup posts `/api/research/roundup`, which queues one
-`sd-research-kit roundup` in Publish now's run shape (`research_roundup.py`): one at a time behind a lock, a 409 while
-one builds, bounded at 300 s. The kit takes no path: it lays out every checkout's deck.json under `~/repos`, newest date
-first, and the run keeps the decks it lists. The page reads `/api/research/roundup/status` (the last run) and
-`/api/research/roundup/<id>`. The deck stays in `~/.local/state/system/research-roundup/runs/`; nothing uploads.
+`30-brief/deck.json` sits beside it. A row's Build deck (icon `file-text`) posts `/api/research/deck` with the row's
+checkout, which queues one `sd-research-kit deck` there in Publish now's run shape (`research_deck.py`): one at a time
+behind a lock, a 409 while one builds, bounded at 300 s, off with its reason when the checkout keeps no deck.json. The
+page reads `/api/research/deck/<id>` until the run settles, then reads the board again; the row links the deck it wrote,
+`docs/dashboard/deck.pptx` in the checkout, through `/research/deck/<key>`, a download that needs the page's session.
+`/api/research/deck/status` is the last run. Nothing uploads.
