@@ -30,8 +30,9 @@ other way is reported as unknown, and the next Evaluate finishes or undoes it.
 The Intake view (system sd:5478) lists the repositories skills are adopted
 from. `GET /api/skills/intake/repos` (`skill_intake.repos`) runs
 `sd skill intake --tracked --json`: the `skills.intake_repos` setting row,
-or, until the list is first changed, the repositories the installed skills'
-Provenance names. Each row shows the skills adopted from it and the last
+or, until the list is first changed, the repositories the installed skills
+came from: their Provenance, `~/.agents/.skill-lock.json` and the GitHub
+origin of a git checkout a user skill links into. Each row shows the skills adopted from it and the last
 refresh's time and result; the repositories skills came from that are not
 tracked sit under the table, each with Track. Track a repository takes a
 `https://github.com/<owner>/<repo>` URL and a scope.

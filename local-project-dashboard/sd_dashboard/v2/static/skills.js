@@ -356,7 +356,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   });
   // ---------- Intake view: tracked repositories (system sd:5478) ----------
   // The list is `sd skill intake --tracked`: the skills.intake_repos setting, or, until it is first written, the repositories
-  // the installed skills' Provenance names; then the ones skills were adopted from that are not tracked. One refresh at a
+  // the installed skills came from (Provenance, the skills lock file, linked checkouts); then the ones not tracked. One refresh at a
   // time per repository; its answer stays in REFRESH and draws under that repository's Details, where Show report puts one
   // skill's report in the intake slot and Approve is the intake's own (APPROVE above).
   const TRACKING = '/api/skills/intake/tracking';
@@ -402,8 +402,8 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
       : html`<tr class="lane"><td colspan="5">${REPOS ? 'No repository is tracked.' : REPO_FAILED ? `Not read: ${REPO_FAILED}` : 'Not read yet.'}</td></tr>`}`);
     put(document.getElementById('intake-untracked'), html`${REPOS?.untracked.length ? html`<h3>Adopted from, not tracked</h3>
       <ul class="imported">${REPOS.untracked.map(u => html`<li><span><b>${u.url}</b><span class="src">${u.skills.map(x => x.name).join(', ')}</span></span>${C.rowActions(`source:${u.url}`)}</li>`)}</ul>` : ''}`);
-    document.getElementById('intake-tally').textContent = REPOS ? `${plural(rows.length, 'repository', 'repositories')} tracked${REPOS.seeded ? ' · from Provenance, not yet saved' : ''}` : '';
-    put(document.getElementById('intake-foot'), REPOS ? html`The list is the <code>${REPOS.key}</code> setting; until it is first changed, it is read from the installed skills' Provenance. Remove keeps the installed skills.` : html``);
+    document.getElementById('intake-tally').textContent = REPOS ? `${plural(rows.length, 'repository', 'repositories')} tracked${REPOS.seeded ? ' · from the installed skills, not yet saved' : ''}` : '';
+    put(document.getElementById('intake-foot'), REPOS ? html`The list is the <code>${REPOS.key}</code> setting; until it is first changed, it is read from the installed skills: their Provenance, the <code>skills</code> lock file and linked GitHub checkouts. Remove keeps the installed skills.` : html``);
     window.shell.view?.count('intake', REPOS ? rows.length : null);
   }
   const markRepos = () => repoRows.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.id === selected)));
