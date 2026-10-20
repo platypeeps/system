@@ -4,13 +4,15 @@ The Experiments view posts `/api/research/roundup` with `{}`. `start` runs in th
 and answers 202 at once:
 
 1. The lock, `<state>/lock`, taken without waiting: a second build while one holds it is a 409 naming the run.
-2. The decks: each board row whose checkout keeps a `deck.json`, newest Updated first. None is a 400.
-3. The run's state file, `<state>/runs/<id>.json`, as `queued`, with the decks and the deck it writes, `<id>.pptx`.
+2. The decks: each board row whose checkout keeps a `deck.json`, newest Updated first; none is a 400. The kit finds its own.
+3. The run's state file, `<state>/runs/<id>.json`, as `queued`, with the decks and the deck it writes. The kit takes no
+   path (R10-D6): it walks the checkouts under `~/repos` itself and writes `docs/dashboard/roundup.pptx` in its working
+   directory, `<state>/runs/<id>/`.
 4. This file as a script, in a session of its own, holding the lock's descriptor.
 
-The runner (`run`) marks the run `running` and runs the pack's `sd-research-kit roundup <out> <deck.json> ...`, bounded at
-`ROUNDUP_SECONDS` (its process group killed past it). The run is `done` when the kit exits 0 and the deck exists, else
-`failed` with the kit's refusal, or the log's last line. Nothing uploads or imports: the deck stays in the state folder for the operator.
+The runner (`run`) marks the run `running` and runs the pack's `sd-research-kit roundup` there, bounded at
+`ROUNDUP_SECONDS` (its process group killed past it). The run is `done` when the kit exits 0 and the deck exists, with
+the decks the kit lists; else `failed` with the kit's refusal or usage line, or the log's last line. Nothing uploads or imports: the deck stays in the state folder for the operator.
 
 `status` answers `GET /api/research/roundup/<id>` from the state file, as `publish_drain.status` does; `latest` answers
 `GET /api/research/roundup/status` with the last run, or none.
@@ -41,6 +43,8 @@ ROUNDUP_SECONDS = 300
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
 RUN_ID = re.compile(r"roundup-[0-9]{8}T[0-9]{6}Z")
+#: Where `sd-research-kit roundup` writes, under its working directory.
+ROUNDUP = Path("docs") / "dashboard" / "roundup.pptx"
 
 
 def state_dir() -> Path:
@@ -83,12 +87,14 @@ def start(inputs: list[Path], *, now: datetime.datetime | None = None, spawn=sub
             raise ValueError("No research checkout keeps a 30-brief/deck.json yet: add one beside its status brief.")
         run_id = f"roundup-{now.astimezone(datetime.timezone.utc):%Y%m%dT%H%M%SZ}"
         record = runs / f"{run_id}.json"
-        if record.exists():
+        if record.exists() or (runs / run_id).exists():
             return 409, {"error": f"Run {run_id} started this second; press Build roundup again in a moment."}
-        out = runs / f"{run_id}.pptx"
-        argv = [sys.executable, str(pack_bin() / "sd-research-kit"), "roundup", str(out), *map(str, inputs)]
-        document = {"id": run_id, "state": "queued", "reason": None, "decks": [str(p) for p in inputs], "out": str(out),
-                    "argv": argv, "timeout": ROUNDUP_SECONDS, "started": _iso(now), "finished": None, "pid": None}
+        here = runs / run_id
+        here.mkdir()
+        argv = [sys.executable, str(pack_bin() / "sd-research-kit"), "roundup"]
+        document = {"id": run_id, "state": "queued", "reason": None, "decks": [str(p) for p in inputs],
+                    "out": str(here / ROUNDUP), "argv": argv, "cwd": str(here), "timeout": ROUNDUP_SECONDS,
+                    "started": _iso(now), "finished": None, "pid": None}
         _write(record, document)
         handle.seek(0)
         handle.truncate()
@@ -125,7 +131,7 @@ def request(values: dict, *, board=None):
 
 def public(document: dict) -> dict:
     """What a page reads: the state file less the runner's own fields."""
-    return {key: value for key, value in document.items() if key not in ("pid", "argv", "timeout")}
+    return {key: value for key, value in document.items() if key not in ("pid", "argv", "cwd", "timeout")}
 
 
 def status(run_id: str, *, now: datetime.datetime | None = None):
@@ -170,7 +176,7 @@ def run(record: Path, lock: int | None = None) -> int:
     log = record.with_suffix(".log")
     with open(log, "w", encoding="utf-8") as sink:
         child = subprocess.Popen(document["argv"], stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
-                                 cwd=str(record.parent), start_new_session=True)
+                                 cwd=document["cwd"], start_new_session=True)
         try:
             code = child.wait(timeout=document["timeout"])
         except subprocess.TimeoutExpired:
@@ -178,14 +184,17 @@ def run(record: Path, lock: int | None = None) -> int:
             child.wait()
             code = None
     said = [line for line in log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
-    # The kit's own refusal names the problem; an older pack's usage text follows it, so it wins over the last line.
-    said = [line for line in said if line.startswith("sd-research-kit")][:1] or said[-1:]
+    # The kit's refusal, or an older pack's usage line, names the problem better than the usage text's last line.
+    told = [line for line in said if line.startswith(("sd-research-kit", "usage:"))][:1] or said[-1:]
+    # Its success lists each deck it laid out, indented under the `wrote` line.
+    used = [line.strip() for line in said if line.startswith("  /")]
     if code is None:
         reason = f"the build did not end within {document['timeout']} s; its process group was killed"
     elif code or not Path(document["out"]).is_file():
-        reason = f"sd-research-kit roundup exited {code}" + (f": {said[0][:300]}" if said else "")
+        reason = f"sd-research-kit roundup exited {code}" + (f": {told[0][:300]}" if told else "")
     else:
         reason = None
+        document["decks"] = used or document["decks"]
     document.update(state="failed" if reason else "done", reason=reason,
                     finished=_iso(datetime.datetime.now(datetime.timezone.utc)))
     if lock is not None:

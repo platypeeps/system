@@ -11,6 +11,7 @@ import datetime
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -60,18 +61,22 @@ FAKE_KIT = """import os, sys, time
 mode = os.environ.get("FAKE_MODE", "write")
 print("args:", *sys.argv[1:], flush=True)
 if mode == "old":
-    # A pack from before the roundup verb: its refusal, then its usage text.
-    print("sd-research-kit: roundup takes no arguments", file=sys.stderr, flush=True)
-    print("usage: sd-research-kit render|publish", file=sys.stderr)
+    # A pack from before the roundup verb: its usage text, which does not name the verb.
+    print("usage: sd-research-kit render|publish|checklinks|review|pins|fleet-pins|", file=sys.stderr, flush=True)
     print("Every verb acts on the current working directory.", file=sys.stderr)
+    print("machine's queue, which is not a repository.", file=sys.stderr)
     sys.exit(1)
 if mode == "fail":
-    print("deck.json: slides[0].cards: at most 6 cards", file=sys.stderr)
+    print("sd-research-kit roundup: /r/a/30-brief/deck.json: slides[0].cards: at most 6 cards", file=sys.stderr)
     sys.exit(1)
 if mode == "sleep":
     time.sleep(30)
 if mode != "silent":
-    open(sys.argv[2], "wb").write(b"pptx")
+    os.makedirs("docs/dashboard")
+    open("docs/dashboard/roundup.pptx", "wb").write(b"pptx")
+    print("wrote docs/dashboard/roundup.pptx: 4 slides from 2 decks")
+    print("  /r/beta/30-brief/deck.json")
+    print("  /r/alpha/30-brief/deck.json")
 """
 
 
@@ -217,16 +222,19 @@ class Roundup(unittest.TestCase):
         document = json.loads(record.read_text(encoding="utf-8"))
         self.assertEqual((document["state"], document["reason"]), ("failed", "the runner did not start: no python"))
 
-    def test_the_runner_holds_the_lock_and_runs_the_kit_over_the_decks(self):
+    def test_the_runner_holds_the_lock_and_runs_the_kit_with_no_path(self):
+        """R10-D6: the kit takes no path; it walks the checkouts itself, and the run keeps the decks it lists."""
         record = self.started([self.base / "a.json", self.base / "b.json"])
         argv, options = self.spawned[0]
         self.assertEqual((argv[2:4], options["start_new_session"], options["pass_fds"]), (["run", str(record)], True, (int(argv[4]),)))
         code = research_roundup.run(record)
         document = json.loads(record.read_text(encoding="utf-8"))
         self.assertEqual((code, document["state"], document["reason"]), (0, "done", None))
-        out = record.with_suffix(".pptx")
+        out = record.with_suffix("") / "docs" / "dashboard" / "roundup.pptx"
         self.assertEqual((document["out"], out.read_bytes()), (str(out), b"pptx"))
-        self.assertIn(f"args: roundup {out} {self.base / 'a.json'} {self.base / 'b.json'}", record.with_suffix(".log").read_text(encoding="utf-8"))
+        self.assertEqual(document["decks"], ["/r/beta/30-brief/deck.json", "/r/alpha/30-brief/deck.json"])
+        self.assertEqual(record.with_suffix(".log").read_text(encoding="utf-8").splitlines()[0], "args: roundup")
+        self.assertNotIn("cwd", research_roundup.status(document["id"])[1])
 
     def test_the_runner_runs_as_a_script_on_its_own(self):
         """The real spawn: this file run by path, with no package, as `start` launches it."""
@@ -241,17 +249,20 @@ class Roundup(unittest.TestCase):
     def test_a_kit_that_fails_or_writes_nothing_reads_failed_with_its_last_line(self):
         code, document = self.ran("fail")
         self.assertEqual((code, document["state"]), (1, "failed"))
-        self.assertEqual(document["reason"], "sd-research-kit roundup exited 1: deck.json: slides[0].cards: at most 6 cards")
+        self.assertEqual(document["reason"], "sd-research-kit roundup exited 1: sd-research-kit roundup: /r/a/30-brief/deck.json: "
+                                             "slides[0].cards: at most 6 cards")
         research_roundup.state_dir().joinpath("runs").joinpath(f"{document['id']}.json").unlink()
+        shutil.rmtree(research_roundup.state_dir() / "runs" / document["id"])
         code, document = self.ran("silent")
         self.assertEqual((code, document["state"]), (1, "failed"))
         self.assertIn("sd-research-kit roundup exited 0: args: roundup", document["reason"])
 
-    def test_a_pack_from_before_the_roundup_verb_reads_failed_with_its_refusal(self):
-        """Older state: the server's pinned pack may predate the verb; the run names that, not the usage text's last line."""
+    def test_a_pack_from_before_the_roundup_verb_reads_failed_with_its_usage_line(self):
+        """Older state: the server's pinned pack may predate the verb; the run names its verbs, not the usage text's last line."""
         code, document = self.ran("old")
         self.assertEqual((code, document["state"]), (1, "failed"))
-        self.assertEqual(document["reason"], "sd-research-kit roundup exited 1: sd-research-kit: roundup takes no arguments")
+        self.assertEqual(document["reason"],
+                         "sd-research-kit roundup exited 1: usage: sd-research-kit render|publish|checklinks|review|pins|fleet-pins|")
 
     def test_a_build_past_its_bound_is_killed(self):
         code, document = self.ran("sleep", timeout=1)

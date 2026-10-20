@@ -153,7 +153,7 @@ function renderExperiments() {
 function drawRoundup() {
   put(document.getElementById('xp-act'), shell.commands.bar(ROUNDUP_OBJ.id));
   const r = ROUNDUP, said = document.getElementById('xp-run');
-  if (!r) { put(said, html`No roundup built yet. ${plural(decksOf().length, 'deck')} would go in it, newest Updated first.`); return; }
+  if (!r) { put(said, html`No roundup built yet. ${plural(decksOf().length, 'deck')} would go in it, newest first.`); return; }
   const from = plural((r.decks || []).length, 'deck');
   put(said, r.state === 'done' ? html`Last roundup built <time class="rel" datetime="${r.finished}"></time> from ${from}: ${r.out}. Import it into Slides by hand.`
     : r.state === 'failed' ? html`<span class="g-warning" aria-hidden="true">■</span> Last roundup failed: ${r.reason || 'no reason recorded'}.`
@@ -172,7 +172,7 @@ function roundupCommand() {
     does: 'Builds one PowerPoint deck from every listed deck.json; nothing uploads.',
     when: () => (!LOADED ? 'the checkouts are not read yet' : !settled(ROUNDUP) ? `run ${ROUNDUP.id} is ${ROUNDUP.state}`
       : decksOf().length ? true : 'no checkout keeps a 30-brief/deck.json'),
-    cli: () => `sd-research-kit roundup roundup.pptx ${decksOf().map(p => shPath(`${p.path}/30-brief/deck.json`)).join(' ')}`,
+    cli: () => 'sd-research-kit roundup',
     sends: () => 'POST /api/research/roundup {}',
     run: () => window.shell.post('/api/research/roundup', {}).then(run => { followRoundup(run, true); return `Roundup started · run ${run.id}`; }, refused) };
 }
