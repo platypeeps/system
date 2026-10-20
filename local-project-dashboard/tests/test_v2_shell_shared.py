@@ -1296,6 +1296,16 @@ class TheFilterBar(unittest.TestCase):
         self.assertEqual(out["c"], ["3 reports", "1 report", "2 of 12 reports"])
 
 
+class TheWholeShell(unittest.TestCase):
+    """sd:5463: the suites run cut blocks of shell.js, so a name one block declares twice in the file's scope passed them
+    while the browser refused the whole shell (the filter bar's tok beside the badge's tok). The file must compile whole."""
+
+    def test_shell_js_compiles_as_one_script(self):
+        script = f"(() => {{ try {{ new Function({json.dumps(SHELL_JS)}); return 'ok'; }} catch (e) {{ return String(e); }} }})()"
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.stdout.strip(), "ok", result.stderr)
+
+
 class TheRowActions(unittest.TestCase):
     """sd:5457: a row's act is its icon when the command declares one, a text button when it does not, then ⋯."""
 

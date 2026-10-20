@@ -1134,13 +1134,13 @@
     return html`<div class="fseg" role="group" aria-label="${name}">${items.map(i => html`<button type="button" data-f="${key}" data-v="${i.v}" aria-pressed="${String(!!i.pressed)}"${
       i.off ? html` aria-disabled="true"` : ''}${i.title ? html` title="${i.title}"` : ''}>${i.label}</button>`)}</div>`;
   }
-  const tok = (key, v, label) => html`<button type="button" class="tok" data-f="${key}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
+  const ftok = (key, v, label) => html`<button type="button" class="tok" data-f="${key}" data-v="${v}" aria-label="Remove filter: ${label}"><span>${label}</span><span class="x" aria-hidden="true">×</span></button>`;
   // The table's count for its title line's tally: every row, or how many of them the filters leave.
   const count = (shown, total, noun) => shown === total ? plural(total, noun) : `${num(shown)} of ${plural(total, noun)}`;
   function fbar(parts, { clear = false } = {}) {
     return html`<div class="fbar" role="group" aria-label="Filters">${parts}<div class="fsum">${clear ? html`<button class="linkbtn" type="button" data-fclear>Clear all</button>` : ''}</div></div>`;
   }
-  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok, fbar, count };
+  const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count };
   // list:end
   // A filter dropdown in use stays open across a redraw; a press outside it or focus leaving it closes it, and so does Esc
   // (Keys, below). toggle does not bubble, so it is heard on the way down.
