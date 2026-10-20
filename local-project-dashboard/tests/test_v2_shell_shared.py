@@ -609,6 +609,9 @@ class TheTableGrammar(unittest.TestCase):
         self.assertIn("`${bar._name}: filter by column…`", js)
         self.assertIn('<span class="tcount" aria-live="polite"></span>', js)
         self.assertIn("if (tally) tally.before(bar._count); else if (line) line.append(bar._count);", js)
+        # sd:5458: a view tab renames its panel's aria-labelledby to the tab (vt-<id>), so the section's own head is the fallback;
+        # without it Reports' Run cadence printed "15 rows" under its "15 of 58 shown" tally.
+        self.assertIn("|| t.closest('section')?.querySelector(':scope > .sec-head, :scope > .panel-head')", js)
         self.assertIn(".toolbar > .tgrid, .filters > .tgrid { display: contents; }", SHELL_CSS)
         self.assertRegex(SHELL_CSS, r"\.toolbar \.tcount, \.toolbar > \.count \{[^}]*margin-left: auto;")
 

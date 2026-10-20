@@ -1328,7 +1328,7 @@
       row ? row.append(bar) : twrap(t).before(bar);
       bar._count = bar.querySelector('.tcount');
       const named = t.getAttribute('aria-labelledby') || t.closest('[aria-labelledby]')?.getAttribute('aria-labelledby') || '';
-      const line = document.getElementById(named)?.closest('.sec-head, .panel-head'), tally = line?.querySelector(':scope > .tally');
+      const line = document.getElementById(named)?.closest('.sec-head, .panel-head') || t.closest('section')?.querySelector(':scope > .sec-head, :scope > .panel-head'), tally = line?.querySelector(':scope > .tally');
       if (tally) tally.before(bar._count); else if (line) line.append(bar._count);
     }
     bar.hidden = false;
