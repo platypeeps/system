@@ -30,8 +30,8 @@ Keys from SSO or a role also sign, but the link stops when they expire; `link` s
 
 ## What is public
 
-Every object in the bucket is readable by anyone with its URL.
-The bucket policy grants `s3:GetObject` to everyone and nothing else, so listing stays closed and a URL must be known.
+Every object in the bucket is readable by anyone, and so is the list of every object's name.
+The bucket policy grants everyone `s3:GetObject` and `s3:ListBucket`, so the bucket URL lists every file under every prefix.
 Put nothing private in the bucket.
 A link lets its holder upload any number of files under its prefix until it expires, each up to the size cap.
 It cannot read, list or delete, and S3 refuses any form field its policy does not name.
