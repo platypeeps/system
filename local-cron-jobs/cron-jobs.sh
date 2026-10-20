@@ -180,8 +180,8 @@ agent_quarantine() { # job binary
 # logs/<job>.debug.<run>.log (sd:972: "error: An unknown error occurred
 # (Unexpected)" is the Bun runtime's, printed before any session exists, and
 # the binary writes no debug log unless --debug-file asks). A passed run
-# removes its own file in cmd_exec; this keeps the newest five that remain,
-# so a job failing every night cannot fill the log dir.
+# keeps its file too, so a stall can be compared with a passing run
+# (sd:5293); this keeps the newest five per job, so the log dir stays bounded.
 prune_debug_files() { # job
   local old
   # shellcheck disable=SC2012 # the names are this script's own (job, UTC stamp, pid): no whitespace, and ls -t is the mtime order wanted
@@ -1272,8 +1272,8 @@ cmd_exec() { # invoked by launchd (and by `run`)
         ${JOB_MODEL:+--model "$JOB_MODEL"} \
         $JOB_CLAUDE_ARGS || rc=$?
     fi
-    # Only a failure keeps its trace; the job log never quotes it.
-    [ "$rc" -ne 0 ] || rm -f "$debug_file"
+    # Every run keeps its trace, pruned to five per job; the job log never
+    # quotes it.
     prune_debug_files "$job"
   else
     rc=1

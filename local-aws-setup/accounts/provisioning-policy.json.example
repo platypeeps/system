@@ -177,6 +177,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "ReadPricing",
+      "Effect": "Allow",
+      "Action": "pricing:GetProducts",
+      "Resource": "*"
+    },
+    {
       "Sid": "EndOwnSsmSessions",
       "Effect": "Allow",
       "Action": [

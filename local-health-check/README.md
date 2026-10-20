@@ -29,7 +29,9 @@ nothing is mailed (sd:3454). A clean run prints no such line.
   both DiagnosticReports folders; crashes count once per process name (a
   pid before the extension, as in `.claude-mem-<pid>.tmp`, is dropped), an
   `ExcUserFault_` report under its process, and `JetsamEvent` reports
-  (memory pressure, not a crash) are left out
+  (memory pressure, not a crash) are left out; a report whose header names
+  a `bug_type` other than a crash (309, or 109 legacy) is left out too, such
+  as a weekly usage-analytics batch (58)
 - every `$SYSTEM_TOOLS_LABEL_PREFIX.*` (default `local.system-tools.*`)
   LaunchAgent: loaded, and last exit code clean
 - disk0 SMART status

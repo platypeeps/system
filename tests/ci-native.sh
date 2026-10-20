@@ -328,6 +328,7 @@ case "$SUITE_LEG" in
     run_suite deploy sh local-deploy/deploy.sh test -v
     run_suite adversarial-gate sh local-adversarial-gate/adversarial-gate.sh test -v
     run_suite aws-setup sh local-aws-setup/aws-setup.sh test -v
+    run_suite shared-upload sh local-shared-upload/shared-upload.sh test -v
     run_suite ai-apps sh local-ai-apps/ai-apps.sh test -v
     run_suite jev sh local-jev/jev.sh test -v
     run_suite kev sh local-kev/kev.sh test -v

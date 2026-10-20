@@ -439,11 +439,11 @@ worth reading, so it is not done.
 
 A prompt job's `claude -p` also writes its own trace, per run, to
 `logs/<job>.debug.<run>.log`, where `<run>` is the run id the report carries
-(`YYYYMMDDTHHMMSSZ-<pid>`), through `--debug-file` on the agent call. Only a
-failure keeps one: a run that exits 0 removes its file before it ends, and
-after every prompt-job run the runner keeps the newest five per job and
-removes the rest, so a job that fails every night does not fill the log
-directory. The job log never quotes the trace. Read it after an exit the
+(`YYYYMMDDTHHMMSSZ-<pid>`), through `--debug-file` on the agent call. A
+passing run keeps its trace as a failed one does, so a stalled run can be
+compared with a passing one (sd:5293). After every prompt-job run the runner
+keeps the newest five per job and removes the rest, so the log directory
+stays bounded. The job log never quotes the trace. Read it after an exit the
 runner cannot explain, such as `error: An unknown error occurred (Unexpected)`
 (sd:972): that text is the runtime's, printed before any session exists, and
 the debug file is the only record of what the binary was doing. The log's

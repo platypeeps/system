@@ -548,6 +548,25 @@ esac
                           and l.endswith(": app crash report(s) in the last day: Example Helper")])
         self.assertEqual(len([l for l in out.splitlines() if l.endswith("last day: Example Helper")]), 1, out)
 
+    def test_only_crash_bug_types_count_as_crashes(self):
+        """sd:5323: an .ips header names its bug_type; a usage-analytics batch
+        (58) is no crash, a crash (309, and 109 legacy) is, and a header with no
+        readable bug_type still counts, as before."""
+        reports = self.tmp / "reports-bug-type"
+        reports.mkdir()
+        for app, header in (("Analytics-Batch", '{"bug_type":"58","timestamp":"2026-10-19"}'),
+                            ("Hang-Report", '{"app_name":"Hang-Report","bug_type":"288"}'),
+                            ("New-Crash", '{"app_name":"New-Crash","bug_type":"309","os_version":"macOS"}'),
+                            ("Legacy-Crash", '{"bug_type" : 109}'),
+                            ("No-Header", "not json")):
+            (reports / (app + stamped(hours=1) + ".ips")).write_text(header + "\n{}\n")
+        out = self.run_check("bug-type", {"JEV_HEALTH_CHECK": "0", "HEALTH_CHECK_SYSTEM_REPORTS": str(reports)},
+                             verb="run")["out"]
+        self.assertNotIn("Analytics-Batch", out)
+        self.assertNotIn("Hang-Report", out)
+        for app in ("New-Crash", "Legacy-Crash", "No-Header"):
+            self.assertIn(app + "(1) ", out)
+
     def test_crashes_of_one_process_with_different_pids_count_as_one_app(self):
         """sd:5253: a process named with its pid (`.claude-mem-<pid>.tmp`) is one app, not one per pid."""
         reports = self.tmp / "reports-pids"

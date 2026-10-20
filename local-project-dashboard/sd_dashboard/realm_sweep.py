@@ -32,7 +32,9 @@ config holds with their credentials, so it loads that config's servers, and dont
 
 Steps, and what a stop between them leaves:
 
-1. The lock, `<state>/sweep.lock`: a second run of the realm exits 3 and writes nothing.
+1. The lock, `<state>/sweep.lock`: a second run of the realm exits 3 and writes nothing. The model run inherits it
+   (sd:5341), so a runner killed in step 3 leaves its model holding the lock, `status` reads it running, and no run
+   starts beside it.
 2. `<state>/last.json` as `running`, naming the run folder, the log, the brief and the pid. `status` reads a `running`
    record whose pid is gone as failed, so a stop from here on reads failed.
 3. The model run, in `<state>/runs/<stamp>/`. Followups and drafts land as it goes; a stop leaves them without a brief.
@@ -63,7 +65,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .sweep import DASHBOARD, state_dir
+from .sweep import DASHBOARD, _held, state_dir
 
 REALMS = ("work", "personal")
 SERIES = {"work": "Work sweep", "personal": "Personal sweep"}
@@ -384,8 +386,12 @@ def status(realm: str) -> dict:
     if record is None:
         return {"running": False, "state": "never", "reason": f"no {realm} sweep has run here"}
     if record.get("state") == "running" and not alive(record.get("pid")):
-        record.update(state="failed", reason=f"the run (pid {record.get('pid')}) stopped without recording an "
-                                             f"outcome; see {record.get('log')}")
+        if _held(state_dir(realm), "sweep.lock"):
+            record["reason"] = ("its runner stopped, and its model run still holds the lock; nothing starts until "
+                                "that ends")
+        else:
+            record.update(state="failed", reason=f"the run (pid {record.get('pid')}) stopped without recording an "
+                                                 f"outcome; see {record.get('log')}")
     record["running"] = record.get("state") == "running"
     return record
 
@@ -400,7 +406,7 @@ def run(realm: str, out, err) -> int:
         except BlockingIOError:
             print(f"sweep: another {realm} sweep is already running", file=err)
             return EXIT_NONE
-        return sweep(realm, state, out, err)
+        return sweep(realm, state, out, err, handle.fileno())
 
 
 def checkpoints(realm: str, previous: dict) -> dict:
@@ -417,8 +423,8 @@ def checkpoints(realm: str, previous: dict) -> dict:
     return {source: previous.get("started") if source in read else before.get(source) for source in SOURCES[realm]}
 
 
-def sweep(realm: str, state: Path, out, err) -> int:
-    """Steps 2 to 5 above."""
+def sweep(realm: str, state: Path, out, err, lock: int) -> int:
+    """Steps 2 to 5 above, under `lock`, the descriptor of step 1's lock, which the model run inherits."""
     try:
         previous = read_record(realm) or {}
     except (OSError, ValueError):
@@ -483,7 +489,8 @@ def sweep(realm: str, state: Path, out, err) -> int:
     argv = claude_argv(claude_binary(), realm, prompt, os.environ.get("WORKSPACE_MCP_URL", "http://127.0.0.1:8083/mcp"),
                        allowed_tools(realm, folder, found.get("followups_repo") or ""))
     with log.open("a", encoding="utf-8") as logged:
-        code, reason, read = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged)
+        code, reason, read = ask(argv, folder, int(os.environ.get("REALM_SWEEP_TIMEOUT", TIMEOUT)), logged,
+                                 keep=(lock,))
     # Only a configured source the reply names counts as read; the rest keep their checkpoints and show as gaps.
     record.update(read=[source for source in configured if source in read],
                   gaps=[source for source in configured if source not in read])
