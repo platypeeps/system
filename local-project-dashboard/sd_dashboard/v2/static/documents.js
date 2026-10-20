@@ -41,6 +41,14 @@ function sorted(list) {
   const k = cmp[L.sort];
   return [...list].sort((a, b) => (b.pinned - a.pinned) || (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0) * L.dir);
 }
+// sd:5484: the list groups by repo, one band row each, and the shell's table grammar folds a band and keeps it shut across
+// sessions. Bands run by repo name, turned around while Repo sorts descending; the sort orders the rows inside each band.
+function grouped(list) {
+  const by = new Map(), name = k => (LABEL[k] || k).toLowerCase(), dir = L.sort === 'repo' ? L.dir : 1;
+  sorted(list).forEach(d => { if (!by.has(d.key)) by.set(d.key, []); by.get(d.key).push(d); });
+  return [...by.keys()].sort((a, b) => (name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0) * dir).flatMap(k => by.get(k));
+}
+const ordered = () => grouped(DOCS.filter(matches));
 
 // ---------- Facets ----------
 const facets = document.getElementById('facets');
@@ -114,12 +122,16 @@ function row(d) {
     <td class="num">${kb(d.bytes)}</td>
     <td class="acts">${window.commands.published(d.pub)}${shell.commands.rowActions(d.id)}</td></tr>`;
 }
+// A band names its repo and how many of the filtered documents it holds; data-band keys its fold, so a count that changes
+// with a filter does not open it again.
+const band = (key, n) => html`<tr class="band" data-band="${key}" aria-hidden="true"><td colspan="${COLS.length}">${LABEL[key] || key}<span class="n">${plural(n, 'document')}</span></td></tr>`;
 // build: no request is filed (document.request is copy only), so the list has no queued request rows.
 function render() {
   renderFacets();
-  const L_ = window.shell.list, list = sorted(DOCS.filter(matches)), slice = L_.pageOf(list, L);
+  const L_ = window.shell.list, list = ordered(), slice = L_.pageOf(list, L), n = {};
+  list.forEach(d => { n[d.key] = (n[d.key] || 0) + 1; });
   put(document.getElementById('rows-head'), L_.sortHead(COLS, L));
-  put(tbody, html`${slice.map(row)}`);
+  put(tbody, html`${slice.map((d, i) => html`${i && slice[i - 1].key === d.key ? '' : band(d.key, n[d.key])}${row(d)}`)}`);
   const empty = document.getElementById('empty');
   empty.hidden = list.length > 0;
   // build: an unread store hides nothing, and the empty Hidden view says why.
@@ -218,7 +230,7 @@ function registerCommands() {
     // build: the document's own address on this dashboard, not a fixed host.
     { id: 'document.open', on: 'document', label: 'Open document', does: 'Opens the rendered document in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: o => !(o.stale && rootOf(o).research),
       cli: o => `open ${location.origin}${o.href}`, run: o => { window.open(o.href, '_blank', 'noopener'); return `Opened in a new tab · ${o.title}`; } },
-    { id: 'document.pin', on: 'document', label: 'Pin', does: 'Pins the document to the top of the list; Undo unpins it.', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
+    { id: 'document.pin', on: 'document', label: 'Pin', does: 'Pins the document to the top of its repo; Undo unpins it.', key: 'p', icon: 'pin', risk: 'undo', when: o => o.pinned ? 'already pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: true }).then(() => `Pinned ${o.title}`), undo: o => view(o, { pinned: false }) },
     { id: 'document.unpin', on: 'document', label: 'Unpin', does: 'Unpins the document; Undo pins it again.', key: 'p', icon: 'pin-off', risk: 'undo', when: o => !o.pinned ? 'not pinned' : storeOff(),
       cli: () => NO_CLI, run: o => view(o, { pinned: false }).then(() => `Unpinned ${o.title}`), undo: o => view(o, { pinned: true }) },
@@ -251,7 +263,7 @@ const details = document.getElementById('details');
 function show(id) {
   const d = DOCS.find(x => x.id === id); if (!d) return;
   selected = id;
-  tbody.querySelectorAll('tr').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
   const root = rootOf(d);
   put(details, html`<p class="kind">${d.stale ? html`<span class="g-caution" aria-hidden="true">▲</span> render-stale · ` : d.src ? '' : html`<span class="g-unknown" aria-hidden="true">▨</span> render unknown · `}${d.kind} · ${LABEL[d.key] || d.key}</p>
     <h2>${d.title}</h2>
@@ -286,9 +298,13 @@ function show(id) {
 function select(id, open) { show(id); writeURL(); if (open) shell.openPane('tab-details'); }
 // The URL carries facets, search, sort, page and the row, as on Tasks and Reports, so a filtered list can be bookmarked or sent.
 // Lists join with commas; defaults are left out. Unknown values are dropped on read.
-const SORTS = Object.keys(cmp);
+// sd:5484: the same query, less the page, is kept in localStorage per page, as the shell keeps a page's view and its folds;
+// an address with none of the page's own params opens on it. A blocked store keeps the filters for this visit only.
+const SORTS = Object.keys(cmp), KEEP = `sd.filters.${location.pathname}`;
 function readURL() {
-  const q = new URLSearchParams(location.search), list = k => (q.get(k) || '').split(',').filter(Boolean);
+  const own = new URLSearchParams(location.search); own.delete('row');
+  let kept = ''; if (!own.toString()) try { kept = localStorage.getItem(KEEP) || ''; } catch { /* blocked: nothing kept */ }
+  const q = kept ? new URLSearchParams(kept) : own, list = k => (q.get(k) || '').split(',').filter(Boolean);
   F.repo = new Set(list('repo').filter(v => ROOTS.some(r => r.key === v)));
   F.kind = new Set(list('kind').filter(v => KINDS.includes(v)));
   F.fresh = new Set(list('fresh').filter(v => v in FRESH));
@@ -303,6 +319,8 @@ function writeURL() {
   ['repo', 'kind', 'fresh'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
   if (F.text) q.set('q', F.text); if (F.pinned) q.set('pinned', '1'); if (F.hidden) q.set('hidden', '1');
   window.shell.list.listQuery(q, L, LIST);
+  // Only once the first read has restored the filters: a draw before it would keep an empty query over the kept one.
+  if (linked) { const k = new URLSearchParams(q.toString()); k.delete('page'); try { localStorage.setItem(KEEP, k.toString()); } catch { /* blocked */ } }
   shell.url(q); // the shell keeps ?row=
 }
 // build: no proposal card. The reference drafted a documents.conf line in chat; neither line it proposed stops a render.
@@ -435,7 +453,7 @@ function attention() {
   window.PAGE_ATTENTION = DOC && DOC.attention || { state: 'unknown', n: 0, what: 'documents not read' };
   window.shell.attention?.(window.PAGE_ATTENTION);
 }
-const shownPage = () => sorted(DOCS.filter(matches)).slice((L.page - 1) * L.size, L.page * L.size);
+const shownPage = () => ordered().slice((L.page - 1) * L.size, L.page * L.size);
 let reading = null, linked = false;
 function adopt(doc) {
   DOC = doc;
@@ -450,7 +468,7 @@ function adopt(doc) {
     linked = true;
     const q = shell.row();
     readURL();
-    const at = sorted(DOCS.filter(matches)).findIndex(d => d.id === q);
+    const at = ordered().findIndex(d => d.id === q);
     if (at >= 0) { L.page = Math.floor(at / L.size) + 1; selected = q; }
   }
   const contested = DOC.contested || [];

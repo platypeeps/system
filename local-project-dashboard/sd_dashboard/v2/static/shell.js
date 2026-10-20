@@ -1238,13 +1238,14 @@
   }
   const theads = t => { const r = t.tHead?.rows; return r && r.length === 1 && ![...r[0].cells].some(c => c.colSpan > 1) ? [...r[0].cells] : null; };
   // The table's rows as the model has them; a row the page drew since the last pass takes its place after the row above it.
+  // A band's cell is its words, or its data-band when the page names one: a count in the words would open a shut fold (sd:5484).
   function tmodel(t) {
     let last = -1, k = 0;
     return [...t.tBodies].flatMap(tb => [...tb.rows]).map(tr => {
       if (tr._tpos == null) tr._tpos = last + ++k * 1e-6; else { last = tr._tpos; k = 0; }
       const one = tr.cells.length === 1 && tr.cells[0].colSpan > 1;
       const kind = tr.matches('.empty, .skeleton') || (one && !tlabel(tr)) ? 'static' : one ? 'group' : 'row';
-      return { kind, cells: kind === 'row' ? [...tr.cells].map(tcell) : [tlabel(tr)], pos: tr._tpos, tr };
+      return { kind, cells: kind === 'row' ? [...tr.cells].map(tcell) : [kind === 'group' && tr.dataset.band || tlabel(tr)], pos: tr._tpos, tr };
     });
   }
   function tapply(t) {
@@ -1287,7 +1288,7 @@
     // Folds: a band becomes a button that shows or hides the rows under it.
     const closed = new Set(st.closed), hid = new Set();
     groups.forEach(s => {
-      const label = tlabel(s.head.tr), td = s.head.tr.cells[0], open = !closed.has(label);
+      const label = s.head.cells[0], td = s.head.tr.cells[0], open = !closed.has(label);
       let b = td.querySelector(':scope > button.tfold');
       if (!b) {
         b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';

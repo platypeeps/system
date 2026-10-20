@@ -31,6 +31,9 @@
 .linkish { font: inherit; color: var(--color-ink-2); background: none; border: 0; padding: 0 var(--space-2xs); text-decoration: underline; cursor: pointer; min-height: 1.75rem; }
 
 /* Ledger */
+/* sd:5484: one band per repo, as Designs bands by product; the shell's table grammar makes it a fold. */
+.ledger tr.band td { height: auto; padding: var(--space-md) var(--space-xs) var(--space-2xs); font: 600 var(--text-2xs)/1.3 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); background: transparent; border-bottom: var(--rule-hair) solid var(--color-rule); }
+.ledger tr.band .n { margin-left: var(--space-xs); font: 400 var(--text-xs)/1 var(--font-data); letter-spacing: 0; text-transform: none; color: var(--color-ink-2); }
 .ledger th[aria-sort] { color: var(--color-ink); }
 .ledger .g { width: 1.75rem; text-align: center; font-family: var(--font-data); }
 .ledger .what button { all: unset; cursor: pointer; font-weight: 500; }
@@ -87,6 +90,10 @@
   .facet > .label, .facet > .fgroup > .label { padding-top: 0; }
   .rootfold { grid-column: 1; }
   .ledger thead { display: none; }
+  .ledger tbody tr.band { display: block; padding: 0; }
+  /* The grid row above outranks the shell's tr[data-tout]; a shut band's rows stay hidden here too. */
+  .ledger tbody tr[data-tout] { display: none; }
+  .ledger tbody tr.band td { display: block; }
   .ledger tbody tr { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". meta acts"; border-bottom: var(--rule-hair) solid var(--color-rule-2); padding: var(--space-xs) 0; }
   .ledger td { height: auto; border: 0; padding: 0 var(--space-2xs); }
   .ledger .g { grid-area: g; } .ledger .what { grid-area: what; } .ledger .acts { grid-area: acts; align-self: center; }

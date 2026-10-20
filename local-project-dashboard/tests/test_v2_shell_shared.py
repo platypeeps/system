@@ -624,6 +624,20 @@ class TheTableGrammar(unittest.TestCase):
         self.assertEqual(out["good"], {"sort": "Kind", "dir": -1, "q": "a", "f": {"Kind": "job"}, "closed": ["Mon"]})
         self.assertEqual(out["none"], out["bad"])
 
+    def test_a_band_with_data_band_keys_its_fold_by_it_so_a_changing_count_keeps_it_shut(self):
+        """sd:5484: Documents' repo bands carry a count that moves with every filter; data-band names the fold instead."""
+        js = (STATIC / "shell.js").read_text(encoding="utf-8")
+        found = re.search(r"\n  (const tlabel = .*?;)\n", js), re.search(r"\n  (function tmodel\(t\) \{.*?\n  \})\n", js, re.S)
+        self.assertTrue(all(found), "shell.js has no tlabel or tmodel")
+        out = run_js(found[0].group(1) + "\n" + found[1].group(1) + """
+  const td = text => ({ colSpan: 7, textContent: text, matches: () => false, dataset: {} });
+  const tr = (text, data) => ({ cells: [td(text)], textContent: text, dataset: data, matches: () => false });
+  const t = { tBodies: [{ rows: [tr('Lab3 documents', { band: 'lab' }), tr('Monday', {})] }] };
+  R.cells = tmodel(t).map(r => [r.kind, r.cells[0]]);""")
+        self.assertEqual(out["cells"], [["group", "lab"], ["group", "Monday"]])
+        # The fold is keyed by the band's model cell, which is that name, not the band's words.
+        self.assertIn("const label = s.head.cells[0]", js)
+
     def test_the_grammar_keeps_its_state_in_local_storage_inside_try_and_its_chips_apart(self):
         js = (STATIC / "shell.js").read_text(encoding="utf-8")
         self.assertIn("const TKEY = `sd.tables.${location.pathname}`;", js)
