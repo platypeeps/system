@@ -44,7 +44,8 @@ SHARED = (
     ".fbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }",
     ".fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; }",
     ".fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }",
-    ".fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }",
+    # sd:5529 (operator, 2026-10-20): Clear all sits right after the filters, "don't have it aligned right, but left".
+    ".fsum { display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }",
 )
 # The lamp selectors only annunciator-strip.css may style, and the ledger selectors only shell.css may. A page keeps what is
 # its own: a cell's extra class (`.cell.clock`), what sits inside a cell (`.cell kbd`) and its narrow-screen ledger cards.

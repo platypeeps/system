@@ -751,7 +751,7 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .tok .x { display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; color: var(--color-ink-2); }
 .tok:hover .x { background: var(--color-panel); color: var(--color-ink); }
 .fseg button:focus-visible, .tok:focus-visible { outline: var(--rule-focus) solid var(--color-focus); outline-offset: 1px; }
-.fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
+.fsum { display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
 .fsum:empty { display: none; }
 @media (pointer: coarse) {
   .fseg button, .tok { min-height: var(--row-touch); }

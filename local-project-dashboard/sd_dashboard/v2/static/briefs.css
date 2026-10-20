@@ -96,7 +96,6 @@
   .lanes { grid-template-columns: minmax(0, 1fr); }
   .lane-btn { border-bottom: 0; }
   .axis-label { display: none; }
-  .fsum { margin-left: 0; }
 }
 @media (max-width: 899px) {
   .ledger thead { display: none; }

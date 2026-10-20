@@ -142,7 +142,6 @@ input.fld.num { width: 5rem; }
   .ledger tbody tr[aria-selected="true"] { background: var(--color-accent-bg); box-shadow: inset var(--rule-lamp) 0 0 var(--color-accent); }
   .ledger tbody tr[aria-selected="true"] td { background: transparent; box-shadow: none; }
   .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .fsum { margin-left: 0; }
 }
 @media (max-width: 599px) {
   .row { grid-template-columns: minmax(0, 1fr); gap: var(--space-2xs); padding: var(--space-xs) 0; }

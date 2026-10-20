@@ -198,7 +198,6 @@
   .quad, .quad[data-q] { border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); }
   .reticle { display: none; }
   .quad .drop { grid-template-columns: minmax(0, 1fr); }
-  .fsum { margin-left: 0; }
   .ffind { flex: 1 1 100%; }
   .ffind input { flex: 1; width: auto; }
 }
