@@ -1288,7 +1288,9 @@
       let b = td.querySelector(':scope > button.tfold');
       if (!b) {
         b = document.createElement('button'); b.type = 'button'; b.className = 'tfold';
-        put(b, html`${ICON('chevron-right')}`); b.append(...[...td.childNodes]); td.append(b);
+        // One span holds the label, so its mixed font sizes share a baseline instead of each centring as a flex item.
+        const text = document.createElement('span'); text.append(...[...td.childNodes]);
+        put(b, html`${ICON('chevron-right')}`); b.append(text); td.append(b);
         s.head.tr.removeAttribute('aria-hidden');
       }
       b.dataset.tfold = label;
