@@ -1431,6 +1431,18 @@ ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'kind' }, value: 't
 ELS.main.listeners.change.forEach(f => f({ target: { dataset: { edit: 'p', key: String(ASK) }, value: '1' } })); await flush();
 R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C.get(String(ITEM)).type; R.gets = OUT.gets;"""
 
+    def test_a_linked_item_the_view_hides_stays_selected_and_says_so(self):
+        # sd:5462: a report done this week is in the read, but the board's view hid it, so the first draw selected the first
+        # card and rewrote ?row= (seen in a real browser on 2026-10-20). The linked row stays selected until another is picked.
+        shown = self.item("A report that wants a look", kind="report", fields={"attention": True})
+        self.doc = tasks_screen.document(self.connection, now=NOW)
+        self.assertIn(shown, {row["id"] for row in self.doc["rows"]})
+        out = self.run_page(self.LEFT_OUT.replace("ASK", str(self.ids["ask"])).replace("ITEM", str(shown)), self.ECHO,
+                            search=f"?view=list&row={shown}")
+        kept = out["R"]["kept"]
+        self.assertEqual(set(zip(kept[::2], kept[1::2])), {(str(shown), True)})
+        self.assertIn(f"The view or filters hide #{shown}; it stays selected until you pick another.", out["R"]["after"])
+
     def test_a_linked_item_the_list_leaves_out_opens_in_details_and_in_no_view(self):
         quiet = self.item("A quiet nightly run", kind="report", fields={"attention": False})
         self.doc = tasks_screen.document(self.connection, now=NOW)

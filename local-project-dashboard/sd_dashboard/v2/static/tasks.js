@@ -56,7 +56,10 @@ addEventListener('DOMContentLoaded', () => {
   // same. PIN is that item: its key, and its row once its /api/tasks/<id> reading answers (details' `row`), marked with why
   // the list leaves it out. The row is kept beside `tasks`, so no view, count or filter lists it; a read that lists it ends PIN.
   let PIN = null;
-  const pinned = k => !!PIN && PIN.key === k;
+  // LINK is the ?row= the page opened at when the read lists it: a view or filter that hides it keeps it selected, with a
+  // note, until another is picked (a done report the board hid lost its selection to the first card, sd:5462).
+  let LINK = null;
+  const pinned = k => !!PIN && PIN.key === k, held = k => pinned(k) || (!!LINK && LINK === k);
   const byKey = k => tasks.find(t => t.key === k) || (pinned(k) && PIN.row) || undefined;
   // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
   const listed = () => tasks.filter(t => !t.parked);
@@ -714,7 +717,7 @@ addEventListener('DOMContentLoaded', () => {
     detKey = t.key;
     put(el, html`<div class="kind"><span class="label">${t.kind}</span><span class="tag real">observed</span></div>
       <h2>${t.title}</h2>
-      ${t.unlisted ? html`<p class="why">The list, board and matrix leave #${t.id} out: ${t.unlisted}.</p>` : ''}
+      ${t.unlisted ? html`<p class="why">The list, board and matrix leave #${t.id} out: ${t.unlisted}.</p>` : LINK === t.key && !visible().some(x => x.key === t.key) ? html`<p class="why">The view or filters hide #${t.id}; it stays selected until you pick another.</p>` : ''}
       <dl class="fields">
         <dt>Id</dt><dd>#${t.id}</dd>
         <dt><label for="det-title">Title</label></dt><dd><input id="det-title" class="fld" value="${t.title}" required${dis}></dd>
@@ -875,13 +878,14 @@ addEventListener('DOMContentLoaded', () => {
     if (view === 'board') renderBoard(); else if (view === 'matrix') renderMatrix(); else renderList();
     // design.md § Selection: a filter or view change that hides the selected task moves the selection to the first visible
     // one, so x, . and the palette never act on a hidden card (review 2026-09-29, item 10).
-    shell.reconcile({ rows: document.querySelectorAll('main [data-key]'), id: n => n.dataset.key, current: selected, keep: pinned,
+    shell.reconcile({ rows: document.querySelectorAll('main [data-key]'), id: n => n.dataset.key, current: selected, keep: held,
       select: key => select(key, false), clear: () => { selected = null; writeURL(); } });
     renderDetails();
   }
 
   // ---------- Selection ----------
   function select(key, open) {
+    if (key !== LINK) LINK = null;
     selected = key;
     // The selected card or row is aria-current: a card holds a checkbox and buttons, so it is an article, not a listbox
     // option, whose descendants assistive technology treats as presentational (review, PR #46).
@@ -1311,7 +1315,7 @@ addEventListener('DOMContentLoaded', () => {
       // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
       drawn = true;
       const q = new URLSearchParams(location.search), row = shell.row();
-      if (row && byKey(row)) selected = row;
+      if (row && byKey(row)) { selected = row; LINK = row; }
       // sd:5462: a linked item the read does not list opens in Details (PIN above), not on its classic item page (sd:3526)
       // and not as the first card in its place. READ is set only by a read that answered.
       else if (row && READ) { PIN = { key: row }; selected = row; readDet(row); }
@@ -1338,7 +1342,7 @@ addEventListener('DOMContentLoaded', () => {
     first: () => selected,
     select: key => select(key, false),
     // The pinned item is not a row the read lists, so the reader finds no row for it: its selection stays.
-    unselect: () => { if (!pinned(selected)) selected = null; renderDetails(); },
+    unselect: () => { if (!held(selected)) selected = null; renderDetails(); },
   });
   function load() { return reading.load(); }
   // ---------- Run sweep (sd:5096, sd:5097) ----------
