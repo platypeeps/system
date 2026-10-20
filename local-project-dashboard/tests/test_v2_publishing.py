@@ -549,7 +549,9 @@ class BriefUndesignation(brief_tests.BriefCase):
         self.connection.execute("UPDATE item SET repo = ? WHERE id = ?", (str(self.checkout), self.brief))
         self.queue = self.base / "pending-mirror-syncs"
         self.enterContext(mock.patch.object(publishing.kit(), "QUEUE", self.queue))
-        fields = {"publish": {"notion": {}}, "published": {f"system::{self.STEM}": {"title": self.STEM, "notion": NOTION_URL}}}
+        from sd_db import paths
+
+        fields = {"publish": {"notion": {}}, "published": {f"{paths.key(str(self.checkout))}::{self.STEM}": {"title": self.STEM, "notion": NOTION_URL}}}
         self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), self.brief))
         self.connection.commit()
 
@@ -559,6 +561,27 @@ class BriefUndesignation(brief_tests.BriefCase):
         self.assertNotIn("publish", self.fields())
         request = json.loads((self.queue / f"system.{self.STEM}.notion.json").read_text(encoding="utf-8"))
         self.assertEqual((request["action"], request["url"], request["item"]), ("trash", NOTION_URL, self.brief))
+
+    def test_only_this_repos_url_is_named_never_another_with_the_same_document(self):
+        """Codex review: a suffix match on `::<title>` took another repository's copy."""
+        from sd_db import paths
+
+        fields = {"publish": {"notion": {}}, "published": {
+            f"/elsewhere/other::{self.STEM}": {"notion": "https://www.notion.so/other-page"},
+            f"{paths.key(str(self.checkout))}::{self.STEM}": {"notion": NOTION_URL}}}
+        self.connection.execute("UPDATE item SET fields = ? WHERE id = ?", (json.dumps(fields), self.brief))
+        self.connection.commit()
+        publishing.undesignate_brief(self.connection, self.brief, "notion")
+        request = json.loads((self.queue / f"system.{self.STEM}.notion.json").read_text(encoding="utf-8"))
+        self.assertEqual(request["url"], NOTION_URL)
+
+    def test_a_document_url_is_read_under_its_own_repo_key(self):
+        from sd_db import paths
+
+        published = {7: {"/elsewhere/lab::plan": {"notion": "https://www.notion.so/other-page"},
+                         f"{paths.key(str(self.checkout))}::plan": {"notion": NOTION_URL}}}
+        self.assertEqual(publishing._document_url(published, self.checkout, "plan", "notion"), NOTION_URL)
+        self.assertEqual(publishing._document_url({7: {"/elsewhere/lab::plan": {"notion": NOTION_URL}}}, self.checkout, "plan", "notion"), "")
 
     def test_a_brief_not_designated_for_the_channel_is_refused(self):
         with self.assertRaisesRegex(publishing.Refused, "not designated for drive"):

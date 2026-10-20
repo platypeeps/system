@@ -544,7 +544,7 @@ def unrequest(values: dict, *, config_path=None, repo_root=None):
         item = _item_of(checkout, out)
         published = published_fields(connection, [item]) if connection is not None and item is not None else {}
         try:
-            return undesignate(checkout, out, values["channel"], url=_document_url(published, out, values["channel"]))
+            return undesignate(checkout, out, values["channel"], url=_document_url(published, checkout, out, values["channel"]))
         except Refused as refused:
             raise ValueError(str(refused)) from None
 
@@ -562,10 +562,17 @@ def _item_of(checkout: Path, out: str):
     return item.value if isinstance(item, ast.Constant) and type(item.value) is int else None
 
 
-def _document_url(published: dict, out: str, channel: str) -> str:
-    """The URL an item's `fields.published` records for this document's channel, or ""."""
+def _own_key(repo, document: str) -> str:
+    """The `fields.published` key `channels.record_url` writes for this repository's document: never another's of that name."""
+    from sd_db import paths
+
+    return f"{paths.key(str(repo))}::{document}"
+
+
+def _document_url(published: dict, checkout: Path, out: str, channel: str) -> str:
+    """The URL an item's `fields.published` records for this checkout's document and channel, or ""."""
     for fields in published.values():
-        url = _from_fields(fields, {k for k in fields if k.endswith(f"::{out}")}).get(channel)
+        url = _from_fields(fields, {_own_key(checkout, out)}).get(channel)
         if url:
             return url
     return ""
@@ -705,7 +712,7 @@ def undesignate_brief(connection, item: int, channel: str) -> dict:
     if not isinstance(publish.get(channel), dict):
         raise Refused(f"sd:{item} is not designated for {channel}, so there is nothing to untick")
     published = fields.get("published") if isinstance(fields.get("published"), dict) else {}
-    state, said = _trash_queue()(checkout, row["title"], channel, item=item, url=_from_fields(published).get(channel, ""))
+    state, said = _trash_queue()(checkout, row["title"], channel, item=item, url=_from_fields(published, {_own_key(row["repo"], row["title"])}).get(channel, ""))
     if not state:
         raise Refused(f"{said}; the designation stays")
     lines = [said]
