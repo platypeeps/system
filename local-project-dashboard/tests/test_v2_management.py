@@ -1709,6 +1709,19 @@ R.sched = ELS['view-schedules'].html;""")
         self.assertEqual(out["urls"][-1], {"view": "schedules", "p": None, "q": "state:failed"})
         self.assertNotIn(">quiet<", out["R"]["sched"])
 
+    def test_the_text_token_holds_the_free_words_and_its_removal_keeps_the_pressed_state(self):
+        """sd:5504: the pressed failed segment already shows state:failed, so the token is the free words alone; removing it
+        keeps the segment's word, and each segment keeps its visible label."""
+        click = "document.querySelector('main').listeners.click.forEach(f => f({ target: { closest: s => s === '[data-f=\"q\"]' ? { dataset: { f: 'q', v: '' } } : null } }));"
+        out = self.run_page("R.a = ELS['view-schedules'].html;" + click + " R.b = ELS['view-schedules'].html; R.box = ELS.shift.value;",
+                            search="?view=schedules&q=state:failed nightly")
+        self.assertIn('<div class="fgroup"><span class="label" aria-hidden="true">State</span><div class="fseg" role="group" aria-label="State">', out["R"]["a"])
+        self.assertIn('data-f="state" data-v="failed" aria-pressed="true"', out["R"]["a"])
+        self.assertEqual(re.findall(r'class="tok" data-f="q" data-v="" aria-label="Remove filter: ([^"]+)"', out["R"]["a"]), ["“nightly”"])
+        self.assertEqual(out["R"]["box"], "state:failed")
+        self.assertIn('data-f="state" data-v="failed" aria-pressed="true"', out["R"]["b"])
+        self.assertNotIn('class="tok"', out["R"]["b"])
+
     def test_a_view_name_from_the_url_is_one_of_five_or_repos(self):
         for name in ("constructor", "toString", "__proto__", "nope"):
             with self.subTest(name=name):

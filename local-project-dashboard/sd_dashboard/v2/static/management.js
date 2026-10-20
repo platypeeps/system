@@ -209,8 +209,12 @@ const SCHED_COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['name', '
 const textChip = () => text.q ? [{ key: 'q', label: `Text: ${text.q}` }] : [];
 // sd:5504: each list's filter bar is Activity's (shell.list.fbar): its segments, the text as a token, then Clear all.
 // The count sits on the list's title line while a filter hides rows (sd:5281).
-const filterSeg = (k, name, vals, on) => shell.list.fseg(k, name, vals.map(v => ({ v, label: v, pressed: on === v })));
-const filterBar = (parts, clear) => shell.list.fbar(html`${parts}${text.q ? shell.list.tok('q', '', `“${text.q}”`) : ''}`, { clear: !!clear });
+// A segment keeps its visible label: yes and no say nothing alone. The token holds the free words only, since a pressed
+// segment already shows a managed:, merge: or state: word, and removing the token keeps those words.
+const FIELD = /^(managed|merge|state):\w+$/i;
+const filterSeg = (k, name, vals, on) => html`<div class="fgroup"><span class="label" aria-hidden="true">${name}</span>${shell.list.fseg(k, name, vals.map(v => ({ v, label: v, pressed: on === v })))}</div>`;
+const filterBar = (parts, clear) => { const free = text.q.split(/\s+/).filter(w => w && !FIELD.test(w)).join(' ');
+  return shell.list.fbar(html`${parts}${free ? shell.list.tok('q', '', `“${free}”`) : ''}`, { clear: !!clear }); };
 const hides = (n, all, noun) => n < all ? html`<span>${shell.list.count(n, all, noun)}</span>` : '';
 const repoChips = () => [RS.managed && { key: 'managed', label: `Managed: ${RS.managed}` }, RS.merge && { key: 'merge', label: `Lane merge: ${RS.merge}` }, ...textChip()].filter(Boolean);
 const text = { q: '' };
@@ -987,7 +991,7 @@ document.querySelector('main').addEventListener('click', e => {
   // and writes the URL.
   const q = e.target.closest('[data-f="q"]'), all = e.target.closest('[data-fclear]'); if (!q && !all) return;
   if (all) RS.managed = RS.merge = null;
-  box.value = ''; text.q = ''; applyText();
+  box.value = all ? '' : box.value.split(/\s+/).filter(w => FIELD.test(w)).join(' '); applyText();
 });
 
 // ---------- Details pane ----------
