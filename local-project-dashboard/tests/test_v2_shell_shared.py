@@ -21,7 +21,7 @@ import subprocess
 import unittest
 from html.parser import HTMLParser
 
-from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SHELL_JS, STAND_IN, V2
+from test_v2_tasks import FETCH_JS, LIST_JS, MARKUP_JS, SETTLE_JS, SHELL_JS, STAND_IN, V2
 from test_v2_today import OSASCRIPT
 
 STATIC = V2 / "static"
@@ -1247,6 +1247,38 @@ class TheOneViewModel(unittest.TestCase):
             if 'id="viewswitch"' not in page:
                 missing += [f"{stem}: {v}" for v in sorted(views - panels)]
         self.assertEqual((stray, missing), ([], []))
+
+
+class TheRowActions(unittest.TestCase):
+    """sd:5457: a row's act is its icon when the command declares one, a text button when it does not, then ⋯."""
+
+    ROW_ACTIONS = re.search(r"  function rowActions\(id\) \{.*?\n  \}\n", SHELL_JS, re.S).group(0)
+
+    def row(self, command):
+        script = (STAND_IN + MARKUP_JS + "\nconst { html, plural } = window.markup;\n"
+                  + "const ICON = n => html`<svg class=\"i\" aria-hidden=\"true\"><use href=\"#i-${n}\"/></svg>`;\n"
+                  + SETTLE_JS + "\nconst OBJ = new Map([['r1', { id: 'r1', type: 'row', label: 'notes.html' }]]);\n"
+                  + f"const CMD = {command};\nconst live = () => [CMD];\n" + self.ROW_ACTIONS
+                  + "\nvar R = {};\n(async () => { try {\nR.html = String(rowActions('r1'));\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
+                  + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
+        result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script], capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = json.loads(result.stdout)
+        self.assertIsNone(out["error"])
+        return out["R"]["html"]
+
+    def test_a_command_with_an_icon_is_an_icon_button_named_by_its_label(self):
+        html = self.row("{ id: 'x.hide', label: 'Hide', does: 'Hides this row.', key: 'h', icon: 'eye-off', risk: 'undo', undo() {},"
+                        " primary: () => true, cli: () => 'no CLI: view state' }")
+        self.assertIn('<button class="icon-btn" type="button" data-cmd="x.hide" data-obj="r1" aria-label="Hide" aria-keyshortcuts=". h"'
+                      ' data-tip="Hide (. h): Hides this row. Dashboard only, no CLI line. Undo offered.">'
+                      '<svg class="i" aria-hidden="true"><use href="#i-eye-off"/></svg></button>', html)
+        self.assertNotIn(">Hide<", html)
+        self.assertIn('data-menu-for="r1"', html)
+
+    def test_a_command_without_an_icon_stays_a_text_button(self):
+        html = self.row("{ id: 'x.run', label: 'Run', does: 'Runs it.', risk: 'safe', primary: () => true, cli: () => 'sd run' }")
+        self.assertIn('<button class="btn quiet sm" type="button" data-cmd="x.run" data-obj="r1" data-tip="Runs it. Runs sd run.">Run</button>', html)
 
 
 if __name__ == "__main__":

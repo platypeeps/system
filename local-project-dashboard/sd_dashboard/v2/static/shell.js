@@ -737,12 +737,16 @@
       const t = document.getElementById('chat-input'); t.value = `Change the proposal: `; t.focus();
     }
   });
-  // Row: the primary command as a button, then ⋯ for the menu.
+  // Row: the primary command as a button, then ⋯ for the menu. sd:5457: a command that declares an icon shows as that
+  // icon, its label the button's name and the head of its tip; one without an icon keeps its text.
   function rowActions(id) {
     const o = OBJ.get(id); if (!o) return html``;
     const L = live(o), p = L.find(c => c.primary?.(o));
     if (!L.length) return html`<span class="rowact"></span>`;
-    return html`<span class="rowact">${p ? html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>` : ''}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
+    const act = !p ? '' : p.icon
+      ? html`<button class="icon-btn" type="button" data-cmd="${p.id}" data-obj="${id}" aria-label="${p.label}" aria-keyshortcuts="${p.key ? '. ' + p.key : ''}" data-tip="${`${p.label}${p.key ? ` (. ${p.key})` : ''}: ${tipOf(p, o)}`}">${ICON(p.icon)}</button>`
+      : html`<button class="btn quiet sm" type="button" data-cmd="${p.id}" data-obj="${id}" data-tip="${tipOf(p, o)}">${p.label}</button>`;
+    return html`<span class="rowact">${act}<button class="icon-btn" type="button" data-menu-for="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${o.label}">${ICON('ellipsis')}</button></span>`;
   }
   // Details: every command as a button; what it does and its line are the button's tip (sd:5287), its CLI line and the
   // reason an off one is off fold under "Same thing from the CLI", closed until opened (sd:3464).
