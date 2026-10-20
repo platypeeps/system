@@ -54,6 +54,10 @@ inventory gives the job's state, its off reason (not installed, running, or a
 start launchd refuses) and the last line of its log; while it runs, the page
 reads again every 15 seconds (`SRC_POLL`).
 
+Refresh all, the panel head's button and the palette's "Refresh all sources" (sd:5482), posts the same route
+for each row whose Run now is on, then reads HOA once. Its toast names each source that started and each
+that did not, with the reason. With no row able to start, it is off and names every row's reason.
+
 The last Data sources row is the HOA sweep (sd:5095). Run sweep asks first,
 then posts `/api/hoa/sweep`, which starts the checkout's `tools/sweep.py run`
 detached, holding `<state>/system/hoa-sweep/lock` (`sd_dashboard/sweep.py`): a second

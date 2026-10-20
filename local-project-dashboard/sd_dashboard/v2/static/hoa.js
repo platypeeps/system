@@ -22,6 +22,8 @@
   const srcOf = key => SRC.find(r => r.source === key);
   // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
+  // sd:5482: the Data sources head's Refresh all command, registered on DOMContentLoaded.
+  let REFRESH = null;
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -335,6 +337,17 @@ let polling = 0;
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
     put($('src-body'), !DOC ? html`` : html`${drawSourceRows(C, sr)}${SWEEP ? sweepRow() : ''}`);
+    // sd:5482: Refresh all, the head's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
+    const o = C.get('sources'), w = o && REFRESH ? REFRESH.when(o) : '';
+    const icon = html`<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${REFRESH?.label}`;
+    put($('src-tools'), !o || !REFRESH ? html`` : w === true
+      ? html`<button class="btn quiet sm" type="button" id="src-refresh" data-tip="${REFRESH.does} Runs ${REFRESH.cli(o)}.">${icon}</button>`
+      : html`<button class="btn quiet sm" type="button" id="src-refresh" aria-disabled="true" aria-describedby="src-refresh-off" data-tip="${w}">${icon}</button><span class="sr" id="src-refresh-off">${w}</span>`);
+  }
+  // The head button and the palette entry: an off Refresh all toasts its reason, as the shell's run does not check it.
+  function refreshAll() {
+    const S = window.shell, o = S.commands.get('sources'), w = o && REFRESH ? REFRESH.when(o) : 'HOA is not read';
+    if (w === true) S.commands.run(REFRESH, o); else S.toast(w);
   }
   function drawSourceRows(C, sr) {
     return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
@@ -417,7 +430,9 @@ let polling = 0;
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
-        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source }))];
+        ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source })),
+        // sd:5482: the Data sources head, which Refresh all acts on.
+        ...(doc.sources && !doc.sources.error ? [{ id: 'sources', type: 'sources', label: 'Data sources' }] : [])];
       SWEEP = doc.sweep || null;
       if (SWEEP) objects.push({ id: 'sweep', type: 'sweep', label: 'HOA sweep' });
       if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running) poll();
@@ -442,6 +457,7 @@ let polling = 0;
   window.PAGE_COMMANDS = [
     { label: 'Read HOA again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Fit the map to the HOA', icon: 'maximize-2', run: () => { center = null; zoomTo(1); } },
+    { label: 'Refresh all sources', icon: 'rotate-ccw', run: () => refreshAll() },
   ];
   // The shell walks the ledger rows on j / k; a row selects by its own click.
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected, select: id => select(id, false) };
@@ -550,15 +566,40 @@ let polling = 0;
     const facts = o => { const j = srcOf(o.source)?.job || {};
       return { name: j.name, service: j.service, failed: j.state === 'failed', exit: j.last_exit,
         capability: j.error ? { allowed: false, reason: j.error } : j.state === 'running' ? { allowed: false, reason: `${j.name} is running now` } : j.capabilities?.retry }; };
+    const kick = j => S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision });
     const refresh = o => { const j = srcOf(o.source).job;
-      return S.post(`/api/jobs/${encodeURIComponent(j.name)}/retry`, { revision: j.revision })
-        .then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+      return kick(j).then(out => reader.reread().then(() => { poll(); return window.commands.answered(out, j.name, 'started', `${o.label} refresh started · ${j.name} · HOA reads again until it ends`); })); };
+    const retry = window.commands.retry({ job: facts, run: refresh });
     C.register(
-      { ...window.commands.retry({ job: facts, run: refresh }),
+      { ...retry,
         does: o => o.source === 'mission' ? 'Exports and imports Mission data once in signed-in Chrome, up to 30 min.'
           : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
       window.commands.showLog({ job: facts }),
     );
+    // ---------- Refresh all (sd:5482) ----------
+    // The Data sources head's one button: Retry's post for every source row whose Retry is on, then one reread. Each source's
+    // off reason is Retry's own; the toast names what started and what did not.
+    const jobRows = () => SRC.filter(r => r.job).map(r => C.get(`source:${r.source}`)).filter(Boolean);
+    const startable = () => jobRows().filter(o => retry.when(o) === true);
+    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', risk: 'safe', primary: () => true, executes: true,
+      does: 'Starts every source\'s refresh job that can start, as each row\'s Run now does.',
+      when: () => { const all = jobRows(); return !all.length ? 'no source has a refresh job' : startable().length ? true : all.map(o => `${o.label}: ${retry.when(o)}`).join(' · '); },
+      askFirst: () => startable().some(o => retry.askFirst(o)),
+      consequence: () => startable().map(o => retry.consequence(o)).filter(Boolean).join(' '),
+      cli: () => (startable().length ? startable() : jobRows()).map(o => retry.cli(o)).join(' && '),
+      sends: () => startable().map(o => retry.sends(o)).filter(Boolean).join('; '),
+      run: () => { const go = startable(), rest = jobRows().filter(o => !go.includes(o));
+        // answered() gives true for a sent start, else the sentence that names the job and why.
+        return Promise.all(go.map(o => { const j = srcOf(o.source).job;
+          return kick(j).then(out => window.commands.answered(out, j.name, 'started', true),
+            err => err.status ? `${j.name} not started: ${err.message}` : `Not known whether ${j.name} was started: no answer (${err.message})`); }))
+          .then(said => reader.reread().then(() => {
+            const ok = go.filter((_, i) => said[i] === true), not = [...said.filter(s => s !== true), ...rest.map(o => `${o.label} not started: ${retry.when(o)}`)];
+            if (ok.length) poll();
+            return [ok.length ? `Refresh started · ${ok.map(o => o.label).join(', ')}` : 'Nothing started', ...not, ok.length ? 'HOA reads again until it ends' : ''].filter(Boolean).join(' · ');
+          })); } };
+    C.register(REFRESH);
+    $('src-tools').addEventListener('click', e => { if (e.target.closest('#src-refresh')) refreshAll(); });
     // ---------- Run sweep (sd:5095) ----------
     // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.
