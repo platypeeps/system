@@ -215,7 +215,7 @@
         run: o => window.shell.post(`${base}/publish`, { ...payload(o.row), channel: o.channel }).then(
           r => reread().then(() => r.queued ? `Queued for ${o.name} · ${o.row.label}` : `${o.name} designated; not queued: ${(r.lines || []).slice(-1)[0] || 'publish said nothing'}`),
           err => refusal(err, 'it was designated')) },
-      { id: `${on}.unpublish`, on: `${on} destination`, label: 'Remove copy', does: 'Drops the designation and queues its copy for the trash, where it can be restored; Publish now drains it. Undo ticks it again.', icon: 'x', risk: 'undo', askFirst: true, executes: true,
+      { id: `${on}.unpublish`, on: `${on} destination`, label: 'Remove copy', does: 'Queues the copy for the trash, which can restore it. Undo re-ticks.', icon: 'x', risk: 'undo', askFirst: true, executes: true,
         when: o => o.channel === 'obsidian' ? 'Obsidian is the repo\'s channels setting: change it under Management > Publishing'
           : !o.set ? `not designated for ${o.name}` : o.why || true,
         cli: () => 'no sd verb: remove the designation by hand, then trash the copy by the publication contract',

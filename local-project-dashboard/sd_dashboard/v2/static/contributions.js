@@ -157,7 +157,7 @@ addEventListener('DOMContentLoaded', () => {
           run: o => view(o, hidden).then(() => `${done} · ${o.label}${after}`),
           undo: o => view(o, !hidden) })),
       // build (sd:5488): Edit opens the ticket or issue where it lives, in a new tab; nothing is posted, and the next sync reads it back.
-      { id: 'filed.edit', on: 'filed', label: 'Edit', does: 'Opens it in Jira or on GitHub in a new tab; the dashboard writes nothing there.', key: 'e', icon: 'arrow-up-right', risk: 'safe',
+      { id: 'filed.edit', on: 'filed', label: 'Edit', does: 'Opens it in Jira or on GitHub in a new tab; writes nothing.', key: 'e', icon: 'arrow-up-right', risk: 'safe',
         when: o => safeLink(o.url) || 'no https link recorded',
         cli: o => `open ${shq(o.url)}`,
         run: o => { window.open(o.url, '_blank', 'noopener'); return `Opened in ${TRACKER[o.tracker]} · ${o.ref}`; } },
