@@ -29,7 +29,6 @@ section + section { margin-top: var(--space-2xl); }
 .more-jobs { margin-top: var(--space-xs); }
 
 /* Filters */
-.filters label.sel { display: flex; flex-direction: column; gap: 2px; font: 600 var(--text-2xs)/1 var(--font-label); letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-muted); min-width: 0; }
 
 /* Ledger */
 .ledger tr.band-start td { border-top: var(--rule-hair) solid var(--color-rule); }
@@ -64,8 +63,6 @@ section + section { margin-top: var(--space-2xl); }
 
 @media (max-width: 599px) {
   #refresh { grid-column: 1 / -1; }
-  .filters label.sel { flex: 1 1 8rem; }
-  .filters select { width: 100%; }
   .cad thead th:not(:first-child) { font-size: 0.5625rem; letter-spacing: 0; padding: var(--space-2xs) 0; }
   .cad .m small { display: none; }
 }

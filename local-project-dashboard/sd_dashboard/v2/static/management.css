@@ -37,8 +37,6 @@
 .no { color: var(--color-muted); }
 
 /* Filters (lists pattern); sort, pager and chips are shell.list's. */
-.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
-.fgroup > .label { margin-right: var(--space-2xs); }
 .linkbtn { min-height: 1.75rem; border: 0; background: none; padding: 0 var(--space-2xs); color: var(--color-ink-2); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 
 /* Repo settings sheet. */

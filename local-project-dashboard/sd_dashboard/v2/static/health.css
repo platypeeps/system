@@ -25,8 +25,6 @@ p.quiet { margin: var(--space-xs) 0 0; font: 400 var(--text-xs)/1.4 var(--font-d
 .area[hidden] { display: none; }
 
 /* Filters: Tasks' chip grammar. Chips in one group widen, groups narrow; a lamp sets the Area group to its area. */
-.fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; }
-.fgroup > .label { margin-right: var(--space-2xs); }
 .fgroup .chips { margin: 0; }
 .fgroup .chip .n { color: var(--color-muted); font-family: var(--font-data); }
 

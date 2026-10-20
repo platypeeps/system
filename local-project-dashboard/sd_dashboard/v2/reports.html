@@ -65,12 +65,7 @@
           <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
         <p class="tally" id="tally"></p>
       </div>
-      <div class="filters toolbar-2" id="filters">
-        <label class="sel">Job<select id="f-job"><option value="">All jobs</option></select></label>
-        <label class="sel">Status<select id="f-status"><option value="">Any status</option><option value="act">Needs action</option><option value="open">Open</option><option value="done">Acknowledged</option></select></label>
-        <label class="sel">Day<select id="f-day"><option value="">Any day</option></select></label>
-      </div>
-      <div id="chips"></div>
+      <div class="filters toolbar-2" id="filters"></div>
       <table class="ledger" aria-labelledby="led-h" data-tfilter="page" data-toolbar="toolbar">
         <thead id="rows-head"><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Report</th><th scope="col">Detail</th><th scope="col">Recorded</th><th scope="col">Status</th><th scope="col" class="act"><span class="sr">Actions</span></th></tr></thead>
         <tbody id="rows"></tbody>

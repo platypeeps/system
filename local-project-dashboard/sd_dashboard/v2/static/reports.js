@@ -152,19 +152,32 @@ byId('cad-body').addEventListener('click', e => { const tr = e.target.closest('t
 
 // Filters.
 const F = { job: '', status: '', day: '', fam: '', q: '' };
-let picks = new Set(), days = [];
+let picks = new Set(), days = [], jobs = [];
 function fillFilters() {
   // Every job the reading names, not only jobs with a report row: a cadence row sets this filter, and readURL takes ?job=
-  // only when an option has it (sd:2430). A job with no report shows "Nothing matches".
-  const jobs = [...new Set([...ROWS.map(r => r.job), ...Object.keys(JOBS), ...Object.keys(CAD)])].sort();
-  put(byId('f-job'), html`<option value="">All jobs</option>${jobs.map(j => html`<option>${j}</option>`)}`);
+  // only when the list has it (sd:2430). A job with no report shows "Nothing matches".
+  jobs = [...new Set([...ROWS.map(r => r.job), ...Object.keys(JOBS), ...Object.keys(CAD)])].sort();
   days = [...new Set(ROWS.map(r => r.at.slice(0, 10)))].sort().reverse();
-  put(byId('f-day'), html`<option value="">Any day</option>${days.map(d => html`<option value="${d}">${new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })}</option>`)}`);
-  byId('f-job').value = F.job; byId('f-day').value = F.day;
 }
-function setJob(j) { jobFilter = j; F.job = j; byId('f-job').value = j; L.page = 1; renderCad(); renderRows(); }
-byId('f-job').addEventListener('change', e => setJob(e.target.value));
-[['f-status', 'status'], ['f-day', 'day']].forEach(([id, k]) => byId(id).addEventListener('change', e => { F[k] = e.target.value; L.page = 1; renderRows(); }));
+function setJob(j) { jobFilter = j; F.job = j; L.page = 1; renderCad(); renderRows(); }
+// The filter bar (sd:5463), Activity's layout from shell.list: Status as a segment with its counts, Job and Day as picks,
+// the lamp's family and the query as removable tokens, then Clear all. The count sits on the title line.
+function renderFilters() {
+  const list = window.shell.list, n = f => ROWS.filter(f).length;
+  const st = (v, word, count, g) => ({ v, pressed: F.status === v, title: `${word}: ${count}`,
+    label: html`${g ? html`<span class="g-warning" aria-hidden="true">${g}</span>` : ''}${word} <span class="n">${String(count)}</span>` });
+  put(byId('filters'), list.fbar(html`${list.fseg('status', 'Status', [st('act', 'Needs action', n(r => r.act), '■'), st('open', 'Open', n(r => r.open)), st('done', 'Acknowledged', n(r => !r.open))])}
+    ${list.pick('job', 'Job', jobs.map(j => [j, j]), F.job, { all: 'All jobs' })}${list.pick('day', 'Day', days.map(d => [d, shortDay(d)]), F.day, { all: 'Any day' })}
+    ${F.fam ? list.tok('fam', F.fam, `Family: ${FAMILIES.find(f => f[0] === F.fam)?.[1] || F.fam}`) : ''}${F.q ? list.tok('q', '', `“${F.q}”`) : ''}`, { clear: !!activeFilters().length }));
+}
+byId('filters').addEventListener('change', e => window.shell.list.pickChange(e, F, () => { jobFilter = F.job; L.page = 1; renderCad(); renderRows(); }));
+byId('filters').addEventListener('click', e => {
+  if (e.target.closest('[data-fclear]')) return clearAll();
+  const b = e.target.closest('[data-f]'); if (!b) return;
+  const { f, v } = b.dataset;
+  if (f === 'status') { F.status = F.status === v ? '' : v; L.page = 1; return renderRows(); }
+  unfilter([f]);
+});
 byId('annunciator').addEventListener('click', e => {
   const c = e.target.closest('button.cell'); if (!c) return;
   if (c.id === 'refresh') return load(); // build: refresh reads /api/reports again, not the whole page
@@ -173,7 +186,7 @@ byId('annunciator').addEventListener('click', e => {
   L.page = 1; renderRows(); window.shell.view.show('reports'); // a lamp filters the list, so it shows the list
 });
 
-// Active filters as chips above the list (sd:2529): each one removes itself, and Clear all removes every one.
+// Active filters (sd:2529): Clear all removes every one; a token removes its own.
 // Status folds the old Needs action view in (sd:5064): act is an open report that needs attention.
 const STATUS = { act: 'Needs action', open: 'Open', done: 'Acknowledged' };
 const shortDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -185,18 +198,14 @@ function activeFilters() {
 }
 // Each remover leaves the list to draw once, after it.
 const UNFILTER = {
-  job: () => { jobFilter = ''; F.job = ''; byId('f-job').value = ''; renderCad(); },
-  status: () => { F.status = ''; byId('f-status').value = ''; },
-  day: () => { F.day = ''; byId('f-day').value = ''; },
+  job: () => { jobFilter = ''; F.job = ''; renderCad(); },
+  status: () => { F.status = ''; },
+  day: () => { F.day = ''; },
   fam: () => { F.fam = ''; document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', 'false')); },
   q: () => { input.value = ''; prev.hidden = true; ghost.textContent = ''; F.q = ''; },
 };
 function unfilter(keys) { keys.forEach(k => UNFILTER[k]()); L.page = 1; renderRows(); }
 const clearAll = () => unfilter(activeFilters().map(f => f.key));
-byId('chips').addEventListener('click', e => {
-  const b = e.target.closest('[data-unfilter]'); if (b) return unfilter([b.dataset.unfilter]);
-  if (e.target.closest('[data-unfilter-all]')) clearAll();
-});
 
 // The list (sd:2527, sd:2528): newest first by default; every column with an order sorts; 50 a page, numbered pages.
 const RANK = { warning: 0, caution: 1, queued: 2, ok: 3, unknown: 4 };
@@ -233,7 +242,8 @@ function renderRows(read) {
   const slice = list.pageOf(shown, L);
   if (started) writeURL();
   put(byId('rows-head'), list.sortHead(COLS, L));
-  put(byId('chips'), list.chips(activeFilters(), shown.length, ROWS.length));
+  renderFilters();
+  byId('tally').textContent = DOC.reports ? list.count(shown.length, ROWS.length, 'report') : '';
   // Day bands read only in time order; another sort draws the rows without them.
   const byDay = L.sort === 'at';
   let lastDay = '';
@@ -248,8 +258,6 @@ function renderRows(read) {
   // A filter that clears it leaves cleared set, so the next render with rows selects the first one again.
   if (!read && started && (sel != null || cleared)) window.shell.reconcile({ rows: tbody.querySelectorAll('tr[data-id]'), current: sel, select: id => { cleared = false; select(id, false); },
     clear: clearDetails });
-  const dbOpen = ROWS.filter(r => r.open);
-  put(byId('tally'), html`<span class="g-warning">■ ${dbOpen.filter(r => r.attn).length} need attention</span><span class="g-queued">◌ ${dbOpen.filter(r => !r.attn).length} open run reports</span>`);
 }
 
 // Line diff against the previous report of the same job (LCS on lines).
@@ -308,12 +316,13 @@ function show(id) {
   window.shell.suggest([`What changed in ${r.job} since its last good run?`, `Why did ${r.job} ${r.attn ? 'fail' : 'report'} this time?`, `Show every open report from ${FAMILIES.find(f => f[0] === FAM_OF[r.job])?.[1] || 'this family'}`]);
   details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap'));
 }
-// The URL carries the filters and the row, so a filtered list can be bookmarked. The dropdowns are the one filter control;
+// The URL carries the filters and the row, so a filtered list can be bookmarked. The filter bar is the one filter control;
 // an old ?act=1 link (the Needs action view and checkbox) lands on Status: Needs action (sd:5064).
 function readURL() {
   const p = new URLSearchParams(location.search);
   if (p.get('act') === '1' && !p.get('status')) p.set('status', 'act');
-  ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (!v) return; const el = byId('f-' + k); if ([...el.options].some(o => o.value === v)) { F[k] = v; el.value = v; } });
+  const offered = { job: jobs, status: Object.keys(STATUS), day: days };
+  ['job', 'status', 'day'].forEach(k => { const v = p.get(k) || ''; if (v && offered[k].includes(v)) F[k] = v; });
   if (F.job) jobFilter = F.job;
   if (FAMILIES.some(([k]) => k === p.get('fam'))) { F.fam = p.get('fam'); document.querySelectorAll('.cell[data-fam]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fam === F.fam))); }
   if (p.get('q')) { F.q = p.get('q').toLowerCase(); byId('shift').value = p.get('q'); }
@@ -365,7 +374,7 @@ window.PAGE_VIEWS = [{ id: 'reports', label: 'Reports' }, { id: 'attention', lab
 document.addEventListener('shell:view', e => {
   const want = e.detail.id === 'attention' ? 'act' : e.detail.id === 'reports' && F.status === 'act' ? '' : F.status;
   if (want === F.status) return;
-  F.status = want; byId('f-status').value = want; L.page = 1; if (DOC) renderRows();
+  F.status = want; L.page = 1; if (DOC) renderRows();
 });
 // The shell walks these rows on j / k.
 window.PAGE_KEYS = [['/', 'Filter reports, capture a task or ask'], ['→', 'In the field: the next reading (filter, task, ask)']];
@@ -373,7 +382,7 @@ window.PAGE_LIST = { rows: () => tbody.querySelectorAll('tr[data-id]'), select: 
 
 window.PAGE_COMMANDS = [
   { label: 'Filter, capture or ask', icon: 'search', key: '/', run: () => input.focus() },
-  { label: 'Show reports that need action', icon: 'filter', run: () => { byId('f-status').value = 'act'; F.status = 'act'; L.page = 1; renderRows(); } },
+  { label: 'Show reports that need action', icon: 'filter', run: () => { F.status = 'act'; L.page = 1; renderRows(); } },
 ];
 
 // ---------- Commands (products/system/commands.md) ----------

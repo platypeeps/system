@@ -606,9 +606,9 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
 
     def test_the_job_filter_lists_every_job_the_reading_names_not_only_jobs_with_reports(self):
         # sd:2430: quiet-one is installed and logged no report; its cadence row sets the filter, so the filter must offer it.
-        out = self.run_page("R.jobs = ELS['f-job'].html;")
+        out = self.run_page("R.jobs = ELS.filters.html;")
         for job in ("nightly-sync", "weekly-scan", "quiet-one"):
-            self.assertIn(f"<option>{job}</option>", out["R"]["jobs"])
+            self.assertIn(f'<option value="{job}">{job}</option>', out["R"]["jobs"])
 
     def test_acknowledge_is_off_for_a_report_a_followup_holds_and_for_an_acknowledged_one(self):
         note = next(r for r in self.doc["reports"] if r["id"] == self.ids["failed"])["followups"]
@@ -706,8 +706,7 @@ R.type = C.get('r{n}').type; R.rows = ELS.rows.html; R.cad = ELS['cad-body'].htm
         # The stand-in tbody answers from the rows the page drew, so a selection outside them is visible.
         rows = """var TB = document.getElementById('rows');
 TB.querySelectorAll = () => [...(TB.html || '').matchAll(/<tr data-id="([^"]+)"/g)].map(m => ({ dataset: { id: m[1] }, setAttribute() {}, toggleAttribute() {} }));
-TB.querySelector = () => TB.querySelectorAll()[0] || null;
-document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"""
+TB.querySelector = () => TB.querySelectorAll()[0] || null;"""
         failed, clean = self.ids["failed"], self.ids["clean"]
         for search, want in ((f"?job=weekly-scan", f"r{clean}"), (f"?job=weekly-scan&row=r{failed}", f"r{clean}"),
                              (f"?row=r{clean}", f"r{clean}"), ("", f"r{failed}")):
@@ -946,7 +945,7 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
     def test_the_needs_attention_view_is_the_reports_table_with_status_needs_action(self):
         # sd:5461 (ruling: the view sets the filter): Needs attention reuses the Reports panel; Reports clears the value.
         view = "document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: '%s' } })); await flush();"
-        out = self.run_page((view % "attention") + " R.a = [F.status, ELS['f-status'].value, shown.every(r => r.act), shown.length];"
+        out = self.run_page((view % "attention") + " R.a = [F.status, ELS.filters.html.includes('data-v=\"act\" aria-pressed=\"true\"') ? 'act' : '', shown.every(r => r.act), shown.length];"
                             + (view % "reports") + " R.r = [F.status, shown.length, ROWS.length];"
                             + " R.views = window.PAGE_VIEWS.map(v => [v.id, v.panel || null]);")
         self.assertEqual(out["R"]["views"], [["reports", None], ["attention", "reports"], ["cadence", None]])
@@ -955,37 +954,50 @@ R.p = ['job:weekly-scan', 'job:nightly-sync'].map(id => [C.get(id).failed, !!c.p
         self.assertEqual(out["R"]["r"][0], "")
         self.assertEqual(out["R"]["r"][1], out["R"]["r"][2])
 
-    def test_active_filters_show_as_chips_that_remove_one_or_clear_all(self):
-        # sd:5064: Needs action is a Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.
-        opts = ("document.getElementById('f-job').options = [{ value: 'weekly-scan' }, { value: 'nightly-sync' }];"
-                "document.getElementById('f-status').options = [{ value: '' }, { value: 'act' }, { value: 'open' }, { value: 'done' }];")
-        out = self.run_page("R.chips = ELS.chips.html; R.url = String(OUT.urls[OUT.urls.length - 1]); R.st = [F.status, ELS['f-status'].value];"
-                            + self.CLICK % ("chips", "'[data-unfilter]'", "{ unfilter: 'status' }")
-                            + " R.chips2 = ELS.chips.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]); R.st2 = [F.status, ELS['f-status'].value];"
-                            + "ELS.chips.listeners.click[0]({ target: { closest: s => s === '[data-unfilter-all]' ? {} : null } });"
-                            + " R.chips3 = ELS.chips.html; R.url3 = String(OUT.urls[OUT.urls.length - 1]);"
-                            + " R.F = [F.job, F.status, F.q, ELS['f-job'].value, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
-                            prelude="location.search = '?job=nightly-sync&act=1&q=sync';\n" + opts)
-        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips"]), ["job", "status", "q"])
-        self.assertIn("Status: Needs action", out["R"]["chips"])
-        self.assertIn("3 filters · ", out["R"]["chips"])
-        self.assertEqual(out["R"]["st"], ["act", "act"])
-        self.assertEqual(out["R"]["url"], "job=nightly-sync&status=act&q=sync")
-        self.assertEqual(re.findall(r'data-unfilter="(\w+)"', out["R"]["chips2"]), ["job", "q"])
-        self.assertEqual(out["R"]["url2"], "job=nightly-sync&q=sync")
-        self.assertEqual(out["R"]["st2"], ["", ""])
-        self.assertEqual(out["R"]["chips3"], "")
-        self.assertEqual(out["R"]["url3"], "")
-        self.assertEqual(out["R"]["F"], ["", "", "", "", ""])
-        self.assertEqual(out["R"]["n"], out["R"]["all"])
+    def test_the_filters_are_activitys_bar_whose_tokens_remove_one_and_clear_all_removes_every_one(self):
+        # sd:5463: Activity's layout from shell.list.fbar. Status is a segment with its counts, Job and Day are picks, the
+        # query is a token, Clear all ends the bar, and the count sits on the title line, once. sd:5064: Needs action is a
+        # Status value, not a view chip or a checkbox; an old ?act=1 link lands on it.
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.textContent; R.url = String(OUT.urls[OUT.urls.length - 1]);"
+                            + self.CLICK % ("filters", "'[data-f]'", "{ f: 'q', v: '' }")
+                            + " R.bar2 = ELS.filters.html; R.url2 = String(OUT.urls[OUT.urls.length - 1]);"
+                            + self.CLICK % ("filters", "'[data-f]'", "{ f: 'status', v: 'act' }")
+                            + " R.st2 = F.status; R.bar3 = ELS.filters.html;"
+                            + "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-fclear]' ? {} : null } });"
+                            + " R.bar4 = ELS.filters.html; R.url4 = String(OUT.urls[OUT.urls.length - 1]); R.tally4 = ELS.tally.textContent;"
+                            + " R.F = [F.job, F.status, F.q, ELS.shift.value]; R.n = shown.length; R.all = ROWS.length;",
+                            prelude="location.search = '?job=nightly-sync&act=1&q=sync';")
+        R, all_ = out["R"], out["R"]["all"]
+        bar = R["bar"]
+        self.assertTrue(bar.startswith('<div class="fbar" role="group" aria-label="Filters"><div class="fseg" role="group" aria-label="Status">'), bar[:120])
+        self.assertEqual(re.findall(r'data-f="status" data-v="(\w+)"', bar), ["act", "open", "done"])
+        self.assertIn('data-v="act" aria-pressed="true" title="Needs action: ', bar)
+        self.assertIn('<option value="nightly-sync" selected>nightly-sync</option>', bar)
+        self.assertIn('<select id="f-day" class="fsel" data-pick="day"><option value="" selected>Any day</option>', bar)
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', bar), ["q"])
+        self.assertTrue(bar.endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertNotIn(" of ", re.sub(r"<[^>]+>", "", bar.split('class="fsum"')[1]), "the bar holds no count")
+        self.assertRegex(R["tally"], rf"^\d+ of {all_} reports$")
+        self.assertEqual(R["url"], "job=nightly-sync&status=act&q=sync")
+        self.assertNotIn('class="tok"', R["bar2"])
+        self.assertEqual(R["url2"], "job=nightly-sync&status=act")
+        self.assertEqual(R["st2"], "", "a pressed segment lifts its filter")
+        self.assertIn('data-fclear', R["bar3"], "Job still filters")
+        self.assertNotIn('data-fclear', R["bar4"])
+        self.assertTrue(R["bar4"].endswith('<div class="fsum"></div></div>'))
+        self.assertEqual(R["url4"], "")
+        self.assertEqual(R["tally4"], f"{all_} reports")
+        self.assertEqual(R["F"], ["", "", "", ""])
+        self.assertEqual(R["n"], all_)
 
     def test_the_page_has_no_view_chips_and_no_needs_action_checkbox(self):
-        # sd:5064: the dropdowns are the one filter control, so the saved-view row and the f-act box are gone.
+        # sd:5064: the filter bar is the one filter control, so the saved-view row and the f-act box are gone.
         page = (V2 / "reports.html").read_text(encoding="utf-8")
         self.assertNotIn('id="views"', page)
         self.assertNotIn('id="f-act"', page)
-        self.assertIn('<option value="act">Needs action</option>', page)
+        self.assertIn("st('act', 'Needs action'", REPORTS_JS)
         self.assertNotIn("shell.views", REPORTS_JS)
+        self.assertNotIn('id="chips"', page, "the bar's tokens replace the chip row")
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
         self.assertNotIn("innerHTML", REPORTS_JS)

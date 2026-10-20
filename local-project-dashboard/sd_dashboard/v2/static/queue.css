@@ -10,7 +10,6 @@
 .readings dd { margin: 0; font: 500 var(--text-md)/1.2 var(--font-data); font-variant-numeric: tabular-nums; color: var(--color-ink); }
 .readings dd small { font-size: var(--text-xs); color: var(--color-ink-2); margin-left: var(--space-2xs); }
 .fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; margin: 0 0 var(--space-md); }
-.fgroup > .label { margin-right: var(--space-2xs); }
 .fgroup .chips { margin: 0; }
 .fgroup .chip .n { color: var(--color-muted); font-family: var(--font-data); }
 .edits { margin: 0 0 var(--space-sm); font-size: var(--text-sm); color: var(--color-ink-2); max-width: 72ch; }

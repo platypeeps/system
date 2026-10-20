@@ -42,6 +42,7 @@ SHARED = (
     ".sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin: 0 0 var(--space-xs); }",
     ".sec-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); display: flex; align-items: center; gap: var(--space-2xs); }",
     ".fbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); min-width: 0; }",
+    ".fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); min-width: 0; }",
     ".fseg { display: inline-flex; gap: 2px; padding: 2px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-panel); }",
     ".fsum { margin-left: auto; display: flex; align-items: center; gap: var(--space-2xs); font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }",
 )
@@ -1289,6 +1290,10 @@ class TheFilterBar(unittest.TestCase):
                          '<button type="button" class="tok" data-f="repo" data-v="system" aria-label="Remove filter: system"><span>system</span><span class="x" aria-hidden="true">×</span></button>'
                          '<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>')
         self.assertEqual(out["off"], '<div class="fbar" role="group" aria-label="Filters"><div class="fsum"></div></div>')
+
+    def test_the_count_names_every_row_or_how_many_the_filters_leave(self):
+        out = run_js("R.c = [list.count(3, 3, 'report'), list.count(1, 1, 'report'), list.count(2, 12, 'report')];")
+        self.assertEqual(out["c"], ["3 reports", "1 report", "2 of 12 reports"])
 
 
 class TheRowActions(unittest.TestCase):
