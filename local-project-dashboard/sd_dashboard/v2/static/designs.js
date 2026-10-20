@@ -48,9 +48,11 @@ const FILTERS = {
 };
 const shown = r => F.hidden === r.hidden;
 const tbody = document.getElementById('rows'), details = document.getElementById('details');
-let selected = null, F = { f: '', q: '', hidden: false };
+let selected = null, F = { f: '', q: '', state: '', product: '', hidden: false };
 let pickedIds = new Set();
-const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
+const match = r => shown(r) && (!F.f || FILTERS[F.f].test(r)) && (!F.state || r.state === F.state) && (!F.product || r.product === F.product)
+  && (!F.q || `${r.path || ''} ${r.title || ''} ${r.subject || ''} ${r.kind} ${r.product}`.toLowerCase().includes(F.q));
+const active = () => !!(F.f || F.q || F.state || F.product);
 // Order: product, then the header's column (sd:3455) inside it. Page, the default, is the design's order: the drawn pages
 // before the skeleton and captures, then path; it also breaks a tie in the other columns.
 const KIND = { 'v2 mockup': 0, 'v1 mockup': 1, design: 2, final: 0, reference: 3, skeleton: 4, 'brief only': 5 };
@@ -97,13 +99,24 @@ function renderRows() {
     <td class="act">${shell.commands.rowActions(r.id)}</td></tr>`;
   })}`);
   const empty = document.getElementById('empty');
-  empty.hidden = rows.length > 0; empty.textContent = F.hidden && !F.f && !F.q ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : F.f || F.q ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
+  empty.hidden = rows.length > 0; empty.textContent = F.hidden && !active() ? `Nothing is hidden. ${STORE ? `${STORE}.` : 'Hide a row from its actions or Details.'}` : active() ? 'No page matches this filter. Clear it to see all pages.' : `No design pages found in ${D.root}/products.`;
   const pages = ROWS.filter(r => r.type === 'page').length;
   // The count on the table's title line (sd:5281): the rows this view draws, of the view's rows while a filter narrows them.
   const all = ROWS.filter(shown).length;
-  document.getElementById('tally').textContent = rows.length === all ? markup.plural(all, 'row') : `${rows.length} of ${markup.plural(all, 'row')}`;
+  document.getElementById('tally').textContent = shell.list.count(rows.length, all, 'row');
+  renderFilters();
   document.getElementById('sub').textContent = `${pages} pages in ${PRODUCTS.length} products`;
   document.getElementById('src').textContent = `${D.root} at ${D.head || 'no commit'}`;
+}
+// The filter bar (sd:5463), Activity's layout from shell.list: the state as a segment with its counts, the product as a
+// pick, a pressed lamp and the query as removable tokens, then Clear all. A lamp already filters by kind, so it has no chip.
+const STATES = [['caution', 'needs a look'], ['ok', 'ok'], ['queued', 'brief only']];
+function renderFilters() {
+  const n = (k, v) => ROWS.filter(r => shown(r) && r[k] === v).length, list = shell.list;
+  put(document.getElementById('filters'), list.fbar(html`${list.fseg('state', 'State', STATES.map(([s, w]) => ({ v: s, pressed: F.state === s, title: `${w}: ${n('state', s)}`,
+    label: html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span><span class="n">${String(n('state', s))}</span><span class="sr"> ${w}</span>` })))}
+    ${list.pick('product', 'Product', PRODUCTS.map(p => [p, p, n('product', p)]), F.product, { all: 'All products' })}
+    ${F.f ? list.tok('f', F.f, FILTERS[F.f].lbl) : ''}${F.q ? list.tok('q', '', `“${F.q}”`) : ''}`, { clear: active() }));
 }
 function show(id) {
   const r = ROWS.find(x => x.id === id); if (!r) return;
@@ -152,7 +165,7 @@ function reconcile() {
 // The sort joins the filter in the URL when it is not the default, as shell.list.listQuery writes it.
 function writeFilter() {
   const sort = L.sort !== LIST.sort || L.dir !== LIST.dir ? { sort: L.sort, dir: L.dir > 0 ? 'asc' : 'desc' } : {};
-  shell.url({ ...(F.f && { f: F.f }), ...(input.value.trim() && { q: input.value.trim() }), ...sort });
+  shell.url({ ...(F.f && { f: F.f }), ...(F.state && { state: F.state }), ...(F.product && { product: F.product }), ...(input.value.trim() && { q: input.value.trim() }), ...sort });
 }
 function update() {
   if (!D) return;
@@ -198,7 +211,16 @@ document.addEventListener('click', e => {
   }
   const tr = e.target.closest?.('tr[data-id]'); if (tr && !e.target.closest('button, a, time')) select(tr.dataset.id, false);
 });
-const input = document.getElementById('shift');
+const input = document.getElementById('shift'), bar = document.getElementById('filters');
+bar.addEventListener('change', e => shell.list.pickChange(e, F, () => { writeFilter(); update(); }));
+bar.addEventListener('click', e => {
+  const b = e.target.closest('[data-fclear], [data-f]'); if (!b) return;
+  if (b.dataset.fclear != null) Object.assign(F, { f: '', q: '', state: '', product: '' });
+  else if (b.dataset.f === 'state') F.state = F.state === b.dataset.v ? '' : b.dataset.v;
+  else F[b.dataset.f] = '';
+  if (!F.q) input.value = '';
+  writeFilter(); update();
+});
 document.getElementById('rows-head').addEventListener('click', e => { if (D && shell.list.sortBy(e, L)) { shell.list.keepFocus(e, renderRows); writeFilter(); } });
 input.addEventListener('input', () => { F.q = input.value.trim().toLowerCase(); writeFilter(); update(); });
 document.addEventListener('keydown', e => {
@@ -238,7 +260,7 @@ function adopt(doc) {
 function clear() {
   D = null; ROWS = []; PRODUCTS = []; STORE = ''; delete document.body.dataset.observed;
   put(document.getElementById('annunciator'), html``); shell.view.count('pages', null); shell.view.count('hidden', null); put(tbody, html``);
-  document.getElementById('tally').textContent = '';
+  document.getElementById('tally').textContent = ''; put(document.getElementById('filters'), html``);
   document.getElementById('sub').textContent = 'Not read';
   document.getElementById('src').textContent = 'ui-design';
   put(details, html`<p class="why">The designs were not read. Reload retries it.</p>`);
@@ -247,6 +269,8 @@ document.addEventListener('DOMContentLoaded', () => {
   registerCommands();
   const p = new URLSearchParams(location.search);
   F.f = FILTERS[p.get('f')] ? p.get('f') : '';
+  F.state = STATES.some(([s]) => s === p.get('state')) ? p.get('state') : '';
+  F.product = p.get('product') || ''; // a product the read does not name stays a pick option, so it can be lifted
   F.hidden = shell.view.current() === 'hidden';
   if (p.get('q')) { input.value = p.get('q'); F.q = p.get('q').trim().toLowerCase(); }
   shell.list.listParams(p, L, { sorts: Object.keys(BY), size: LIST.size });

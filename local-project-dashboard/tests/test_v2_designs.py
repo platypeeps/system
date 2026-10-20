@@ -321,6 +321,38 @@ class TheScript(unittest.TestCase):
         out = self.run_page("R.rows = ELS.rows.html;", search="?f=brief")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["product:brand"])
 
+    def test_the_filters_are_activitys_bar_with_state_product_tokens_and_clear_all(self):
+        """sd:5463: Activity's layout from shell.list.fbar: the state as a segment with its counts, the product as a pick,
+        the pressed lamp and the query as tokens, then Clear all; the count stays once, on the title line."""
+        bar = "ELS.filters.listeners.%s[0]({ target: %s });"
+        out = self.run_page("R.bar = ELS.filters.html; R.tally = ELS.tally.textContent;"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'q', v: '' } } : null }")
+                            + " R.bar2 = ELS.filters.html; R.url2 = OUT.urls[OUT.urls.length - 1]; R.input = ELS.shift.value;"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { f: 'state', v: 'ok' } } : null }")
+                            + " R.url3 = OUT.urls[OUT.urls.length - 1];"
+                            + bar % ("click", "{ closest: s => s === '[data-fclear], [data-f]' ? { dataset: { fclear: '' } } : null }")
+                            + " R.bar4 = ELS.filters.html; R.url4 = OUT.urls[OUT.urls.length - 1]; R.tally4 = ELS.tally.textContent;"
+                            + bar % ("change", "{ dataset: { pick: 'product' }, type: 'select-one', value: 'brand' }")
+                            + " R.rows5 = ELS.rows.html; R.url5 = OUT.urls[OUT.urls.length - 1];",
+                            search="?f=stale&q=tasks")
+        R = out["R"]
+        self.assertTrue(R["bar"].startswith('<div class="fbar" role="group" aria-label="Filters"><div class="fseg" role="group" aria-label="State">'), R["bar"][:120])
+        self.assertEqual(re.findall(r'data-f="state" data-v="(\w+)" aria-pressed="false" title="[^"]*: (\d+)"', R["bar"]),
+                         [("caution", "3"), ("ok", "1"), ("queued", "1")])
+        self.assertIn('<select id="f-product" class="fsel" data-pick="product"><option value="" selected>All products</option>'
+                      '<option value="system">system · 4</option><option value="brand">brand · 1</option></select>', R["bar"])
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar"]), ["f", "q"])
+        self.assertTrue(R["bar"].endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'))
+        self.assertEqual(R["tally"], "1 of 5 rows")
+        self.assertEqual((R["url2"], R["input"]), ({"f": "stale"}, ""))
+        self.assertEqual(re.findall(r'class="tok" data-f="(\w+)"', R["bar2"]), ["f"])
+        self.assertEqual(R["url3"], {"f": "stale", "state": "ok"})
+        self.assertEqual(R["url4"], {})
+        self.assertTrue(R["bar4"].endswith('<div class="fsum"></div></div>'))
+        self.assertEqual(R["tally4"], "5 rows")
+        self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', R["rows5"]), ["product:brand"])
+        self.assertEqual(R["url5"], {"product": "brand"})
+
     def test_details_open_the_page_and_its_screenshot_where_the_tab_serves_them(self):
         out = self.run_page(f"open('{PAGES}/today.html'); R.page = ELS.details.html; open('product:brand'); R.brief = ELS.details.html;")
         self.assertIn(f'<a class="open" href="/designs/{PAGES}/today.html">', out["R"]["page"])
