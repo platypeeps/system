@@ -738,6 +738,18 @@ TB.querySelector = () => TB.querySelectorAll()[0] || null;"""
         self.assertEqual(out["R"]["today"], ["none", "·", "no run yet today"])
         self.assertEqual(out["R"]["last"], "ok")
 
+    def test_a_rerun_on_an_unscheduled_day_supersedes_the_failed_scheduled_run(self):
+        # sd:5538: a weekly job failed on its day and a hand rerun the next day passed; the lamp said failing.
+        doc = json.loads(json.dumps(self.doc))
+        c = doc["cadence"]["nightly-sync"]
+        c["scheduled"] = [False, False, False, False, False, True, False]
+        c["runs"] = {d: [0, 0] for d in DAYS}
+        c["runs"][DAYS[5]], c["runs"][DAYS[6]] = [0, 1], [2, 0]
+        out = self.run_page("R.today = mark('nightly-sync', DAYS[6]); R.idle = mark('nightly-sync', DAYS[4]); R.last = lastState('nightly-sync');", doc=doc)
+        self.assertEqual(out["R"]["last"], "ok")
+        self.assertEqual(out["R"]["today"][0], "ok")
+        self.assertEqual(out["R"]["idle"], ["none", "·", "not scheduled"])
+
     def test_the_state_names_a_missing_family_list_and_a_failed_source(self):
         doc = json.loads(json.dumps(self.doc))
         doc["families"] = {"state": "missing", "source": "<config>/project-dashboard/report-families.conf", "problems": [], "list": []}

@@ -42,9 +42,12 @@ const prevOf = r => { const l = byJob[r.job]; return l[l.indexOf(r) + 1] || null
 function mark(job, day) {
   const c = CAD[job], i = DAYS.indexOf(day);
   if (!c || i < 0) return ['unknown', '▨', 'not read'];
-  // build (sd:4965): a manual job is never due; a day it ran reads as any run does.
-  if (c.manual) { const [ok, bad] = c.runs[day] || [0, 0]; if (!ok && !bad) return ['none', '·', 'manual: runs when started']; }
-  else if (!c.scheduled[i]) return ['none', '·', 'not scheduled'];
+  // build (sd:4965, sd:5538): a manual job is never due, nor an unscheduled day; a day it ran reads as any run does,
+  // so a rerun after a failed scheduled run supersedes it.
+  if (c.manual || !c.scheduled[i]) {
+    const [ok, bad] = c.runs[day] || [0, 0];
+    if (!ok && !bad) return ['none', '·', c.manual ? 'manual: runs when started' : 'not scheduled'];
+  }
   if (!c.log || (c.from && day < c.from)) return ['unknown', '▨', 'no log yet'];
   // build: a cut read can begin partway through its first day, so that day is not read either (as the server's `last`);
   // a cut with no whole stamped line (no read_from) read no day at all.
