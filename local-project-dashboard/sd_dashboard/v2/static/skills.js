@@ -371,11 +371,16 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   const bucket = r => r.mode === 'gone' ? 'gone' : r.error ? 'failed' : r.mode === 're-import' ? 'changed' : r.mode;
   const BUCKET = { new: ['▲', 'caution', 'new'], changed: ['▲', 'caution', 'changed'], unchanged: ['●', 'ok', 'unchanged'],
     blocked: ['■', 'warning', 'blocked'], gone: ['▲', 'caution', 'removed upstream'], failed: ['▨', 'unknown', 'not read'] };
-  const repoGlyph = r => REFRESH[r.url]?.wait ? ['◌', 'queued', 'Refreshing now']
-    : !r.refreshed ? ['▨', 'unknown', 'Not refreshed yet']
-    : /^failed/.test(r.result || '') ? ['▨', 'unknown', 'The last refresh failed']
-    : /\d+ (new|changed|blocked|gone)\b/.test(r.result || '') ? ['▲', 'caution', 'The last refresh found skills to review']
-    : ['●', 'ok', 'The last refresh found nothing new or changed'];
+  // Caution outranks unknown (design.md): a refresh that found skills to review and failed on others is ▲, and says both.
+  const repoGlyph = r => {
+    const res = r.result || '', part = /\d+ failed\b/.test(res) ? ' and could not read every skill' : '';
+    return REFRESH[r.url]?.wait ? ['◌', 'queued', 'Refreshing now']
+      : !r.refreshed ? ['▨', 'unknown', 'Not refreshed yet']
+      : /^failed/.test(res) ? ['▨', 'unknown', 'The last refresh failed']
+      : /\d+ (new|changed|blocked|gone)\b/.test(res) ? ['▲', 'caution', `The last refresh found skills to review${part}`]
+      : part ? ['▨', 'unknown', `The last refresh found nothing new${part}`]
+      : ['●', 'ok', 'The last refresh found nothing new or changed'];
+  };
   const refreshed = r => REFRESH[r.url]?.wait ? 'refreshing…' : r.refreshed ? html`${when(r.refreshed)} · ${r.result}` : 'never';
   function adoptRepos(doc) {
     REPOS = doc; REPO_FAILED = '';

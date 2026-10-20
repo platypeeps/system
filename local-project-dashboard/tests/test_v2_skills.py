@@ -824,6 +824,17 @@ shellRun(cmd('skill.schedule'), C.get('sd-used')); shellRun(cmd('skill.scan'), C
         self.assertIn(REPO, out["R"]["rows"])
         self.assertEqual(out["R"]["count"], ["intake", 1])
 
+    def test_a_repository_row_is_unknown_when_its_refresh_did_not_read_every_skill(self):
+        cases = (("1 unchanged, 1 failed", "▨", "could not read every skill"), ("failed: git ls-remote exited 128", "▨", "The last refresh failed"),
+                 ("1 new, 1 failed", "▲", "skills to review and could not read every skill"), ("1 new", "▲", "skills to review"), ("2 unchanged", "●", "nothing new"))
+        for result, glyph, why in cases:
+            with self.subTest(result=result):
+                listed = dict(TRACKED, repos=[dict(TRACKED["repos"][0], result=result)])
+                out = self.run_page(self.INTAKE_VIEW + " R.rows = ELS['intake-rows'].html;", answer=self.views(listed))
+                cell = re.search(r'<td class="g g-\w+" title="([^"]*)">(.)', out["R"]["rows"])
+                self.assertEqual(cell.group(2), glyph)
+                self.assertIn(why, cell.group(1))
+
     def test_an_empty_list_says_why_and_a_failed_read_is_not_an_empty_one(self):
         empty = dict(TRACKED, seeded=True, repos=[], untracked=[])
         out = self.run_page(self.INTAKE_VIEW + " R.rows = ELS['intake-rows'].html;", answer=self.views(empty))
