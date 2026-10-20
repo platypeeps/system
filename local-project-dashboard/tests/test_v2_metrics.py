@@ -140,6 +140,7 @@ class TheDocument(Fixture):
         buckets = self.doc()["age"]["buckets"]
         self.assertEqual(sum(b["ready_to_send"] + b["other"] for b in buckets), 2)
         self.assertEqual([(b["label"], b["ready_to_send"]) for b in buckets if b["ready_to_send"]], [("3-6d", 1)])
+        self.assertEqual([b["key"] for b in buckets], [b.key for b in reads.age_histogram([])])
 
     def test_a_part_that_fails_is_its_error_and_the_rest_still_answer(self):
         with mock.patch.object(reads, "scorecard", side_effect=sqlite3.OperationalError("database is locked")):
@@ -357,6 +358,8 @@ R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'
         self.assertEqual(re.findall(r'data-ev="(skill:[^"]+)"', r["top"]), ["skill:sd-ship", "skill:sd-review"])
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
+        # sd:5474: a bar links to Tasks' list at its bucket, open items only, in the All view: the scope the bar counts.
+        self.assertIn('<a class="hbar" href="/tasks?view=list&age=3&active=1#view=all" aria-label="3-6d', r["hist"])
 
     def test_without_a_registry_cap_and_configure_are_off_with_the_reason(self):
         (self.path.parent / "providers.yaml").unlink()

@@ -133,7 +133,7 @@ def _skills(connection, today):
 
 def _age(connection, now):
     rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done"]
-    return {"error": "", "buckets": [{"label": b.label, "lower": b.lower, "upper": b.upper, "ready_to_send": b.counts["ready_to_send"],
+    return {"error": "", "buckets": [{"key": b.key, "label": b.label, "lower": b.lower, "upper": b.upper, "ready_to_send": b.counts["ready_to_send"],
                                       "other": b.counts["other"]} for b in reads.age_histogram(rows, now=now)]}
 
 

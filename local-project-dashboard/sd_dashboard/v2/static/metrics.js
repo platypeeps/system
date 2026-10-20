@@ -53,8 +53,6 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
       d.skills.weeks.forEach(w => put1(`week:${w.start}`, { kind: 'Skill use · week', title: `week of ${w.start}`, facts: [['Uses', w.uses], ['Source', 'reads.skill_use_days (Monday-start weeks)']], cli: 'sd skill list' }));
       d.skills.top.forEach(([n, v]) => put1(`skill:${n}`, { kind: 'Skill use · this week', title: n, facts: [['Uses this week', v], ['Source', 'reads.skill_use_days']], open: window.shell?.pages?.Skills ? [`${window.shell.pages.Skills}?row=${encodeURIComponent(n)}`, 'Open in Skills'] : null, cli: 'sd skill list' }));
     }
-    if (!d.age.error) d.age.buckets.forEach(b => put1(`age:${b.lower}`, { kind: 'Age in status', title: `${b.ready_to_send + b.other} items at ${b.label}`,
-      facts: [['Ready to send', b.ready_to_send], ['Other statuses', b.other], ['Scope', 'active items, done and parked excluded']], cli: 'sd task list' }));
     if (!d.observed.error) put1('observed', { kind: 'Observed activity', title: `${d.observed.since} → ${d.observed.until}`, facts: [['Requests recorded', d.observed.recorded_requests], ['Finished review attempts', d.observed.finished_review_attempts], ['Recorded deliveries', d.observed.recorded_deliveries], ['Source', 'reporting.metrics']], note: d.observed.interpretation, cli: '—' });
     d.unread.forEach(x => put1(`unread:${x.id}`, { kind: 'Not read', title: x.name, s: 'unknown', facts: [['Reason', x.reason]], cli: '—' }));
   }
@@ -143,7 +141,8 @@ window.PAGE_VIEWS = [{ id: 'spend', label: 'Spend' }, { id: 'providers', label: 
     if (!a || a.error) { put($('hist'), unknownBlock(a ? a.error : 'the Metrics document did not arrive')); return; }
     const max = Math.max(1, ...a.buckets.map(b => b.ready_to_send + b.other));
     put($('hist'), html`<ul class="hbars" aria-label="Open items by days in their current status">${a.buckets.map(b => { const tot = b.ready_to_send + b.other;
-      return html`<li><button class="hbar" type="button" data-ev="age:${b.lower}" aria-pressed="${`age:${b.lower}` === selected ? 'true' : 'false'}" aria-label="${b.label}: ${tot} items, ${b.ready_to_send} ready to send"><span class="k">${b.label}<small>${b.ready_to_send ? `${b.ready_to_send} ready to send` : ''}</small></span><svg class="track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true"><rect class="fill s1" width="${(b.ready_to_send / max * 100).toFixed(1)}" height="1"/><rect class="fill" x="${(b.ready_to_send / max * 100).toFixed(1)}" width="${(b.other / max * 100).toFixed(1)}" height="1"/></svg><span class="v">${tot}</span></button></li>`; })}</ul>
+      // sd:5474: each bar opens Tasks' list at its bucket, open items only, in the All view: the scope it counts (reads.age_bucket's key).
+      return html`<li><a class="hbar" href="/tasks?view=list&age=${encodeURIComponent(b.key)}&active=1#view=all" aria-label="${b.label}: ${tot} items, ${b.ready_to_send} ready to send"><span class="k">${b.label}<small>${b.ready_to_send ? `${b.ready_to_send} ready to send` : ''}</small></span><svg class="track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true"><rect class="fill s1" width="${(b.ready_to_send / max * 100).toFixed(1)}" height="1"/><rect class="fill" x="${(b.ready_to_send / max * 100).toFixed(1)}" width="${(b.other / max * 100).toFixed(1)}" height="1"/></svg><span class="v">${tot}</span></a></li>`; })}</ul>
       <table class="sr"><caption>Open items by age in status</caption><tbody>${a.buckets.map(b => html`<tr><th scope="row">${b.label}</th><td>${b.ready_to_send} ready to send, ${b.other} other</td></tr>`)}</tbody></table>`);
   }
   function draw() {
