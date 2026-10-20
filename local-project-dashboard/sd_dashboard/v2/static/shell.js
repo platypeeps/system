@@ -1201,8 +1201,9 @@
   // right-aligned on the same row; a page that filters the table itself (ownFilter) keeps its own text filter and gets the
   // column filter alone. Folds come with 2 bands.
   function tbar({ total = 0, filterOn = false, ownFilter = false, bands = 0 } = {}) {
-    const facet = total > 0 || filterOn;
-    return { find: !ownFilter && facet, facet, folds: bands >= 2 };
+    // sd:5467: a page with its own filter bar is the one place to filter its table, so it gets neither box nor column filter.
+    const facet = !ownFilter && (total > 0 || filterOn);
+    return { find: facet, facet, folds: bands >= 2 };
   }
   // The count at the row's right end: every row, or the shown ones of every row while a filter hides some.
   const tcount = (shown, total) => shown === total ? plural(total, 'row') : `${shown} of ${plural(total, 'row')}`;

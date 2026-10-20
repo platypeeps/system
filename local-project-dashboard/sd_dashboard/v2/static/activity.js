@@ -278,8 +278,6 @@ addEventListener('DOMContentLoaded', () => {
     put($('pager'), html`<span>${a}–${z} of ${all.length}</span>
       <div class="chips" role="group" aria-label="Page">${page > 1 ? html`<button class="chip" type="button" data-p="${String(page - 1)}">${ICON('chevron-left')}Previous</button>` : ''}${page < pages ? html`<button class="chip" type="button" data-p="${String(page + 1)}">Next${ICON('chevron-right')}</button>` : ''}</div>
       <div class="chips" role="group" aria-label="Rows per page">${[25, 50, 100, 200].map(n => html`<button class="chip" type="button" data-size="${String(n)}" aria-pressed="${String(n === size)}">${n}</button>`)}</div>`);
-    const c = s => all.filter(e => e.s === s).length;
-    put($('tally'), html`<span class="g-warning">■ ${c('warning')} failed</span><span class="g-caution">▲ ${c('caution')} caution</span><span>● ${c('ok')} ok</span>`);
     put($('sub'), html`${plural(EVENTS.filter(inWindow).length, 'event')} across the fleet · last 24 hours to ${new Date(OBSERVED).toISOString().slice(11, 16)} UTC, ${new Date(OBSERVED).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' })}`);
     // build: the design's journal note, with this document's counts (sd:2183: the reader lists every writer's notes).
     const journal = EVENTS.filter(e => e.k === 'command'), older = journal.filter(e => !inWindow(e)).length;

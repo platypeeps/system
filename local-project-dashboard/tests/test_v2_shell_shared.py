@@ -584,14 +584,15 @@ class TheTableGrammar(unittest.TestCase):
 
     def test_every_table_with_a_row_gets_the_filters_and_its_count_on_one_row(self):
         # sd:5281: the toolbar standard. A filter box from the first data row, not the sixth; a page's own text filter
-        # wins, and its table still gets the column filter.
+        # wins. sd:5467 (operator, 2026-10-20) reverses the rest: a page with its own filter bar gets no column filter either,
+        # so one table has one place to filter, and keeps only the folds.
         out = run_tables("""R.one = tbar({ total: 1 }); R.none = tbar({ total: 0 }); R.on = tbar({ total: 0, filterOn: true });
   R.own = tbar({ total: 40, ownFilter: true, bands: 3 });
   R.counts = [tcount(1, 1), tcount(7, 7), tcount(2, 7)];""")
         self.assertEqual(out["one"], {"find": True, "facet": True, "folds": False})
         self.assertEqual(out["none"], {"find": False, "facet": False, "folds": False})
         self.assertEqual(out["on"], {"find": True, "facet": True, "folds": False})
-        self.assertEqual(out["own"], {"find": False, "facet": True, "folds": True})
+        self.assertEqual(out["own"], {"find": False, "facet": False, "folds": True})
         self.assertEqual(out["counts"], ["1 row", "7 rows", "2 of 7 rows"])
 
     def test_the_filter_bar_sits_in_the_tables_toolbar_with_the_count_at_its_right_end(self):
