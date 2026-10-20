@@ -1,8 +1,8 @@
 // Skills (sd:2123): the design source's products/system/designs/pages/skills.js at 2729265, ported. Each change from the
 // reference is marked "build:". The rows are /api/skills (skills_screen.document): the catalog the old screen renders, each
 // skill's use in the last three Monday-start weeks, and the use records no catalog skill explains; never sample data.
-// Try, Review, Promote and Demote ask first and post the routes the old screen posts: no verb withdraws a trial or a queued
-// request, so none carries the reference's Undo. Run, Schedule, Adopt and Scan are copy only: the dashboard has no route that
+// Try, Review, Promote and Demote ask first and post the routes the old screen posts: no verb ends a trial early, and a
+// request files an sd item that closes in Tasks (system sd:5477), so none carries the reference's Undo. Run, Schedule, Adopt and Scan are copy only: the dashboard has no route that
 // creates the item a run needs, adds a launchd job, adopts a skill or scans sessions, and the reference's chat proposals are
 // not ported. Re-import and Evaluate (sd:3992) post /api/skills/intake, which runs `sd skill intake` and answers its report;
 // Approve shows only under a report that can install, asks first, and posts the URL, scope and revision that report printed.
@@ -197,7 +197,7 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
         <dt>Installed</dt><dd>${s.installed.length ? s.installed.join(' · ') + ' · current' : 'not installed'}${s.changed.length ? ` · changed on ${s.changed.join(', ')}` : ''}</dd>
         ${s.imported ? html`<dt>Imported from</dt><dd>${s.imported.url} at ${s.imported.commit.slice(0, 12)}</dd>` : ''}
         ${s.trial ? html`<dt>Trial</dt><dd>${String(s.trial[0]).slice(0, 10)} → ${String(s.trial[1]).slice(0, 10)}</dd>` : ''}<dt>Source</dt><dd>${s.source}</dd><dt>Revision</dt><dd>${String(s.revision).slice(0, 12)}</dd></dl>
-      ${s.q.length ? html`<p class="why">Queued from here: ${s.q.join(' · ')}</p>` : ''}
+      ${s.q.length ? html`<p class="why">Asked from here: ${s.q.join(' · ')}</p>` : ''}
       <details class="when"><summary>When to use</summary><p>${s.when}</p></details>
       <h3>Act</h3>${C.bar(id)}<div id="form-slot"></div><div id="intake-slot"></div>`);
     drawIntake();
@@ -389,31 +389,32 @@ const shq = window.shell.shq; // every value in a line the operator copies is si
   // ---------- Commands (products/system/commands.md) ----------
   // Each skill is an object; each command is declared once and the shell renders row, menu, Details and palette.
   // A write's answer is its own: the reread after it is started, not awaited, so a failed reread never reports a landed write
-  // as "not changed". Until the reread lands, the row says what was queued. A refused write reads again with load().
-  const sk = o => byName[o.id] || o, queued = (o, l) => sk(o).q.includes(l) ? `${l} already` : true;
+  // as "not changed". Until the reread lands, the row says what was asked. A refused write reads again with load().
+  // Review, Promote and Demote file an sd item and queue no runner work: it waits in Tasks like any other (system sd:5477).
+  const sk = o => byName[o.id] || o, asked = (o, l) => sk(o).q.includes(l) ? `${l} already` : true;
   const pend = (o, label) => { const s = byName[o.id]; if (!s) return; s.q = [...s.q.filter(x => x !== label), label]; drawRows(); if (selected === s.name) show(s.name); };
   const write = (o, action, label, done, body = {}) => window.shell.post(`/api/skills/${encodeURIComponent(o.id)}/${action}`, { revision: sk(o).revision, ...body })
     .then(out => { pend(o, label); reread(); return done(out); }, e => { load(); throw e; });
-  const itemOf = out => out?.item?.id ? ` as item #${out.item.id}` : '';
-  const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', does: 'Queues a task that moves the skill onto this path; it cannot be withdrawn.', risk: 'confirm',
-    consequence: o => `This queues a task that moves ${o.id} into skills/ on the ${o.path} path, in an isolated checkout, and opens a pull request. No verb withdraws it.`,
+  const itemOf = out => ` in Tasks${out?.item?.id ? ` as item #${out.item.id}` : ''}`;
+  const PROMOTE = { id: 'skill.promote.queue', on: 'skill form', label: 'Promote', does: 'Files a task in Tasks that moves the skill onto this path.', risk: 'safe', askFirst: true,
+    consequence: o => `This files a task in Tasks to move ${o.id} into skills/ on the ${o.path} path, in an isolated checkout, with one pull request. Close the task there to drop it.`,
     cli: o => `sd skill promote ${shq(o.id)} --path ${shq(o.path)}`,
-    run: o => write(o, 'promote', `promotion to ${o.path} queued`, out => `Promotion of ${o.id} to ${o.path} queued${itemOf(out)}`, { path_name: o.path }) };
+    run: o => write(o, 'promote', `promotion to ${o.path} filed`, out => `Promotion of ${o.id} to ${o.path} filed${itemOf(out)}`, { path_name: o.path }) };
   function registerCommands() {
     C.register(
       { id: 'skill.try', on: 'skill', label: 'Try', does: 'Starts a 30-day trial at the next install; it cannot end early.', key: 't', risk: 'confirm', bulk: true, primary: o => sk(o).status === 'contrib',
-        when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : queued(o, 'trial queued'),
+        when: o => sk(o).status !== 'contrib' ? `already installed · ${sk(o).status}` : asked(o, 'trial queued'),
         consequence: o => `This starts a 30-day trial of ${o.id}; it installs at the next sd install. No verb ends a trial early.`,
         cli: o => `sd skill try ${shq(o.id)}`, run: o => write(o, 'try', 'trial queued', () => `Trial of ${o.id} starts at the next install`) },
-      { id: 'skill.review', on: 'skill', label: 'Review', does: 'Queues an independent review of this skill; it cannot be withdrawn.', key: 'v', risk: 'confirm', bulk: true, when: o => queued(o, 'review queued'),
-        consequence: o => `This queues a review of ${o.id} by a reviewer independent of its latest author. No verb withdraws it.`,
-        cli: o => `sd skill review ${shq(o.id)}`, run: o => write(o, 'review', 'review queued', out => `Review of ${o.id} queued${itemOf(out)}`) },
+      { id: 'skill.review', on: 'skill', label: 'Review', does: 'Files an item in Tasks for an independent review of this skill.', key: 'v', risk: 'safe', askFirst: true, bulk: true, when: o => asked(o, 'review filed'),
+        consequence: o => `This files an item in Tasks for a review of ${o.id} by a reviewer independent of its latest author.`,
+        cli: o => `sd skill review ${shq(o.id)}`, run: o => write(o, 'review', 'review filed', out => `Review of ${o.id} filed${itemOf(out)}`) },
       { id: 'skill.promote', on: 'skill', label: 'Promote', does: 'Opens the form that picks a path to promote this skill to.', key: 'p', risk: 'safe', fills: true, when: o => sk(o).status !== 'path' || `on ${sk(o).paths.join(', ')} already`,
         cli: o => `sd skill promote ${shq(o.id)} --path PATH`, run: o => { select(o.id, true); openPromote(sk(o)); return null; } },
-      { id: 'skill.demote', on: 'skill', label: 'Demote', does: 'Queues a task that moves the skill off every path; it cannot be withdrawn.', key: 'd', risk: 'confirm', primary: o => sk(o).status === 'path' && !total(sk(o)),
-        when: o => sk(o).status === 'path' ? queued(o, 'demotion queued') : 'not on a path',
-        consequence: o => `This queues a task that moves ${o.id} from skills/ to contrib/ and off every path, and opens a pull request. No verb withdraws it.`,
-        cli: o => `sd skill demote ${shq(o.id)}`, run: o => write(o, 'demote', 'demotion queued', out => `Removal of ${o.id} from paths queued${itemOf(out)}`) },
+      { id: 'skill.demote', on: 'skill', label: 'Demote', does: 'Files a task in Tasks that moves the skill off every path.', key: 'd', risk: 'safe', askFirst: true, primary: o => sk(o).status === 'path' && !total(sk(o)),
+        when: o => sk(o).status === 'path' ? asked(o, 'demotion filed') : 'not on a path',
+        consequence: o => `This files a task in Tasks to move ${o.id} from skills/ to contrib/ and off every path, with one pull request. Close the task there to drop it.`,
+        cli: o => `sd skill demote ${shq(o.id)}`, run: o => write(o, 'demote', 'demotion filed', out => `Removal of ${o.id} from paths filed${itemOf(out)}`) },
       { id: 'skill.reimport', on: 'skill', label: 'Re-import', does: 'Reads the skill\'s source again and shows the intake report.', key: 'i', risk: 'safe', when: o => !!sk(o).imported || 'not installed by sd skill intake',
         cli: o => `sd skill intake ${shq(o.id)}`, run: o => { select(o.id, true); return evaluate(o.id, { source: o.id }); } },
       { id: 'skill.reimport.user', on: 'user skill', label: 'Re-import', does: 'Reads this user skill\'s source and shows the intake report.', key: 'i', risk: 'safe', primary: () => true,

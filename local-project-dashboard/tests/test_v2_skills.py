@@ -46,12 +46,13 @@ MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 NOW = "2026-09-23T12:00:00+00:00"
 
 #: The design's Skills commands (design source products/system/designs/pages/skills.js): id, object type, label, key, risk.
-#: Try, Review and Demote are `confirm` here, not the design's `undo`: no verb withdraws a trial or a queued request.
+#: Try is `confirm` here, not the design's `undo`: no verb ends a trial early. Review and Demote file an item in Tasks
+#: (system sd:5477), which closes there like any other, so they are `safe` and ask first.
 COMMANDS = [
     ["skill.try", "skill", "Try", "t", "confirm"],
-    ["skill.review", "skill", "Review", "v", "confirm"],
+    ["skill.review", "skill", "Review", "v", "safe"],
     ["skill.promote", "skill", "Promote", "p", "safe"],
-    ["skill.demote", "skill", "Demote", "d", "confirm"],
+    ["skill.demote", "skill", "Demote", "d", "safe"],
     ["skill.reimport", "skill", "Re-import", "i", "safe"],
     ["skill.reimport.user", "user skill", "Re-import", "i", "safe"],
     ["skill.schedule", "skill", "Schedule", "s", "safe"],
@@ -453,10 +454,29 @@ class TheScript(Pack, ScreenCase):
         self.assertEqual(out["gets"], ["/api/skills", "/api/skills"], "the page did not reread after the write")
         self.assertEqual(out["toasts"][-1], ["Trial of sd-extra starts at the next install", False])
 
-    def test_review_and_demote_post_their_routes_and_name_the_queued_item(self):
+    def test_review_and_demote_ask_post_their_routes_and_name_the_filed_item(self):
         out = self.run_page("shellRun(cmd('skill.review'), C.get('sd-used')); await flush(); shellRun(cmd('skill.demote'), C.get('sd-idle')); await flush();")
+        self.assertEqual(out["confirms"], ["skill.review", "skill.demote"])
         self.assertEqual([p[0] for p in out["posts"]], ["/api/skills/sd-used/review", "/api/skills/sd-idle/demote"])
-        self.assertEqual([t[0] for t in out["toasts"]], ["Review of sd-used queued as item #42", "Removal of sd-idle from paths queued as item #42"])
+        self.assertEqual([t[0] for t in out["toasts"]], ["Review of sd-used filed in Tasks as item #42",
+                                                         "Removal of sd-idle from paths filed in Tasks as item #42"])
+
+    def test_review_promote_and_demote_say_they_file_an_item_and_never_that_it_cannot_be_withdrawn(self):
+        """system sd:5477: the request files an sd item and queues no runner work, so a filed item closes in Tasks."""
+        out = self.run_page("const slot = document.getElementById('form-slot'), parts = {};"
+                            " slot.querySelector = s => (parts[s] = parts[s] || El(s));"
+                            " C.run = (c, o) => { R.form = [c.id, c.risk, !!c.askFirst, c.does, c.consequence({ ...o, path: 'build' })]; };"
+                            " cmd('skill.promote').run(C.get('sd-extra'));"
+                            " parts['#pro-form'].listeners.submit[0]({ preventDefault() {} });"
+                            " R.cmds = ['skill.review', 'skill.demote'].map(id => { const c = cmd(id);"
+                            " return [c.id, c.risk, !!c.askFirst, c.does, c.consequence(C.get('sd-used'))]; });")
+        for command, risk, asks, does, consequence in [out["R"]["form"], *out["R"]["cmds"]]:
+            with self.subTest(command=command):
+                self.assertEqual((risk, asks), ("safe", True))
+                self.assertIn("Files", does)
+                self.assertIn("Tasks", does)
+                for text in (does, consequence):
+                    self.assertNotRegex(text, r"(?i)withdr|queue")
 
     def test_a_refused_write_says_why_and_reads_again(self):
         answer = "(path) => path === '/api/skills' ? [200, DOC] : [409, { error: 'The skill changed', reload: true }]"
