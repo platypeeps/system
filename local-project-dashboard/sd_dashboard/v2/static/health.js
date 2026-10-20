@@ -105,18 +105,24 @@
     if (first) { readers[id] = shell.read(spec(id)); load(); }
   }
 
-  function filters(sum) {
-    const grp = (key, name, opts) => html`<div class="fgroup"><span class="label">${name}</span><div class="chips">${opts.map(([v, l, n]) => html`<button type="button" class="chip" data-f="${key}" data-v="${v}" aria-pressed="${F[key].has(v) ? 'true' : 'false'}">${l} <span class="n">${n}</span></button>`)}</div></div>`;
-    const chip = (v, l, n) => html`<button type="button" class="chip" data-show="${v}" aria-pressed="${String(showing === v)}">${l} <span class="n">${n}</span></button>`;
-    const L = listed();
-    return html`<div class="filters toolbar-2" role="group" aria-label="Filters"><div class="fgroup"><span class="label">Show</span><div class="chips">${chip('findings', 'findings', ROWS.filter(r => !QUIET.has(r.state)).length)}${chip('all', 'all', ROWS.length)}${chip('ignored', 'ignored', IGNORED.length)}</div></div>${grp('state', 'State', STATES.filter(s => L.some(r => r.state === s)).map(s => [s, html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span> ${s}`, L.filter(r => r.state === s).length]))}${AREAS.length > 1 ? grp('area', 'Area', AREAS.map(a => [a.id, a.name, L.filter(r => r.area === a.id).length])) : ''}${sum}</div>`;
+  // sd:5504: Activity's bar (shell.list.fbar), as on Reports: Show and State as segments with their counts, Area as a pick
+  // (a lamp presses it too), the picked areas and the query as tokens, then Clear all. An area's title line counts its rows
+  // while a filter hides some of them (sd:5281).
+  function filters() {
+    const L = listed(), list = shell.list, n = f => L.filter(f).length;
+    const shows = [['findings', ROWS.filter(r => !QUIET.has(r.state)).length], ['all', ROWS.length], ['ignored', IGNORED.length]];
+    return html`<div class="filters toolbar-2">${list.fbar(html`${list.fseg('show', 'Show', shows.map(([v, c]) => ({ v, pressed: showing === v, label: html`${v} <span class="n">${String(c)}</span>` })))}${
+      list.fseg('state', 'State', STATES.filter(s => L.some(r => r.state === s)).map(s => { const c = n(r => r.state === s);
+        return { v: s, pressed: F.state.has(s), title: `${s}: ${c}`, label: html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span><span class="n">${String(c)}</span><span class="sr"> ${s}</span>` }; }))}${
+      AREAS.length > 1 ? list.pick('area', 'Area', AREAS.map(a => [a.id, a.name, n(r => r.area === a.id)]), F.area, { multi: true }) : ''}${
+      [...F.area].map(a => list.tok('area', a, AREAS.find(x => x.id === a)?.name || a))}${query ? list.tok('q', '', `“${query}”`) : ''}`, { clear: filtering() })}</div>`;
   }
 
   function areas() {
     const count = (a, s) => a.rows.filter(r => r.state === s).length;
     return html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
       <div class="sec-head"><h2 id="h-${a.id}">${I(LOOK[a.id]?.[0] || 'circle-help')}${a.name}<button class="help" type="button" aria-label="Help: ${a.name}" data-help="${LOOK[a.id]?.[1] || ''}">${I('circle-help')}</button></h2>
-        <p class="tally">${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
+        <p class="tally">${rows.length < a.rows.filter(drawn).length ? html`<span>${shell.list.count(rows.length, a.rows.filter(drawn).length, 'row')}</span>` : ''}${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
       ${!a.read ? html`<p class="unread"><b>No reader yet.</b> The dashboard has no collector for this area, so nothing here is known: ${a.missing.join(', ')}.</p>`
         : a.error ? html`<p class="unread"><b>Not read:</b> ${a.error}</p>`
         : a.missing.length ? html`<p class="unread"><b>Not read here:</b> ${a.missing.join(', ')}.</p>` : ''}
@@ -136,7 +142,7 @@
   // only Unignore, so it carries no data-id and the selection passes it by.
   function ignored() {
     const rows = IGNORED.filter(passes), name = id => AREAS.find(a => a.id === id)?.name;
-    return html`<section class="area" aria-labelledby="h-ignored"><div class="sec-head"><h2 id="h-ignored">${I('eye-off')}Ignored</h2></div>
+    return html`<section class="area" aria-labelledby="h-ignored"><div class="sec-head"><h2 id="h-ignored">${I('eye-off')}Ignored</h2>${rows.length < IGNORED.length ? html`<p class="tally">${shell.list.count(rows.length, IGNORED.length, 'row')}</p>` : ''}</div>
       ${rows.length ? html`<table class="ledger" aria-labelledby="h-ignored" data-tfilter="page" data-toolbar="toolbar"><thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Finding</th><th scope="col">Unignore</th></tr></thead>
         <tbody>${rows.map(r => html`<tr><td class="g g-${r.state}"><span aria-hidden="true">${GLYPH[r.state]}</span><span class="sr">${r.state}</span></td>
           <td class="what">${r.what}<span class="detail">${name(r.area)} · ${r.detail}</span></td>
@@ -211,11 +217,7 @@
   // The open view's panel: its filters, the filter note and its areas. Another view's panel keeps what it last drew.
   function apply() {
     if (!VIEW) return;
-    const on = filtering(), shown = listed().filter(passes).length;
-    const total = listed().filter(drawn).length;
-    // sd:5469: the count and Clear all end the filter bar, as on Activity; the pressed chips already say what filters.
-    const sum = html`<div class="fsum"><span>${shown} of ${total}</span>${on ? html`<button class="linkbtn" type="button" data-clear>Clear all</button>` : ''}</div>`;
-    put($(`body-${VIEW}`), html`${DOC ? filters(sum) : ''}${DOC && showing === 'ignored' ? ignored() : areas()}`);
+    put($(`body-${VIEW}`), html`${DOC ? filters() : ''}${DOC && showing === 'ignored' ? ignored() : areas()}`);
     // The selection is always a row the viewer can see: the first visible one, or none with the reason.
     shell.reconcile({ rows: document.querySelectorAll('.ledger tbody tr[data-id]'), current: selected, select: id => select(id, false),
       clear: () => { selected = null; put($('details'), html`<p class="why">${!DOC ? 'Nothing is selected: Health could not be read.' : showing === 'ignored' ? 'Nothing is selected: an ignored row has Unignore only. Show findings to pick a row.' : ROWS.some(drawn) ? 'No row matches the filter, so nothing is selected. Show all rows to pick one.' : ROWS.length ? 'Nothing is selected: no row here wants you. Show all lists the ok rows.' : 'Nothing is selected: no area raised a row.'}</p>`); } });
@@ -417,18 +419,19 @@
     const asked = viewOf([...F.area][0]);
     if (asked && !hashView()) { history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`); shell.view.show(asked); }
 
-    // Each panel: its Show and filter chips, the filter note's clear, a matrix column and a row.
+    // Each panel: its filter bar (segments, tokens, Clear all), a matrix column and a row.
     PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('click', e => {
-      if (e.target.closest('[data-clear]')) { clearFilters(); return; }
-      const b = e.target.closest('[data-show]');
-      if (b) { if (b.dataset.show !== showing) { showing = b.dataset.show; apply(); } return; }
+      if (e.target.closest('[data-fclear]')) { clearFilters(); return; }
       const c = e.target.closest('[data-f]');
+      if (c && c.dataset.f === 'show') { if (c.dataset.v !== showing) { showing = c.dataset.v; apply(); } return; }
+      if (c && c.dataset.f === 'q') { query = ''; $('q').value = ''; apply(); return; }
       if (c) { const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v); lamps(); apply(); return; }
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
       const col = e.target.closest('.pmx-col'); if (col) { select(col.dataset.row, true); return; }
       const tr = e.target.closest('tbody tr[data-id]'); if (tr) select(tr.dataset.id, true);
     }));
-    // A lamp is the Area chip for its area: pressing it adds the area to the filter, pressing it again takes it out.
+    PAGE_VIEWS.forEach(v => $(`view-${v.id}`).addEventListener('change', e => shell.list.pickChange(e, F, () => { lamps(); apply(); })));
+    // A lamp is the Area pick's value for its area: pressing it adds the area to the filter, pressing it again takes it out.
     $('annunciator').addEventListener('click', e => {
       const c = e.target.closest('button.cell'); if (!c) return;
       if (c.id === 'refresh') return load();

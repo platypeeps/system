@@ -1619,12 +1619,28 @@ R.observed = document.body.dataset.observed;""")
                             + "R.unknown = BODY().html;")
         cred, unknown = out["R"]["cred"], out["R"]["unknown"]
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', cred), ["cred"])
-        # sd:5469: the count sits at the filter bar's end, as on Activity; no note line repeats the filter.
-        self.assertIn('<div class="fsum"><span>1 of 3</span><button class="linkbtn" type="button" data-clear>Clear all</button></div>', out["R"]["note"])
+        # sd:5504: Activity's bar (shell.list.fbar): the lamp's area is a token, Clear all ends the bar, and the bar holds no
+        # count; an area's title line counts its rows only while a filter hides some (sd:5281). No note line repeats the filter.
+        bar = re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"]["note"], re.S).group(0)
+        self.assertIn('class="tok" data-f="area" data-v="cred"', bar)
+        self.assertTrue(bar.endswith('<div class="fsum"><button class="linkbtn" type="button" data-fclear>Clear all</button></div></div>'), bar[-160:])
+        self.assertNotRegex(re.sub(r"<[^>]+>", " ", bar), r"\b\d+ of \d+\b")
+        self.assertNotIn(" of ", re.search(r'id="a-cred".*?</p>', cred, re.S).group(0), "the lamp hides no row of its own area")
         self.assertNotIn("Filtered to", out["R"]["note"])
         self.assertEqual(out["R"]["address"], "/fleet-health#view=jobs")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', unknown), ["cred", "mir"])
         self.assertEqual(re.findall(r'data-id="([^"]+)"', unknown), ["cred:none", "mir", "mir:briefs"])
+
+    def test_an_areas_title_line_counts_its_rows_while_a_filter_hides_some_and_the_bar_holds_no_count(self):
+        """sd:5504: Activity's bar on Health; the count moved from the bar's end to each area's title line (sd:5281)."""
+        out = self.run_page("R.before = BODY().html;"
+                            "PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'state', v: 'caution' } } : null } });"
+                            "R.after = BODY().html;")
+        tallies = lambda h: re.findall(r'<p class="tally"><span>(\d+ of \d+ rows?)</span>', h)
+        self.assertEqual(tallies(out["R"]["before"]), [])
+        self.assertEqual(tallies(out["R"]["after"]), ["1 of 2 rows", "1 of 2 rows"], "caution leaves one of each area's two drawn rows")
+        bar = re.search(r'<div class="fbar".*?<div class="fsum">.*?</div></div>', out["R"]["after"], re.S).group(0)
+        self.assertNotRegex(re.sub(r"<[^>]+>", " ", bar), r"\b\d+ of \d+\b", "the bar holds no count")
 
     def test_a_second_lamp_adds_its_area_and_pressing_one_again_takes_it_out(self):
         click = "ELS.annunciator.listeners.click[0]({{ target: {{ closest: s => s === 'button.cell' ? {{ id: '', dataset: {{ area: '{a}' }} }} : null }} }});"
@@ -1640,7 +1656,7 @@ R.observed = document.body.dataset.observed;""")
         self.assertEqual(re.findall(r'<section class="area" id="a-(\w+)"', out["R"]["wt"]), ["wt"])
         self.assertIn('data-id="gone:group/alpha"', out["R"]["wt"], "a lamp press drew no row of its area")
         self.assertIn('data-id="unread:beta"', out["R"]["wt"])
-        self.assertIn('data-clear>Clear all</button>', out["R"]["note"])
+        self.assertIn('data-fclear>Clear all</button>', out["R"]["note"])
 
     def test_ports_show_the_counts_line_and_warnings_and_protection_has_no_lamp(self):
         out = self.run_page("R.lamps = ELS.annunciator.html; R.areas = BODY().html; R.lsof = cmd('port.inspect').cli(C.get('port:svc-a:9010'));",
@@ -2097,14 +2113,14 @@ R.cur = window.shell.view.current();""", doc)
 
     def test_show_findings_hides_the_ok_rows_and_says_so_and_show_all_lists_them(self):
         out = self.run_page("""R.findings = BODY().html; R.filters = BODY().html;
-PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'all' } } : null } });
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'show', v: 'all' } } : null } });
 R.all = BODY().html;""", view="machine")
         findings, every = out["R"]["findings"], out["R"]["all"]
         ok = [i for i in re.findall(r'data-id="([^"]+)"', every) if i not in re.findall(r'data-id="([^"]+)"', findings)]
         self.assertTrue(ok)
         self.assertRegex(findings, r'<p class="quiet">[^<]*\d+ ok or queued rows? not shown: Show all lists')
         self.assertNotIn('class="quiet"', every)
-        self.assertIn('data-show="findings" aria-pressed="true"', out["R"]["filters"])
+        self.assertIn('data-f="show" data-v="findings" aria-pressed="true"', out["R"]["filters"])
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
         self.assertNotIn("innerHTML", HEALTH_JS)

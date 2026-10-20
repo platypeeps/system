@@ -30,7 +30,10 @@ which owns `#view=<id>`; each view's reader starts the first time it opens. Each
 view counts the rows that want you, from the summary; a view with an area not
 read shows no count. With no view named the page opens the view an `?area=`
 value names, else Checkouts. A lamp of another view opens that view with its
-area alone. Show findings (the default) leaves out ok and queued rows and
+area alone. The filters are Activity's bar (sd:5504): Show and State as
+segments, Area as a pick, the picked areas and the query as tokens, then Clear
+all; an area's title line counts its rows while a filter hides some. Show
+findings (the default) leaves out ok and queued rows and
 says how many; Show all (`?show=all`) lists them; Show ignored (`?show=ignored`)
 lists the ignored rows instead of the areas. A finding's detail is one line
 in the table; Details carries the row in full.
