@@ -161,27 +161,28 @@ function update() {
 
 // Commands (commands.md). Opening a page is a link, not a command: the tab serves it, nothing runs.
 // build: History and Retake are copy only; the dashboard runs no git, no shots.mjs and no pager. Read brief shows the brief.
+// sd:5457: Hide or Unhide is every row's act; History and Retake stay off Details' bar (bar: false), not off the ⋯ menu,
+// their keys or the palette. Read brief is not the row's act: the row's name opens the same Details.
 const pageName = o => o.path.split('/').pop().slice(0, -5);
 const NO_CLI = 'no CLI: view state; the dashboard writes it (POST /api/designs/view)';
 const view = (o, hidden) => shell.post('/api/designs/view', { id: o.id, hidden }).then(v => reading.reread().then(() => v));
-// One Hide and one Unhide for each row type, a page and a brief-only product.
+// One Hide and one Unhide for each row type, a page and a brief-only product; the row shows the one that is on.
 const hiding = on => [
-  { id: 'design.hide', on, label: 'Hide', does: 'Hides this row from the list; Undo shows it again.', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, when: o => o.hidden ? 'already hidden' : STORE || true,
+  { id: 'design.hide', on, label: 'Hide', does: 'Hides this row from the list; Undo shows it again.', key: 'h', icon: 'eye-off', risk: 'undo', bulk: true, primary: () => true, when: o => o.hidden ? 'already hidden' : STORE || true,
     cli: () => NO_CLI, run: o => view(o, true).then(() => `Hidden: ${o.label}. The Hidden view lists it.`), undo: o => view(o, false) },
-  { id: 'design.unhide', on, label: 'Unhide', does: 'Shows this row in the list again; Undo hides it.', key: 'h', icon: 'eye', risk: 'undo', bulk: true, when: o => !o.hidden ? 'not hidden' : STORE || true,
+  { id: 'design.unhide', on, label: 'Unhide', does: 'Shows this row in the list again; Undo hides it.', key: 'h', icon: 'eye', risk: 'undo', bulk: true, primary: () => true, when: o => !o.hidden ? 'not hidden' : STORE || true,
     cli: () => NO_CLI, run: o => view(o, false).then(() => `Unhidden: ${o.label}`), undo: o => view(o, true) },
 ];
 function registerCommands() {
   const C = shell.commands, REPO = () => D?.root || '~/repos/ui-design';
   C.register(
-    { id: 'design.log', on: 'page', label: 'History', does: 'Gives a git line that lists this page\'s last five commits.', key: 'l', icon: 'git-branch', risk: 'safe', executes: false,
+    { id: 'design.log', on: 'page', label: 'History', does: 'Gives a git line that lists this page\'s last five commits.', key: 'l', icon: 'git-branch', risk: 'safe', executes: false, bar: false,
       cli: o => `git -C ${REPO()} log -5 --format='%h %cs %s' -- ${o.path}`, run: o => `Copy the line to see the last five commits of ${o.label}` },
-    { id: 'design.shots', on: 'page', label: 'Retake screenshots', does: 'Gives the line that retakes this page\'s screenshots at 1440 and 375.', key: 's', icon: 'eye', risk: 'safe', executes: false,
-      primary: o => { const r = ROWS.find(x => x.id === o.id); return !!r && !r.dirty && (!r.shots.length || !!shotStale(r)); },
+    { id: 'design.shots', on: 'page', label: 'Retake screenshots', does: 'Gives the line that retakes this page\'s screenshots at 1440 and 375.', key: 's', icon: 'eye', risk: 'safe', executes: false, bar: false,
       when: o => o.kind === 'v2 mockup' || o.kind === 'skeleton' || 'shots.mjs draws the v2 pages only',
       cli: o => `node ${REPO()}/products/system/designs/tools/shots.mjs ${pageName(o)}`, run: o => `Copy the line to retake ${o.label} at 1440 and 375; the dashboard does not run it` },
     // build: the brief's text comes in the ledger (designs.BRIEF_CHARS); Details shows it, the tab serving no Markdown.
-    { id: 'design.brief', on: 'brief', label: 'Read brief', does: 'Shows the product\'s design brief in Details.', key: 'b', icon: 'file-text', risk: 'safe', primary: () => true, executes: false,
+    { id: 'design.brief', on: 'brief', label: 'Read brief', does: 'Shows the product\'s design brief in Details.', key: 'b', icon: 'file-text', risk: 'safe', executes: false,
       when: o => !!o.brief || 'this product has no brief', cli: o => `less ${REPO()}/${o.brief}`, run: o => { select(o.id, true); return `Brief of ${o.product} shown in Details`; } },
     ...hiding('page'), ...hiding('brief'),
   );

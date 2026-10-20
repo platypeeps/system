@@ -185,6 +185,16 @@ class TheScript(unittest.TestCase):
         self.assertEqual(out["R"]["exec"], [False, False, False, None, None, None, None])
         self.assertEqual(out["R"]["cli"], f"git -C ~/repos/example/ui-design log -5 --format='%h %cs %s' -- {PAGES}/today.html")
 
+    def test_hide_and_unhide_are_the_rows_act_and_details_drops_history_and_retake(self):
+        # sd:5457: the row shows Hide (or Unhide, on the Hidden view) on every page and brief row; Details' Act bar drops
+        # History and Retake screenshots, which the ⋯ menu, their keys and the palette keep.
+        rows = {"page": f"{PAGES}/tasks.html", "brief": "product:brand"}
+        out = self.run_page(f"const ROWS_ = {json.dumps(rows)};"
+                            " R.primary = Object.fromEntries(Object.entries(ROWS_).map(([t, id]) => [t, REG.filter(c => c.on === t && c.primary?.(C.get(id))).map(c => c.id)]));"
+                            " R.offBar = REG.filter(c => c.bar === false).map(c => c.id);")
+        self.assertEqual(out["R"]["primary"], {"page": ["design.hide", "design.unhide"], "brief": ["design.hide", "design.unhide"]})
+        self.assertEqual(out["R"]["offBar"], ["design.log", "design.shots"])
+
     def test_the_copy_only_commands_post_nothing_and_say_so(self):
         out = self.run_page(f"shellRun(cmd('design.shots'), C.get('{PAGES}/tasks.html')); await flush();")
         self.assertEqual(out["posts"], [])

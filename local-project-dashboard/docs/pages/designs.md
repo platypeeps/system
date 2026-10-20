@@ -9,5 +9,7 @@ which of them are stale, and whether the working tree changed it. Details
 opens the page and its 1440 px screenshot at `/designs/<path>`, where the tab
 serves them sandboxed, as before. History, Retake screenshots and Read brief
 are copy only: the dashboard runs no git, no `shots.mjs` and no pager.
+Each row's act is Hide, or Unhide on the Hidden view (sd:5457). History and
+Retake screenshots are in the row's ⋯ menu and the palette, not in Details.
 Observed rereads `/api/designs`. The page reads through the shell's reader,
 `read.js`. The old listing was retired in sd:3402.
