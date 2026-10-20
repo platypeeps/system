@@ -7,7 +7,9 @@
   GitHub tracker's freshness), read when the page opens and after a write.
   Details shows each row's dependencies, test evidence and notification delivery (sd:3394), every local path cut to its last part.
   Writes: Acknowledge (POST /api/contributions/acknowledge), Make task (POST /api/contributions/task, a task linked to the
-  contribution by its GitHub URL) and Dismiss (POST /api/contributions/dismiss, sd:3432: closes a row with no item), each asked first. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
+  contribution by its GitHub URL) and Dismiss (POST /api/contributions/dismiss, sd:3432: closes a row with no item), each asked first.
+  Hide and Unhide (POST /api/contributions/view, sd:5486) write the view state Designs' Hide writes, each with Undo; the
+  Hidden view shows the Open table with the hidden rows. Re-run collector (POST /api/shadow/sync, sd:2207) asks the server to run
   sd shadow sync in a thread, on one 120 s deadline and one run at a time; the page reads GET /api/shadow/state until it ends.
   The page reads nothing from GitHub itself, and nothing here is sample data. The design's Trackers view opens the classic Operations > Trackers.
 -->
@@ -58,7 +60,7 @@
 
   <section id="view-open" aria-labelledby="open-h">
     <div class="sec-head">
-      <h2 id="open-h">Open <button class="help" type="button" aria-label="Help: Open" data-help="<b>Waiting on you first, then on them.</b> Acknowledge clears the attention events on a row; it never completes a task or sends anything. Make task files a task linked to the contribution by its GitHub URL. Dismiss moves a row with no item to Closed. Draft nudge gives the gh line to copy; the dashboard posts nothing.">
+      <h2 id="open-h"><span id="open-title">Open</span> <button class="help" type="button" aria-label="Help: Open" data-help="<b>Waiting on you first, then on them.</b> Acknowledge clears the attention events on a row; it never completes a task or sends anything. Make task files a task linked to the contribution by its GitHub URL. Dismiss moves a row with no item to Closed. Hide takes a row out of Open and every count until you Unhide it from the Hidden view; new activity leaves it hidden. Draft nudge gives the gh line to copy; the dashboard posts nothing.">
         <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
       <p class="tally" id="tally"></p>
     </div>

@@ -17,12 +17,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_db import contributions, upsert_repo
+from sd_db import contributions, upsert_repo, writes
 
 from sd_dashboard import contribution_screen, server, v2
 
@@ -48,6 +49,9 @@ COMMANDS = [
     ["contribution.task", "contribution", "Make task", "k", "confirm"],
     ["contribution.open", "contribution", "Open on GitHub", "o", "safe"],
     ["contribution.dismiss", "contribution", "Dismiss", "x", "confirm"],
+    # sd:5486: Hide and Unhide, the view state Designs' and Documents' Hide write; Undo reverses each.
+    ["contribution.hide", "contribution", "Hide", "h", "undo"],
+    ["contribution.unhide", "contribution", "Unhide", "h", "undo"],
     ["collector.sync", "collector", "Re-run collector", "r", "safe"],
 ]
 
@@ -94,7 +98,7 @@ class TheDocument(ScreenCase):
         row = self.doc(given=[contribution(1, evidence=[{"argv": ["/home/example/x/secret.sh"], "cwd": "/home/example/x"}],
                                            local_clone="/home/example/x", blocked_on="waiting on a private note")])["rows"][0]
         self.assertEqual(set(row), set(contribution_screen.ROW_FIELDS) | {
-            "repo", "has_draft", "freshness", "internal", "why_internal", "evidence", "dependencies", "delivery", "linked"})
+            "repo", "has_draft", "freshness", "internal", "why_internal", "evidence", "dependencies", "delivery", "linked", "hidden"})
         # sd:3394: evidence is shown now, but no local path: the script reads `…/secret.sh`, the directory `local: x`.
         self.assertNotIn("/home/example", json.dumps(row))
         # Review 4 of PR #72 (34daa6618266): blocked_on is free-form metadata the page never reads.
@@ -152,8 +156,40 @@ class TheDocument(ScreenCase):
             doc = self.doc(given=many)
         self.assertEqual(len(doc["rows"]), 1)
         self.assertEqual(doc["counts"], {
-            "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0, "github": 0},
-            "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1, "github": 0}})
+            "internal": {"newly_unblocked": 1, "awaiting_you": 0, "awaiting_them": 0, "unknown": 0, "linked": 0, "unfiled": 0, "github": 0,
+                         "hidden": 0},
+            "external": {"newly_unblocked": 0, "awaiting_you": 1, "awaiting_them": 1, "unknown": 1, "linked": 1, "unfiled": 1, "github": 0,
+                         "hidden": 0}})
+
+    def test_a_hidden_row_carries_hidden_and_leaves_every_count_and_the_badge(self):
+        # sd:5486: Hide is the view store Designs and Documents write, keyed contribution:<key>. A hidden row stays in the
+        # document for the Hidden view, but leaves the lanes, the tallies and the badge; settled rows ignore it.
+        writes.set_view(self.connection, "contribution:" + contribution(1)["key"], hidden=True)
+        writes.set_view(self.connection, "contribution:" + contribution(5)["key"], hidden=True)
+        self.connection.commit()
+        doc = self.doc()
+        self.assertEqual([(r["key"][-1:], r["hidden"]) for r in doc["rows"]], [("2", False), ("3", False), ("4", False), ("1", True)])
+        self.assertEqual(doc["store"], {"available": True, "reason": ""})
+        internal = doc["counts"]["internal"]
+        self.assertEqual((internal["newly_unblocked"], internal["awaiting_you"], internal["hidden"]), (0, 1, 1))
+        self.assertEqual(doc["attention"], {"state": "caution", "n": 1, "what": "contributions want you"})
+        self.assertEqual(doc["settled"][0]["merged"], 2, "a hidden settled row left the record")
+
+    def test_hidden_rows_go_last_so_the_limit_cuts_them_first(self):
+        many = [contribution(n, "awaiting_them", observed_at=f"2026-09-0{n}T00:00:00Z") for n in range(1, 4)]
+        writes.set_view(self.connection, "contribution:" + many[2]["key"], hidden=True)
+        self.connection.commit()
+        with mock.patch.object(contribution_screen, "OPEN_LIMIT", 2):
+            cut = self.doc(given=many)
+        self.assertEqual([r["key"][-1] for r in cut["rows"]], ["2", "1"])
+        self.assertEqual((cut["truncated"], cut["counts"]["internal"]["hidden"]), (True, 1))
+
+    def test_an_unread_view_store_hides_nothing_and_says_why(self):
+        writes.set_view(self.connection, "contribution:" + contribution(1)["key"], hidden=True)
+        with mock.patch.object(writes, "views", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc()
+        self.assertEqual([r["hidden"] for r in doc["rows"]], [False] * 4)
+        self.assertEqual(doc["store"], {"available": False, "reason": "the view store was not read: database is locked"})
 
     def test_settled_checkouts_named_alike_stay_two_entries(self):
         # Review 2 of PR #72 (aa5a4f3222ed): the label `local: project` keyed the fold, so two checkouts became one entry.
@@ -369,13 +405,39 @@ class ThePage(BrowserSession):
         self.assertEqual(status, 400)
         self.assertIn("close the item", refused["error"])
 
+    def test_hide_writes_the_view_state_the_page_reads_back_and_unhide_clears_it(self):
+        # sd:5486: Hide persists until Unhide; a key the projection does not list writes nothing.
+        seed_registered(self.connection)
+        read = lambda: json.loads(self.request("/api/contributions/page", headers={"Cookie": self.cookie})[2])
+        [row] = read()["rows"]
+        self.assertFalse(row["hidden"])
+        before = self.snapshot()
+        for payload in ({"key": row["key"]}, {"key": row["key"], "hidden": "yes"}, {"key": 3, "hidden": True},
+                        {"key": row["key"], "hidden": True, "revision": row["revision"]}):
+            self.assertEqual(self.post("/api/contributions/view", payload)[0], 400, payload)
+        self.assertEqual(self.post("/api/contributions/view", {"key": row["key"], "hidden": True}, **{"X-SD-CSRF": "0" * 64})[0], 403)
+        status, _, refused = self.post("/api/contributions/view", {"key": "github:https://github.com/example/gone/pull/9", "hidden": True})
+        self.assertEqual((status, refused.get("reload")), (409, True))
+        self.assertEqual(self.snapshot(), before)
+        status, _, out = self.post("/api/contributions/view", {"key": row["key"], "hidden": True})
+        self.assertEqual((status, out), (200, {"key": row["key"], "pinned": False, "hidden": True, "tags": []}))
+        page = read()
+        self.assertEqual([r["hidden"] for r in page["rows"]], [True])
+        self.assertEqual(sum(side["hidden"] for side in page["counts"].values()), 1)
+        self.assertEqual(writes.views(self.connection)["contribution:" + row["key"]]["hidden"], True)
+        self.assertEqual(self.post("/api/contributions/view", {"key": row["key"], "hidden": False})[0], 200)
+        self.assertEqual([r["hidden"] for r in read()["rows"]], [False])
+
 
 SHELL_MORE = r"""
 window.shell.row = () => null; window.shell.closePane = () => {}; OUT.urls = []; window.shell.url = q => OUT.urls.push(q);
 OUT.picks = []; C.pick = id => OUT.picks.push(id); OUT.opened = []; window.open = u => OUT.opened.push(u);
 // An answer that settles after k more turns, so a test can make an older read land after a newer one.
 const later = (v, k) => { let p = Promise.resolve(v); for (let i = 0; i < k; i++) p = p.then(x => x); return p; };
-OUT.shown = []; window.shell.view = { show: id => OUT.shown.push(id), current: () => 'open', count() {} };
+// The shell's view switch: show() records the view and fires shell:view, as shell.js does; count() records each tab's count.
+OUT.shown = []; OUT.counts = {}; let VIEW_NOW = 'open';
+window.shell.view = { show(id) { OUT.shown.push(id); VIEW_NOW = id; document.dispatchEvent(new CustomEvent('shell:view', { detail: { id } })); },
+  current: () => VIEW_NOW, count: (id, n) => { OUT.counts[id] = n; } };
 """
 
 
@@ -449,6 +511,73 @@ shellRun(cmd('contribution.dismiss'), ext); await flush(); R.off = cmd('contribu
         self.assertEqual(out["gets"], ["/api/contributions/page", "/api/contributions/page"], "the page did not reread after the write")
         self.assertEqual(out["toasts"][-1], ["Dismissed · Contribution 3", False])
         self.assertEqual(out["R"]["off"], "dismissed; the page reads again")
+
+    def hidden(self):
+        """The document with the newly unblocked row hidden, as `document` sends it: out of the counts, last in the rows."""
+        one = next(r for r in self.doc["rows"] if r["key"] == ONE)
+        one["hidden"] = True
+        self.doc["rows"] = [r for r in self.doc["rows"] if r is not one] + [one]
+        self.doc["counts"]["internal"]["newly_unblocked"] -= 1
+        self.doc["counts"]["internal"]["hidden"] = 1
+        self.doc["attention"] = {"state": "caution", "n": 1, "what": "contributions want you"}
+
+    #: The server's answer, with the view write landing in the document the next read returns.
+    VIEWS = ("(path, body) => { if (path === '/api/contributions/view') { DOC.rows.find(r => r.key === body.key).hidden = body.hidden;"
+             " return [200, { key: body.key, hidden: body.hidden }]; } return [200, DOC]; }")
+
+    def test_a_hidden_row_leaves_the_open_rows_and_the_hidden_view_lists_it_with_unhide(self):
+        # sd:5486: Hidden is a page view on the Open table; Open lists the unhidden rows, Hidden the hidden ones alone.
+        self.hidden()
+        out = self.run_page(f"""R.rows = ELS.rows.html; R.lamps = ELS.annunciator.html; R.tally = ELS.tally.html;
+window.shell.view.show('hidden'); R.hidden = ELS.rows.html; R.title = ELS['open-title'].textContent; R.htally = ELS.tally.html;
+R.off = [cmd('contribution.hide').when(C.get('{ONE}')), cmd('contribution.unhide').when(C.get('{ONE}')),
+  cmd('contribution.unhide').when(C.get('github:{EXTERNAL}'))];
+window.shell.view.show('open'); R.back = ELS.rows.html;""")
+        ids = r'<tr data-id="([^"]+)"'
+        self.assertNotIn(ONE, re.findall(ids, out["R"]["rows"]))
+        self.assertEqual(len(re.findall(ids, out["R"]["rows"])), 3)
+        self.assertIn('data-cell="newly_unblocked" data-state="ok"', out["R"]["lamps"])
+        self.assertIn("▲ 1 yours", out["R"]["tally"])
+        self.assertEqual(re.findall(ids, out["R"]["hidden"]), [ONE])
+        self.assertEqual((out["R"]["title"], out["R"]["htally"]), ("Hidden", "1 hidden"))
+        self.assertEqual(out["R"]["off"], ["already hidden", True, "not hidden"])
+        self.assertEqual(out["counts"]["hidden"], 1)
+        self.assertNotIn(ONE, re.findall(ids, out["R"]["back"]))
+        self.assertEqual(out["attention"]["n"], 1)
+
+    def test_hide_posts_the_row_and_undo_posts_it_back(self):
+        out = self.run_page(f"""shellRun(cmd('contribution.hide'), C.get('{ONE}')); await flush(); R.rows = ELS.rows.html;
+await lastUndo().undo(); await flush(); R.back = ELS.rows.html;""", answer=self.VIEWS)
+        self.assertEqual(out["confirms"], [])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/contributions/view", {"key": ONE, "hidden": True}],
+                                                         ["/api/contributions/view", {"key": ONE, "hidden": False}]])
+        self.assertEqual(out["toasts"][0], ["Hidden · Fix it's $HOME. The Hidden view lists it.", True])
+        self.assertNotIn(ONE, re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]))
+        self.assertIn(ONE, re.findall(r'<tr data-id="([^"]+)"', out["R"]["back"]), "Undo did not bring the row back")
+        self.assertEqual(out["gets"].count("/api/contributions/page"), 3, "Hide or its Undo did not read again")
+
+    def test_unhide_posts_the_row_and_undo_hides_it_again(self):
+        self.hidden()
+        out = self.run_page(f"""window.shell.view.show('hidden'); shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
+await lastUndo().undo(); await flush();""")
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/contributions/view", {"key": ONE, "hidden": False}],
+                                                         ["/api/contributions/view", {"key": ONE, "hidden": True}]])
+        self.assertEqual(out["toasts"][0], ["Unhidden · Fix it's $HOME", True])
+
+    def test_an_emptied_hidden_view_says_nothing_is_hidden_while_a_count_lags(self):
+        # Seen in the browser: after Unhide, a count from the last read still said 1 hidden, and the empty view blamed the
+        # limit. Rows are left out only when the document says it cut some.
+        self.hidden()
+        out = self.run_page(f"""window.shell.view.show('hidden'); shellRun(cmd('contribution.unhide'), C.get('{ONE}')); await flush();
+R.rows = ELS.rows.html;""", answer=self.VIEWS)
+        self.assertIn("Nothing hidden in any repositories", out["R"]["rows"])
+        self.assertNotIn("left out by the limit", out["R"]["rows"])
+
+    def test_an_unread_view_store_turns_hide_off_with_its_reason_and_the_hidden_view_says_so(self):
+        self.doc["store"] = {"available": False, "reason": "the view store was not read: locked"}
+        out = self.run_page(f"""R.off = cmd('contribution.hide').when(C.get('{ONE}')); window.shell.view.show('hidden'); R.rows = ELS.rows.html;""")
+        self.assertEqual(out["R"]["off"], "Hide is off: the view store was not read: locked")
+        self.assertIn("Hidden not read: the view store was not read: locked", out["R"]["rows"])
 
     def test_a_landed_write_whose_reread_fails_still_says_it_landed_and_turns_its_command_off(self):
         # Review 2 of PR #72 (84cde549031a): the reread sat inside the write's promise, so a failed GET reported a committed
@@ -775,7 +904,8 @@ document.dispatchEvent(new CustomEvent('contributions:scope', { detail: 'externa
         # Review 4 of PR #72 (0435ca1e4fbb): the help and the page note still said a followup through /api/items.
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
         routes = re.findall(r"post\('(/api/[^']+)'", PAGE_JS)
-        self.assertEqual(routes, ["/api/contributions/acknowledge", "/api/contributions/task", "/api/contributions/dismiss"])
+        self.assertEqual(routes, ["/api/contributions/view", "/api/contributions/acknowledge", "/api/contributions/task",
+                                  "/api/contributions/dismiss"])
         # Re-run collector is the shared declaration (commands.js, sd:3524); the page help still names its route.
         self.assertIn("window.commands.syncCollector(", PAGE_JS)
         for route in routes + ["/api/shadow/sync"]:
@@ -878,7 +1008,9 @@ ELS.annunciator.listeners.click[0]({ target: lamp }); R.on = where(); R.html = E
 
     def test_open_is_the_first_view_and_settled_the_second(self):
         page = (V2 / "contributions.html").read_text(encoding="utf-8")
-        self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' }];", PAGE_JS)
+        # sd:5486: Hidden shows the Open panel with the hidden rows, and is never the remembered view.
+        self.assertIn("window.PAGE_VIEWS = [{ id: 'open', label: 'Open' }, { id: 'settled', label: 'Settled' },"
+                      " { id: 'hidden', label: 'Hidden', panel: 'open', keep: false }];", PAGE_JS)
         self.assertLess(page.index('<section id="view-open"'), page.index('<section class="settled" id="view-settled"'))
 
     def test_trackers_is_a_link_beside_the_views_not_a_second_open(self):
@@ -906,7 +1038,7 @@ shellRun(cmd('contribution.ack'), C.get('{ONE}')); await flush(); R.on = where()
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "contributions", "Contributions", "/contributions", ("/api/contributions/page", "/api/contributions/task", "/api/contributions/dismiss",
-                                                                         "/api/shadow/sync", "/api/shadow/state")
+                                                                         "/api/contributions/view", "/api/shadow/sync", "/api/shadow/state")
 
 
 if __name__ == "__main__":

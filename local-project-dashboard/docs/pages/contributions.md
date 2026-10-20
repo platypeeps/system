@@ -21,7 +21,15 @@ failed reread keeps the rows and says the write landed; a failed load clears
 the page. A redraw keeps keyboard focus on the replaced lamp or command, or on
 the row's next action when that command went off (sd:2426). Settled rows count per stored repository, so two
 checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
-Re-run collector are copy only. Details shows each row's dependencies, test
+Re-run collector are copy only. Hide and Unhide (sd:5486) post
+`/api/contributions/view`, `{"key", "hidden"}`, which writes the view store
+Designs' Hide writes, keyed `contribution:<key>`; each offers Undo. A key the
+projection no longer lists is refused with 409. A hidden open row stays in the
+document with `hidden`, after every shown row, and leaves the lanes, tallies
+and badge; the Hidden view lists it on the Open table with Unhide. Unlike
+Dismiss, new activity does not unhide it, and settled rows keep their counts.
+A view store that does not read hides nothing: `store.reason` says why, and
+Hide is off. Details shows each row's dependencies, test
 evidence and notification delivery (sd:3394); the document cuts each local path
 in a recorded check to its last part, and a section it cannot read says
 "Not read" with the reason. The old screen moved to `/classic/contributions`.

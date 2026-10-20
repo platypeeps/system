@@ -163,7 +163,8 @@ SETTLED_REPOS = 100
 #: `repo` is rewritten by `_shown` and `draft_path` becomes `has_draft`: the page only asks whether a draft exists.
 #: Evidence, dependencies and notification delivery (sd:3394) are shaped by `_row_evidence`, `_row_dependencies` and
 #: `_row_delivery`.
-#: `merged_at` and `closed_at` are when GitHub settled the row, as the shadow collector last read it (sd:5301).
+#: `merged_at` and `closed_at` are when GitHub settled the row, as the shadow collector last read it (sd:5301); `hidden` is
+#: added beside these, from the view store (sd:5486).
 ROW_FIELDS = ("key", "revision", "event_ids", "reasons", "lane", "title", "url", "external_state", "local_status",
               "item_id", "local_branch", "tested_commit", "observed_at", "merged_at", "closed_at")
 #: The fields each dependency kind may carry, as the library's `_dependency` admits them.
@@ -173,6 +174,13 @@ DEPENDENCY_FIELDS = {"item": ("kind", "item"), "merge": ("kind", "url"), "issue"
 SETTLED_DAYS = 29
 #: A local path inside a recorded command word: at its start or after `=`, never inside a URL or a relative path.
 LOCAL_PATH = re.compile(r"(?<![\w:/.~-])~?/[^\s=]*")
+#: The key prefix of a contribution's view state (sd:5486): Hide is the workflow database's `view` store, the one Designs'
+#: and Documents' Hide write; a Designs key starts `designs/` and a Documents key is `<root key>/<file>`.
+VIEW_ROOT = "contribution"
+
+
+def view_key(key):
+    return f"{VIEW_ROOT}:{key}"
 
 
 def _registered(connection):
@@ -325,14 +333,20 @@ def document(connection, *, now):
     """The Contributions page's document: open rows by lane, settled rows counted per repository, collector freshness."""
     from datetime import timedelta
 
+    from .documents_screen import views
+
     rows = contributions.projection(connection)
     remotes, places = _registered(connection)
+    # Hide (sd:5486): an open row the operator hid stays in `rows` with `hidden`, for the Hidden view, and leaves every count.
+    # A store that does not read hides nothing, and `store.reason` says why Hide is off.
+    kept, unread = views(connection)
     lanes = dict.fromkeys(contributions.LANES, 0)
     fresh = {"current": 0, "unknown": 0}
     opened, settled = [], {}
     # Per scope, over every open row, so a cut list still counts in full: lanes, unknown freshness, linked, unfiled, and
     # rows GitHub already merged or closed.
-    counts = {side: dict.fromkeys((*OPEN_LANES, "unknown", "linked", "unfiled", "github"), 0) for side in ("internal", "external")}
+    counts = {side: dict.fromkeys((*OPEN_LANES, "unknown", "linked", "unfiled", "github", "hidden"), 0)
+              for side in ("internal", "external")}
     # Settle dates (sd:5301): every dated row in the window, any lane; the settled rows before it or with no date, per scope.
     since = _moment(now) - timedelta(days=SETTLED_DAYS)
     recent, older, undated = [], {"internal": 0, "external": 0}, {"internal": 0, "external": 0}
@@ -351,12 +365,16 @@ def document(connection, *, now):
             undated[scope] += 1
         if row["lane"] in OPEN_LANES:
             side = counts[scope]
-            side[row["lane"]] += 1
-            side["unknown"] += status != "current"
-            side["linked"] += bool(row.get("item_id"))
-            side["unfiled"] += not row.get("url")
-            side["github"] += settle is not None
-            opened.append({key: row.get(key) for key in ROW_FIELDS} | {
+            hidden = bool(kept.get(view_key(row["key"]), {}).get("hidden"))
+            if hidden:
+                side["hidden"] += 1
+            else:
+                side[row["lane"]] += 1
+                side["unknown"] += status != "current"
+                side["linked"] += bool(row.get("item_id"))
+                side["unfiled"] += not row.get("url")
+                side["github"] += settle is not None
+            opened.append({key: row.get(key) for key in ROW_FIELDS} | {"hidden": hidden,
                 "repo": _shown(row.get("repo")), "has_draft": bool(row.get("draft_path")),
                 "freshness": {"status": status or "unknown", "reason": (row.get("freshness") or {}).get("reason") or ""},
                 "internal": why is not None, "why_internal": why,
@@ -370,6 +388,8 @@ def document(connection, *, now):
     # Newest observation first within a lane, never-observed rows last: two stable sorts.
     opened.sort(key=lambda row: str(row["observed_at"] or ""), reverse=True)
     opened.sort(key=lambda row: OPEN_LANES.index(row["lane"]))
+    # Hidden rows after every shown one, so the limit cuts them first.
+    opened.sort(key=lambda row: row["hidden"])
     recent.sort(key=lambda entry: _moment(entry["at"]), reverse=True)
     ranked = sorted(settled.values(), key=lambda entry: (-(entry["merged"] + entry["closed"]), entry["repo"]))
     other = {"internal": {"merged": 0, "closed": 0}, "external": {"merged": 0, "closed": 0}}
@@ -389,6 +409,7 @@ def document(connection, *, now):
         "settled": ranked[:SETTLED_REPOS],
         "settled_other": other,
         "collector": _freshness(connection, now),
+        "store": {"available": not unread, "reason": unread},
         # A pack before sd:5303 gives rows no settle dates at all: the page reads that as not recorded, never as none.
         "github_dates": all("merged_at" in row and "closed_at" in row for row in rows),
         "settled_recent": recent,
@@ -404,3 +425,23 @@ def _attention(counts) -> dict:
 
     mine = sum(side[lane] for side in counts.values() for lane in ("newly_unblocked", "awaiting_you"))
     return attention(["caution"] * mine, {"caution": "contributions want you"})
+
+
+def view(payload):
+    """`POST /api/contributions/view` (sd:5486): `{"key", "hidden"}`; the write as `action_route` returns one. The write reads
+    the projection again, so a key it no longer lists is refused as stale and nothing is written. Unlike Dismiss, the state
+    persists until Unhide: new activity on the row leaves it hidden."""
+    from sd_db import workflow, writes
+
+    key, hidden = payload.get("key"), payload.get("hidden")
+    if set(payload) != {"key", "hidden"} or not isinstance(key, str) or not isinstance(hidden, bool):
+        raise ValueError("Send the contribution's key and hidden, true or false.")
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+
+    def write(connection):
+        if key not in {row["key"] for row in contributions.projection(connection)}:
+            raise workflow.StaleItem(f"No contribution {key} is listed. Nothing was hidden or shown. Read Contributions again.")
+        return {"key": key, **writes.set_view(connection, view_key(key), hidden=hidden)}
+
+    return write

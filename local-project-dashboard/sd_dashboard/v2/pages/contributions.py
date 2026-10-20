@@ -2,7 +2,8 @@
 /classic/contributions when this page took its path; it stays in the palette because this page caps its open rows and
 the old screen lists every one. Details shows evidence, dependencies and notification delivery (sd:3394). Acknowledge
 posts /api/contributions/acknowledge, which v1 posts too, so it stays in server.py's action_route. Dismiss (sd:3432) closes
-a row with no item. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
+a row with no item. Hide (sd:5486) posts /api/contributions/view, the view state Designs' Hide writes, and the Hidden view
+lists the hidden rows with Unhide. Re-run collector posts /api/shadow/sync and reads /api/shadow/state (sd:2207, `shadow_run`)."""
 
 from __future__ import annotations
 
@@ -42,6 +43,13 @@ def _dismiss(payload, principal):
     return lambda connection: contributions.dismiss(connection, values["key"], expected_revision=values["revision"], who="dashboard")
 
 
+def _view(payload, principal):
+    from ... import contribution_screen
+
+    # Hide and Unhide (sd:5486): the view state Designs' Hide writes, keyed contribution:<key>; Undo posts the other value.
+    return contribution_screen.view(dict(payload))
+
+
 def _sync_status(read):
     from ...shadow_run import RUN
 
@@ -69,7 +77,7 @@ PAGE = Page(
     html="contributions.html",
     item="sd:2113",
     api=(Api("/api/contributions/page", _read), Api("/api/contributions/task", write=_task),
-         Api("/api/contributions/dismiss", write=_dismiss),
+         Api("/api/contributions/dismiss", write=_dismiss), Api("/api/contributions/view", write=_view),
          Api("/api/shadow/sync", write=_sync), Api("/api/shadow/state", _sync_status)),
     classic={"Contributions (classic)": "/classic/contributions"},
     takes=(Old("/classic/contributions", _classic),),
