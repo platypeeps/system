@@ -724,7 +724,8 @@ class TheToolbarStandard(unittest.TestCase):
         "activity.html": {"Events per hour by kind"},  # the chart's fallback table
         "briefs.html": {"Briefs per source and day"},  # the cadence fallback table
         "health.html": {"Snoozed rows", "pmx-cap"},  # snoozed rows; the protection matrix's table
-        "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h"},  # lane, processes, worktrees, satellites
+        "management.html": {"queue-h", "ready-h", "agents-h", "wt-h", "sat-h", "up-h"},  # lane, processes, worktrees,
+        # satellites, the shared upload link
         "reports.html": {"cad"},  # the cadence table
         "tasks.html": {"issues-h", "place-rows"},  # Your issues; the place rows
         "today.html": {"active-h", "work-h", "problems-h", "briefs-h", "mail-h", "issues-h", "intake-h", "decisions-h",

@@ -105,6 +105,13 @@ def presigned_post(bucket: str, region: str, prefix: str, keys: dict, lifetime: 
     return endpoint(bucket, region), fields, expiry
 
 
+def curl_line(url: str, fields: dict) -> str:
+    """The ready `curl` line for a form; the uploader replaces `/path/to/file`. The dashboard shows it too (sd:5405)."""
+    # --form-string sends a value as written: curl reads no @, < or ;type= in it.
+    return " ".join(["curl"] + [f"--form-string {shlex.quote(f'{name}={value}')}" for name, value in fields.items()]
+                    + ["-F file=@/path/to/file", url])
+
+
 def link(args: list[str], out, err) -> int:
     options = {"--expires": os.environ.get("SHARED_UPLOAD_EXPIRES") or "168h",
                "--max-mb": os.environ.get("SHARED_UPLOAD_MAX_MB") or "500"}
@@ -126,9 +133,7 @@ def link(args: list[str], out, err) -> int:
     keys = credentials(profile)
     url, fields, expiry = presigned_post(bucket, region, prefix, keys, lifetime, max_bytes,
                                          datetime.datetime.now(datetime.timezone.utc))
-    # --form-string sends a value as written: curl reads no @, < or ;type= in it.
-    curl = " ".join(["curl"] + [f"--form-string {shlex.quote(f'{name}={value}')}" for name, value in fields.items()]
-                    + ["-F file=@/path/to/file", url])
+    curl = curl_line(url, fields)
     print(f"url: {url}", file=out)
     for name, value in fields.items():
         print(f"field {name}: {value}", file=out)

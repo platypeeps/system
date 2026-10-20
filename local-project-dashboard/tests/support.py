@@ -42,7 +42,9 @@ class ScreenCase(unittest.TestCase):
         self.addCleanup(self.connection.close)
         self.now = NOW
         # The Tasks read carries the sweeps' records (sd:5096): a run on this machine must not reach a fixture's page.
-        state = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state")})
+        # Management reads <config>/shared-upload/.env (sd:5405): this machine's config must not reach one either.
+        state = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(self.tmp.name) / "state"),
+                                             "SYSTEM_TOOLS_CONFIG": str(Path(self.tmp.name) / "config")})
         state.start()
         self.addCleanup(state.stop)
 
