@@ -706,7 +706,7 @@ function registerCommands() {
       consequence: () => 'Each satellite, on its next repo-sync follow run (every five minutes), drains its lanes, follows the hub\'s pins and runs machine-setup update --apply, then writes its result here.',
       run: () => landing(refreshSatellites(), v => `Refresh requested · ${v.id}`) },
     // sd:5405: local-shared-upload's signer, run by the server; the link is one setting row and the toast never holds it.
-    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it in place of this one.', risk: 'confirm',
+    { id: 'upload.regenerate', on: 'upload link', label: 'Regenerate', does: 'Signs a new 7-day upload link under inbox/ and shows it here.', risk: 'confirm',
       primary: () => true, cli: () => 'no CLI: the dashboard signs the link with local-shared-upload and keeps it as the dashboard.shared_upload_link row', executes: true,
       sends: () => 'aws configure export-credentials --profile <SHARED_UPLOAD_PROFILE>',
       consequence: () => `Signs a new link for uploads under ${UPLOAD?.prefix || 'inbox/'} that works for 7 days and shows it here in place of the current one. Links already handed out keep working until they expire.`,
