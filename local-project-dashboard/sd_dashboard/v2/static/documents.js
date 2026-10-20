@@ -13,6 +13,12 @@ let OBSERVED = Date.now(), ROOTS = [], LABEL = {}, DOCS = [], STORE = '', DOC = 
 const KINDS = ['report', 'research', 'design', 'dashboard'];
 const FRESH = { today: 'modified today', week: '1–7 days', older: 'older than 7 days', stale: 'render-stale' };
 function days(iso) { return Math.floor((Date.parse(new Date(OBSERVED).toISOString().slice(0, 10)) - Date.parse(iso.slice(0, 10))) / 864e5); }
+// A destination is on when the row designates it or already holds a copy there; a row with neither is None.
+const DEST = { drive: ['Drive', 'triangle'], notion: ['Notion', 'box'], obsidian: ['Obsidian', 'gem'], none: ['None', ''] };
+function dests(d) {
+  const p = d.pub || {}, on = ['drive', 'notion', 'obsidian'].filter(ch => (p.choice && p.choice[ch]) || (p.copies || []).some(c => c.channel === ch));
+  return on.length ? on : ['none'];
+}
 function fresh(d) { const n = days(d.mod); return n <= 0 ? 'today' : n <= 7 ? 'week' : 'older'; }
 const kb = b => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024).toLocaleString()} KB`;
 const rootOf = d => ROOTS.find(x => x.key === d.key);
@@ -22,7 +28,7 @@ const shownRoots = () => ROOTS.filter(r => !r.hidden);
 const checkoutOf = d => rootOf(d).path.replace(/\/docs\/dashboard$/, '');
 
 // ---------- State ----------
-const F = { repo: new Set(), kind: new Set(), fresh: new Set(), text: '', pinned: false, hidden: false };
+const F = { repo: new Set(), kind: new Set(), fresh: new Set(), dest: new Set(), text: '', pinned: false, hidden: false };
 // The list's sort, page and size (shell.list, sd:2682): newest first, 50 a page.
 const LIST = { sort: 'mod', dir: -1, size: 50 }, L = { ...LIST, page: 1 };
 let selected = null, picked = [];
@@ -32,6 +38,7 @@ function matches(d) {
   if (F.pinned && !d.pinned) return false;
   if (F.repo.size && !F.repo.has(d.key)) return false;
   if (F.kind.size && !F.kind.has(d.kind)) return false;
+  if (F.dest.size && !dests(d).some(ch => F.dest.has(ch))) return false;
   if (F.fresh.size && !([...F.fresh].some(f => f === 'stale' ? d.stale : fresh(d) === f))) return false;
   if (F.text) { const hay = `${d.title} ${d.h1} ${d.desc} ${d.file} ${d.tags.join(' ')}`.toLowerCase(); if (!F.text.split(/\s+/).every(w => hay.includes(w))) return false; }
   return true;
@@ -74,6 +81,7 @@ function renderFacets() {
     <div class="facet">${window.shell.list.pick('repo', 'Repo', shownRoots().map(r => [r.key, LABEL[r.key] || r.key, facetCount('repo', r.key), r.n === 0 ? `Nothing generated yet in ${r.path}` : '']), F.repo, { multi: true, help: hiddenRoots() })}</div>
     <div class="facet"><span class="label">Kind <button class="help" type="button" aria-label="Help: Kind" data-help="<b>Derived until the index exists.</b> A checkout with research.conf.py makes research; the rest are reports. The document index (backend work) stores kind per file.">${I('circle-help')}</button></span><div class="chips">${KINDS.map(k => chip('kind', k, k))}</div></div>
     <div class="facet"><span class="label">Freshness</span><div class="chips">${Object.entries(FRESH).map(([k, l]) => chip('fresh', k, l, k === 'stale' ? html`<span class="g-caution" aria-hidden="true">▲</span>` : ''))}</div></div>
+    <div class="facet"><span class="label">Destination</span><div class="chips">${Object.entries(DEST).map(([k, [l, i]]) => chip('dest', k, l, i ? I(i) : ''))}</div></div>
     <div class="facet"><span class="label">Show</span><div class="chips">
       <button class="chip" type="button" id="f-pinned" aria-pressed="${String(F.pinned)}">${I('pin')}Pinned only <span class="n">${DOCS.filter(d => d.pinned && !d.hidden).length}</span></button>
       <button class="chip" type="button" id="f-hidden" aria-pressed="${String(F.hidden)}">${I('eye-off')}Hidden <span class="n">${DOCS.filter(d => d.hidden).length}</span></button></div></div>`);
@@ -103,6 +111,7 @@ const COLS = [[null, html`<span class="sr">State</span>`, 'g'], ['title', 'Docum
 function activeFilters() {
   const act = [];
   F.repo.forEach(v => act.push({ key: `repo:${v}`, label: `repo:${v}` })); F.kind.forEach(v => act.push({ key: `kind:${v}`, label: `kind:${v}` }));
+  F.dest.forEach(v => act.push({ key: `dest:${v}`, label: `dest:${v}` }));
   F.fresh.forEach(v => act.push({ key: `fresh:${v}`, label: v === 'stale' ? 'is:stale' : `age:${v}` }));
   if (F.pinned) act.push({ key: 'pinned', label: 'is:pinned' }); if (F.hidden) act.push({ key: 'hidden', label: 'is:hidden' });
   if (F.text) act.push({ key: 'q', label: `“${F.text}”` });
@@ -158,7 +167,7 @@ document.getElementById('chips').addEventListener('click', e => {
   if (f === 'pinned' || f === 'hidden') F[f] = false; else if (f === 'q') { F.text = ''; input.value = ''; } else F[f].delete(v);
   L.page = 1; render();
 });
-function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; L.page = 1; renderShift(); render(); }
+function clearAll() { F.repo.clear(); F.kind.clear(); F.fresh.clear(); F.dest.clear(); F.text = ''; F.pinned = false; F.hidden = false; input.value = ''; L.page = 1; renderShift(); render(); }
 document.getElementById('main').addEventListener('click', e => {
   if (e.target.closest('[data-clear]')) return clearAll();
 });
@@ -308,6 +317,7 @@ function readURL() {
   F.repo = new Set(list('repo').filter(v => ROOTS.some(r => r.key === v)));
   F.kind = new Set(list('kind').filter(v => KINDS.includes(v)));
   F.fresh = new Set(list('fresh').filter(v => v in FRESH));
+  F.dest = new Set(list('dest').filter(v => v in DEST));
   F.text = (q.get('q') || '').trim().toLowerCase(); F.pinned = q.get('pinned') === '1'; F.hidden = q.get('hidden') === '1';
   // A page is decimal digits: ?page=1.5 sliced mid-page and pressed no pager button, and Number('0x2') is 2 (sd:2427).
   window.shell.list.listParams(q, L, { sorts: SORTS, size: LIST.size });
@@ -316,7 +326,7 @@ function readURL() {
 }
 function writeURL() {
   const q = new URLSearchParams();
-  ['repo', 'kind', 'fresh'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
+  ['repo', 'kind', 'fresh', 'dest'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
   if (F.text) q.set('q', F.text); if (F.pinned) q.set('pinned', '1'); if (F.hidden) q.set('hidden', '1');
   window.shell.list.listQuery(q, L, LIST);
   // Only once the first read has restored the filters: a draw before it would keep an empty query over the kept one.

@@ -753,6 +753,18 @@ box('lab', true); await flush(); R.two = ELS.rows.html; R.after = ELS.facets.htm
         out = self.run_page(f"{click} {click} R.rows = ELS.rows.html;")
         self.assertEqual([b[0] for b in re.findall(self.BANDS, out["R"]["rows"])], ["lab", "civic"])
 
+    def test_the_destination_filter_keeps_rows_with_a_chosen_destination_on(self):
+        """A destination is on when the row designates it or holds a copy; None keeps rows with neither."""
+        for row in self.doc["documents"]:
+            row["pub"] = {"lab/plan.html": {"choice": {"notion": True, "drive": False}, "copies": []},
+                          "lab/overview.html": {"choice": {}, "copies": [{"channel": "drive", "title": "Drive", "state": "has"}]}}.get(f"{row['key']}/{row['file']}")
+        ids = lambda out: re.findall(r'data-id="([^"]+)"', out["R"]["rows"])
+        out = self.run_page("R.rows = ELS.rows.html; R.facets = ELS.facets.html;", search="?dest=notion")
+        self.assertEqual(ids(out), ["lab/plan.html"])
+        self.assertIn('data-f="dest" data-v="none"', out["R"]["facets"])
+        self.assertEqual(sorted(ids(self.run_page("R.rows = ELS.rows.html;", search="?dest=drive,notion"))), ["lab/overview.html", "lab/plan.html"])
+        self.assertEqual(sorted(ids(self.run_page("R.rows = ELS.rows.html;", search="?dest=none"))), ["civic/brief.html", "lab/orphan.html"])
+
     def test_chosen_repos_show_only_their_bands(self):
         out = self.run_page("R.rows = ELS.rows.html;", search="?repo=lab")
         self.assertEqual([b[0] for b in re.findall(self.BANDS, out["R"]["rows"])], ["lab"])
