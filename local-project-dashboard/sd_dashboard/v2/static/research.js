@@ -112,11 +112,14 @@ document.getElementById('tally').addEventListener('click', e => {
 // Each checkout's status brief (research_screen.experiment), read with the board: its State word, Updated day, line, Asks and
 // links. Over 7 days since Updated is stale (research_screen.stale). Each row's Build deck posts /api/research/deck, which runs
 // sd-research-kit deck in that checkout (research_deck.py), reads the run every 5 s until it settles, then reads the board
-// again, so the row links the deck it wrote: /research/deck/<key> downloads docs/dashboard/deck.pptx.
+// again, so the row links the deck it wrote: /research/deck/<key> downloads docs/dashboard/deck.pptx. Import to Slides
+// (#25693, option A) posts /api/research/slides, which imports that deck through workspace-mcp on the work account
+// (research_slides.py); the row then links the Slides file. /api/research/slides/status says whether it can.
 const xpBody = document.getElementById('xp-rows');
 const XP_WORDS = { ok: 'running, decided or done', caution: 'waiting', warning: 'blocked', unknown: 'state not in the standard' };
 const DECK_POLL = 5000;
 let BUILD = null, BUILD_UNREAD = '', buildTimer = 0;
+let SLIDES = null, IMPORTING = '';
 // The page's filter field reaches this ledger too, by the same words as the board.
 const briefs = () => PROJECTS.filter(p => p.experiment && (!filterText || `${p.label} ${p.key} ${p.path}`.toLowerCase().includes(filterText)));
 // Each brief is an object of its own, so its row's one action is Build deck, not the board's primary.
@@ -139,9 +142,17 @@ function deckLine(p) {
   if (x.built) return html`${failed}<a href="${deckHref(p.key)}" download>deck.pptx</a><span class="d">built <time class="rel" datetime="${x.built}"></time></span>`;
   return html`${failed}<span class="d">${x.deck ? 'deck.json ●, no deck built yet' : 'no deck.json: Build deck is off'}</span>`;
 }
+const ext = (url, text) => html`<a class="ext" href="${url}" target="_blank" rel="noopener">${text} ${I('arrow-up-right')}</a>`;
+// The Slides file the deck was imported as, and whether the deck changed since.
+function slidesLine(p) {
+  if (IMPORTING === p.key) return html`<span class="d"><span class="g-queued" aria-hidden="true">◌</span> Importing to Slides</span>`;
+  const s = SLIDES?.imports?.[p.key];
+  if (!s) return '';
+  return html`${ext(s.link, 'Slides')}<span class="d">${s.built === p.experiment.built ? 'current deck' : 'an older deck: import again'}</span>`;
+}
 function linksCell(p) {
-  const x = p.experiment, ext = (url, text) => html`<a class="ext" href="${url}" target="_blank" rel="noopener">${text} ${I('arrow-up-right')}</a>`;
-  return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}${deckLine(p)}</span>`;
+  const x = p.experiment;
+  return html`<span class="links">${x.links.map(l => ext(l.url, l.text))}${x.deck_url ? ext(x.deck_url, 'Deck') : ''}${deckLine(p)}${slidesLine(p)}</span>`;
 }
 function renderExperiments() {
   const list = briefs();
@@ -184,6 +195,24 @@ function deckCommand() {
     cli: o => `cd ${shPath(o.path)} && sd-research-kit deck`,
     sends: o => `POST /api/research/deck {"repo": "${o.key}"}`,
     run: o => window.shell.post('/api/research/deck', { repo: o.key }).then(run => { followBuild(run, true); return `Building ${o.label}'s deck · run ${run.id}`; }, refused) };
+}
+function readSlides() {
+  return window.shell.getJSON('/api/research/slides/status').then(d => { SLIDES = d; },
+    e => { SLIDES = { ready: false, why: `the Slides state was not read: ${e.message}`, imports: SLIDES?.imports || {} }; }).then(renderExperiments);
+}
+function slidesCommand() {
+  return { id: 'research.slides', on: 'research experiment', label: 'Import to Slides', icon: 'send', risk: 'safe', askFirst: true, executes: true,
+    does: 'Imports the built deck into Google Slides on the work account; shares nothing.',
+    when: o => (!o.x.built ? 'no deck is built: press Build deck first' : IMPORTING ? `${IMPORTING}'s deck is importing now`
+      : !SLIDES ? 'whether workspace-mcp answers is not read yet' : SLIDES.why || true),
+    cli: () => 'no sd verb: the dashboard imports the deck through workspace-mcp',
+    sends: o => `POST /api/research/slides {"repo": "${o.key}"}`,
+    consequence: o => `${o.label}'s deck.pptx goes to Google Slides on the work account. An unchanged deck reuses its Slides file; a changed one makes a new file. Nothing is shared.`,
+    run: o => { IMPORTING = o.key; renderExperiments();
+      return window.shell.post('/api/research/slides', { repo: o.key }).then(d => {
+        IMPORTING = ''; SLIDES = { ...SLIDES, imports: { ...SLIDES?.imports, [o.key]: d.slides } }; renderExperiments();
+        return d.reused ? `Slides unchanged · ${o.label}: this deck is already imported` : `Imported to Slides · ${o.label}${d.replaces ? '; the earlier Slides file stays in Drive' : ''}`;
+      }, err => { IMPORTING = ''; renderExperiments(); return refused(err); }); } };
 }
 xpBody.addEventListener('click', e => { if (e.target.closest('a, .acts')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
@@ -600,6 +629,7 @@ function registerCommands() {
     START,
     ...experimentCommands(),
     deckCommand(),
+    slidesCommand(),
     // sd:5101: codex checks the source's grade and the claims citing it against the source as the runner fetches it.
     window.commands.adversarialReview('research source', { id: 'source.adversarial-review',
       does: 'Starts a codex review of this source against the claims citing it; its brief lists fixes to pick.',
@@ -764,4 +794,5 @@ document.addEventListener('DOMContentLoaded', () => {
   load();
   // A build already running when the page opens is followed too.
   window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  readSlides();
 });

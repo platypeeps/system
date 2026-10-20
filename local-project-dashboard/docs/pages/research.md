@@ -43,4 +43,12 @@ checkout, which queues one `sd-research-kit deck` there in Publish now's run sha
 behind a lock, a 409 while one builds, bounded at 300 s, off with its reason when the checkout keeps no deck.json. The
 page reads `/api/research/deck/<id>` until the run settles, then reads the board again; the row links the deck it wrote,
 `docs/dashboard/deck.pptx` in the checkout, through `/research/deck/<key>`, a download that needs the page's session.
-`/api/research/deck/status` is the last run. Nothing uploads.
+`/api/research/deck/status` is the last run. Build deck uploads nothing.
+
+Import to Slides (#25693, option A) posts `/api/research/slides` with the row's checkout (`research_slides.py`). It sends
+the built deck as base64, with its sha256, to workspace-mcp's `import_to_google_slides` on the work Google account,
+`google.accounts.work.email`. `<state>/research-deck/slides.json` records each checkout's Slides file id, link and deck
+sha256. An unchanged deck reuses its file and calls nothing; a changed one makes a new file, because the tool cannot
+replace a Slides file's content from bytes, and the earlier file stays in Drive. `/api/research/slides/status` probes
+workspace-mcp, so the action is off with its reason when it does not answer, when no account is set, or when no deck is
+built. The row then links the Slides file and says whether it holds the current deck or an older one.

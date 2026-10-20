@@ -62,6 +62,7 @@ COMMANDS = [
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
     ["research.deck", "research experiment", "Build deck", None, "safe"],
+    ["research.slides", "research experiment", "Import to Slides", None, "safe"],
     ["source.adversarial-review", "research source", "Adversarial review", None, "safe"],
 ]
 
@@ -627,7 +628,7 @@ var ROW = null;
 def ledger_reads(out):
     """The page's reads less each selected project's experiment link (sd:5296) and the last deck run (pack sd:5525),
     which `TheScript` tests on their own."""
-    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?") and path != "/api/research/deck/status"]
+    return [path for path in out["gets"] if not path.startswith("/api/research/experiments?") and path not in ("/api/research/deck/status", "/api/research/slides/status")]
 
 
 def project(key, label, render, *, conf=None, docs=None, dirs=None):
@@ -1073,6 +1074,31 @@ R.when = cmd('research.deck').when(C.get('xp:research/alpha')); R.rows = ELS['xp
         self.assertEqual(out["R"]["when"], "run deck-20260906T120000Z is building research/alpha's deck")
         self.assertIn("Building: run deck-20260906T120000Z is running; its state was not read: unread", out["R"]["rows"])
 
+    def test_import_to_slides_posts_the_rows_checkout_and_links_the_slides_file(self):
+        """#25693 option A: a built deck goes to Slides through workspace-mcp; the row links the file and says when the deck
+        changed since; the action is off with no built deck or while workspace-mcp does not answer."""
+        board = json.loads(self.experiment_board())
+        board["projects"][0]["experiment"]["built"] = NOW
+        ready = {"ready": True, "why": "", "imports": {}}
+        slides = {"id": "p-1", "link": "https://docs.google.com/presentation/d/p-1/edit", "built": NOW, "imported": NOW}
+        answer = (f"(path, body) => path === '/api/research' ? [200, {json.dumps(board)}] : path === '/api/research/slides/status' ? [200, {json.dumps(ready)}]"
+                  f" : path === '/api/research/slides' ? [200, {json.dumps({'slides': slides, 'reused': False, 'replaces': None})}] : [200, {{ run: null }}]")
+        out = self.run_page("""const c = cmd('research.slides'), o = C.get('xp:research/alpha');
+R.when = c.when(o); R.beta = c.when(C.get('xp:research/beta')); R.ask = c.askFirst; R.before = ELS['xp-rows'].html;
+R.said = await c.run(o); R.rows = ELS['xp-rows'].html;
+SLIDES.imports['research/alpha'] = { ...SLIDES.imports['research/alpha'], built: '2026-09-01T00:00:00Z' }; renderExperiments(); R.older = ELS['xp-rows'].html;
+SLIDES = { ready: false, why: 'workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused', imports: {} }; R.down = c.when(o);""", answer=answer)
+        r = out["R"]
+        self.assertEqual((r["when"], r["ask"]), (True, True))
+        self.assertEqual(r["beta"], "no deck is built: press Build deck first")
+        self.assertNotIn("docs.google.com", r["before"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/slides", {"repo": "research/alpha"}]])
+        self.assertEqual(r["said"], "Imported to Slides · Alpha")
+        self.assertIn('href="https://docs.google.com/presentation/d/p-1/edit"', r["rows"])
+        self.assertIn("current deck", r["rows"])
+        self.assertIn("an older deck: import again", r["older"])
+        self.assertEqual(r["down"], "workspace-mcp at http://127.0.0.1:8083/mcp did not answer: refused")
+
     def test_sources_and_claim_map_send_the_viewer_to_projects_when_none_is_selected(self):
         out = self.run_page("""ANSWER = () => [500, { error: 'boom' }]; await load(); await flush();
 R.reader = ELS.reader.html; R.claims = ELS.claims.html; R.counts = Object.assign({}, OUT.counts);
@@ -1301,7 +1327,7 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
-                                                                "/api/research/deck", "/api/research/deck/status", "/api/research/deck/deck-20261020T120000Z",
+                                                                "/api/research/deck", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
                                                                 "/api/research/example")
 
 
