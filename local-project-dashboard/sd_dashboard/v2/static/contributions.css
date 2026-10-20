@@ -41,6 +41,7 @@
 @media (pointer: coarse) { .ledger .links a { display: inline-flex; align-items: center; min-height: var(--row-touch); } }
 .ledger .reason { display: block; margin-top: var(--space-3xs); font-size: var(--text-xs); color: var(--color-ink-2); }
 .ledger .obs { font: 400 var(--text-xs)/1.4 var(--font-data); color: var(--color-muted); }
+.ledger .obs > .g-ok, .ledger .obs > .g-unknown { margin-right: var(--space-2xs); } /* the glyph sat on the age (sd:5487) */
 .ledger .act { text-align: right; }
 .row-acts { display: inline-flex; gap: var(--space-2xs); align-items: center; justify-content: flex-end; }
 .done { font: 400 var(--text-xs)/1 var(--font-data); color: var(--color-muted); white-space: nowrap; }
