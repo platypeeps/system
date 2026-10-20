@@ -3,8 +3,8 @@
   Metrics (sd:2119), at /metrics. Built from the design source's products/system/designs/pages/metrics.{html,css,js}.
   Data: /api/metrics (metrics_screen.document: sd usage's month, the 7-day window meter per day, the week's numbers,
   the provider scorecard, skill use, age in status and observed activity), read when the page opens and
-  on Refresh. A part that did not read is unknown with its reason. By model, CI health and flaky tests have no reader and
-  show as unknown. Writes: Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the
+  on Refresh, and the merge lane's gate runs per repository with the flaky heads (sd:5473). A part that did not read is
+  unknown with its reason. By model has no reader and shows as unknown. Writes: Cap and Configure post /api/bills/<bill>/cap and /api/providers/configure with the
   registry revision the page read (sd:3387). Nothing here is sample data.
 -->
 <html lang="en">
@@ -83,8 +83,13 @@
 
   <div id="view-ci" aria-label="CI" hidden>
     <section class="panel" id="ci" aria-labelledby="ci-h">
-      <div class="panel-head"><div><h2 id="ci-h">CI health</h2><p>Local gate runs and test results.</p></div></div>
+      <div class="panel-head"><div><h2 id="ci-h">CI health <button class="help" type="button" aria-label="Help: CI health" data-help="<b>The merge lane's gate runs, 7 days.</b> A run is a lane entry that ended: merged or prepared passed the gate; failed means sd-check failed; rate is passed over passed plus failed. A review stop or a merge conflict ran no gate, so it counts as stopped, not failed. Flaky means one head failed its gate, then passed it at that same head."><svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+        <p>The local gate as the merge lane ran it: each lane entry's last checkpoint.</p></div></div>
       <div id="ci-state"></div>
+      <div class="scroll-x"><table class="tbl" id="ci-table" aria-labelledby="ci-h"><thead><tr><th scope="col" class="g"><span class="sr">State</span></th><th scope="col">Repository</th><th scope="col" class="num hide-sm">Passed</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Rate</th><th scope="col" class="num hide-sm">Stopped</th><th scope="col" class="hide-sm">Last failure</th></tr></thead><tbody id="ci-body"></tbody></table></div>
+      <h3 class="sub gap" id="flaky-h">Flaky tests, by head</h3>
+      <div class="scroll-x"><table class="tbl" id="flaky-table" aria-labelledby="flaky-h"><thead><tr><th scope="col">Item · repository</th><th scope="col">Head</th><th scope="col" class="hide-sm">Gate failed</th><th scope="col">Passed</th></tr></thead><tbody id="flaky-body"></tbody></table></div>
+      <p class="foot-note">Per head, not per test: no store names the test that failed.</p>
     </section>
   </div>
 

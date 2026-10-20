@@ -6,8 +6,9 @@ its script before `shell.js`; `/api/metrics` carries the month exactly as
 week, the week's numbers, the provider scorecard, four
 weeks of skill use, age in status and observed activity. Each part is guarded
 on its own, so one that fails is that part's error and the page shows it as
-unknown with the reason. By model, CI health and flaky tests have no reader:
-the document names each with its reason, and the page never draws them empty.
+unknown with the reason. By model has no reader: the document names it with
+its reason, and the page never draws it empty. CI health and Flaky tests read
+the merge lane's gate runs (sd:5473).
 
 Cap and Configure (sd:3387) post `/api/bills/<bill>/cap` and
 `/api/providers/configure` with the registry revision `/api/metrics` read. A
@@ -174,13 +175,108 @@ class TheDocument(Fixture):
 
     def test_the_panels_no_reader_covers_are_named_with_their_reason(self):
         unread = {u["id"]: u["reason"] for u in self.doc()["unread"]}
-        self.assertEqual(sorted(unread), ["ci", "flaky", "model"])
+        self.assertEqual(sorted(unread), ["model"])
         self.assertTrue(all(unread.values()))
 
     def test_no_registry_is_the_controls_error_and_the_rest_still_answer(self):
         doc = self.doc()
         self.assertEqual(doc["controls"], {"error": f"RegistryError: no provider registry at {self.path.parent.resolve() / 'providers.yaml'}"})
         self.assertEqual(doc["usage"]["error"], "")
+
+
+#: sd-ship's refusal texts, as the lane keeps them in an entry's `reason` (sd:5473).
+GATE = "the repository gate failed after the review cleared; the review pass is kept: sd-check fail (suite leg-shared)"
+MERGE_GATE = "repo.ci is local and sd/local-gate is failure on 0123abcd: sd-check failed"
+REVIEW = "local review blocking: 1/1 completed; the gate did not run, so no test has passed at this head: high x.py:1"
+CONFLICT = "merging origin/main into b1 conflicts; the branch is unchanged"
+
+
+def lane_run(connection, entry, status, finished, *, repository="example/alpha", item=1, head=None, expected=None,
+             reason=None, step="prepare"):
+    """One lane entry's latest checkpoint, as sd-ship's lane writes it: a failed entry names no `head`."""
+    body = {"id": entry, "item": item, "title": f"Item {item}", "repository": repository, "status": status, "step": step,
+            "expected_head": expected or head or "e" * 40, "head": head, "finished_at": finished, "reason": reason}
+    connection.execute("INSERT INTO state(kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                       (f"lane:v1:{repository}:{entry}", finished or NOW, json.dumps(body)))
+    connection.commit()
+
+
+class TheGateRuns(Fixture):
+    """CI health and Flaky tests read the lane's entries (sd:5473). NOW is 2026-09-06T12:00Z; the range is 7 days."""
+
+    def test_ci_health_counts_each_repositorys_gate_runs_in_the_range(self):
+        c = self.connection
+        lane_run(c, "a1", "merged", "2026-09-06T10:00:00Z", head="a" * 40)
+        lane_run(c, "a2", "prepared", "2026-09-05T10:00:00Z", head="b" * 40)
+        lane_run(c, "a3", "failed", "2026-09-04T10:00:00Z", expected="c" * 40, reason=GATE, item=3)
+        lane_run(c, "a4", "failed", "2026-09-06T11:00:00Z", reason=REVIEW, item=4)
+        lane_run(c, "a5", "failed", "2026-09-03T10:00:00Z", reason=CONFLICT)
+        lane_run(c, "a6", "failed", "2026-09-02T10:00:00Z", reason=None, step="runner")
+        lane_run(c, "a7", "failed", "2026-09-01T10:00:00Z", reason=MERGE_GATE, step="merge", item=7)
+        lane_run(c, "a8", "merged", "2026-08-29T10:00:00Z", head="d" * 40)       # before the range
+        lane_run(c, "a9", "running", None)                                       # not ended
+        lane_run(c, "a10", "cancelled", "2026-09-05T10:00:00Z")                  # no gate ran
+        lane_run(c, "b1", "merged", "2026-09-05T09:00:00Z", repository="example/beta", head="f" * 40)
+        ci = self.doc()["ci"]
+        self.assertEqual((ci["error"], ci["days"], ci["since"], ci["unreadable"]), ("", 7, "2026-08-30T12:00:00Z", 0))
+        rows = {r["repository"]: r for r in ci["repos"]}
+        self.assertEqual([r["repository"] for r in ci["repos"]], ["example/alpha", "example/beta"])
+        alpha = rows["example/alpha"]
+        self.assertEqual({k: alpha[k] for k in ("passed", "gate", "review", "other", "unknown")},
+                         {"passed": 2, "gate": 2, "review": 1, "other": 1, "unknown": 1})
+        self.assertEqual(alpha["rate"], 0.5)
+        self.assertEqual({k: alpha["newest"][k] for k in ("item", "at", "kind")}, {"item": 4, "at": "2026-09-06T11:00:00Z", "kind": "review"})
+        self.assertEqual({k: alpha["newest_gate"][k] for k in ("item", "at", "step")}, {"item": 3, "at": "2026-09-04T10:00:00Z", "step": "prepare"})
+        self.assertEqual((rows["example/beta"]["passed"], rows["example/beta"]["rate"], rows["example/beta"]["newest"]), (1, 1.0, None))
+
+    def test_a_head_that_failed_its_gate_and_later_passed_at_that_head_is_flaky(self):
+        c, h = self.connection, "1" * 40
+        lane_run(c, "f1", "failed", "2026-09-04T10:00:00Z", expected=h, reason=GATE, item=9)
+        lane_run(c, "f2", "failed", "2026-09-04T12:00:00Z", expected=h, reason=GATE, item=9)
+        lane_run(c, "f3", "merged", "2026-09-04T14:00:00Z", head=h, item=9)
+        # Not flaky: a pass in another repository, a new commit, a pass before the failure, a review stop.
+        lane_run(c, "g1", "merged", "2026-09-04T15:00:00Z", repository="example/beta", head=h, item=9)
+        lane_run(c, "g2", "failed", "2026-09-03T10:00:00Z", expected="2" * 40, reason=GATE, item=10)
+        lane_run(c, "g3", "merged", "2026-09-03T12:00:00Z", head="3" * 40, expected="2" * 40, item=10)
+        lane_run(c, "g4", "merged", "2026-09-02T10:00:00Z", head="4" * 40, item=11)
+        lane_run(c, "g5", "failed", "2026-09-02T12:00:00Z", expected="4" * 40, reason=GATE, item=11)
+        lane_run(c, "g6", "failed", "2026-09-01T10:00:00Z", expected="5" * 40, reason=REVIEW, item=12)
+        lane_run(c, "g7", "merged", "2026-09-01T12:00:00Z", head="5" * 40, item=12)
+        self.assertEqual(self.doc()["ci"]["flaky"], [{"repository": "example/alpha", "item": 9, "title": "Item 9", "head": h,
+                                                      "failed": ["2026-09-04T10:00:00Z", "2026-09-04T12:00:00Z"],
+                                                      "passed": "2026-09-04T14:00:00Z", "status": "merged"}])
+
+    def test_a_lane_read_that_fails_is_its_error_and_never_zeros(self):
+        with mock.patch.object(reads, "lane_entries", side_effect=sqlite3.OperationalError("database is locked")):
+            doc = self.doc()
+        self.assertEqual(doc["ci"], {"error": "OperationalError: database is locked"})
+        self.assertEqual(doc["usage"]["error"], "")
+
+    def test_an_entry_that_is_not_a_lane_entry_is_counted_unreadable_not_a_run(self):
+        lane_run(self.connection, "a1", "merged", "2026-09-06T10:00:00Z", head="a" * 40)
+        for key, body in (("x", "not json"), ("y", "[1]"), ("z", json.dumps({"status": "merged", "finished_at": "yesterday"}))):
+            self.connection.execute("INSERT INTO state(kind, key, timestamp, body) VALUES ('checkpoint', ?, ?, ?)",
+                                    (f"lane:v1:example/alpha:{key}", NOW, body))
+        self.connection.commit()
+        ci = self.doc()["ci"]
+        self.assertEqual((ci["unreadable"], [r["passed"] for r in ci["repos"]]), (3, [1]))
+
+    def test_an_empty_range_has_no_repository_and_no_flaky_head(self):
+        lane_run(self.connection, "old", "merged", "2026-08-01T10:00:00Z", head="a" * 40)
+        ci = self.doc()["ci"]
+        self.assertEqual((ci["error"], ci["repos"], ci["flaky"], ci["unreadable"]), ("", [], [], 0))
+
+    def test_the_gate_phrases_and_codes_are_the_pinned_packs_refusals(self):
+        # A pack that rewords a gate refusal would file every gate failure as "other": the pinned source must say each.
+        bin_dir = Path(reads.__file__).resolve().parents[2] / "bin"
+        source = "\n".join(p.read_text(encoding="utf-8") for p in sorted(bin_dir.glob("sd_*.py")))
+        self.assertIn('raise Refusal(f"the repository gate failed', source)
+        self.assertIn('raise Refusal(f"repo.ci is local and {CONTEXT} is failure on', source)
+        self.assertIn('LOCAL_GATE_CONTEXT = "sd/local-gate"', source)
+        for phrase in ("the repository gate failed", "sd/local-gate is failure on"):
+            self.assertRegex(phrase, metrics_screen.GATE_FAILED)
+        for code in metrics_screen.GATE_CODES:
+            self.assertIn(f'code="{code}"', source)
 
 
 class TheControls(Controlled):
@@ -323,7 +419,7 @@ class TheScript(Controlled):
         lamps = out["R"]["lamps"]
         self.assertRegex(lamps, r'data-cell="spend" data-ev="spend" data-view="spend" data-state="ok".*?<b>\$80.00</b>')
         self.assertRegex(lamps, r'data-cell="w-claude" data-ev="win:claude:10080" data-view="spend" data-state="caution".*?<b>80%</b> used')
-        self.assertRegex(lamps, r'data-cell="ci" data-ev="unread:ci" data-view="ci" data-state="unknown".*?not read')
+        self.assertRegex(lamps, r'data-cell="ci" data-ev="ci" data-view="ci" data-state="unknown".*?no gate run')
         self.assertEqual(cell_grammar(self, lamps)[-1], ("button", None))
         self.assertEqual(out["attention"][-1], {"state": "caution", "n": 1, "what": "readings past a threshold"})
         self.assertIsNone(out["states"][-1])
@@ -341,26 +437,76 @@ class TheScript(Controlled):
 
     def test_a_lamp_shows_the_view_that_holds_its_reading(self):
         out = self.run_page("""const lamp = (cell, ev, view) => ({ dataset: { cell, ev, view } });
-for (const el of [lamp('ci', 'unread:ci', 'ci'), lamp('spend', '', 'spend')])
+for (const el of [lamp('ci', 'ci', 'ci'), lamp('spend', '', 'spend')])
   DOC_LISTENERS.click.forEach(f => f({ target: { closest: s => s === '[data-ev]' ? el : null } }));""")
         self.assertEqual(out["shown"], ["ci", "spend"], "a spend lamp that did not read still shows its view")
 
     def test_the_panels_draw_the_readings_and_name_what_is_not_read(self):
-        out = self.run_page("""R.bills = ELS.bills.html; R.trends = ELS.trends.html; R.model = ELS.model.html; R.ci = ELS['ci-state'].html;
+        out = self.run_page("""R.bills = ELS.bills.html; R.trends = ELS.trends.html; R.model = ELS.model.html;
 R.weeks = ELS['su-weeks'].html; R.top = ELS['su-top'].html; R.sc = ELS['sc-body'].html; R.hist = ELS.hist.html;""")
         r = out["R"]
         self.assertRegex(r["bills"], r'data-ev="bill:capped".*?<rect class="fill caution" width="80.0".*?<span class="g-caution" aria-hidden="true">▲</span>\$80.00')
         self.assertRegex(r["bills"], r'data-ev="bill:plan".*?class="track hatch".*?▨ window')
         self.assertEqual(re.findall(r'data-ev="(t:[^"]+)"', r["trends"]), ["t:claude:2026-09-01", "t:claude:2026-09-06"])
         self.assertIn("<b>▨ Not read.</b> the cost ledger records bill and provider, not model", r["model"])
-        self.assertIn("GitHub Actions is off", r["ci"])
-        self.assertIn("no test-result store exists", r["ci"])
         # sd:5476: a skill is a link to Skills with that skill's Details loaded (?row=, which Skills selects).
         self.assertEqual(re.findall(r'<a class="hbar" href="([^"]+)"', r["top"]), ["/skills?row=sd-ship", "/skills?row=sd-review"])
         self.assertEqual(re.findall(r'data-ev="sc:([^"]+)"', r["sc"]), ["claude", "kimi"])
         self.assertIn('aria-label="3-6d: 1 items, 1 ready to send"', r["hist"])
         # sd:5474: a bar links to Tasks' list at its bucket, open items only, in the All view: the scope the bar counts.
         self.assertIn('<a class="hbar" href="/tasks?view=list&age=3&active=1#view=all" aria-label="3-6d', r["hist"])
+
+    def lane(self):
+        c, h = self.connection, "1" * 40
+        lane_run(c, "f1", "failed", "2026-09-04T10:00:00Z", expected=h, reason=GATE, item=9)
+        lane_run(c, "f2", "merged", "2026-09-04T14:00:00Z", head=h, item=9)
+        lane_run(c, "f3", "failed", "2026-09-05T10:00:00Z", reason=REVIEW, item=8)
+        lane_run(c, "b1", "merged", "2026-09-05T09:00:00Z", repository="example/beta", head="f" * 40, item=7)
+
+    def test_ci_health_draws_each_repositorys_gate_runs_and_the_flaky_heads(self):
+        """sd:5473: the lane's gate runs per repository, and a head that failed its gate then passed at that head."""
+        self.lane()
+        doc = self.doc()
+        self.assertEqual(doc["attention"], {"state": "caution", "n": 2, "what": "readings past a threshold"})
+        out = self.run_page("""R.ci = ELS['ci-body'].html; R.flaky = ELS['flaky-body'].html; R.lamps = ELS.annunciator.html;
+open('flaky:example/alpha:1111111111111111111111111111111111111111'); R.det = ELS.details.html;""", doc)
+        r = out["R"]
+        self.assertEqual(re.findall(r'<tr data-ev="([^"]+)"', r["ci"]), ["ci:example/alpha", "ci:example/beta"])
+        alpha = re.search(r'<tr data-ev="ci:example/alpha".*?</tr>', r["ci"]).group(0)
+        self.assertEqual(re.findall(r'<td class="num[^"]*">(.*?)</td>', alpha), ["1", "1", "50%", "1"])
+        self.assertIn("<td class=\"mono hide-sm\">sd:8 · review</td>", alpha)
+        self.assertRegex(r["ci"], r'data-ev="ci:example/beta".*?<td class="num">100%</td>')
+        self.assertEqual(re.findall(r'<tr data-ev="([^"]+)"', r["flaky"]), ["flaky:example/alpha:" + "1" * 40])
+        self.assertIn("111111111111", r["flaky"])
+        self.assertIn("09-04 10:00Z", r["flaky"])
+        self.assertRegex(r["lamps"], r'data-cell="ci" data-ev="ci" data-view="ci" data-state="caution".*?<b>67%</b> passed.*?3 gate runs · 1 flaky head')
+        self.assertIn("<h2>sd:9 · 111111111111</h2>", r["det"])
+        self.assertIn('href="/tasks?row=9"', r["det"])
+
+    def test_an_empty_range_says_no_run_ended_and_its_lamp_is_unknown(self):
+        out = self.run_page("R.ci = ELS['ci-body'].html; R.flaky = ELS['flaky-body'].html; R.lamps = ELS.annunciator.html;")
+        r = out["R"]
+        self.assertIn("No lane entry ended in the last 7 days.", r["ci"])
+        self.assertIn("No head failed its gate and then passed at that head in the last 7 days.", r["flaky"])
+        self.assertRegex(r["lamps"], r'data-cell="ci" data-ev="ci" data-view="ci" data-state="unknown".*?no gate run')
+
+    def test_a_ci_read_that_failed_is_unknown_with_its_reason_and_no_zeros(self):
+        self.lane()
+        doc = self.doc()
+        doc["ci"] = {"error": "OperationalError: database is locked"}
+        out = self.run_page("R.state = ELS['ci-state'].html; R.ci = ELS['ci-body'].html; R.flaky = ELS['flaky-body'].html; R.lamps = ELS.annunciator.html;", doc)
+        r = out["R"]
+        self.assertIn("<b>▨ Not read.</b> OperationalError: database is locked", r["state"])
+        self.assertNotIn("data-ev", r["ci"] + r["flaky"])
+        self.assertNotIn("No lane entry", r["ci"])
+        self.assertRegex(r["lamps"], r'data-cell="ci" data-ev="ci" data-view="ci" data-state="unknown".*?not read')
+        self.assertIn("ci: OperationalError: database is locked", out["states"][-1]["text"])
+
+    def test_unreadable_lane_entries_are_named_not_hidden(self):
+        doc = self.doc()
+        doc["ci"]["unreadable"] = 2
+        out = self.run_page("R.state = ELS['ci-state'].html;", doc)
+        self.assertIn("2 lane entries are not readable and are not counted", out["R"]["state"])
 
     def test_without_a_registry_cap_and_configure_are_off_with_the_reason(self):
         (self.path.parent / "providers.yaml").unlink()

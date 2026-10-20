@@ -15,6 +15,7 @@ Progress areas already make:
 - `skills`: skill uses per day and skill for four weeks (`reads.skill_use_days`).
 - `age`: open items by days in their current status (`reads.age_histogram`).
 - `observed`: observed workflow activity (`reporting.metrics`).
+- `ci`: the lane's gate runs over the page's range (`CI_DAYS`), per repository, and the flaky heads (`_ci`, sd:5473).
 - `controls`: the provider registry as `provider_controls.snapshot` reads it, with its `revision`, and per bill the
   one cap write the route takes (`_writes`), the read the classic Usage area's forms make (sd:3387).
 
@@ -31,6 +32,7 @@ registry, a bill's cap or the order policy changed since this read.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -40,7 +42,7 @@ from sd_db.errors import SdDbError
 
 from .operations_screen import BILL_NAME
 
-__all__ = ["SKILL_WEEKS", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
+__all__ = ["CI_DAYS", "GATE_CODES", "GATE_FAILED", "SKILL_WEEKS", "SLOW", "TREND_DAYS", "UNREAD", "WINDOW", "document", "slow"]
 
 #: The vendor window the trend draws: seven days, in minutes.
 WINDOW = 10080
@@ -54,9 +56,19 @@ SKILL_WEEKS = 4
 #: The design's panels no reader covers, and why; the page draws each as unknown with its reason.
 UNREAD = (
     {"id": "model", "name": "By model", "reason": "the cost ledger records bill and provider, not model; judgment.model covers Jev calls only"},
-    {"id": "ci", "name": "CI health", "reason": "GitHub Actions is off (local CI since 2026-09-27) and sd.db stores no sd/local-gate run; reading runs needs a network call"},
-    {"id": "flaky", "name": "Flaky tests", "reason": "no test-result store exists, so no test is known to have failed and then passed"},
 )
+
+#: Days of lane runs CI health and Flaky tests read, ending now: the page's one range, 7d.
+CI_DAYS = TREND_DAYS
+
+#: A failed lane entry whose `reason` says sd-ship's gate refusal: prepare's "the repository gate failed …"
+#: (`sd_ship_review`) or merge's "repo.ci is local and sd/local-gate is failure on …" (`sd_local_gate`). The lane keeps
+#: the refusal's text; its `code` is mostly empty, so the codes count only when present.
+GATE_FAILED = re.compile(r"\bthe repository gate failed\b|\bsd/local-gate is failure on\b")
+GATE_CODES = frozenset({"gate_failed", "ci_not_passing"})
+
+#: An entry the gate passed: the lane merged it (merge refuses a failed `sd/local-gate`) or prepare cleared it.
+PASSED = ("merged", "prepared")
 
 FAILURES = (SdDbError, sqlite3.Error, OSError, ValueError)
 
@@ -75,9 +87,9 @@ def _guard(read):
         return {"error": f"{error.__class__.__name__}: {error}"}
 
 
-def _attention(spend: dict, trend: dict) -> dict:
-    """The rail badge (sd:3446): the lamps metrics.js can light, each week window at 75 % or more and the estimated
-    spend rows. An unread usage is unknown: no lamp could be read."""
+def _attention(spend: dict, trend: dict, ci: dict | None = None) -> dict:
+    """The rail badge (sd:3446): the lamps metrics.js can light, each week window at 75 % or more, the estimated
+    spend rows and a flaky head in CI (sd:5473). An unread usage is unknown: no lamp could be read."""
     from .v2.pages import attention
 
     if spend["error"] or spend.get("stale"):
@@ -89,7 +101,8 @@ def _attention(spend: dict, trend: dict) -> dict:
 
     window = trend.get("window")
     cells = [level(meter["used_percent"]) for meter in spend["meter"] if meter["window_minutes"] == window]
-    return attention([*cells, "caution" if spend["bound"] else ""], {"caution": "readings past a threshold"})
+    flaky = "caution" if ci and not ci.get("error") and ci["flaky"] else ""
+    return attention([*cells, "caution" if spend["bound"] else "", flaky], {"caution": "readings past a threshold"})
 
 
 def _trend(connection, today):
@@ -135,6 +148,86 @@ def _age(connection, now):
     rows = [row for row in reads.backlog_items(connection, now=now) if row["status"] != "done"]
     return {"error": "", "buckets": [{"key": b.key, "label": b.label, "lower": b.lower, "upper": b.upper, "ready_to_send": b.counts["ready_to_send"],
                                       "other": b.counts["other"]} for b in reads.age_histogram(rows, now=now)]}
+
+
+def _failure(entry: dict) -> str:
+    """What stopped a failed lane entry: `gate`, `review` (it stopped before the gate ran), `other`, or `unknown`."""
+    reason = entry.get("reason")
+    if entry.get("code") in GATE_CODES or (isinstance(reason, str) and GATE_FAILED.search(reason)):
+        return "gate"
+    if not isinstance(reason, str) or not reason.strip():
+        return "unknown"
+    return "review" if re.search(r"\breview", reason) else "other"
+
+
+def _ended(row) -> dict | None:
+    """The body of a lane entry that passed or failed, None for one that has not ended or ran no gate (cancelled,
+    skipped, handed back); ValueError for a body that is not a lane entry or names no end time."""
+    entry = json.loads(row["body"]) if isinstance(row["body"], str) else None
+    if not isinstance(entry, dict) or not isinstance(entry.get("repository"), str):
+        raise ValueError(row["key"])
+    if entry.get("status") not in (*PASSED, "failed"):
+        return None
+    if not isinstance(entry.get("finished_at"), str):
+        raise ValueError(row["key"])
+    _stamp(entry["finished_at"])
+    return entry
+
+
+def _ci(connection, now):
+    """CI health and Flaky tests from the lane's entries (sd:5473): the latest checkpoint of each, as `reads.lane_entries`
+    reads it. An entry runs once: the lane queues a retry as a new entry, so one key does not fail and then pass.
+
+    A run is an entry that ended in the range: passed (`PASSED`) or failed, the failure split by `_failure`. The rate is
+    passed over gate runs, passed plus `gate`; a review stop or a conflict ran no gate. A flaky head is one a gate failed
+    at, and a later entry of the same repository passed at that same head: `head`, or `expected_head` where the failed
+    entry names none, so a catch-up merge or a new commit is a new head. A body that is not a lane entry is `unreadable`.
+    """
+    since = (_stamp(now) - timedelta(days=CI_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ended, unreadable = [], 0
+    for row in reads.lane_entries(connection):
+        try:
+            entry = _ended(row)
+        except ValueError:
+            unreadable += 1
+            continue
+        if entry:
+            ended.append((_stamp(entry["finished_at"]).strftime("%Y-%m-%dT%H:%M:%SZ"), entry))
+    ended.sort(key=lambda pair: pair[0])
+    repos: dict[str, dict] = {}
+    for at, entry in ended:
+        if at < since:
+            continue
+        row = repos.setdefault(entry["repository"], {"repository": entry["repository"], "passed": 0, "gate": 0, "review": 0,
+                                                     "other": 0, "unknown": 0, "newest": None, "newest_gate": None})
+        if entry["status"] in PASSED:
+            row["passed"] += 1
+            continue
+        kind = _failure(entry)
+        row[kind] += 1
+        said = {"item": entry.get("item"), "title": entry.get("title") or "", "at": at, "kind": kind,
+                "step": entry.get("step") or "", "reason": str(entry.get("reason") or "")[:240]}
+        row["newest"] = said
+        if kind == "gate":
+            row["newest_gate"] = said
+    for row in repos.values():
+        runs = row["passed"] + row["gate"]
+        row["rate"] = row["passed"] / runs if runs else None
+    failed: dict[tuple, list] = {}
+    flaky = {}
+    for at, entry in ended:
+        head = entry.get("head") or entry.get("expected_head")
+        if not isinstance(head, str):
+            continue
+        key = (entry["repository"], head)
+        if entry["status"] == "failed" and _failure(entry) == "gate":
+            failed.setdefault(key, []).append(at)
+        elif entry["status"] in PASSED and failed.get(key) and key not in flaky and at >= since:
+            flaky[key] = {"repository": entry["repository"], "item": entry.get("item"), "title": entry.get("title") or "",
+                          "head": head, "failed": failed[key], "passed": at, "status": entry["status"]}
+    return {"error": "", "days": CI_DAYS, "since": since, "unreadable": unreadable,
+            "repos": sorted(repos.values(), key=lambda r: (-r["gate"], r["repository"])),
+            "flaky": sorted(flaky.values(), key=lambda f: f["passed"], reverse=True)}
 
 
 def _writes(name, spawned, held):
@@ -183,9 +276,10 @@ def document(connection, *, now: str, kept=None) -> dict:
     today = _stamp(now).date()
     read_slow = kept or (lambda name: slow(connection, name, now=now))
     spend, trend = _guard(lambda: read_slow("usage")), _guard(lambda: _trend(connection, today))
+    ci = _guard(lambda: _ci(connection, now))
     return {
         "read": now,
-        "attention": _attention(spend, trend),
+        "attention": _attention(spend, trend, ci),
         "usage": spend,
         "trend": trend,
         "numbers": _guard(lambda: read_slow("numbers")),
@@ -194,5 +288,6 @@ def document(connection, *, now: str, kept=None) -> dict:
         "age": _guard(lambda: _age(connection, now)),
         "observed": _guard(lambda: {"error": "", **reporting.metrics(connection, now=now)}),
         "controls": _guard(lambda: _controls(connection)),
+        "ci": ci,
         "unread": list(UNREAD),
     }
