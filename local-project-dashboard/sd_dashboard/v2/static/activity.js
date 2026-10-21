@@ -100,9 +100,9 @@ addEventListener('DOMContentLoaded', () => {
   }
   function renderAnnunciator() {
     pageAttention();
-    // The lamps count what the range shows: the journal's older records only under All (a 24-hour page said "55 in the
-    // journal" of weeks-old records).
-    const shown = EVENTS.filter(e => F.all || inWindow(e));
+    // The lamps count the timeline's Range (1h, 24h, All): a 24-hour page said "55 in the journal" of weeks-old records.
+    const inRange = e => F.all || Date.parse(e.at) >= (since() || RANGE.from);
+    const shown = EVENTS.filter(inRange);
     const n = (k, s) => shown.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
     // A lamp, its Kind chip and its lane button are one control (design.md § Interaction rules): pressed is F.kind.
@@ -111,12 +111,12 @@ addEventListener('DOMContentLoaded', () => {
       ? { state: 'unknown', attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val: html`<span class="ph"><b>unknown</b></span> · <span class="ph">not read</span>` }
       : { button: true, state: worst(k.id), pressed: F.kind.has(k.id), attrs: html` data-kind="${k.id}"`, label: k.name, mark: ICON(k.icon), val };
     // Runs mixes two sources: a job carries `job`, an assignment carries `status`; count each by its own field.
-    const asg = EVENTS.filter(e => e.k === 'run' && e.status);
-    const jobsFailed = EVENTS.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
+    const asg = shown.filter(e => e.k === 'run' && e.status);
+    const jobsFailed = shown.filter(e => e.k === 'run' && e.job && e.s === 'warning').length;
     const VAL = {
-      merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
+      merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(shown.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
       run: html`<span class="ph"><b>${jobsFailed}</b> jobs failed</span> · <span class="ph">${asg.filter(e => e.status === 'blocked').length} of ${asg.length} runs blocked</span>`,
-      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} ${F.all ? 'in the journal' : 'in 24 h'}</span>`,
+      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} ${F.all ? 'in the journal' : F.hour ? 'in 1 h' : 'in 24 h'}</span>`,
       // build: the design's "want changes · approve" has no source; a delivery records clean or adjudicated (sd:2211).
       review: html`<span class="ph"><b>${n('review', 'caution')}</b> adjudicated</span> · <span class="ph">${n('review', 'ok')} clean</span>${DOC?.review_unrecorded ? html` · <span class="ph">${plural(DOC.review_unrecorded, 'merge')} unrecorded</span>` : ''}`,
     };
