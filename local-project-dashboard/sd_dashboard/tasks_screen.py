@@ -184,13 +184,14 @@ def is_scheduled(row) -> bool:
     return bool(_column(row, "scheduled"))
 
 
-def _scheduled(row, *, now: str):
-    """`row` with `scheduled` beside the `opens_on` `item_by_id` gives it (pack sd:5648), so Details' row is the list's.
+def _scheduled(connection, row, *, now: str):
+    """`row` with the `opens_on` `reads.item_opens_on` gives (pack sd:5648) and `scheduled`, so Details' row is the list's.
 
-    A pack before sd:5648 gives no `opens_on`: the row as it is, which `_column` reads as not scheduled.
+    A pack before sd:5648 has no `item_opens_on`: the row as it is, which `_column` reads as not scheduled.
     """
-    opens_on = _column(row, "opens_on")
-    return {**dict(row), "scheduled": int(opens_on > now[:10])} if opens_on else row
+    opens = getattr(reads, "item_opens_on", None)
+    opens_on = opens(connection, row["id"]) if opens else None
+    return {**dict(row), "opens_on": opens_on, "scheduled": int(opens_on > now[:10])} if opens_on else row
 
 
 def _has_lead(connection) -> bool:
@@ -363,7 +364,7 @@ def _details(connection, item: int, *, now: str) -> dict:
         "work": progress.work_controls(connection, item) if state["item"]["kind"] == "work" else None,
         "base": _base(state),
         "experiment": _experiment(connection, state),
-        "row": _rows(connection, [_scheduled(row, now=now)], realms(connection), now=now)[0],
+        "row": _rows(connection, [_scheduled(connection, row, now=now)], realms(connection), now=now)[0],
         "left_out": _left_out(row, now=now),
     }
 
