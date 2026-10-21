@@ -15,6 +15,10 @@
 .panel-head h2 { margin: 0; font: 600 var(--text-md)/1.2 var(--font-ui); }
 .panel-head p { margin: 0; font-size: var(--text-sm); color: var(--color-muted); }
 .panel-head .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); }
+/* sd:5621: the Alarms toolbar's Acknowledge all sits right of the views, as the count does on other tables. */
+.toolbar > .tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); margin-left: auto; }
+.toolbar > .tools:empty { display: none; }
+.toolbar .tools .btn .n { color: var(--color-muted); font-family: var(--font-data); }
 
 /* ---------- Map ---------- */
 .mapwrap { position: relative; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-md); overflow: hidden; }
@@ -133,5 +137,5 @@ main { container-type: inline-size; }
 @media (pointer: coarse) {
   .range .chip { min-width: var(--row-touch); justify-content: center; }
   .legend button, .legend .status { min-height: var(--row-touch); }
-  .panel-head .help, .panel-head .tools .btn { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
+  .panel-head .help, .panel-head .tools .btn, .toolbar > .tools .btn { display: inline-grid; place-items: center; min-width: var(--row-touch); min-height: var(--row-touch); }
 }

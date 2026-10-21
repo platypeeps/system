@@ -4,7 +4,7 @@
   commands.md. Data: /api/hoa (hoa_screen.document: the asset map, the Mission export and the open items of the checkout
   the repo table holds under the folder name hoa), read when the page opens and on Refresh. A part that did not read is unknown
   with its reason. The map is one SVG of the files' vectors: no Leaflet and no tiles. Writes: Acknowledge on an alarm event
-  (sd:4967, POST /api/hoa/alarm, the workflow database's view state) and Run sweep on the HOA sweep row (sd:5095, POST /api/hoa/sweep,
+  (sd:4967, POST /api/hoa/alarm, the workflow database's view state), Acknowledge all on the Alarms toolbar (sd:5621, POST /api/hoa/alarms) and Run sweep on the HOA sweep row (sd:5095, POST /api/hoa/sweep,
   the checkout's tools/sweep.py in the background: Gmail drafts only); email is never sent; the Mission portal is never touched.
   Nothing here is sample data.
   Views (places.js): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Alarms is hoa.js's alarm ledger (sd:5286); Briefs and Reports each read /api/hoa/<view> (places.py) when shown.
@@ -96,7 +96,7 @@
   <section class="place-view" id="view-alarms" data-place-view="alarms" data-label="Alarms" aria-labelledby="al-h" hidden>
     <div class="sec-head"><div><h2 id="al-h">Alarm events</h2><p>From <code>alarm-events.csv</code>, the last 30 days of the export, newest first.</p></div></div>
     <!-- The toolbar standard (sd:5281, sd:5286): Open | Acknowledged | All on the left, then the table's filters. -->
-    <div class="toolbar" id="al-toolbar"><div class="vseg" id="al-show" role="group" aria-label="Alarm events shown"></div></div>
+    <div class="toolbar" id="al-toolbar"><div class="vseg" id="al-show" role="group" aria-label="Alarm events shown"></div><div class="tools" id="al-tools"></div></div>
     <table class="ledger" id="al-table" aria-labelledby="al-h" data-toolbar="al-toolbar">
       <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Event</th><th scope="col">When</th><th scope="col" class="hide-sm">Kind</th><th scope="col" class="num hide-sm">Min</th><th scope="col" class="hide-sm">Notified</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
       <tbody id="al-body"></tbody>

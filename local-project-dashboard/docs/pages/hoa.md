@@ -41,6 +41,18 @@ behind the Show acknowledged chip and leave the Alarms today lamp. The write
 reads the export again, so an event it no longer holds is refused (409) by
 name. Nothing reaches the Mission portal.
 
+Acknowledge all (sd:5621) is the Alarms toolbar's button, right of the Open |
+Acknowledged | All views, and a palette entry. It asks first, naming the count
+("Acknowledge all: 7 alarms?"), then posts every unacknowledged key once to
+`/api/hoa/alarms` (`{"keys", "acked"}`), which writes each as the single route
+does, in one transaction with the export read once. The answer lists the keys
+that landed (`acked`) and those that did not (`failed`, each with its reason: an
+event the export dropped, or a refused write); the toast says how many landed
+and names the rest, and HOA reads again. Undo posts back only the landed keys.
+When no key is listed any more the route answers 409 and writes nothing. The
+button is off, with its reason, when no event is unacknowledged or the store did
+not read.
+
 Data sources (sd:4965) shows one age lamp per source the checkout's
 `python3 tools/source-ages.py --json` lists (Mission export, CORE, Vantaca,
 TMT), run with a 10-second bound (`SOURCE_SECONDS`). A script that is missing,

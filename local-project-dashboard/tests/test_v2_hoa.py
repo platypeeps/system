@@ -30,7 +30,7 @@ from unittest import mock
 
 from sd_dashboard import hoa_screen, server, v2
 
-from sd_db import connect, upsert_repo, workflow, writes
+from sd_db import SdDbError, connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
 
 from support import NOW, ScreenCase
@@ -356,6 +356,7 @@ class TheScript(Fixture):
             ["asset.ask", "asset", "safe", "a"],
             ["alarm.ack", "alarm", "undo", "a"],
             ["alarm.unack", "alarm", "undo", "a"],
+            ["alarms.ack", "alarms", "undo", None],
             ["jobs.retry", "job", "safe", "t"],
             ["jobs.log", "job", "safe", "l"],
             ["sources.refresh", "sources", "safe", None],
@@ -716,6 +717,57 @@ class TheAcknowledgement(Fixture):
             with self.assertRaises(ValueError):
                 hoa_screen.acknowledge(payload)
 
+    def ack_many(self, keys, acked=True):
+        result = hoa_screen.acknowledge_many({"keys": keys, "acked": acked})(self.connection)
+        self.connection.commit()
+        return result
+
+    def test_acknowledge_many_writes_each_listed_event_in_one_call_and_undo_writes_them_back(self):
+        keys = [k for k in self.alarms()]
+        result = self.ack_many(keys)
+        self.assertEqual([x["key"] for x in result["acked"]], keys)
+        self.assertEqual(result["failed"], [])
+        self.assertTrue(all(self.alarms().values()))
+        self.ack_many(keys, False)
+        self.assertFalse(any(self.alarms().values()))
+
+    def test_acknowledge_many_names_a_key_the_export_no_longer_holds_and_writes_the_rest(self):
+        gone = "hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"
+        result = self.ack_many([TANK_LOW, gone])
+        self.assertEqual([x["key"] for x in result["acked"]], [TANK_LOW])
+        self.assertEqual([x["key"] for x in result["failed"]], [gone])
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank High Alarm", result["failed"][0]["error"])
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [TANK_LOW])
+
+    def test_acknowledge_many_refuses_as_stale_when_no_key_is_listed_and_writes_nothing(self):
+        before = writes.views(self.connection)
+        with self.assertRaises(workflow.StaleItem) as caught:
+            self.ack_many(["hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"])
+        self.assertIn("Nothing was acknowledged", str(caught.exception))
+        self.assertEqual(writes.views(self.connection), before)
+
+    def test_acknowledge_many_reports_a_key_the_store_refuses_and_writes_the_rest(self):
+        real = writes.set_view
+
+        def refuse_one(connection, key, **fields):
+            if key == TANK_LOW:
+                raise SdDbError("the view store refused it")
+            return real(connection, key, **fields)
+
+        other = "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm"
+        with mock.patch.object(writes, "set_view", side_effect=refuse_one):
+            result = self.ack_many([TANK_LOW, other])
+        self.assertEqual([x["key"] for x in result["acked"]], [other])
+        self.assertEqual(result["failed"], [{"key": TANK_LOW, "error": "the view store refused it"}])
+        self.assertEqual([k for k, acked in self.alarms().items() if acked], [other])
+
+    def test_acknowledge_many_refuses_a_bad_request_before_a_write(self):
+        for payload in ({"keys": [TANK_LOW]}, {"keys": [], "acked": True}, {"keys": TANK_LOW, "acked": True},
+                        {"keys": [TANK_LOW, TANK_LOW], "acked": True}, {"keys": ["designs/x.html"], "acked": True},
+                        {"keys": [TANK_LOW], "acked": "yes"}, {"keys": [TANK_LOW], "acked": True, "extra": 1}):
+            with self.assertRaises(ValueError):
+                hoa_screen.acknowledge_many(payload)
+
     def test_an_acknowledged_alarm_today_leaves_the_lamp_and_the_badge(self):
         checkout(self.hoa, alarms=ALARMS + "2026-09-06 07:00:00,other,A2 VSD Alarm,N,2\n")
         doc = self.doc()
@@ -807,6 +859,73 @@ await flush();""")
         self.assertIs(out["R"]["bulk"], True)
         self.assertEqual(sorted(p[1]["key"] for p in out["posts"]), ["hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm", TANK_LOW])
 
+    def test_acknowledge_all_is_a_button_in_the_toolbar_naming_the_open_count(self):
+        out = self.run_page("R.tools = ELS['al-tools'].html;", self.acked_doc())
+        self.assertRegex(out["R"]["tools"], r'<button[^>]*id="al-ack-all"[^>]*>.*Acknowledge all <span class="n">3</span>')
+        self.assertNotIn('aria-disabled="true"', out["R"]["tools"])
+        page = (V2 / "hoa.html").read_text(encoding="utf-8")
+        self.assertRegex(page, r'<div class="toolbar" id="al-toolbar">.*?<div class="tools" id="al-tools"></div></div>')
+
+    def test_acknowledge_all_is_off_with_its_reason_when_nothing_is_unacknowledged(self):
+        doc = self.doc()
+        for row in doc["mission"]["alarms"]:
+            row["acked"] = True
+        out = self.run_page("R.tools = ELS['al-tools'].html; R.when = cmd('alarms.ack').when(OBJ.get('alarms'));", doc)
+        self.assertIn('aria-disabled="true"', out["R"]["tools"])
+        self.assertEqual(out["R"]["when"], "no alarm event is unacknowledged")
+
+    def test_acknowledge_all_asks_first_and_names_the_count(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [200, { acked: [], failed: [] }];
+const c = cmd('alarms.ack'), o = OBJ.get('alarms');
+R.ask = c.askFirst; R.label = o.label; R.says = c.consequence(o); R.risk = c.risk;
+C.run(c, o); await flush();""", self.acked_doc())
+        self.assertEqual((out["R"]["ask"], out["R"]["label"], out["R"]["risk"]), (True, "3 alarms", "undo"))
+        self.assertIn("Hides 3 unacknowledged alarm events", out["R"]["says"])
+        self.assertEqual(out["confirms"], ["alarms.ack"])
+
+    def test_acknowledge_all_posts_every_open_key_once_and_reads_again(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.map(key => ({ key, hidden: body.acked })), failed: [] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""", self.acked_doc())
+        self.assertEqual(len(out["posts"]), 1)
+        path, body = out["posts"][0][:2]
+        self.assertEqual(path, "/api/hoa/alarms")
+        self.assertEqual((sorted(body["keys"]), body["acked"]), (sorted((
+            "hoa-alarm/2026-08-20 09:00:00 Generator Running", "hoa-alarm/2026-09-01 10:00:00 A2 VSD Alarm",
+            "hoa-alarm/2026-09-01 10:30:00 A2 VSD Normal")), True))
+        self.assertNotIn(TANK_LOW, body["keys"])
+        self.assertEqual(out["gets"], ["/api/hoa"] * 2)
+        self.assertEqual(out["toasts"][-1], ["Acknowledged 3 alarms. The Acknowledged view lists them.", True])
+
+    def test_acknowledge_all_names_the_events_that_did_not_land(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.slice(1).map(key => ({ key, hidden: true })),
+            failed: [{ key: body.keys[0], error: 'alarm-events.csv holds no alarm event ' + body.keys[0].slice(10) }] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""")
+        toast = out["toasts"][-1][0]
+        self.assertRegex(toast, r"^Acknowledged 3 of 4 alarms\. 1 not acknowledged: ")
+        self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank Low Alarm", toast)
+
+    def test_acknowledge_all_undo_posts_only_the_landed_keys_back(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [200, { acked: body.keys.slice(1).map(key => ({ key, hidden: body.acked })), failed: body.acked ? [{ key: body.keys[0], error: 'refused' }] : [] }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();
+OUT.toasts[OUT.toasts.length - 1].undo(); await flush();""")
+        self.assertEqual([p[1]["acked"] for p in out["posts"]], [True, False])
+        # The first key was refused on the way in, so the way back sends the other three only.
+        self.assertEqual(out["posts"][1][1]["keys"], out["posts"][0][1]["keys"][1:])
+        self.assertIn("Acknowledge all undone", out["toasts"][-1][0])
+
+    def test_a_refused_acknowledge_all_is_the_toast(self):
+        out = self.run_page("""ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
+  : [409, { error: 'alarm-events.csv holds none of the 4 alarm events. Nothing was acknowledged. Read HOA again.', reload: true }];
+C.run(cmd('alarms.ack'), OBJ.get('alarms')); await flush();""")
+        self.assertTrue(any("Nothing was acknowledged" in t[0] for t in out["toasts"]), out["toasts"])
+
+    def test_acknowledge_all_is_in_the_palette(self):
+        out = self.run_page("R.labels = window.PAGE_COMMANDS.map(c => c.label);")
+        self.assertIn("Acknowledge all alarms", out["R"]["labels"])
+
     def test_an_unread_store_turns_both_commands_off_with_its_reason(self):
         doc = self.doc()
         doc["mission"]["acks"] = {"available": False, "reason": "the view store was not read: database is locked"}
@@ -861,6 +980,21 @@ class TheAcknowledgeRoute(BrowserSession):
         self.assertIn("holds no alarm event 2026-09-05 06:00:00 Tank High Alarm", body["error"])
         status, _, body = self.post("/api/hoa/alarm", {"key": TANK_LOW, "acked": True})
         self.assertEqual((status, body["key"], body["hidden"]), (200, TANK_LOW, True))
+        status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
+        self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
+
+    def test_the_batch_route_writes_the_listed_events_names_the_rest_and_is_409_when_none_is_listed(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        hoa = checkout(Path(tmp.name) / "hoa")
+        self.repo(str(hoa))
+        gone = "hoa-alarm/2026-09-05 06:00:00 Tank High Alarm"
+        status, _, body = self.post("/api/hoa/alarms", {"keys": [gone], "acked": True})
+        self.assertEqual(status, 409)
+        self.assertTrue(body["reload"])
+        status, _, body = self.post("/api/hoa/alarms", {"keys": [TANK_LOW, gone], "acked": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(([x["key"] for x in body["acked"]], [x["key"] for x in body["failed"]]), ([TANK_LOW], [gone]))
         status, _, body = self.request("/api/hoa", headers={"Cookie": self.cookie})
         self.assertEqual([r["key"] for r in json.loads(body)["mission"]["alarms"] if r["acked"]], [TANK_LOW])
 
@@ -1101,7 +1235,7 @@ R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
 
 
 class TheRegistration(Registers, unittest.TestCase):
-    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/sweep",
+    page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/alarms", "/api/hoa/sweep",
                                               "/api/hoa/sweep/status", "/api/hoa/briefs",
                                               "/api/hoa/reports")
 
