@@ -59,6 +59,11 @@ A bar shows where the work is: delivered in 24 h, landing, planned, unscheduled 
 to its section. Each section shows its first 5 rows, as the command does, and Show all opens the rest.
 The gate slots come from `sd gate status --json`; a failed read shows as unknown with its reason.
 
+**GitHub**, the tab after Issues, lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
+`/api/today/github` (`today_github.py`) reads only what is stored: `shadow`, the Contributions projection, the
+repos with GitHub issues on, sd-ship's delivery notes and items filed under a `github:` ref; it calls no collector.
+Rows sort newest GitHub activity first; a row with no stamp says not recorded. Your issues and Issue intake stay on Issues.
+
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:
 `sd task note N $'Which store?\nOption: Pack store kind\nOption: Database rows' --kind question`.

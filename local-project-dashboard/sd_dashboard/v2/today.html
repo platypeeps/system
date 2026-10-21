@@ -12,6 +12,9 @@
   Your mail (sd:4191): the mail threads waiting on the operator under each repo's aliases, from the same document (mail); mail.js draws them.
   Status (sd:5099): /api/today/status, the sections `sd today` prints (sd_db.today.sections), read by today-status.js when the view
   first shows and on Refresh.
+  GitHub (sd:5608): /api/today/github, the operator's open pull requests and issues and those merged or closed in the last
+  7 days, from what sd shadow sync and the Contributions collector stored (today_github.document), read by today-github.js
+  when the view first shows and on Refresh. Your issues and Issue intake stay on Issues, with Jira and File as item.
   Decisions (sd:3012): /api/decisions, read by decisions.js when the page opens and on Refresh; a choice posts /api/decisions/answer.
   A review batch's questions (sd:3709) are not rows here: one line under the table counts them and links to Review.
   The decisions waiting count in Today's rail badge with the caution rows (today.js attend).
@@ -166,6 +169,16 @@
         </table>
       </section>
     </div>
+    <div id="view-github" aria-label="GitHub" hidden>
+      <section aria-labelledby="github-h">
+        <div class="sec-head">
+          <h2 id="github-h">GitHub <button class="help" type="button" aria-label="Help: GitHub" data-help="&lt;b&gt;Your pull requests and issues.&lt;/b&gt; Open pull requests that are yours, assigned to you or waiting on you; open issues that are yours or opened by someone else in a repo with GitHub issues on; and both merged or closed in the last 7 days. Upstream is yours in a repo sd does not register. Newest GitHub activity first; each part shows 5 rows, Show all opens the rest. Read from what &lt;code&gt;sd shadow sync&lt;/code&gt; and the Contributions collector stored: nothing here calls GitHub. Your issues and Issue intake stay on Issues.">
+            <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
+          <p class="tally" id="github-tally"></p>
+        </div>
+        <div id="github-sections"><p class="st-line">Reading GitHub…</p></div>
+      </section>
+    </div>
     <div id="view-decisions" aria-label="Decisions" hidden>
       <section aria-labelledby="decisions-h">
         <div class="sec-head">
@@ -194,6 +207,7 @@
 <script src="/ui/today-reports.js"></script>
 <script src="/ui/today.js"></script>
 <script src="/ui/today-status.js"></script>
+<script src="/ui/today-github.js"></script>
 <script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>

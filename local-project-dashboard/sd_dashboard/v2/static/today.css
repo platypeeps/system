@@ -131,3 +131,13 @@ section[aria-labelledby="decisions-h"] { margin-top: var(--space-xl); }
   .st tbody tr { grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "g what when" ". detail detail"; }
   .st .what { grid-area: what; width: auto; } .st .detail { grid-area: detail; } .st .when { grid-area: when; }
 }
+
+/* GitHub (sd:5608): Status's parts and rows (.st-sec, .st) for pull requests and issues. The title links to GitHub, the
+ * item under Why to Tasks; the tally's waiting count links to its part. No new tokens.
+ * Hallmark · component: github view · genre: modern-minimal · theme: design.md instrument panel
+ * states: default · hover (links) · focus · active · empty (one shared line) · error (could not be read) · not read (▨ line) */
+.st .detail .sub a { color: var(--color-ink-2); }
+.st .detail a:focus-visible, #github-tally a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+#github-tally a { display: inline-flex; align-items: center; color: var(--color-caution); text-decoration: none; white-space: nowrap; }
+#github-tally a:hover { text-decoration: underline; }
+@media (pointer: coarse) { #github-tally a { min-height: var(--row-touch); } }

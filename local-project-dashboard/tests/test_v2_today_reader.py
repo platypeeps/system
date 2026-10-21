@@ -168,13 +168,13 @@ class TheViews(TheReader):
 
     def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
         views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "status", "work", "inbox", "issues", "decisions"])
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "status", "work", "inbox", "issues", "github", "decisions"])
         self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
         page = (V2 / "today.html").read_text(encoding="utf-8")
         panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))
                   for m in re.finditer(r'<div id="view-([a-z]+)"(.*?)(?=<div id="view-|</main>)', page, re.S)}
         self.assertEqual(panels, {"now": ["now-h"], "status": ["status-h"], "work": ["active-h", "work-h"], "inbox": ["problems-h", "briefs-h", "mail-h"],
-                                  "issues": ["issues-h", "intake-h"], "decisions": ["decisions-h"]})
+                                  "issues": ["issues-h", "intake-h"], "github": ["github-h"], "decisions": ["decisions-h"]})
         scripts = "".join((V2 / "static" / f).read_text(encoding="utf-8")
                           for f in ("today.js", "today-reports.js", "mail.js", "issues.js", "decisions.js"))
         reported = set(re.findall(r"todayCount(?:\?\.)?\('([a-z]+)'", scripts))
