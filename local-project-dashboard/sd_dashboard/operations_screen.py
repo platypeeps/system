@@ -283,7 +283,7 @@ def _services(connection, parameters, backend):
         listing.controls(paged),
         tag("div", join(_service(entry) for entry in shown), class_="operations-grid") if shown else
             tag("p", "No services match this filter." if query else "No installed services were found."),
-        listing.pager(paged), class_="listing", data_listing="services")
+        listing.pager(paged), class_="listing", data_listing="services", data_listing_q=f"{listing.keys}q")
 
 
 def operations_page(connection, *, parameters, now, services_backend=None):

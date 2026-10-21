@@ -289,6 +289,9 @@
   // shell.filter() is the shown view's filter text; shell.filter(q) sets it (a page's Clear all). The bar reads ?q= at load.
   // A page with a bar of its own (Skills, Tasks) hands its filter text over with shell.filter(q) at each change, so the
   // tables it does not filter itself (Skills' tracked repositories, Tasks' issues) take it as their text filter too.
+  // A server-drawn list (listing.py, on Operations, Protection, an item page) filters on the server, before its pages: its
+  // section names its query key (data-listing-q), the bar opens with that key's text, and Enter in filter mode loads the
+  // page with the text in every list's key, each list from its first page.
   // window.PAGE_FILTER = { <view id, or '' on a page without views>: 'reports, bodies included' } says what the filter
   // covers; without it the shown tables' titles say it.
   // shift:start
@@ -316,8 +319,10 @@
     const el = (id && document.getElementById(id.split(' ')[0])) || (!label && (t.closest('section')?.querySelector('h2, h3') || t.caption));
     return (el ? el.textContent : label || '').replace(/\s+/g, ' ').trim();
   }
+  // A server list names itself (data-listing), with a table or without one (Services' cards, an empty list).
   const shiftCovers = () => window.PAGE_FILTER?.[shiftView()]
-    ?? shiftWhat([...main.querySelectorAll('table')].filter(t => !t.closest('[hidden], dialog, .sr')).map(shiftName));
+    ?? shiftWhat([...main.querySelectorAll('table')].filter(t => !t.closest('[hidden], dialog, .sr, [data-listing]')).map(shiftName)
+      .concat([...main.querySelectorAll('[data-listing-q]')].map(el => el.dataset.listing.replace(/-/g, ' '))));
   // The field's placeholder follows the view, and the tables once they are drawn (tscan calls it).
   function shiftPlace() {
     if (!shiftIn) return;
@@ -347,6 +352,13 @@
     return shiftQ();
   }
   const shiftClear = () => !!shiftIn?.value && (shiftSet(''), true);
+  const LISTS = [...main.querySelectorAll('[data-listing-q]')].map(el => el.dataset.listingQ);
+  function listGo(v) {
+    const p = new URLSearchParams(location.search);
+    LISTS.forEach(k => { v ? p.set(k, v) : p.delete(k); p.delete(k.replace(/q$/, 'page')); });
+    const qs = String(p);
+    location.assign(location.pathname + (qs ? `?${qs}` : ''));
+  }
   if (shiftRow) {
     const el = document.createElement('div'); el.className = 'shift';
     put(el, html`<label class="field">${ICON('search')}<span class="sr">Filter, capture or ask</span><input id="shift" autocomplete="off" spellcheck="false" aria-describedby="shift-hint"><span class="ghost" id="shift-ghost"></span><kbd>/</kbd></label>
@@ -358,12 +370,14 @@
     const after = shiftRow.querySelector(':scope > .viewswitch, :scope > #viewswitch, :scope > .place-switch');
     after ? after.after(el) : shiftRow.prepend(el);
     shiftIn = el.querySelector('#shift'); shiftPrev = el.querySelector('#shift-preview');
-    // A ?q= link opens with its text as the filter; a page that keeps ?q= reads it too.
-    shiftSet(new URLSearchParams(location.search).get('q') || '', 'filter');
+    // A ?q= link opens with its text as the filter; a page that keeps ?q= reads it too, and a server list its own key.
+    const u = new URLSearchParams(location.search), listQ = [...LISTS, 'q'].map(k => u.get(k)).find(Boolean) || '';
+    shiftSet(listQ, 'filter');
     shiftIn.addEventListener('input', () => shiftSet(shiftIn.value));
     shiftIn.addEventListener('keydown', e => {
       const v = shiftIn.value.trim();
       if (e.key === 'ArrowRight' && shiftIn.selectionStart === shiftIn.value.length && v) { e.preventDefault(); shiftMode = shiftNext(shiftMode); shiftRender(); }
+      if (e.key === 'Enter' && shiftMode === 'filter' && LISTS.length && v !== listQ.trim()) { e.preventDefault(); listGo(v); }
       if (e.key === 'Enter' && v) {
         e.preventDefault();
         if (shiftMode === 'task') { shiftSet(''); openCapture(null, v); }
@@ -1397,8 +1411,8 @@
     if (!t.tHead || !t.tBodies.length || t.matches('.sr, [data-tgrid="off"]') || t.closest('.sr, dialog')) return;
     const key = tkeyOf(t), st = tst(key), ths = theads(t);
     const owned = !!t.tHead.querySelector('button[data-sort]') || !ths;
-    // A page with its own filter for the table marks it data-tfilter="page"; a classic listing has its server form.
-    const ownFilter = t.dataset.tfilter === 'page' || !!t.closest('.listing')?.querySelector('.listing-form');
+    // A page with its own filter for the table marks it data-tfilter="page", and so does a server list (listing.py).
+    const ownFilter = t.dataset.tfilter === 'page';
     const cols = ths ? ths.map(tlabel) : [];
     // A header whose words are all for screen readers names an action column (Acknowledge, Seen), unless it is the state glyph's.
     const seen = th => [...th.childNodes].some(n => n.nodeType === 3 ? n.textContent.trim() : n.nodeType === 1 && !n.matches('.sr') && tlabel(n));

@@ -10,11 +10,14 @@ third.
 
 The three controls, and what each one promises:
 
-* **Filter.** One field, narrowing on every visible column and on the extra
-  fields the section names. `/` focuses it, and *the URL carries it*, so a
-  filtered view is a link the operator can send to themselves. The filter is
-  applied by the server; the script does not hide rows, because a row hidden
-  by a script is still in the page and still in the count.
+* **Filter.** One text, narrowing on every visible column and on the extra
+  fields the section names, and *the URL carries it*, so a filtered view is a
+  link the operator can send to themselves. The text is typed in the shell's
+  one bar (sd:5539), not a field of the list's own: the section names its key
+  (`data-listing-q`), and Enter in the bar's filter mode loads the page with
+  the text in every list's key. The filter is applied by the server; the
+  script does not hide rows, because a row hidden by a script is still in the
+  page and still in the count.
 * **Selection.** One tap per row, plus select-all-shown, and the bulk actions
   the section declares. A section with no bulk actions renders no selection
   control at all -- which is every list in this pull request, because this
@@ -116,7 +119,7 @@ class Listing:
     name: str
     columns: Sequence[Column]
     rows: Sequence[object]
-    #: Where the form submits and the page links point. The filter and the page
+    #: Where the page links point. The filter and the page
     #: ride in the query string of this path, which is what makes a filtered
     #: view a link.
     path: str
@@ -126,7 +129,7 @@ class Listing:
     actions: Sequence[BulkAction] = ()
     row_id: Callable[[object], str] | None = None
     row_href: Callable[[object], str] | None = None
-    #: Extra query-string keys that must survive a filter or a page link --
+    #: Extra query-string keys that must survive a page link --
     #: the Backlog's `view`, a kind or repo facet. Carried, never interpreted.
     extra: Mapping[str, str] = field(default_factory=dict)
     #: What this list's three controls are called in the query string, before
@@ -134,8 +137,9 @@ class Listing:
     #: list but Sessions'. Two lists sharing a page shared those three names
     #: too, so filtering the processes also hid matching worktrees and paging
     #: one table paged the other (PR #427 review). A prefix gives each list
-    #: its own; the sibling's state rides in `extra` so a filter or a page
-    #: link carries it past unchanged. `dashboard.js` still writes a bare
+    #: its own; the sibling's state rides in `extra` so a page link carries
+    #: it past unchanged. The shell's one bar sets every list's key on the
+    #: page at once (sd:5539). `dashboard.js` still writes a bare
     #: `sel`, which holds because a selection needs a bulk action and no
     #: prefixed list declares one; a prefixed list that does needs the script
     #: told its prefix.
@@ -250,11 +254,7 @@ class Listing:
         return bool(self.actions)
 
     def controls(self, page: Page) -> Markup:
-        """The filter field and the count, above the rows."""
-        hidden = [
-            tag("input", type="hidden", name=key, value=value)
-            for key, value in sorted(self.extra.items())
-        ]
+        """The count, above the rows; the filter text is the shell's bar's."""
         summary: list[object] = []
         if page.total > SHOW_TOTAL_ABOVE:
             summary.append(
@@ -268,35 +268,7 @@ class Listing:
             summary.append(
                 tag("p", f"{page.total} shown", class_="listing-count")
             )
-        return tag(
-            "div",
-            tag(
-                "form",
-                tag(
-                    "label",
-                    tag("span", "Filter", class_="visually-hidden"),
-                    tag(
-                        "input",
-                        type="search",
-                        name=f"{self.keys}q",
-                        value=self.query,
-                        placeholder=f"Filter {self.name}",
-                        data_listing_filter=self.name,
-                        autocomplete="off",
-                        enterkeyhint="search",
-                    ),
-                    class_="listing-filter",
-                ),
-                join(hidden),
-                tag("button", "Filter", type="submit", class_="listing-go"),
-                method="get",
-                action=self.path,
-                role="search",
-                class_="listing-form",
-            ),
-            join(summary),
-            class_="listing-controls",
-        )
+        return tag("div", join(summary), class_="listing-controls")
 
     def pager(self, page: Page) -> Markup:
         if page.pages <= 1:
@@ -344,11 +316,13 @@ class Listing:
                     value = tag("a", value, href=self.row_href(row))
                 cells.append(tag("td", value, class_=column.css))
             body.append(tag("tr", join(cells)))
+        # The server filters these rows, so the shell's table grammar does not (data-tfilter="page").
         return tag(
             "table",
             tag("thead", tag("tr", join(head))),
             tag("tbody", join(body)),
             class_="listing-table",
+            data_tfilter="page",
         )
 
     def render(self) -> Markup:
@@ -363,6 +337,7 @@ class Listing:
                 tag("div", join(empty), class_="listing-empty"),
                 class_="listing",
                 data_listing=self.name,
+                data_listing_q=f"{self.keys}q",
             )
         return tag(
             "section",
@@ -371,4 +346,5 @@ class Listing:
             self.pager(page),
             class_="listing",
             data_listing=self.name,
+            data_listing_q=f"{self.keys}q",
         )

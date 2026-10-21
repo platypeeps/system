@@ -79,17 +79,15 @@ class SessionsArea(FleetCase):
         self.assertEqual(self.cells(page, "worktree-name"), ["lane-a"])
         self.assertEqual(self.cells(page, "process-pid"), ["4242", "4243"])
 
-    def test_one_listings_filter_carries_the_others_state_past_it(self):
-        # Each list's form and links carry the sibling's key, so filtering one
-        # table does not drop the filter already on the other.
+    def test_each_listing_names_its_own_key_for_the_shells_bar(self):
+        # sd:5539: the shell's one bar sets each list's key (data-listing-q); no list draws a form of its own, and a
+        # page link still carries the sibling's key (Listing.carried into extra).
         pack = self.checkout("pack")
         self.worktree(pack, "lane-a", "fix/sd-1-lane-a")
         self.shim("ps", f"printf '{PS}'")
         page = self.sessions(**{"processes-q": "sd-review"})
-        forms = re.findall(r'<form method="get" action="/operations"[^>]*>(.*?)</form>', page, re.DOTALL)
-        carrying = [form for form in forms if 'name="worktrees-q"' in form]
-        self.assertEqual(len(carrying), 1, forms)
-        self.assertIn('<input type="hidden" name="processes-q" value="sd-review">', carrying[0])
+        self.assertNotIn('<form method="get"', page)
+        self.assertEqual(re.findall(r'data-listing-q="([^"]+)"', page), ["worktrees-q", "processes-q"])
 
     def test_running_sd_commands_are_listed_by_their_basename(self):
         self.shim("ps", f"printf '{PS}'")

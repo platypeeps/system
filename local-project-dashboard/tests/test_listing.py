@@ -86,11 +86,20 @@ class TheFilter(unittest.TestCase):
     def test_the_url_carries_it(self):
         one = listing(10, query="alpha")
         self.assertEqual(one.link(), "/fixture?q=alpha")
-        self.assertIn('value="alpha"', one.render())
-        self.assertIn('name="q"', one.render())
+        self.assertIn('data-listing-q="q"', one.render())
+        self.assertIn('data-listing-q="worktrees-q"', listing(3, keys="worktrees-").render())
 
-    def test_the_field_is_focusable_by_the_script(self):
-        self.assertIn("data-listing-filter", listing(3).render())
+    def test_the_shells_bar_holds_the_text_and_the_list_draws_no_field(self):
+        # sd:5539 (operator, note 25755): one bar per page; the list's own Filter form goes. Its section names its key for
+        # the bar, and its table is the server's to filter.
+        for one in (listing(3, query="alpha"), listing(0, query="nothing")):
+            rendered = one.render()
+            with self.subTest(rows=len(one.rows)):
+                self.assertNotIn("<form", rendered)
+                self.assertNotIn("<input", rendered)
+                self.assertNotIn("listing-go", rendered)
+                self.assertIn('data-listing-q="q"', rendered)
+        self.assertIn('<table class="listing-table" data-tfilter="page">', listing(3).render())
 
 
 class ThePaging(unittest.TestCase):
@@ -186,10 +195,10 @@ class TheRendering(unittest.TestCase):
         self.assertIn("Nothing open.", rendered)
         self.assertIn("File one.", rendered)
 
-    def test_extra_facets_survive_a_filter_and_a_page(self):
+    def test_extra_facets_survive_a_page(self):
         one = listing(120, query="alpha", extra={"view": "board"})
         self.assertIn("view=board", one.link(page=2))
-        self.assertIn('name="view"', one.render())
+        self.assertIn("view=board", one.render())
 
 
 if __name__ == "__main__":  # pragma: no cover

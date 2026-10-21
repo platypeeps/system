@@ -151,7 +151,8 @@ class UsageScreen(Seeds, ScreenCase):
 
     def test_the_bound_rows_are_a_listing_with_the_filter_and_the_pager(self):
         """The `bound` rows grow all month, so they go through `Listing`:
-        the filter narrows them, the URL carries it, and the month rides along."""
+        the filter narrows them, the URL carries it, and the month rides along: in the page links, and in the address
+        the shell's bar keeps when it sets ?q= (sd:5539)."""
         self.month()
         for index in range(60):
             self.cost("bound", at=f"2026-09-{10 + index % 19:02d}T10:00:00Z", provider="kimi", bill="open",
@@ -163,7 +164,7 @@ class UsageScreen(Seeds, ScreenCase):
         filtered = self.render("/operations", {"area": ["usage"], "month": ["2026-09"], "q": ["lost-56"]})
         self.assertIn('data-bound="lost-56"', filtered)
         self.assertNotIn('data-bound="lost">', filtered)
-        self.assertIn('name="month" value="2026-09"', filtered)
+        self.assertIn('href="/operations?area=usage&amp;month=2026-09&amp;page=2"', page)
 
     def test_a_zero_cap_is_a_cap_and_a_plan_bill_draws_its_windows_not_a_burn(self):
         """`cap_usd_month = 0` is a limit, not an open bill: the gauge is full
