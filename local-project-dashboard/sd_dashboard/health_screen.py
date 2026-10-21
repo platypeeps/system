@@ -21,7 +21,8 @@ adds no collector:
   each reads and leaves out.
 - Dependencies and Security (sd:2205, sd:2206): the same `protection.rows`,
   each managed repository's `alerts`, which the nightly sync stores beside
-  its protection. Health makes no GitHub call.
+  its protection. Health makes no GitHub call. A repository with Dependabot
+  alerts off is allowed: an ok row lists it (sd:5595).
 - Credentials (sd:2203): the latest `credentials:nightly` heartbeat that
   `sd-db credentials` writes each night: presence, validity and expiry,
   never a value. Expiry is judged against the request's time.
@@ -532,16 +533,19 @@ def _unread_reason(repo: dict, part: dict | None) -> str:
 
 
 def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
-    """A row per managed repository with open Dependabot alerts, one for those not read, and the clean count."""
+    """A row per managed repository with open Dependabot alerts, one for those not read, one for those with alerts
+    off, and the clean count. Alerts off is allowed (sd:5595): an ok row names those repos, so it stays visible."""
     managed = _managed(found)
     if not managed:
         return [_no_managed("dep", "Dependencies")], {}
-    rows, unread, clean, archived, skipped = [], [], 0, 0, set()
+    rows, unread, off, clean, archived, skipped = [], [], [], 0, 0, set()
     for repo in managed:
         part = (repo.get("alerts") or {}).get("dependabot")
         name = repo.get("slug") or repo["repo"]
         if isinstance(part, dict) and part.get("archived"):
             archived += 1
+        elif isinstance(part, dict) and part.get("setting") == "disabled":
+            off.append(name)
         elif not isinstance(part, dict) or not isinstance(part.get("open"), int):
             unread.append(_unread_reason(repo, part))
             skipped.add(repo["repo"])
@@ -572,6 +576,11 @@ def _dependency_rows(found: list[dict], *, now: str) -> tuple[list[dict], dict]:
                      "what": f"No open Dependabot alert in {clean} managed {_plural(clean, 'repo', 'repos')}",
                      "detail": f"archived repos left out: {archived}", "kind": "Dependencies",
                      "facts": {"Clean": str(clean), "Archived": str(archived)}})
+    if off:
+        rows.append({"id": "dep:off", "state": "ok", "type": "check",
+                     "what": f"Dependabot alerts off in {len(off)} managed {_plural(len(off), 'repo', 'repos')}",
+                     "detail": "allowed; the nightly sync reads no alerts there", "kind": "Dependencies · alerts off",
+                     "facts": {"Alerts off": str(len(off))}, "list": off})
     return rows, _alert_extra(managed)
 
 

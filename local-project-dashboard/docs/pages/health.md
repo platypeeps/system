@@ -45,7 +45,8 @@ calls no service and reads no credential.
   `sd shadow sync` stores in each managed repository's `repo_protection` row.
   Dependencies is a row per repository with open Dependabot alerts, a warning
   when one is critical or high or the list ran past its first page; an
-  archived repository is left out. Security
+  archived repository is left out, and one with Dependabot alerts off is
+  allowed and listed in an ok row (sd:5595). Security
   is a row per public repository with open secret-scanning alerts (warning) or
   with scanning off (caution); a private repository is not scanned, by policy.
   A repository whose alerts were not re-read in 48 hours is a caution row.
