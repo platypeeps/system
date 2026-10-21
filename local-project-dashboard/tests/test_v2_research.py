@@ -34,7 +34,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import research_screen, server, v2
+from sd_dashboard import documents, research_screen, server, v2
 
 from support import NOW, ScreenCase
 from test_v2_read import READ_SHELL
@@ -573,6 +573,51 @@ class TheDocument(ScreenCase):
         bare = research_screen.sources("research/alpha", now=NOW, backend=lambda *_: {"found": True, "rows": [], "total": 0})
         self.assertIsNone(bare["claims"])
 
+    def test_each_populated_stage_links_the_page_documents_serves_for_its_first_document(self):
+        # sd:5657: a stage bar opens its document. The address is the one /documents/<key>/<file> serves for this checkout,
+        # never one built from the out name alone: a page under build/, or under a key two checkouts claim, gets no link.
+        conf = ("DOCS=[dict(src='00-overview/README.md', out='overview', title='Overview'),\n"
+                " dict(src='20-map/MAP.md', out='map', title='Map'), dict(src='./20-map/extra.md', out='extra', title='Extra'),\n"
+                " dict(src='30-brief/BRIEF.md', out='brief', title='Brief'), dict(src='40-docs/a/guide.md', out='guide', title='Guide')]\n")
+        repo = checkout(self.root, "research/alpha", conf=conf, dirs=[(d, True) for d in research_screen.DIRS])
+        for src in ("00-overview/README.md", "20-map/MAP.md", "20-map/extra.md", "30-brief/BRIEF.md", "40-docs/a/guide.md"):
+            (repo / src).parent.mkdir(parents=True, exist_ok=True)
+            (repo / src).write_text("# page\n", encoding="utf-8")
+        built = repo / "docs" / "dashboard"
+        built.mkdir(parents=True)
+        for out in ("map", "extra", "brief"):
+            (built / f"{out}.html").write_text("<p>built</p>", encoding="utf-8")
+        (repo / "build").mkdir()
+        (repo / "build" / "guide.html").write_text("<p>built</p>", encoding="utf-8")  # the old layout: nothing serves it
+        self.enterContext(mock.patch.object(documents, "REPO_ROOT", self.root))
+        self.enterContext(mock.patch.object(documents, "CONFIG", self.root / "no-documents.conf"))
+        stages = {p["key"]: p for p in research_screen.document(now=NOW)["projects"]}["research/alpha"]["stages"]
+        self.assertEqual({d: s["href"] for d, s in stages.items()},
+                         {"00-overview": "", "10-sources": "", "20-map": "/documents/alpha/map.html", "30-brief": "/documents/alpha/brief.html",
+                          "40-docs": ""})
+        self.assertEqual((stages["20-map"]["title"], stages["20-map"]["why"]), ("Map", ""))
+        self.assertIn("not built", stages["00-overview"]["why"])
+        self.assertIn("declares no document from 10-sources", stages["10-sources"]["why"])
+        self.assertIn("not served", stages["40-docs"]["why"])
+        # Another checkout named alpha contests the Documents key: neither is served, so neither stage links.
+        other = checkout(self.root, "other/alpha", conf=conf, dirs=[("20-map", True)])
+        (other / "docs" / "dashboard").mkdir(parents=True)
+        (other / "docs" / "dashboard" / "map.html").write_text("<p>other</p>", encoding="utf-8")
+        rows = {p["key"]: p for p in research_screen.document(now=NOW)["projects"]}
+        for key in ("research/alpha", "other/alpha"):
+            self.assertEqual(rows[key]["stages"]["20-map"]["href"], "", key)
+            self.assertIn("not served", rows[key]["stages"]["20-map"]["why"], key)
+
+    def test_a_documents_read_that_fails_links_no_stage_and_says_so(self):
+        checkout(self.root, "research/alpha", conf="DOCS=[dict(src='20-map/MAP.md', out='map', title='Map')]\n", dirs=[("20-map", True)])
+        (self.root / "research" / "alpha" / "docs" / "dashboard").mkdir(parents=True)
+        (self.root / "research" / "alpha" / "docs" / "dashboard" / "map.html").write_text("<p>built</p>", encoding="utf-8")
+        (self.root / "research" / "alpha" / "20-map" / "MAP.md").write_text("# map\n", encoding="utf-8")
+        with mock.patch.object(documents, "roots", side_effect=OSError("disk gone")):
+            [row] = research_screen.document(now=NOW)["projects"]
+        self.assertEqual(row["stages"]["20-map"]["href"], "")
+        self.assertIn("disk gone", row["stages"]["20-map"]["why"])
+
     def test_a_reader_that_fails_is_named_and_lists_nothing(self):
         def broken(*_):
             raise ValueError("research reading was stopped at its budget: python ran past its budget of 4 seconds")
@@ -675,6 +720,31 @@ class TheScript(ScreenCase):
     def test_the_design_commands_are_registered_with_their_ids_labels_keys_and_risks(self):
         out = self.run_page("R.reg = REG.map(c => [c.id, c.on, c.label, c.key, c.risk]);")
         self.assertEqual(out["R"]["reg"], COMMANDS)
+
+    def test_a_populated_stage_bar_opens_its_document_and_a_click_on_it_selects_no_row(self):
+        # sd:5657: each populated bar with a served page is a link named for its stage and document; the rest stay inert
+        # and say why. A click on a bar opens the page, not the row's Details.
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["00-overview", "20-map", "30-brief"]
+        beta["stages"] = {"00-overview": {"title": "Overview", "href": "", "state": "not built", "why": "Overview is not built: Render writes it"},
+                          "10-sources": {"title": "", "href": "", "state": "", "why": "research.conf.py declares no document from 10-sources"},
+                          "20-map": {"title": "Map <b>", "href": "/documents/beta/map.html", "state": "fresh", "why": ""},
+                          "30-brief": {"title": "Brief", "href": "/documents/beta/brief.html", "state": "stale", "why": ""}}
+        click = "ELS.rows.listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id: 'research/alpha' } } : %s } });"
+        out = self.run_page("R.rows = ELS.rows.html; R.before = selected;"
+                            + click % "(s.split(', ').includes('a') ? {} : null)" + " R.onBar = selected;"
+                            + click % "null" + " R.onRow = selected;")
+        row = re.search(r'<tr data-id="research/beta".*?</tr>', out["R"]["rows"], re.S).group(0)
+        links = re.findall(r'<a class="pip" href="([^"]+)" aria-label="([^"]+)" title="([^"]+)">', row)
+        self.assertEqual(links, [("/documents/beta/map.html", "Open 20-map: Map &lt;b&gt;", "20-map: Map &lt;b&gt;"),
+                                 ("/documents/beta/brief.html", "Open 30-brief: Brief", "30-brief: Brief, stale since its source changed")])
+        self.assertIn('title="00-overview: Overview is not built: Render writes it"', row)
+        self.assertIn('role="group" aria-label="Populated: 00-overview, 20-map, 30-brief"', row)
+        # Alpha has no served page, so its track stays one image.
+        alpha = re.search(r'<tr data-id="research/alpha".*?</tr>', out["R"]["rows"], re.S).group(0)
+        self.assertNotIn("<a class=\"pip\"", alpha)
+        self.assertIn('role="img" aria-label="Populated: 00-overview, 10-sources"', alpha)
+        self.assertEqual((out["R"]["before"], out["R"]["onBar"], out["R"]["onRow"]), ("research/beta", "research/beta", "research/alpha"))
 
     def test_a_header_sorts_the_board_and_the_url_keeps_it(self):
         # sd:3455: the shell's sort header. State is the default; its bands draw only in that order.

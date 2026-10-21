@@ -31,11 +31,19 @@ const PICK = () => html`<p class="why">No project is selected. <button class="li
 const STATE_WORDS = { caution: 'render-stale', unknown: 'config or render unread', ok: 'current' };
 let stateFilter = null;
 
+// build (sd:5657): a populated stage whose page Documents serves is a link to it; /api/research names the address
+// (research_screen.linked). Every other pip stays inert, and its title says why it opens nothing.
+function pip(p, d, group) {
+  const on = p.dirs.includes(d), s = on ? p.stages?.[d] : null;
+  if (s?.href) return html`<a class="pip" href="${s.href}" aria-label="Open ${d}: ${s.title}" title="${d}: ${s.title}${s.state === 'stale' ? ', stale since its source changed' : ''}"><i class="on"></i></a>`;
+  return html`<span class="pip" title="${d}${s?.why ? `: ${s.why}` : ''}"${group ? html` aria-hidden="true"` : ''}><i class="${on ? 'on' : ''}"></i></span>`;
+}
 function stageCell(p) {
-  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<i class="hatch"></i>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
+  if (!p.dirs) return html`<span class="track" aria-hidden="true">${DIRS.map(() => html`<span class="pip"><i class="hatch"></i></span>`)}</span><span class="stage-lbl"><span class="g-unknown">▨</span> no numbered layout</span>`;
   const last = DIRS.filter(d => p.dirs.includes(d)).pop();
+  const group = p.dirs.some(d => p.stages?.[d]?.href);
   // build: a numbered layout with no Markdown yet says so; the reference always had a last directory.
-  return html`<span class="track" role="img" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => html`<i class="${p.dirs.includes(d) ? 'on' : ''}" title="${d}"></i>`)}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
+  return html`<span class="track" role="${group ? 'group' : 'img'}" aria-label="Populated: ${p.dirs.join(', ') || 'none'}">${DIRS.map(d => pip(p, d, group))}</span><span class="stage-lbl">${last ? last.slice(3) : 'no Markdown yet'}</span>`;
 }
 // build: no round reader, so every project's rounds are unknown with the document's reason.
 function roundsCell() {
@@ -624,7 +632,8 @@ function selectSource(i, open) {
   document.querySelectorAll('.src[data-i]').forEach(li => li.setAttribute('aria-current', +li.dataset.i === i));
   showSource(i); if (open) shell.openPane('tab-details');
 }
-tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
+// A stage bar is a link: it opens its document, not the row's Details.
+tbody.addEventListener('click', e => { if (e.target.closest('.rowact, a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); });
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.

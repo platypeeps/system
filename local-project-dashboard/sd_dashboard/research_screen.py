@@ -25,6 +25,9 @@ states. A document the reader does not read is named with its reason.
 them yet, so the document says so (`ROUNDS_REASON`) and the page shows rounds
 as unknown with that reason.
 
+**Stage links** (sd:5657). The child picks each numbered directory's document from research.conf.py (`pages`); the page
+side links it at the address `/documents/<key>/<file>` serves (`linked`), or says why it has none.
+
 **One module, two roles**, as `fleet.py`: imported, it is the page side, and
 `collect` runs this same file as a child, `python3 -I research_screen.py
 <area> [<checkout>] <seconds>`, under the collectors' `Budget`. Run as that
@@ -45,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 __all__ = ["BRIEF", "BUILT", "CAP", "CLAIM_DIRS", "CLAIM_TYPES", "DECK", "DIRS", "REGISTRIES", "ROUNDS_REASON", "claims", "collect", "document", "experiment",
-           "grade_legend", "parse_registry", "project", "source_key", "sources", "stale"]
+           "grade_legend", "linked", "pages", "parse_registry", "project", "source_key", "sources", "stale"]
 
 #: The page's budget for one reading, the Resources > Research view's `VIEW_SECONDS`, and how much sooner the child
 #: stops so its reason arrives before the page's kill does (`fleet.FLEET_MARGIN`).
@@ -169,6 +172,7 @@ def document(*, now: str, backend=None) -> dict:
     except (OSError, ValueError) as failure:
         found, projects, error = {}, [], str(failure)
     stale(projects, now)
+    linked(projects)
     return {
         "read": now,
         "error": error,
@@ -180,6 +184,53 @@ def document(*, now: str, backend=None) -> dict:
         "rounds": {"available": False, "reason": ROUNDS_REASON},
         "attention": _attention(projects, error),
     }
+
+
+def linked(projects: list) -> None:
+    """Give each populated stage its document's address, or the reason it has none (sd:5657).
+
+    The address is the one `/documents/<key>/<file>` serves: the Documents root whose directory is this checkout's
+    `docs/dashboard`, and a file `documents.within` accepts there, as the server finds them. A page the server would
+    not serve (built under `build/`, skipped, or under a key two checkouts claim) gets no link, never a guessed one.
+    """
+    from . import documents
+
+    rows = [p for p in projects if isinstance(p, dict) and isinstance(p.get("dirs"), list)]
+    built = any(isinstance(s, dict) and s.get("state") != "not built"
+                for p in rows if isinstance(p.get("stages"), dict) for s in p["stages"].values())
+    by_dir, unread = {}, ""
+    try:
+        for root in documents.roots() if built else ():
+            try:
+                by_dir.setdefault(root.path.expanduser().resolve(strict=True), root)
+            except (OSError, RuntimeError):
+                continue
+    except (OSError, ValueError) as failure:
+        by_dir, unread = {}, f"the Documents roots were not read: {failure}"
+    for p in rows:
+        key, picks = p.get("key"), p.get("stages") if isinstance(p.get("stages"), dict) else {}
+        try:
+            root = by_dir.get((Path(documents.REPO_ROOT) / key / documents.PUBLISHED).resolve(strict=True)) \
+                if isinstance(key, str) and KEY.fullmatch(key) else None
+        except (OSError, RuntimeError):
+            root = None
+        p["stages"] = {d: _link(documents, d, picks.get(d), root, unread) for d in p["dirs"] if d in DIRS}
+
+
+def _link(documents, folder: str, pick, root, unread: str) -> dict:
+    if not isinstance(pick, dict):
+        return {"title": "", "href": "", "state": "", "why": f"research.conf.py declares no document from {folder}"}
+    title, state, name = str(pick.get("title", "")), str(pick.get("state", "")), f"{pick.get('out', '')}.html"
+    link = {"title": title, "href": "", "state": state, "why": ""}
+    if state == "not built":
+        link["why"] = f"{title} is not built: Render writes it"
+    elif unread:
+        link["why"] = unread
+    elif root is None or name in root.skip or documents.within(root.path, name) is None:
+        link["why"] = f"{title} is not served on Documents"
+    else:
+        link["href"] = f"/documents/{root.key}/{name}"
+    return link
 
 
 def stale(projects: list, now: str) -> None:
@@ -268,6 +319,18 @@ def stage(repo: Path) -> list[str] | None:
     if not present:
         return None
     return [name for name in present if next((repo / name).rglob("*.md"), None) is not None]
+
+
+def pages(docs: list) -> dict:
+    """Each numbered directory's document (sd:5657), in research.conf.py order: the first whose source lies in it and
+    whose page is built, else the first declared there. A directory no document comes from is absent."""
+    found = {}
+    for doc in docs:
+        folder, _, rest = posixpath.normpath(str(doc.get("src", ""))).partition("/")
+        if folder not in DIRS or not rest or (folder in found and (found[folder]["state"] != "not built" or doc.get("state") == "not built")):
+            continue
+        found[folder] = {"title": _cut(str(doc.get("title", ""))), "out": str(doc.get("out", ""))[:CELL], "state": doc.get("state", "")}
+    return found
 
 
 def render(item: dict) -> dict:
@@ -362,6 +425,8 @@ def project(item: dict, root: Path, *, dirs=None) -> dict:
         "docs": [{"title": _cut(str(d.get("title", ""))), "src": _cut(str(d.get("src", ""))), "state": d.get("state", ""),
                   "updated": d.get("updated", "")} for d in docs],
         "docs_total": len(docs),
+        # Picked before the board cuts `docs`, so a cut list still links each stage (sd:5657).
+        "stages": pages(docs),
         "experiment": experiment(repo),
         "git": None if not git else {key: _cut(value) if isinstance(value := git.get(key), str) else value
                                      for key in ("branch", "dirty", "behind", "last_iso", "subject")},
