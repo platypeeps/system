@@ -1,8 +1,6 @@
 <!doctype html>
 <!--
-  Review (sd:3709), at /review: two views (sd:5497). Questions lists the decisions that wait on the operator, the rows
-  Today's Decisions lists (/api/decisions, decisions.js; a choice posts /api/decisions/answer). Bulk scoring is the
-  labelling queue (design docs/work/2026-10-12-review-queue, Queue UX). No design source page: built on the v2 shell from
+  Review (sd:3709), at /review: the labelling queue, one view (sd:5651; one-off questions are Today's Decisions) (design docs/work/2026-10-12-review-queue, Queue UX). No design source page: built on the v2 shell from
   ui-design products/system/design.md (Rail: Review, g l; Keys: digits 1-9 on Review) and foundation/.
   Data: /api/review (review_screen.document: each open batch and its questions, open or reviewed; a blind or sealed batch
   sends text, options and label only), read when the page opens, on Read again and after a failed or stale write.
@@ -25,7 +23,6 @@
 <script src="/ui/annunciator-strip.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/annunciator-strip.css">
-<link rel="stylesheet" href="/ui/decisions.css">
 <link rel="stylesheet" href="/ui/review.css">
 </head>
 <body data-page="Review" data-scope="fleet">
@@ -36,22 +33,8 @@
     <h1>Review</h1>
     <button class="btn quiet sm" type="button" id="reload">Read again</button>
   </header>
-  <!-- The toolbar standard (sd:5281): row 1, the views then the shell's Shapeshift bar (sd:5539). -->
+  <!-- The toolbar standard (sd:5281): row 1, the shell's Shapeshift bar (sd:5539). -->
   <div class="toolbar" id="toolbar" data-shift></div>
-  <div id="view-questions" aria-label="Questions">
-    <section aria-labelledby="decisions-h">
-      <div class="sec-head">
-        <h2 id="decisions-h">Questions</h2>
-        <p class="tally" id="decisions-tally"></p>
-      </div>
-      <table class="ledger decisions" aria-labelledby="decisions-h">
-        <thead id="decisions-head"></thead>
-        <tbody id="decisions"><tr class="empty"><td colspan="4">Reading questions…</td></tr></tbody>
-      </table>
-      <p class="filtered" id="decisions-note" role="status" hidden></p>
-    </section>
-  </div>
-  <div id="view-bulk" aria-label="Bulk scoring" hidden>
     <div id="state" hidden></div>
     <h2 class="sr">Open batches</h2>
     <annunciator-strip><ul class="annunciator" id="annunciator" hidden></ul></annunciator-strip>
@@ -67,12 +50,10 @@
         <tbody id="rows"></tbody>
       </table>
     </section>
-  </div>
 </main>
 </div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/review.js"></script>
-<script src="/ui/decisions.js"></script>
 <script src="/ui/shell.js"></script>
 </body>
 </html>

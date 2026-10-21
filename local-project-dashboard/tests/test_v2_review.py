@@ -228,19 +228,14 @@ class TodaysDecisions(ScreenCase):
 
 
 class ThePage(unittest.TestCase):
-    def test_the_page_has_a_questions_view_and_a_bulk_scoring_view(self):
-        # sd:5497: Questions lists the decisions Today lists, through decisions.js; Bulk scoring is the labelling queue.
+    def test_the_page_is_bulk_scoring_alone_and_today_owns_the_decisions(self):
+        # sd:5651: Review's Questions view drew Today's Decisions rows again; Review keeps the labelling queue alone.
         page = (V2 / "review.html").read_text(encoding="utf-8")
-        self.assertIn("window.PAGE_VIEWS = [{ id: 'questions', label: 'Questions' }, { id: 'bulk', label: 'Bulk scoring', key: 'b' }];", PAGE_JS)
-        questions, bulk = page.index('id="view-questions"'), page.index('id="view-bulk"')
-        self.assertLess(questions, page.index('<tbody id="decisions">'))
-        self.assertLess(page.index('<tbody id="decisions">'), bulk)
-        self.assertLess(bulk, page.index('<tbody id="rows">'))
-        self.assertLess(bulk, page.index('id="annunciator"'))
-        self.assertLess(bulk, page.index('id="bulk"'))
-        scripts = re.findall(r'<script src="/ui/([^"?]+)', page)
-        self.assertLess(scripts.index("decisions.js"), scripts.index("shell.js"))
-        self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', page)
+        self.assertNotIn("PAGE_VIEWS", PAGE_JS)
+        self.assertNotIn('id="view-questions"', page)
+        self.assertNotIn("decisions.js", page)
+        self.assertNotIn("decisions.css", page)
+        self.assertLess(page.index('id="annunciator"'), page.index('<tbody id="rows">'))
         today = (V2 / "today.html").read_text(encoding="utf-8")
         self.assertIn('<link rel="stylesheet" href="/ui/decisions.css">', today)
         # One home for the decision rows' look: Today's sheet no longer carries them.
@@ -656,20 +651,6 @@ class TheBulkView(unittest.TestCase):
         self.assertEqual(out["gets"], ["/api/review", "/api/review"])
         self.assertIn("note #10 (no answer, so not known: connection reset)", out["toasts"][-1][0])
         self.assertIn("note #11 (not sent: an earlier label got no answer)", out["toasts"][-1][0])
-
-    def test_digits_label_only_while_the_bulk_view_shows(self):
-        out = self.bulk_page("window.shell.view = { current: () => 'questions', count() {} }; key('1'); await settle();"
-                             " R.when = window.PAGE_LIST.when();")
-        self.assertEqual(out["posts"], [])
-        self.assertFalse(out["R"]["when"])
-        out = self.bulk_page("window.shell.view = { current: () => 'bulk', count() {} }; key('1'); await settle();")
-        self.assertEqual([p[1]["note"] for p in out["posts"]], [10])
-
-    def test_the_view_segments_count_the_open_questions_and_the_waiting_decisions(self):
-        prefix = "var COUNTS = {}; window.shell.view = { current: () => 'bulk', count: (id, n) => { COUNTS[id] = n; } };\n"
-        out = self.run_page("document.dispatchEvent(new CustomEvent('today:decisions', { detail: 4 })); R.counts = COUNTS;",
-                            "(path, body) => [200, DOC]", doc=two_batches(), prefix=prefix)
-        self.assertEqual(out["R"]["counts"], {"bulk": 5, "questions": 4})
 
 
 if __name__ == "__main__":
