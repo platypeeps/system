@@ -107,6 +107,7 @@ COMMANDS = (
     Command(r"/api/research/intake", "Add sources", _key("target")),
     Command(r"/api/adversarial", "Adversarial review", _key("kind", "target", "item"), run="review"),
     Command(r"/api/hoa/sweep", "Run sweep", lambda match, payload: "hoa", run="sweep"),
+    Command(r"/api/hoa/download", "Download", _key("source"), run="download"),
     Command(r"/api/tasks/sweep", "Run sweep", _key("realm"), run="sweep"),
     Command(r"/api/tasks/start-next/run", "Start next", _items),
     Command(r"/api/shadow/sync", "Re-run collector", lambda match, payload: "shadow sync", run="shadow"),
@@ -311,6 +312,22 @@ def _sweep_handle(answer, record):
     return {"started": answer["started"], "repo": answer["repo"], "realm": record.get("target") or "hoa"}
 
 
+def _download(handle):
+    """A portal download (sd:5626): its record's end once its lock is free; a record of another start is unknown."""
+    from . import hoa_download
+
+    out = hoa_download.status(handle["source"])
+    if out["error"]:
+        raise OSError(out["error"])
+    if out["running"]:
+        return None
+    if _moment(out["started"]) != _moment(handle["started"]):
+        return UNKNOWN, f"the {handle['source']} download's last record is not the run started at {handle['started']}\n" + _tail(out["log"])
+    reason = f": {out['reason']}" if out["reason"] else ""
+    code = {"done": 0, "unavailable": 3}.get(out["state"], 1)
+    return code, f"{handle['source']} download {out['state']}{reason}\n" + _tail(out["log"])
+
+
 def _experiment(handle):
     from . import research_experiments, sweep
 
@@ -343,6 +360,8 @@ SETTLE = {
     "review": _by_id("adversarial", ("queued", "running"), ("done",)),
     "issue": _by_id("issue_filing", ("queued", "drafting"), ("ready",)),
     "sweep": Settle(_sweep_handle, _sweep),
+    "download": Settle(lambda answer, record: {"started": answer["started"], "source": record.get("target")}
+                       if isinstance(answer.get("started"), str) and record.get("target") else None, _download),
     "experiment": Settle(lambda answer, record: {"run": answer["run"]} if isinstance(answer.get("run"), str) else None,
                          _experiment),
     "shadow": Settle(lambda answer, record: {"started": answer["started"]} if isinstance(answer.get("started"), str)

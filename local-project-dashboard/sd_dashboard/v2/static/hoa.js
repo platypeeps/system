@@ -22,8 +22,9 @@
   const srcOf = key => SRC.find(r => r.source === key);
   // sd:5095: the checkout's tools/sweep.py, as /api/hoa's `sweep` part reads it (sweep.status): running, and the last run.
   let SWEEP = null;
-  // sd:5482: the Data sources head's Refresh all command, registered on DOMContentLoaded.
-  let REFRESH = null;
+  // sd:5626: each portal download's last run (/api/hoa's `downloads`, hoa_download.status), and its head command.
+  let DL = {};
+  const DOWNLOADS = {};
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -32,6 +33,10 @@ const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.sta
 const sweepText = w => !w || w.error ? '' : w.running ? `sweep running${w.last?.started ? ` since ${w.last.started.slice(11, 16)} UTC` : ''}`
   : !w.last || w.last.state === 'never' ? 'sweep not run yet' : w.last.state === 'done' ? `last sweep done${w.last.finished ? ` ${w.last.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
   : `last sweep ${w.last.state}${w.last.exit != null ? `, exit ${w.last.exit}` : ''}${w.last.reason ? `: ${w.last.reason}` : ''}`;
+// A download's run, in words: while it runs, its phase; after, how it ended. The row reads it as the sweep row reads its run.
+const downloadText = d => !d ? '' : d.running ? (d.phase === 'waiting' ? 'waiting for you to log in' : d.phase === 'downloading' ? 'downloading'
+  : `opening ${d.label} in Chrome`) : d.state === 'done' ? `last download done${d.finished ? ` ${d.finished.slice(0, 16).replace('T', ' ')} UTC` : ''}`
+  : d.state === 'unavailable' ? `last download not possible: ${d.reason}` : d.state === 'failed' ? `last download failed${d.reason ? `: ${d.reason}` : ''}` : '';
 const sweepState = w => !w || w.error || w.last?.state === 'unknown' ? 'unknown' : w.running || !w.last || w.last.state === 'never' ? 'queued' : w.last.state === 'done' ? 'ok' : 'warning';
 // While a refresh job runs, HOA reads again every SRC_POLL ms, so the lamps follow the run to its end.
 const SRC_POLL = 15000;
@@ -337,24 +342,26 @@ let polling = 0;
   function drawSources() {
     const C = window.shell.commands, sr = DOC?.sources;
     put($('src-body'), !DOC ? html`` : html`${drawSourceRows(C, sr)}${SWEEP ? sweepRow() : ''}`);
-    // sd:5482: Refresh all, the head's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
-    const o = C.get('sources'), w = o && REFRESH ? REFRESH.when(o) : '';
-    const icon = html`<svg class="i" aria-hidden="true"><use href="#i-rotate-ccw"/></svg>${REFRESH?.label}`;
-    put($('src-tools'), !o || !REFRESH ? html`` : w === true
-      ? html`<button class="btn quiet sm" type="button" id="src-refresh" data-tip="${REFRESH.does} Runs ${REFRESH.cli(o)}.">${icon}</button>`
-      : html`<button class="btn quiet sm" type="button" id="src-refresh" aria-disabled="true" aria-describedby="src-refresh-off" data-tip="${w}">${icon}</button><span class="sr" id="src-refresh-off">${w}</span>`);
+    // sd:5626: one Download button per source row with a download, in the rows' order. aria-disabled, not disabled, so an
+    // off button keeps focus and its reason.
+    put($('src-tools'), html`${SRC.map(r => r.source).filter(k => DOWNLOADS[k] && C.get(`download:${k}`)).map(k => {
+      const c = DOWNLOADS[k], o = C.get(`download:${k}`), w = c.when(o);
+      const icon = html`<svg class="i" aria-hidden="true"><use href="#i-download"/></svg>${c.label}`;
+      return w === true ? html`<button class="btn quiet sm" type="button" data-download="${k}" data-tip="${c.does} Runs ${c.cli(o)}.">${icon}</button>`
+        : html`<button class="btn quiet sm" type="button" data-download="${k}" aria-disabled="true" aria-describedby="dl-${k}-off" data-tip="${w}">${icon}</button><span class="sr" id="dl-${k}-off">${w}</span>`; })}`);
   }
-  // The head button and the palette entry: an off Refresh all toasts its reason, as the shell's run does not check it.
-  function refreshAll() {
-    const S = window.shell, o = S.commands.get('sources'), w = o && REFRESH ? REFRESH.when(o) : 'HOA is not read';
-    if (w === true) S.commands.run(REFRESH, o); else S.toast(w);
+  // The head button and the palette entry: an off Download toasts its reason, as the shell's run does not check it.
+  function downloadFrom(k) {
+    const S = window.shell, c = DOWNLOADS[k], o = S.commands.get(`download:${k}`);
+    const w = !c ? 'HOA is not read' : !o ? `${c.label} has no source row on this page` : c.when(o);
+    if (w === true) S.commands.run(c, o); else S.toast(w);
   }
   function drawSourceRows(C, sr) {
     return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
       : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
         return html`<tr data-id="${id}" aria-selected="${id === selected ? 'true' : 'false'}"><td class="g g-${st}" aria-label="${st}">${GLYPH[st]}</td>
-        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}</div></td>
-        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${refreshText(r.job)}</td>
+        <td class="what"><button type="button">${r.label}</button><div class="detail">${r.state === 'unknown' ? r.error : r.latest ? `newest ${r.latest} · ${r.age_days} d old` : 'no date found'}${DL[r.source]?.running ? ` · ${downloadText(DL[r.source])}` : ''}</div></td>
+        <td class="src hide-sm">allowed ${r.allowed_days} d</td><td class="detail hide-sm">${downloadText(DL[r.source]) || refreshText(r.job)}</td>
         <td class="act">${C.rowActions(id)}</td></tr>`; })}`
       : html`<tr><td colspan="5" class="why">tools/source-ages.py lists no current source.</td></tr>`;
   }
@@ -419,6 +426,7 @@ let polling = 0;
       // The end date is the site's calendar day, so the read's time is compared in the browser's zone, not UTC.
       const today = new Date(doc.read).toLocaleDateString('en-CA');
       SRC = (doc.sources?.rows || []).filter(r => r.state !== 'retired' && !(r.ends && r.ends < today));
+      DL = doc.downloads || {};
       P = project(); if (!P) { zoom = 1; center = null; }
       CELLS = readCells(); attention();
       document.body.dataset.observed = doc.read;
@@ -430,18 +438,18 @@ let polling = 0;
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
         ...SRC.map(r => ({ id: `source:${r.source}`, type: r.job ? 'job' : 'source', label: r.label, source: r.source })),
-        // sd:5482: the Data sources head, which Refresh all acts on.
-        ...(doc.sources && !doc.sources.error ? [{ id: 'sources', type: 'sources', label: 'Data sources' }] : [])];
+        // sd:5626: a download for each source row the page shows that has one.
+        ...SRC.filter(r => DL[r.source]).map(r => ({ id: `download:${r.source}`, type: `${r.source} download`, label: DL[r.source].label, source: r.source }))];
       SWEEP = doc.sweep || null;
       if (SWEEP) objects.push({ id: 'sweep', type: 'sweep', label: 'HOA sweep' });
-      if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running) poll();
+      if (SRC.some(r => r.job?.state === 'running') || SWEEP?.running || Object.values(DL).some(d => d.running)) poll();
       const st = c.state === 'missing' ? { kind: 'empty', title: 'No HOA checkout', text: `Register the HOA checkout: add a repo whose folder is named hoa (sd-db repo add).`, source: c.source }
         : c.problems.length ? { kind: 'partial', text: `${c.source}: ${c.problems.join(' · ')}.`, source: c.source }
         : failed.length ? { kind: 'partial', text: `${failed.join(' · ')}. The other parts are current.`, source: '/api/hoa' } : null;
       return { objects, state: st };
     },
     clear: () => {
-      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null;
+      DOC = null; M = null; ASSETS = []; LOTS = []; OB = []; AL = []; P = null; CELLS = []; SRC = []; SWEEP = null; DL = {};
       delete document.body.dataset.observed;
       put($('subhead'), html`The HOA readings could not be read.`);
       window.shell.attention({ state: 'unknown', n: 0, what: 'HOA not read' });
@@ -456,7 +464,8 @@ let polling = 0;
   window.PAGE_COMMANDS = [
     { label: 'Read HOA again', icon: 'rotate-ccw', run: () => load() },
     { label: 'Fit the map to the HOA', icon: 'maximize-2', run: () => { center = null; zoomTo(1); } },
-    { label: 'Refresh all sources', icon: 'rotate-ccw', run: () => refreshAll() },
+    { label: 'Download from Vantaca', icon: 'download', run: () => downloadFrom('vantaca') },
+    { label: 'Download from Mission', icon: 'download', run: () => downloadFrom('mission') },
   ];
   // The shell walks the ledger rows on j / k; a row selects by its own click.
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected, select: id => select(id, false) };
@@ -575,30 +584,21 @@ let polling = 0;
           : `Pulls ${o.label} once through its refresh job. Nothing to undo.` },
       window.commands.showLog({ job: facts }),
     );
-    // ---------- Refresh all (sd:5482) ----------
-    // The Data sources head's one button: Retry's post for every source row whose Retry is on, then one reread. Each source's
-    // off reason is Retry's own; the toast names what started and what did not.
-    const jobRows = () => SRC.filter(r => r.job).map(r => C.get(`source:${r.source}`)).filter(Boolean);
-    const startable = () => jobRows().filter(o => retry.when(o) === true);
-    REFRESH = { id: 'sources.refresh', on: 'sources', label: 'Refresh all', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: true,
-      does: 'Starts every source\'s refresh job that can start, as each row\'s Run now does.',
-      when: () => { const all = jobRows(); return !all.length ? 'no source has a refresh job' : startable().length ? true : all.map(o => `${o.label}: ${retry.when(o)}`).join(' · '); },
-      askFirst: () => startable().some(o => retry.askFirst(o)),
-      consequence: () => startable().map(o => retry.consequence(o)).filter(Boolean).join(' '),
-      cli: () => (startable().length ? startable() : jobRows()).map(o => retry.cli(o)).join(' && '),
-      sends: () => startable().map(o => retry.sends(o)).filter(Boolean).join('; '),
-      run: () => { const go = startable(), rest = jobRows().filter(o => !go.includes(o));
-        // answered() gives true for a sent start, else the sentence that names the job and why.
-        return Promise.all(go.map(o => { const j = srcOf(o.source).job;
-          return kick(j).then(out => window.commands.answered(out, j.name, 'started', true),
-            err => err.status ? `${j.name} not started: ${err.message}` : `Not known whether ${j.name} was started: no answer (${err.message})`); }))
-          .then(said => reader.reread().then(() => {
-            const ok = go.filter((_, i) => said[i] === true), not = [...said.filter(s => s !== true), ...rest.map(o => `${o.label} not started: ${retry.when(o)}`)];
-            if (ok.length) poll();
-            return [ok.length ? `Refresh started · ${ok.map(o => o.label).join(', ')}` : 'Nothing started', ...not, ok.length ? 'HOA reads again until it ends' : ''].filter(Boolean).join(' · ');
-          })); } };
-    C.register(REFRESH);
-    $('src-tools').addEventListener('click', e => { if (e.target.closest('#src-refresh')) refreshAll(); });
+    // ---------- Download (sd:5626) ----------
+    // POST /api/hoa/download {source} starts hoa_download.py detached: a Claude Chrome session opens the portal, waits for
+    // the operator's login, then the checkout's own download runs. A 409 names the run going; a 400 the missing procedure.
+    // HOA reads again until it ends; the source row shows "waiting for you to log in" while the session waits.
+    for (const [k, label] of [['vantaca', 'Vantaca'], ['mission', 'Mission']]) {
+      DOWNLOADS[k] = { id: `download.${k}`, on: `${k} download`, label: `Download from ${label}`, icon: 'download', risk: 'safe', primary: () => true, executes: true,
+        does: `Opens ${label} in Chrome, waits for your login, then downloads.`,
+        when: () => { const d = DL[k]; return !d ? 'HOA is not read' : d.error || (d.running ? `a ${label} download is running now: ${downloadText(d)}` : true); },
+        cli: () => DL[k]?.command || '', sends: () => `POST /api/hoa/download {"source": "${k}"}`,
+        run: () => S.post('/api/hoa/download', { source: k }).then(
+          out => reader.reread().then(() => { poll(); return `${label} download started ${String(out.started).slice(11, 16)} UTC · log in in Chrome if it asks`; }),
+          err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether the ${label} download started is not known`); }) };
+      C.register(DOWNLOADS[k]);
+    }
+    $('src-tools').addEventListener('click', e => { const b = e.target.closest('[data-download]'); if (b) downloadFrom(b.dataset.download); });
     // ---------- Run sweep (sd:5095) ----------
     // POST /api/hoa/sweep starts the checkout's tools/sweep.py in the background (sd_dashboard/sweep.py); a 409 names the run going.
     // HOA reads again until the run ends; the row's lamp and text follow it. It asks first: the run lands a commit.

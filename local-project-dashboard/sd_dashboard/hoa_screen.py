@@ -18,8 +18,8 @@ the failed part as unknown with the reason, never as an empty list. The read
 reaches no network: the map draws the vectors in the files, and the page loads
 no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
 and reads the refresh jobs' launchd state, and asks the checkout's `tools/sweep.py status --json` for the last sweep
-(`sweep`); it starts nothing. The writes are Acknowledge (`acknowledge`), the jobs route Refresh now posts, and
-Run sweep (`sweep.start`).
+(`sweep`) and each source's last download (`downloads`, sd:5626); it starts nothing. The writes are Acknowledge
+(`acknowledge`), the jobs route Refresh now posts, Run sweep (`sweep.start`) and Download (`hoa_download.start`).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from pathlib import Path
 
 from sd_db import operations, reads, repos, workflow, writes
 
-from . import sweep
+from . import hoa_download, sweep
 from .documents import _config_dir, pipe_lines
 
 __all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
@@ -457,6 +457,7 @@ def document(connection, *, now: str, jobs=None) -> dict:
         "thresholds": thresholds(connection),
         "sources": ages,
         "sweep": sweep.status(place) if not problems else {**sweep.status(None), "error": problems[0]},
+        "downloads": {source: hoa_download.status(source, place) for source in hoa_download.SOURCES} if place else {},
         "attention": _attention(mission, items),
     }
 
