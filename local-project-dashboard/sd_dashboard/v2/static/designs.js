@@ -275,6 +275,8 @@ document.addEventListener('DOMContentLoaded', () => {
     unselect: clearSelection,
   });
   reading.load();
+  // Read again (sd:5638): the shell's head button reads the designs again, as the Observed lamp does.
+  window.PAGE_AGAIN = { title: 'Read the designs again', run: () => reading.load() };
 });
 // The view switch (shell.js, view block) picks unhidden or hidden rows; the selection follows (shell.reconcile).
 document.addEventListener('shell:view', e => { F.hidden = e.detail.id === 'hidden'; update(); });

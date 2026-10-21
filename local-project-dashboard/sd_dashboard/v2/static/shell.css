@@ -217,6 +217,9 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .btn.quiet { background: transparent; color: var(--color-ink); border-color: var(--color-rule); }
 .btn.quiet:hover { border-color: var(--color-ink-2); }
 .btn.sm { min-height: 2rem; padding: 0 var(--space-sm); font-size: var(--text-xs); }
+/* Read again (sd:5638): busy while its read is pending; at the head's end it keeps its height where a page stretches the head. */
+.btn[aria-busy="true"] { cursor: progress; }
+.head > #read-again { align-self: end; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 2rem; height: 2rem; padding: 0;
   border: var(--rule-hair) solid transparent; border-radius: var(--radius-sm);

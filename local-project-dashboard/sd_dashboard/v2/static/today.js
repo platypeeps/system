@@ -283,6 +283,9 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   // build (sd:3521): capture's repo default is the row's: a repo row names it in its id, a pull request as owner/name.
   window.PAGE_REPO = o => o && o.type === 'repo' ? o.id.split(':')[1] : (o && o.repo) || null;
 
+  // Read again (sd:5638): the shell's head button presses the Observed lamp, which every Today section reads again on.
+  window.PAGE_AGAIN = { title: 'Read every Today section again', run: () => $('refresh').click() };
+
   window.PAGE_COMMANDS = [
     { label: 'Clear the source filter', icon: 'filter', run: clearSource },
     { label: 'Read Now again', icon: 'rotate-ccw', run: () => load() },

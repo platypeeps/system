@@ -412,7 +412,8 @@
       if (e.target.closest('#clear-batch')) return void filter(null);
       const x = e.target.closest('#export'); if (x && !x.disabled && batch !== null) download(batch);
     });
-    $('reload').addEventListener('click', () => load());
+    // Read again (sd:5638): the shell's head button reads the review queue again.
+    window.PAGE_AGAIN = { title: 'Read the review queue again', run: () => load() };
     // Enter on the selected row: open or fold its whole question in place.
     document.addEventListener('shell:open', e => {
       const n = noteOf(e.detail); if (!find(n)) return;

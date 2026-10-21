@@ -170,7 +170,9 @@
 
   // reread(view): read a place view again after a write its Details made (a brief's Publish, a report's Acknowledge).
   const reread = view => { const v = window.PAGE_VIEWS?.find(x => x.id === view); return v?.api ? load(v) : Promise.resolve(); };
-  window.places = { viewSwitch, place, reread };
+  // again(): Read again (sd:5638) reads the shown place view again; a view without its own read has nothing to read.
+  const again = () => reread(window.shell.view.current());
+  window.places = { viewSwitch, place, reread, again };
   // Top level: places.js loads before shell.js, which reads PAGE_VIEWS when it loads.
   if (document.body.dataset.place && !document.documentElement.hasAttribute('data-kiosk')) {
     window.PAGE_VIEWS = blocks.map(b => ({ id: b.dataset.placeView, label: b.dataset.label, ...(b.dataset.api ? { api: b.dataset.api } : {}) }));

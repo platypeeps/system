@@ -632,6 +632,14 @@ await go('#view=reports'); R.reports = ELS['reports-rows'].html;""", docs)
         self.assertNotIn("<table", out["R"]["briefs"])
         self.assertIn("▨ Not read.</b> /api/hoa/reports did not answer: the server failed", out["R"]["reports"])
 
+    def test_read_again_reads_the_shown_view_again_and_a_view_without_a_read_reads_nothing(self):
+        # sd:5638: the shell's Read again on HOA, Home and a realm place reads the shown place view's document again.
+        out = self.run_page("""await go('#view=briefs'); let before = OUT.gets.length;
+await window.places.again(); await flush(); R.briefs = OUT.gets.slice(before);
+await go('#view=overview'); before = OUT.gets.length;
+await window.places.again(); await flush(); R.overview = OUT.gets.slice(before);""", self.docs())
+        self.assertEqual((out["R"]["briefs"], out["R"]["overview"]), (["/api/hoa/briefs"], []))
+
 
 class TheTasksSwitch(Fixture):
     """Tasks' Personal | <realms> | HOA | Home | All: tasks.js with places.js, against the rows `tasks_screen` builds."""
@@ -774,7 +782,7 @@ try {{
 {PLACES_JS}
 R.page = document.body.dataset.page || null; R.place = document.body.dataset.place || null; R.title = document.title || null;
 R.h1 = ELS.title ? ELS.title.textContent : null; R.sub = ELS.subhead ? ELS.subhead.textContent : null;
-R.views = window.PAGE_VIEWS || null; R.state = window.PAGE_STATE ? [window.PAGE_STATE.title, String(window.PAGE_STATE.text.text || window.PAGE_STATE.text)] : null;
+R.again = !!window.PAGE_AGAIN; R.views = window.PAGE_VIEWS || null; R.state = window.PAGE_STATE ? [window.PAGE_STATE.title, String(window.PAGE_STATE.text.text || window.PAGE_STATE.text)] : null;
 }} catch (e) {{ OUT.error = String(e) + ' ' + e.stack; }}
 function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
 """)
@@ -784,6 +792,7 @@ function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
         self.assertEqual((r["page"], r["place"], r["title"], r["h1"]), ("Acme", "acme", "Acme · system", "Acme"))
         self.assertEqual(r["views"], [{"id": v, "label": v, "api": f"/api/place/acme/{v}"} for v in ("tasks", "briefs", "reports")])
         self.assertIsNone(r["state"])
+        self.assertTrue(r["again"], "a realm place declares no Read again (sd:5638)")
 
     def test_a_realm_without_a_family_or_not_listed_keeps_its_views_and_says_why(self):
         r = self.place("?realm=acme", [{"id": "acme", "label": "Acme", "place": None}])
@@ -798,7 +807,7 @@ function run() {{ OUT.R = R; return JSON.stringify(OUT); }}
 
     def test_without_a_realm_the_page_lists_the_realm_places_and_reads_no_view(self):
         r = self.place("", [{"id": "acme", "label": "Acme", "place": "map"}, {"id": "lab", "label": "Lab", "place": None}])
-        self.assertEqual((r["place"], r["views"], r["state"][0]), (None, None, "Pick a place"))
+        self.assertEqual((r["place"], r["views"], r["state"][0], r["again"]), (None, None, "Pick a place", False))
         self.assertIn('href="/places?realm=acme">Acme</a>', r["state"][1])
         self.assertNotIn("Lab", r["state"][1])
         r = self.place("?realm=../x", [])

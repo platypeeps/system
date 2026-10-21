@@ -439,6 +439,8 @@ addEventListener('DOMContentLoaded', () => {
     unselect,
   });
   reading.load();
+  // Read again (sd:5638): the shell's head button reads the pieces again.
+  window.PAGE_AGAIN = { title: 'Read the pieces again', run: () => reading.load() };
   suggest(['Which fact-check findings block this piece?', 'Summarise what changed since research was stamped', 'Draft the reason to correct this piece to Review']);
 });
 // Top level, not inside DOMContentLoaded: shell.js builds the ? sheet from PAGE_KEYS when it loads.

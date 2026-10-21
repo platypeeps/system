@@ -186,7 +186,8 @@ window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }, { id: 'idle', label: 'Idle
     window.shell.commands.register(window.commands.adversarialReview('entry', {
       payload: o => ({ kind: 'change', target: o.worktree, item: o.item }),
       when: o => !!o.worktree || 'the lane recorded no worktree for this entry' }));
-    $('reload').addEventListener('click', load);
+    // Read again (sd:5638): the shell's head button reads the lanes again.
+    window.PAGE_AGAIN = { title: 'Read the lanes again', run: load };
     show = new URLSearchParams(location.search).get('show') === 'all' ? 'all' : 'active';
     $('show').addEventListener('click', e => {
       const b = e.target.closest('button[data-show]'); if (!b || b.dataset.show === show) return;

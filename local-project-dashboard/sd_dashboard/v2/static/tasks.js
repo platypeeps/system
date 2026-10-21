@@ -1380,6 +1380,8 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => { if (!held(selected)) selected = null; renderDetails(); },
   });
   function load() { return reading.load(); }
+  // Read again (sd:5638): the shell's head button reads the tasks again.
+  window.PAGE_AGAIN = { title: 'Read the tasks again', run: load };
   // ---------- Run sweep (sd:5096, sd:5097) ----------
   // POST /api/tasks/sweep {realm} starts that realm's sweep in the background (sd_dashboard/sweep.py); a 409 names the run going. It asks
   // first: the run files a brief and followups and saves drafts, and takes up to an hour.
