@@ -37,6 +37,7 @@ MARKUP_JS = (STATIC / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (STATIC / "commands.js").read_text(encoding="utf-8")
 BRIEF_DETAILS_JS = (STATIC / "brief-details.js").read_text(encoding="utf-8")
 REPORT_DETAILS_JS = (STATIC / "report-details.js").read_text(encoding="utf-8")
+TASK_DETAILS_JS = (STATIC / "task-details.js").read_text(encoding="utf-8")
 
 FAMILIES = ("family|hoa|HOA|house|hoa-mission-alarms,hoa-morning-digest\n"
             "family|home|Home|house|ha-backups-prune,fun-events-nightly\n")
@@ -111,6 +112,15 @@ class Tasks(Fixture):
         hoa = sorted(r["item"] for r in hoa_screen.document(self.connection, now=NOW)["items"]["rows"])
         self.assertEqual(hoa, self.ids(places.tasks(self.connection, "hoa", now=NOW)))
         self.assertEqual({r["id"]: r["area"] for r in rows if r["id"] == self.other_item}, {self.other_item: None})
+
+    def test_a_places_tasks_rows_are_the_tasks_pages_rows(self):
+        # sd:5635: a Tasks row's Details on Home, HOA and a realm place are the Tasks page's own, so the view lists the
+        # /api/tasks rows (tasks_screen._rows), with the revision, allowed moves, edit capability and issue targets.
+        listed = {r["id"]: r for r in tasks_screen.document(self.connection, now=NOW)["rows"]}
+        for area in places.AREAS:
+            doc = places.tasks(self.connection, area, now=NOW)
+            self.assertTrue(doc["rows"], area)
+            self.assertEqual(doc["rows"], [listed[r["id"]] for r in doc["rows"]], area)
 
 
 class Realms(Fixture):
@@ -461,7 +471,7 @@ const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView
 let VIEW = VIEWS[0][0];
 window.shell.view = { current: () => VIEW, show: () => true, count: () => {} };
 const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } })); await flush(); };
-""" + COMMANDS_JS + BRIEF_DETAILS_JS + REPORT_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
+""" + COMMANDS_JS + BRIEF_DETAILS_JS + REPORT_DETAILS_JS + TASK_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -583,6 +593,44 @@ shellRun(cmd('report.ack'), C.get('r{self.fun}')); await flush(); R.det = ELS.de
         self.assertEqual(out["toasts"][-1]["msg"], f"Acknowledged · #{self.fun}")
         self.assertIn(f"Database report #{self.fun} · ", out["R"]["det"])
 
+    def task_docs(self):
+        docs = self.docs("home")
+        docs[f"/api/tasks/{self.home_item}"] = [200, tasks_screen.details(self.connection, self.home_item, now=NOW)]
+        return docs
+
+    def test_a_tasks_row_shows_the_tasks_pages_details_in_the_pane_and_the_page_stays(self):
+        # sd:5635: a Tasks row on Home fills Details with the Tasks page's own Details and commands, rather than opening
+        # Tasks; a link in Details still opens it there. HOA's Tasks rows are hoa.js's, with HOA's own item commands.
+        n = self.home_item
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=tasks'); R.rows = ELS['tasks-rows'].html;
+clickRow('{n}'); await flush();
+R.det = ELS.details.html || ''; R.reg = REG.map(c => c.id); R.obj = (C.get('{n}') || {{}}).type; R.cur = window.PAGE_LIST.current();""",
+                            self.task_docs(), place="home")
+        r = out["R"]
+        self.assertEqual((r["went"], r["panes"], r["cur"], r["obj"]), ([], ["tab-details"], str(n), "item"))
+        self.assertIn(f'<tr data-id="{n}" aria-selected="false">', r["rows"])
+        self.assertIn(f"/api/tasks/{n}", out["gets"])
+        for part in ("<h2>Clean the gutters</h2>", '<dl class="fields">', f"<dd>#{n}</dd>", '<select id="det-status" class="fld">',
+                     "<h3>Status history", f'href="/tasks?row={n}">Open on Tasks</a>', "from /api/home/tasks."):
+            self.assertIn(part, r["det"])
+        for command in ("item.status.done", "item.edit", "item.note"):
+            self.assertIn(command, r["reg"])
+        hoa = self.run_page("await go('#view=tasks'); R.reg = REG.map(c => c.id);", self.docs())
+        self.assertEqual([c for c in hoa["R"]["reg"] if c.startswith("item.")], [])
+
+    def test_a_status_move_in_a_tasks_details_posts_the_item_route_and_reads_the_view_again(self):
+        # sd:5635: the move is the Tasks page's (task-details.js), with the row's revision; the view reads again.
+        n, docs = self.home_item, self.task_docs()
+        row = docs["/api/home/tasks"][1]["rows"][0]
+        to = next(s for s in row["allowed"] if s != row["status"])
+        docs[f"/api/items/{n}/status"] = [200, {"revision": "after-move", "item": {"status": to, "priority": row["priority"], "due": row["due"],
+                                                                                    "recurrence": row["recurrence"], "title": row["title"]}}]
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=tasks'); clickRow('{n}'); await flush();
+shellRun(cmd('item.status.{to}'), C.get('{n}')); await flush(); R.det = ELS.details.html || '';""", docs, place="home")
+        self.assertEqual([p[:2] for p in out["posts"]], [[f"/api/items/{n}/status", {"status": to, "revision": row["revision"]}]])
+        self.assertEqual(out["gets"].count("/api/home/tasks"), 2)
+        self.assertIn("<h2>Clean the gutters</h2>", out["R"]["det"])
+
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();
 await go('#view=tasks'); R.second = shown(); R.gets1 = OUT.gets.slice();
@@ -618,7 +666,7 @@ R.second = shown(); R.reports = ELS['reports-rows'].html;""", self.docs(), setup
         out = self.run_page("""await go('#view=tasks'); R.tasks = ELS['tasks-rows'].html; R.tally = ELS['tasks-tally'].html;""",
                             self.docs("home"), place="home")
         self.assertEqual(out["gets"], ["/api/home/tasks"])
-        self.assertIn(f'href="/tasks?row={self.home_item}">sd:{self.home_item}</a>', out["R"]["tasks"])
+        self.assertIn(f'<tr data-id="{self.home_item}" aria-selected="false"><td class="ref num">sd:{self.home_item}</td>', out["R"]["tasks"])
         self.assertNotIn("Fix the valve log", out["R"]["tasks"])
         self.assertEqual("", out["R"]["tally"], "sd:5524: the Tasks tab carries the count")
 

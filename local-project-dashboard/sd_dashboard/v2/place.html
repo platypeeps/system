@@ -4,7 +4,8 @@
   (dashboard.report_families). It is HOA's and Home's Tasks, Briefs and Reports with no Overview: place.js names the page
   after the realm (SHELL_REALMS, from /ui/sections.js) and points each view at /api/place/<id>/<view> (places.py), then
   places.js reads a view when it shows. No realm is named here: the lines are the operator's. Without ?realm= the page
-  lists the realm places. A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620).
+  lists the realm places. A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620); a
+  Tasks row the Tasks page's (task-details.js, sd:5635).
 -->
 <html lang="en">
 <head>
@@ -18,6 +19,7 @@
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/places.css">
 <link rel="stylesheet" href="/ui/brief-details.css">
+<link rel="stylesheet" href="/ui/task-details.css">
 </head>
 <body data-page="Places" data-scope="realm" data-scope-note="dashboard.realms">
 <script src="/ui/icons.js"></script>
@@ -51,6 +53,7 @@
 <script src="/ui/read.js"></script>
 <script src="/ui/commands.js"></script>
 <script src="/ui/brief-details.js"></script>
+<script src="/ui/task-details.js"></script>
 <script src="/ui/place.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

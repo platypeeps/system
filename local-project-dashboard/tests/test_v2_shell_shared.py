@@ -1348,7 +1348,7 @@ class TheSelect(unittest.TestCase):
             want = re.search(rf"\b{prop}: ([^;]+);", chip).group(1)
             self.assertEqual(re.search(rf"\b{prop}: ([^;]+);", bar.group(1)).group(1), want, prop)
         self.assertIn("border-radius: var(--radius-md);", select)
-        for name in ("settings.css", "management.css", "tasks.css"):
+        for name in ("settings.css", "management.css", "task-details.css"):
             css = (STATIC / name).read_text(encoding="utf-8")
             field = re.search(r"select\.fld \{ min-height: ([^;]+);", css).group(1)
             self.assertEqual(re.search(r"\.fld:not\(select\) \{ min-height: ([^;]+);", css).group(1), field, name)

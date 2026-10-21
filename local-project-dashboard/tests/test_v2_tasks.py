@@ -38,6 +38,8 @@ from test_v2_registry import Registers
 
 V2 = Path(v2.__file__).resolve().parent
 TASKS_JS = (V2 / "static" / "tasks.js").read_text(encoding="utf-8")
+# A task's Details, commands and dialogs (sd:5635): tasks.js attaches task-details.js, which the page loads first.
+TASK_DETAILS_JS = (V2 / "static" / "task-details.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
 SHELL_JS = (V2 / "static" / "shell.js").read_text(encoding="utf-8")
@@ -323,7 +325,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "tasks.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "task-details.js", "tasks.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -686,7 +688,7 @@ class TheScript(ScreenCase):
   if (path === '/api/tasks') return typeof FAIL_TASKS === 'string' ? [500, { error: FAIL_TASKS }] : [200, JSON.parse(JSON.stringify(DOC))];
   var m = path.match(/^\\/api\\/tasks\\/(\\d+)$/); if (m) return typeof DETAIL === 'function' ? DETAIL(m[1]) : m[1] in DETAILS ? [200, detailNow(m[1])] : [404, { error: 'no item ' + m[1] }];
   return WRITE ? storing(WRITE(path, body)) : [404, { error: 'no answer' }];
-};\n""" + COMMANDS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
+};\n""" + COMMANDS_JS + TASK_DETAILS_JS + TASKS_JS + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.toasts = OUT.toasts.map(t => [t.msg, !!t.undo]); return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -2213,7 +2215,7 @@ R.undated = [cmd('item.complete').consequence(o), cmd('item.complete').danger(o)
     def test_the_rule_parts_the_page_walks_are_the_librarys(self):
         from sd_db import recurrence
 
-        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASKS_JS)
+        parts = re.search(r"const PARTS = new Set\(\[([^\]]*)\]\)", TASK_DETAILS_JS)
         self.assertIsNotNone(parts)
         self.assertEqual(tuple(re.findall(r"'([A-Z]+)'", parts.group(1))), recurrence.PARTS)
         # The shell's confirm colour asks the command where it declares danger(o).
@@ -2300,18 +2302,21 @@ R.list = ELS['view-list'].html;""")
     def test_the_script_has_no_branch_for_a_row_without_an_sd_id(self):
         # sd:3289: /api/tasks rows are item rows, each with an id (TheDocuments), so the mockup's id-less job rows are gone
         # and with them the "no sd id" reasons and the `ops` kind, which item.kind does not allow.
-        self.assertNotIn("no sd id", TASKS_JS)
-        self.assertNotRegex(TASKS_JS, r"kind [!=]== 'ops'")
-        self.assertNotIn("'no id'", TASKS_JS)
+        for text in (TASKS_JS, TASK_DETAILS_JS):
+            self.assertNotIn("no sd id", text)
+            self.assertNotRegex(text, r"kind [!=]== 'ops'")
+            self.assertNotIn("'no id'", text)
 
     def test_the_script_adds_no_sink_and_no_inline_style(self):
-        self.assertNotIn("innerHTML", TASKS_JS)
-        self.assertNotIn("createElement('style')", TASKS_JS)
-        self.assertNotIn("setAttribute('style'", TASKS_JS)
-        self.assertNotRegex(TASKS_JS, r"style=\\?\"")
-        self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", TASKS_JS)), [])
-        # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
-        self.assertNotRegex(TASKS_JS, r"e\.key === '[jk]'")
+        # task-details.js holds the Details tasks.js drew (sd:5635), so the rule holds for both.
+        for text in (TASKS_JS, TASK_DETAILS_JS):
+            self.assertNotIn("innerHTML", text)
+            self.assertNotIn("createElement('style')", text)
+            self.assertNotIn("setAttribute('style'", text)
+            self.assertNotRegex(text, r"style=\\?\"")
+            self.assertEqual(re.findall(r"window\.markup\b", re.sub(r"const \{ [\w, ]+ \} = window\.markup;", "", text)), [])
+            # A page-level j/k or Escape handler is drift (the shell owns them through PAGE_LIST).
+            self.assertNotRegex(text, r"e\.key === '[jk]'")
 
 
 def keys(fragment: str) -> set[int]:
@@ -2547,8 +2552,8 @@ class TheDocumentLinks(ScreenCase):
         self.assertEqual([doc["path"] for doc in got], [str(self.outside)])
 
     def test_the_panel_renders_the_documents_section(self):
-        self.assertIn("<h3>Documents ${src(", TASKS_JS)
-        self.assertIn("d.documents", TASKS_JS)
+        self.assertIn("<h3>Documents ${src(", TASK_DETAILS_JS)
+        self.assertIn("d.documents", TASK_DETAILS_JS)
 
 
 if __name__ == "__main__":

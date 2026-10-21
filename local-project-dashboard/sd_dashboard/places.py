@@ -182,18 +182,21 @@ def _unknown(now: str, area: str, reason: str, **more) -> dict:
 
 
 def tasks(connection, area: str, *, now: str) -> dict:
-    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` (or a realm's `realm_of`) places in it."""
+    """The area's open items: `reads.backlog_items`' unparked open rows `area_of` (or a realm's `realm_of`) places in it.
+
+    Each is the Tasks page's row (`tasks_screen._rows`), read in one snapshot as `/api/tasks` is: a row's Details on the
+    place page are the Tasks page's own (sd:5635), with its revision, moves, edit capability and issue targets.
+    """
     owns, why, unread = _place(connection, area)
     if owns is None:
         return {**_unknown(now, area, why), **({"state": "error"} if unread else {})}
-    from .screens import _repo_labels
+    from .operations_screen import _one_snapshot
+    from .tasks_screen import _rows
 
-    found = [row for row in reads.backlog_items(connection, now=now)
-             if row["status"] != "done" and owns(row["repo"], row["kind"])]
-    label = _repo_labels(row["repo"] for row in found)
-    rows = [{"id": row["id"], "title": row["title"], "kind": row["kind"], "status": row["status"],
-             "priority": row["priority"], "due": row["due"], "repo": label(row["repo"]) if row["repo"] else None,
-             "since": row["status_since"]} for row in found]
+    with _one_snapshot(connection):
+        found = [row for row in reads.backlog_items(connection, now=now)
+                 if row["status"] != "done" and owns(row["repo"], row["kind"])]
+        rows = _rows(connection, found, realms(connection), now=now)
     return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows}
 
 

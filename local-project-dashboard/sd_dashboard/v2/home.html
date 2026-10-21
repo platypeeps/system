@@ -7,7 +7,7 @@
   Edit tiles (sd:3987) posts /api/home/tiles: it writes the tile row.
   Views (places.js): Overview is the tiles; Tasks, Briefs and Reports each read /api/home/<view> (places.py) when shown.
   A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620); a Reports row the Reports page's
-  (report-details.js, sd:5636).
+  (report-details.js, sd:5636); a Tasks row the Tasks page's (task-details.js, sd:5635).
 -->
 <html lang="en">
 <head>
@@ -24,6 +24,7 @@
 <link rel="stylesheet" href="/ui/places.css">
 <link rel="stylesheet" href="/ui/brief-details.css">
 <link rel="stylesheet" href="/ui/report-details.css">
+<link rel="stylesheet" href="/ui/task-details.css">
 </head>
 <body data-page="Home" data-scope="home" data-scope-note="HA config" data-place="home">
 <script src="/ui/icons.js"></script>
@@ -82,6 +83,7 @@
 <script src="/ui/commands.js"></script>
 <script src="/ui/brief-details.js"></script>
 <script src="/ui/report-details.js"></script>
+<script src="/ui/task-details.js"></script>
 <script src="/ui/home.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

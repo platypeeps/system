@@ -4,8 +4,9 @@
 // Overview is the page's own read, and so is HOA's Tasks: hoa.js draws it from /api/hoa, which the annunciator and the badge
 // read anyway. Which rows are a place's is decided once (places.area_of): Tasks' HOA and Home views filter on the `area` each
 // /api/tasks row carries, so they hold the place pages' Tasks rows. A view that did not read is unknown with its reason, never
-// an empty list. Nothing here writes; a brief's Details (brief-details.js) carry the Briefs page's commands, and a report's
-// (report-details.js) the Reports page's. Markup is html`…` from markup.js: every value is escaped.
+// an empty list. Nothing here writes; a brief's Details (brief-details.js) carry the Briefs page's commands, a report's
+// (report-details.js) the Reports page's, and a task's (task-details.js) the Tasks page's. Markup is html`…` from markup.js:
+// every value is escaped.
 //
 // Adapter: viewSwitch(show) is the one place a page meets the shell's view switch (shell.js view:start). The page declares
 // window.PAGE_VIEWS = [{ id, label, key?, api? }] before shell.js; show(id) runs for the view shown, at shell:ready and on
@@ -26,11 +27,12 @@
   const table = (head, rows, empty) => html`<table class="ledger place-rows"><thead><tr>${head.map(([label, cls = '']) => html`<th scope="col" class="${cls}">${label}</th>`)}</tr></thead>
     <tbody>${rows.length ? rows : html`<tr class="empty"><td colspan="${head.length}">${empty}</td></tr>`}</tbody></table>`;
 
-  // Each place view: its table head, one row, the empty text and the tally. A task row opens where Tasks acts on it.
+  // Each place view: its table head, one row, the empty text and the tally.
   // The view's tab carries the row count (sd:5524, shell.view.auto), so a tally says only what the count does not.
   const DRAW = {
+    // sd:5635: a task row is selected in place; Details is the Tasks page's (task-details.js), with a link to Tasks.
     tasks: doc => [table([['ID', 'num'], ['What'], ['Kind', 'hide-sm'], ['Status'], ['Due', 'hide-sm']],
-      doc.rows.map(r => html`<tr><td class="ref num"><a href="${window.shell.itemHref(r.id)}">sd:${r.id}</a></td><td class="what">${r.title}</td>
+      doc.rows.map(r => html`<tr data-id="${r.id}" aria-selected="${String(String(r.id) === sel.tasks)}"><td class="ref num">sd:${r.id}</td><td class="what"><button type="button">${r.title}</button></td>
         <td class="hide-sm">${r.kind}</td><td>${r.status}</td><td class="hide-sm">${day(r.due) || '—'}</td></tr>`),
       $('view-tasks')?.dataset.empty || 'No open item without a repo.'), ''],
     // sd:5620: a brief row is selected in place; Details is the Briefs page's (brief-details.js), with a link to Briefs.
@@ -48,9 +50,9 @@
     },
   };
 
-  // sd:5481: a click anywhere on a row opens what its link opens (Tasks with the row's Details and its actions); a click on
-  // the link itself, or with a modifier, stays the browser's. sd:5620, sd:5636: a row with an id (a brief or a report) is
-  // selected here instead, and its Details fill the pane.
+  // sd:5481: a click anywhere on a row opens what its link opens; a click on the link itself, or with a modifier, stays the
+  // browser's. sd:5620, sd:5636, sd:5635: a row with an id (a brief, a report or a task) is selected here instead, and its
+  // Details fill the pane.
   document.addEventListener('click', e => {
     const tr = e.target.closest('.place-rows tbody tr');
     if (tr?.dataset?.id && ROWS[shownView()]?.has(tr.dataset.id)) { if (!e.target.closest('a, .rowact')) pick(tr.dataset.id, true); return; }
@@ -64,7 +66,8 @@
   // j / k and on Enter (the shell's grammar, through PAGE_LIST), and draws its Details in the pane. ROWS holds the view's
   // rows by id from its last read; PUT the ids of the objects it put; sel the selected id per view. An object the next read
   // no longer puts is put again as not listed, so no command runs on it, and Details says a row gone is gone.
-  // A renderer is { rows(doc), objects(rows), show(row), forget() }: rows(doc) are the read's rows by id, as Details reads them.
+  // A renderer is { rows(doc), objects(rows), show(row), forget(), key? }: rows(doc) are the read's rows, as Details reads them,
+  // by key(row), else by id.
   const ROWS = {}, PUT = {}, sel = {}, RAW = {}, DETAILS = {};
   const shownView = () => window.shell?.view?.current?.();
   const details = () => $('details');
@@ -93,6 +96,20 @@
       more: r => html`<p class="why"><a href="/reports?row=${encodeURIComponent(r.id)}">Open on Reports</a>: the run cadence, the family lamps and every report.</p>` });
     return { rows: doc => (M = R.model(doc.details || {})).rows, objects: () => d.objects(), show: d.show, forget: () => {} };
   }
+  // The Tasks page's Details (task-details.js), from the view's rows, which are /api/tasks rows (places.tasks). A write
+  // folds into its row, then reads the view again; a refused one reads it again too, as Tasks does.
+  function tasks(view) {
+    const TD = window.taskDetails; if (!TD) return null;
+    let T = [];
+    const shown = () => shownView() === view ? sel[view] ?? null : null, api = () => window.PAGE_VIEWS?.find(x => x.id === view)?.api;
+    const d = TD.attach({ details: details(), rows: () => T, selected: shown, read: () => RAW[view]?.read,
+      render: () => { if (shown() != null) d.renderDetails(); }, reread: () => window.places.reread(view),
+      load: () => window.places.reread(view).then(() => RAW[view]?.state === 'read'), select: (key, open) => pick(key, open),
+      foot: () => RAW[view]?.read ? html`Rows read <time class="rel" datetime="${RAW[view].read}"></time> from ${api()}.` : '',
+      more: t => html`<p class="why"><a href="${window.shell.itemHref(t.id)}">Open on Tasks</a>: the board, the matrix and every task.</p>` });
+    return { key: t => t.key, rows: doc => { T = (doc.rows || []).map(TD.shape); d.adopt(T); return T; }, objects: rows => rows.map(d.objectOf),
+      show: t => { window.shell.commands.select(t.key); d.readDet(t.id); d.renderDetails(); }, forget: () => {} };
+  }
   // The shell's picked rows, so a retired row's pick is dropped first, as read.js retires: the shell refuses to toggle a
   // pick on a type no bulk command is on, and the bulk bar would run on the retired object.
   let picks = [];
@@ -100,7 +117,7 @@
   function adopt(view, doc) {
     const D = DETAILS[view]; if (!D) return;
     const C = window.shell.commands, before = PUT[view] || new Set(), rows = D.rows(doc), objs = D.objects(rows);
-    RAW[view] = doc; ROWS[view] = new Map(rows.map(r => [r.id, r])); PUT[view] = new Set(objs.map(o => o.id));
+    RAW[view] = doc; ROWS[view] = new Map(rows.map(r => [(D.key || (x => x.id))(r), r])); PUT[view] = new Set(objs.map(o => o.id));
     const gone = [...before].filter(id => !PUT[view].has(id));
     picks.filter(id => gone.includes(id)).forEach(id => C.pick(id));
     gone.forEach(id => C.put({ id, type: 'not listed', label: `${C.get(id)?.label || id} (no longer listed)` }));
@@ -159,6 +176,8 @@
   function place() {
     if (blocks.some(b => b.dataset.placeView === 'briefs')) DETAILS.briefs = briefs('briefs');
     if (blocks.some(b => b.dataset.placeView === 'reports')) DETAILS.reports = reports('reports');
+    // HOA's Tasks is hoa.js's table from /api/hoa, with HOA's own item commands: only a Tasks view that reads its rows.
+    if (blocks.some(b => b.dataset.placeView === 'tasks' && b.dataset.api)) DETAILS.tasks = tasks('tasks');
     Object.keys(DETAILS).forEach(v => { if (!DETAILS[v]) delete DETAILS[v]; });
     list();
     viewSwitch(id => {

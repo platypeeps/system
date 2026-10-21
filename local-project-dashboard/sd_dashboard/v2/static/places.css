@@ -1,10 +1,10 @@
 /* Places: the HOA and Home pages' views and Tasks' place views (places.js). Tokens only.
  * The view switch is the shell's (shell.js view:start); each place view is one section
- * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). A task row opens it on the page that
- * acts on it; a brief or report row is selected in place (aria-selected, shell.css) and its Details fill the pane (sd:5620,
- * sd:5636).
+ * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). A brief, report or task row is
+ * selected in place (aria-selected, shell.css) and its Details fill the pane (sd:5620, sd:5636, sd:5635); HOA's Tasks rows
+ * are hoa.js's.
  * Hallmark · component: place view · genre: modern-minimal · theme: design.md instrument panel
- * states: default · hover (the row link or button) · focus (link, button and switch) · active (pressed view) · selected (a brief or report row) · loading (Reading…) ·
+ * states: default · hover (the row link or button) · focus (link, button and switch) · active (pressed view) · selected (a brief, report or task row) · loading (Reading…) ·
  * error (▨ Not read, with the reason) · empty (a row naming what was looked for) */
 .place-switch { margin: 0 0 var(--space-md); }
 .place-switch:empty, html[data-kiosk] .place-switch { display: none; }

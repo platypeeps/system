@@ -53,10 +53,12 @@ class OneDeclaration(unittest.TestCase):
     def test_a_page_that_registers_a_shared_command_loads_the_module_before_its_script(self):
         users = sorted(name for name, body in SCRIPTS.items() if re.search(r"window\.commands\b", body) and name != SHARED)
         self.assertEqual(users, ["activity.js", "brief-details.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "management.js", "queue.js", "report-details.js", "research.js",
-                                 "tasks.js", "today-github.js", "today.js"])
-        # brief-details.js (sd:5620) and report-details.js (sd:5636) are modules, not pages: every page that loads one loads
-        # the shared module first. today-github.js is Today's GitHub view (sd:5633), loaded by today.html.
+                                 "task-details.js", "today-github.js", "today.js"])
+        # brief-details.js (sd:5620), report-details.js (sd:5636) and task-details.js (sd:5635) are modules, not pages: every
+        # page that loads one loads the shared module first. today-github.js is Today's GitHub view (sd:5633), loaded by
+        # today.html.
         modules = {"brief-details.js": ["briefs.html", "hoa.html", "home.html", "place.html"], "report-details.js": ["hoa.html", "home.html", "reports.html"],
+                   "task-details.js": ["home.html", "place.html", "tasks.html"],
                    "today-github.js": ["today.html"]}
         scripts = lambda page: re.findall(r'<script src="/ui/([^"]+)"', page.read_text(encoding="utf-8"))
         for name in users:
@@ -129,8 +131,9 @@ def declarations(text):
 
 
 # The pages whose commands do not say yet what they do: other branches own these scripts now (sd:4963). Each leaves this
-# list when its texts land; once it is empty, every page's commands are held to the rule.
-NOT_YET = {"hoa.js", "tasks.js"}
+# list when its texts land; once it is empty, every page's commands are held to the rule. Tasks' commands moved to
+# task-details.js (sd:5635).
+NOT_YET = {"hoa.js", "task-details.js"}
 # `does: '…'`, or `does: o => …` for a text that differs per row: each text a person reads is about 12 words at most.
 DOES = re.compile(r"\bdoes:\s*")
 TEXT = re.compile(r"'((?:[^'\\]|\\.)*)'|`([^`]*)`")
