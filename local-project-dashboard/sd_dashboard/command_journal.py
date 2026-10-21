@@ -120,6 +120,7 @@ COMMANDS = (
     Command(r"/api/skills/intake/tracking", "Skill tracking", _key("action", "url")),
     Command(r"/api/shared-upload/regenerate", "Regenerate upload link"),
     Command(r"/api/items/([1-9][0-9]*)/fix", "Fix session", _item),
+    Command(r"/api/now/fix", "Fix session", _key("row")),
     Command(r"/api/items/([1-9][0-9]*)/draft-email", "Draft email", _item),
     Command(r"/api/items/([1-9][0-9]*)/file-issue", "Draft issue", _item, run="issue"),
     Command(r"/api/issue-runs/([A-Za-z0-9-]{1,80})/confirm", "File issue", _group),

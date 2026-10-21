@@ -325,7 +325,7 @@ def _edit_base_row(connection, item, revision, values):
     return {**workflow.item_state(connection, item), "mirror": beat[1] if beat else None}
 
 
-def action_route(path, payload, *, principal, operations_backend=None, services_backend=None):
+def action_route(path, payload, *, principal, operations_backend=None, services_backend=None, fleet_backend=None):
     """Parse one finite action vocabulary before opening a writable connection.
 
     `principal` is what the listener authenticated for this request
@@ -371,6 +371,11 @@ def action_route(path, payload, *, principal, operations_backend=None, services_
         if issue_run[2] == "check":
             return issue_filing.check_request(issue_run[1], values)
         return issue_filing.discard_request(issue_run[1], values)
+    if path == "/api/now/fix":
+        from . import fix_session
+
+        # sd:5652: Fix on a Today Now row no other command addresses, read again through the server's fleet seam.
+        return fix_session.row_request(values, fleet=fleet_backend, jobs=operations_backend)
     if path == "/api/snooze":
         from . import snooze
 
@@ -1126,7 +1131,7 @@ class Dashboard(BaseHTTPRequestHandler):
                 raise ValueError("Action URLs do not accept query parameters.")
             action = action_route(path.path, payload, principal=context.principal,
                                  operations_backend=self.operations_backend,
-                                 services_backend=self.services_backend)
+                                 services_backend=self.services_backend, fleet_backend=self.fleet_backend)
         except (ValueError, UnicodeDecodeError) as problem:
             return self._json(400, {"error": str(problem)})
         except NotFound:

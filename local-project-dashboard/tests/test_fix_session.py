@@ -18,6 +18,7 @@ from unittest.mock import patch
 from sd_db import workflow
 from sd_dashboard import fix_session
 
+from test_now_screen import fleet_document, repo, tree
 from test_workflow_actions import BrowserSession
 
 DOUBLES = fix_session.CHECKOUT / "local-herdr" / "tests" / "doubles"
@@ -201,3 +202,118 @@ class TheRefusals(FixCase):
         self.assertEqual(self.post(f"/api/items/{item}/fix", good, **{"X-SD-CSRF": "0" * 64})[0], 403)
         self.assertEqual(self.post(f"/api/items/{item}/fix", good, Origin="http://example.test")[0], 403)
         self.assertEqual(self.calls(), [])
+
+
+class TheNowRow(FixCase):
+    """sd:5652: Fix on a Today Now row no command addresses starts claude in herdr on that row, through the same launch.
+
+    The row is the page's id; the server reads the fleet again (the `fleet_backend` seam) and launches only for a row
+    that read still raises, in the checkout that read names. Nothing is noted: a Now row has no item.
+    """
+
+    def setUp(self):
+        self.repos, self.trees, self.dark = [], [], set()
+        self.fleet_backend = self.read_fleet
+        super().setUp()
+
+    def read_fleet(self, area):
+        if area in self.dark:
+            raise ValueError("fleet collector exited 1 without a reason")
+        return fleet_document(area, repos=self.repos, trees=self.trees)
+
+    def checkout(self, name="pushy", **counts):
+        self.repos.append({**repo(name, **{k: v for k, v in counts.items() if k in ("ahead", "dirty")}),
+                           "path": str(self.work), **{k: v for k, v in counts.items() if k not in ("ahead", "dirty")}})
+
+    def fix_row(self, row):
+        return self.post("/api/now/fix", {"row": row})
+
+    def test_a_repo_row_starts_a_session_in_its_checkout_on_the_kinds_prompt(self):
+        self.running()
+        self.checkout(dirty=2)
+        before = self.unjournalled()
+        status, _, answer = self.fix_row("dirty:pushy:2")
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(self.calls()[1:], [
+            ["workspace", "create", "--cwd", str(self.work), "--label", "fix-dirty-pushy", "--no-focus"],
+            ["agent", "start", "sd-w9-p1", "--kind", "claude", "--pane", "w9:p1"],
+            ["agent", "prompt", "sd-w9-p1", fix_session.row_prompt("dirty")],
+        ])
+        self.assertEqual(answer, {"fix": {"pane": "w9:p1", "checkout": str(self.work), "workspace": "fix-dirty-pushy"}})
+        self.assertEqual(self.unjournalled(), before, "a Now row has no item, so nothing is noted")
+        self.assertEqual(self.journalled(), [("Fix session · dirty:pushy:2", 0)])
+
+    def test_each_repo_kind_has_its_own_fixed_prompt(self):
+        self.running()
+        self.checkout(ahead=1, pinned_behind=3, default="main")
+        for row, kind, says in (("ahead:pushy:1", "ahead", "commits its remote does not have"),
+                                ("pinned:pushy:3", "pinned", f"{fix_session.CHECKOUT}/local-repo-sync/repo-sync.sh refresh")):
+            with self.subTest(row=row):
+                status, _, answer = self.fix_row(row)
+                self.assertEqual(status, 200, answer)
+                self.assertEqual(self.calls()[-1][3], fix_session.row_prompt(kind))
+                self.assertIn(says, fix_session.row_prompt(kind))
+                self.assertEqual(answer["fix"]["workspace"], f"fix-{kind}-pushy")
+
+    def test_the_prompt_never_carries_the_checkout_name(self):
+        self.running()
+        self.checkout(name="$(touch pwned)", dirty=1)
+        self.assertEqual(self.fix_row("dirty:$(touch pwned):1")[0], 200)
+        self.assertNotIn("pwned", self.calls()[-1][3])
+
+    def test_abandoned_worktrees_and_a_dark_collector_start_in_this_checkout(self):
+        self.running()
+        self.trees.append(tree("gone", live=False))
+        self.dark.add("repos")
+        for row, kind in (("worktrees:1", "worktree"), ("dark:repos", "dark")):
+            with self.subTest(row=row):
+                status, _, answer = self.fix_row(row)
+                self.assertEqual(status, 200, answer)
+                self.assertEqual(self.calls()[-3][3], str(fix_session.CHECKOUT))
+                self.assertEqual(self.calls()[-1][3], fix_session.row_prompt(kind, source="repos"))
+        self.assertIn("its repos collector could not be read", fix_session.row_prompt("dark", source="repos"))
+
+    def test_a_row_the_read_no_longer_raises_is_stale_and_launches_nothing(self):
+        self.running()
+        self.checkout(dirty=3)
+        for row in ("dirty:pushy:2", "ahead:pushy:3", "worktrees:1", "dark:repos", "dark:sessions"):
+            with self.subTest(row=row):
+                status, _, answer = self.fix_row(row)
+                self.assertEqual(status, 409, answer)
+                self.assertTrue(answer["reload"])
+        self.assertEqual(self.calls(), [])
+
+    def test_a_fleet_read_that_failed_is_not_known_and_launches_nothing(self):
+        """A read that failed is no answer: the row is neither confirmed nor gone."""
+        self.running()
+        self.checkout(dirty=2)
+        self.dark.add("repos")
+        status, _, answer = self.fix_row("dirty:pushy:2")
+        self.assertEqual(status, 503)
+        self.assertIn("the repos were not read, so whether dirty:pushy:2 is still a Now row is not known", answer["error"])
+        self.assertEqual(self.calls(), [])
+
+    def test_two_checkouts_with_the_row_launch_nothing(self):
+        self.running()
+        self.checkout(dirty=2)
+        self.checkout(dirty=2)
+        status, _, answer = self.fix_row("dirty:pushy:2")
+        self.assertEqual(status, 400)
+        self.assertIn("2 checkouts are named pushy", answer["error"])
+        self.assertEqual(self.calls(), [])
+
+    def test_a_bad_body_and_a_row_another_route_fixes_launch_nothing(self):
+        self.running()
+        self.checkout(dirty=2)
+        for payload in ({}, {"row": 7}, {"row": "dirty:pushy:2", "prompt": "anything"}, {"row": "job:nightly:7"},
+                        {"row": "pr:example/project#4:4"}, {"row": "dark:prs"}, {"row": "item:7"}):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.post("/api/now/fix", payload)[0], 400)
+        self.assertEqual(self.post("/api/now/fix", {"row": "dirty:pushy:2"}, Origin="http://example.test")[0], 403)
+        self.assertEqual(self.calls(), [])
+
+    def test_no_running_session_is_a_503_in_herdr_sh_words(self):
+        self.checkout(dirty=2)
+        status, _, answer = self.fix_row("dirty:pushy:2")
+        self.assertEqual(status, 503)
+        self.assertEqual(answer["error"], "Fix failed: herdr.sh launch: session sd is not running; run herdr.sh start first")

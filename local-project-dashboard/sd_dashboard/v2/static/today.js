@@ -291,19 +291,46 @@ window.PAGE_FILTER = { now: 'the Now ledger' };
   document.addEventListener('DOMContentLoaded', () => {
     const C = shell.commands;
     const K = window.commands;
+    // jobs.retry (commands.js). build (sd:3386): it posts /api/jobs/<job>/retry with the revision the Now read brought, as
+    // Management does; launchd starts the run. A refused retry reads Now again; one with no answer may have started, so it
+    // says the outcome is not known.
+    const retry = K.retry({ job: o => ({ name: o.job, failed: o.failed, exit: o.exit, capability: o.capability, sends: o.retry }),
+      run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
+        out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
+        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) });
+    const open = K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo });
+    // Fix (sd:5652): each Now row's act, routed by kind to what already addresses it: a failed or interrupted job's Run now,
+    // a pull request's Open on GitHub, the pull request collector's Re-run collector, and for every other row claude in
+    // herdr on it (fix_session.start_row: a repo ahead, dirty or pinned in its checkout; the abandoned worktrees and a dark
+    // collector here). Fix is the route's own declaration under its label, so its when, ask, line and run are the route's:
+    // a row the route is off for has Fix off with that reason, never a Fix that does nothing. The icon is the route's act.
+    const sync = K.syncCollector({ reread: () => reading.reread(), page: 'Today' });
+    const session = { label: 'Claude in herdr', does: 'Asks first, then starts claude in herdr to fix this row.', askFirst: true,
+      cli: () => 'no sd verb: the dashboard runs local-herdr/herdr.sh launch', sends: o => `POST /api/now/fix ${JSON.stringify({ row: o.id })}`,
+      consequence: o => `Opens a herdr workspace and starts claude on "${o.label}", in ${o.type === 'repo' ? 'its checkout' : 'the system checkout'}. A second Fix starts a second session: look in herdr first.`,
+      run: o => window.shell.post('/api/now/fix', { row: o.id }).then(
+        out => reading.reread().then(() => `Fix started · ${o.label} · claude in herdr workspace ${out.fix.workspace}, pane ${out.fix.pane}`),
+        err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether a session started is not known; look in herdr before you press Fix again`); }) };
+    const fix = (on, glyph, route) => {
+      const via = (k, none) => (o, v) => { const r = route(o), f = r[k]; return typeof f === 'function' ? f(o, v) : f === undefined ? none : f; };
+      return { id: `${on}.fix`, on, label: 'Fix', key: 'f', icon: glyph, risk: 'safe',
+        does: o => { const d = route(o).does; return typeof d === 'function' ? d(o) : d; },
+        when: via('when', true), askFirst: via('askFirst', false), consequence: via('consequence', ''), cli: via('cli', ''), sends: via('sends', ''),
+        primary: o => { const r = route(o); return (!r.when || r.when(o) === true) && (!r.primary || !!r.primary(o)); },
+        run: (o, v) => route(o).run(o, v) };
+    };
     C.register(
-      // jobs.retry (commands.js). build (sd:3386): it posts /api/jobs/<job>/retry with the revision the Now read brought, as
-      // Management does; launchd starts the run. A refused retry reads Now again; one with no answer may have started, so it
-      // says the outcome is not known.
-      K.retry({ job: o => ({ name: o.job, failed: o.failed, exit: o.exit, capability: o.capability, sends: o.retry }),
-        run: o => window.shell.post(`/api/jobs/${encodeURIComponent(o.job)}/retry`, { revision: o.revision }).then(
-          out => reading.reread().then(() => K.answered(out, o.job, 'retried', `Retry started · ${o.job}`)),
-          err => { load(); throw err.status ? err : new Error(`no answer (${err.message}), so whether launchd started it is not known; Now is read again`); }) }),
+      fix('job', 'play', () => retry),
+      fix('pull request', 'arrow-up-right', () => open),
+      fix('collector', 'bot', o => o.id === 'dark:prs' ? sync : session),
+      fix('repo', 'bot', () => session),
+      fix('sessions', 'bot', () => session),
+      retry,
       // Each row kind's commands from the page that shows it in full (sd:3449): a job's log and launchd record, as Management
       // and Activity declare them; Show log opens the job on Management > Schedules.
       K.showLog({ job: o => ({ name: o.job }) }),
       K.printJob({ job: o => ({ service: o.service, exit: o.exit }) }),
-      K.openPullRequest({ pr: o => ({ repo: o.repo, number: o.number }), primary: o => !!o.repo }),
+      open,
       // Fix (sd:3456, commands.js) on a work row, with the revision the Now read gave; a refused one reads Now again.
       K.fix('work item', { item: o => o.item, report: o => o.itemKind === 'report',
         post: (o, path) => window.shell.post(path, { revision: o.revision }).then(out => reading.reread().then(() => out), err => { load(); throw err; }) }),
