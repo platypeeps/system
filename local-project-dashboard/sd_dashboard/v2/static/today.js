@@ -4,13 +4,14 @@
 // The work items `sd today` lists (sd:3271) are the document's `work`: their own table, the same Snooze, keyed today:item:<id>.
 // Ported from ui-design products/system/designs/v2/today.html at a3861c9; the sources the build has no collector for are left out.
 // Markup is html`…` from markup.js: every value put in it is escaped, and put() is the only way into the page.
-// sd:5080: Today's areas are the shell's views (shell.js, view:start): Now; Status (sd:5099, today-status.js); Work (working
-// now, your work); Inbox (problem reports, new briefs, mail); Issues (yours, intake); GitHub (sd:5608, today-github.js);
-// Decisions. Each tab counts what waits on you there; a section's script reports its number through
+// sd:5080: Today's areas are the shell's views (shell.js, view:start): Now; Issues (yours, intake: the tab after Now since
+// sd:5645 moved Your issues here from Tasks, so issues assigned to the operator sit near the top); Status (sd:5099,
+// today-status.js); Work (working now, your work); Inbox (problem reports, new briefs, mail); GitHub (sd:5608,
+// today-github.js); Decisions. Each tab counts what waits on you there; a section's script reports its number through
 // window.todayCount(key, n), and n null means not read, which hides the tab's count. Status and GitHub count nothing: what
 // waits in them is counted on the tab that acts on it.
-window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'status', label: 'Status' }, { id: 'work', label: 'Work' },
-  { id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'issues', label: 'Issues' }, { id: 'github', label: 'GitHub' },
+window.PAGE_VIEWS = [{ id: 'now', label: 'Now' }, { id: 'issues', label: 'Issues' }, { id: 'status', label: 'Status' },
+  { id: 'work', label: 'Work' }, { id: 'inbox', label: 'Inbox', key: 'm' }, { id: 'github', label: 'GitHub' },
   { id: 'decisions', label: 'Decisions' }];
 window.PAGE_FILTER = { now: 'the Now ledger' };
 (() => {

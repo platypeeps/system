@@ -4,7 +4,7 @@
   Data: /api/tasks (tasks_screen.document: the rows reads.backlog_items gives v1 /backlog, with each row's revision, allowed
   statuses and age bucket), read when the page opens and after a write; /api/tasks/<id> (tasks_screen.details: the sd task show <id> JSON split into
   status history and notes, the item's assignments, and its external context), read when a task is selected.
-  Your issues (sd:4628): the same document's issues, each repo's issues assigned to or filed by the operator; issues.js draws them.
+  The operator's issues (sd:4628) moved to Today's Issues view (sd:5645): this page keeps no copy.
   Places (places.js): All | HOA | Home narrows the rows to the area each row carries (places.area_of), the HOA and Home pages' Issues rule.
   Writes: the v1 action routes (status, edit, note resolve, capture) and task cancel (Close, sd:3012). Nothing here is sample data.
 -->
@@ -19,7 +19,6 @@
 <script src="/ui/markup.js"></script>
 <link rel="stylesheet" href="/ui/shell.css">
 <link rel="stylesheet" href="/ui/tasks.css">
-<link rel="stylesheet" href="/ui/issues.css">
 <link rel="stylesheet" href="/ui/places.css">
 </head>
 <body data-page="Tasks" data-scope="tasks">
@@ -72,24 +71,11 @@
   <section id="view-matrix" aria-label="Eisenhower matrix" hidden></section>
   <section id="view-list" aria-label="List" hidden></section>
 
-  <section class="issues-sec" aria-labelledby="issues-h">
-    <div class="sec-head">
-      <h2 id="issues-h">Your issues <button class="help" type="button" aria-label="Help: Your issues" data-help="&lt;b&gt;Issues that are yours.&lt;/b&gt; Open Jira and GitHub issues assigned to you or filed by you, from each repo&#39;s issue sources (&lt;code&gt;jira=KEY&lt;/code&gt;, &lt;code&gt;github=owner/name&lt;/code&gt; on the repo&#39;s channels). Watched issues stay synced and are not listed. &lt;code&gt;sd shadow sync&lt;/code&gt; refreshes them.">
-        <svg class="i" aria-hidden="true"><use href="#i-circle-help"/></svg></button></h2>
-      <p class="tally" id="issues-tally"></p>
-    </div>
-    <table class="ledger issues" aria-labelledby="issues-h">
-      <thead><tr><th>Issue</th><th>Title</th><th>Repo</th><th>Why</th></tr></thead>
-      <tbody id="issues"><tr class="empty"><td colspan="4">Reading issues…</td></tr></tbody>
-    </table>
-  </section>
-
 </main>
 <div class="details" id="details"></div></div>
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/commands.js"></script>
-<script src="/ui/issues.js"></script>
 <script src="/ui/tasks.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

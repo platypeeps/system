@@ -1,4 +1,6 @@
-"""Your issues on Today and Tasks (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator.
+"""Your issues on Today (sd:4628): each repo's Jira and GitHub issues assigned to or filed by the operator.
+
+sd:5645 moved the section off Tasks: Today shows it in its Issues view, the tab after Now, and Tasks keeps no copy.
 
 The rows come from `sd_db.repos.mine_issues` (pack sd:4636), which filters `shadow` on its `reason` column. The pin in
 `.sd-pack-rev` predates both, so these stub the read: what is under test is the page's half, the document, its failure
@@ -72,32 +74,40 @@ class TheDocument(ScreenCase):
 
 
 class ThePages(ScreenCase):
-    def test_today_and_tasks_carry_the_issues(self):
-        with stub(return_value=FOUND):
+    def test_today_carries_the_issues_and_tasks_does_not(self):
+        with stub(return_value=FOUND) as read:
             today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
                                         fleet=lambda area: fleet_document(area))
+            calls = read.call_count
             tasks = tasks_screen.document(self.connection, now=NOW)
-        for document in (today, tasks):
-            self.assertEqual(([row["ref"] for row in document["issues"]], document["issues_error"]), (["EXAMPLE-8", "#12", "#3"], ""))
+        self.assertEqual(([row["ref"] for row in today["issues"]], today["issues_error"]), (["EXAMPLE-8", "#12", "#3"], ""))
+        self.assertEqual(read.call_count, calls)  # sd:5645: Tasks no longer reads them
+        self.assertNotIn("issues", tasks)
+        self.assertNotIn("issues_error", tasks)
 
-    def test_a_failed_issue_read_leaves_the_rest_of_today_and_tasks(self):
+    def test_a_failed_issue_read_leaves_the_rest_of_today(self):
         with stub(side_effect=sqlite3.OperationalError("database is locked")):
             today = now_screen.document(self.connection, now=NOW, jobs=JobsBackend(self.tmp.name),
                                         fleet=lambda area: fleet_document(area))
-            tasks = tasks_screen.document(self.connection, now=NOW)
         self.assertEqual((today["issues_error"], today["work_error"]), ("database is locked", ""))
-        self.assertEqual((tasks["issues_error"], tasks["rows"]), ("database is locked", []))
 
-    def test_both_pages_draw_the_section_and_load_its_script_before_the_shell(self):
-        for name, page in (("today", "today.js"), ("tasks", "tasks.js")):
-            html = (V2 / f"{name}.html").read_text(encoding="utf-8")
-            with self.subTest(page=name):
-                self.assertIn('<tbody id="issues">', html)
-                self.assertIn('id="issues-tally"', html)
-                self.assertIn('<link rel="stylesheet" href="/ui/issues.css">', html)
-                scripts = re.findall(r'<script src="/ui/([a-z-]+\.js)"></script>', html)
-                self.assertLess(scripts.index("issues.js"), scripts.index(page))
-                self.assertIn("issues:read", (V2 / "static" / page).read_text(encoding="utf-8"))
+    def test_today_draws_the_section_and_loads_its_script_before_the_shell(self):
+        html = (V2 / "today.html").read_text(encoding="utf-8")
+        self.assertIn('<tbody id="issues">', html)
+        self.assertIn('id="issues-tally"', html)
+        self.assertIn('<link rel="stylesheet" href="/ui/issues.css">', html)
+        scripts = re.findall(r'<script src="/ui/([a-z-]+\.js)"></script>', html)
+        self.assertLess(scripts.index("issues.js"), scripts.index("today.js"))
+        self.assertIn("issues:read", (V2 / "static" / "today.js").read_text(encoding="utf-8"))
+
+    def test_tasks_keeps_no_copy_of_the_section(self):
+        # sd:5645: the section moved to Today; Tasks draws none, loads neither its script nor its sheet, and reads none.
+        html = (V2 / "tasks.html").read_text(encoding="utf-8")
+        for gone in ('id="issues-h"', '<tbody id="issues">', 'id="issues-tally"', "/ui/issues.js", "/ui/issues.css",
+                     "Your issues"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, html)
+        self.assertNotIn("issues:read", (V2 / "static" / "tasks.js").read_text(encoding="utf-8"))
 
 
 class TheTable(ScreenCase):
