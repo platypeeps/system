@@ -252,12 +252,25 @@ VIEW = 'all'; document.dispatchEvent(new CustomEvent('shell:view', { detail: { i
                             prelude=self.REALMS)
         r = out["R"]
         self.assertEqual(r["views"], [["personal", "p"], ["brand", "r"], ["work", "w"], ["all", "a"]])
-        self.assertEqual(out["hidden"], {"personal": False, "brand": False, "work": True})
+        self.assertEqual(out["hidden"], {"brand": False, "work": True})  # Personal never hides (sd:5642)
         has = lambda board: ["Three Budgets" in board, "Gated Review" in board, "File Owned" in board]
         self.assertEqual((has(r["personal"]), has(r["brand"]), has(r["all"])),
                          ([True, False, True], [False, True, False], [True, True, True]))
         # Each realm reads again, so the reader's objects are the pieces the view shows.
         self.assertEqual(out["gets"], ["/api/writing"] * 3)
+
+    def test_personal_shows_with_no_piece_in_it_and_says_where_the_pieces_are(self):
+        # sd:5642: Personal is a tab for personal writing, as on Tasks: it stays when every piece's repo is in a realm line,
+        # and its empty board says why, not that no piece is registered.
+        brand = self.REALMS + "DOC.pieces.forEach(p => { p.realm = 'brand'; }); DOC.realms = { state: %s };\n"
+        out = self.run_page("", prelude=brand % "'read'")
+        self.assertEqual(out["hidden"], {"brand": False, "work": True}, "Personal was hidden, or a realm was not told")
+        self.assertEqual(out["states"][-1]["title"], "No personal pieces")
+        self.assertEqual(out["states"][-1]["text"], "Pieces from a repo a realm claims show in that realm: writing-pack under Brand."
+                         " dashboard.realms on Settings decides which repos each realm claims.")
+        # A realm list that was not read leaves each piece's realm unknown (places.realm_of None); the board says so.
+        out = self.run_page("", prelude=brand % "'error'")
+        self.assertIn("The dashboard.realms list was not read", out["states"][-1]["text"])
 
     # sd:5641: Board and Editor are one icon button whose menu lists the two, the picker Tasks uses (shell.viewPick).
     VIEW_MENU = r"""const items = ['board', 'editor'].map(v => { const b = El('item-' + v); b.dataset.view = v; b.attrs = {};

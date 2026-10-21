@@ -11,9 +11,9 @@ window.PAGE_COMMANDS = [
 ];
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'pieces not read' };
 // Realm views (sd:5064): Personal, the dashboard.realms realms (SHELL_REALMS, from /ui/sections.js), then All. A piece's realm is
-// places.realm_of of its repo, as on Tasks; a view no piece is in hides once the pieces are read. Board and editor are this
-// page's panels and b and e its v keys, so a realm takes neither; nor btn or menu, the layout menu's view-btn and view-menu
-// (sd:5641), which the shell would hide as panels.
+// places.realm_of of its repo, as on Tasks; a realm view no piece is in hides once the pieces are read, but Personal and All
+// stay (sd:5642). Board and editor are this page's panels and b and e its v keys, so a realm takes neither; nor btn or menu,
+// the layout menu's view-btn and view-menu (sd:5641), which the shell would hide as panels.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
   ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'all', 'board', 'editor', 'btn', 'menu'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
   { id: 'all', label: 'All', key: 'a' }];
@@ -416,11 +416,20 @@ addEventListener('DOMContentLoaded', () => {
   reading = window.shell.read({
     source: '/api/writing', what: 'the pieces',
     adopt: doc => {
-      (window.PAGE_VIEWS || []).forEach(v => { if (v.id !== 'all') window.shell.view?.hide(v.id, !(doc.pieces || []).some(p => p.realm === v.id)); });
+      // Personal stays, as on Tasks (sd:5642): it is where personal writing goes, so its tab shows with nothing in it.
+      (window.PAGE_VIEWS || []).forEach(v => { if (!['personal', 'all'].includes(v.id)) window.shell.view?.hide(v.id, !(doc.pieces || []).some(p => p.realm === v.id)); });
       D = doc; pieces = (doc.pieces || []).filter(p => inRealm(p));
       document.body.dataset.observed = D.read;
+      const known = ['read', 'partial'].includes(doc.realms?.state);
+      // Each repo once, with the realm that claims it: "sd-writing under Work".
+      const label = id => (window.PAGE_VIEWS || []).find(v => v.id === id)?.label || id;
+      const claimed = ps => [...new Map(ps.filter(p => p.realm).map(p => [p.repo, `${p.repo} under ${label(p.realm)}`])).values()].join(', ');
       return { objects: pieces.map(p => ({ id: String(p.id), type: 'piece', label: `#${p.id} ${p.title}` })),
-        state: pieces.length ? null : { kind: 'empty', title: 'No pieces', text: 'No writing piece is registered. Import the writing collection to see its pieces here.', source: '/api/writing' } };
+        state: pieces.length ? null : REALM === 'personal' && (doc.pieces || []).length
+          ? { kind: 'empty', title: 'No personal pieces', source: '/api/writing', text: known
+            ? `Pieces from a repo a realm claims show in that realm: ${claimed(doc.pieces)}. dashboard.realms on Settings decides which repos each realm claims.`
+            : 'The dashboard.realms list was not read, so a piece\'s realm is not known. Set it on Settings.' }
+          : { kind: 'empty', title: 'No pieces', text: 'No writing piece is registered. Import the writing collection to see its pieces here.', source: '/api/writing' } };
     },
     clear: () => { D = null; pieces = []; delete document.body.dataset.observed; },
     draw: () => { setView(view); },
