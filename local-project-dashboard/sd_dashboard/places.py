@@ -231,17 +231,24 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
             "rows": doc["briefs"], "reader": doc["reader"], "watchdog": doc["watchdog"]}
 
 
-def reports(connection, area: str, *, now: str, config: Path | None = None) -> dict:
-    """The reports of the area's family jobs, from the newest `reporting.reports` the Reports page reads."""
-    from .reports_screen import FAILURES, _reports
+def reports(connection, area: str, *, now: str, jobs, config: Path | None = None) -> dict:
+    """The reports of the area's family jobs, from the newest `reporting.reports` the Reports page reads.
 
-    jobs, unconfigured, unread = _family(connection, area, config)
-    if jobs is None:
+    `details` is the Reports page's document (`reports_screen.document`) for those jobs alone, read through `jobs`, the
+    operations backend: a row's Details on the place page are the Reports page's own (sd:5636), with the diff, the job's
+    cadence and its commands.
+    """
+    from . import reports_screen
+
+    names, unconfigured, unread = _family(connection, area, config)
+    if names is None:
         return {**_unknown(now, area, unconfigured, jobs=[]), **({"state": "error"} if unread else {})}
-    try:
-        found = _reports(connection)
-    except FAILURES as failure:
-        return {**_unknown(now, area, f"reports not read: {failure}", jobs=jobs), "state": "error"}
+    doc = reports_screen.document(connection, now=now, jobs=jobs, config=config, only=frozenset(names))
+    if doc["reports"] is None:
+        return {**_unknown(now, area, f"reports not read: {doc['sources']['reports']}", jobs=names), "state": "error"}
     keep = ("id", "title", "status", "at", "job", "attention", "exit", "ended", "followups")
-    rows = [{key: row[key] for key in keep} for row in found if row["job"] in jobs]
-    return {"read": now, "area": area, "state": "read", "reason": "", "rows": rows, "jobs": jobs, "limit": 200}
+    rows = [{key: row[key] for key in keep} for row in doc["reports"]]
+    # A jobs or cadence read that failed leaves the rows; the view names it, so Details without a job's bar is not "no job".
+    failed = [f"{source} ({why})" for source, why in doc["sources"].items() if why]
+    return {"read": now, "area": area, "state": "read", "reason": f"Not read: {', '.join(failed)}." if failed else "", "rows": rows,
+            "jobs": names, "limit": 200, "details": doc}

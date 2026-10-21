@@ -106,7 +106,8 @@ def place_views(area: str, kinds=("tasks", "briefs", "reports")) -> tuple[Api, .
         def read(read: Read):
             from ... import places
 
-            return getattr(places, kind)(read.connection, area, now=read.now)
+            # A Reports row's Details read the jobs as the Reports page does (sd:5636).
+            return getattr(places, kind)(read.connection, area, now=read.now, **({"jobs": read.jobs} if kind == "reports" else {}))
 
         return Api(f"/api/{area}/{kind}", read)
 
