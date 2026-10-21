@@ -7,7 +7,7 @@
   (sd:4967, POST /api/hoa/alarm, the workflow database's view state), Acknowledge all on the Alarms toolbar (sd:5621, POST /api/hoa/alarms) and Run sweep on the HOA sweep row (sd:5095, POST /api/hoa/sweep,
   the checkout's tools/sweep.py in the background: Gmail drafts only); email is never sent; the Mission portal is never touched.
   Nothing here is sample data.
-  Views (places.js, left to right as below): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Briefs and Reports each read /api/hoa/<view> (places.py) when shown; Alarms, right of Reports (sd:5622), is hoa.js's alarm ledger (sd:5286).
+  Views (places.js, left to right as below): Overview is the above; Tasks is hoa.js's table of /api/hoa's items; Briefs and Reports each read /api/hoa/<view> (places.py) when shown; Alarms, right of Reports (sd:5622), is hoa.js's alarm ledger (sd:5286). A Briefs row shows its Details in the pane, the Briefs page's own (brief-details.js, sd:5620).
 -->
 <html lang="en">
 <head>
@@ -23,6 +23,7 @@
 <link rel="stylesheet" href="/ui/annunciator-strip.css">
 <link rel="stylesheet" href="/ui/hoa.css">
 <link rel="stylesheet" href="/ui/places.css">
+<link rel="stylesheet" href="/ui/brief-details.css">
 </head>
 <body data-page="HOA" data-scope="hoa" data-scope-note="HOA water system" data-place="hoa">
 <script src="/ui/icons.js"></script>
@@ -117,6 +118,7 @@
 <script src="/ui/sections.js"></script>
 <script src="/ui/read.js"></script>
 <script src="/ui/commands.js"></script>
+<script src="/ui/brief-details.js"></script>
 <script src="/ui/hoa.js"></script>
 <script src="/ui/places.js"></script>
 <script src="/ui/shell.js"></script>

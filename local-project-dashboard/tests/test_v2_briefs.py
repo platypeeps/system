@@ -43,6 +43,7 @@ V2 = Path(v2.__file__).resolve().parent
 BRIEFS_JS = (V2 / "static" / "briefs.js").read_text(encoding="utf-8")
 MARKUP_JS = (V2 / "static" / "markup.js").read_text(encoding="utf-8")
 COMMANDS_JS = (V2 / "static" / "commands.js").read_text(encoding="utf-8")
+BRIEF_DETAILS_JS = (V2 / "static" / "brief-details.js").read_text(encoding="utf-8")
 REPO = "/repos/system"
 FOLDER = "Briefs/system"
 
@@ -286,7 +287,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Briefs · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "briefs.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "briefs.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
         self.assertNotIn("resource=briefs", body)
@@ -343,7 +344,7 @@ class TheScript(BriefCase):
     def run_page(self, body, answer=None, search="", row=None):
         answer = answer or f"(p) => p === '/api/items' ? [201, {{ item: {{ id: 77, title: 'Read it' }} }}] : [200, {json.dumps(self.page_doc)}]"
         script = (STAND_IN + f"location.search = {json.dumps(search)}; var ROW = {json.dumps(row)};\n" + MARKUP_JS
-                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + BRIEFS_JS
+                  + "\nconst mk = window.markup.html;\n" + SHELL + SHELL_MORE + READ_SHELL + f"\nANSWER = {answer};\n" + COMMANDS_JS + BRIEF_DETAILS_JS + BRIEFS_JS
                   + "\nvar R = {};\n(async () => { try {\n(WIN_LISTENERS.DOMContentLoaded || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; OUT.attention = window.PAGE_ATTENTION;"
@@ -756,11 +757,12 @@ await flush(); R.lane = OUT.shown.slice(); R.rows = ELS.rows.html;""")
         self.assertEqual(re.findall(r'<tr data-id="([^"]+)"', out["R"]["rows"]), ["2026-09-06 - Fun Events"])
 
     def test_the_script_adds_no_sink_no_inline_style_and_no_own_list_keys(self):
-        self.assertNotIn("innerHTML", BRIEFS_JS)
-        self.assertNotIn("setAttribute('style'", BRIEFS_JS)
-        self.assertNotRegex(BRIEFS_JS, r"style=\\?\"")
-        self.assertNotIn("history.replaceState", BRIEFS_JS)
-        self.assertNotRegex(BRIEFS_JS, r"e\.key !?== '[jk]'")
+        for text in (BRIEFS_JS, BRIEF_DETAILS_JS):
+            self.assertNotIn("innerHTML", text)
+            self.assertNotIn("setAttribute('style'", text)
+            self.assertNotRegex(text, r"style=\\?\"")
+            self.assertNotIn("history.replaceState", text)
+            self.assertNotRegex(text, r"e\.key !?== '[jk]'")
         self.assertIn("window.PAGE_LIST", BRIEFS_JS)
 
 

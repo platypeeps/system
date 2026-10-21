@@ -466,6 +466,8 @@ let polling = 0;
     draw,
     current: () => selected,
     first: () => OB[0]?.id,
+    // sd:5620: a Briefs row fills Details in its view (places.js); a read selects HOA's own rows only outside Briefs and Reports.
+    active: () => !['briefs', 'reports'].includes(window.shell.view?.current?.()),
     select: (id, opened) => select(id, opened),
     unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };

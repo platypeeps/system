@@ -52,14 +52,18 @@ class OneDeclaration(unittest.TestCase):
 
     def test_a_page_that_registers_a_shared_command_loads_the_module_before_its_script(self):
         users = sorted(name for name, body in SCRIPTS.items() if re.search(r"window\.commands\b", body) and name != SHARED)
-        self.assertEqual(users, ["activity.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "management.js", "queue.js", "reports.js", "research.js",
+        self.assertEqual(users, ["activity.js", "brief-details.js", "briefs.js", "contributions.js", "documents.js", "health.js", "hoa.js", "management.js", "queue.js", "reports.js", "research.js",
                                  "tasks.js", "today.js"])
-        for name in users:
-            page = (V2 / name.replace(".js", ".html")).read_text(encoding="utf-8")
-            scripts = re.findall(r'<script src="/ui/([^"]+)"', page)
+        # brief-details.js is a module, not a page (sd:5620): every page that loads it loads the shared module first.
+        pages = {name: re.findall(r'<script src="/ui/([^"]+)"', (V2 / name.replace(".js", ".html")).read_text(encoding="utf-8"))
+                 for name in users if name != "brief-details.js"}
+        pages.update({f"{page.stem}.html": re.findall(r'<script src="/ui/([^"]+)"', page.read_text(encoding="utf-8"))
+                      for page in V2.glob("*.html") if 'src="/ui/brief-details.js"' in page.read_text(encoding="utf-8")})
+        self.assertEqual(sorted(p for p in pages if p.endswith(".html")), ["briefs.html", "hoa.html", "home.html"])
+        for name, scripts in pages.items():
             with self.subTest(page=name):
                 self.assertIn(SHARED, scripts)
-                self.assertLess(scripts.index(SHARED), scripts.index(name))
+                self.assertLess(scripts.index(SHARED), scripts.index(name if name.endswith(".js") else "brief-details.js"))
 
 
 def scan(text, i, stop):

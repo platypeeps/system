@@ -1,9 +1,9 @@
 /* Places: the HOA and Home pages' views and Tasks' place views (places.js). Tokens only.
  * The view switch is the shell's (shell.js view:start); each place view is one section
- * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). Rows are not selectable: the item,
- * brief or report link opens it on the page that acts on it.
+ * head and one ledger (shell.css .ledger), as Your issues draws its rows (issues.css). A task or report row opens it on the
+ * page that acts on it; a brief row is selected in place (aria-selected, shell.css) and its Details fill the pane (sd:5620).
  * Hallmark · component: place view · genre: modern-minimal · theme: design.md instrument panel
- * states: default · hover (the row link) · focus (link and switch) · active (pressed view) · loading (Reading…) ·
+ * states: default · hover (the row link or button) · focus (link, button and switch) · active (pressed view) · selected (a brief row) · loading (Reading…) ·
  * error (▨ Not read, with the reason) · empty (a row naming what was looked for) */
 .place-switch { margin: 0 0 var(--space-md); }
 .place-switch:empty, html[data-kiosk] .place-switch { display: none; }
@@ -25,6 +25,9 @@
 .place-rows a { color: var(--color-ink); text-decoration: none; }
 .place-rows a:hover, .place-rows a:active { text-decoration: underline; }
 .place-rows a:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.place-rows .what button { all: unset; cursor: pointer; display: block; overflow-wrap: anywhere; }
+.place-rows .what button:hover, .place-rows .what button:active { text-decoration: underline; }
+.place-rows .what button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .place-rows .g.ok { color: var(--color-ok); }
 .place-rows .g.warning { color: var(--color-warning); }
 .place-rows .g.queued { color: var(--color-unknown); }
@@ -35,4 +38,5 @@
 }
 @media (pointer: coarse) {
   .place-rows a { display: inline-block; min-height: var(--row-touch); line-height: var(--row-touch); }
+  .place-rows .what button { min-height: var(--row-touch); line-height: var(--row-touch); }
 }

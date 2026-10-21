@@ -166,7 +166,7 @@ BRIEF_SCAN = 100_000
 
 
 def briefs(connection, area: str, *, now: str, config: Path | None = None) -> dict:
-    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`)."""
+    """The area's briefs, in the Briefs page's row shape (`briefs_screen.document`), with its watchdog for their Details."""
     from . import briefs_screen
 
     jobs, unconfigured, unread = _family(connection, area, config)
@@ -187,7 +187,7 @@ def briefs(connection, area: str, *, now: str, config: Path | None = None) -> di
     state = "error" if doc["reader"]["state"] == "error" else "read"
     # A family not configured still leaves the checkout's briefs; the reason says what else would be read.
     return {"read": now, "area": area, "state": state, "reason": doc["reader"]["reason"] or unconfigured,
-            "rows": doc["briefs"], "reader": doc["reader"]}
+            "rows": doc["briefs"], "reader": doc["reader"], "watchdog": doc["watchdog"]}
 
 
 def reports(connection, area: str, *, now: str, config: Path | None = None) -> dict:

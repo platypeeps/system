@@ -294,7 +294,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>HOA · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "hoa.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "annunciator-strip.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "hoa.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -362,6 +362,16 @@ class TheScript(Fixture):
             ["sources.refresh", "sources", "safe", None],
             ["sweep.run", "sweep", "safe", "w"],
         ])
+
+    def test_a_read_in_the_briefs_or_reports_view_leaves_their_details_alone(self):
+        # sd:5620: a Briefs row's Details fill the pane (places.js); Read HOA again then selects no HOA row over them,
+        # and does again once an HOA view shows.
+        out = self.run_page("""const read = () => window.PAGE_COMMANDS.find(p => p.label === 'Read HOA again').run();
+for (const v of ['briefs', 'reports']) { window.shell.view.current = () => v; window.markup.put(ELS.details, mk`<h2>A brief</h2>`); read(); await flush(); R[v] = ELS.details.html; }
+window.shell.view.current = () => 'tasks'; read(); await flush(); R.tasks = ELS.details.html;""")
+        self.assertEqual(out["gets"], ["/api/hoa"] * 4)
+        self.assertEqual((out["R"]["briefs"], out["R"]["reports"]), ("<h2>A brief</h2>", "<h2>A brief</h2>"))
+        self.assertNotEqual(out["R"]["tasks"], "<h2>A brief</h2>")
 
     def test_every_lamp_says_what_it_measures_and_its_source_on_hover_and_focus(self):
         # sd:5287: the shell's tip (data-tip) on each lamp: what it measures, then its source.
