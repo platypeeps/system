@@ -1235,6 +1235,13 @@ class TheShapeshiftBar(unittest.TestCase):
         self.assertIn("window.PAGE_KEYS = [['/', 'Filter, capture a task or ask']", SHELL_JS)
         self.assertRegex(SHELL_JS, r"window\.shell = \{[^\n]*\bfilter\b")
 
+    def test_shell_filter_is_the_bars_and_not_the_palettes(self):
+        # 697344e6 declared a second function filter (the palette's) in the same scope; the later one won, so shell.filter
+        # ran the palette filter: a page's Clear all left the bar's text, and Skills and Tasks could not hand theirs over.
+        self.assertEqual(len(re.findall(r"\bfunction filter\(", SHELL_JS)), 1)
+        self.assertIn("function filter(...a) {", SHELL_JS)
+        self.assertIn("palIn.addEventListener('input', palFilter);", SHELL_JS)
+
 class TheSelect(unittest.TestCase):
     """sd:5064: one native select style in shell.css; a page sets only size and width, so every select reads the same."""
 

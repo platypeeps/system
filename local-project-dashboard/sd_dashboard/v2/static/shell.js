@@ -1107,7 +1107,7 @@
   }
   const vis = () => opts.filter(o => !o.classList.contains('out'));
   const markOpt = o => { opts.forEach(x => x.setAttribute('aria-selected', x === o)); if (o) { o.id ||= `opt-${opts.indexOf(o)}`; palIn.setAttribute('aria-activedescendant', o.id); o.scrollIntoView({ block: 'nearest' }); } };
-  function filter() {
+  function palFilter() {
     const q = palIn.value.trim().toLowerCase();
     opts.forEach(o => o.classList.toggle('out', !!q && !o.textContent.toLowerCase().includes(q) && !o.hasAttribute('data-chat')));
     palList.querySelectorAll('.grp').forEach(g => { let n = g.nextElementSibling, any = false; while (n && !n.classList.contains('grp')) { if (!n.classList.contains('out')) any = true; n = n.nextElementSibling; } g.classList.toggle('out', !any); });
@@ -1123,8 +1123,8 @@
     if (o.dataset.run) { const s = OBJ.get(selId), c = REG.find(x => x.id === o.dataset.run); return run(c, s); }
     extra[+o.dataset.cmd]?.run?.();
   }
-  function openPal() { closeMenu(); buildPal(); palIn.value = ''; filter(); modal(pal, palIn); }
-  palIn.addEventListener('input', filter);
+  function openPal() { closeMenu(); buildPal(); palIn.value = ''; palFilter(); modal(pal, palIn); }
+  palIn.addEventListener('input', palFilter);
   palIn.addEventListener('keydown', e => {
     const v = vis(), i = v.findIndex(o => o.getAttribute('aria-selected') === 'true');
     if (e.key === 'ArrowDown') { e.preventDefault(); markOpt(v[Math.min(i + 1, v.length - 1)]); }
