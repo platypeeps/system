@@ -717,6 +717,15 @@ FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(c
                                answer=self.experiments({"link": {"page": "2" * 32, "title": "Trace budgets"}}))
         self.assertEqual(linked["R"]["on"], "already linked to an experiment")
 
+    def test_read_again_reads_the_board_the_ledgers_and_the_experiment_link_again(self):
+        # sd:5638: a refresh on the page reads every table behind it again.
+        out = self.run_page("PAGE_LIST.select('research/beta'); await flush(); const before = OUT.gets.length;"
+                            " ELS.reload.listeners.click[0]({}); await flush(); R.after = OUT.gets.slice(before);",
+                            answer=self.experiments({}))
+        self.assertIn("/api/research", out["R"]["after"])
+        self.assertTrue(any(g.startswith("/api/research/experiments?project=research%2Fbeta") for g in out["R"]["after"]))
+        self.assertTrue(any(g.startswith("/api/research/research/beta") for g in out["R"]["after"]))
+
     def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
         out = self.run_page("""const input = ELS.shift;
 input.value = 'how do vendors detect spans? repo:beta deep'; (input.listeners.input || []).forEach(f => f());

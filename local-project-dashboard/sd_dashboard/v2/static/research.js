@@ -806,6 +806,11 @@ function unselect() {
 }
 // Only the newest of overlapping loads draws; nothing on this page writes, so it never rereads.
 const load = () => board.load();
+// Read again (sd:5638): the board, the cached ledgers behind Sources and Claim map, and the shown project's experiment link.
+document.getElementById('reload').addEventListener('click', () => {
+  SOURCES.clear(); load();
+  if (selected) { loadExperiment(selected); readerFor(selected); renderClaims(selected); }
+});
 document.addEventListener('DOMContentLoaded', () => {
   put(document.getElementById('rows-head'), shell.list.sortHead(COLS, L)); // drawn before the read, so a failed one keeps the columns
   registerCommands();
