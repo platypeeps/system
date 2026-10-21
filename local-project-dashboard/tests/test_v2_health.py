@@ -1881,7 +1881,7 @@ OUT.toasts[OUT.toasts.length - 1].undo(); await flush(); R.seen = o.seen;""")
         snooze(self.connection, "health:unread:beta", "2026-09-07T08:00:00Z", seen=seen["unread:beta"], now=NOW)
         out = self.run_page("""ANSWER = (path, body) => HEALTH_READ(path) ? HEALTH(path) : [200, { key: 'k', until: body.until }];
 R.snoozed = ELS.snoozed.html; R.findings = BODY().html;
-PANEL().listeners.click[0]({ target: { closest: s => s === '[data-show]' ? { dataset: { show: 'ignored' } } : null } });
+PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'show', v: 'ignored' } } : null } });
 R.ignored = BODY().html; var o = C.get('ignored:gone:group/alpha'); R.type = o.type;
 shellRun(cmd('ignored row.unignore'), o); await flush(); OUT.toasts[OUT.toasts.length - 1].undo(); await flush();
 window.snooze.draw(ELS.snoozed, [{ id: 'x', what: 'today row', until: 'forever', seen: 's' }]); R.today = ELS.snoozed.html;""")
@@ -1889,9 +1889,9 @@ window.snooze.draw(ELS.snoozed, [{ id: 'x', what: 'today row', until: 'forever',
         self.assertIn("Snoozed · 1", out["R"]["snoozed"])
         self.assertNotIn(alpha, out["R"]["snoozed"])
         self.assertNotIn(alpha, out["R"]["findings"])
-        self.assertRegex(out["R"]["findings"], r'data-show="ignored" aria-pressed="false">ignored <span class="n">1</span>')
+        self.assertRegex(out["R"]["findings"], r'data-f="show" data-v="ignored" aria-pressed="false">ignored <span class="n">1</span>')
         self.assertIn(alpha, out["R"]["ignored"])
-        self.assertIn('data-show="ignored" aria-pressed="true"', out["R"]["ignored"])
+        self.assertIn('data-f="show" data-v="ignored" aria-pressed="true"', out["R"]["ignored"])
         self.assertNotIn("data-id=", out["R"]["ignored"], "the areas' rows are not drawn beside the ignored ones")
         self.assertEqual(out["R"]["type"], "ignored row")
         self.assertEqual([body for _, body, _ in out["posts"]],
