@@ -68,6 +68,25 @@ class SnapshotLocation(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("1 server(s) match the snapshot", output)
 
+    def test_an_empty_env_is_no_change(self):
+        # sd:5593. Claude Code wrote "env": {} on a server whose snapshot has
+        # no env; doctor reported "changed home-assistant (env)".
+        live = {"mcpServers": {"bare": {"command": "bare-mcp"}}}
+        (self.home / ".claude.json").write_text(json.dumps(live))
+        self.assertEqual(self.run_claude("capture", "--apply")[0], 0)
+        live["mcpServers"]["bare"]["env"] = {}
+        (self.home / ".claude.json").write_text(json.dumps(live))
+        code, output = self.run_claude("status")
+        self.assertNotIn("changed bare", output)
+        self.assertEqual(code, 0, output)
+        # And the other way: a snapshot holding {} matches a live server with no env.
+        snap = self.config / "claude" / "mcp" / "testprofile" / "claude-code.json"
+        snap.write_text(json.dumps({"bare": {"command": "bare-mcp", "env": {}}}))
+        del live["mcpServers"]["bare"]["env"]
+        (self.home / ".claude.json").write_text(json.dumps(live))
+        code, output = self.run_claude("status")
+        self.assertEqual(code, 0, output)
+
     def test_status_with_no_profile_is_nothing_to_check(self):
         # sd:3552. A machine that was never set up has nothing to compare:
         # convention 6's 3, not the 1 that means drift.
