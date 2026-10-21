@@ -50,8 +50,11 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build) ----------
   // /api/tasks rows become the reference's task shape: p is priority, repo the short label v1 shows, key the id.
     let tasks = [], READ = null, AGES = [], ATTENTION = null;
+  // pack sd:5648: whether the store takes a lead (tasks_screen._has_lead). A store before schema 41 has none, so the page
+  // shows no Lead field and no Lead column, and writes no lead.
+  let LEAD = false;
   const shape = r => ({ id: r.id, key: String(r.id), title: r.title, repo: r.repo || 'no repo', repo_path: r.repo_path, p: r.priority, due: r.due,
-    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
+    status: r.status, since: r.status_since, kind: r.kind, urgent: !!r.urgent, urgentOtherwise: !!r.urgent_otherwise, assignment: r.assignment, age: r.age, recurrence: r.recurrence, anchor: r.recurrence_anchor ?? null, lead: r.recurrence_lead ?? null, opensOn: r.opens_on ?? null, scheduled: !!r.scheduled, nextDue: r.next_due ?? null, revision: r.revision, allowed: r.allowed, edit: r.edit, run: r.run, parked: r.parked ?? null,
     base: r.base ?? null, stage: r.stage ?? null, score: r.score ?? null, area: r.area ?? null, realm: r.realm ?? null, issueTargets: r.issue_targets ?? null, issueLink: r.issue_link ?? null, real: true });
   // sd:5462: a linked item the read does not list, a quiet report or one done before the week, opens in Details all the
   // same. PIN is that item: its key, and its row once its /api/tasks/<id> reading answers (details' `row`), marked with why
@@ -62,8 +65,10 @@ addEventListener('DOMContentLoaded', () => {
   let LINK = null;
   const pinned = k => !!PIN && PIN.key === k, held = k => pinned(k) || (!!LINK && LINK === k);
   const byKey = k => tasks.find(t => t.key === k) || (pinned(k) && PIN.row) || undefined;
-  // The rows every view lists: a parked row shows only under the Parked chip (sd:3012).
-  const listed = () => tasks.filter(t => !t.parked);
+  // The rows every view lists: a parked row shows only under Scope's Parked only (sd:3012), and a scheduled occurrence, a
+  // repeating task's next row before due minus its lead (reads.opens_on_clause, pack sd:5648), under Scheduled only.
+  const listed = () => tasks.filter(t => !t.parked && !t.scheduled);
+  const scoped = t => F.active.has('parked') ? !!t.parked : !t.parked && !!t.scheduled === F.active.has('scheduled');
   // build (places): the PAGE_VIEWS above. A row's area is the server's (places.area_of), the rule the HOA and Home pages'
   // Tasks views use, so the HOA and Home views hold their rows; its realm is places.realm_of (sd:5064).
   let PLACE = 'all', REALMS = null;
@@ -84,6 +89,7 @@ addEventListener('DOMContentLoaded', () => {
     const dueMoved = t.due !== state.item.due;
     Object.assign(t, { status: state.item.status, p: state.item.priority, due: state.item.due, recurrence: state.item.recurrence,
       anchor: state.item.recurrence_anchor ?? null, revision: state.revision, title: state.item.title ?? t.title, stage: t.base ? state.item.stage : null });
+    if ('recurrence_lead' in state.item) t.lead = state.item.recurrence_lead ?? null;
     if ('repo' in state.item && state.item.repo !== t.repo_path) Object.assign(t, { repo_path: state.item.repo,
       repo: state.item.repo ? tasks.find(x => x.repo_path === state.item.repo)?.repo || state.item.repo.split('/').pop() : 'no repo' });
     // The server's urgency is is_urgent, and urgent_otherwise is is_urgent without its due rule; after a due edit the page
@@ -162,6 +168,14 @@ addEventListener('DOMContentLoaded', () => {
   // the library, cannot be walked: completing it ends the series. test_v2_tasks holds this set to the library's.
   const PARTS = new Set(['FREQ', 'INTERVAL', 'BYMONTH', 'BYMONTHDAY', 'BYDAY']);
   const walkable = t => String(t.recurrence || '').replace(/^RRULE:/i, '').split(';').every(p => PARTS.has(p.split('=')[0].trim().toUpperCase()));
+  // sd:5649: the Repeat field's rules, each in sd_db.recurrence.Rule.text()'s spelling, the one the store keeps, so a stored
+  // rule selects its name; test_v2_tasks parses each with the library. A rule not here shows as itself.
+  const REPEATS = [['FREQ=DAILY', 'Daily'], ['FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', 'Weekdays'], ['FREQ=WEEKLY', 'Weekly'], ['FREQ=MONTHLY', 'Monthly'],
+    ['FREQ=MONTHLY;INTERVAL=3', 'Quarterly'], ['FREQ=YEARLY;BYMONTH=3,6,9,12;BYMONTHDAY=21', 'Seasonal'], ['FREQ=YEARLY', 'Yearly']];
+  const repeatName = rule => REPEATS.find(r => r[0] === rule)?.[1] || rule;
+  // The Lead field's days: how long before its due date a repeating task's next row opens (pack sd:5648).
+  const LEADS = [0, 1, 2, 3, 7, 14, 30];
+  const opens = t => t.scheduled && t.opensOn ? `opens ${fmt(t.opensOn)}` : '';
   // A completion that opens nothing: a rule sd cannot walk, or one whose next date workflow.next_occurrence_due says is none.
   const ends = t => !walkable(t) || t.nextDue === null;
   const cliMove = (t, to) => `sd task status ${t.id} ${to}`;
@@ -172,6 +186,8 @@ addEventListener('DOMContentLoaded', () => {
     if ('repo' in ch) a.push(ch.repo ? `--belongs-to ${window.shell.shq(ch.repo)}` : '--no-repo');
     if ('title' in ch) a.push(`--title ${window.shell.shq(ch.title)}`);
     if ('body' in ch) a.push(`--body ${window.shell.shq(ch.body)}`);
+    if ('recurrence' in ch) a.push(ch.recurrence ? `--recur ${window.shell.shq(ch.recurrence)}` : '--clear-recur');
+    if ('recurrence_lead' in ch) a.push(`--recur-lead ${ch.recurrence_lead ?? 0}`);
     return `sd task edit ${t.id} ${a.join(' ')}`;
   }
 
@@ -233,6 +249,8 @@ addEventListener('DOMContentLoaded', () => {
   // build (sd:3012): Parked swaps the listed rows for the ones the nightly prune parked, for triage's Unpark.
   // build (sd:3977): Base narrows to one vault base's rows; it shows once a row has a base.
   const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
+  // sd:5649: the list's optional columns the Columns menu shows, kept in the address as ?cols=.
+  const SHOW = { cols: new Set() }, COL_OPTS = [['lead', 'Lead (days)']];
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
   let Q = '';
@@ -258,14 +276,17 @@ addEventListener('DOMContentLoaded', () => {
       combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
       combo('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
       // sd:5643: Scope holds Parked too, as one choice: open and done (the default), open only, or the parked rows only.
-      combo('active', 'Scope', [['1', 'Open only'], ['parked', 'Parked only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>Open only</b> hides Done tasks, as the Operations histogram counts only open ones. The nightly prune parks an open P4 task untouched for 30 days; parked tasks stay off every other scope. <b>Parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`, 'Open and done')}${
+      // sd:5649: and Scheduled only, the repeating tasks' next rows that have not opened yet.
+      combo('active', 'Scope', [['1', 'Open only'], ['parked', 'Parked only'], ['scheduled', 'Scheduled only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>Open only</b> hides Done tasks, as the Operations histogram counts only open ones. The nightly prune parks an open P4 task untouched for 30 days; parked tasks stay off every other scope. <b>Parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history. Completing a repeating task opens its next row at once; it stays off every other scope, and off Today, until its due date less its lead. <b>Scheduled only</b> lists those rows with the day each opens.">${ICON('circle-help')}</button>`, 'Open and done')}${
+      // sd:5649: the list's optional columns, hidden by default. Not a filter: no chip, and Clear all keeps it.
+      view === 'list' && LEAD ? window.shell.list.pick('cols', 'Columns', COL_OPTS, SHOW.cols, { all: 'Default', multi: true }) : ''}${
       (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
   const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
   const kindWord = v => (v.startsWith('base:') ? `${v.slice(5)} (plugin kind)` : v);
   const fvalue = (k, v) => k === 'kind' ? kindWord(v) : k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
-    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? (v === 'parked' ? 'Parked only' : 'Open only') : v;
+    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? ({ parked: 'Parked only', scheduled: 'Scheduled only' }[v] || 'Open only') : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
     if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
@@ -274,14 +295,14 @@ addEventListener('DOMContentLoaded', () => {
     if (k === 'q') { Q = ''; find.value = ''; } else F[k].delete(v);
     L.page = 1; render();
   });
-  document.getElementById('filters').addEventListener('change', e => window.shell.list.pickChange(e, F, () => { L.page = 1; render(); }));
+  document.getElementById('filters').addEventListener('change', e => window.shell.list.pickChange(e, F, () => { L.page = 1; render(); }) || window.shell.list.pickChange(e, SHOW, render));
   function clearFilters() { Object.values(F).forEach(s => s.clear()); Q = ''; find.value = ''; L.page = 1; render(); }
   // The text filter narrows on what a row shows: id, title, repo, status and kind, as v1's ?q= read the visible columns.
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind) || (!!t.base && F.kind.has(`base:${t.base}`))) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
-    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.has('1') || t.status !== 'done') && !!t.parked === F.active.has('parked') && inPlace(t) && (!Q || words(t).includes(Q));
+    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.has('1') || t.status !== 'done') && scoped(t) && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -416,7 +437,7 @@ addEventListener('DOMContentLoaded', () => {
   // revision the edit answered. A field the row does not carry (the description) takes `before(row)`, read then too.
   // `check` asks as the edit leaves whether it still changes anything: a second one queued
   // behind the first would write nothing, and its Undo would set back what the first one changed (review, PR #46).
-  const FIELD = { anchor: 'recurrence_anchor', repo_path: 'repo' };
+  const FIELD = { anchor: 'recurrence_anchor', lead: 'recurrence_lead', repo_path: 'repo' };
   // `before` holds a field the row does not carry (the description, read with the Details).
   function editRun(t, ch, msg, { check, keep = Object.keys(ch), before = () => ({}) } = {}) {
     let was = {};
@@ -625,7 +646,7 @@ addEventListener('DOMContentLoaded', () => {
         ${C.rowActions(t.key)}
       </div>
       <div class="t">${t.title}</div>
-      <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
+      <div class="meta"><span class="repo">${t.repo}</span>${tileF(t) ? dueSelect(t, dt, dc) : html`<span class="due ${dc}">${dt}</span>`}${opens(t) ? html`<span class="opens">${opens(t)}</span>` : ''}${compact ? html`<span>${slabel(t.status).toLowerCase()}</span>` : ''}</div>
     </article>`;
   }
   // sd:5305: the board's Done column holds only what was done in the 7 days before the read; the list keeps every done item.
@@ -672,13 +693,13 @@ addEventListener('DOMContentLoaded', () => {
   const LIST = { sort: 'p', dir: 1, size: 50 }, L = { ...LIST, page: 1 };
   const ORDER = Object.fromEntries(STATUSES.map(([st], i) => [st, i]));
   const SORTS = { id: t => t.id, title: t => t.title.toLowerCase(), repo: t => t.repo.toLowerCase(), status: t => ORDER[t.status] ?? 99, p: t => t.p ?? 9,
-    due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999, stage: t => t.stage || '~',
+    due: t => t.overdue && !t.due ? -99 : t.due ? days(t) : 999, stage: t => t.stage || '~', lead: t => t.recurrence ? t.lead ?? 0 : Infinity,
     // A base row's score, highest first; a row with none sorts last (sd:3977).
     score: t => t.score === null || t.score === '' || isNaN(+t.score) ? Infinity : -t.score };
   // slim: a control or short cell (pick, glyph, P, actions) keeps the narrow gutter that lets the list fit its column (sd:4037).
   // id, rp and sc mark the columns that fold into a .fold line of their neighbour in a narrower column (tasks.css).
   const COLS = [[null, html`<span class="sr">Select</span>`, 'slim'], [null, html`<span class="sr">State</span>`, 'slim'], ['id', 'Id', 'label id'], ['title', 'Title', 'label'], ['repo', 'Repo', 'label rp'],
-    ['status', 'Status', 'label'], ['stage', 'Stage', 'label'], ['score', 'Score', 'label sc'], ['p', 'P', 'label slim'], ['due', 'Due', 'label'], [null, html`<span class="sr">Actions</span>`, 'slim']];
+    ['status', 'Status', 'label'], ['stage', 'Stage', 'label'], ['score', 'Score', 'label sc'], ['p', 'P', 'label slim'], ['due', 'Due', 'label'], ['lead', 'Lead (days)', 'label'], [null, html`<span class="sr">Actions</span>`, 'slim']];
   // Due's head says the word, so a cell drops it (the design source's shortDue).
   const shortDue = s => s === 'no due' ? 'none' : s.replace(/^due /, '');
   let seek = false;
@@ -690,9 +711,11 @@ addEventListener('DOMContentLoaded', () => {
     if (seek) { seek = false; const i = all.findIndex(t => t.key === selected); if (i >= 0) L.page = Math.floor(i / L.size) + 1; }
     const v = list.pageOf(all, L);
     // Stage and Score show once a row has a base (sd:3977), as Base does: two empty columns would push Due and Actions off.
-    const based = tasks.some(t => t.base), cols = based ? COLS : COLS.filter(c => c[0] !== 'stage' && c[0] !== 'score');
+    // Lead (days) shows only when the Columns menu picks it and the store has a lead (sd:5649).
+    const based = tasks.some(t => t.base), lead = LEAD && SHOW.cols.has('lead');
+    const cols = COLS.filter(c => (based || (c[0] !== 'stage' && c[0] !== 'score')) && (lead || c[0] !== 'lead'));
     put(document.getElementById('view-list'), html`<div class="list-wrap"><table class="list" data-tfilter="page" data-toolbar="filterbar"><caption class="sr">Tasks</caption><thead>${list.sortHead(cols, L)}</thead><tbody>
-      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button>${issueLink(t)}<span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}</td><td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
+      ${(v.length ? v.map(t => { const st = state(t), [dt, dc] = dueText(t); return html`<tr data-key="${t.key}"${t.key === selected ? html` aria-current="true"` : ''}${checked.has(t.key) ? html` data-picked` : ''}><td class="slim"><label class="pick"><input type="checkbox" data-check="${t.key}" aria-label="Select ${label(t)}"${checked.has(t.key) ? html` checked` : ''}><span></span></label></td><td class="g g-${st} slim">${st ? GLYPH[st] : ''}</td><td class="mono id">${label(t)}</td><td class="title"><button type="button" data-open="${t.key}">${t.title}</button>${issueLink(t)}<span class="fold mono">${label(t)} · ${t.repo}</span></td><td class="mono rp"><span title="${t.repo}">${t.repo}</span></td><td class="st">${slabel(t.status)}</td>${based ? html`<td>${t.stage || ''}${t.score != null && t.score !== '' ? html`<span class="fold mono">score ${t.score}</span>` : ''}</td><td class="mono sc">${t.score ?? ''}</td>` : ''}<td class="slim"><span class="pri" data-p="${String(t.p || '')}">${t.p ? 'P' + t.p : 'P–'}</span></td><td class="mono due ${dc}">${shortDue(dt)}${opens(t) ? html`<small class="opens">${opens(t)}</small>` : ''}</td>${lead ? html`<td class="mono lead">${t.recurrence ? String(t.lead ?? 0) : ''}</td>` : ''}<td class="slim">${C.rowActions(t.key)}</td></tr>`; }) : html`<tr><td colspan="${cols.length}" class="empty">None match the filters. <button class="linkbtn" type="button" id="clear-f2">Clear filters</button></td></tr>`)}
     </tbody></table></div>${list.pager(all.length, L, 'tasks')}`);
   }
   document.getElementById('view-list').addEventListener('click', e => {
@@ -730,6 +753,7 @@ addEventListener('DOMContentLoaded', () => {
           return html`<option value="${s}"${s === t.status ? html` selected` : L.ok ? '' : html` disabled title="${L.reason}"`}>${name}</option>`; })}${SLABEL[t.status] ? '' : html`<option value="${t.status}" selected disabled>${slabel(t.status)}</option>`}</select></dd>
         <dt><label for="det-p">Priority</label></dt><dd><select id="det-p" class="fld"${dis}>${t.p ? '' : html`<option value="" selected>not recorded</option>`}${[1, 2, 3, 4].map(n => html`<option value="${n}"${t.p === n ? html` selected` : ''}>P${n}</option>`)}</select></dd>
         <dt><label for="det-due">Due</label></dt><dd><input id="det-due" class="fld" type="date" value="${String(t.due || '')}"${dis}>${t.due || t.overdue ? html` <span class="why">${t.due ? dt : 'overdue · date not recorded'}</span>` : ''}</dd>
+        ${repeatFields(t, off)}
         <dt><label for="det-repo">Repo</label></dt><dd><select id="det-repo" class="fld"${t.kind === 'work' && !off ? html` disabled title="A work item belongs to the checkout its folder is in."` : dis}>${repoOptions(t, null)}</select></dd>
         <dt>Urgent</dt><dd>${urgent(t) ? 'yes' : 'no'} <span class="why">(derived)</span></dd>
         <dt><label for="det-q">Quadrant</label></dt><dd>${t.status === 'done' ? 'not placed' : html`<select id="det-q" class="fld"${dis}>${QUADS.map(q => html`<option value="${q[0]}"${q[0] === quadOf(t) ? html` selected` : ''}>${q[1]}</option>`)}</select>`}</dd>
@@ -749,6 +773,17 @@ addEventListener('DOMContentLoaded', () => {
       if (f && caret[0] != null) try { f.setSelectionRange(caret[0], caret[1]); } catch { /* a date or select has no caret */ }
     } else if (focused?.startsWith('det-')) document.getElementById(focused)?.focus?.();
     if (!off) window.shell.repos?.().then(list => { const r = document.getElementById('det-repo'); if (r && selected === t.key && !r.disabled) put(r, repoOptions(t, list)); }, () => {});
+  }
+  // sd:5649: Repeat and Lead, each a select whose change is one edit with Undo (fieldChange). Repeat offers REPEATS, and a
+  // stored rule not among them as itself; Lead shows on a repeating row of a store that has a lead (LEAD).
+  function repeatFields(t, off) {
+    const why = off || (RECURS.includes(t.kind) ? '' : `a ${t.kind} item cannot recur`), dis = why ? html` disabled title="${why}"` : '';
+    const rules = t.recurrence && !REPEATS.some(r => r[0] === t.recurrence) ? [...REPEATS, [t.recurrence, t.recurrence]] : REPEATS;
+    const note = opens(t) || (!t.due && !repeats(t) && !why ? 'needs a due date' : '');
+    return html`<dt><label for="det-recur">Repeat</label></dt><dd><select id="det-recur" class="fld"${dis}><option value=""${t.recurrence ? '' : html` selected`}>Does not repeat</option>${
+      rules.map(([v, name]) => html`<option value="${v}"${v === t.recurrence ? html` selected` : ''}>${name}</option>`)}</select>${note ? html` <span class="why">${note}</span>` : ''}</dd>${
+      LEAD && repeats(t) ? html`<dt><label for="det-lead">Lead</label></dt><dd><select id="det-lead" class="fld"${dis}>${
+        [...new Set([...LEADS, t.lead ?? 0])].sort((a, b) => a - b).map(n => html`<option value="${n}"${n === (t.lead ?? 0) ? html` selected` : ''}>${n ? `${plural(n, 'day')} early` : 'On the due date'}</option>`)}</select></dd>` : ''}`;
   }
   // The repos a task can move to: every registered one (the capture's list) once read, else the ones these rows name.
   function repoOptions(t, list) {
@@ -790,6 +825,13 @@ addEventListener('DOMContentLoaded', () => {
     if (id === 'det-due') { const d = v || null; if (d === t.due) return false;
       if (!d && repeats(t)) { toast(NO_CLEAR); return false; }
       commitEdit(t, { due: d }, d ? `due ${fmt(d)}` : 'due removed', { check: r => r.due !== d || 'the date is already set' }); return true; }
+    // sd:5649: --recur needs a due date; clearing the rule clears its anchor and lead, which Undo sets again.
+    if (id === 'det-recur') { const rule = v || null; if (rule === (t.recurrence || null)) return false;
+      if (rule && !t.due) { toast(`${label(t)} not changed: --recur needs a due date`); return false; }
+      commitEdit(t, { recurrence: rule }, rule ? `repeats ${repeatName(rule).toLowerCase()}` : 'no longer repeats',
+        { keep: rule ? ['recurrence'] : ['recurrence', 'anchor', ...(LEAD ? ['lead'] : [])], check: r => (r.recurrence || null) !== rule || 'it repeats so already' }); return true; }
+    if (id === 'det-lead') { const n = +v; if (!LEAD || !repeats(t) || n === (t.lead ?? 0)) return false;
+      commitEdit(t, { recurrence_lead: n }, `lead ${plural(t.lead ?? 0, 'day')} → ${plural(n, 'day')}`, { keep: ['lead'], check: r => (r.lead ?? 0) !== n || 'the lead is already that' }); return true; }
     if (id === 'det-repo') { const r = v || null; if (r === (t.repo_path || null)) return false;
       commitEdit(t, { repo: r }, `repo → ${r ? r.split('/').pop() : 'none'}`, { keep: ['repo_path'], check: x => (x.repo_path || null) !== r || 'it is already there' }); return true; }
     return false;
@@ -826,7 +868,7 @@ addEventListener('DOMContentLoaded', () => {
       <h3>Artifact ${src('Artifact', `sd task show ${t.id} --json · item.path`)}</h3>
       <dl><dt>Path</dt><dd>${it.path || 'none'}</dd><dt>Repo</dt><dd>${it.repo || 'none'}</dd>${it.branch ? html`<dt>Branch</dt><dd>${it.branch}</dd>` : ''}</dl>
       <h3>Recurrence ${src('Recurrence', `sd task show ${t.id} --json · item.recurrence`)}</h3>
-      <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
+      <dl><dt>Repeats</dt><dd>${it.recurrence || 'no'}</dd>${it.recurrence_anchor ? html`<dt>Anchor</dt><dd>${it.recurrence_anchor}</dd>` : ''}${it.recurrence && 'recurrence_lead' in it ? html`<dt>Lead</dt><dd>${plural(it.recurrence_lead ?? 0, 'day')}</dd>` : ''}${opens(t) ? html`<dt>Opens</dt><dd>${t.opensOn}</dd>` : ''}<dt>Revision</dt><dd>${d.revision.slice(0, 12)}…</dd></dl>
       ${external(d)}`;
   }
   // sd:3465: where the item's work was published, each URL under its document's title; tasks_screen._published sets
@@ -1171,7 +1213,7 @@ addEventListener('DOMContentLoaded', () => {
     list: 'Every task, sortable by any column.',
   };
   function subhead() {
-    const parked = tasks.length - listed().length;
+    const parked = tasks.filter(t => t.parked).length, scheduled = tasks.filter(t => !t.parked && t.scheduled).length;
     // A realm view without a readable realm list (dashboard.realms) holds only the rows with no repo; it says why (sd:5064).
     const why = REALMS && !['all', 'hoa', 'home'].includes(PLACE) && !['read', 'partial'].includes(REALMS.state)
       ? ` · repos in no realm: ${REALMS.state === 'missing' ? 'no realm list; set dashboard.realms on Settings' : `${REALMS.source} ${REALMS.problems[0] || 'was not read'}`}` : '';
@@ -1179,7 +1221,7 @@ addEventListener('DOMContentLoaded', () => {
     const w = SWEEP_NAME[PLACE] && SWEEPS?.[PLACE];
     // Each view's tab carries its tasks (sd:5524), so the line under the title counts none.
     window.PAGE_VIEWS.forEach(v => window.shell.view.count(v.id, listed().filter(t => inPlace(t, v.id)).length));
-    put(document.getElementById('subhead'), html`${parked ? `${parked} parked · ` : ''}read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
+    put(document.getElementById('subhead'), html`${parked ? `${parked} parked · ` : ''}${scheduled ? `${scheduled} scheduled · ` : ''}read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
   }
   // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked. The shell
   // wires it (shell.viewPick, sd:5641), as on Writing.
@@ -1201,7 +1243,8 @@ addEventListener('DOMContentLoaded', () => {
     [...F.age].forEach(v => { if (!AGES.some(a => a.key === v)) F.age.delete(v); });
     // An older address's ?parked=1 is Scope's Parked only now (sd:5643).
     if (q.get('parked') === '1') { F.active.clear(); F.active.add('parked'); }
-    [...F.active].forEach(v => { if (v !== '1' && v !== 'parked') F.active.delete(v); });
+    [...F.active].forEach(v => { if (!['1', 'parked', 'scheduled'].includes(v)) F.active.delete(v); });
+    (q.get('cols') || '').split(',').filter(v => COL_OPTS.some(o => o[0] === v)).forEach(v => SHOW.cols.add(v));
     find.value = (q.get('q') || '').trim(); Q = find.value.toLowerCase();
     // A page is decimal digits, as on Documents (sd:2427).
     window.shell.list.listParams(q, L, { sorts: Object.keys(SORTS), size: LIST.size });
@@ -1211,6 +1254,7 @@ addEventListener('DOMContentLoaded', () => {
     const q = new URLSearchParams(); q.set('view', view);
     FKEYS.forEach(key => { if (F[key].size) q.set(key, [...F[key]].join(',')); });
     if (Q) q.set('q', Q);
+    if (SHOW.cols.size) q.set('cols', [...SHOW.cols].join(','));
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
     shell.filter(Q); // the shell's bar shows the same text (sd:5539)
@@ -1318,7 +1362,7 @@ addEventListener('DOMContentLoaded', () => {
   }
   const reading = shell.read({
     source: '/api/tasks', what: 'the tasks',
-    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null; SWEEPS = doc.sweeps || null;
+    adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; LEAD = !!doc.lead; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null; SWEEPS = doc.sweeps || null;
       // While a sweep runs, Tasks reads again every SWEEP_POLL ms, so its words follow the run to its end.
       if (!sweepTimer && Object.values(SWEEPS || {}).some(w => w.running)) sweepTimer = setTimeout(() => { sweepTimer = 0; reread(); }, SWEEP_POLL);
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
