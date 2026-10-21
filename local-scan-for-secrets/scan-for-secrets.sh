@@ -1388,6 +1388,18 @@ TARGETS_EOF
   RE=$(ere_patterns | paste -sd '|' -)
   # shellcheck disable=SC2086
   OUT=$(grep -rEIno --null $EX_D $EX_G -e "$RE" "$@" 2>/dev/null | to_fields || true)
+  # grep's --exclude matches basenames only, so the critical paths are dropped from the hits here; a case
+  # pattern's `*` crosses `/`, as ripgrep's `**` does (sd:5493: the gate has no rg and reported every fixture).
+  if [ "$MODE" = critical ]; then
+    OUT=$(printf '%s\n' "$OUT" | while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      path=${hit%%"$US"*}; path=${path#./}; keep=1
+      set -f
+      for p in $CRITICAL_EXCLUDE_PATHS; do case $path in ($p|$p/*) keep=0; break ;; esac; done
+      set +f
+      [ "$keep" = 0 ] || printf '%s\n' "$hit"
+    done)
+  fi
 fi
 # The Hugging Face match ends with its boundary character; the value is the
 # 37 before it. Bytes, since that character may be a multibyte one.
