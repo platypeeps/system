@@ -3022,14 +3022,17 @@ report_deferred() {
 #   claude_settings.py. VS Code documents update.mode none and Zed
 #   auto_update false. Docker Desktop keeps its "Always download updates"
 #   setting as AutoDownloadUpdates in settings-store.json.
+# - env: an environment variable, for a CLI; app is the command, target the
+#   shell env file every login shell and job sources. antigravity-cli's agy
+#   reads AGY_CLI_DISABLE_AUTO_UPDATE (named in its binary, not its docs):
+#   its updater replaced the cask's link with a bare binary (fleet sd:5566).
 #
 # No documented per-user switch, so left on (checked 2026-10-08): 1Password
 # (a Settings > Advanced toggle only); Electron apps Antigravity, Beekeeper
 # Studio, Discord, Dropbox, Notion, Obsidian, OpenWhispr, Postman and Slack;
 # Beyond Compare, iStat Menus, Malwarebytes, Piezo and Sync with their own
 # updaters; Firefox, Google Chrome, Google Drive and Zoom, whose switches are
-# system-wide managed policy; and the CLIs antigravity-cli, copilot-cli and
-# gcloud-cli. Updater agents are never removed to stop an app.
+# system-wide managed policy; and the CLIs copilot-cli and gcloud-cli. Updater agents are never removed to stop an app.
 self_update_rows() {
   printf '%s\n' \
     "appcleaner|AppCleaner.app|sparkle|net.freemacsoft.AppCleaner" \
@@ -3050,7 +3053,8 @@ self_update_rows() {
     "claude|Claude.app|defaults|com.anthropic.claudefordesktop|disableAutoUpdates|true" \
     "visual-studio-code|Visual Studio Code.app|json|$HOME/Library/Application Support/Code/User/settings.json|update.mode|\"none\"" \
     "zed|Zed.app|json|$HOME/.config/zed/settings.json|auto_update|false" \
-    "docker-desktop|Docker.app|json|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false"
+    "docker-desktop|Docker.app|json|$HOME/Library/Group Containers/group.com.docker/settings-store.json|AutoDownloadUpdates|false" \
+    "antigravity-cli|agy|env|$HOME/.config/shell/env.sh|AGY_CLI_DISABLE_AUTO_UPDATE|1"
 }
 
 # Can this process read an app's data? macOS refuses another app's container
@@ -3125,10 +3129,32 @@ self_update_json() { # file key json-value
     || echo "  DIFFERS $1 $2 not changed; set it to $3 by hand"
 }
 
+# One `export KEY=VALUE` line in a shell env file: ok, or MISSING/DIFFERS and
+# the append. A later line wins in sh, so a differing value is overridden, not
+# edited; the file is created owner-only, as the shell env check wants it.
+self_update_env() { # file key value
+  want="export $2=$3"
+  if [ -f "$1" ] && grep -qxF "$want" "$1"; then
+    echo "  ok      $1 $2 = $3"
+    return 0
+  fi
+  if [ -f "$1" ] && grep -q "^export $2=" "$1"; then
+    echo "  DIFFERS $1 $2, want $3"
+  else
+    echo "  MISSING $1 $2 = $3"
+  fi
+  run_ok mkdir -p "$(dirname "$1")" || return 0
+  try_run sh -c 'umask 077; printf "%s\n" "$1" >> "$2"' sh "$want" "$1" \
+    || echo "  DIFFERS $1 $2 not written; add '$want' by hand"
+}
+
 stage_self_update() {
   echo "  self-update off (casks that update themselves; the weekly upgrade moves them)"
   while IFS='|' read -r cask app how target key val; do
-    [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] || continue
+    case "$how" in
+      env) command -v "$app" >/dev/null 2>&1 ;;
+      *) [ -n "$app" ] && [ -d "$APPLICATIONS_DIR/$app" ] ;;
+    esac || continue
     case "$how" in
       sparkle)
         # An App Store build ships no Sparkle and no updater of its own (the
@@ -3145,6 +3171,7 @@ stage_self_update() {
         self_update_default "$target" SUAutomaticallyUpdate false ;;
       defaults) self_update_default "$target" "$key" "$val" ;;
       json) self_update_json "$target" "$key" "$val" ;;
+      env) self_update_env "$target" "$key" "$val" ;;
       *) echo "  DIFFERS $cask: unknown self-update mechanism '$how'" ;;
     esac
   done <<EOF_SELF_UPDATE

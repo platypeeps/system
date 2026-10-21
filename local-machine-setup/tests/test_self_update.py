@@ -150,6 +150,37 @@ class SelfUpdateOffTest(unittest.TestCase):
                       clean.stdout)
         self.assertIn("MISSING", clean.stdout)
 
+    def test_an_env_row_exports_its_switch_once_in_the_shell_env(self):
+        # fleet sd:5566: agy self-updated into a bare binary Homebrew no longer tracked. Its switch is an
+        # environment variable, kept in ~/.config/shell/env.sh, which every login shell and job sources.
+        write_exec(self.stubs / "agy", EXIT_1_STUB)
+        env_sh = self.home / ".config/shell/env.sh"
+        env_sh.parent.mkdir(parents=True, exist_ok=True)
+        env_sh.write_text("export OTHER=1\n")
+
+        dry = self.run_verb("update", "macos")
+        self.assertIn("MISSING", dry.stdout)
+        self.assertIn("AGY_CLI_DISABLE_AUTO_UPDATE", dry.stdout)
+        self.assertEqual(env_sh.read_text(), "export OTHER=1\n")
+
+        self.run_verb("update", "macos", "--apply")
+        again = self.run_verb("update", "macos", "--apply")
+
+        lines = env_sh.read_text().splitlines()
+        self.assertEqual(lines.count("export AGY_CLI_DISABLE_AUTO_UPDATE=1"), 1, lines)
+        self.assertIn("export OTHER=1", lines)
+        self.assertNotIn("AGY_CLI_DISABLE_AUTO_UPDATE", "\n".join(
+            line for line in again.stdout.splitlines() if "MISSING" in line or "DIFFERS" in line))
+
+    def test_an_env_row_for_a_command_not_installed_is_skipped(self):
+        env_sh = self.home / ".config/shell/env.sh"
+        env_sh.parent.mkdir(parents=True, exist_ok=True)
+        env_sh.write_text("")
+
+        self.run_verb("update", "macos", "--apply")
+
+        self.assertNotIn("AGY_CLI_DISABLE_AUTO_UPDATE", env_sh.read_text())
+
     def test_an_app_without_sparkle_has_no_sparkle_row(self):
         # sd:3103: the App Store build of Maccy ships no Sparkle.framework and
         # no updater, so its two keys were drift that no write could clear.
