@@ -66,9 +66,16 @@ inventory gives the job's state, its off reason (not installed, running, or a
 start launchd refuses) and the last line of its log; while it runs, the page
 reads again every 15 seconds (`SRC_POLL`).
 
-Refresh all, the panel head's button and the palette's "Refresh all sources" (sd:5482), posts the same route
-for each row whose Run now is on, then reads HOA once. Its toast names each source that started and each
-that did not, with the reason. With no row able to start, it is off and names every row's reason.
+Download from Vantaca and Download from Mission (sd:5626), the panel head's buttons and palette entries, post
+`/api/hoa/download {"source"}`. That starts `sd_dashboard/hoa_download.py` detached through the sweep's
+`spawn`, holding `<state>/system/hoa-download/<source>/lock`: a second post while it runs is a 409. The run opens
+the portal in a Claude Chrome session (`claude -p --chrome`, Chrome tools only, no form tool). On a login page the
+source row shows "waiting for you to log in" while the session reads the page every 30 seconds, up to 15 minutes; it
+never types. Once signed in, it runs the checkout's own download, `tools/vantaca-pull.py` or
+`tools/mission/mission.sh export`; their prompts name the portal address (section 2). `/api/hoa`'s `downloads`
+part reads each source's `last.json`: running and its phase, or done, unavailable or failed with the reason. A
+checkout without the script or prompt turns that button off, naming the file. A button shows only while its source
+row does, so Vantaca's leaves with its row after its end date.
 
 The last Data sources row is the HOA sweep (sd:5095). Run sweep asks first,
 then posts `/api/hoa/sweep`, which starts the checkout's `tools/sweep.py run`

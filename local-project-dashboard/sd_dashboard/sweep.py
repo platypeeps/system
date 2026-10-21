@@ -116,9 +116,11 @@ def spawn(state: Path, place: Path, argv: list[str], command: str, what: str, pr
         with open(state / "start.log", "w", encoding="utf-8") as log:
             log.write(f"{started} {command} in {place}\n")
             log.flush()
+            # SD_RUN_LOCK_FD names the held lock, so a runner can hand it to its own children (hoa_download).
             runner = subprocess.Popen(argv, cwd=str(place),
                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                      pass_fds=(handle.fileno(),), start_new_session=True, env=_environment())
+                                      pass_fds=(handle.fileno(),), start_new_session=True,
+                                      env=_environment() | {"SD_RUN_LOCK_FD": str(handle.fileno())})
         # Reaped here when it ends, so a long-lived server keeps no zombie; a restart hands it to launchd instead.
         threading.Thread(target=runner.wait, name=what, daemon=True).start()
         return 202, {"started": started, "repo": str(place), "command": command}

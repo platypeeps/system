@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from sd_dashboard import hoa_screen, server, v2
+from sd_dashboard import hoa_download, hoa_screen, server, v2
 
 from sd_db import SdDbError, connect, upsert_repo, workflow, writes
 from sd_db.migrate import initialise
@@ -133,6 +133,10 @@ class Fixture(ScreenCase):
         # Never this machine's levels: a test that wants one writes this file.
         self.levels = self.root / "hoa-thresholds.conf"
         patch = mock.patch.object(hoa_screen, "THRESHOLDS", self.levels)
+        patch.start()
+        self.addCleanup(patch.stop)
+        # Never this machine's downloads (sd:5626): each source's state folder is the test's own.
+        patch = mock.patch.object(hoa_download, "state_dir", lambda source: self.root / "downloads" / source)
         patch.start()
         self.addCleanup(patch.stop)
         # Never this machine's launchd: a test that wants a refresh job installed names it here.
@@ -366,7 +370,8 @@ class TheScript(Fixture):
             ["alarms.ack", "alarms", "undo", None],
             ["jobs.retry", "job", "safe", "t"],
             ["jobs.log", "job", "safe", "l"],
-            ["sources.refresh", "sources", "safe", None],
+            ["download.vantaca", "vantaca download", "safe", None],
+            ["download.mission", "mission download", "safe", None],
             ["sweep.run", "sweep", "safe", "w"],
         ])
 
@@ -1180,55 +1185,77 @@ C.run(c, m); await flush(); R.timers = TIMERS;""", doc,
         # and once more after SRC_POLL, in case launchd had not marked the job running yet.
         self.assertEqual(out["R"]["timers"], [15000])
 
-    # sd:5482: one Refresh all button on the Data sources head starts every source's refresh job through the same route.
-    REFRESH_ALL = """ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC]
-  : [200, { request: { status: 'accepted', message: 'launchctl accepted the request' }, job: {} }];
-const c = cmd('sources.refresh'), o = OBJ.get('sources');
-R.when = c.when(o); R.cli = c.cli(o); R.tools = ELS['src-tools'].html;
-R.page = window.PAGE_COMMANDS.map(p => p.label);
-ELS['src-tools'].listeners.click[0]({ target: { closest: s => s === '#src-refresh' ? {} : null } }); await flush(); R.timers = TIMERS;"""
+    # sd:5626: Refresh all is gone; the head holds Download from Vantaca and Download from Mission, each one start of
+    # hoa_download through POST /api/hoa/download, and the source row follows that run.
+    DOWNLOAD = """ANSWER = (path, body) => path === '/api/hoa' ? [200, DOC] : [202, { started: '2026-09-06T08:00:00+00:00', repo: '/hoa', command: 'x' }];
+const c = cmd('download.vantaca'), o = OBJ.get('download:vantaca');
+R.when = c.when(o); R.cli = c.cli(o); R.tools = ELS['src-tools'].html; R.src = ELS['src-body'].html;
+R.page = window.PAGE_COMMANDS.map(p => p.label); R.reg = REG.map(c => c.id);
+ELS['src-tools'].listeners.click[0]({ target: { closest: s => s === '[data-download]' ? { dataset: { download: 'vantaca' } } : null } });
+await flush(); R.timers = TIMERS;"""
 
-    def test_refresh_all_starts_the_mission_and_vantaca_jobs_through_the_jobs_route(self):
+    def download_doc(self, **vantaca):
         self.script()
-        self.jobs.jobs.update({"hoa-mission-export": ("failed", 3), "hoa-vantaca-pull": ("idle", 0)})
         doc = self.doc()
-        rev = {r["job"]["name"]: r["job"]["revision"] for r in doc["sources"]["rows"] if "job" in r}
-        out = self.run_page(self.REFRESH_ALL, doc,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
+        never = {"running": False, "state": "never", "phase": "", "reason": "", "started": "", "finished": "", "exit": None,
+                 "log": "/state/start.log", "error": ""}
+        doc["downloads"] = {"vantaca": never | {"source": "vantaca", "label": "Vantaca", "command": "python3 tools/vantaca-pull.py"} | vantaca,
+                            "mission": never | {"source": "mission", "label": "Mission", "command": "sh tools/mission/mission.sh export"}}
+        return doc
+
+    def test_refresh_all_is_gone_and_each_download_button_posts_its_source(self):
+        out = self.run_page(self.DOWNLOAD, self.download_doc(), pre=TIMERS)
         self.assertIs(out["R"]["when"], True)
-        self.assertEqual(out["R"]["cli"], "sd jobs retry hoa-mission-export && sd jobs retry hoa-vantaca-pull")
-        self.assertIn('id="src-refresh"', out["R"]["tools"])
-        self.assertNotIn('aria-disabled', out["R"]["tools"])
-        self.assertIn("Refresh all sources", out["R"]["page"])
-        self.assertEqual([p[:2] for p in out["posts"]],
-                         [["/api/jobs/hoa-mission-export/retry", {"revision": rev["hoa-mission-export"]}],
-                          ["/api/jobs/hoa-vantaca-pull/retry", {"revision": rev["hoa-vantaca-pull"]}]])
-        self.assertIn("Refresh started · Mission export, Vantaca invoices", out["toasts"][0][0])
-        # One reread for both starts, then the poll.
+        self.assertEqual(out["R"]["cli"], "python3 tools/vantaca-pull.py")
+        self.assertEqual(re.findall(r'data-download="(\w+)"', out["R"]["tools"]), ["mission", "vantaca"])
+        self.assertIn("Download from Vantaca", out["R"]["tools"])
+        self.assertIn("Download from Mission", out["R"]["tools"])
+        self.assertNotIn("aria-disabled", out["R"]["tools"])
+        self.assertNotIn("Refresh all", out["R"]["tools"] + " ".join(out["R"]["page"]))
+        self.assertNotIn("sources.refresh", out["R"]["reg"])
+        self.assertIn("Download from Vantaca", out["R"]["page"])
+        self.assertIn("Download from Mission", out["R"]["page"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/hoa/download", {"source": "vantaca"}]])
+        self.assertIn("Vantaca download started 08:00 UTC", out["toasts"][-1][0])
+        # The start reads HOA again, then again every SRC_POLL until the run ends.
         self.assertEqual(out["gets"], ["/api/hoa", "/api/hoa"])
         self.assertEqual(out["R"]["timers"], [15000])
 
-    def test_refresh_all_starts_the_job_that_can_and_names_the_one_that_cannot(self):
-        self.script()
-        self.jobs.jobs.update({"hoa-mission-export": ("idle", 0), "hoa-vantaca-pull": ("running", None)})
-        out = self.run_page(self.REFRESH_ALL,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
-        self.assertEqual([p[0] for p in out["posts"]], ["/api/jobs/hoa-mission-export/retry"])
-        self.assertIn("Refresh started · Mission export · Vantaca invoices not started: hoa-vantaca-pull is running now",
-                      out["toasts"][0][0])
-
-    def test_refresh_all_is_off_with_each_reason_when_no_job_can_start(self):
-        self.script()
-        doc = self.doc()
-        out = self.run_page(self.REFRESH_ALL, doc,
-                            pre="var TIMERS = []; setTimeout = (f, ms) => { TIMERS.push(ms); return TIMERS.length; };")
-        why = (f"Mission export: {doc['sources']['rows'][0]['job']['error']} · "
-               f"Vantaca invoices: {doc['sources']['rows'][2]['job']['error']}")
-        self.assertEqual(out["R"]["when"], why)
-        self.assertIn('aria-disabled="true"', out["R"]["tools"])
-        self.assertIn(why, out["R"]["tools"])
+    def test_the_row_says_waiting_for_you_to_log_in_and_the_button_is_off_while_it_waits(self):
+        doc = self.download_doc(running=True, state="running", phase="waiting", started="2026-09-06T08:00:00+00:00")
+        out = self.run_page(self.DOWNLOAD, doc, pre=TIMERS)
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?17 d old · waiting for you to log in</div>', re.S))
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?class="detail hide-sm">waiting for you to log in<', re.S))
+        self.assertEqual(out["R"]["when"], "a Vantaca download is running now: waiting for you to log in")
+        self.assertRegex(out["R"]["tools"], r'data-download="vantaca" aria-disabled="true"')
         self.assertEqual(out["posts"], [])
-        self.assertEqual(out["toasts"][0][0], why)
+        self.assertEqual(out["toasts"][-1][0], "a Vantaca download is running now: waiting for you to log in")
+        # A running download reads HOA again, so the row follows the session to the download and its end.
+        self.assertEqual(out["R"]["timers"], [15000])
+
+    def test_a_finished_download_is_the_rows_refresh_text_and_a_missing_procedure_turns_its_button_off(self):
+        doc = self.download_doc(state="failed", reason="python3 tools/vantaca-pull.py exited 1: boom",
+                                error="tools/vantaca-pull.py is not in the hoa checkout /hoa, so the Vantaca download has no procedure there")
+        out = self.run_page(self.DOWNLOAD, doc, pre=TIMERS)
+        self.assertRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?class="detail hide-sm">last download failed: python3 tools/vantaca-pull.py exited 1: boom<', re.S))
+        self.assertNotRegex(out["R"]["src"], re.compile(r'data-id="source:vantaca".*?17 d old · ', re.S))
+        self.assertEqual(out["R"]["when"], doc["downloads"]["vantaca"]["error"])
+        self.assertEqual(out["posts"], [])
+
+    def test_a_retired_source_has_no_download_button(self):
+        doc = self.download_doc()
+        doc["sources"]["rows"] = [r for r in doc["sources"]["rows"] if r["source"] != "vantaca"]
+        out = self.run_page("R.tools = ELS['src-tools'].html; R.obj = !!OBJ.get('download:vantaca');", doc)
+        self.assertEqual(re.findall(r'data-download="(\w+)"', out["R"]["tools"]), ["mission"])
+        self.assertFalse(out["R"]["obj"])
+
+    def test_the_document_carries_each_sources_download_state(self):
+        self.script()
+        got = self.doc()["downloads"]
+        self.assertEqual(sorted(got), ["mission", "vantaca"])
+        self.assertEqual((got["mission"]["state"], got["mission"]["running"]), ("never", False))
+        # The fixture checkout holds neither procedure, so each download names the file it lacks.
+        self.assertIn("tools/mission/export-prompt.md is not in the hoa checkout", got["mission"]["error"])
 
     def test_a_refused_start_is_named(self):
         self.script()
@@ -1284,7 +1311,7 @@ R.when = ['mission', 'vantaca'].map(k => c.when(OBJ.get(`source:${k}`)));""",
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "hoa", "HOA", "/hoa", ("/api/hoa", "/api/hoa/alarm", "/api/hoa/alarms", "/api/hoa/sweep",
-                                              "/api/hoa/sweep/status", "/api/hoa/briefs",
+                                              "/api/hoa/sweep/status", "/api/hoa/download", "/api/hoa/briefs",
                                               "/api/hoa/reports")
 
 
