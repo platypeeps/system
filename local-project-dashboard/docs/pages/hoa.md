@@ -96,3 +96,10 @@ is hoa's when its job is in that family. A missing checkout, family or file
 makes the view unknown with the reason and the line to add, never an empty list.
 The views are `window.PAGE_VIEWS`, set from the markup before `shell.js`; the shell's view switch draws
 them in `#viewswitch`, and until that shell lands `places.js` draws a segmented control there (`viewSwitch`).
+
+HOA-owned tracts (sd:5623): every `tract` outline whose county land use (`luc`)
+is `TRCT` is the association's common land, drawn in the accent colour; the road
+parcel (`ROAD`) is not. A tract whose longest side is under 12 px at the current
+zoom gets a ring marker, which goes once the zoom shows the tract. The legend
+counts them. No parcel number is kept in this repository; the outlines and their
+land use come from the checkout's `base.geojson`.

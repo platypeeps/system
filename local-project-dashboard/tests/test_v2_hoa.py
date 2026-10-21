@@ -438,6 +438,36 @@ R.after = ELS.map.html;""")
         self.assertIn("Valves <b>1</b>", out["R"]["legend"])
         self.assertEqual(re.findall(r'data-asset="([^"]+)"', out["R"]["after"]), ["TANK-01", "WELL-A2"])
 
+    def tract_doc(self):
+        """The fixture's base plus a common tract, a tiny common tract and a road parcel: synthetic AINs, as the county prints land use."""
+        doc = self.doc()
+        square = lambda x, y, side: [[[x, y], [x + side, y], [x + side, y + side], [x, y + side], [x, y]]]  # noqa: E731
+        doc["base"]["features"] = [f | ({"luc": "TRCT"} if f["kind"] == "tract" else {}) for f in doc["base"]["features"]] + [
+            {"kind": "tract", "ain": "0002", "label": "", "luc": "TRCT", "acres": 0.02, "rings": square(10.0015, 50.0005, 0.00001)},
+            {"kind": "tract", "ain": "0003", "label": "", "luc": "ROAD", "acres": 0.03, "rings": square(10.0018, 50.0018, 0.0001)}]
+        return doc
+
+    def test_the_hoa_owned_tracts_are_highlighted_and_a_tiny_one_gets_a_marker(self):
+        # sd:5623: every TRCT tract is the HOA's; the road parcel is not. A tract too small to see at the scale gets a ring.
+        out = self.run_page("R.map = ELS.map.html; R.legend = ELS.legend.html;", self.tract_doc())
+        paths = re.findall(r'<path class="lot k-tract"([^>]*)>', out["R"]["map"])
+        owned = {re.search(r'data-tract="([^"]+)"', p).group(1) for p in paths if " data-owned" in p}
+        self.assertEqual((owned, len(paths)), ({"0001", "0002"}, 3))
+        self.assertEqual(re.findall(r'<circle class="hoa-mark" data-tract="([^"]+)"', out["R"]["map"]), ["0002"])
+        self.assertRegex(out["R"]["legend"], r'class="status"><i class="own" aria-hidden="true"></i>HOA-owned tracts <b class="data">2</b>')
+
+    def test_the_marker_goes_when_the_zoom_makes_the_tract_visible(self):
+        out = self.run_page("""R.far = ELS.map.html;
+for (let i = 0; i < 3; i++) ELS['zoom-in'].listeners.click[0]();
+R.near = ELS.map.html;""", self.tract_doc())
+        self.assertEqual(len(re.findall(r'class="hoa-mark"', out["R"]["far"])), 1)
+        self.assertEqual(len(re.findall(r'class="hoa-mark"', out["R"]["near"])), 0)
+        self.assertEqual(len(re.findall(r'<path class="lot k-tract" data-tract="[^"]+" data-owned', out["R"]["near"])), 2)
+
+    def test_no_tract_means_no_hoa_legend_entry(self):
+        out = self.run_page("R.legend = ELS.legend.html;")
+        self.assertNotIn("HOA-owned", out["R"]["legend"])
+
     def test_the_tasks_are_ranked_rows_with_their_due_state(self):
         out = self.run_page("R.ob = ELS['ob-body'].html; R.al = ELS['al-body'].html; R.det = ELS.details.html;")
         ob = out["R"]["ob"]
