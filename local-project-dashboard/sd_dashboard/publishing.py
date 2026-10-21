@@ -678,24 +678,24 @@ def seed_obsidian(connection, *, apply: bool = False) -> list[str]:
     `apply` the file is replaced atomically and trusted again only when a render by hand trusted it before. A second run
     finds every key there and seeds nothing.
     """
-    from sd_db import paths
+    from sd_db import paths, repos
 
     lines: list[str] = []
-    for row in connection.execute("SELECT path FROM repo ORDER BY path"):
-        checkout = paths.expand(row[0])
+    for row in repos.registered(connection):
+        checkout = paths.expand(row["path"])
         conf = checkout / "research.conf.py"
         if not conf.is_file():
             continue
         if vault_repository(checkout):
-            lines.append(f"{row[0]}: the vault's own repository; its documents stay repo-wide, nothing to seed")
+            lines.append(f"{row["path"]}: the vault's own repository; its documents stay repo-wide, nothing to seed")
             continue
         setting, unread = read_channels(connection, checkout)
         if unread:
-            lines.append(f"{row[0]}: held, {unread}; nothing seeded")
+            lines.append(f"{row["path"]}: held, {unread}; nothing seeded")
         elif setting is not None and "obsidian" not in setting:
-            lines.append(f"{row[0]}: Obsidian is off for this repository, so nothing of it was mirrored; nothing to seed")
+            lines.append(f"{row["path"]}: Obsidian is off for this repository, so nothing of it was mirrored; nothing to seed")
         else:
-            lines += _seed(row[0], checkout, conf, vault_folder(checkout, setting), apply)
+            lines += _seed(row["path"], checkout, conf, vault_folder(checkout, setting), apply)
     return lines
 
 
