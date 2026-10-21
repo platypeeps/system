@@ -476,30 +476,29 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertNotIn('id="views"', page)
         self.assertNotIn("shell.views", ACTIVITY_JS)
 
-    def test_all_read_adds_the_older_journal_records_and_24h_leaves_them_out(self):
+    def test_only_a_link_reads_the_older_journal_records_and_its_token_goes_back_to_24h(self):
+        """The 7d, 30d and All chips are gone; palette.py's range=all link still opens the older records."""
         older = self.ids["older"]
-        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
-        out = self.run_page("R.day = ELS.rows.html; R.chip = ELS.filters.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html;"
-                            + range_ % "all" + "R.all = ELS.rows.html;" + range_ % "24h" + "R.back = ELS.rows.html;")
-        self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["day"])
-        self.assertRegex(out["R"]["chip"], r'data-f="range" data-v="all"[^>]*title="All read: the 24 hours and 1 older journal record">All <span class="n">\+1</span>')
-        self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["lanes"], "the chart is the 24 hours")
+        tok = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: 'all' } } : null } });"
+        day = self.run_page("R.day = ELS.rows.html; R.lanes = ELS.lanes.html; R.note = ELS['journal-note'].html; R.hid = ELS['journal-note'].hidden;")
+        self.assertNotIn(f'data-id="cmd:{older}"', day["R"]["day"])
+        self.assertNotIn(f'data-id="cmd:{older}"', day["R"]["lanes"], "the chart is the 24 hours")
+        self.assertEqual(day["R"]["note"], "1 exec note no known writer left is skipped.")
+        self.assertFalse(day["R"]["hid"])
+        out = self.run_page("R.all = ELS.rows.html; R.bar = ELS.filters.html;" + tok + "R.back = ELS.rows.html;",
+                            pre="location.search = '?range=all';")
         self.assertIn(f'data-id="cmd:{older}"', out["R"]["all"])
-        self.assertIn([None, "all"], out["urls"])
+        self.assertIn('class="tok" data-f="range" data-v="all" aria-label="Remove filter: Older journal records"', out["R"]["bar"])
         self.assertNotIn(f'data-id="cmd:{older}"', out["R"]["back"])
-        self.assertIn("5 records", out["R"]["note"])
-        self.assertIn("palette, runner and page runs alike", out["R"]["note"])
-        self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
-        self.assertNotIn("none shows here", out["R"]["note"])
 
     def test_the_lamps_count_the_timeline_range(self):
         # The Commands lamp said "55 in the journal" on a 24-hour page whose 55 records were weeks old.
         range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
-        out = self.run_page("R.day = ELS.annunciator.html;" + range_ % "all" + "R.all = ELS.annunciator.html;"
-                            + range_ % "1h" + "R.hour = ELS.annunciator.html;")
+        out = self.run_page("R.day = ELS.annunciator.html;" + range_ % "1h" + "R.hour = ELS.annunciator.html;")
         self.assertIn('<span class="ph">4 in 24 h</span>', out["R"]["day"])
         self.assertRegex(out["R"]["hour"], r'<span class="ph">\d+ in 1 h</span>')
         self.assertNotIn("in 24 h", out["R"]["hour"])
+        out = self.run_page("R.all = ELS.annunciator.html;", pre="location.search = '?range=all';")
         self.assertIn('<span class="ph">5 in the journal</span>', out["R"]["all"])
 
     def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
@@ -799,7 +798,7 @@ R.on = r.when(C.get('cmd:{self.ids['stopped']}')); R.primary = r.primary(C.get('
         self.assertRegex(state, rf'data-f="state" data-v="warning" aria-pressed="false" title="failed: {failed}"><span class="g-warning" aria-hidden="true">■</span><span class="n">{failed}</span>')
         self.assertEqual(re.findall(r'aria-hidden="true">(.)</span>', state), ["■", "▲", "●"])
         rng = re.search(r'<div class="fseg" role="group" aria-label="Range">(.*?)</div>', bar).group(1)
-        self.assertEqual(re.findall(r'data-f="range" data-v="(\w+)"', rng), ["1h", "24h", "all", "7d", "30d"])
+        self.assertEqual(re.findall(r'data-f="range" data-v="(\w+)"', rng), ["1h", "24h"])
         self.assertIn('data-v="24h" aria-pressed="true"', rng)
         self.assertRegex(bar, r'<button type="button" class="pick" id="repo-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="repo-pop">Repo')
         self.assertTrue(bar.endswith('<div class="fsum"></div></div>'), "no filter is on, so there is nothing to clear")
@@ -866,15 +865,6 @@ R.bar = ELS.filters.html; R.input = (OUT.shift ?? null);""", pre="location.searc
                                                       "window.shell.url = p => OUT.qs = (OUT.qs || []).concat([p.toString()]);")
         self.assertEqual((out["R"]["input"], out["qs"][-1]), ("", ""))
         self.assertNotIn('class="tok"', out["R"]["bar"])
-
-    def test_a_range_that_is_not_read_toasts_the_range_that_stays(self):
-        """sd:2424. At 1h or All read, 7d keeps that range; the toast said 24h."""
-        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
-        out = self.run_page(range_ % "7d" + range_ % "1h" + range_ % "7d" + range_ % "all" + range_ % "30d")
-        self.assertEqual([t[0] for t in out["toasts"]], [
-            "7d is not read: /api/activity holds the last 24 hours. The range stays at 24h.",
-            "7d is not read: /api/activity holds the last 24 hours. The range stays at 1h.",
-            "30d is not read: /api/activity holds the last 24 hours. The range stays at All read."])
 
     def test_a_search_from_the_address_matches_without_case(self):
         """sd:2424 (round-6 finding). A typed query is lowercased; one restored from ?q= was matched as written."""
