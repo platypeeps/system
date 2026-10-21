@@ -804,6 +804,16 @@ pick('p', ''); R.url2 = OUT.urls[OUT.urls.length - 1];""", search="?kind=task,wo
         self.assertIn("p=1", out["R"]["url"])
         self.assertNotIn("p=", out["R"]["url2"])
 
+    def test_kind_holds_the_plugin_kinds_and_an_old_base_address_still_filters(self):
+        # sd:5644: Kind and Base were two filters over one question; Base's plugin kinds are Kind's last options now.
+        self.doc["rows"] = [*self.doc["rows"], {**self.doc["rows"][0], "id": 901, "title": "A blog idea", "base": "blog-idea"}]
+        out = self.run_page("R.filters = ELS.filters.html; R.board = ELS['view-board'].html;", search="?base=blog-idea")
+        filters = out["R"]["filters"]
+        self.assertNotIn('data-pick="base"', filters)
+        self.assertIn('<option value="base:blog-idea" selected>blog-idea (plugin kind)</option></select>', filters)
+        self.assertIn("A blog idea", out["R"]["board"])
+        self.assertNotIn("Port the page", out["R"]["board"])
+
     def test_repo_is_a_multiselect_dropdown_and_two_repos_show_their_union(self):
         """sd:5158: Repo is a menu of checkboxes; two picks show the tasks of both, and the address names both."""
         box = "const box = (v, on) => ELS.filters.listeners.change[0]({ currentTarget: ELS.filters, target: { dataset: { pick: 'repo' }, type: 'checkbox', value: v, checked: on, getAttribute: () => null } });\n"

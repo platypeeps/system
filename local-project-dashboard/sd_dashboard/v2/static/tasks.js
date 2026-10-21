@@ -232,7 +232,7 @@ addEventListener('DOMContentLoaded', () => {
   // check land here with their filter.
   // build (sd:3012): Parked swaps the listed rows for the ones the nightly prune parked, for triage's Unpark.
   // build (sd:3977): Base narrows to one vault base's rows; it shows once a row has a base.
-  const F = { kind: new Set(), base: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
+  const F = { kind: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
   let Q = '';
@@ -251,7 +251,8 @@ addEventListener('DOMContentLoaded', () => {
     const combo = (key, name, opts, help, all = 'All', multi = false) => window.shell.list.pick(key, name,
       [...new Map([...opts, ...[...F[key]].map(v => [v, fvalue(key, v)])])], F[key], { all, help, multi });
     const same = vs => vs.map(v => [v, v]);
-    put(document.getElementById('filters'), html`${combo('kind', 'Kind', same(kinds))}${bases.length || F.base.size ? combo('base', 'Base', same(bases)) : ''}${combo('repo', 'Repo', same(repos), '', 'All', true)}${
+    // sd:5644: one Kind filter. A plugin kind (the row's base: lead, blog-idea…) is a `base:` value after the item kinds.
+    put(document.getElementById('filters'), html`${combo('kind', 'Kind', [...same(kinds), ...bases.map(b => [`base:${b}`, kindWord(`base:${b}`)])])}${combo('repo', 'Repo', same(repos), '', 'All', true)}${
       combo('p', 'Priority', [['1', 'P1'], ['2', 'P2'], ['3', 'P3'], ['4', 'P4'], ['', 'unset']].map(([v, l]) => [v || 'unset', l]))}${
       combo('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. An old link may name two buckets; they widen the view, and filters narrow it.">${ICON('circle-help')}</button>`)}${
       combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
@@ -261,8 +262,9 @@ addEventListener('DOMContentLoaded', () => {
       (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
-  const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
-  const fvalue = (k, v) => k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
+  const FNAME = { kind: 'Kind', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
+  const kindWord = v => (v.startsWith('base:') ? `${v.slice(5)} (plugin kind)` : v);
+  const fvalue = (k, v) => k === 'kind' ? kindWord(v) : k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
     : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? (v === 'parked' ? 'Parked only' : 'Open only') : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
@@ -278,7 +280,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('input', () => { Q = find.value.trim().toLowerCase(); L.page = 1; render(); });
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
-  const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
+  const passes = t => (!F.kind.size || F.kind.has(t.kind) || (!!t.base && F.kind.has(`base:${t.base}`))) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
     && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.has('1') || t.status !== 'done') && !!t.parked === F.active.has('parked') && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
@@ -1193,6 +1195,8 @@ addEventListener('DOMContentLoaded', () => {
   function readFilterURL() {
     const q = new URLSearchParams(location.search);
     FKEYS.forEach(key => (q.get(key) || '').split(',').filter(Boolean).forEach(v => F[key].add(v)));
+    // An older address's ?base= is Kind's plugin kinds now (sd:5644).
+    (q.get('base') || '').split(',').filter(Boolean).forEach(v => F.kind.add(`base:${v}`));
     // An age v1 would not accept is dropped, as v1 dropped it; active takes 1 only, as v1's ?active=1 did.
     [...F.age].forEach(v => { if (!AGES.some(a => a.key === v)) F.age.delete(v); });
     // An older address's ?parked=1 is Scope's Parked only now (sd:5643).
