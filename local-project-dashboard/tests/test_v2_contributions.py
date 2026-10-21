@@ -1112,8 +1112,9 @@ R.undated = (open('filed:jira:{JIRA}ABC-4'), ELS.details.html);""")
         details = out["R"]["details"]
         for text in ("Ticket ABC-1", "In Review", "Alex", "ABC", "Jira ticket"):
             self.assertIn(text, details)
-        self.assertIn(f'href="{JIRA}ABC-1" target="_blank" rel="noopener noreferrer"', details)
-        self.assertIn("Edit in Jira", details)
+        # sd:5629: the Key is the link to the ticket; there is no separate Edit in Jira link.
+        self.assertIn(f'<dt>Key</dt><dd><a class="ext" href="{JIRA}ABC-1" target="_blank" rel="noopener noreferrer">ABC-1', details)
+        self.assertNotIn("Edit in", details)
         self.assertEqual(out["opened"], [JIRA + "ABC-1"])
         self.assertEqual(out["posts"], [], "Edit wrote something")
         self.assertEqual(out["R"]["cli"], f"open '{JIRA}ABC-1'")

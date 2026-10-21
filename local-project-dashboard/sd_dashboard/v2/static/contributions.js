@@ -395,11 +395,13 @@ addEventListener('DOMContentLoaded', () => {
   function showFiled(key) {
     const r = FBY.get(key), g = fstate(r), where = TRACKER[r.tracker];
     selected = key; mark();
-    const facts = [['Key', r.ref], ['Status', r.status || 'not synced yet'], [r.tracker === 'jira' ? 'Project' : 'Repository', r.project || 'not recorded'],
+    // sd:5629: the Key is the link to the ticket or issue; a row with no https link shows the bare key and says so.
+    const keyCell = safeLink(r.url) ? html`<a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${r.ref}${I('arrow-up-right')}</a>` : r.ref;
+    const facts = [['Key', keyCell], ['Status', r.status || 'not synced yet'], [r.tracker === 'jira' ? 'Project' : 'Repository', r.project || 'not recorded'],
       ['Assignee', r.assignee == null ? 'not synced yet' : r.assignee || 'unassigned'], ['Filed by', r.author || 'you']];
     putKeep(details, html`<p class="kind"><span class="g-${g}" aria-hidden="true">${GLYPH[g]}</span> ${KIND[r.tracker]} · filed by you</p>
       <h2>${r.title || r.ref}</h2>
-      ${safeLink(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">Edit in ${where}${I('arrow-up-right')}</a></p>` : html`<p class="note">No https link recorded, so it opens nowhere.</p>`}
+      ${safeLink(r.url) ? '' : html`<p class="note">No https link recorded, so it opens nowhere.</p>`}
       <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}
         <dt>Created</dt><dd>${r.created_at ? html`<time class="rel" datetime="${r.created_at}" data-long=""></time>` : 'created date not synced yet'}</dd>
         <dt>Updated</dt><dd>${r.updated_at ? html`<time class="rel" datetime="${r.updated_at}" data-long=""></time>` : 'not synced yet'}</dd>
