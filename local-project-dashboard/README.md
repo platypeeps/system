@@ -69,6 +69,10 @@ Rows sort newest GitHub activity first; a row with no stamp says not recorded. Y
 A pull request row opens its details in the right pane (sd:5633), with Open on GitHub, Open item, Adversarial review
 (a codex review of the pull request at its head, in its registered checkout) and Copilot review. Copilot review asks
 GitHub once per press through `POST /api/today/github/copilot-review`, which runs `gh api` for one open pull request.
+Merge (sd:5668, `pr_merge.py`) copies an open pull request in a registered repository, yours or anyone's, into the lane:
+its confirm previews the head, author, worktree and item; then it fetches `pull/<n>/head` into `pr/<n>` and
+`~/worktrees/<checkout>-pr-<n>`, files or reuses the item under `github:<owner>/<name>#<n>`, and runs
+`sd-ship lane enqueue --deliver`. A second Merge resumes a run that stopped. The original stays open (sd:5669).
 Now, Work and GitHub rows share one selection (sd:5654): pressing a row in any of them marks it alone, names it in
 `?row=` and shows its details; a Work row's title there opens the item on Tasks.
 

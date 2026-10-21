@@ -15,6 +15,10 @@ sd:5633: a pull request row carries what its Details show (author, branch, dates
 registered checkout of its repository; a press opens those Details with Open on GitHub, Open item, Adversarial review
 (a change review of that pull request) and Copilot review, which asks GitHub once per press through
 `/api/today/github/copilot-review`. No test here runs gh or codex: the request takes a stand-in `run`.
+
+sd:5668: Merge reads its preview, asks with the pull request, its head, its author, the worktree and the item, and posts
+the preview's revision once; a settled pull request or one outside a registered repository is off. The copy itself is
+`test_v2_today_github_merge`.
 """
 
 from __future__ import annotations
@@ -372,7 +376,7 @@ class ThePullRequestDetails(unittest.TestCase):
         self.assertIsNone(out["R"]["issue"])
         self.assertEqual([i for i in out["R"]["ids"] if i.startswith("github pull request.")],
                          ["github pull request.open", "github pull request.item", "github pull request.adversarial-review",
-                          "github pull request.copilot-review"])
+                          "github pull request.copilot-review", "github pull request.merge"])
 
     def test_adversarial_review_starts_a_change_review_of_that_pull_request_and_only_an_open_one(self):
         out = self.page(f"C.run(cmd('github pull request.adversarial-review'), C.get('gh:{PR}'));"
@@ -402,6 +406,48 @@ class ThePullRequestDetails(unittest.TestCase):
         lost = self.page(f"C.run(cmd('github pull request.copilot-review'), C.get('gh:{PR}')); await flush();",
                          posts="() => { throw new Error('Failed to fetch'); }")
         self.assertIn("no answer (Failed to fetch), so whether Copilot was asked is not known", lost["toasts"][-1]["msg"])
+
+    # sd:5668: Merge's preview and write, as pr_merge answers them; `ASKS` records each confirm and answers `YES`.
+    MERGE = ("path => path.startsWith('/api/today/github/merge/preview') ? [200, { repo: 'example/anvil', number: 1,"
+             " title: 'Fix <b>it</b>', author: 'dependabot[bot]', head: '" + "b" * 40 + "', branch: 'pr/1', mode: 'copy',"
+             " worktree: '/home/worktrees/anvil-pr-1', worktree_listed: false, item: null, ref: 'github:example/anvil#1',"
+             " item_title: 'Merge example/anvil#1: Fix it', revision: '" + "r" * 64 + "', cli: 'git fetch && sd-ship lane enqueue' }]"
+             " : path === '/api/today/github/merge' ? [200, { ok: true, head: '" + "b" * 40 + "', branch: 'pr/1', item: 77,"
+             " filed: true, lane: { status: 'pending' } }] : [500, { error: 'unexpected ' + path }]")
+    ASKS = ("OUT.asks = []; var YES = true; window.shell.ask = a => { OUT.asks.push({ title: a.title, body: String(a.body), ok: a.ok,"
+            " keep: a.keep, cli: a.cli() }); return Promise.resolve({ yes: YES, values: {} }); };\n")
+
+    def test_merge_asks_with_the_preview_then_posts_its_revision_once(self):
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}')); R.previews = cmd('github pull request.merge').previews;",
+                        posts=self.MERGE)
+        self.assertEqual([g for g in out["gets"] if "merge" in g], ["/api/today/github/merge/preview?repo=example%2Fanvil&number=1"])
+        ask = out["asks"][0]
+        self.assertEqual((ask["title"], ask["ok"], ask["keep"], ask["cli"]),
+                         ("Merge example/anvil#1?", "Merge", "Don't merge", "git fetch && sd-ship lane enqueue"))
+        for fact in ('example/anvil#1 "Fix <b>it</b>" by dependabot[bot], head bbbbbbbbbbbb.', "pr/1",
+                     "/home/worktrees/anvil-pr-1", "Item: files a new task, Merge example/anvil#1: Fix it, under github:example/anvil#1.",
+                     "The original stays open"):
+            self.assertIn(fact, ask["body"])
+        self.assertEqual([(p, b) for p, b, _ in out["posts"]],
+                         [("/api/today/github/merge", {"repo": "example/anvil", "number": 1, "revision": "r" * 64})])
+        self.assertEqual(out["R"]["got"]["text"], "Copied · example/anvil#1 at bbbbbbbbbbbb into pr/1 · sd:77 filed · lane pending; Queue shows it")
+        self.assertTrue(out["R"]["previews"])
+
+    def test_merge_kept_posts_nothing_and_a_settled_or_unregistered_pull_request_is_off(self):
+        kept = self.page(self.ASKS + f"YES = false; R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}'));"
+                         f" C.run(cmd('github pull request.merge'), C.get('gh:{HUB}/example/anvil/pull/3'));", posts=self.MERGE)
+        self.assertEqual(kept["posts"], [])
+        self.assertEqual(kept["R"]["got"]["text"], "Merge not run · example/anvil#1")
+        self.assertEqual(kept["toasts"][-1]["msg"], "off: the pull request is merged; Merge copies an open one")
+        unregistered = self.page(f"C.run(cmd('github pull request.merge'), C.get('gh:{PR}'));", found=doc(pulls=[entry(1, checkout=None)]))
+        self.assertEqual((unregistered["gets"][1:], unregistered["posts"]), ([], []))
+        self.assertIn("example/anvil is not a registered repository, so the lane cannot take it", unregistered["toasts"][-1]["msg"])
+
+    def test_a_merge_the_server_could_not_finish_says_merge_again_resumes(self):
+        lost = self.MERGE.replace("path === '/api/today/github/merge' ? [200,", "path === '/api/today/github/merge' ? [502, { error: 'Merge stopped part way: stopped' }] : false ? [200,")
+        out = self.page(self.ASKS + f"R.got = await cmd('github pull request.merge').run(C.get('gh:{PR}'));", posts=lost)
+        self.assertEqual(out["R"]["got"]["text"],
+                         "Not known how far Merge got · example/anvil#1: Merge stopped part way: stopped. Merge again resumes what was copied.")
 
     def test_a_row_a_later_read_drops_is_retired_so_no_command_runs_on_it(self):
         out = self.run_page("show(); await flush(); R.before = C.get('gh:" + PR + "').type;"
