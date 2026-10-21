@@ -636,7 +636,7 @@ class TheTableGrammar(unittest.TestCase):
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
                            ("management.js", "shell.view.count('repos', rows.length);"),
                            ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];"),
-                           ("queue.js", "window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];")]:
+                           ("queue.js", "window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);")]:
             self.assertIn(call, (STATIC / page).read_text(encoding="utf-8"), page)
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
@@ -918,6 +918,20 @@ class TheToolbarBoxesAlign(unittest.TestCase):
         body = self.rule(SHELL_CSS, ".toolbar .viewswitch [role=\"tab\"], .toolbar .vseg > button")
         self.assertIsNotNone(body)
         self.assertIn("min-height: 0;", body)
+
+
+class EveryDisclosureHasOneArrow(unittest.TestCase):
+    """sd:5637: every <details> summary but a filter pick wears one ▸/▾ arrow from shell.css. Cause: Briefs' and Activity's
+    "as a table" summaries were inline-flex, which drops the native marker, while Notes drew its own arrow."""
+
+    def test_shell_css_draws_the_arrow_for_every_summary(self):
+        self.assertIn("details:not(.fpick) > summary::before { content: '▸';", SHELL_CSS)
+        self.assertIn("details:not(.fpick)[open] > summary::before { content: '▾'; }", SHELL_CSS)
+
+    def test_no_page_draws_its_own_arrow(self):
+        for css in STATIC.glob("*.css"):
+            if css.name != "shell.css":
+                self.assertNotIn("summary::before", css.read_text(encoding="utf-8"), css.name)
 
 
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
