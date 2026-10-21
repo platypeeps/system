@@ -878,6 +878,43 @@ class TheToolbarStandard(unittest.TestCase):
                       (STATIC / "shell.js").read_text(encoding="utf-8"))
 
 
+class TheToolbarBoxesAlign(unittest.TestCase):
+    """sd:5619: in row 1 the view switch and the Shapeshift box share one height and one top and bottom edge. The JXA harness
+    has no layout engine, so these pin the CSS that makes them equal. Cause: .place-switch (places.css) kept a margin-bottom
+    of --space-md, so the box that wraps Home's, HOA's and Tasks' switch stood 16px taller than the switch and, centred in
+    the row, put the Shapeshift box 7px lower at its top and 9px lower at its bottom; the switch (42px) and the box (44px)
+    also took their heights from different numbers."""
+
+    PLACES_CSS = (STATIC / "places.css").read_text(encoding="utf-8")
+
+    @staticmethod
+    def rule(css, selector):
+        m = re.search(r"(?m)^" + re.escape(selector) + r" \{([^}]*)\}", css)
+        return m.group(1) if m else None
+
+    def test_the_box_around_a_places_switch_has_no_margin_in_row_one(self):
+        self.assertRegex(self.PLACES_CSS, r"\.place-switch \{ margin: 0 0 var\(--space-md\); \}")  # outside a toolbar it still spaces
+        body = self.rule(SHELL_CSS, ".toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg")
+        self.assertIsNotNone(body, "no row-1 rule zeroes the margin of the switch and the box around it")
+        self.assertIn("margin: 0;", body)
+
+    def test_the_switch_and_the_shapeshift_box_take_one_height_token(self):
+        row = self.rule(SHELL_CSS, ".toolbar")
+        self.assertIsNotNone(row, "the row-1 height token is declared on .toolbar")
+        self.assertIn("--bar-h: var(--row-touch);", row)
+        self.assertIn("--bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair)));",
+                      re.search(r"@media \(pointer: coarse\) \{ \.toolbar \{[^}]*\} \}", SHELL_CSS).group(0))
+        both = self.rule(SHELL_CSS, ".toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field")
+        self.assertIsNotNone(both, "the switch, the pressed group and the box share one rule")
+        self.assertIn("height: var(--bar-h);", both)
+
+    def test_a_tab_fills_the_switch_instead_of_setting_its_height(self):
+        # The touch rule gave a tab 44px, which made the switch 50px beside a 44px box; in row 1 the tab stretches instead.
+        body = self.rule(SHELL_CSS, ".toolbar .viewswitch [role=\"tab\"], .toolbar .vseg > button")
+        self.assertIsNotNone(body)
+        self.assertIn("min-height: 0;", body)
+
+
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")
 #: The rail's markup as shell.js draws it: its head row (the mark and its controls) and its foot.
 RAIL = re.search(r"put\(rail, html`(.*?)`\);", SHELL_JS, re.S).group(1)

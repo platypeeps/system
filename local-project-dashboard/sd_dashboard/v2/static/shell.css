@@ -11,6 +11,8 @@
  *   view group · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · active · pressed; filter typed · count "N of M"
  * 2026-10-19 component: filter dropdowns (sd:5281) every filter select one pill, accent when narrowed; every select's open
  *   list themed where base-select exists (decision #24588) · pre-emit critique: P4 H4 E4 S4 R5 V4 · states: default · hover · focus · open · picked (accent) · disabled
+ * 2026-10-21 component: toolbar alignment (sd:5619) row 1 view switch and Shapeshift box share --bar-h, one top and bottom edge
+ *   pre-emit critique: P4 H4 E4 S4 R5 V4 · states: unchanged (height and margin only)
  */
 
 html, body { overflow-x: clip; }
@@ -709,7 +711,14 @@ th[aria-sort] > .sorter .i { opacity: 1; }
 .toolbar-2 { margin-top: calc(-1 * var(--space-2xs)); font-size: var(--text-xs); color: var(--color-muted); }
 .toolbar > .tgrid, .filters > .tgrid { display: contents; }
 .toolbar > .tgrid[hidden], .filters > .tgrid[hidden] { display: none; }
-.toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+/* One height for the boxes in row 1 (sd:5619): the view switch (.viewswitch, .vseg) and the Shapeshift box (.shift .field) take
+ * --bar-h, so they share a top and a bottom edge. A tab stretches to fill the switch; on touch the bar grows so the tab keeps
+ * --row-touch. The box around a place switch (.place-switch) has no margin here: its margin-bottom made it taller than the switch. */
+.toolbar { --bar-h: var(--row-touch); }
+@media (pointer: coarse) { .toolbar { --bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair))); } }
+.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+.toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field { height: var(--bar-h); }
+.toolbar .viewswitch [role="tab"], .toolbar .vseg > button { min-height: 0; }
 .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
 .toolbar > .count:empty { display: none; }
 /* A table's title line (sd:5463): its heading and help on the left, its tally (the count and the table's facts) on the right. */
