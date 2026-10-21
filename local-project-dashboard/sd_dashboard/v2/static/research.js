@@ -505,7 +505,7 @@ function experimentSection(p) {
     : link ? html`<dl><dt>Linked</dt><dd>${link.url ? html`<a class="ext" href="${link.url}" target="_blank" rel="noopener">${link.title || link.page} ${I('arrow-up-right')}</a>` : link.title || link.page}</dd>${
       row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
     : html`<p class="why">Not linked. Attach one, or use Draft experiment in the toolbar.</p>`}
-    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
+    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments, in the toolbar, reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
     ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
     ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
     ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
@@ -527,7 +527,7 @@ function applyText(o) {
 const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
   e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
-const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
+const started = (what, key) => out => (key ? loadExperiment(key) : Promise.resolve()).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
 const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
 const expPost = (body, what, key) => window.shell.post('/api/research/experiments/act', body).then(started(what, key), refused);
 const expOff = o => (EXP?.key !== o.key ? 'the experiment link is not read yet' : EXP.error ? `not read: ${EXP.error}` : EXP.running ? 'a run is going now' : EXP.problems?.source || true);
@@ -535,9 +535,6 @@ function experimentCommands() {
   const on = 'research project', post = (o, body, what) => expPost({ ...body, project: o.key }, what, o.key);
   const linkedOff = o => { const w = expOff(o); return w !== true ? w : EXP.link_error ? `the link was not read: ${EXP.link_error}` : true; };
   return [
-    { id: 'experiment.refresh', on, label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
-      when: expOff, sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
-      run: o => expPost({ verb: 'list' }, 'Refresh', o.key) },
     { id: 'experiment.attach', on, label: 'Attach experiment', does: 'Links this project to a listed experiment, in the workflow database only.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.cache?.current ? 'refresh the experiments list first' : !EXP.cache.rows.length ? 'the list holds no experiments' : true; },
       fields: () => [{ name: 'page', label: 'Experiment', options: (EXP?.cache?.rows || []).map(r => ({ value: r.page, label: `${r.title} · ${r.stage || 'no stage'}` })) }],
@@ -620,7 +617,7 @@ const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
     e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
-// Draft experiment is a page action (toolbar): it names its project, the one shown first. The server refuses a linked one (409).
+// Draft experiment is a page action (toolbar, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
 const PAGE = { id: 'research:page', type: 'research page', label: 'Research' };
 const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
   when: () => PROJECTS.length ? true : 'no research project to draft for',
@@ -629,6 +626,11 @@ const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft exp
   sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
   run: (o, v) => { select(v.project, true); return expPost({ verb: 'draft', action: 'create', description: v.description, project: v.project }, 'Draft', v.project); } };
 document.getElementById('draft-exp').addEventListener('click', () => shell.commands.run(CREATE, PAGE));
+// Refresh experiments reads the one team list every project shares (sd:5656): a page action, so it needs no selection.
+const REFRESH = { id: 'experiment.refresh', on: 'research page', label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
+  when: () => (EXP?.running ? 'a run is going now' : EXP?.problems?.source || true), sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
+  run: () => expPost({ verb: 'list' }, 'Refresh', selected) };
+document.getElementById('refresh-exp').addEventListener('click', () => shell.commands.run(REFRESH, PAGE));
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
 const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Gives the line that files this research request; the dashboard files nothing.', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
@@ -644,6 +646,7 @@ function registerCommands() {
       run: o => window.shell.post('/api/research/review', { repo: o.key }).then(run => { followRun(run, o, 'review'); return `Reviewing ${o.label} · run ${run.id}`; }, refused) },
     START,
     CREATE,
+    REFRESH,
     ...experimentCommands(),
     deckCommand(),
     slidesCommand(),

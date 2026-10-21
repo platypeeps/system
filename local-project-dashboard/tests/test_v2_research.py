@@ -56,7 +56,7 @@ COMMANDS = [
     ["research.review", "research project", "Review", "v", "safe"],
     ["research.start", "research request", "Run", "r", "confirm"],
     ["experiment.create", "research page", "Draft experiment", None, "safe"],
-    ["experiment.refresh", "research project", "Refresh experiments", None, "safe"],
+    ["experiment.refresh", "research page", "Refresh experiments", None, "safe"],
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
     ["experiment.status", "research project", "Draft status update", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
@@ -1171,12 +1171,16 @@ R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
 R.section = ELS.details.html; R.status = cmd('experiment.status').when(o); R.apply = cmd('experiment.apply').when(o);
 R.options = cmd('experiment.attach').fields(o)[0].options; R.says = cmd('experiment.attach').consequence(o);
-shellRun(cmd('experiment.refresh'), o); await flush();
+R.refreshOff = cmd('experiment.refresh').when(C.get('research:page')); ELS['refresh-exp'].listeners.click[0]({}); await flush();
 FIELD_VALUES = { page: '2'.repeat(32), project: 'research/beta', description: 'Tail sampling keeps the slow spans' };
 shellRun(cmd('experiment.attach'), o); await flush(); ELS['draft-exp'].listeners.click[0]({}); await flush();
 R.projects = cmd('experiment.create').fields(C.get('research:page'))[0].options.map(x => x.value);""", answer=answer)
         self.assertIn("Not linked. Attach one, or use Draft experiment in the toolbar.", out["R"]["section"])
-        # Draft experiment is a page action (toolbar), not a project command; its first project is the one shown.
+        # Draft experiment and Refresh experiments are page actions (toolbar), not project commands (sd:5631, sd:5656).
+        self.assertTrue(out["R"]["refreshOff"])
+        self.assertIn("Refresh experiments, in the toolbar, reads it", self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.s = ELS.details.html;",
+                      answer=self.experiments({"cache": None}))["R"]["s"])
+        # Its first project is the one shown.
         self.assertEqual(out["R"]["projects"][0], "research/beta")
         self.assertEqual(out["R"]["status"], "not linked: attach or create an experiment first")
         self.assertEqual(out["R"]["apply"], "no finished draft waits for Apply")
