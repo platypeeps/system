@@ -142,6 +142,22 @@ class TheScript(unittest.TestCase):
         self.assertIn("Nothing in Attention · Decisions · Landing now · Delivered · Planned · Followups.", first)
         self.assertNotIn('id="st-attention"', first)
 
+    def test_the_unscheduled_list_filters_by_repo(self):
+        # sd:5653: a Repo select on Unscheduled draws one repo's rows; its options count each repo.
+        found = doc(unscheduled=[row(1), row(2, repo="~/repos/platypeeps/sd-ai-command-pack"), row(3)])
+        pick = ("ELS['status-sections'].listeners.change[0]({ target: { closest: s => s === 'select[data-st-repo]'"
+                " ? { value: 'sd-ai-command-pack' } : null } });")
+        out = self.run_page("show(); await flush(); R.first = ELS['status-sections'].html; " + pick + " R.one = ELS['status-sections'].html;",
+                            f"(path, body) => [200, {json.dumps(found)}]")
+        first, one = out["R"]["first"], out["R"]["one"]
+        self.assertIn('<option value="">All repos (3)</option>', first)
+        self.assertIn('<option value="system">system (2)</option>', first)
+        self.assertEqual(first[first.index('id="st-unscheduled"'):].count("<tr data-item="), 3)
+        part = one[one.index('id="st-unscheduled"'):]
+        self.assertEqual(part.count("<tr data-item="), 1)
+        self.assertIn('<tr data-item="2">', part)
+        self.assertIn('<option value="sd-ai-command-pack" selected>', part)
+
     def test_the_flow_strip_draws_each_section_with_work_and_its_key_links_to_every_section(self):
         found = doc(delivered=[row(5, pr=12, commit="a" * 40, at="2026-10-19T15:00:00Z")], unscheduled=[row(6)],
                     decisions=[row(7, note=99, item_title="Pick a store", title="Which store?", at="2026-10-19T15:00:00Z")])
