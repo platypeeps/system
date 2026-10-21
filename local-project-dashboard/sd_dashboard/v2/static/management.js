@@ -265,6 +265,15 @@ function settingCells(r) {
   return html`<td class="d mono" data-k="floor">${reviewCell(r.review, 'floor')}</td><td class="d mono" data-k="copilot">${reviewCell(r.review, 'copilot')}</td>
     <td class="d mono" data-k="checks">${checksCell(r.protection)}</td><td class="d mono" data-k="python">${pinCell(r.runtimes, 'python')}</td><td class="d mono" data-k="node">${pinCell(r.runtimes, 'node')}</td>`;
 }
+// They apply to every repository, so they are a page action on the Repos heading, not a row's (sd:5656).
+// sd:5109: the Deep review's settings are fleet-wide setting rows; an emptied field clears its row, so the default applies.
+const DEEP_SETTINGS = { id: 'repo.deep-settings', on: 'deep review settings', label: 'Deep review settings', does: 'Sets the Deep review\'s model, effort, bound and sub-agent cap for every repository.', risk: 'safe', executes: true, icon: 'settings',
+  when: () => !!DOC?.deep || `settings not read: ${why('deep') || 'the reading carries none'}`,
+  fields: () => DEEP_FIELDS.map(([k, label, help]) => ({ name: k, label, help, value: deepOf(k) })),
+  cli: () => 'no sd verb: the dashboard writes the adversarial.deep.* setting rows',
+  sends: (o, v) => `POST /api/adversarial/settings ${JSON.stringify(deepChanged(v || {}))}`,
+  run: (o, v) => { const changed = deepChanged(v || {}); if (!Object.keys(changed).length) return 'Nothing changed';
+    return window.shell.post('/api/adversarial/settings', changed).then(async () => { await reread(); return `Deep review settings saved · ${Object.keys(changed).map(k => k.split('.').pop()).join(', ')}`; }); } };
 function renderRepos() {
   const el = document.getElementById('view-repos');
   if (!DOC.repos) { put(el, unknown('The repo table was not read', why('repos'), 'sd-db repo list')); return; }
@@ -274,6 +283,7 @@ function renderRepos() {
   const c = GIT?.counts || {};
   shell.view.count('repos', rows.length);
   put(el, html`<div class="sec-head"><h2 id="repos-h">Repos <button class="help" type="button" aria-label="Help: Repos" data-help="<b>The sd-db repo table is the enumeration.</b> One row per registered checkout. Open a repo for its settings page: the sd-db row, its review declaration and GitHub protection, each with the route an edit takes.">${I('circle-help')}</button></h2>
+      <button class="btn quiet sm" type="button" data-deep-settings>${I('settings')}<span>Deep review settings</span></button>
       <p class="tally">${hides(rows.length, ALL.length, 'repo')}<span>${REPOS.length} registered</span><span>${managed} managed</span><span>${auto} lane merge auto</span></p>
       <p class="tally" id="git-tally">${GIT ? html`${c.repos ?? 0} checkouts under ${tilde(GIT.root || '') || 'the fleet root'} · ${c.dirty ?? 0} dirty · ${c.ahead ?? 0} ahead · ${GIT.repos.filter(g => g.state === 'behind').length} behind default · git read ${seen(GIT)}` : html`<span class="g-unknown">▨</span> git state not read: ${why('git')}`}</p></div>
     <div class="filters toolbar-2">${filterBar(html`${filterSeg('managed', 'Managed', ['yes', 'no'], RS.managed)}${filterSeg('merge', 'Lane merge', ['auto', 'manual'], RS.merge)}${filterSeg('cols', 'Columns', ['git', 'settings'], RS.cols)}`, repoChips().length)}</div>
@@ -292,6 +302,7 @@ function renderRepos() {
 }
 document.getElementById('view-repos').addEventListener('click', e => {
   if (e.target.closest('.rowact')) return;
+  if (e.target.closest('[data-deep-settings]')) return shell.commands.run(DEEP_SETTINGS, shell.commands.get('deep:settings'));
   const cols = e.target.closest('[data-f="cols"]');
   if (cols) { RS.cols = cols.dataset.v === 'settings' ? 'settings' : 'git'; if (!repoCols().some(c => c[0] === RS.sort)) RS.sort = 'name'; renderRepos(); return setURL(); }
   const f = e.target.closest('[data-f="managed"], [data-f="merge"]'), tr = e.target.closest('tr[data-repo]');
@@ -614,6 +625,7 @@ function objects() {
     { id: 'wt:live', type: 'live worktrees', label: `${SESS.registered - SESS.abandoned} live worktrees` },
     ...SESS.processes.map((p, i) => ({ id: `proc:${i}`, type: 'process', label: p.command })));
   SERVICES.forEach(s => out.push({ id: `svc:${s.label}`, type: 'service', label: s.name, name: s.label, running: s.state === 'running', revision: s.revision, caps: s.capabilities || {} }));
+  out.push({ id: 'deep:settings', type: 'deep review settings', label: 'Deep review settings' });
   if (SATS) out.push({ id: 'sats:request', type: 'satellite refresh', label: 'Refresh satellites', request: SATS.request },
     ...SATS.satellites.map(x => ({ id: `sat:${x.host}`, type: 'satellite', label: x.host })));
   if (UPLOAD?.set_up) out.push({ id: 'upload:link', type: 'upload link', label: `${UPLOAD.prefix} upload link`, state: UPLOAD.link_state });
@@ -671,14 +683,7 @@ function registerCommands() {
       does: 'Runs a read-only claude review with up to 8 sub-agents in the background; its brief lists fixes to pick.',
       payload: o => ({ kind: 'deep', target: o.path }), when: registeredWhy,
       consequence: o => `Runs claude at ${deepOf('model')} and ${deepOf('effort')} effort on ${o.label}, with up to ${deepOf('agents')} read-only sub-agents, for up to ${deepOf('bound_minutes')} minutes. It changes nothing in the checkout. Its brief lists each fix as a question to approve or reject.` }),
-    // sd:5109: the Deep review's settings are fleet-wide setting rows; an emptied field clears its row, so the default applies.
-    { id: 'repo.deep-settings', on: 'repo', label: 'Deep review settings', does: 'Sets the Deep review\'s model, effort, bound and sub-agent cap for every repository.', risk: 'safe', executes: true, icon: 'settings',
-      when: () => !!DOC?.deep || `settings not read: ${why('deep') || 'the reading carries none'}`,
-      fields: () => DEEP_FIELDS.map(([k, label, help]) => ({ name: k, label, help, value: deepOf(k) })),
-      cli: () => 'no sd verb: the dashboard writes the adversarial.deep.* setting rows',
-      sends: (o, v) => `POST /api/adversarial/settings ${JSON.stringify(deepChanged(v || {}))}`,
-      run: (o, v) => { const changed = deepChanged(v || {}); if (!Object.keys(changed).length) return 'Nothing changed';
-        return window.shell.post('/api/adversarial/settings', changed).then(async () => { await reread(); return `Deep review settings saved · ${Object.keys(changed).map(k => k.split('.').pop()).join(', ')}`; }); } },
+    DEEP_SETTINGS,
     // Land (sd:5104): the preview first, in the confirm, then the write with the preview's revision (land.py). A changed
     // Items field previews again, so the confirm always shows what lands. build: it posts /api/repos/land.
     { id: 'repo.land', on: 'repo', label: 'Land', does: 'Commits the work once per item and queues it; asks first with a preview.', key: 'n', icon: 'rocket', risk: 'confirm', executes: true,

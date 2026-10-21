@@ -1046,7 +1046,7 @@ class TheScript(PageScript):
             ["repo.adversarial-review", "repo", "safe", None, True, False],
             ["repo.adversarial-pr", "repo", "safe", None, True, False],
             ["repo.deep-review", "repo", "safe", None, True, False],
-            ["repo.deep-settings", "repo", "safe", None, True, False],
+            ["repo.deep-settings", "deep review settings", "safe", None, True, False],
             ["repo.land", "repo", "confirm", "n", True, False],
             ["sddb.run", "sd-db change", "undo", "u", True, True],
             ["declaration.copy", "declaration change", "safe", "p", False, False],
@@ -1442,13 +1442,15 @@ selectRow('repo:{path}'); C.run(c, o); await flush(); await flush(); R.end = ELS
         doc = json.loads(json.dumps(self.doc))
         doc["deep"]["adversarial.deep.model"] = {"value": "fable", "from": "database"}
         answer = """(p, b) => p === '/api/adversarial/settings' ? [200, { saved: b }] : [404, { error: 'no' }]"""
-        out = self.run_page(f"""const o = C.get('repo:{path}'), c = cmd('repo.deep-settings');
+        # sd:5656: the settings are every repository's, so the command is on the page's own object, run from the Repos heading.
+        out = self.run_page(f"""const o = C.get('deep:settings'), c = cmd('repo.deep-settings'); R.button = ELS['view-repos'].html.includes('data-deep-settings');
 selectRow('repo:{path}'); R.det = ELS.details.html; R.fields = c.fields(o).map(f => [f.name, f.value]); R.on = c.when(o);
 FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}; C.run(c, o); await flush(); await flush();""",
                             answer=answer, doc=doc)
         self.assertIn("Deep review settings: model <b>fable</b> · effort <b>max</b> (default)", out["R"]["det"])
         self.assertIn("sub-agents at most <b>8</b> (default)", out["R"]["det"])
         self.assertEqual(out["R"]["on"], True)
+        self.assertTrue(out["R"]["button"])
         self.assertEqual(out["R"]["fields"], [["model", "fable"], ["effort", "max"], ["bound_minutes", "90"], ["agents", "8"]])
         self.assertEqual(out["posts"], [["/api/adversarial/settings", {"adversarial.deep.model": "",
                                                                        "adversarial.deep.bound_minutes": "120"}, 64]])
@@ -1456,7 +1458,7 @@ FIELD_VALUES = {{ model: '', effort: 'max', bound_minutes: '120', agents: '8' }}
     def test_deep_review_settings_are_off_when_the_settings_were_not_read(self):
         path = self.ids["checkout"]
         doc = dict(self.doc, deep=None, sources=dict(self.doc["sources"], deep="the setting adversarial.deep.agents wants x"))
-        out = self.run_page(f"R.why = cmd('repo.deep-settings').when(C.get('repo:{path}')); selectRow('repo:{path}'); R.det = ELS.details.html;", doc=doc)
+        out = self.run_page(f"R.why = cmd('repo.deep-settings').when(C.get('deep:settings')); selectRow('repo:{path}'); R.det = ELS.details.html;", doc=doc)
         self.assertEqual(out["R"]["why"], "settings not read: the setting adversarial.deep.agents wants x")
         self.assertIn("Deep review settings not read: the setting adversarial.deep.agents wants x.", out["R"]["det"])
 
