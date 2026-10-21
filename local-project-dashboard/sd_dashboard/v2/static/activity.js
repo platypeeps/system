@@ -100,7 +100,10 @@ addEventListener('DOMContentLoaded', () => {
   }
   function renderAnnunciator() {
     pageAttention();
-    const n = (k, s) => EVENTS.filter(e => e.k === k && (!s || e.s === s)).length;
+    // The lamps count what the range shows: the journal's older records only under All (a 24-hour page said "55 in the
+    // journal" of weeks-old records).
+    const shown = EVENTS.filter(e => F.all || inWindow(e));
+    const n = (k, s) => shown.filter(e => e.k === k && (!s || e.s === s)).length;
     const worst = k => unknownWhy(k) ? 'unknown' : n(k, 'warning') ? 'warning' : n(k, 'caution') ? 'caution' : 'ok';
     // A lamp, its Kind chip and its lane button are one control (design.md § Interaction rules): pressed is F.kind.
     // build: a kind whose read failed is a lamp that cannot be pressed: it has no answer to filter.
@@ -113,7 +116,7 @@ addEventListener('DOMContentLoaded', () => {
     const VAL = {
       merge: html`<span class="ph"><b>${n('merge')}</b> merged</span> · <span class="ph">${plural(new Set(EVENTS.filter(e => e.k === 'merge').map(e => e.repo)).size, 'repo')}</span>`,
       run: html`<span class="ph"><b>${jobsFailed}</b> jobs failed</span> · <span class="ph">${asg.filter(e => e.status === 'blocked').length} of ${asg.length} runs blocked</span>`,
-      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} in the journal</span>`,
+      command: html`<span class="ph"><b>${n('command', 'warning')}</b> failed</span> · <span class="ph">${n('command')} ${F.all ? 'in the journal' : 'in 24 h'}</span>`,
       // build: the design's "want changes · approve" has no source; a delivery records clean or adjudicated (sd:2211).
       review: html`<span class="ph"><b>${n('review', 'caution')}</b> adjudicated</span> · <span class="ph">${n('review', 'ok')} clean</span>${DOC?.review_unrecorded ? html` · <span class="ph">${plural(DOC.review_unrecorded, 'merge')} unrecorded</span>` : ''}`,
     };

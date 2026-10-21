@@ -492,6 +492,13 @@ shellRun(cmd('jobs.log'), C.get('job:nightly-sync')); await flush(); R.href = lo
         self.assertIn("1 exec note no known writer left is skipped", out["R"]["note"])
         self.assertNotIn("none shows here", out["R"]["note"])
 
+    def test_the_commands_lamp_counts_the_window_and_all_adds_the_older_records(self):
+        # The Commands lamp said "55 in the journal" on a 24-hour page whose 55 records were weeks old.
+        range_ = "ELS.filters.listeners.click[0]({ target: { closest: s => s === '[data-f=\"range\"]' ? { dataset: { f: 'range', v: '%s' } } : null } });"
+        out = self.run_page("R.day = ELS.annunciator.html;" + range_ % "all" + "R.all = ELS.annunciator.html;")
+        self.assertIn('<span class="ph">4 in 24 h</span>', out["R"]["day"])
+        self.assertIn('<span class="ph">5 in the journal</span>', out["R"]["all"])
+
     def test_a_row_names_its_state_in_words_and_where_it_belongs(self):
         port = self.ids["port"]
         out = self.run_page("R.rows = ELS.rows.html;")
