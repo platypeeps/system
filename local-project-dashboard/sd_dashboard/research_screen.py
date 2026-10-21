@@ -57,8 +57,8 @@ MARGIN = 1.0
 #: This file, run as the child; a page never supplies the path.
 CHILD = Path(__file__).resolve()
 AREAS = ("board", "sources")
-#: The research-repo standard's numbered layout, in stage order.
-DIRS = ("00-overview", "10-sources", "20-map", "30-brief", "40-docs")
+#: The research-repo standard's numbered layout, in stage order; 05-architecture holds no claims (sd:5661).
+DIRS = ("00-overview", "05-architecture", "10-sources", "20-map", "30-brief", "40-docs")
 #: Where a checkout keeps its source ledger, in the order the reader shows them.
 REGISTRIES = ("SOURCES.md", "10-sources/registry.md", "10-sources/references.md")
 #: The independent review passes a brief may take (the command pack's planning review rule).

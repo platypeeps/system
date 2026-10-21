@@ -33,6 +33,7 @@ sd-research-kit conventions
 | Path | Holds |
 |---|---|
 | `00-overview/` | `understanding.md`, `open-questions.md`, `next-research.md` — fixed names |
+| `05-architecture/` | The architecture overview: how the studied system fits together (pack sd:5660) |
 | `10-sources/` | `registry.md` (what was read, when, status, corrections on record), `references.md` |
 | `20-map/` | `MAP-*.md` — ledgers, crosswalks, comparisons |
 | `30-brief/` | `BRIEF-*` positions · `REVIEW-*` assessments · `SUMMARY-*` condensations |

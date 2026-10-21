@@ -8,7 +8,7 @@ const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: s
 // build: a path under the home folder keeps its ~ outside the quotes, so the shell still expands it.
 const shPath = p => (p.startsWith('~/') ? `~/${shq(p.slice(2))}` : shq(p));
 const GLYPH = { caution: '▲', unknown: '▨', ok: '●', queued: '◌', warning: '■' };
-let DIRS = ['00-overview', '10-sources', '20-map', '30-brief', '40-docs'];
+let DIRS = ['00-overview', '05-architecture', '10-sources', '20-map', '30-brief', '40-docs']; // until /api/research names them
 let CAP = 2;
 // build: the reference's project list, data/research-sources.js and claims were sample data. These fill from the two documents.
 let PROJECTS = [], ROUNDS = '', READ = null, CUT = 0, LOADED = false;

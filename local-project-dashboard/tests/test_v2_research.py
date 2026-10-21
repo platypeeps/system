@@ -359,6 +359,14 @@ class TheReader(unittest.TestCase):
         self.assertIsNone(research_screen.stage(bare))
         laid = checkout(self.root, "group/laid", dirs=[("00-overview", True), ("10-sources", False), ("30-brief", True)])
         self.assertEqual(research_screen.stage(laid), ["00-overview", "30-brief"])
+        # sd:5661: 05-architecture is a stage of its own, between the overview and the sources.
+        self.assertEqual(research_screen.DIRS, ("00-overview", "05-architecture", "10-sources", "20-map", "30-brief", "40-docs"))
+        self.assertNotIn("05-architecture", research_screen.CLAIM_DIRS)
+        drawn = checkout(self.root, "group/drawn", dirs=[("05-architecture", True), ("20-map", True)])
+        self.assertEqual(research_screen.stage(drawn), ["05-architecture", "20-map"])
+        self.assertEqual(research_screen.pages([{"src": "05-architecture/ARCHITECTURE.md", "out": "architecture", "title": "Architecture",
+                                                 "state": "fresh"}]),
+                         {"05-architecture": {"title": "Architecture", "out": "architecture", "state": "fresh"}})
 
     def test_render_is_unknown_without_a_read_config_or_documents_and_counts_what_is_not_fresh(self):
         self.assertEqual(research_screen.render({"error": "computed"})["s"], "unknown")
@@ -577,15 +585,16 @@ class TheDocument(ScreenCase):
         # sd:5657: a stage bar opens its document. The address is the one /documents/<key>/<file> serves for this checkout,
         # never one built from the out name alone: a page under build/, or under a key two checkouts claim, gets no link.
         conf = ("DOCS=[dict(src='00-overview/README.md', out='overview', title='Overview'),\n"
+                " dict(src='05-architecture/ARCHITECTURE.md', out='architecture', title='Architecture'),\n"
                 " dict(src='20-map/MAP.md', out='map', title='Map'), dict(src='./20-map/extra.md', out='extra', title='Extra'),\n"
                 " dict(src='30-brief/BRIEF.md', out='brief', title='Brief'), dict(src='40-docs/a/guide.md', out='guide', title='Guide')]\n")
         repo = checkout(self.root, "research/alpha", conf=conf, dirs=[(d, True) for d in research_screen.DIRS])
-        for src in ("00-overview/README.md", "20-map/MAP.md", "20-map/extra.md", "30-brief/BRIEF.md", "40-docs/a/guide.md"):
+        for src in ("00-overview/README.md", "05-architecture/ARCHITECTURE.md", "20-map/MAP.md", "20-map/extra.md", "30-brief/BRIEF.md", "40-docs/a/guide.md"):
             (repo / src).parent.mkdir(parents=True, exist_ok=True)
             (repo / src).write_text("# page\n", encoding="utf-8")
         built = repo / "docs" / "dashboard"
         built.mkdir(parents=True)
-        for out in ("map", "extra", "brief"):
+        for out in ("architecture", "map", "extra", "brief"):
             (built / f"{out}.html").write_text("<p>built</p>", encoding="utf-8")
         (repo / "build").mkdir()
         (repo / "build" / "guide.html").write_text("<p>built</p>", encoding="utf-8")  # the old layout: nothing serves it
@@ -593,7 +602,8 @@ class TheDocument(ScreenCase):
         self.enterContext(mock.patch.object(documents, "CONFIG", self.root / "no-documents.conf"))
         stages = {p["key"]: p for p in research_screen.document(now=NOW)["projects"]}["research/alpha"]["stages"]
         self.assertEqual({d: s["href"] for d, s in stages.items()},
-                         {"00-overview": "", "10-sources": "", "20-map": "/documents/alpha/map.html", "30-brief": "/documents/alpha/brief.html",
+                         {"00-overview": "", "05-architecture": "/documents/alpha/architecture.html", "10-sources": "",
+                          "20-map": "/documents/alpha/map.html", "30-brief": "/documents/alpha/brief.html",
                           "40-docs": ""})
         self.assertEqual((stages["20-map"]["title"], stages["20-map"]["why"]), ("Map", ""))
         self.assertIn("not built", stages["00-overview"]["why"])
@@ -745,6 +755,22 @@ class TheScript(ScreenCase):
         self.assertNotIn("<a class=\"pip\"", alpha)
         self.assertIn('role="img" aria-label="Populated: 00-overview, 10-sources"', alpha)
         self.assertEqual((out["R"]["before"], out["R"]["onBar"], out["R"]["onRow"]), ("research/beta", "research/beta", "research/alpha"))
+
+    def test_the_track_draws_one_bar_per_stage_and_the_architecture_bar_opens_its_document(self):
+        # sd:5661: six stages, 05-architecture second. A checkout without the folder keeps that bar inert.
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["05-architecture", "30-brief"]
+        beta["stages"] = {"05-architecture": {"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "fresh", "why": ""},
+                          "30-brief": {"title": "Brief", "href": "", "state": "not built", "why": "Brief is not built: Render writes it"}}
+        out = self.run_page("R.rows = ELS.rows.html;")
+        rows = {key: re.search(rf'<tr data-id="{key}".*?</tr>', out["R"]["rows"], re.S).group(0) for key in ("research/alpha", "research/beta", "group/gamma")}
+        for key, row in rows.items():
+            self.assertEqual(len(re.findall(r'class="pip"', row)), 6, key)
+        self.assertEqual(re.findall(r'<a class="pip" href="([^"]+)" aria-label="([^"]+)"', rows["research/beta"]),
+                         [("/documents/beta/architecture.html", "Open 05-architecture: Architecture")])
+        self.assertIn('<span class="pip" title="05-architecture"><i class=""></i></span>', rows["research/alpha"])
+        # The track's columns follow the stage count; none is pinned to five.
+        self.assertNotRegex((V2 / "static" / "research.css").read_text(encoding="utf-8"), r"\.track[^{]*\{[^}]*repeat\(5")
 
     def test_a_header_sorts_the_board_and_the_url_keeps_it(self):
         # sd:3455: the shell's sort header. State is the default; its bands draw only in that order.
