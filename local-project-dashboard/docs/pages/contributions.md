@@ -20,8 +20,8 @@ landed, and a row a read no longer lists loses its pick and its commands. A
 failed reread keeps the rows and says the write landed; a failed load clears
 the page. A redraw keeps keyboard focus on the replaced lamp or command, or on
 the row's next action when that command went off (sd:2426). Settled rows count per stored repository, so two
-checkouts with one folder name stay two bars. Draft nudge, Open on GitHub and
-Re-run collector are copy only. Hide and Unhide (sd:5486) post
+checkouts with one folder name stay two bars. Draft nudge is copy only; Open on
+GitHub opens the row on GitHub in a new tab (sd:5628). Hide and Unhide (sd:5486) post
 `/api/contributions/view`, `{"key", "hidden"}`, which writes the view store
 Designs' Hide writes, keyed `contribution:<key>`; each offers Undo. A key the
 projection no longer lists is refused with 409. A hidden open row stays in the

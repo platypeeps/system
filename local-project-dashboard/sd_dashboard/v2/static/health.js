@@ -288,6 +288,7 @@
   // None runs in the shell's bulk: its confirm names four rows at most, and its tally counts an unknown outcome as landed.
   // Clean all safe (sd:5105) is its own command instead: its confirm names every row, and an unknown outcome stops it.
   const copyOnly = o => `Not run here: copy the line from Details and run it in a terminal · ${o.label}`;
+  const openAlerts = (o, page) => { window.open(`https://github.com/${o.slug}/security/${page}`, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; };
   const names = xs => xs.length > 6 ? `${xs.slice(0, 6).join(', ')} and ${xs.length - 6} more` : xs.join(', ');
   // A 4xx wrote nothing (health_cleanup); a 502 or no answer may follow a step that landed, so the page reads again either way.
   const cleanup = o => shell.post('/api/health/cleanup', { row: o.id, revision: o.revision }).then(out => {
@@ -404,11 +405,12 @@
         run: o => { window.open(`https://github.com/${o.slug}/settings/branches`, '_blank', 'noopener'); return 'Opens in a new tab'; } },
       // Re-run collector (commands.js); Health reads again once the run ends.
       window.commands.syncCollector({ reread: () => load(), page: 'Health' }),
-      // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows; each line is copy only.
-      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', does: 'Gives the line that opens the Dependabot alerts on GitHub.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
-        executes: false, cli: o => o.cli, run: copyOnly },
-      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Gives the line that opens the secret scanning alerts on GitHub.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
-        executes: false, cli: o => o.cli, run: copyOnly },
+      // Dependencies, Security and Credentials (sd:2203, sd:2205, sd:2206) read stored rows. Review on GitHub opens the repo's
+      // alerts page in a new tab (sd:5628); its gh line, which lists the alert links, stays for copying.
+      { id: 'dependabot alerts.review', on: 'dependabot alerts', label: 'Review on GitHub', does: 'Opens the Dependabot alerts on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
+        executes: false, when: o => !!o.slug || 'no github.com remote: there is no alerts page', cli: o => o.cli, run: o => openAlerts(o, 'dependabot') },
+      { id: 'secret scanning.review', on: 'secret scanning', label: 'Review on GitHub', does: 'Opens the secret scanning alerts on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', primary: () => true,
+        executes: false, when: o => !!o.slug || 'no github.com remote: there is no alerts page', cli: o => o.cli, run: o => openAlerts(o, 'secret-scanning') },
       { id: 'credential.probe', on: 'credential', label: 'Probe again', does: 'Gives the line that probes this credential again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', primary: () => true, executes: false,
         cli: o => o.cli, run: copyOnly },
     );

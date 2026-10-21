@@ -1505,6 +1505,14 @@ class TheScript(Collectors, ScreenCase):
           + [["snoozed row.unsnooze", "snoozed row", "undo", "s", None, True],
              ["ignored row.unignore", "ignored row", "undo", "s", None, True]])
 
+    def test_review_on_github_opens_the_repos_alert_page_in_a_new_tab(self):
+        """sd:5628. Review on GitHub opens the alerts page, as Open branch settings does; the gh line stays for copying."""
+        out = self.run_page("""R.opened = []; window.open = (u, t) => R.opened.push([u, t]);
+R.said = ['dependabot alerts.review', 'secret scanning.review'].map(id => cmd(id).run({ slug: 'example/anvil', label: 'anvil' }));""")
+        self.assertEqual(out["R"]["opened"], [["https://github.com/example/anvil/security/dependabot", "_blank"],
+                                              ["https://github.com/example/anvil/security/secret-scanning", "_blank"]])
+        self.assertEqual(out["R"]["said"], ["Opened on GitHub in a new tab"] * 2)
+
     def test_an_area_with_no_reader_is_an_unknown_lamp_that_names_what_it_does_not_read(self):
         doc = health_screen.document(self.connection, now=NOW, fleet=fleet_of(TREES), ports=ports_snapshot, protection=protection_of(PROTECTION))
         cred = next(area for area in doc["areas"] if area["id"] == "cred")

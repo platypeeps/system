@@ -2,7 +2,7 @@
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
 // /classic/contributions renders, never sample data. The dashboard makes no GitHub call: the "Settled on GitHub" lamp, each
 // row's settle date and the settled-per-day chart read the dates the shadow collector records (sd:5301). Acknowledge, Make task and
-// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
+// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge is copy only; Open on GitHub opens a tab (sd:5628);
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 // build (sd:5486): Hide and Unhide post /api/contributions/view, the view state Designs' Hide writes, each with Undo. A hidden
 // row leaves the Open rows, the lamps, the tallies and the badge; the Hidden view lists it, on the Open table, with Unhide.
@@ -135,10 +135,10 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
         run: o => window.shell.post('/api/contributions/task', { key: o.key, title: o.title })
           .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { load(); throw e; }) },
-      // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
-      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', does: 'Gives the line that opens it on GitHub; Details has the link.', key: 'o', risk: 'safe', executes: false,
+      // sd:5628: opens the page in a new tab, as every Open on GitHub does; the gh line stays for copying.
+      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', does: 'Opens it on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
-        run: () => 'Copy the line, or use the link in Details: the dashboard opens nothing itself' },
+        run: o => { window.open(o.url, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } },
       // build (sd:3432): Dismiss closes a row with no item that will never settle, such as a pull request that now 404s.
       // The row leaves the open lanes; new attention shows it again, and a lifecycle change ends the dismissal.
       { id: 'contribution.dismiss', on: 'contribution', label: 'Dismiss', does: 'Moves this contribution to Closed; no Undo, new activity shows it again.', key: 'x', risk: 'confirm',

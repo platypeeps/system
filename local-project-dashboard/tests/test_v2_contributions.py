@@ -719,8 +719,8 @@ shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext
         self.assertEqual(out["R"]["exec"], [False, False])
         self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}"])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
-        # Review 2 of PR #72 (8af737dffde4): the shell calls run for a copy-only command too, and run opened a tab.
-        self.assertEqual(out["opened"], [])
+        # sd:5628 reverses the copy-only ruling of PR #72's review 2: Open on GitHub opens the pull request, nudge still opens nothing.
+        self.assertEqual(out["opened"], [EXTERNAL])
 
     def sync_answer(self, finished):
         """The page's document, a started sync, and its state: running on the first read, then `finished`."""
