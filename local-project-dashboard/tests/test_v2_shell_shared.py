@@ -1186,12 +1186,13 @@ class TheShapeshiftBar(unittest.TestCase):
     def test_the_ask_line_names_the_page_and_the_filter_line_what_it_filters(self):
         out = self.run_shift("""R.ask = shiftAs('ask', 'why?', 'Reports', 'reports');
   R.task = shiftAs('task', 'p1 fix', 'Reports', 'reports');
-  R.filter = shiftAs('filter', 'x', 'Reports', 'reports, bodies included');
+  R.filter = shiftAs('filter', 'x', 'Reports', 'reports, bodies included'); R.none = shiftAs('filter', 'x', 'Metrics', '');
   R.what = [[], ['Timeline'], ['Repos', 'Lane'], ['CI runs', 'Mail', 'Briefs'], ['A', 'B', 'C', 'D'], ['Now', 'Now', '']].map(shiftWhat);""")
         self.assertEqual(out["ask"], ["message-square", "ask chat about reports"])
         self.assertEqual(out["task"], ["list-todo", "task “p1 fix”"])
         self.assertEqual(out["filter"], ["filter", "filter reports, bodies included"])
-        self.assertEqual(out["what"], ["this view", "timeline", "repos and lane", "CI runs, mail and briefs", "4 tables", "now"])
+        self.assertEqual(out["none"], ["filter", "filter this view"])
+        self.assertEqual(out["what"], ["", "timeline", "repos and lane", "CI runs, mail and briefs", "4 tables", "now"])
 
     def test_no_table_draws_a_filter_rows_box(self):
         # The operator's ruling: no table-level text box anywhere; Filter by column, the folds and the count stay.

@@ -294,13 +294,14 @@
   const shiftGuess = v => /\?$|^(why|what|how|which|when|should)\b/i.test(v) ? 'ask' : /^(p[1-4]\b|todo\b|add\b)|\bdue\b/i.test(v) ? 'task' : 'filter';
   const shiftNext = m => SHIFT_MODES[(SHIFT_MODES.indexOf(m) + 1) % SHIFT_MODES.length];
   // What the filter covers, from the shown tables' titles: a title starts lower-case unless it opens with an acronym (CI).
+  // No table (a chart's view) covers nothing, and the field offers capture and ask alone.
   function shiftWhat(names) {
     const n = [...new Set(names.filter(Boolean).map(s => /^.[a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s))];
-    return !n.length ? 'this view' : n.length > 3 ? `${n.length} tables` : n.length === 1 ? n[0] : `${n.slice(0, -1).join(', ')} and ${n.at(-1)}`;
+    return !n.length ? '' : n.length > 3 ? `${n.length} tables` : n.length === 1 ? n[0] : `${n.slice(0, -1).join(', ')} and ${n.at(-1)}`;
   }
   // The As line: the icon and the words for the reading.
   const shiftAs = (mode, v, page, what) => mode === 'task' ? ['list-todo', `task “${v}”`]
-    : mode === 'ask' ? ['message-square', `ask chat about ${page.toLowerCase()}`] : ['filter', `filter ${what}`];
+    : mode === 'ask' ? ['message-square', `ask chat about ${page.toLowerCase()}`] : ['filter', `filter ${what || 'this view'}`];
   // shift:end
   const shiftRow = main.querySelector('[data-shift]');
   const SQ = {}; // the bar's text per view
@@ -318,7 +319,7 @@
   // The field's placeholder follows the view, and the tables once they are drawn (tscan calls it).
   function shiftPlace() {
     if (!shiftIn) return;
-    const p = `Filter ${shiftCovers()}, capture a task, or ask`;
+    const what = shiftCovers(), p = what ? `Filter ${what}, capture a task, or ask` : 'Capture a task, or ask';
     if (shiftIn.placeholder !== p) shiftIn.placeholder = p;
   }
   function shiftFire() {
