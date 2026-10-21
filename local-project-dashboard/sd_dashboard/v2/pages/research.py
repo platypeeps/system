@@ -42,6 +42,12 @@ def _render(payload, principal):
     return research_deck.request(dict(payload), verb="render")
 
 
+def _review(payload, principal):
+    from ... import research_deck
+
+    return research_deck.request(dict(payload), verb="review")
+
+
 def _deck_last(read):
     from ... import research_deck
 
@@ -81,10 +87,10 @@ PAGE = Page(
     html="research.html",
     item="sd:2122",
     api=(Api("/api/research", _board), Api("/api/research/experiments", _experiments, query=True),
-         Api("/api/research/experiments/act", write=_experiment), Api("/api/research/deck", write=_deck), Api("/api/research/render", write=_render),
+         Api("/api/research/experiments/act", write=_experiment), Api("/api/research/deck", write=_deck), Api("/api/research/render", write=_render), Api("/api/research/review", write=_review),
          Api("/api/research/deck/status", _deck_last), Api("/api/research/slides", write=_slides),
          Api("/api/research/slides/status", _slides_status),
-         Api(pattern=r"/api/research/deck/(deck|render)-[0-9TZ]+", example="/api/research/deck/deck-20261020T120000Z", read=_deck_run),
+         Api(pattern=r"/api/research/deck/(deck|render|review)-[0-9TZ]+", example="/api/research/deck/deck-20261020T120000Z", read=_deck_run),
          Api(pattern=r"/api/research/.*", example="/api/research/example", read=_sources)),
     classic={"Resources (classic)": "/operations?area=resources"},
     count="/api/research",

@@ -694,15 +694,15 @@ class TheScript(ScreenCase):
         out = self.run_page("R.rows = ELS.rows.html;", search="?sort=what&dir=desc")
         self.assertEqual(re.findall(ids, out["R"]["rows"]), ["group/gamma", "research/beta", "research/alpha"])
 
-    def test_render_runs_in_the_checkout_and_review_is_copy_only(self):
-        # sd:5632: Render posts the render run; Review stays a line to copy.
+    def test_render_and_review_run_in_the_checkout(self):
+        # sd:5632: Render posts the render run. sd:5655: Review posts the review run too.
         out = self.run_page("""const beta = C.get('research/beta');
 R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cmd(id).cli(beta), cmd(id).primary ? cmd(id).primary(beta) : null]);
 ['research.render', 'research.review'].forEach(id => shellRun(cmd(id), beta)); await flush();""")
         self.assertEqual(out["R"]["lines"], [[True, "cd ~/'repos/research/beta' && sd-research-kit render", True],
-                                             [False, "cd ~/'repos/research/beta' && sd-research-kit review", None]])
-        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/render", {"repo": "research/beta"}]])
-        self.assertIn("Copy it into a terminal: the dashboard does not run sd-research-kit review", [t[0] for t in out["toasts"]])
+                                             [True, "cd ~/'repos/research/beta' && sd-research-kit review", None]])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/render", {"repo": "research/beta"}],
+                                                         ["/api/research/review", {"repo": "research/beta"}]])
 
     def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
         out = self.run_page("""const input = ELS.shift;
@@ -1330,7 +1330,7 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
-                                                                "/api/research/deck", "/api/research/render", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
+                                                                "/api/research/deck", "/api/research/render", "/api/research/review", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
                                                                 "/api/research/example")
 
 

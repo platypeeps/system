@@ -162,3 +162,5 @@
   .ledger.xp tbody tr { grid-template-columns: 1.75rem minmax(0, 1fr) auto; grid-template-areas: "g what acts" ". upd upd" ". asks asks" ". links links"; }
   .ledger.xp .upd { grid-area: upd; } .ledger.xp .ask { grid-area: asks; } .ledger.xp .lnk { grid-area: links; }
 }
+/* Last review (sd:5655): the kit's report, folded; long lines wrap, a long report scrolls inside the pane. */
+.report pre { max-height: 24rem; overflow: auto; margin: var(--space-2xs) 0 0; padding: var(--space-xs); background: var(--color-well); font: 400 var(--text-xs)/1.4 var(--font-data); white-space: pre-wrap; overflow-wrap: anywhere; }

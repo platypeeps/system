@@ -42,7 +42,9 @@ __all__ = ["DECK_SECONDS", "STARTUP", "built", "latest", "request", "run", "star
 DECK_SECONDS = 300
 #: How long a queued run may wait for its runner to say it started before it reads as failed.
 STARTUP = 60
-RUN_ID = re.compile(r"(deck|render)-[0-9]{8}T[0-9]{6}Z")
+#: What a review run keeps of its report for the page (sd:5655): the tail, where the checklist ends.
+REPORT_CHARS = 20000
+RUN_ID = re.compile(r"(deck|render|review)-[0-9]{8}T[0-9]{6}Z")
 
 
 def state_dir() -> Path:
@@ -66,7 +68,7 @@ def built(key: str, root: Path | None = None) -> Path | None:
 
 
 def start(key: str, root: Path, *, verb: str = "deck", now: datetime.datetime | None = None, spawn=subprocess.Popen):
-    """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` while a build holds the lock. `verb` is deck or render."""
+    """Steps 1 to 4 above: `(202, run)`, or `(409, {"error"})` while a build holds the lock. `verb` is deck, render or review."""
     from . import pack_bin, research_screen
 
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -203,6 +205,9 @@ def run(record: Path, lock: int | None = None) -> int:
         reason = f"sd-research-kit {document.get('verb', 'deck')} exited {code}" + (f": {told[0][:300]}" if told else "")
     else:
         reason = None
+    if document.get("verb") == "review":
+        # The report is the run's point, pass or fail: the checks and the checklist no script can do.
+        document["output"] = log.read_text(encoding="utf-8", errors="replace")[-REPORT_CHARS:]
     document.update(state="failed" if reason else "done", reason=reason,
                     finished=_iso(datetime.datetime.now(datetime.timezone.utc)))
     if lock is not None:

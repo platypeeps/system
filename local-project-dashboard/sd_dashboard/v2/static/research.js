@@ -455,7 +455,9 @@ function showProject(key, read = true) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
-    <p class="why">Render runs here as a dashboard run: the kit refuses a research.conf.py no render by hand has read. Review is a line to copy.</p>
+    ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
+      <details class="report"><summary>Report</summary><pre>${REVIEWS[p.key].output || 'It printed nothing.'}</pre></details>` : ''}
+    <p class="why">Render and Review run here as dashboard runs, one at a time: the kit refuses a research.conf.py no render by hand has read.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);
@@ -606,13 +608,16 @@ tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; 
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.
-// build: Review is copy only (executes: false). Render (sd:5632) runs through the deck runner's lock, as a dashboard run.
-const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit review';
-// One poll per render until it settles; done reads the board again, failed says the kit's reason.
-const followRender = (run, label) => (['done', 'failed'].includes(run.state)
-  ? (shell.toast(run.state === 'done' ? `Rendered · ${label}` : `Render failed · ${label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load())
-  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRender(next, label),
-    e => shell.toast(`Render ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
+// Render (sd:5632) and Review (sd:5655) run through the deck runner's lock, as dashboard runs.
+// One poll per run until it settles; a render that is done reads the board again, a failed one says the kit's reason.
+// A review keeps its report, pass or fail, and the project's Details show it under Last review.
+const REVIEWS = {};
+const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
+  ? (verb === 'review' ? (REVIEWS[o.key] = run, shownProject === o.key && showProject(o.key, false),
+      shell.toast(run.state === 'done' ? `Reviewed · ${o.label}: every check passed` : `Review · ${o.label}: ${run.reason || 'no reason recorded'}`))
+    : (shell.toast(run.state === 'done' ? `Rendered · ${o.label}` : `Render failed · ${o.label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load()))
+  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRun(next, o, verb),
+    e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
 // Draft experiment is a page action (toolbar): it names its project, the one shown first. The server refuses a linked one (409).
@@ -633,9 +638,10 @@ function registerCommands() {
   C.register(
     { id: 'research.render', on: 'research project', label: 'Render', does: 'Renders this research project again in its checkout.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: o => o.s === 'caution',
       cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, sends: o => `POST /api/research/render {"repo": "${o.key}"}`,
-      run: o => window.shell.post('/api/research/render', { repo: o.key }).then(run => { followRender(run, o.label); return `Rendering ${o.label} · run ${run.id}`; }, refused) },
-    { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
+      run: o => window.shell.post('/api/research/render', { repo: o.key }).then(run => { followRun(run, o, 'render'); return `Rendering ${o.label} · run ${run.id}`; }, refused) },
+    { id: 'research.review', on: 'research project', label: 'Review', does: 'Runs the research kit\'s mechanical pre-publication checks here; Details show the report.', key: 'v', icon: 'shield-check', risk: 'safe', executes: true,
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, sends: o => `POST /api/research/review {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/review', { repo: o.key }).then(run => { followRun(run, o, 'review'); return `Reviewing ${o.label} · run ${run.id}`; }, refused) },
     START,
     CREATE,
     ...experimentCommands(),
@@ -804,6 +810,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   load();
   // A build already running when the page opens is followed too.
-  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run?.id?.startsWith('render-') ? null : d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(/^(render|review)-/.test(d.run?.id || '') ? null : d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
   readSlides();
 });

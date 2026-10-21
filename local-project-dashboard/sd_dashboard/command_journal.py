@@ -101,6 +101,7 @@ COMMANDS = (
     Command(r"/api/documents/publish-now", "Publish now", _key("root", "file"), run="drain"),
     Command(r"/api/research/deck", "Build deck", _key("repo"), run="deck"),
     Command(r"/api/research/render", "Render", _key("repo"), run="deck"),
+    Command(r"/api/research/review", "Review", _key("repo"), run="deck"),
     Command(r"/api/research/slides", "Import to Slides", _key("repo")),
     # Attach links a checkout to a page in the database; list, draft and apply start a run.
     Command(r"/api/research/experiments/act", "Experiments", _key("verb", "action", "project", "run"), run="experiment",

@@ -232,6 +232,27 @@ class BuildDeck(unittest.TestCase):
         self.assertTrue(json.loads(record.read_text(encoding="utf-8"))["reason"].startswith("sd-research-kit render exited 1: "))
         self.assertTrue(callable(research_deck.request({"repo": "research/nodeck"}, verb="render")))
 
+    def test_review_runs_the_kits_review_and_keeps_its_report_for_the_page(self):
+        """sd:5655: Review runs `sd-research-kit review` in the checkout; the run keeps what it printed, pass or fail."""
+        repo = brief(self.root, "research/nodeck", deck=False)
+        status, run = research_deck.start("research/nodeck", self.root, verb="review", spawn=self.spawn)
+        self.assertEqual(status, 202, run)
+        self.assertTrue(run["id"].startswith("review-"))
+        record = research_deck.state_dir() / "runs" / f"{run['id']}.json"
+        with mock.patch.dict(os.environ, {"FAKE_MODE": "silent"}):
+            self.assertEqual(research_deck.run(record), 0)
+        code, document = research_deck.status(run["id"])
+        self.assertEqual((code, document["state"]), (200, "done"))
+        self.assertTrue(document["output"].startswith(f"args: review\ncwd: {repo}\ntrigger: None"))
+        with mock.patch.dict(os.environ, {"FAKE_MODE": "fail"}):
+            record.unlink()
+            status, run = research_deck.start("research/nodeck", self.root, verb="review", spawn=self.spawn)
+            record = research_deck.state_dir() / "runs" / f"{run['id']}.json"
+            self.assertEqual(research_deck.run(record), 1)
+        failed = json.loads(record.read_text(encoding="utf-8"))
+        self.assertTrue(failed["reason"].startswith("sd-research-kit review exited 1"))
+        self.assertIn("args: review", failed["output"])
+
     def test_a_checkout_the_board_does_not_serve_or_one_without_a_deck_json_is_refused(self):
         brief(self.root, "research/nodeck", deck=False)
         for key, said in (("research/nodeck", "research/nodeck keeps no 30-brief/deck.json"), ("../escape", "No research checkout"),
