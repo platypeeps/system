@@ -299,6 +299,9 @@ class CronReports(unittest.TestCase):
             jobs = root / "config/cron-jobs/jobs"; jobs.mkdir(parents=True)
             (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="printf \'REPORT BODY\\n\'"\nJOB_DIR=' + str(root) + "\n")
             (cron / "logs/fixture.log").write_text("PREVIOUS RUN\n")
+            # Both runs below notify: the stub answers before the first, so no run reaches the Mac's own osascript (sd:5624).
+            notified = root / "osascript-calls"; notified.touch()
+            (root / "osascript").write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {str(notified)!r}\n"); (root / "osascript").chmod(0o755)
             fake = root / "sd"; calls = root / "calls.jsonl"
             fake.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['REPORT_CALLS'],'a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\nsys.exit(int(os.environ.get('REPORT_EXIT','0')))\n")
             fake.chmod(0o755)
@@ -319,8 +322,7 @@ class CronReports(unittest.TestCase):
             self.assertIn("print gui/", launchctl_calls.read_text())
             self.assertFalse((cron / "logs/.fixture.lock").exists())
             self.assertFalse((cron / "logs/failures.log").exists())
-            notification = root / "osascript"
-            notification.write_text("#!/bin/sh\nexit 0\n"); notification.chmod(0o755)
+            self.assertIn("Job 'fixture': report not recorded", notified.read_text())
             (jobs / "fixture.job").write_text('JOB_SCHEDULE="* * * * *"\nJOB_COMMAND="exit 7"\nJOB_DIR=' + str(root) + "\n")
             result = subprocess.run(["sh", str(cron / "cron-jobs.sh"), "exec", "fixture"], env=env, capture_output=True, text=True, timeout=10, check=False)
             self.assertEqual(result.returncode, 7, result.stderr)
