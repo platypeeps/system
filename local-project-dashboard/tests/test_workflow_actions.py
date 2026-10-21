@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import re
 import threading
 import urllib.error
@@ -62,14 +61,17 @@ class BrowserSession(ScreenCase):
         failed in the POST leaves of its own."""
         from sd_dashboard import command_journal
 
-        copy = sqlite3.connect(":memory:")
-        self.connection.backup(copy)
-        held = copy.execute("SELECT id FROM item WHERE source=? AND external_id=?", command_journal.HOLDER).fetchone()
-        if held:
-            copy.execute("DELETE FROM note WHERE item=?", held)
-            copy.execute("DELETE FROM item WHERE id=?", held)
-            copy.commit()
-        return tuple(copy.iterdump())
+        db = self.connection
+        db.execute("SAVEPOINT unjournalled")
+        try:
+            held = db.execute("SELECT id FROM item WHERE source=? AND external_id=?", command_journal.HOLDER).fetchone()
+            if held:
+                db.execute("DELETE FROM note WHERE item=?", held)
+                db.execute("DELETE FROM item WHERE id=?", held)
+            return tuple(db.iterdump())
+        finally:
+            db.execute("ROLLBACK TO unjournalled")
+            db.execute("RELEASE unjournalled")
 
     def journalled(self):
         """The execution journal's records, oldest first, as (command, exit code)."""
