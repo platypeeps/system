@@ -878,6 +878,30 @@ class TheScript(ScreenCase):
         # The track's columns follow the stage count; none is pinned to five.
         self.assertNotRegex((V2 / "static" / "research.css").read_text(encoding="utf-8"), r"\.track[^{]*\{[^}]*repeat\(5")
 
+    def test_details_name_the_architecture_overview_and_offer_render_when_its_page_is_not_current(self):
+        # sd:5661: Details carry the architecture overview: its page, or why there is none. Render is offered where a
+        # render changes that (declared, and not built or stale); never where it cannot (not declared, not served).
+        beta = next(p for p in self.doc["projects"] if p["key"] == "research/beta")
+        beta["dirs"] = ["05-architecture", "30-brief"]
+        render = '<button class="btn quiet sm" type="button" data-cmd="research.render" data-obj="research/beta">Render</button>'
+        cases = {
+            "fresh": ({"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "fresh", "why": ""},
+                      '<dt>Architecture</dt><dd><a href="/documents/beta/architecture.html">Architecture</a></dd>'),
+            "stale": ({"title": "Architecture", "href": "/documents/beta/architecture.html", "state": "stale", "why": ""},
+                      '<dt>Architecture</dt><dd><a href="/documents/beta/architecture.html">Architecture</a> · stale since its source changed ' + render + '</dd>'),
+            "unbuilt": ({"title": "Architecture", "href": "", "state": "not built", "why": "Architecture is not built: Render writes it"},
+                        '<dt>Architecture</dt><dd>Architecture is not built: Render writes it ' + render + '</dd>'),
+            "undeclared": ({"title": "", "href": "", "state": "", "why": "research.conf.py declares no document from 05-architecture"},
+                           '<dt>Architecture</dt><dd>research.conf.py declares no document from 05-architecture</dd>'),
+        }
+        for name, (stage, want) in cases.items():
+            beta["stages"] = {"05-architecture": stage}
+            out = self.run_page("select('research/beta', false); R.det = ELS.details.html;")
+            self.assertIn(want, out["R"]["det"], name)
+        beta["dirs"], beta["stages"] = ["30-brief"], {}
+        out = self.run_page("select('research/beta', false); R.det = ELS.details.html;")
+        self.assertIn("<dt>Architecture</dt><dd>none yet: 05-architecture/architecture.md starts from the sd-research-repo template</dd>", out["R"]["det"])
+
     def test_a_header_sorts_the_board_and_the_url_keeps_it(self):
         # sd:3455: the shell's sort header. State is the default; its bands draw only in that order.
         head = "ELS['rows-head'].listeners.click[0]({ target: { closest: s => s === 'button[data-sort]' ? { dataset: { sort: 'what' } } : null } });"

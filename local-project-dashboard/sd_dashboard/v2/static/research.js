@@ -462,6 +462,14 @@ function claimsOf(i) {
 const details = document.getElementById('details');
 function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
 const kindWord = s => (s === 'unknown' ? 'config or render unread' : s === 'caution' ? 'render-stale' : 'current');
+// The architecture overview (sd:5661, pack sd:5660): its page, or why there is none. Render is offered only where a render
+// changes that: the overview is declared and its page is not built or stale.
+function architecture(p) {
+  const s = p.dirs?.includes('05-architecture') ? p.stages?.['05-architecture'] : null;
+  if (!s) return 'none yet: 05-architecture/architecture.md starts from the sd-research-repo template';
+  const render = ['not built', 'stale'].includes(s.state) ? html` <button class="btn quiet sm" type="button" data-cmd="research.render" data-obj="${p.key}">Render</button>` : '';
+  return s.href ? html`<a href="${s.href}">${s.title}</a>${s.state === 'stale' ? ' · stale since its source changed' : ''}${render}` : html`${s.why}${render}`;
+}
 // read: false redraws from the experiment read already held, so the Act bar follows it without a second read.
 function showProject(key, read = true) {
   const p = PROJECTS.find(x => x.key === key); if (!p) return;
@@ -474,6 +482,7 @@ function showProject(key, read = true) {
       <dt>Stage</dt><dd>${p.dirs ? (p.dirs.join(' · ') || 'numbered layout, no Markdown yet') : 'no numbered layout'}</dd>
       <dt>Render</dt><dd>${p.render.txt}${p.render.sub ? ` · ${p.render.sub}` : ''}</dd>
       <dt>Documents</dt><dd>${plural(p.docs_total ?? p.docs.length, 'document')} in research.conf.py${p.docs.length < (p.docs_total ?? 0) ? ` · ${p.docs.length} listed: the board passed its print bound` : ''} · <a href="/documents">Documents</a></dd>
+      <dt>Architecture</dt><dd>${architecture(p)}</dd>
       <dt>Rounds</dt><dd>${ROUNDS}</dd></dl>
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until it is read.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
