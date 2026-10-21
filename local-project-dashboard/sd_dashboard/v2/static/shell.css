@@ -307,7 +307,7 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
 .tabs [role="tab"] kbd { font-size: var(--text-2xs); color: var(--color-muted); }
 .tabs .close { margin-left: auto; display: none; }
 .pane [role="tabpanel"] { overflow-y: auto; }
-.pane [role="tabpanel"][hidden] { display: none; }
+.pane [role="tabpanel"][hidden], .pane [role="tab"][hidden] { display: none; }
 
 /* Details */
 .details { padding: var(--space-lg); }

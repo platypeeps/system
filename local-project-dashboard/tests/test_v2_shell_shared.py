@@ -1450,3 +1450,14 @@ class TheRowActions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThePaneWithoutDetails(unittest.TestCase):
+    """sd:5592. A page whose Details never shows a row has no Details element; the shell hides the tab and opens on Chat."""
+
+    def test_only_queue_review_and_settings_have_no_details_and_the_shell_shows_chat(self):
+        v2 = V2
+        bare = sorted(p.stem for p in v2.glob("*.html") if 'id="details"' not in p.read_text(encoding="utf-8"))
+        self.assertEqual(bare, ["queue", "review", "settings"])
+        self.assertIn("if (!details) { pane.querySelector('#tab-details').hidden = true; showTab('tab-chat'); }", SHELL_JS)
+        self.assertIn('.pane [role="tab"][hidden] { display: none; }', (v2 / "static" / "shell.css").read_text(encoding="utf-8"))

@@ -247,14 +247,12 @@ class ThePage(unittest.TestCase):
         self.assertNotIn(".decisions .choices", (STATIC / "today.css").read_text(encoding="utf-8"))
         self.assertIn(".decisions .choices", (STATIC / "decisions.css").read_text(encoding="utf-8"))
 
-    def test_the_page_has_no_details_pane_and_docks_no_side_pane(self):
-        # sd:5123: the row carries the question; the shell's pane opens only for Chat (c), as the sheet it is below 1240px.
+    def test_the_page_has_no_details_pane_and_the_shell_pane_is_chat(self):
+        # sd:5123: the row carries the question. sd:5592: with no Details element the shell docks Chat alone.
         page = (V2 / "review.html").read_text(encoding="utf-8")
         self.assertNotIn('id="details"', page)
-        self.assertIn("#tab-details { display: none; }", PAGE_CSS)
-        wide = re.search(r"@media \(min-width: 1240px\) \{(.*?)\n\}", PAGE_CSS, re.S)
-        self.assertIsNotNone(wide)
-        self.assertIn(".pane:not([data-open]) { display: none; }", wide.group(1))
+        self.assertNotIn("#tab-details", PAGE_CSS)
+        self.assertNotIn(".pane", PAGE_CSS)
         self.assertNotIn("openPane", PAGE_JS)
 
 
