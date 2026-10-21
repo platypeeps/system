@@ -12,9 +12,10 @@ window.PAGE_COMMANDS = [
 window.PAGE_ATTENTION = { state: 'unknown', n: 0, what: 'pieces not read' };
 // Realm views (sd:5064): Personal, the dashboard.realms realms (SHELL_REALMS, from /ui/sections.js), then All. A piece's realm is
 // places.realm_of of its repo, as on Tasks; a view no piece is in hides once the pieces are read. Board and editor are this
-// page's panels and b and e its v keys, so a realm takes neither.
+// page's panels and b and e its v keys, so a realm takes neither; nor btn or menu, the layout menu's view-btn and view-menu
+// (sd:5641), which the shell would hide as panels.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
-  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'all', 'board', 'editor'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'all', 'board', 'editor', 'btn', 'menu'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
   { id: 'all', label: 'All', key: 'a' }];
 {
   const used = new Set(['b', 'e', 'a']);
@@ -349,16 +350,18 @@ addEventListener('DOMContentLoaded', () => {
     (window.PAGE_VIEWS || []).forEach(v => window.shell.view?.count(v.id, (D.pieces || []).filter(p => inRealm(p, v.id)).length));
     sub.textContent = `Read ${String(D.read).slice(11, 16)} UTC · ` + (view === 'board' ? 'Pieces by stage. Four lamps per piece: draft, research, fact-check, adversarial.' : 'Focused editor: the draft on the left, its evidence on the right.');
   }
+  // Board and Editor are the layout menu Tasks uses (shell.viewPick, sd:5641): one icon button; its menu lists the two.
+  const pickView = window.shell.viewPick(document.getElementById('view-btn'), document.getElementById('view-menu'),
+    { board: ['kanban', 'Board'], editor: ['pen-line', 'Editor'] }, setView);
   function setView(v) {
     view = v;
-    document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === v));
+    pickView(v);
     ['board', 'editor'].forEach(x => { const el = document.getElementById('view-' + x); el.hidden = x !== v; if (x !== v) el.replaceChildren(); });
     document.getElementById('strip').hidden = v === 'editor';
     subhead();
     window.shell.url({ view: v }); // the shell keeps ?row=
     render();
   }
-  document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
   window.writingView = setView;
   let vChord = 0;
   document.addEventListener('keydown', e => {

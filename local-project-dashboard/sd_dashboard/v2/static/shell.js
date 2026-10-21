@@ -1287,6 +1287,39 @@
   }
   const list = { SIZES, sortHead, sortBy, pageOf, pager, paging, keepFocus, rangeText, pageList, chips, listParams, listQuery, pick, pickChange, fseg, tok: ftok, fbar, count };
   // list:end
+
+  // ---------- Layout picker: one icon button and its menu (sd:5064; shared sd:5641) ----------
+  // viewpick:start
+  // build (sd:5641): the one control for a page's layouts (Tasks' List, Board, Matrix; Writing's Board, Editor); the views
+  // (PAGE_VIEWS) stay the tabs. The page writes <div class="viewpick">: a button.viewpick-btn with aria-haspopup="menu", then
+  // its <div class="actmenu viewmenu" role="menu" hidden> of menuitemradio items, each with data-view, its icon, name and v key.
+  // shell.viewPick(btn, menu, layouts, pick) wires it, layouts being { id: [icon, name] }. The menu opens on the checked item;
+  // ↑ ↓ Home End move, Esc and Tab close it, and a letter stays out of the shell's keys. A pick calls pick(id), closes the
+  // menu and focuses the button. The page's own setter calls the returned set(id): it checks the item and shows its icon.
+  function viewPick(btn, menu, layouts, pick) {
+    const items = () => [...menu.querySelectorAll('[role="menuitemradio"]')];
+    function open(on) {
+      menu.hidden = !on; btn.setAttribute('aria-expanded', String(on));
+      if (on) (items().find(b => b.getAttribute('aria-checked') === 'true') || items()[0]).focus();
+    }
+    btn.addEventListener('click', () => open(menu.hidden));
+    menu.addEventListener('keydown', e => {
+      const all = items(), i = all.indexOf(document.activeElement), last = all.length - 1;
+      const to = { ArrowDown: i >= last ? 0 : i + 1, ArrowUp: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
+      if (to !== undefined) { e.preventDefault(); all[to].focus(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); open(false); btn.focus(); return; }
+      if (e.key === 'Tab') { open(false); return; }
+      e.stopPropagation(); // a letter here is not the shell's (j, k, g); Enter and Space press the item
+    });
+    menu.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; pick(b.dataset.view); open(false); btn.focus(); });
+    document.addEventListener('click', e => { if (!menu.hidden && !btn.parentElement.contains(e.target)) open(false); });
+    return id => {
+      items().forEach(b => b.setAttribute('aria-checked', String(b.dataset.view === id)));
+      btn.setAttribute('aria-label', `View: ${layouts[id][1]}`);
+      put(btn, html`<svg class="i" aria-hidden="true"><use href="#i-${layouts[id][0]}"/></svg>`);
+    };
+  }
+  // viewpick:end
   // A filter dropdown in use stays open across a redraw; a press outside it or focus leaving it closes it, and so does Esc
   // (Keys, below). toggle does not bubble, so it is heard on the way down.
   document.addEventListener('toggle', e => { const d = e.target; if (d.matches?.('details.fpick')) { if (d.open) PICKS.add(d.dataset.pick); else PICKS.delete(d.dataset.pick); } }, true);
@@ -1786,7 +1819,7 @@
   const read = window.SHELL_READ && window.SHELL_READ({ fetch: (...a) => fetch(...a), commands, state, row: rowParam, listen: (t, f) => document.addEventListener(t, f) });
   // read:end
   // build: (sd:2418) `read` joins the shell's API; (view switch) so does `view`.
-  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
+  window.shell = { ready, ICON, plural, state, read, post, getJSON, shown: stillShown, list, viewPick, tables, chording: () => !!chord && Date.now() - chord < 1500, openPane, closePane, showTab, openChat, setContext, suggest, send, toast, confirm: a => confirmAction(a).then(r => r.yes), ask: a => confirmAction(a).then(({ yes, values }) => ({ yes, values })), commands, capture: openCapture, fileCapture, filter, repos: readRepos, shq, itemHref, itemPage, openItem, time, attention, view, reconcile, url, row: (...a) => a.length ? writeRow(a[0]) : rowParam(), pages: PAGES, groups: GROUPS,
     // sd:3445: the rail's width in px, or null at the default; railWidth(px) sets and keeps it, railWidth(null) resets it.
     railWidth: (...a) => a.length ? setWidth(a[0]) : railWidth(store('sd.rail.width')) };
   if (location.hash === '#chat') openChat(); // screenshot hook

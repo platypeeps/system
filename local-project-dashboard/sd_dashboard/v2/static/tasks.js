@@ -13,11 +13,12 @@ window.PAGE_COMMANDS = [
 ];
 // build (places): the views filter the one board, matrix and list, so they have no view-<id> panel: the switch goes in
 // #viewswitch. sd:5064: Personal, then the realms the dashboard.realms row names (SHELL_REALMS, from /ui/sections.js), then HOA, Home
-// and All. A realm named list, board or matrix is dropped: the shell would hide that layout panel (view-<id>, sd:5114).
+// and All. A realm named list, board or matrix is dropped: the shell would hide that layout panel (view-<id>, sd:5114); so is
+// one named btn or menu, the layout menu's view-btn and view-menu (sd:5641).
 // Home takes v o (g o opens the Home page), since v h is HOA's. A realm takes the first letter of its id that no
 // other view, and not the list, board and matrix keys (v l, v b, v m), holds.
 window.PAGE_VIEWS = [{ id: 'personal', label: 'Personal' },
-  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all', 'list', 'board', 'matrix'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
+  ...(window.SHELL_REALMS || []).filter(r => /^[a-z0-9][a-z0-9-]*$/.test(r.id) && !['personal', 'hoa', 'home', 'all', 'list', 'board', 'matrix', 'btn', 'menu'].includes(r.id)).map(r => ({ id: r.id, label: r.label })),
   { id: 'hoa', label: 'HOA', key: 'h' }, { id: 'home', label: 'Home', key: 'o' }, { id: 'all', label: 'All', key: 'a' }];
 {
   const used = new Set(['l', 'b', 'm', ...window.PAGE_VIEWS.map(v => v.key).filter(Boolean)]);
@@ -1178,30 +1179,13 @@ addEventListener('DOMContentLoaded', () => {
     window.PAGE_VIEWS.forEach(v => window.shell.view.count(v.id, listed().filter(t => inPlace(t, v.id)).length));
     put(document.getElementById('subhead'), html`${parked ? `${parked} parked · ` : ''}read ${READ ? html`<time class="rel" datetime="${READ}"></time>` : 'not yet'} · ${SUB[view]}${why}${w ? html` · <span class="sweep" data-sweep="${PLACE}">${SWEEP_NAME[PLACE]} ${sweepText(w)} ${C.rowActions('sweep:' + PLACE)}</span>` : ''}`);
   }
-  // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked.
-  const viewBtn = document.getElementById('view-btn'), viewMenu = document.getElementById('view-menu');
-  const VIEW_ICON = { list: 'list-todo', board: 'kanban', matrix: 'grid-2x2' }, VIEW_NAME = { list: 'List', board: 'Board', matrix: 'Matrix' };
-  const viewItems = () => [...viewMenu.querySelectorAll('[role="menuitemradio"]')];
-  function viewMenuOpen(open) {
-    viewMenu.hidden = !open; viewBtn.setAttribute('aria-expanded', String(open));
-    if (open) (viewItems().find(b => b.getAttribute('aria-checked') === 'true') || viewItems()[0]).focus();
-  }
-  viewBtn.addEventListener('click', () => viewMenuOpen(viewMenu.hidden));
-  viewMenu.addEventListener('keydown', e => {
-    const items = viewItems(), i = items.indexOf(document.activeElement), last = items.length - 1;
-    const to = { ArrowDown: i >= last ? 0 : i + 1, ArrowUp: i < 1 ? last : i - 1, Home: 0, End: last }[e.key];
-    if (to !== undefined) { e.preventDefault(); items[to].focus(); return; }
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); viewMenuOpen(false); viewBtn.focus(); return; }
-    if (e.key === 'Tab') { viewMenuOpen(false); return; }
-    e.stopPropagation(); // a letter here is not the shell's (j, k, g); Enter and Space press the item
-  });
-  viewMenu.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (!b) return; setView(b.dataset.view); viewMenuOpen(false); viewBtn.focus(); });
-  document.addEventListener('click', e => { if (!viewMenu.hidden && !e.target.closest?.('.viewpick')) viewMenuOpen(false); });
+  // The view menu (sd:5064): one button shows the current view's icon; its menu lists the three, one checked. The shell
+  // wires it (shell.viewPick, sd:5641), as on Writing.
+  const pickView = window.shell.viewPick(document.getElementById('view-btn'), document.getElementById('view-menu'),
+    { list: ['list-todo', 'List'], board: ['kanban', 'Board'], matrix: ['grid-2x2', 'Matrix'] }, setView);
   function setView(v) {
     view = v;
-    viewItems().forEach(b => b.setAttribute('aria-checked', String(b.dataset.view === v)));
-    viewBtn.setAttribute('aria-label', `View: ${VIEW_NAME[v]}`);
-    put(viewBtn, html`<svg class="i" aria-hidden="true"><use href="#i-${VIEW_ICON[v]}"/></svg>`);
+    pickView(v);
     ['board', 'matrix', 'list'].forEach(x => { const el = document.getElementById('view-' + x); el.hidden = x !== v; if (x !== v) el.replaceChildren(); });
     subhead();
     render();

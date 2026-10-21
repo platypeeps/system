@@ -51,6 +51,9 @@ FETCH_JS = re.search(r"^  // fetch:start\n(.*?)^  // fetch:end$", SHELL_JS, re.S
 ITEM_JS = re.search(r"^  // item:start\n(.*?)^  // item:end$", SHELL_JS, re.S | re.M).group(1)
 # The list grammar, as shell.js has it (sd:2527, sd:2528, sd:2529): sort header, pager and filter chips.
 LIST_JS = re.search(r"^  // list:start\n(.*?)^  // list:end$", SHELL_JS, re.S | re.M).group(1)
+# The layout picker, as shell.js has it (sd:5641): Tasks and Writing wire their view menu through shell.viewPick.
+VIEWPICK = re.search(r"^  // viewpick:start\n(.*?)^  // viewpick:end$", SHELL_JS, re.S | re.M)
+VIEWPICK_JS = VIEWPICK.group(1) if VIEWPICK else "function viewPick() { throw new Error('shell.js has no viewpick block'); }\n"
 
 
 def seed(case):
@@ -426,6 +429,9 @@ window.shell = { commands: C, post, getJSON, shown: stillShown, itemHref, itemPa
   filter: q => (OUT.shift = String(q ?? '').trim()),
   state: s => OUT.states.push(s), attention: a => OUT.attention.push(a),
   view: { current: () => null, show: () => true, hide() {}, count: (id, n) => { (OUT.counts = OUT.counts || {})[id] = n; } },
+  viewPick: (() => { const { html, put } = window.markup;
+""" + VIEWPICK_JS + r"""
+    return viewPick; })(),
   list: (() => { const { html, plural } = window.markup, ICON = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 """ + LIST_JS + r"""
     return list; })() };

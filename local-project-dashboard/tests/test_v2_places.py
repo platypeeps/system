@@ -578,10 +578,11 @@ for (const v of ['work', 'hoa', 'home', 'all']) { document.dispatchEvent(new Cus
         self.assertEqual([t in r["all"] for t in titles], [True, True, True])
 
     def test_a_realm_named_after_a_layout_panel_is_kept_out_of_the_views(self):
-        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>)."""
+        """sd:5114: a realm named list, board or matrix would make the shell hide that layout panel (view-<id>); one named
+        btn or menu, the layout menu's view-btn and view-menu (sd:5641)."""
         self.doc, self.details = self.realm_doc(), {}
         prelude = ("globalThis.SHELL_REALMS = [{ id: 'list', label: 'List' }, { id: 'board', label: 'Board' },"
-                   " { id: 'matrix', label: 'Matrix' }, { id: 'work', label: 'Work' }];\n")
+                   " { id: 'matrix', label: 'Matrix' }, { id: 'btn', label: 'Btn' }, { id: 'menu', label: 'Menu' }, { id: 'work', label: 'Work' }];\n")
         out = test_v2_tasks.TheScript.run_page(self, "R.views = window.PAGE_VIEWS.map(v => v.id);", prelude=prelude)
         self.assertEqual(out["R"]["views"], ["personal", "work", "hoa", "home", "all"])
 
