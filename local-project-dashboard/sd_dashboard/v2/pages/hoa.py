@@ -1,6 +1,7 @@
 """HOA (sd:2116): the water system's map, Mission export trends, open followups and alarm events, from the checkout
 the repo table holds as `hoa`. The page has no classic screen to keep: v1 had no HOA view. Acknowledge posts
-/api/hoa/alarm (sd:4967), the view state Designs' Hide writes. Run sweep posts /api/hoa/sweep (sd:5095), which starts the
+/api/hoa/alarm (sd:4967), the view state Designs' Hide writes; Acknowledge all posts /api/hoa/alarms (sd:5621), the same
+write for many keys. Run sweep posts /api/hoa/sweep (sd:5095), which starts the
 checkout's tools/sweep.py in the background; GET /api/hoa/sweep/status reads its last run. Download posts
 /api/hoa/download (sd:5626), which opens the source's portal in a Claude Chrome session, waits for the operator's login,
 then runs the checkout's download; /api/hoa's `downloads` part reads each source's last run."""
@@ -40,13 +41,20 @@ def _ack(payload, principal):
     return hoa_screen.acknowledge(payload)
 
 
+def _ack_many(payload, principal):
+    from ... import hoa_screen
+
+    return hoa_screen.acknowledge_many(payload)
+
+
 PAGE = Page(
     section="HOA",
     routes=("/hoa",),
     html="hoa.html",
     item="sd:2116",
     # HOA's Tasks view is /api/hoa's items (hoa.js draws it), so it has no read of its own.
-    api=(Api("/api/hoa", _read), Api("/api/hoa/alarm", write=_ack), Api("/api/hoa/sweep", write=_run_sweep),
+    api=(Api("/api/hoa", _read), Api("/api/hoa/alarm", write=_ack), Api("/api/hoa/alarms", write=_ack_many),
+         Api("/api/hoa/sweep", write=_run_sweep),
          Api("/api/hoa/sweep/status", _sweep), Api("/api/hoa/download", write=_download),
          *place_views("hoa", ("briefs", "reports"))),
     count="/api/hoa",

@@ -26,10 +26,13 @@
 
   let DOC = null, failed = '', reads = 0, started = false;
   const OPEN = new Set();
+  let REPO = ''; // Unscheduled's Repo select (sd:5653): '' draws every repo
 
   // sd_db.repos.short: `~/repos/system` is `system`, `owner/name` is `name`, and none is `fleet`.
   const repo = r => String(r.repo || r.repository || '').split('/').filter(Boolean).pop() || 'fleet';
   const rows = key => !DOC ? [] : key === 'landing' ? DOC.landing.entries : DOC[key];
+  // Unscheduled draws the picked repo's rows; a repo gone from the read drops the pick.
+  const picked = key => key === 'unscheduled' && REPO ? rows(key).filter(r => repo(r) === REPO) : rows(key);
   const prio = p => p === null || p === undefined ? 'no priority' : `P${p}`;
   // A due date against the read's local day, as sd_views.days counts it.
   function days(due) {
@@ -81,18 +84,25 @@
     if (key === 'planned') return html`<p class="st-line">${sum.planned_this_week} due in the next 7 days</p>`;
     if (key === 'unscheduled') {
       const mix = new Map();
-      rows(key).forEach(r => mix.set(prio(r.priority), (mix.get(prio(r.priority)) || 0) + 1));
+      picked(key).forEach(r => mix.set(prio(r.priority), (mix.get(prio(r.priority)) || 0) + 1));
       return html`<p class="st-line">${[...mix].sort((a, b) => (a[0] > b[0]) - (a[0] < b[0])).map(([p, n]) => `${p} ${n}`).join(' · ')}</p>`;
     }
     return '';
   }
 
+  function repoPick() {
+    const n = new Map();
+    rows('unscheduled').forEach(r => n.set(repo(r), (n.get(repo(r)) || 0) + 1));
+    return html`<label class="st-pick">Repo <select data-st-repo><option value="">All repos (${String(rows('unscheduled').length)})</option>${[...n].sort((a, b) => a[0].localeCompare(b[0])).map(([r, c]) => html`<option value="${r}"${r === REPO ? html` selected` : ''}>${r} (${String(c)})</option>`)}</select></label>`;
+  }
+
   // A section shows when it has rows, or a line that counts what it leaves out (closed by hand, review questions).
   const shows = key => rows(key).length || (key === 'delivered' && DOC.summary.closed_by_hand) || (key === 'decisions' && DOC.summary.review_questions);
   function section(key) {
-    const all = rows(key), open = OPEN.has(key), shown = open ? all : all.slice(0, CAP);
+    if (key === 'unscheduled' && REPO && !rows(key).some(r => repo(r) === REPO)) REPO = '';
+    const all = picked(key), open = OPEN.has(key), shown = open ? all : all.slice(0, CAP);
     return html`<section class="st-sec" id="st-${key}" aria-labelledby="st-${key}-h">
-      <div class="sec-head"><h3 id="st-${key}-h">${HEAD[key]} <span class="n">${all.length}</span></h3></div>
+      <div class="sec-head"><h3 id="st-${key}-h">${HEAD[key]} <span class="n">${all.length}</span></h3>${key === 'unscheduled' ? repoPick() : ''}</div>
       ${note(key)}
       ${all.length ? html`<table class="ledger st" aria-labelledby="st-${key}-h">
         <thead><tr><th scope="col"><span class="sr">State</span></th><th scope="col">Item</th><th scope="col">${DETAIL[key]}</th><th scope="col">When</th></tr></thead>
@@ -161,6 +171,11 @@
       draw();
       // The redraw made a new button: focus moves to it, so a keyboard reader keeps their place.
       $('status-sections').querySelector(`button[data-st-more="${key}"]`)?.focus();
+    });
+    $('status-sections').addEventListener('change', e => {
+      const s = e.target.closest('select[data-st-repo]'); if (!s) return;
+      REPO = s.value; draw();
+      $('status-sections').querySelector('select[data-st-repo]')?.focus();
     });
     draw();
   });

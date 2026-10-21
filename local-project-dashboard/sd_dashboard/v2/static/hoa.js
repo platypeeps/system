@@ -25,6 +25,8 @@
   // sd:5626: each portal download's last run (/api/hoa's `downloads`, hoa_download.status), and its head command.
   let DL = {};
   const DOWNLOADS = {};
+  // sd:5621: the Alarms toolbar's Acknowledge all command, registered on DOMContentLoaded.
+  let ACK_ALL = null;
 // A source's refresh job (its source-ages row's `job`) as the jobs inventory reads it: its last run, in words.
 const refreshText = j => !j ? '' : j.error ? 'refresh job not installed' : j.state === 'running' ? 'refresh running'
   : ['failed', 'interrupted'].includes(j.state) ? `last refresh ${j.state}${j.last_exit != null ? `, exit ${j.last_exit}` : ''}${j.said ? `: ${j.said}` : ''}`
@@ -111,6 +113,9 @@ let polling = 0;
   const glyph = type => html`<svg viewBox="0 0 24 24" aria-hidden="true">${TYPES[type].svg}</svg>`;
   const stClass = s => s === 'in service' ? 'st-ok' : s === 'unknown' ? 'st-unknown' : 'st-out';
   const W = 1000, ZOOMS = [1, 2, 4, 8, 16, 32], LABEL_ZOOM = 4;
+  // sd:5623: every common tract (the county's land use TRCT) is the HOA's; the road parcel is not. A tract whose longest side
+  // is under TRACT_MIN_PX on screen is too small to see, so a ring marks it until the zoom shows it.
+  const owned = l => l.kind === 'tract' && l.luc === 'TRCT', TRACT_MIN_PX = 12;
 
   function project() {
     const pts = [...LOTS.flatMap(l => l.rings.flat()), ...ASSETS.map(a => [a.lng, a.lat])];
@@ -135,8 +140,11 @@ let polling = 0;
     const mid = r => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
     const labels = zoom >= LABEL_ZOOM ? LOTS.filter(l => l.kind === 'lot' && l.address).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
       return html`<text class="lot-label" x="${P.x(x).toFixed(1)}" y="${P.y(y).toFixed(1)}" font-size="${(11 * u).toFixed(2)}">${l.address}</text>`; }) : '';
+    const extent = l => { const xs = l.rings[0].map(p => P.x(p[0])), ys = l.rings[0].map(p => P.y(p[1])); return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)); };
+    const marks = LOTS.filter(l => owned(l) && extent(l) / u < TRACT_MIN_PX).map(l => { const [x, y] = mid(l.rings[0].slice(0, -1));
+      return html`<circle class="hoa-mark" data-tract="${l.ain || l.label}" cx="${P.x(x).toFixed(1)}" cy="${P.y(y).toFixed(1)}" r="${(8 * u).toFixed(2)}"><title>HOA-owned tract${l.label ? `, ${l.label}` : ''}</title></circle>`; });
     put(box, html`<svg class="map" viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" aria-label="HOA water assets map">
-      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || l.kind}</title></path>`)}${labels}
+      ${LOTS.map(l => html`<path class="lot k-${l.kind}"${key(l)}${owned(l) ? html` data-owned` : ''}${l.kind === 'lot' && `lot:${l.index}` === selected ? html` aria-current="true"` : ''} d="${l.rings.map(ring).join('')}"><title>${l.address || l.label || (owned(l) ? 'HOA-owned tract' : l.kind)}</title></path>`)}${labels}${marks}
       ${ASSETS.filter(a => !hidden.has(a.type) && TYPES[a.type]).map(a => { const t = TYPES[a.type], g = t.size * u;
         return html`<g class="asset t-${a.type} ${stClass(a.status)}" data-asset="${a.id}" tabindex="0" role="button" aria-label="${a.name}, ${a.type}, ${a.status}"${a.id === selected?.slice(6) ? html` aria-current="true"` : ''} transform="translate(${(P.x(a.lng) - g / 2).toFixed(2)} ${(P.y(a.lat) - g / 2).toFixed(2)}) scale(${(g / 24).toFixed(4)})"><title>${a.name} · ${a.status}</title>${TYPES[a.type].svg}</g>`; })}
     </svg>`);
@@ -144,9 +152,11 @@ let polling = 0;
   function zoomTo(z, at) { zoom = Math.max(ZOOMS[0], Math.min(ZOOMS[ZOOMS.length - 1], z)); if (at) center = at; drawMap(); }
   function legend() {
     const byType = {}, byStatus = {};
+    const tracts = LOTS.filter(owned).length;
     ASSETS.forEach(a => { byType[a.type] = (byType[a.type] || 0) + 1; byStatus[a.status] = (byStatus[a.status] || 0) + 1; });
     put($('legend'), html`${ORDER.filter(t => byType[t]).map(t => html`<li><button type="button" data-type="${t}" aria-pressed="${hidden.has(t) ? 'false' : 'true'}">${glyph(t)}${TYPES[t].label}s <b>${byType[t]}</b></button></li>`)}<li class="sep" aria-hidden="true"></li>${
-      Object.entries(byStatus).map(([s, n]) => html`<li class="status"><i class="${s === 'in service' ? '' : s === 'unknown' ? 'unk' : 'out'}" aria-hidden="true"></i>${s} <b class="data">${n}</b></li>`)}`);
+      Object.entries(byStatus).map(([s, n]) => html`<li class="status"><i class="${s === 'in service' ? '' : s === 'unknown' ? 'unk' : 'out'}" aria-hidden="true"></i>${s} <b class="data">${n}</b></li>`)}${
+      tracts ? html`<li class="status"><i class="own" aria-hidden="true"></i>HOA-owned ${tracts === 1 ? 'tract' : 'tracts'} <b class="data">${tracts}</b><i class="mark" aria-hidden="true"></i>ring: too small to see at this zoom</li>` : ''}`);
   }
 
   // ---------- Details ----------
@@ -356,6 +366,11 @@ let polling = 0;
     const w = !c ? 'HOA is not read' : !o ? `${c.label} has no source row on this page` : c.when(o);
     if (w === true) S.commands.run(c, o); else S.toast(w);
   }
+  // The toolbar button and the palette entry, the same as Download.
+  function acknowledgeAll() {
+    const S = window.shell, o = S.commands.get('alarms'), w = o && ACK_ALL ? ACK_ALL.when(o) : 'HOA is not read';
+    if (w === true) S.commands.run(ACK_ALL, o); else S.toast(w);
+  }
   function drawSourceRows(C, sr) {
     return sr.error ? html`<tr><td colspan="5">${unknownBlock(sr.error)}</td></tr>`
       : SRC.length ? html`${SRC.map(r => { const st = SRC_STATE[r.state] || 'unknown', id = `source:${r.source}`;
@@ -395,9 +410,17 @@ let polling = 0;
   }
 
   // ---------- Alarm ledger ----------
+  const alarmsErr = () => DOC?.mission?.files.find(x => x.name === 'alarm-events.csv')?.error;
+  const openAlarms = () => AL.filter(a => !a.acked);
   function drawLedgers() {
-    const C = window.shell.commands, m = DOC?.mission, alErr = m?.files.find(x => x.name === 'alarm-events.csv')?.error;
+    const C = window.shell.commands, alErr = alarmsErr();
     const shown = AL.filter(AL_VIEWS.find(v => v[0] === alView)[2]);
+    // sd:5621: Acknowledge all, the toolbar's one button. aria-disabled, not disabled, so an off button keeps focus and its reason.
+    const o = C.get('alarms'), w = o && ACK_ALL ? ACK_ALL.when(o) : '';
+    const label = html`<svg class="i" aria-hidden="true"><use href="#i-check"/></svg>${ACK_ALL?.label} <span class="n">${String(openAlarms().length)}</span>`;
+    put($('al-tools'), !o || !ACK_ALL ? html`` : w === true
+      ? html`<button class="btn quiet sm" type="button" id="al-ack-all" data-tip="${ACK_ALL.does} Asks first.">${label}</button>`
+      : html`<button class="btn quiet sm" type="button" id="al-ack-all" aria-disabled="true" aria-describedby="al-ack-all-off" data-tip="${w}">${label}</button><span class="sr" id="al-ack-all-off">${w}</span>`);
     put($('al-show'), DOC && !alErr ? html`${AL_VIEWS.map(([id, label, test]) => html`<button type="button" data-alview="${id}" aria-pressed="${String(id === alView)}">${label} <span class="n">${String(AL.filter(test).length)}</span></button>`)}` : html``);
     put($('al-body'), !DOC ? html`` : alErr ? html`<tr><td colspan="7">${unknownBlock(alErr)}</td></tr>`
       : shown.length ? html`${shown.map(a => html`<tr data-id="${a.id}" aria-selected="${a.id === selected ? 'true' : 'false'}"${a.acked ? html` data-acked` : ''}><td class="g g-${a.st}" aria-label="${a.st}">${GLYPH[a.st]}</td><td class="what"><button type="button">${a.event}</button>${a.acked ? html` <span class="tag">acknowledged</span>` : ''}</td><td class="src">${a.datetime.slice(5, 16)}</td><td class="detail hide-sm">${a.kind}</td><td class="num hide-sm">${a.minutes}</td><td class="detail hide-sm">${a.notified}</td><td class="act">${C.rowActions(a.id)}</td></tr>`)}`
@@ -434,6 +457,8 @@ let polling = 0;
       put($('subhead'), html`Water system: ${plural(ASSETS.length, 'mapped asset')}, ${plural(LOTS.length, 'lot and tract outline', 'lot and tract outlines')}; Mission export ${M.latest ? `through ${M.latest}` : 'not read'} · read <time class="rel" datetime="${doc.read}"></time>`);
       const objects = [...ASSETS.map(a => ({ id: `asset:${a.id}`, type: 'asset', label: `${a.id} · ${a.name}`, asset: a.id, name: a.name })),
         ...OB.map(o => ({ id: o.id, type: 'item', label: `sd:${o.item} · ${o.title}`, item: o.item, what: o.title, kind: o.kind, revision: o.revision })),
+        // sd:5621: the Alarms toolbar, which Acknowledge all acts on; its label is the count the confirm names.
+        ...(M.error ? [] : [{ id: 'alarms', type: 'alarms', label: plural(AL.filter(a => !a.acked).length, 'alarm') }]),
         ...AL.map(a => ({ id: a.id, type: 'alarm', label: `${a.datetime.slice(5, 16)} ${a.event}`, key: a.key, acked: a.acked })),
         ...(M.dir && !srcOf('mission') ? [{ id: 'source:mission', type: 'source', label: 'Mission export', source: 'mission' }] : []),
         // A source with a refresh job is a job row: Management's shared Retry and Show log act on it.
@@ -457,6 +482,8 @@ let polling = 0;
     draw,
     current: () => selected,
     first: () => OB[0]?.id,
+    // sd:5620: a Briefs row fills Details in its view (places.js); a read selects HOA's own rows only outside Briefs and Reports.
+    active: () => !['briefs', 'reports'].includes(window.shell.view?.current?.()),
     select: (id, opened) => select(id, opened),
     unselect: () => { selected = null; mark(); put($('details'), html`<p class="note">${DOC ? 'Select a marker, a task, an alarm or a trend day to see it here.' : 'Nothing is selected: the HOA readings could not be read.'}</p>`); },
   };
@@ -466,6 +493,7 @@ let polling = 0;
     { label: 'Fit the map to the HOA', icon: 'maximize-2', run: () => { center = null; zoomTo(1); } },
     { label: 'Download from Vantaca', icon: 'download', run: () => downloadFrom('vantaca') },
     { label: 'Download from Mission', icon: 'download', run: () => downloadFrom('mission') },
+    { label: 'Acknowledge all alarms', icon: 'check', run: () => acknowledgeAll() },
   ];
   // The shell walks the ledger rows on j / k; a row selects by its own click.
   window.PAGE_LIST = { rows: () => document.querySelectorAll('.ledger tbody tr[data-id]'), current: () => selected, select: id => select(id, false) };
@@ -567,6 +595,26 @@ let polling = 0;
         key: 'a', risk: 'undo', bulk: true, when: o => !o.acked ? 'not acknowledged' : ACKS || true, cli: () => NO_CLI,
         run: o => ack(o, false).then(() => `Unacknowledged: ${o.label}`), undo: o => ack(o, true) },
     );
+    // ---------- Acknowledge all (sd:5621) ----------
+    // One post for every unacknowledged event: POST /api/hoa/alarms writes each key as the single route does, and names the
+    // keys it did not write (an event the export dropped, or a refused write). It asks first and names the count; the toast
+    // says how many landed and which did not, and Undo posts back only the keys that landed.
+    const ackMany = (keys, acked) => S.post('/api/hoa/alarms', { keys, acked }).then(v => reader.reread().then(() => v));
+    ACK_ALL = { id: 'alarms.ack', on: 'alarms', label: 'Acknowledge all', icon: 'check', risk: 'undo', primary: () => true, executes: true,
+      askFirst: true, does: 'Hides every open alarm event here only. Undo shows them.',
+      when: () => alarmsErr() ? `alarm-events.csv did not read: ${alarmsErr()}` : ACKS || (openAlarms().length ? true : 'no alarm event is unacknowledged'),
+      consequence: () => `Hides ${plural(openAlarms().length, 'unacknowledged alarm event')} in this list. The Mission portal is not told; Undo shows them again.`,
+      cli: () => NO_CLI, sends: () => 'POST /api/hoa/alarms {keys, acked: true}',
+      run: () => { const rows = openAlarms(), named = new Map(rows.map(a => [a.key, `${a.datetime.slice(5, 16)} ${a.event}`]));
+        return ackMany(rows.map(a => a.key), true).then(out => {
+          const got = out.acked.map(x => x.key), bad = out.failed.map(x => `${named.get(x.key) || x.key} (${x.error})`);
+          return { keys: got, text: bad.length ? `Acknowledged ${got.length} of ${plural(rows.length, 'alarm')}. ${bad.length} not acknowledged: ${bad.join(', ')}`
+            : `Acknowledged ${plural(got.length, 'alarm')}. The Acknowledged view lists them.` }; }); },
+      undo: (o, v) => !v?.keys?.length ? false : ackMany(v.keys, false).then(out => {
+        if (out.failed.length) throw new Error(`${out.acked.length} of ${v.keys.length} shown again; ${out.failed.length} not: ${out.failed.map(x => x.error).join(', ')}`);
+        return true; }) };
+    C.register(ACK_ALL);
+    $('al-tools').addEventListener('click', e => { if (e.target.closest('#al-ack-all')) acknowledgeAll(); });
     // ---------- Refresh a source (sd:4965) ----------
     // Each refreshable source has a manual cron job, named by its source-ages row (sd:5280). Its row registers Management's shared Retry
     // (commands.js), which posts /api/jobs/<name>/retry with the job's revision; the jobs inventory's answer is the off

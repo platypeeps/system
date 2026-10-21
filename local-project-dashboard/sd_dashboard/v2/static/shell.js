@@ -288,7 +288,7 @@
   // The reading is guessed from the text; → at the field's end takes the next one; Esc clears; / focuses the field.
   // shell.filter() is the shown view's filter text; shell.filter(q) sets it (a page's Clear all). The bar reads ?q= at load.
   // A page with a bar of its own (Skills, Tasks) hands its filter text over with shell.filter(q) at each change, so the
-  // tables it does not filter itself (Skills' tracked repositories, Tasks' issues) take it as their text filter too.
+  // tables it does not filter itself (Skills' tracked repositories) take it as their text filter too.
   // A server-drawn list (listing.py, on Operations, Protection, an item page) filters on the server, before its pages: its
   // section names its query key (data-listing-q), the bar opens with that key's text, and Enter in filter mode loads the
   // page with the text in every list's key, each list from its first page.

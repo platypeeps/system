@@ -2,7 +2,7 @@
 // reference is marked "build:". The rows are /api/contributions/page (contribution_screen.document): the projection v1
 // /classic/contributions renders, never sample data. The dashboard makes no GitHub call: the "Settled on GitHub" lamp, each
 // row's settle date and the settled-per-day chart read the dates the shadow collector records (sd:5301). Acknowledge, Make task and
-// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge and Open on GitHub are copy only;
+// Dismiss run through dashboard routes and ask first: none has a verb that reverses it. Draft nudge is copy only; Open on GitHub opens a tab (sd:5628);
 // Re-run collector asks the server to run sd shadow sync (sd:2207). The reference's Trackers view is not ported: its switch opens the classic Operations > Trackers.
 // build (sd:5486): Hide and Unhide post /api/contributions/view, the view state Designs' Hide writes, each with Undo. A hidden
 // row leaves the Open rows, the lamps, the tallies and the badge; the Hidden view lists it, on the Open table, with Unhide.
@@ -51,7 +51,7 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Data (build: /api/contributions/page) ----------
   let DOC = null, ROWS = [], BY = new Map(), selected = null, FAILED = '', STORE = '';
   // The Hidden view draws the hidden rows on the Open table; every other view draws the rest.
-  let HIDDEN = false;
+  let HIDDEN = false, SYNC = null;
   const inView = r => r.hidden === HIDDEN;
   // The Filed view (sd:5488): its rows, by key, and whether it is the shown view.
   let FILED = [], FBY = new Map(), FILEDVIEW = false;
@@ -135,10 +135,10 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `printf '%s\\n' ${shq(taskJson(o))} > contribution.json && sd task contribution add ${shq(o.title)} --file contribution.json`,
         run: o => window.shell.post('/api/contributions/task', { key: o.key, title: o.title })
           .then(out => { landed(o, { item_id: out.item?.id }); reread(); return `Task #${out.item?.id} filed · ${o.label.slice(0, 48)}`; }, e => { load(); throw e; }) },
-      // Copy only, as ruled: the shell still calls run, so run opens nothing. The Details link opens the page.
-      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', does: 'Gives the line that opens it on GitHub; Details has the link.', key: 'o', risk: 'safe', executes: false,
+      // sd:5628: opens the page in a new tab, as every Open on GitHub does; the gh line stays for copying.
+      { id: 'contribution.open', on: 'contribution', label: 'Open on GitHub', does: 'Opens it on GitHub in a new tab.', key: 'o', icon: 'arrow-up-right', risk: 'safe', executes: false,
         when: o => github(o.url) || 'not filed on GitHub', cli: o => `gh ${kindOf(o)} view --web ${o.url}`,
-        run: () => 'Copy the line, or use the link in Details: the dashboard opens nothing itself' },
+        run: o => { window.open(o.url, '_blank', 'noopener'); return 'Opened on GitHub in a new tab'; } },
       // build (sd:3432): Dismiss closes a row with no item that will never settle, such as a pull request that now 404s.
       // The row leaves the open lanes; new attention shows it again, and a lifecycle change ends the dismissal.
       { id: 'contribution.dismiss', on: 'contribution', label: 'Dismiss', does: 'Moves this contribution to Closed; no Undo, new activity shows it again.', key: 'x', risk: 'confirm',
@@ -162,7 +162,7 @@ addEventListener('DOMContentLoaded', () => {
         cli: o => `open ${shq(o.url)}`,
         run: o => { window.open(o.url, '_blank', 'noopener'); return `Opened in ${TRACKER[o.tracker]} · ${o.ref}`; } },
       // Re-run collector (commands.js); Contributions reads again once the run ends.
-      window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' }),
+      (SYNC = window.commands.syncCollector({ reread: () => reread(), page: 'Contributions' })),
     );
   }
 
@@ -395,11 +395,13 @@ addEventListener('DOMContentLoaded', () => {
   function showFiled(key) {
     const r = FBY.get(key), g = fstate(r), where = TRACKER[r.tracker];
     selected = key; mark();
-    const facts = [['Key', r.ref], ['Status', r.status || 'not synced yet'], [r.tracker === 'jira' ? 'Project' : 'Repository', r.project || 'not recorded'],
+    // sd:5629: the Key is the link to the ticket or issue; a row with no https link shows the bare key and says so.
+    const keyCell = safeLink(r.url) ? html`<a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">${r.ref}${I('arrow-up-right')}</a>` : r.ref;
+    const facts = [['Key', keyCell], ['Status', r.status || 'not synced yet'], [r.tracker === 'jira' ? 'Project' : 'Repository', r.project || 'not recorded'],
       ['Assignee', r.assignee == null ? 'not synced yet' : r.assignee || 'unassigned'], ['Filed by', r.author || 'you']];
     putKeep(details, html`<p class="kind"><span class="g-${g}" aria-hidden="true">${GLYPH[g]}</span> ${KIND[r.tracker]} · filed by you</p>
       <h2>${r.title || r.ref}</h2>
-      ${safeLink(r.url) ? html`<p><a class="ext" href="${r.url}" target="_blank" rel="noopener noreferrer">Edit in ${where}${I('arrow-up-right')}</a></p>` : html`<p class="note">No https link recorded, so it opens nowhere.</p>`}
+      ${safeLink(r.url) ? '' : html`<p class="note">No https link recorded, so it opens nowhere.</p>`}
       <dl>${facts.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}
         <dt>Created</dt><dd>${r.created_at ? html`<time class="rel" datetime="${r.created_at}" data-long=""></time>` : 'created date not synced yet'}</dd>
         <dt>Updated</dt><dd>${r.updated_at ? html`<time class="rel" datetime="${r.updated_at}" data-long=""></time>` : 'not synced yet'}</dd>
@@ -469,6 +471,8 @@ addEventListener('DOMContentLoaded', () => {
   document.addEventListener('shell:view', e => onView(e.detail.id));
   onView(window.shell.view?.current?.());
   document.getElementById('source').addEventListener('click', e => { if (e.target.closest('[data-collector]')) select('collector', true); });
+  // Refresh (sd:5630): the toolbar's way to Re-run collector; the table reads again once the sync ends.
+  document.getElementById('contrib-refresh').addEventListener('click', () => { if (SYNC) window.shell.commands.run(SYNC, window.shell.commands.get('collector')); });
   [tbody, ftbody].forEach(b => b.addEventListener('click', e => { if (e.target.closest('.rowact') || e.target.closest('a')) return; const tr = e.target.closest('tr[data-id]'); if (tr) select(tr.dataset.id, true); }));
   document.addEventListener('shell:open', e => select(e.detail, true));
   document.addEventListener('shell:filter', e => { if (e.detail.q === q.value) return; q.value = e.detail.q; if (DOC) applyFilter(); });

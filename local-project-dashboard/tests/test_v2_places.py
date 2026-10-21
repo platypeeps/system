@@ -33,6 +33,8 @@ from test_workflow_actions import BrowserSession
 STATIC = Path(v2.__file__).resolve().parent / "static"
 PLACES_JS = (STATIC / "places.js").read_text(encoding="utf-8")
 MARKUP_JS = (STATIC / "markup.js").read_text(encoding="utf-8")
+COMMANDS_JS = (STATIC / "commands.js").read_text(encoding="utf-8")
+BRIEF_DETAILS_JS = (STATIC / "brief-details.js").read_text(encoding="utf-8")
 
 FAMILIES = ("family|hoa|HOA|house|hoa-mission-alarms,hoa-morning-digest\n"
             "family|home|Home|house|ha-backups-prune,fun-events-nightly\n")
@@ -324,7 +326,7 @@ const shown = () => SECTIONS.filter(x => !x.hidden).map(x => x.dataset.placeView
 let VIEW = VIEWS[0][0];
 window.shell.view = { current: () => VIEW, show: () => true, count: () => {} };
 const go = async hash => { VIEW = hash.replace('#view=', ''); document.dispatchEvent(new CustomEvent('shell:view', { detail: { id: VIEW } })); await flush(); };
-""" + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
+""" + COMMANDS_JS + BRIEF_DETAILS_JS + PLACES_JS + "\nvar R = {};\n(async () => { try {\n" + setup + "\n(DOC_LISTENERS['shell:ready'] || []).forEach(f => f());\nawait flush();\n"
                   + body + "\n} catch (e) { OUT.error = String(e) + ' ' + e.stack; } })();\n"
                   + "function run() { OUT.R = R; return JSON.stringify(OUT); }\n")
         result = subprocess.run([OSASCRIPT, "-l", "JavaScript", "-e", script],
@@ -345,6 +347,45 @@ const tr = { querySelector: () => ({ href: '/tasks?row=5' }) };
 const click = (onLink, more = {}) => (DOC_LISTENERS['click'] || []).forEach(f => f(Object.assign({ button: 0, target: { closest: sel => sel === '.place-rows tbody tr' ? tr : onLink ? {} : null } }, more)));
 click(false); click(true); click(false, { metaKey: true });""", self.docs())
         self.assertEqual(out["R"]["went"], ["/tasks?row=5"])
+
+    #: A Briefs row as the click handler sees it: its id, and the link the row used to follow.
+    BRIEF_CLICK = """const clickRow = id => { const tr = { dataset: { id }, querySelector: () => ({ href: '/briefs?row=' + encodeURIComponent(id) }) };
+  (DOC_LISTENERS['click'] || []).forEach(f => f({ button: 0, target: { closest: sel => sel === '.place-rows tbody tr' ? tr : null } })); };
+R.went = []; location.assign = h => R.went.push(h); globalThis.getSelection = () => ({ toString: () => '' });
+R.panes = []; window.shell.openPane = p => R.panes.push(p);
+"""
+
+    def test_a_briefs_row_shows_its_details_in_the_pane_and_the_page_stays(self):
+        # sd:5620: a Briefs row on HOA or Home fills Details with the Briefs page's own Details and commands, rather than
+        # opening Briefs; a link in Details still opens it there.
+        for place, stem in (("hoa", "2026-09-05 - Board Notes"), ("home", "2026-09-05 - Fun Events Nightly")):
+            out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=briefs'); R.rows = ELS['briefs-rows'].html;
+clickRow({json.dumps(stem)}); await flush();
+R.det = document.getElementById('details').html || ''; R.reg = REG.map(c => c.id); R.obj = (C.get({json.dumps(stem)}) || {{}}).type;""", self.docs(place), place=place)
+            r = out["R"]
+            self.assertEqual(r["went"], [], place)
+            self.assertEqual(r["panes"], ["tab-details"], place)
+            self.assertIn(f'<tr data-id="{stem}" aria-selected="false">', r["rows"], place)
+            self.assertIn("Brief · ", r["det"], place)
+            self.assertIn(f"<h2>{stem}</h2>", r["det"], place)
+            self.assertIn(f'href="/briefs?row={stem.replace(" ", "%20")}"', r["det"], place)
+            self.assertEqual(r["obj"], "brief", place)
+            for command in ("brief.read", "brief.task", "brief.open", "brief.adversarial-review", "brief.publish"):
+                self.assertIn(command, r["reg"], place)
+
+    def test_j_k_and_enter_walk_the_briefs_rows_through_the_shells_list(self):
+        # sd:5620: the shell's grammar (shell.js walk): j / k select a row, Details follows without opening the pane, and
+        # Enter (shell:open) opens it.
+        board, digest = "2026-09-05 - Board Notes", "2026-09-05 - HOA Morning Digest"
+        out = self.run_page(self.BRIEF_CLICK + f"""await go('#view=briefs');
+window.PAGE_LIST.select({json.dumps(digest)}); await flush();
+R.cur = window.PAGE_LIST.current(); R.det = ELS.details.html || ''; R.quiet = R.panes.slice();
+open({json.dumps(board)}); await flush(); R.cur2 = window.PAGE_LIST.current(); R.det2 = ELS.details.html || '';""", self.docs())
+        r = out["R"]
+        self.assertEqual((r["cur"], r["quiet"]), (digest, []))
+        self.assertIn(f"<h2>{digest}</h2>", r["det"])
+        self.assertEqual((r["cur2"], r["panes"]), (board, ["tab-details"]))
+        self.assertIn(f"<h2>{board}</h2>", r["det2"])
 
     def test_the_overview_reads_no_view_and_each_view_reads_its_own_document_when_shown(self):
         out = self.run_page("""R.first = shown(); R.gets0 = OUT.gets.slice();

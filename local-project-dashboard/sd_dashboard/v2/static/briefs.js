@@ -15,7 +15,6 @@ window.PAGE_FILTER = { list: 'subject, source and first lines' };
 addEventListener('DOMContentLoaded', () => {
   const shell = window.shell, C = shell.commands;
   const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
-  const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
   // build: capture files through the shell's default capture (sd:3520): POST /api/items, as Today and Tasks do.
 
   // ---------- Data (build) ----------
@@ -30,8 +29,7 @@ addEventListener('DOMContentLoaded', () => {
     return Array.from({ length: RANGES[range] }, (_, i) => new Date(end - (RANGES[range] - 1 - i) * DAY_MS).toISOString().slice(0, 10)); };
   let DAYS = [];
   const inRange = b => b.day >= DAYS[0] && b.day <= DAYS[DAYS.length - 1];
-  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const dayLabel = d => { const t = new Date(d + 'T12:00:00Z'); return `${WD[t.getUTCDay()]} ${t.getUTCDate()} ${MON[t.getUTCMonth()]}`; };
+  const { dayLabel } = window.briefDetails;
   const hhmm = iso => iso ? iso.slice(11, 16) : '–';
   const srcOf = id => SOURCES.find(s => s.id === id);
   const ago = iso => { const m = Math.round((Date.parse(READ) - Date.parse(iso)) / 60000); return m < 60 ? `${Math.max(m, 0)}m ago` : m < 2880 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
@@ -192,125 +190,33 @@ addEventListener('DOMContentLoaded', () => {
   // ---------- Details ----------
   const details = document.getElementById('details');
   function swap() { details.setAttribute('data-swap', ''); requestAnimationFrame(() => details.removeAttribute('data-swap')); }
+  // sd:5620: a brief's Details and commands are brief-details.js's, which the HOA and Home pages' Briefs views draw too.
+  const brief = window.briefDetails.attach({ details, reread: () => briefs.reread(), read: () => READ, watch: () => WATCH });
   function show(id) {
     const b = BRIEFS.find(r => r.id === id); if (!b) return false;
-    shownItem = b.item;
     tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.setAttribute('aria-selected', tr.dataset.id === id));
     document.querySelectorAll('#lanes rect.tick').forEach(r => r.classList.toggle('sel', r.dataset.id === id));
-    put(details, html`<p class="kind">Brief · ${b.src}</p>
-      <h2>${b.subj}</h2>
-      <dl><dt>Source</dt><dd>${b.src}</dd><dt>Day</dt><dd>${dayLabel(b.day)}</dd>
-        <dt>Written</dt><dd>${b.at ? `${b.at.slice(0, 16).replace('T', ' ')} UTC · ${ago(b.at)}` : 'time not known: the note changed after its day'}</dd>
-        <dt>Words</dt><dd>${b.words}</dd><dt>Item</dt><dd>#${b.item}</dd>
-        <dt>Vault copy</dt><dd>${b.rel ? html`<code>${b.rel}</code>` : b.copy}</dd>
-        <dt>Watchdog</dt><dd><span class="g-unknown" aria-hidden="true">▨</span> ${WATCH}</dd></dl>
-      <h3>Body · first lines</h3><div class="mailbody">${b.lead}${b.lead.length >= 200 ? '…' : ''}</div>
-      <p class="why off">First lines only. Read opens the whole brief.</p>
-      <h3>Act</h3>${C.bar(id)}
-      ${window.commands.publishPane('brief', { id: b.id, label: b.subj, item: b.item, pub: b.pub })}
-      ${window.commands.reviewPane('brief', b.item)}
-      ${b.src === REVIEW_SRC ? html`<section class="recs" id="recs" aria-live="polite"><h3>Create tasks</h3><p class="why off">Reading its recommendations…</p></section>` : ''}`);
-    if (b.src === REVIEW_SRC) loadRecs(b.item);
-    C.select(id);
-    shell.suggest(['Summarise this brief in three lines', `What else did ${b.src} write this week?`, 'Turn what this brief asks into tasks']);
-    swap();
+    brief.show(b);
     return true;
   }
   // build: a source has no Act bar. The reference's Retry and Show log ran on the job behind the source; the file name gives a
   // kind, not a job, so there is nothing to run them on.
   function showSource(id) {
     const s = srcOf(id); if (!s) return;
-    shownItem = null;
+    brief.forget();
     const mine = ranged().filter(b => b.src === id), on = new Set(mine.map(b => b.day)).size;
-    put(details, html`<p class="kind">Source · ${mine.length ? 'quiet days are gaps' : 'no brief in range'}</p>
+    put(details, html`<div class="brief-det"><p class="kind">Source · ${mine.length ? 'quiet days are gaps' : 'no brief in range'}</p>
       <h2>${s.id}</h2>
       <dl><dt>Briefs, ${DAYS.length} days</dt><dd>${mine.length} on ${on} of ${DAYS.length} days</dd><dt>Newest</dt><dd>${s.newest}</dd>
         <dt>All read</dt><dd>${s.n}${capped() ? ` of the newest ${READER.shown}` : ''}</dd><dt>Watchdog</dt><dd><span class="g-unknown" aria-hidden="true">▨</span> ${WATCH}</dd></dl>
-      <p class="why">A quiet day is a gap, not a fault. Without a watchdog reader the page cannot say whether the job ran and had nothing to write, or failed. The file name gives the kind, not the job, so there is no job to retry from here.</p>`);
+      <p class="why">A quiet day is a gap, not a fault. Without a watchdog reader the page cannot say whether the job ran and had nothing to write, or failed. The file name gives the kind, not the job, so there is no job to retry from here.</p></div>`);
     C.select(null); shell.suggest([`Why is ${s.id} quiet?`, 'Which jobs missed a run this week?']); shell.openPane('tab-details'); swap();
   }
   function select(id, open) { if (!show(id)) return; selected = id; if (open) shell.openPane('tab-details'); }
 
-  // ---------- Create tasks (sd:5064) ----------
-  // An adversarial review's brief names its review batches; each question is one recommendation, read from
-  // /api/briefs/<item>/recommendations. Create selected rules each ticked question Approve through POST /api/review/rule,
-  // one call at a time under its batch's revision, and Approve files the task. Reject the rest rules every open one
-  // Reject. An unticked question stays open; a refused call keeps the server's sentence on its own row. Details names the
-  // brief it shows in shownItem; an answer or a click for another brief changes nothing (shell.shown).
-  const REVIEW_SRC = 'Adversarial review';
-  let RECS = null, busy = false, shownItem = null;
-  const CHOSEN = new Set(), REFUSED = new Map();
-  function loadRecs(item) {
-    const still = shell.shown('recs', item, () => shownItem); if (!still) return Promise.resolve();
-    return shell.getJSON(`/api/briefs/${item}/recommendations`).then(doc => doc, e => ({ brief: item, error: e.message }))
-      .then(doc => { if (!still()) return; if (RECS?.brief !== item) { CHOSEN.clear(); REFUSED.clear(); } RECS = doc; drawRecs(); });
-  }
-  function drawRecs() {
-    const host = document.getElementById('recs'); if (!host || !RECS || RECS.brief !== shownItem) return;
-    if (RECS.error) { put(host, html`<h3>Create tasks</h3><p class="why">Its recommendations were not read: ${RECS.error}</p>`); return; }
-    const open = RECS.questions.filter(q => q.open);
-    put(host, html`<h3>Create tasks</h3>
-      <p class="why">Each recommendation waits in a review batch. Create selected approves the ticked ones, which files each as a task; the rest stay open.</p>
-      ${RECS.batches.filter(b => b.error).map(b => html`<p class="why">sd:${b.item} was not read: ${b.error}</p>`)}
-      ${RECS.questions.length ? html`<ul class="rec-list">${RECS.questions.map(q => html`<li>${q.open
-        ? html`<label class="chk"><input type="checkbox" data-q="${q.note}"${CHOSEN.has(q.note) ? html` checked` : ''}${busy ? html` disabled` : ''}> <span>${q.title}</span></label>`
-        : html`<span class="ruled"><span class="lab">${q.label || 'expired'}</span> <span>${q.title}</span>${q.filed ? html` · <a href="${shell.itemHref(q.filed)}">sd:${q.filed}</a>` : ''}</span>`}
-        <small>${q.repo || 'no repository'} · batch sd:${q.batch}</small>${REFUSED.has(q.note) ? html`<small class="refused">${REFUSED.get(q.note)}</small>` : ''}</li>`)}</ul>`
-        : html`<p class="why off">This review filed no recommendation.</p>`}
-      ${open.length ? html`<div class="actions"><button class="linkbtn" type="button" data-recs="all">Select all</button>
-        <button class="btn sm" type="button" data-recs="create"${busy ? html` disabled` : ''}>Create selected</button>
-        <button class="btn sm quiet" type="button" data-recs="reject"${busy ? html` disabled` : ''}>Reject the rest</button></div>` : ''}`);
-  }
-  async function ruleEach(option, picked) {
-    const doc = RECS, revision = new Map(doc.batches.map(b => [b.item, b.revision]));
-    if (!picked.length) { shell.toast('Tick a recommendation first'); return; }
-    busy = true; REFUSED.clear(); drawRecs();
-    let failed = 0;
-    for (const q of picked) {
-      try {
-        const out = await shell.post('/api/review/rule', { item: q.batch, note: q.note, option, revision: revision.get(q.batch) });
-        revision.set(q.batch, out.revision); CHOSEN.delete(q.note);
-      } catch (e) { failed++; REFUSED.set(q.note, e.message); }
-    }
-    busy = false; drawRecs();
-    shell.toast(`${picked.length - failed} of ${picked.length} ruled ${option}${failed ? `; ${failed} failed, each row says why` : ''}`);
-    await loadRecs(doc.brief);
-  }
-  details.addEventListener('change', e => {
-    const box = e.target.closest?.('input[data-q]'); if (!box) return;
-    if (box.checked) CHOSEN.add(+box.dataset.q); else CHOSEN.delete(+box.dataset.q);
-  });
-  details.addEventListener('click', e => {
-    const b = e.target.closest?.('[data-recs]'); if (!b || busy || !RECS?.questions || RECS.brief !== shownItem) return;
-    const open = RECS.questions.filter(q => q.open);
-    if (b.dataset.recs === 'all') { open.forEach(q => CHOSEN.add(q.note)); drawRecs(); }
-    if (b.dataset.recs === 'create') ruleEach('Approve', open.filter(q => CHOSEN.has(q.note)));
-    if (b.dataset.recs === 'reject') ruleEach('Reject', open.filter(q => !CHOSEN.has(q.note)));
-  });
   document.addEventListener('publish:run', e => { if (selected === e.detail.key) show(selected); });
   document.addEventListener('adversarial:run', e => { const b = BRIEFS.find(r => r.id === selected); if (b && e.detail.key === `brief:${b.item}`) show(b.id); });
 
-  // ---------- Commands (products/system/commands.md): declared once, rendered by the shell ----------
-  // build: Read, then two of the reference's four brief commands. Acknowledge and Mark read wrote a message store that does not
-  // exist and had nothing to change here; Open in Gmail is Open in Obsidian, the vault copy's link, off without one (sd:3459).
-  function registerCommands() {
-    C.register(
-      // build (sd:3459): every brief is a row in the database, so Read works with or without a vault copy.
-      { id: 'brief.read', on: 'brief', label: 'Read', does: 'Opens the brief on its work item\'s page.', key: 'r', icon: 'book-open', risk: 'safe', primary: () => true, executes: false,
-        cli: o => `sd reports brief show ${shq(o.id)}`, run: o => { location.href = shell.itemPage(o.item); return `#${o.item} opens`; } },
-      // build: no verb deletes a task, so no Undo: the capture form shows the line and files it only on Capture.
-      { id: 'brief.task', on: 'brief', label: 'Make task', does: 'Opens Capture with the brief\'s title, to file it as a task.', key: 'k', risk: 'safe',
-        cli: o => `sd task add ${shq(o.label)}`, run: o => { shell.capture(o, o.label); return 'Check the title, then Capture'; } },
-      { id: 'brief.open', on: 'brief', label: 'Open in Obsidian', does: 'Opens the brief\'s vault copy in Obsidian.', key: 'o', risk: 'safe', executes: false,
-        when: o => !!o.open || o.copy || 'no vault copy for this brief', cli: o => `open ${shq(o.open)}`,
-        run: o => { window.open(o.open, '_blank', 'noopener'); return 'Obsidian opens the copy'; } },
-      // sd:5064: a codex review of the brief's item, in the background; its own brief lists the tasks to pick.
-      window.commands.adversarialReview('brief', { payload: o => ({ kind: 'brief', target: o.item }) }),
-      // sd:5102: Publish to (the item's fields.publish) and Publish now, declared once in commands.js.
-      ...window.commands.publishCommands('brief', { base: '/api/briefs', payload: o => ({ item: o.item }), reread: () => briefs.reread(),
-        cli: () => 'no sd verb: the dashboard writes the brief\'s fields.publish and queues it through sd-research-kit' }),
-    );
-  }
   document.addEventListener('shell:open', e => { if (BRIEFS.some(b => b.id === e.detail)) select(e.detail, true); });
 
   // ---------- Shapeshift bar (the shell's, sd:5539) ----------
@@ -339,7 +245,7 @@ addEventListener('DOMContentLoaded', () => {
         : !BRIEFS.length ? { kind: 'empty', title: 'No briefs', text: 'The workflow database holds no routine brief.', source }
         : READER.skipped || capped() ? { kind: 'partial', text: [READER.skipped ? `${plural(READER.skipped, 'row')} skipped: not a brief.` : '', capped() ? `Showing the newest ${READER.shown}; older briefs are in the database. Counts before ${oldest().slice(5)} are not read.` : ''].filter(Boolean).join(' '), source }
         : null;
-      return { objects: BRIEFS.map(b => ({ id: b.id, type: 'brief', label: b.subj, src: b.src, item: b.item, open: b.open, copy: b.copy, pub: b.pub || null })), state };
+      return { objects: BRIEFS.map(window.briefDetails.object), state };
     },
     // Nothing from the last read stays on screen: rows, lanes and the observed time.
     clear: err => { READ = null; READER = { state: 'error', reason: err.message, total: 0, shown: 0 }; COPIES = null; BRIEFS = []; SOURCES = []; F.src.clear(); LOADED = true; },
@@ -351,6 +257,5 @@ addEventListener('DOMContentLoaded', () => {
     unselect: () => { selected = null; put(details, html`<p class="why">Select a brief to see it.</p>`); },
   });
   readURL();
-  registerCommands();
   briefs.load();
 });

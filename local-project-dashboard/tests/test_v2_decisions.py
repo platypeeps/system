@@ -271,16 +271,6 @@ class TheScript(unittest.TestCase):
         failed = self.run_page("R.hidden = ELS['decisions-review'].hidden;", "(path, body) => [500, { error: 'locked' }]")
         self.assertTrue(failed["R"]["hidden"])
 
-    def test_on_review_the_list_reads_with_no_review_line_and_read_again_rereads_it(self):
-        # sd:5497: Review's Questions view runs this script; that page has no line linking to itself and names its button reload.
-        prefix = ("var bare = document.getElementById.bind(document);"
-                  " document.getElementById = id => id === 'decisions-review' || id === 'refresh' ? null : bare(id);\n")
-        doc = json.dumps({"decisions": [decision_row()], "review": 5})
-        out = self.run_page("R.rows = ELS.decisions.html; ELS.reload.listeners.click[0](); await flush();",
-                            f"(path, body) => [200, {doc}]", prefix=prefix)
-        self.assertIn('data-note="7" data-option="0"', out["R"]["rows"])
-        self.assertEqual(out["gets"], ["/api/decisions", "/api/decisions"])
-
     def test_no_decisions_says_so_and_a_failed_read_says_why(self):
         empty = self.run_page("R.rows = ELS.decisions.html;", "(path, body) => [200, { decisions: [] }]")
         self.assertIn("No decision waits on you", empty["R"]["rows"])

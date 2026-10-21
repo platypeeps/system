@@ -1,6 +1,5 @@
-// Review (sd:3709): the labelling queue. It loads before shell.js, which reads PAGE_VIEWS, PAGE_LIST and PAGE_KEYS from it.
-// Views (sd:5497): Questions is decisions.js on this page's Questions table; Bulk scoring is this file's queue. 1-9 and j / k
-// apply while Bulk scoring shows.
+// Review (sd:3709): the labelling queue. It loads before shell.js, which reads PAGE_LIST and PAGE_KEYS from it.
+// One view (sd:5651): the review batches. One-off questions are Today's Decisions, which links here.
 // Rows: /api/review (review_screen.document): one lamp per open batch, one ledger row per question, nightly suggestions
 // first. A row carries its question (sd:5123): the first line and its subject and evidence, the options as numbered buttons,
 // and the whole question folded in place. No Details pane: the shell's pane opens only for Chat. One click on an option
@@ -42,11 +41,6 @@
   const firstLine = t => String(t || '').split('\n')[0];
   const clock = d => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' });
 
-  window.PAGE_VIEWS = [{ id: 'questions', label: 'Questions' }, { id: 'bulk', label: 'Bulk scoring', key: 'b' }];
-  // The queue's keys apply only while it shows; a page without views (a stand-in) has it always.
-  const onBulk = () => (window.shell?.view?.current?.() ?? 'bulk') === 'bulk';
-  // decisions.js tells how many questions wait; the Questions segment shows the count.
-  document.addEventListener('today:decisions', e => window.shell?.view?.count?.('questions', e.detail));
 
   // ---------- Draw ----------
   function lamps() {
@@ -74,7 +68,6 @@
     // The rail's rule is the read's (sd:3446, review_screen.document); this page keeps it current as its labels land.
     window.PAGE_ATTENTION = { state: open > 0 ? 'caution' : 'ok', n: Math.max(0, open), what: 'questions open' };
     window.shell?.attention?.();
-    window.shell?.view?.count?.('bulk', DOC ? Math.max(0, open) : null);
     bar();
   }
 
@@ -370,13 +363,13 @@
     ['j / k', 'Next / previous question, without a label (a skip)'], ['↵', 'Open or fold the whole question in its row'],
     ['u', 'Undo the last label while its toast shows'], ['n', 'Comment on the selected question'],
     ['Esc', 'Show every batch again and hide reviewed questions']];
-  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)), when: onBulk,
+  window.PAGE_LIST = { rows: () => $('rows').querySelectorAll('tr[data-id]'), select: id => select(noteOf(id)),
     current: () => (sel === null ? null : rowId(sel)), clear: () => (batch !== null || REVIEWED) && (filter(null, false), true) };
 
   document.addEventListener('keydown', e => {
     if (!/^[1-9]$/.test(e.key) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target?.matches?.('input, textarea, select, [contenteditable]') || document.querySelector('dialog[open]')) return;
-    if (window.shell?.chording?.() || sel === null || !onBulk()) return;
+    if (window.shell?.chording?.() || sel === null) return;
     e.preventDefault();
     label(sel, +e.key - 1);
   });

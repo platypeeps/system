@@ -354,7 +354,7 @@ class ThePage(BrowserSession):
         self.assertIn("<title>Home · system</title>", body)
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "home.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "home-kiosk.js", "icons.js", "sections.js", "read.js", "commands.js", "brief-details.js", "home.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -1017,6 +1017,18 @@ every.forEach(f => f()); await flush();
 document.hidden = true; every.forEach(f => f()); await flush();""")
         self.assertEqual(out["R"]["observed"], [self.doc["read"], "1"])
         self.assertEqual(out["gets"], ["/api/home"] * 3, "the first read, Read again and one minute, and none while hidden")
+
+    def test_the_minute_read_leaves_another_views_details_alone(self):
+        # sd:5620: a Briefs row's Details fill the pane on Home; the tiles' minute read selects nothing while the Overview
+        # is not shown, so it does not put "Select a tile" over them.
+        out = self.run_page("""window.shell.view.current = () => 'briefs';
+put(ELS.details, mk`<h2>A brief</h2>`);
+INTERVALS.filter(i => i[1] === 60 * 1000).forEach(i => i[0]()); await flush(); R.det = ELS.details.html;
+window.shell.view.current = () => 'overview';
+INTERVALS.filter(i => i[1] === 60 * 1000).forEach(i => i[0]()); await flush(); R.back = ELS.details.html;""")
+        self.assertEqual(out["gets"], ["/api/home"] * 3)
+        self.assertEqual(out["R"]["det"], "<h2>A brief</h2>")
+        self.assertIn("Select a tile", out["R"]["back"])
 
     def test_the_minute_read_shows_no_loading_state(self):
         # REGRESSION sd:3522: each minute read drew the loading state above the tiles, so the wall display jumped by its height.

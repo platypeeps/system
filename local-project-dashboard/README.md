@@ -53,16 +53,22 @@ non-zero, a shadow read or a launchd read that fails — is a rank-0 row naming 
 and the reason, never an empty list. Nothing is stored and nothing on Now
 writes; there is no dismiss.
 
-**Status**, the tab after Now, shows the sections `sd today` and `sd-status` print (sd:5099).
+**Issues**, the tab after Now, lists Your issues, the open Jira and GitHub issues assigned to you or filed by you, and
+Issue intake (sd:4628, sd:4840). Your issues moved here from Tasks (sd:5645), which keeps no copy.
+
+**Status**, the tab after Issues, shows the sections `sd today` and `sd-status` print (sd:5099).
 `/api/today/status` is the pack's `sd_db.today.sections` unchanged, so the tab and the command cannot drift.
 A bar shows where the work is: delivered in 24 h, landing, planned, unscheduled and blocked. Its key links each count
 to its section. Each section shows its first 5 rows, as the command does, and Show all opens the rest.
 The gate slots come from `sd gate status --json`; a failed read shows as unknown with its reason.
 
-**GitHub**, the tab after Issues, lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
+**GitHub**, the tab after Inbox, lists your open pull requests and issues, and those merged or closed in 7 days (sd:5608).
 `/api/today/github` (`today_github.py`) reads only what is stored: `shadow`, the Contributions projection, the
 repos with GitHub issues on, sd-ship's delivery notes and items filed under a `github:` ref; it calls no collector.
 Rows sort newest GitHub activity first; a row with no stamp says not recorded. Your issues and Issue intake stay on Issues.
+A pull request row opens its details in the right pane (sd:5633), with Open on GitHub, Open item, Adversarial review
+(a codex review of the pull request at its head, in its registered checkout) and Copilot review. Copilot review asks
+GitHub once per press through `POST /api/today/github/copilot-review`, which runs `gh api` for one open pull request.
 
 **Decisions**, below Now, list the questions that wait on the operator, one button per option (sd:3012).
 Ask one with a `question` note that carries one `Option: <text>` line per choice, at least two:

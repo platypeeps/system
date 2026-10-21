@@ -1,4 +1,5 @@
-// Your issues (sd:4628), on Today and Tasks: each repo's Jira and GitHub issues assigned to or filed by the operator.
+// Your issues (sd:4628), on Today (Tasks drew them until sd:5645): each repo's Jira and GitHub issues assigned to or
+// filed by the operator.
 // Issue intake (sd:4840), on Today only, is at the end.
 // The rows are the page document's `issues` (issues.document over sd_db.repos.mine_issues); the page script hands them over
 // with an issues:read event after each read, `error` set when the read failed. A failure is a row naming it, never an empty list.
@@ -15,7 +16,7 @@
         <td class="why">${r.reason}</td></tr>`)}`
       : html`<tr class="empty"><td colspan="4">No open issue is assigned to you or filed by you in a repo with issue sources.</td></tr>`);
     put($('issues-tally'), issues.length && !error ? html`<span>${issues.length} open</span>` : html``);
-    window.todayCount?.('issues', error ? null : issues.length); // Today's Issues tab (sd:5080); Tasks has none
+    window.todayCount?.('issues', error ? null : issues.length); // Today's Issues tab (sd:5080)
   }
   document.addEventListener('issues:read', e => draw(e.detail));
 

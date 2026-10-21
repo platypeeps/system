@@ -55,10 +55,11 @@ COMMANDS = [
     ["research.render", "research project", "Render", "r", "safe"],
     ["research.review", "research project", "Review", "v", "safe"],
     ["research.start", "research request", "Run", "r", "confirm"],
-    ["experiment.refresh", "research project", "Refresh experiments", None, "safe"],
+    ["experiment.create", "research page", "Draft experiment", None, "safe"],
+    ["experiment.refresh", "research page", "Refresh experiments", None, "safe"],
     ["experiment.attach", "research project", "Attach experiment", None, "safe"],
-    ["experiment.create", "research project", "Draft experiment", None, "safe"],
     ["experiment.status", "research project", "Draft status update", None, "safe"],
+    ["experiment.make", "research project", "Make experiment", None, "safe"],
     ["experiment.deck", "research project", "Draft deck", None, "safe"],
     ["experiment.apply", "research project", "Apply draft", None, "safe"],
     ["research.deck", "research experiment", "Build deck", None, "safe"],
@@ -694,14 +695,27 @@ class TheScript(ScreenCase):
         out = self.run_page("R.rows = ELS.rows.html;", search="?sort=what&dir=desc")
         self.assertEqual(re.findall(ids, out["R"]["rows"]), ["group/gamma", "research/beta", "research/alpha"])
 
-    def test_render_and_review_are_copy_only_and_name_the_checkout(self):
+    def test_render_and_review_run_in_the_checkout(self):
+        # sd:5632: Render posts the render run. sd:5655: Review posts the review run too.
         out = self.run_page("""const beta = C.get('research/beta');
 R.lines = ['research.render', 'research.review'].map(id => [cmd(id).executes, cmd(id).cli(beta), cmd(id).primary ? cmd(id).primary(beta) : null]);
 ['research.render', 'research.review'].forEach(id => shellRun(cmd(id), beta)); await flush();""")
-        self.assertEqual(out["R"]["lines"], [[False, "cd ~/'repos/research/beta' && sd-research-kit render", True],
-                                             [False, "cd ~/'repos/research/beta' && sd-research-kit review", None]])
-        self.assertEqual(out["posts"], [])
-        self.assertEqual([t[0] for t in out["toasts"]], ["Copy it into a terminal: the dashboard does not run sd-research-kit"] * 2)
+        self.assertEqual(out["R"]["lines"], [[True, "cd ~/'repos/research/beta' && sd-research-kit render", True],
+                                             [True, "cd ~/'repos/research/beta' && sd-research-kit review", None]])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/render", {"repo": "research/beta"}],
+                                                         ["/api/research/review", {"repo": "research/beta"}]])
+
+    def test_make_experiment_drafts_one_for_the_rows_project_and_is_off_when_linked(self):
+        # sd:5662: a project row and its Details turn the project into an experiment: a draft create naming the project.
+        out = self.run_page("""const beta = C.get('research/beta');
+R.row = ELS.rows.html.includes('Make experiment'); R.on = cmd('experiment.make').when(beta);
+FIELD_VALUES = { description: 'Tail sampling keeps the slow spans' }; shellRun(cmd('experiment.make'), beta); await flush();""")
+        self.assertTrue(out["R"]["on"])
+        self.assertEqual([p[:2] for p in out["posts"]], [["/api/research/experiments/act", {"verb": "draft", "action": "create",
+                          "description": "Tail sampling keeps the slow spans", "project": "research/beta"}]])
+        linked = self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.on = cmd('experiment.make').when(C.get('research/beta'));",
+                               answer=self.experiments({"link": {"page": "2" * 32, "title": "Trace budgets"}}))
+        self.assertEqual(linked["R"]["on"], "already linked to an experiment")
 
     def test_start_research_is_off_with_its_reason_shows_the_line_and_sends_nothing(self):
         out = self.run_page("""const input = ELS.shift;
@@ -1131,14 +1145,13 @@ R.views = OUT.views.slice();""")
                                    "runs": [run]})
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
 R.section = ELS.details.html; R.on = cmd('experiment.apply').when(o); R.shows = cmd('experiment.apply').consequence(o);
-R.create = cmd('experiment.create').when(o); shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
+shellRun(cmd('experiment.apply'), o); await flush();""", answer=answer)
         self.assertIn('href="https://example.test/x"', out["R"]["section"])
         self.assertIn("Stage</dt><dd>Running · Status Todo", out["R"]["section"])
         self.assertIn("Waiting for Apply: the status update drafted 2026-10-19 16:00 UTC", out["R"]["section"])
         self.assertTrue(out["R"]["on"])
         self.assertIn("Now: “2026-10-01 started”. After: “2026-10-19 ran the probe. 2026-10-01 started”. Status Todo becomes In Progress.",
                       out["R"]["shows"])
-        self.assertEqual(out["R"]["create"], "linked already: Attach replaces the link")
         self.assertEqual(out["confirms"], ["experiment.apply"])
         self.assertEqual(out["posts"], [["/api/research/experiments/act", {"verb": "apply", "run": run["run"], "fingerprint": "f" * 64,
                                                                        "recreate": False}, 64]])
@@ -1171,10 +1184,17 @@ R.create = cmd('experiment.apply').consequence(o);""", answer=self.experiments({
         out = self.run_page("""PAGE_LIST.select('research/beta'); await flush(); const o = C.get('research/beta');
 R.section = ELS.details.html; R.status = cmd('experiment.status').when(o); R.apply = cmd('experiment.apply').when(o);
 R.options = cmd('experiment.attach').fields(o)[0].options; R.says = cmd('experiment.attach').consequence(o);
-shellRun(cmd('experiment.refresh'), o); await flush();
-FIELD_VALUES = { page: '2'.repeat(32), description: 'Tail sampling keeps the slow spans' };
-shellRun(cmd('experiment.attach'), o); await flush(); shellRun(cmd('experiment.create'), o); await flush();""", answer=answer)
-        self.assertIn("Not linked. Attach one from the list, or draft a new one.", out["R"]["section"])
+R.refreshOff = cmd('experiment.refresh').when(C.get('research:page')); ELS['refresh-exp'].listeners.click[0]({}); await flush();
+FIELD_VALUES = { page: '2'.repeat(32), project: 'research/beta', description: 'Tail sampling keeps the slow spans' };
+shellRun(cmd('experiment.attach'), o); await flush(); ELS['draft-exp'].listeners.click[0]({}); await flush();
+R.projects = cmd('experiment.create').fields(C.get('research:page'))[0].options.map(x => x.value);""", answer=answer)
+        self.assertIn("Not linked. Attach one, or use Draft experiment in the toolbar.", out["R"]["section"])
+        # Draft experiment and Refresh experiments are page actions (toolbar), not project commands (sd:5631, sd:5656).
+        self.assertTrue(out["R"]["refreshOff"])
+        self.assertIn("Refresh experiments, in the toolbar, reads it", self.run_page("PAGE_LIST.select('research/beta'); await flush(); R.s = ELS.details.html;",
+                      answer=self.experiments({"cache": None}))["R"]["s"])
+        # Its first project is the one shown.
+        self.assertEqual(out["R"]["projects"][0], "research/beta")
         self.assertEqual(out["R"]["status"], "not linked: attach or create an experiment first")
         self.assertEqual(out["R"]["apply"], "no finished draft waits for Apply")
         self.assertEqual(out["R"]["options"], [{"value": "2" * 32, "label": "Trace budgets · Idea"}])
@@ -1327,7 +1347,7 @@ R.rows = ELS.rows.html; R.type = C.get('research/beta').type; R.reader = ELS.rea
 
 class TheRegistration(Registers, unittest.TestCase):
     page, section, route, api = "research", "Research", "/research", ("/api/research", "/api/research/experiments", "/api/research/experiments/act",
-                                                                "/api/research/deck", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
+                                                                "/api/research/deck", "/api/research/render", "/api/research/review", "/api/research/deck/status", "/api/research/slides", "/api/research/slides/status", "/api/research/deck/deck-20261020T120000Z",
                                                                 "/api/research/example")
 
 

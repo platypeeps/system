@@ -1,7 +1,7 @@
 // Research (sd:2122): the design source's products/system/designs/v2/research.js at 7f50ad4, ported. Each change from the reference is
 // marked "build:". The board is /api/research (research_screen.py: collectors.collect_research, every checkout with a research.conf.py);
 // a project's ledger and claim map are /api/research/<checkout>, read when the project is selected. Never sample data. Nothing reads
-// review rounds yet, so they are unknown with the document's reason. Render and Review are copy only; Start research is off.
+// review rounds yet, so they are unknown with the document's reason. Render runs in the checkout (sd:5632); Review is copy only; Start research is off.
 const { html, put, plural } = window.markup;
 const I = n => html`<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
 const shq = s => `'${String(s ?? '').replace(/'/g, "'\\''")}'`; // shell-safe: single quotes, so $(), backticks and \ stay literal
@@ -455,7 +455,9 @@ function showProject(key, read = true) {
     ${p.conf ? html`<p class="unknown"><span class="g-unknown">▨</span>The dashboard collector could not read research.conf.py: “${p.conf}”. Per-document freshness stays unknown until the config declares its data.</p>` : ''}
     ${notFresh.length ? html`<h3>Not fresh</h3><ul class="claims">${notFresh.map(d => html`<li class="claim"><span class="g g-caution" aria-hidden="true">▲</span><span>${d.title} · ${d.state} · ${d.src}</span></li>`)}</ul>` : ''}
     <h3>Act</h3>${shell.commands.bar(p.key)}
-    <p class="why">Render and the mechanical review run in the checkout; neither writes outside it. The dashboard runs neither: copy the line.</p>
+    ${REVIEWS[p.key] ? html`<h3>Last review</h3><p class="why">${REVIEWS[p.key].state === 'done' ? 'Every check passed' : REVIEWS[p.key].reason || 'failed'} · <time class="rel" datetime="${REVIEWS[p.key].finished || ''}"></time></p>
+      <details class="report"><summary>Report</summary><pre>${REVIEWS[p.key].output || 'It printed nothing.'}</pre></details>` : ''}
+    <p class="why">Render and Review run here as dashboard runs, one at a time: the kit refuses a research.conf.py no render by hand has read.</p>
     <section aria-live="polite">${experimentSection(p)}</section>`);
   shell.commands.select(p.key);
   if (read) loadExperiment(p.key);
@@ -502,8 +504,8 @@ function experimentSection(p) {
   return html`<h3>Experiment</h3>${EXP.link_error ? html`<p class="unknown"><span class="g-unknown">▨</span>The link was not read: ${EXP.link_error.replace(/\.$/, '')}.</p>`
     : link ? html`<dl><dt>Linked</dt><dd>${link.url ? html`<a class="ext" href="${link.url}" target="_blank" rel="noopener">${link.title || link.page} ${I('arrow-up-right')}</a>` : link.title || link.page}</dd>${
       row ? html`<dt>Stage</dt><dd>${row.stage || 'none'} · Status ${row.status || 'none'}</dd>` : ''}</dl>`
-    : html`<p class="why">Not linked. Attach one from the list, or draft a new one.</p>`}
-    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
+    : html`<p class="why">Not linked. Attach one, or use Draft experiment in the toolbar.</p>`}
+    <p class="why">${c ? html`List: ${plural(c.rows.length, 'experiment')}, read <time class="rel" datetime="${c.read}"></time>${c.current ? '' : ' from another data source: refresh it before you attach'}.` : 'List: never read. Refresh experiments, in the toolbar, reads it.'}${EXP.cache_error ? ` The list did not read: ${EXP.cache_error}.` : ''}</p>
     ${problems.map(([k, why]) => html`<p class="unknown"><span class="g-unknown">▨</span>${why.replace(/\.$/, '')}.${k === 'kit' ? ' The deck is off until then.' : ''}</p>`)}
     ${draft ? html`<p class="why">Waiting for Apply: the ${ACTION_WORD[draft.action]} drafted ${stampTime(draft.run)}${draft.unknown ? ', whose last apply found no trace of its write' : ''}. Apply shows it first.</p>` : ''}
     ${EXP.running ? html`<p class="why">A run is going, started ${EXP.running}. This reads again until it ends.</p>`
@@ -525,7 +527,7 @@ function applyText(o) {
 const shapeText = e => [`${e.shape} at ${e.x},${e.y} ${e.w}x${e.h}`, e.text && `“${e.text}”`, e.fill && `fill ${e.fill}`,
   e.color && `text ${e.color}`, e.size && `${e.size}pt`, e.font, e.bold && 'bold'].filter(Boolean).join(' ');
 // The answer to a start, as a toast: a refusal names its reason; no answer means the outcome is not known.
-const started = (what, key) => out => loadExperiment(key).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
+const started = (what, key) => out => (key ? loadExperiment(key) : Promise.resolve()).then(() => (out.linked ? `Linked to ${out.linked.title || out.linked.page}` : `${what} started · this reads again until it ends`));
 const refused = err => { if ([400, 409].includes(err.status)) return err.message; throw err.status ? err : new Error(`no answer (${err.message}), so whether it started is not known`); };
 const expPost = (body, what, key) => window.shell.post('/api/research/experiments/act', body).then(started(what, key), refused);
 const expOff = o => (EXP?.key !== o.key ? 'the experiment link is not read yet' : EXP.error ? `not read: ${EXP.error}` : EXP.running ? 'a run is going now' : EXP.problems?.source || true);
@@ -533,24 +535,23 @@ function experimentCommands() {
   const on = 'research project', post = (o, body, what) => expPost({ ...body, project: o.key }, what, o.key);
   const linkedOff = o => { const w = expOff(o); return w !== true ? w : EXP.link_error ? `the link was not read: ${EXP.link_error}` : true; };
   return [
-    { id: 'experiment.refresh', on, label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
-      when: expOff, sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
-      run: o => expPost({ verb: 'list' }, 'Refresh', o.key) },
     { id: 'experiment.attach', on, label: 'Attach experiment', does: 'Links this project to a listed experiment, in the workflow database only.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.cache?.current ? 'refresh the experiments list first' : !EXP.cache.rows.length ? 'the list holds no experiments' : true; },
       fields: () => [{ name: 'page', label: 'Experiment', options: (EXP?.cache?.rows || []).map(r => ({ value: r.page, label: `${r.title} · ${r.stage || 'no stage'}` })) }],
       consequence: o => `Links ${o.label} to the chosen experiment in the workflow database${EXP?.link ? `, in place of ${EXP.link.title || EXP.link.page}` : ''}. Notion is not written.`,
       sends: () => 'POST /api/research/experiments/act {"verb":"attach"}',
       run: (o, v) => post(o, { verb: 'attach', page: v.page, replaces: EXP?.link?.page ?? null }, 'Attach') },
-    { id: 'experiment.create', on, label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
-      when: o => { const w = linkedOff(o); return w !== true ? w : EXP.link ? 'linked already: Attach replaces the link' : true; },
-      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
-      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
-      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
     { id: 'experiment.status', on, label: 'Draft status update', does: 'Drafts a dated status entry; Apply writes it after you read it.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"status"}',
       run: o => post(o, { verb: 'draft', action: 'status' }, 'Draft') },
+    // Make experiment (sd:5662): this project as a new experiment, from its row or its Details. The link is read only for the
+    // project shown, so another row offers it too; the server refuses a project already linked (409).
+    { id: 'experiment.make', on, label: 'Make experiment', does: 'Drafts a new experiment for this project; Apply writes it after you read it.', icon: 'flask-conical', risk: 'safe', executes: true,
+      when: o => (EXP?.key !== o.key ? true : EXP.link ? 'already linked to an experiment' : EXP.running ? 'a run is going now' : EXP.problems?.source || true),
+      fields: () => [{ name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+      sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+      run: (o, v) => post(o, { verb: 'draft', action: 'create', description: v.description }, 'Draft') },
     { id: 'experiment.deck', on, label: 'Draft deck', does: 'Drafts a branded 6-8 slide deck; Apply builds it after you read it.', risk: 'safe', executes: true,
       when: o => { const w = linkedOff(o); return w !== true ? w : !EXP.link ? 'not linked: attach or create an experiment first' : EXP.problems?.kit || EXP.problems?.account || true; },
       sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"deck"}',
@@ -611,22 +612,48 @@ tbody.addEventListener('click', e => { if (e.target.closest('.rowact')) return; 
 
 // ---------- Commands (products/system/commands.md) ----------
 // Each board row is a research project. Labels are CLI verbs; the shell renders every button, menu entry and CLI line.
-// build: Render and Review are copy only (executes: false): the dashboard runs no command in a research checkout.
-const COPY = 'Copy it into a terminal: the dashboard does not run sd-research-kit';
+// Render (sd:5632) and Review (sd:5655) run through the deck runner's lock, as dashboard runs.
+// One poll per run until it settles; a render that is done reads the board again, a failed one says the kit's reason.
+// A review keeps its report, pass or fail, and the project's Details show it under Last review.
+const REVIEWS = {};
+const followRun = (run, o, verb) => (['done', 'failed'].includes(run.state)
+  ? (verb === 'review' ? (REVIEWS[o.key] = run, shownProject === o.key && showProject(o.key, false),
+      shell.toast(run.state === 'done' ? `Reviewed · ${o.label}: every check passed` : `Review · ${o.label}: ${run.reason || 'no reason recorded'}`))
+    : (shell.toast(run.state === 'done' ? `Rendered · ${o.label}` : `Render failed · ${o.label}: ${run.reason || 'no reason recorded'}`), run.state === 'done' && load()))
+  : setTimeout(() => window.shell.getJSON(`/api/research/deck/${encodeURIComponent(run.id)}`).then(next => followRun(next, o, verb),
+    e => shell.toast(`${verb === 'review' ? 'Review' : 'Render'} ${run.id}: not read (${e.message}); whether it ended is not known`)), DECK_POLL));
 // build: Start research is off with this reason, and its risk is confirm, not undo: there is no queued run to take back.
 const START_OFF = 'the dashboard does not create items yet: copy the line into a terminal';
+// Draft experiment is a page action (toolbar, sd:5631): it names its project, the one shown first. The server refuses a linked one (409).
+const PAGE = { id: 'research:page', type: 'research page', label: 'Research' };
+const CREATE = { id: 'experiment.create', on: 'research page', label: 'Draft experiment', does: 'Drafts a new experiment from a description; Apply writes it after you read it.', risk: 'safe', executes: true,
+  when: () => PROJECTS.length ? true : 'no research project to draft for',
+  fields: () => [{ name: 'project', label: 'Project', options: [...PROJECTS].sort((a, b) => (b.key === selected) - (a.key === selected)).map(p => ({ value: p.key, label: p.label })) },
+    { name: 'description', label: 'What the experiment tests', required: true, placeholder: 'One or two sentences' }],
+  sends: () => 'POST /api/research/experiments/act {"verb":"draft","action":"create"}',
+  run: (o, v) => { select(v.project, true); return expPost({ verb: 'draft', action: 'create', description: v.description, project: v.project }, 'Draft', v.project); } };
+document.getElementById('draft-exp').addEventListener('click', () => shell.commands.run(CREATE, PAGE));
+// Refresh experiments reads the one team list every project shares (sd:5656): a page action, so it needs no selection.
+const REFRESH = { id: 'experiment.refresh', on: 'research page', label: 'Refresh experiments', does: 'Reads the team\'s experiments list from Notion; writes nothing there.', risk: 'safe', executes: true,
+  when: () => (EXP?.running ? 'a run is going now' : EXP?.problems?.source || true), sends: () => 'POST /api/research/experiments/act {"verb":"list"}',
+  run: () => expPost({ verb: 'list' }, 'Refresh', selected) };
+document.getElementById('refresh-exp').addEventListener('click', () => shell.commands.run(REFRESH, PAGE));
 const DRAFT = { id: 'draft:research', type: 'research request', label: 'new research', q: '', cmd: '' };
 const START = { id: 'research.start', on: 'research request', label: 'Run', does: 'Gives the line that files this research request; the dashboard files nothing.', key: 'r', icon: 'flask-conical', risk: 'confirm', executes: false, primary: () => true,
   when: o => (!o.q ? 'type the question first' : !o.repo ? 'name the project: add repo:<name>' : START_OFF), cli: o => o.cmd, run: () => START_OFF };
 function registerCommands() {
   const C = shell.commands;
-  C.put(DRAFT);
+  C.put(DRAFT); C.put(PAGE);
   C.register(
-    { id: 'research.render', on: 'research project', label: 'Render', does: 'Gives the line that renders this research project again.', key: 'r', icon: 'rotate-ccw', risk: 'safe', bulk: true, executes: false, primary: o => o.s === 'caution',
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, run: () => COPY },
-    { id: 'research.review', on: 'research project', label: 'Review', does: 'Gives the line that runs the research kit\'s review.', key: 'v', icon: 'shield-check', risk: 'safe', bulk: true, executes: false,
-      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, run: () => COPY },
+    { id: 'research.render', on: 'research project', label: 'Render', does: 'Renders this research project again in its checkout.', key: 'r', icon: 'rotate-ccw', risk: 'safe', executes: true, primary: o => o.s === 'caution',
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit render`, sends: o => `POST /api/research/render {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/render', { repo: o.key }).then(run => { followRun(run, o, 'render'); return `Rendering ${o.label} · run ${run.id}`; }, refused) },
+    { id: 'research.review', on: 'research project', label: 'Review', does: 'Runs the research kit\'s mechanical pre-publication checks here; Details show the report.', key: 'v', icon: 'shield-check', risk: 'safe', executes: true,
+      cli: o => `cd ${shPath(o.path)} && sd-research-kit review`, sends: o => `POST /api/research/review {"repo": "${o.key}"}`,
+      run: o => window.shell.post('/api/research/review', { repo: o.key }).then(run => { followRun(run, o, 'review'); return `Reviewing ${o.label} · run ${run.id}`; }, refused) },
     START,
+    CREATE,
+    REFRESH,
     ...experimentCommands(),
     deckCommand(),
     slidesCommand(),
@@ -793,6 +820,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   load();
   // A build already running when the page opens is followed too.
-  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
+  window.shell.getJSON('/api/research/deck/status').then(d => followBuild(/^(render|review)-/.test(d.run?.id || '') ? null : d.run, false), e => { BUILD_UNREAD = e.message; renderExperiments(); });
   readSlides();
 });

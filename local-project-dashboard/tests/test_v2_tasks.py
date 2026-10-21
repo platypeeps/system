@@ -320,7 +320,7 @@ class ThePage(BrowserSession):
         self.assertRegex(body, r'<meta name="sd-csrf" content="[a-f0-9]{64}"></head>')
         self.assertEqual(Refused(body).found, [])
         scripts = re.findall(r'<script src="/ui/([^"?]+)', body)
-        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "issues.js", "tasks.js", "places.js", "shell.js"])
+        self.assertEqual(scripts, ["theme.js", "markup.js", "icons.js", "sections.js", "read.js", "commands.js", "tasks.js", "places.js", "shell.js"])
         for path in re.findall(r'(?:src|href)="(/ui/[^"]+)"', body):
             self.assertEqual(self.request(path)[0], 200, path)
 
@@ -1496,16 +1496,19 @@ R.after = ELS.details.html; R.views2 = views(); R.obj = C.get(String(ITEM)) && C
     def test_a_parked_row_shows_only_under_the_parked_chip(self):
         self.park()
         out = self.run_page("""R.sub = ELS.subhead.html; R.board = ELS['view-board'].html; R.filters = ELS.filters.html;
-ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'parked' }, value: '1' } });
+ELS.filters.listeners.change[0]({ target: { dataset: { pick: 'active' }, value: 'parked' } });
 R.parked = ELS['view-board'].html; R.url = OUT.urls[OUT.urls.length - 1];""")
         self.assertIn("1 parked · read", out["R"]["sub"])
         self.assertEqual(out["counts"]["all"], 3)
         self.assertNotIn("Parked by the prune", out["R"]["board"])
         self.assertIn("Plan the review", out["R"]["board"])
-        self.assertIn('<select id="f-parked" class="fsel" data-pick="parked"><option value="" selected>Not parked</option><option value="1">parked only</option></select>', out["R"]["filters"])
+        # sd:5643: Scope and Parked are one dropdown, each option starting with a capital.
+        self.assertIn('<select id="f-active" class="fsel" data-pick="active"><option value="" selected>Open and done</option><option value="1">Open only</option>'
+                      '<option value="parked">Parked only</option></select>', out["R"]["filters"])
+        self.assertNotIn('f-parked', out["R"]["filters"])
         self.assertIn("Parked by the prune", out["R"]["parked"])
         self.assertNotIn("Plan the review", out["R"]["parked"])
-        self.assertIn("parked=1", out["R"]["url"])
+        self.assertIn("active=parked", out["R"]["url"])
         self.assertEqual(out["attention"][-1], self.doc["attention"])
 
     def test_the_parked_chip_is_read_from_the_address(self):

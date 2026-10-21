@@ -333,6 +333,12 @@ body[data-rail="min"] .rail nav a .classic { display: none; }
   background: var(--color-well); border-radius: var(--radius-sm); font: 400 var(--text-xs)/1.4 var(--font-data); overflow-wrap: anywhere;
 }
 .cli .icon-btn { flex-shrink: 0; }
+/* One disclosure arrow (sd:5637): every summary but a filter pick's (its own chevron) wears ▸ closed and ▾ open, drawn
+ * here and not by the browser, so a summary a page lays out as flex keeps it. */
+details:not(.fpick) > summary { list-style: none; }
+details:not(.fpick) > summary::-webkit-details-marker { display: none; }
+details:not(.fpick) > summary::before { content: '▸'; display: inline-block; width: 1em; flex: none; font-family: var(--font-data); color: var(--color-muted); }
+details:not(.fpick)[open] > summary::before { content: '▾'; }
 /* The CLI lines fold under one summary, closed by default (sd:3464). */
 .cli-all { margin: var(--space-sm) 0 0; }
 .cli-all > summary { cursor: pointer; font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
@@ -716,7 +722,7 @@ th[aria-sort] > .sorter .i { opacity: 1; }
  * --row-touch. The box around a place switch (.place-switch) has no margin here: its margin-bottom made it taller than the switch. */
 .toolbar { --bar-h: var(--row-touch); }
 @media (pointer: coarse) { .toolbar { --bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair))); } }
-.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup { margin: 0; }
 .toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field { height: var(--bar-h); }
 .toolbar .viewswitch [role="tab"], .toolbar .vseg > button { min-height: 0; }
 .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }

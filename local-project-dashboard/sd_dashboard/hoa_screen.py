@@ -19,7 +19,8 @@ reaches no network: the map draws the vectors in the files, and the page loads
 no tiles. It runs one command, the checkout's bounded `tools/source-ages.py`,
 and reads the refresh jobs' launchd state, and asks the checkout's `tools/sweep.py status --json` for the last sweep
 (`sweep`) and each source's last download (`downloads`, sd:5626); it starts nothing. The writes are Acknowledge
-(`acknowledge`), the jobs route Refresh now posts, Run sweep (`sweep.start`) and Download (`hoa_download.start`).
+(`acknowledge`) and Acknowledge all (`acknowledge_many`), the jobs route Refresh now posts, Run sweep (`sweep.start`) and
+Download (`hoa_download.start`).
 """
 
 from __future__ import annotations
@@ -34,12 +35,12 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from sd_db import operations, reads, repos, workflow, writes
+from sd_db import SdDbError, operations, reads, repos, workflow, writes
 
 from . import hoa_download, sweep
 from .documents import _config_dir, pipe_lines
 
-__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "alarm_key", "document",
+__all__ = ["ALARM_ROOT", "REFRESH_JOBS", "SOURCE_AGES", "SOURCE_SECONDS", "SOON_DAYS", "STALE_DAYS", "THRESHOLDS", "TREND_DAYS", "acknowledge", "acknowledge_many", "alarm_key", "document",
            "thresholds"]
 
 #: The folder name that picks the checkout out of the repo table.
@@ -315,6 +316,24 @@ def _real(row: dict) -> bool:
     return row["kind"] != "generator" and "Normal" not in row["event"]
 
 
+def _listed(connection) -> set[str]:
+    """The keys of the alarm events the export lists now: a write reads the file again, so a key it no longer holds is stale."""
+    _, place, problems = checkout(connection)
+    if problems or place is None:
+        raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
+    name, stamp, columns = FILES["alarms"]
+    try:
+        rows = _csv(_paths(place)["mission"] / name, stamp, columns)
+    except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
+        raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
+    return {alarm_key(row) for row in rows}
+
+
+def _need_views() -> None:
+    if not hasattr(writes, "set_view"):
+        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+
+
 def acknowledge(payload: dict):
     """`POST /api/hoa/alarm`: `{"key", "acked"}`; the write as `action_route` returns one. The write reads the export
     again, so a key the export no longer holds is refused as stale and nothing is written."""
@@ -322,22 +341,41 @@ def acknowledge(payload: dict):
     if set(payload) != {"key", "acked"} or not isinstance(key, str) or not isinstance(acked, bool) \
             or not key.startswith(f"{ALARM_ROOT}/"):
         raise ValueError("Send the alarm event's key and acked, true or false.")
-    if not hasattr(writes, "set_view"):
-        raise ValueError("The command pack has no view store yet (sd:3430): pull it and restart the dashboard.")
+    _need_views()
 
     def write(connection):
-        _, place, problems = checkout(connection)
-        if problems or place is None:
-            raise ValueError(f"Nothing was acknowledged: {problems[0] if problems else 'no repo named hoa is registered'}.")
-        name, stamp, columns = FILES["alarms"]
-        try:
-            rows = _csv(_paths(place)["mission"] / name, stamp, columns)
-        except (OSError, UnicodeDecodeError, ValueError, csv.Error) as error:
-            raise ValueError(f"Nothing was acknowledged: {name} did not read: {error}") from None
-        if key not in {alarm_key(row) for row in rows}:
-            raise workflow.StaleItem(f"{name} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. Nothing was acknowledged. "
-                                     "Read HOA again.")
+        if key not in _listed(connection):
+            raise workflow.StaleItem(f"{FILES['alarms'][0]} holds no alarm event {key[len(ALARM_ROOT) + 1:]}. "
+                                     "Nothing was acknowledged. Read HOA again.")
         return {"key": key, **writes.set_view(connection, key, hidden=acked)}
+
+    return write
+
+
+def acknowledge_many(payload: dict):
+    """`POST /api/hoa/alarms`: `{"keys", "acked"}`, Acknowledge all and its Undo: the single write for each key, in one
+    transaction, with the export read once. A key the export no longer holds, or the store refuses, is `failed` with its
+    reason and the others still land (`acked`); when none lands the answer is stale and nothing is written."""
+    keys, acked = payload.get("keys"), payload.get("acked")
+    if set(payload) != {"keys", "acked"} or not isinstance(acked, bool) or not isinstance(keys, list) or not keys \
+            or not all(isinstance(key, str) and key.startswith(f"{ALARM_ROOT}/") for key in keys) or len(set(keys)) != len(keys):
+        raise ValueError("Send the alarm events' keys, each once, and acked, true or false.")
+    _need_views()
+
+    def write(connection):
+        listed, landed, failed = _listed(connection), [], []
+        for key in keys:
+            if key not in listed:
+                failed.append({"key": key, "error": f"{FILES['alarms'][0]} holds no alarm event {key[len(ALARM_ROOT) + 1:]}"})
+                continue
+            try:
+                landed.append({"key": key, **writes.set_view(connection, key, hidden=acked)})
+            except SdDbError as error:
+                failed.append({"key": key, "error": str(error)})
+        if not landed:
+            raise workflow.StaleItem(f"{FILES['alarms'][0]} holds none of the {len(keys)} alarm events. "
+                                     "Nothing was acknowledged. Read HOA again.")
+        return {"acked": landed, "failed": failed}
 
     return write
 

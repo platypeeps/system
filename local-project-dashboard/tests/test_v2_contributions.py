@@ -719,8 +719,8 @@ shellRun(cmd('contribution.nudge'), ext); shellRun(cmd('contribution.open'), ext
         self.assertEqual(out["R"]["exec"], [False, False])
         self.assertEqual(out["R"]["cli"], [f"gh pr comment {EXTERNAL} --body-file nudge.md", f"gh pr view --web {EXTERNAL}"])
         self.assertEqual((out["posts"], out["confirms"]), ([], []))
-        # Review 2 of PR #72 (8af737dffde4): the shell calls run for a copy-only command too, and run opened a tab.
-        self.assertEqual(out["opened"], [])
+        # sd:5628 reverses the copy-only ruling of PR #72's review 2: Open on GitHub opens the pull request, nudge still opens nothing.
+        self.assertEqual(out["opened"], [EXTERNAL])
 
     def sync_answer(self, finished):
         """The page's document, a started sync, and its state: running on the first read, then `finished`."""
@@ -741,6 +741,14 @@ shellRun(cmd('collector.sync'), C.get('collector')); await flush();""", answer=s
         self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
         self.assertEqual(out["gets"], ["/api/contributions/page", "/api/shadow/state", "/api/shadow/state", "/api/contributions/page"])
         self.assertEqual([t[0] for t in out["toasts"]], ["Shadow sync started · Contributions reads again when it ends"])
+
+    def test_the_toolbar_refresh_button_reruns_the_collector_and_reads_again(self):
+        """sd:5630. Refresh in the toolbar runs Re-run collector: one sync, then the table reads again."""
+        done = {"running": False, "error": None, "trackers": [
+            {"tracker": "github", "ok": True, "configured": True, "reason": "", "lines": []}]}
+        out = self.run_page("""ELS['contrib-refresh'].listeners.click[0]({ target: {} }); await flush();""", answer=self.sync_answer(done))
+        self.assertEqual(out["posts"], [["/api/shadow/sync", {}, 64]])
+        self.assertEqual(out["gets"][-1], "/api/contributions/page")
 
     def test_a_sync_that_ends_with_a_failed_tracker_or_a_broken_run_says_why(self):
         failed = {"running": False, "error": None, "trackers": [
@@ -1112,8 +1120,9 @@ R.undated = (open('filed:jira:{JIRA}ABC-4'), ELS.details.html);""")
         details = out["R"]["details"]
         for text in ("Ticket ABC-1", "In Review", "Alex", "ABC", "Jira ticket"):
             self.assertIn(text, details)
-        self.assertIn(f'href="{JIRA}ABC-1" target="_blank" rel="noopener noreferrer"', details)
-        self.assertIn("Edit in Jira", details)
+        # sd:5629: the Key is the link to the ticket; there is no separate Edit in Jira link.
+        self.assertIn(f'<dt>Key</dt><dd><a class="ext" href="{JIRA}ABC-1" target="_blank" rel="noopener noreferrer">ABC-1', details)
+        self.assertNotIn("Edit in", details)
         self.assertEqual(out["opened"], [JIRA + "ABC-1"])
         self.assertEqual(out["posts"], [], "Edit wrote something")
         self.assertEqual(out["R"]["cli"], f"open '{JIRA}ABC-1'")

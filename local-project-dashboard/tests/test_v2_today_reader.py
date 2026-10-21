@@ -168,7 +168,7 @@ class TheViews(TheReader):
 
     def test_the_areas_are_page_views_and_each_panel_holds_its_sections(self):
         views = re.search(r"window\.PAGE_VIEWS = (\[.*?\]);", TODAY_JS, re.S).group(1)
-        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "status", "work", "inbox", "issues", "github", "decisions"])
+        self.assertEqual(re.findall(r"id: '([a-z]+)'", views), ["now", "issues", "status", "work", "inbox", "github", "decisions"])
         self.assertIn("{ id: 'inbox', label: 'Inbox', key: 'm' }", views)
         page = (V2 / "today.html").read_text(encoding="utf-8")
         panels = {m.group(1): re.findall(r'<h2[^>]*id="([a-z]+-h)"', m.group(2))
@@ -295,6 +295,17 @@ FIELD_VALUES.until = 'snooze-hour'; shellRun(cmd('work item.snooze'), C.get('ite
         self.assertEqual([(path, body["page"], body["row"], body["seen"]) for path, body, _ in out["posts"]],
                          [("/api/snooze", "today", "item:7", "0123456789abcdef")])
         self.assertEqual(out["gets"], ["/api/now", "/api/now"])
+
+    def test_a_work_row_click_shows_its_details_with_its_actions(self):
+        """sd:5654: a Work row selects like a Now row: Details names the item, its status and due date, and its actions."""
+        self.doc["work"], self.doc["work_error"] = [self.ITEM], ""
+        out = self.run_page("""ELS.work.listeners.click[0]({ target: { closest: s => s === 'tr[data-id]' ? { dataset: { id: 'item:7' } } : null } });
+R.details = ELS.details.html;""")
+        details = out["R"]["details"]
+        self.assertIn("<h2>#7 Write the brief</h2>", details)
+        self.assertIn("in_progress · due 2026-09-05", details)
+        self.assertIn('href="/tasks?row=7"', details)
+        self.assertIn("<h3>Act</h3>", details)
 
     def test_a_work_read_that_failed_says_so_and_is_not_an_empty_list(self):
         self.doc["work"], self.doc["work_error"] = [], "database is locked"
@@ -460,7 +471,7 @@ class TheSort(TheReader):
         self.assertNotIn("band-start", out["R"]["now"])
         self.assertEqual((out["R"]["sel"], out["R"]["sel2"]), (["job:nightly-sync:7"], ["job:nightly-sync:7"]))
         self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["active"]), ["6", "5"])
-        self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["work"]), ["9", "7"])
+        self.assertEqual(re.findall(r'<tr data-id="item:\d+" data-item="(\d+)"', out["R"]["work"]), ["9", "7"])
         self.assertEqual(re.findall(r'<tr data-item="(\d+)"', out["R"]["decisions"]), ["12", "3012"])
         self.assertNotIn("sort=", out["R"]["url"])
 

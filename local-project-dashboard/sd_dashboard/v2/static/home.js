@@ -263,6 +263,8 @@ addEventListener('DOMContentLoaded', () => {
   const reading = window.shell.read({
     source: '/api/home', what: 'the tiles', adopt, clear, draw: render, unselect,
     current: () => selected, first: () => null,
+    // sd:5620: another view's row (a brief) may fill Details; the minute read selects a tile only while the Overview shows.
+    active: () => (window.shell.view?.current?.() || 'overview') === 'overview',
     // The wall display opens no Details, so a ?row= tile is not selected there.
     select: (id, opened) => { if (root.hasAttribute('data-kiosk')) unselect(); else showDetails(id, opened); },
   });

@@ -636,7 +636,7 @@ class TheTableGrammar(unittest.TestCase):
                            ("skills.js", "window.shell.view?.count('catalog', DOC ? v.length : null);"),
                            ("management.js", "shell.view.count('repos', rows.length);"),
                            ("documents.js", "window.PAGE_VIEWS = [{ id: 'documents', label: 'Documents' }];"),
-                           ("queue.js", "window.PAGE_VIEWS = [{ id: 'lanes', label: 'Lanes' }];")]:
+                           ("queue.js", "window.shell?.view.count('lanes', busyLanes.length); window.shell?.view.count('idle', idle.length);")]:
             self.assertIn(call, (STATIC / page).read_text(encoding="utf-8"), page)
 
     def test_a_kept_state_that_is_malformed_falls_back_field_by_field(self):
@@ -894,9 +894,14 @@ class TheToolbarBoxesAlign(unittest.TestCase):
 
     def test_the_box_around_a_places_switch_has_no_margin_in_row_one(self):
         self.assertRegex(self.PLACES_CSS, r"\.place-switch \{ margin: 0 0 var\(--space-md\); \}")  # outside a toolbar it still spaces
-        body = self.rule(SHELL_CSS, ".toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg")
-        self.assertIsNotNone(body, "no row-1 rule zeroes the margin of the switch and the box around it")
+        body = self.rule(SHELL_CSS, ".toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup")
+        self.assertIsNotNone(body, "no row-1 rule zeroes the margin of the switch, the box around it and a chip group")
         self.assertIn("margin: 0;", body)
+
+    def test_a_chip_group_in_row_one_has_no_margin(self):
+        # sd:5639: queue.css gives .fgroup a bottom margin, so Queue's Show chips sat above the centre of the Lanes switch.
+        self.assertIn("margin: 0 0 var(--space-md)", self.rule((STATIC / "queue.css").read_text(encoding="utf-8"), ".fgroup"))
+        self.assertIn(".toolbar > .fgroup", SHELL_CSS)
 
     def test_the_switch_and_the_shapeshift_box_take_one_height_token(self):
         row = self.rule(SHELL_CSS, ".toolbar")
@@ -913,6 +918,20 @@ class TheToolbarBoxesAlign(unittest.TestCase):
         body = self.rule(SHELL_CSS, ".toolbar .viewswitch [role=\"tab\"], .toolbar .vseg > button")
         self.assertIsNotNone(body)
         self.assertIn("min-height: 0;", body)
+
+
+class EveryDisclosureHasOneArrow(unittest.TestCase):
+    """sd:5637: every <details> summary but a filter pick wears one ▸/▾ arrow from shell.css. Cause: Briefs' and Activity's
+    "as a table" summaries were inline-flex, which drops the native marker, while Notes drew its own arrow."""
+
+    def test_shell_css_draws_the_arrow_for_every_summary(self):
+        self.assertIn("details:not(.fpick) > summary::before { content: '▸';", SHELL_CSS)
+        self.assertIn("details:not(.fpick)[open] > summary::before { content: '▾'; }", SHELL_CSS)
+
+    def test_no_page_draws_its_own_arrow(self):
+        for css in STATIC.glob("*.css"):
+            if css.name != "shell.css":
+                self.assertNotIn("summary::before", css.read_text(encoding="utf-8"), css.name)
 
 
 SHELL_JS = (STATIC / "shell.js").read_text(encoding="utf-8")

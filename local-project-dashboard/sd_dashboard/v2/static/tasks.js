@@ -231,7 +231,7 @@ addEventListener('DOMContentLoaded', () => {
   // check land here with their filter.
   // build (sd:3012): Parked swaps the listed rows for the ones the nightly prune parked, for triage's Unpark.
   // build (sd:3977): Base narrows to one vault base's rows; it shows once a row has a base.
-  const F = { kind: new Set(), base: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set(), parked: new Set() };
+  const F = { kind: new Set(), base: new Set(), repo: new Set(), p: new Set(), due: new Set(), status: new Set(), age: new Set(), active: new Set() };
   const FKEYS = Object.keys(F);
   const find = document.getElementById('find-in');
   let Q = '';
@@ -255,14 +255,14 @@ addEventListener('DOMContentLoaded', () => {
       combo('due', 'Due', DUE_OPTS, html`<button class="help" type="button" aria-label="Help: due filter" data-help="Buckets count from today. <b>≤ 7 days</b> is the same window the matrix calls urgent. An old link may name two buckets; they widen the view, and filters narrow it.">${ICON('circle-help')}</button>`)}${
       combo('status', 'Status', statuses.map(st => [st, slabel(st)]))}${
       combo('age', 'In status', AGES.map(a => [a.key, a.label]), html`<button class="help" type="button" aria-label="Help: in status filter" data-help="Days since the task's last status change, in the buckets the Operations Progress histogram counts (<code>reads.age_bucket</code>). A bar there opens its bucket here.">${ICON('circle-help')}</button>`)}${
-      combo('active', 'Scope', [['1', 'open only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>open only</b> hides Done tasks, as the Operations histogram counts only open ones.">${ICON('circle-help')}</button>`, 'Done too')}${
-      combo('parked', 'Parked', [['1', 'parked only']], html`<button class="help" type="button" aria-label="Help: parked filter" data-help="The nightly prune parks an open P4 task untouched for 30 days. Parked tasks stay off every other view; <b>parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`, 'Not parked')}${
+      // sd:5643: Scope holds Parked too, as one choice: open and done (the default), open only, or the parked rows only.
+      combo('active', 'Scope', [['1', 'Open only'], ['parked', 'Parked only']], html`<button class="help" type="button" aria-label="Help: scope filter" data-help="<b>Open only</b> hides Done tasks, as the Operations histogram counts only open ones. The nightly prune parks an open P4 task untouched for 30 days; parked tasks stay off every other scope. <b>Parked only</b> lists them, and <b>Unpark</b> brings one back with its fields and history.">${ICON('circle-help')}</button>`, 'Open and done')}${
       (on() ? window.shell.list.chips(activeFilters(), visible().length, placed().length) : html`<div class="fsum">${ICON('filter')}<span>${placed().length} tasks</span></div>`)}`);
   }
   // Active filters above the list (shell.list, sd:2682): one chip per value, keyed field:value, and one for the text.
-  const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope', parked: 'Parked' };
+  const FNAME = { kind: 'Kind', base: 'Base', repo: 'Repo', p: 'Priority', due: 'Due', status: 'Status', age: 'In status', active: 'Scope' };
   const fvalue = (k, v) => k === 'p' ? (v && v !== 'unset' ? 'P' + v : 'unset') : k === 'due' ? DUE_OPTS.find(o => o[0] === v)?.[1] || v : k === 'status' ? slabel(v)
-    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? 'open only' : k === 'parked' ? 'parked only' : v;
+    : k === 'age' ? AGES.find(a => a.key === v)?.label || v : k === 'active' ? (v === 'parked' ? 'Parked only' : 'Open only') : v;
   const activeFilters = () => [...FKEYS.flatMap(k => [...F[k]].map(v => ({ key: `${k}:${v}`, label: `${FNAME[k]}: ${fvalue(k, v)}` }))), ...(Q ? [{ key: 'q', label: `Text: ${Q}` }] : [])];
   document.getElementById('filters').addEventListener('click', e => {
     if (e.target.closest('[data-unfilter-all]')) { clearFilters(); return; }
@@ -278,7 +278,7 @@ addEventListener('DOMContentLoaded', () => {
   find.addEventListener('keydown', e => { if (e.key === 'Escape' && find.value) { e.stopPropagation(); find.value = ''; Q = ''; L.page = 1; render(); } });
   const words = t => `#${t.id} ${t.title} ${t.repo} ${slabel(t.status)} ${t.kind} ${t.stage || ''}`.toLowerCase();
   const passes = t => (!F.kind.size || F.kind.has(t.kind)) && (!F.base.size || F.base.has(t.base)) && (!F.repo.size || F.repo.has(t.repo)) && (!F.p.size || F.p.has(t.p ? String(t.p) : 'unset')) && (!F.due.size || F.due.has(dueBucket(t)))
-    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.size || t.status !== 'done') && !t.parked === !F.parked.size && inPlace(t) && (!Q || words(t).includes(Q));
+    && (!F.status.size || F.status.has(t.status)) && (!F.age.size || F.age.has(t.age)) && (!F.active.has('1') || t.status !== 'done') && !!t.parked === F.active.has('parked') && inPlace(t) && (!Q || words(t).includes(Q));
   const visible = () => tasks.filter(passes);
 
   // ---------- Commands (products/system/commands.md) ----------
@@ -1211,8 +1211,9 @@ addEventListener('DOMContentLoaded', () => {
     FKEYS.forEach(key => (q.get(key) || '').split(',').filter(Boolean).forEach(v => F[key].add(v)));
     // An age v1 would not accept is dropped, as v1 dropped it; active takes 1 only, as v1's ?active=1 did.
     [...F.age].forEach(v => { if (!AGES.some(a => a.key === v)) F.age.delete(v); });
-    [...F.active].forEach(v => { if (v !== '1') F.active.delete(v); });
-    [...F.parked].forEach(v => { if (v !== '1') F.parked.delete(v); });
+    // An older address's ?parked=1 is Scope's Parked only now (sd:5643).
+    if (q.get('parked') === '1') { F.active.clear(); F.active.add('parked'); }
+    [...F.active].forEach(v => { if (v !== '1' && v !== 'parked') F.active.delete(v); });
     find.value = (q.get('q') || '').trim(); Q = find.value.toLowerCase();
     // A page is decimal digits, as on Documents (sd:2427).
     window.shell.list.listParams(q, L, { sorts: Object.keys(SORTS), size: LIST.size });
@@ -1224,7 +1225,7 @@ addEventListener('DOMContentLoaded', () => {
     if (Q) q.set('q', Q);
     if (view === 'list') window.shell.list.listQuery(q, L, LIST);
     shell.url(q); // the shell keeps ?row=
-    shell.filter(Q); // the shell filters Your issues with the same text (sd:5539)
+    shell.filter(Q); // the shell's bar shows the same text (sd:5539)
   }
 
   // ---------- Shapeshift: add or find ----------
@@ -1312,10 +1313,8 @@ addEventListener('DOMContentLoaded', () => {
   // The reader (read.js, sd:2418) holds the guards: of overlapping reads only the newest draws; a task the read no longer
   // lists loses its pick and runs no command; a failed load leaves no row; and a failed reread after a write keeps the rows
   // and says the write landed. The Details keep their own per-item generation (DET.gen).
-  let drawn = false, ISSUES = null;
+  let drawn = false;
   function draw() {
-    // Your issues (sd:4628) are this document's too; issues.js draws them, or says the read failed.
-    document.dispatchEvent(new CustomEvent('issues:read', { detail: ISSUES || { error: 'the tasks could not be read' } }));
     if (!drawn) {
       // The address is read before the first draw: that draw's reconcile selects the first shown card and rewrites ?row=.
       drawn = true;
@@ -1334,13 +1333,12 @@ addEventListener('DOMContentLoaded', () => {
     adopt: doc => { tasks = doc.rows.map(shape); READ = doc.read; AGES = doc.ages || []; ATTENTION = doc.attention || null; REALMS = doc.realms || null; SWEEPS = doc.sweeps || null;
       // While a sweep runs, Tasks reads again every SWEEP_POLL ms, so its words follow the run to its end.
       if (!sweepTimer && Object.values(SWEEPS || {}).some(w => w.running)) sweepTimer = setTimeout(() => { sweepTimer = 0; reread(); }, SWEEP_POLL);
-      ISSUES = { issues: doc.issues || [], error: doc.issues_error || '' };
       // A row read at another revision than its cached Details changed elsewhere: they are read again (review 2026-10-12).
       tasks.forEach(t => { const d = DET.items[t.id]; if (d && d.revision !== t.revision) { staleDet(t.id); if (selected === t.key) readDet(t.id); } });
       if (PIN && tasks.some(t => t.key === PIN.key)) PIN = null;
       const sweeps = Object.keys(SWEEP_NAME).filter(r => SWEEPS?.[r]).map(r => ({ id: `sweep:${r}`, type: 'sweep', label: `${SWEEP_NAME[r]} sweep` }));
       return { objects: [...tasks.map(objectOf), ...(PIN?.row ? [objectOf(PIN.row)] : []), ...sweeps], state: tasks.length ? null : { kind: 'empty', text: 'No open task, and none done this week.', source: '/api/tasks' } }; },
-    clear: () => { tasks = []; READ = null; ATTENTION = null; ISSUES = null; SWEEPS = null; PIN = null; },
+    clear: () => { tasks = []; READ = null; ATTENTION = null; SWEEPS = null; PIN = null; },
     draw,
     // draw() has already reconciled the selection against the cards the filters show, so the reader settles on that one.
     current: () => selected,
