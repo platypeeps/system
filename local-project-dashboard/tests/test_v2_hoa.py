@@ -816,12 +816,13 @@ press('all'); R.all = ELS['al-body'].html;""", self.acked_doc())
         self.assertIn('data-alview="acked" aria-pressed="true"', out["R"]["segAcked"])
         self.assertNotIn("Show acknowledged", out["R"]["seg"])
 
-    def test_the_alarm_ledger_is_its_own_view_after_tasks(self):
+    def test_the_alarm_ledger_is_its_own_view_right_of_reports(self):
         page = (V2 / "hoa.html").read_text(encoding="utf-8")
         overview = re.search(r'<div id="view-overview".*?\n  </div>\n', page, re.S).group(0)
         self.assertNotIn('id="al-table"', overview)
         views = re.findall(r'data-place-view="([a-z]+)"', page)
-        self.assertEqual(views[:3], ["overview", "tasks", "alarms"])
+        # sd:5622: the switch and its arrow keys follow this order (places.js builds PAGE_VIEWS from the blocks).
+        self.assertEqual(views, ["overview", "tasks", "briefs", "reports", "alarms"])
         self.assertRegex(page, r'<table class="ledger" id="al-table" aria-labelledby="al-h" data-toolbar="al-toolbar">')
 
     def test_every_event_acknowledged_says_so_instead_of_an_empty_table(self):
