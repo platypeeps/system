@@ -397,7 +397,8 @@ function drawClaims(p, s) {
     put(claimsEl, html`<p class="why">No claims: no sentence in ${c.dirs.join(', ')} links a URL in the ledger. ${plural(c.read, 'document')} read.</p>${unread}`);
     return;
   }
-  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict">${['supported', 'unverified'].filter(v => c.tally[v]).map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}" title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v]} ${v}</button>`)}</div>
+  // The verdict filter: All and both verdicts always, so it reads as a control; a verdict with no claims is off.
+  put(claimsEl, html`<div class="vbar" role="group" aria-label="Show claims by verdict"><span class="vlabel">Show</span><button type="button" class="v-all" data-verdict="" aria-pressed="${String(!verdict)}">All ${c.total}</button>${['supported', 'unverified'].map(v => html`<button type="button" class="v-${v}" data-verdict="${v}" aria-pressed="${String(verdict === v)}"${c.tally[v] ? '' : html` disabled`} title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${c.tally[v] || 0} ${v}</button>`)}</div>
     <p class="vlegend">${['supported', 'unverified'].map(v => html`<span title="${typeTip(c, v)}" aria-describedby="claim-type-${v}">${VERDICT[v][0]} ${v}: ${ruleOf(c, v)}</span><span class="sr" id="claim-type-${v}">${typeTip(c, v)}</span>`)}${
       c.tally.ungraded ? html`<span>${!c.graded ? `The ledger has no grades, so all ${plural(c.tally.ungraded, 'claim')} are unverified` : `${c.tally.ungraded} of the unverified cite only ungraded sources`}</span>` : ''}</p>
     <ul class="claims">${c.rows.map((x, i) => html`<li class="claim" data-c="${i}" aria-current="${String(curClaim === i)}"${litClaims.includes(i) ? html` data-lit` : ''}${verdict && x.s !== verdict ? html` hidden` : ''}>
@@ -410,7 +411,7 @@ function drawClaims(p, s) {
 claimsEl.addEventListener('click', e => {
   const to = e.target.closest('[data-view]'); if (to) { shell.view.show(to.dataset.view); return; }
   const v = e.target.closest('[data-verdict]');
-  if (v) { verdict = verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
+  if (v) { verdict = !v.dataset.verdict || verdict === v.dataset.verdict ? null : v.dataset.verdict; redraw(); claimsEl.querySelector(`[data-verdict="${v.dataset.verdict}"]`)?.focus(); return; }
   const li = e.target.closest('.claim[data-c]'); if (li && e.target.closest('button')) selectClaim(+li.dataset.c);
 });
 // Draw the reader and the map again from the cache, keeping what is lit.

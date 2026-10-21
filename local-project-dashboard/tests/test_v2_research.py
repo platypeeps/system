@@ -972,8 +972,8 @@ claimTap('5'); R.lit = ELS.reader.html; R.det = ELS.details.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '.src' ? { dataset: { i: '5' } } : null } })); R.unkeyed = ELS.details.html;
 (ELS.reader.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-cites]' ? { dataset: { cites: '1' } } : null } }));
 R.litClaims = ELS.claims.html;
-(ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-verdict]' ? { dataset: { verdict: 'unverified' } } : null } }));
-R.filtered = ELS.claims.html;""")
+const pick = verdict => (ELS.claims.listeners.click || []).forEach(f => f({ target: { closest: s => s === '[data-verdict]' ? { dataset: { verdict } } : null } }));
+pick('unverified'); R.filtered = ELS.claims.html; pick(''); R.all = ELS.claims.html;""")
         claims = out["R"]["claims"]
         self.assertIn("● 5 supported", claims)
         self.assertIn("▨ 3 unverified", claims)
@@ -991,6 +991,9 @@ R.filtered = ELS.claims.html;""")
         # The note's count lights the three claims that cite it.
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*data-lit', out["R"]["litClaims"]), ["1", "4", "5"])
         self.assertEqual(re.findall(r'<li class="claim" data-c="(\d+)"[^>]*hidden', out["R"]["filtered"]), ["1", "2", "4", "5", "7"])
+        # The filter reads as a control: All is offered, and All clears a verdict pick.
+        self.assertIn('data-verdict="" aria-pressed="true">All 8</button>', claims)
+        self.assertNotIn(' hidden', out["R"]["all"].split('class="claims"')[1])
 
     def test_the_page_has_four_views_and_the_selected_project_carries_across_them(self):
         # sd:5064 operator request: Projects | Sources | Claim map tabs, through the shell's view switch.
