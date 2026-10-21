@@ -85,7 +85,7 @@ Add no attribution lines to commits or PRs (Co-Authored-By, Claude-Session, gene
 Merge permission is one setting per repo, `repo.runner_merge` (`auto` or `manual`): the last field of `sd-db repo list`.
 Never infer merge permission from prose; set it with `sd-db repo runner-merge <path> manual|auto`.
 Merge only through `sd-ship prepare` then `sd-ship merge`; say which PR merged and at which commit.
-Favor fewer, larger PRs: bundle a repo's ready items and their implementation into one PR, one commit per item, and always group same-file tasks: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
+Bundle by default: a lane brief puts a repo's ready items in one PR, one commit per item, same-file tasks always together, one golden bless per bundle: each PR costs a review, a rebase and a serial gate; a change that moves state in steps still gets its own PR.
 Fix only blocking findings before merge; file the rest as sd items for the repo's next PR or a follow-up PR, not another review round: each round costs a full re-review.
 Rebuttals need no approval: reject a review finding with a reason a reader can check, in the document's Status or the PR thread.
 
@@ -103,7 +103,7 @@ Reason: an allow rule matches the whole line, so `cd <dir> && …` goes to the a
 # Parallel work
 
 Follow pack `WORKFLOW.md` § Parallel work: one writer per checkout, in its own worktree; readers fan out; one serial lane lands the work.
-Run at most 6 code-writing builders at once per machine, and start none while load5 is above 40. Readers stay unlimited.
+Run at most 6 code-writing builders at once per machine and 3 per repo, and start none while load5 is above 40: one serial lane lands about 3, the rest go stale (sd:5617). Readers stay unlimited.
 Make worktrees outside `~/repos`, such as `~/worktrees/<repo>-<branch>`: repo-sync reads every folder there as a checkout.
 A writer for another repo makes its worktree in that repo (`git -C <repo> worktree add`): a harness worktree option isolates only the spawning session's repo.
 Give every spawned agent a budget and a completion notice; never poll and never assume success.
@@ -115,10 +115,11 @@ Put large uncommitted data (run outputs, logs, captures) under the bulk storage 
 
 # Merge lane
 
-The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then keep one background `sd-ship lane watch --item A --item B …` naming every item you have in that lane, restarted after each enqueue and after an sd outage; build no hand-run chains.
-Treat a watch exit as done only when its output says `ok: true`: bare `lane watch` never exits (a block sat 1.5 h), and a hub build mismatch ends a watch with `ok: false` and exit 0 (2026-10-12).
+Shift failures left (sd:5617): each builder runs one read-only `codex exec` review of its branch, fixes the blockers and merges `origin/main` before its report; then the lead runs `sd gate check --base main` in its worktree, in the background, and enqueues only a pass, which prepare reuses: 16 of 40 prepares on Oct 20-21 failed on what these catch.
+The runner lands PRs (`repo.runner_merge=auto` on every managed repo): `sd-ship lane enqueue` the item, then keep one background `sd-ship lane watch --item A --item B …` naming every item you have in that lane, restarted after each enqueue, after an sd outage and after any exit without `ok: true`; build no hand-run chains.
+Bare `lane watch` never exits (a block sat 1.5 h), and a hub build mismatch ends a watch with `ok: false` (`hub_unavailable`).
 Request Copilot only on a PR the operator names, once, on the final head (`sd-ship prepare --copilot-review request`); never re-request after a push.
-Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lane runs the full `make check`.
+Builders run only foreground test runs of 10 minutes or less, never `run_in_background`, Monitor or `sleep`: a background exit did not wake idle teammates (4 h stalls); the lead runs the full gate.
 Count gates with `sd gate status --json` (`holders`, `waiters`), never `pgrep`: a pattern matches the shell that runs it.
 Stop a ship chain by its process group (`kill -- -<pgid>`): a killed shell alone leaves its children holding a gate slot.
 Before a builder merges main into its branch, stop every queued ship for that item: the ship merges in the same worktree and its abort can discard the builder's merge.
@@ -132,7 +133,6 @@ A merged change to a scheduled job runs at its next slot: pause the job, or hold
 # Review rounds
 
 A change that moves state in steps gets the failure table (step, state moved, failure, recovery, test) in its `design.md` or PR body before the first review round.
-Before such a design enters the lane, its builder runs one read-only adversarial `codex exec` review and fixes what it finds: 4 such designs took 2 to 6 lane rounds (sd:2997).
 New proof or validation code carries a property test over extreme magnitudes (overflow, inf, subnormal, zero, nested input) before round 1: that class cost 6 rounds on sd:2406 alone.
 Trigger: the first blocking round: 34 of 82 blocking rounds in 14 days repeated a prior blocker.
 After a review pass, only add commits; never amend, rebase or squash: a moved head forces a full re-review (26 of 32 kept passes).
