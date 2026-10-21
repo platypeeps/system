@@ -894,9 +894,14 @@ class TheToolbarBoxesAlign(unittest.TestCase):
 
     def test_the_box_around_a_places_switch_has_no_margin_in_row_one(self):
         self.assertRegex(self.PLACES_CSS, r"\.place-switch \{ margin: 0 0 var\(--space-md\); \}")  # outside a toolbar it still spaces
-        body = self.rule(SHELL_CSS, ".toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg")
-        self.assertIsNotNone(body, "no row-1 rule zeroes the margin of the switch and the box around it")
+        body = self.rule(SHELL_CSS, ".toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup")
+        self.assertIsNotNone(body, "no row-1 rule zeroes the margin of the switch, the box around it and a chip group")
         self.assertIn("margin: 0;", body)
+
+    def test_a_chip_group_in_row_one_has_no_margin(self):
+        # sd:5639: queue.css gives .fgroup a bottom margin, so Queue's Show chips sat above the centre of the Lanes switch.
+        self.assertIn("margin: 0 0 var(--space-md)", self.rule((STATIC / "queue.css").read_text(encoding="utf-8"), ".fgroup"))
+        self.assertIn(".toolbar > .fgroup", SHELL_CSS)
 
     def test_the_switch_and_the_shapeshift_box_take_one_height_token(self):
         row = self.rule(SHELL_CSS, ".toolbar")

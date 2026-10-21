@@ -716,7 +716,7 @@ th[aria-sort] > .sorter .i { opacity: 1; }
  * --row-touch. The box around a place switch (.place-switch) has no margin here: its margin-bottom made it taller than the switch. */
 .toolbar { --bar-h: var(--row-touch); }
 @media (pointer: coarse) { .toolbar { --bar-h: calc(var(--row-touch) + 2 * (var(--space-3xs) + var(--rule-hair))); } }
-.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg { margin: 0; }
+.toolbar .place-switch, .toolbar .viewswitch, .toolbar .vseg, .toolbar > .fgroup { margin: 0; }
 .toolbar .viewswitch, .toolbar .vseg, .toolbar .shift .field { height: var(--bar-h); }
 .toolbar .viewswitch [role="tab"], .toolbar .vseg > button { min-height: 0; }
 .toolbar > .count { margin-left: auto; font: 400 var(--text-xs)/1.2 var(--font-data); color: var(--color-ink-2); white-space: nowrap; }
