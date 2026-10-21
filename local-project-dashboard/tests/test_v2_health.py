@@ -1699,6 +1699,27 @@ R.observed = document.body.dataset.observed;""")
         self.assertEqual(gamma.count("<td>—</td>"), 1, "only the Branch cell, which an unread repository has none of")
         self.assertIn("— does not apply; not read where the repository was not read.", table)
 
+    def test_repos_shows_managed_repos_by_default_and_all_on_choice(self):
+        """sd:5596. Managed is the default for the matrix and the findings; All brings the others back; a row of no repo stays."""
+        for path, managed in (("/checkouts/alpha", 1), ("/checkouts/delta", 1), ("/checkouts/beta", 0), ("/checkouts/gamma", 0)):
+            self.connection.execute("INSERT INTO repo (path, managed, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                                    (path, managed, NOW, NOW))
+        self.connection.commit()
+        col = r'class="pmx-col" data-row="([^"]+)"'
+        pick = "PANEL().listeners.click[0]({ target: { closest: s => s === '[data-f]' ? { dataset: { f: 'repos', v: '%s' } } : null } });"
+        out = self.run_page("R.def = BODY().html;" + pick % "all" + "R.all = BODY().html;" + pick % "managed" + "R.back = BODY().html;",
+                            view="github")
+        R = out["R"]
+        self.assertEqual(re.findall(col, R["def"]), ["prot:/checkouts/alpha", "prot:/checkouts/delta"])
+        self.assertIn('<p class="counts">2 protected · 0 unprotected · 0 unknown · ', R["def"])
+        self.assertNotIn('data-id="prot:/checkouts/beta"', R["def"], "the findings list follows the choice")
+        self.assertRegex(R["def"], r'data-f="repos" data-v="managed" aria-pressed="true"[^>]*>managed <span class="n">2</span>')
+        self.assertEqual(re.findall(col, R["all"]), ["prot:/checkouts/beta", "prot:/checkouts/gamma", "prot:/checkouts/alpha", "prot:/checkouts/delta"])
+        self.assertIn('data-id="prot:/checkouts/beta"', R["all"])
+        self.assertEqual(re.findall(col, R["back"]), ["prot:/checkouts/alpha", "prot:/checkouts/delta"])
+        linked = self.run_page("R.b = BODY().html;", view="github", search="?repos=all")
+        self.assertIn('data-row="prot:/checkouts/beta"', linked["R"]["b"])
+
     def test_a_matrix_column_opens_its_repo_with_every_check_in_details(self):
         out = self.run_page("""PANEL().listeners.click[0]({ target: { closest: s => s === '.pmx-col' ? { dataset: { row: 'prot:/checkouts/alpha' } } : null } });
 R.d = ELS.details.html; R.cli = cmd('protection.settings').cli(C.get('prot:/checkouts/alpha'));

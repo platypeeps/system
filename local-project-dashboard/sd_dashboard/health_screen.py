@@ -1040,6 +1040,14 @@ def _area(key: str, name: str, source: str, missing, *, at) -> dict:
             "rows": [], "missing": list(missing), "at": at, "extra": {}}
 
 
+def _tag_managed(rows: list[dict], flags: dict[str, bool]) -> None:
+    """Mark each row of a registered repository with its `managed` flag, for the page's Repos choice; other rows stay bare."""
+    for row in rows:
+        path = row.get("repo_path") or (row.get("facts") or {}).get("Repository")
+        if path and os.path.expanduser(path) in flags:
+            row["managed"] = flags[os.path.expanduser(path)]
+
+
 def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None, protection=None,
              disk=None, branches=None, credentials=None, doctor=None, services=None, served_commit=None,
              view: str | None = None) -> dict:
@@ -1075,6 +1083,10 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
                        branches=branches, credentials=credentials, doctor=doctor, services=services,
                        served_commit=served_commit)
     snoozes, snooze_error = snooze.held(connection, now=now)
+    try:
+        flags = {os.path.expanduser(str(row["path"])): bool(row["managed"]) for row in repos.registered(connection)}
+    except (SdDbError, sqlite3.Error):
+        flags = {}  # no flag: every row shows, as under All
     running = {key: _SCANS.start(key, readers[key], now=now, fresh=DOCTOR_FRESH_SECONDS if key == "doc" else None)
                for key in POOLED if key in keys}
     stop = time.monotonic() + PAGE_SECONDS
@@ -1113,6 +1125,7 @@ def document(connection: sqlite3.Connection, *, now: str, fleet=None, ports=None
         else:
             _settle(area, name, readers[key])
         _SCANS.keep(area)
+        _tag_managed(area["rows"], flags)
         area["rows"], area["snoozed"] = snooze.split("health", area["rows"], snoozes)
         areas.append(area)
     found = {"read": now, "areas": areas, "snooze_error": snooze_error, "attention": _attention(areas)}

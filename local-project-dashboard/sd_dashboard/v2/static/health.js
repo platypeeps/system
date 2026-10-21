@@ -54,14 +54,16 @@
   window.PAGE_FILTER = Object.fromEntries(window.PAGE_VIEWS.map(v => [v.id, 'repo, path and branch']));
 
   let DOC = null, AREAS = [], ROWS = [], SNOOZED = [], IGNORED = [], selected = null, query = '';
-  let SUMMARY = null, VIEW = null, showing = 'findings';
+  let SUMMARY = null, VIEW = null, showing = 'findings', repos = 'managed';
   const S = {}, readers = {}; // each view's last reading and its reader
   const F = { state: new Set(), area: new Set() };
   const byId = id => ROWS.find(r => r.id === id);
   // Show: the rows that want something, or all of them, or the ignored ones. A filter on ok or queued names those rows, so it shows them.
   const QUIET = new Set(['ok', 'queued']);
-  const drawn = r => showing !== 'findings' || !QUIET.has(r.state) || F.state.has(r.state);
-  const listed = () => showing === 'ignored' ? IGNORED : ROWS;
+  // Repos: a row of a registered repository carries managed (health_screen._tag_managed); Managed hides the others. A row of no repo stays.
+  const scoped = r => repos === 'all' || r.managed !== false;
+  const drawn = r => scoped(r) && (showing !== 'findings' || !QUIET.has(r.state) || F.state.has(r.state));
+  const listed = () => (showing === 'ignored' ? IGNORED : ROWS).filter(scoped);
   const viewOf = area => PAGE_VIEWS.find(v => v.areas.includes(area))?.id;
 
   // The design's size wording, from a count of KiB.
@@ -112,8 +114,10 @@
   // while a filter hides some of them (sd:5281).
   function filters() {
     const L = listed(), list = shell.list, n = f => L.filter(f).length;
-    const shows = [['findings', ROWS.filter(r => !QUIET.has(r.state)).length], ['all', ROWS.length], ['ignored', IGNORED.length]];
+    const mine = ROWS.filter(scoped), shows = [['findings', mine.filter(r => !QUIET.has(r.state)).length], ['all', mine.length], ['ignored', IGNORED.filter(scoped).length]];
+    const tagged = ROWS.filter(r => 'managed' in r);
     return html`<div class="filters toolbar-2">${list.fbar(html`${list.fseg('show', 'Show', shows.map(([v, c]) => ({ v, pressed: showing === v, label: html`${v} <span class="n">${String(c)}</span>` })))}${
+      tagged.length ? list.fseg('repos', 'Repos', [['managed', tagged.filter(r => r.managed).length], ['all', tagged.length]].map(([v, c]) => ({ v, pressed: repos === v, label: html`${v} <span class="n">${String(c)}</span>` }))) : ''}${
       list.fseg('state', 'State', STATES.filter(s => L.some(r => r.state === s)).map(s => { const c = n(r => r.state === s);
         return { v: s, pressed: F.state.has(s), title: `${s}: ${c}`, label: html`<span class="g-${s}" aria-hidden="true">${GLYPH[s]}</span><span class="n">${String(c)}</span><span class="sr"> ${s}</span>` }; }))}${
       AREAS.length > 1 ? list.pick('area', 'Area', AREAS.map(a => [a.id, a.name, n(r => r.area === a.id)]), F.area, { multi: true }) : ''}${
@@ -121,7 +125,7 @@
   }
 
   function areas() {
-    const count = (a, s) => a.rows.filter(r => r.state === s).length;
+    const count = (a, s) => a.rows.filter(r => r.state === s && scoped(r)).length;
     return html`${AREAS.filter(areaShown).map(a => { const rows = a.rows.filter(passes); return html`<section class="area" id="a-${a.id}" aria-labelledby="h-${a.id}">
       <div class="sec-head"><h2 id="h-${a.id}">${I(LOOK[a.id]?.[0] || 'circle-help')}${a.name}<button class="help" type="button" aria-label="Help: ${a.name}" data-help="${LOOK[a.id]?.[1] || ''}">${I('circle-help')}</button></h2>
         <p class="tally">${rows.length < a.rows.filter(drawn).length ? html`<span>${shell.list.count(rows.length, a.rows.filter(drawn).length, 'row')}</span>` : ''}${a.read && !a.error ? STATES.filter(s => count(a, s)).map(s => html`<span class="g-${s}">${GLYPH[s]} ${count(a, s)} ${s}</span>`) : html`<span class="g-unknown">${GLYPH.unknown} not read</span>`}${a.at ? html`<span>read <time class="rel" datetime="${a.at}"></time></span>` : ''}</p></div>
@@ -162,7 +166,8 @@
     if (a.id === 'wt') return html`<p class="counts">${plural(safe().length, 'cleanup')} ready in Checkouts · ${shell.commands.rowActions('cleanup:safe')}</p>`;
     if (a.id === 'ports') return html`<p class="counts">${x.counts.configured} configured ports · ${x.counts.listening} listening · ${x.counts.unknown} unknown</p>${x.warnings.map(warn)}`;
     if (a.id !== 'prot' || !x.columns) return '';
-    const cols = x.columns.map(byId).filter(Boolean), n = x.counts;
+    const cols = x.columns.map(byId).filter(r => r && scoped(r));
+    const n = Object.fromEntries(Object.keys(x.counts).map(k => [k, cols.filter(r => r.status === k).length]));
     const lines = x.checks.length + 1;
     return html`<p class="counts">${n.protected} protected · ${n.unprotected} unprotected · ${n.unknown} unknown · ${shell.commands.rowActions('collector:protection')}</p>
       ${x.reasons.map(r => warn(`${n.unknown} unknown, ${x.reasons.length === 1 ? 'all for one reason' : 'among them'}: ${r}.`))}
@@ -214,6 +219,7 @@
     ['state', 'area'].forEach(k => { if (F[k].size) q.set(k, [...F[k]].join(',')); });
     if (query) q.set('q', query);
     if (showing !== 'findings') q.set('show', showing);
+    if (repos !== 'managed') q.set('repos', repos);
     shell.url(q); // the shell keeps ?row=
   }
   // The open view's panel: its filters, the filter note and its areas. Another view's panel keeps what it last drew.
@@ -416,6 +422,7 @@
     (u.get('area') || '').split(',').filter(Boolean).forEach(a => F.area.add(a));
     query = (u.get('q') || '').trim().toLowerCase(); // the shell's bar reads ?q= too
     showing = ['all', 'ignored'].includes(u.get('show')) ? u.get('show') : 'findings';
+    repos = u.get('repos') === 'all' ? 'all' : 'managed';
     // An ?area= link opens that area's view unless #view= names one. The shell's first shell:view fires after this listener.
     const asked = viewOf([...F.area][0]);
     if (asked && !hashView()) { history.replaceState(null, '', `${location.pathname}${location.search}#view=${asked}`); shell.view.show(asked); }
@@ -425,6 +432,7 @@
       if (e.target.closest('[data-fclear]')) { clearFilters(); return; }
       const c = e.target.closest('[data-f]');
       if (c && c.dataset.f === 'show') { if (c.dataset.v !== showing) { showing = c.dataset.v; apply(); } return; }
+      if (c && c.dataset.f === 'repos') { if (c.dataset.v !== repos) { repos = c.dataset.v; apply(); } return; }
       if (c && c.dataset.f === 'q') { query = ''; shell.filter(''); apply(); return; }
       if (c) { const set = F[c.dataset.f]; set.has(c.dataset.v) ? set.delete(c.dataset.v) : set.add(c.dataset.v); lamps(); apply(); return; }
       if (e.target.closest('.rowact') || e.target.closest('.help')) return;
